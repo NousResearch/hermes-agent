@@ -207,3 +207,50 @@ async def test_internal_event_keeps_channel_prompt_and_parent_override(monkeypat
     eph = [_effective_ephemeral(runner, kw) for kw in calls]
     assert "Channel hint." in eph[0] and "Parent persona." in eph[0]
     assert eph[0] == eph[1] == eph[2], "internal event toggled the channel ephemeral components"
+
+
+@pytest.mark.asyncio
+async def test_eventless_followup_inherits_effective_channel_prompt(monkeypatch):
+    runner = _make_runner(monkeypatch)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._refresh_agent_cache_message_count = AsyncMock()
+
+    adapter = MagicMock()
+    adapter.get_pending_message.return_value = None
+    adapter._active_sessions = {}
+    source = _human_source()
+    baseline = {"source": source, "context_prompt": "ctx", "channel_prompt": "Channel hint."}
+
+    cases = (
+        {"final_response": "done", "messages": [], "pending_steer": "follow up"},
+        {
+            "final_response": "done",
+            "messages": [],
+            "interrupt_message": "follow up",
+            "interrupted": True,
+        },
+    )
+    for result in cases:
+        pending_event, pending = await runner._run_agent_drain_pending(result, adapter, source, KEY)
+        assert pending_event is None
+        assert pending == "follow up"
+
+        turn_ctx = TurnContext(
+            source=source,
+            context_prompt="ctx",
+            channel_prompt="Channel hint.",
+            session_key=KEY,
+            session_id="sess-wiring",
+            run_generation=1,
+            history=[],
+        )
+        await runner._run_agent_queued_followup(
+            turn_ctx, adapter, pending, pending_event, "done", result, None
+        )
+
+    assert [call["channel_prompt"] for call in calls] == ["Channel hint.", "Channel hint."]
+    expected = _effective_ephemeral(runner, baseline)
+    assert all(_effective_ephemeral(runner, call) == expected for call in calls)
+

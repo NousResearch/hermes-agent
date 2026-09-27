@@ -2,7 +2,8 @@
 image generation and structured session control.
 
 Handlers: ``tui_gateway/methods_config.py`` (``config.get``, ``setup.*``, ``diagnostics.share_nous``),
-``methods_config_set.py`` (``config.set``), ``methods_free_tier.py``, ``methods_complete.py``
+``methods_config_set.py`` (``config.set``), ``methods_free_tier.py``, ``methods_shared_metrics.py``,
+``methods_complete.py``
 (``model.options``), ``methods_connectors.py``, ``methods_images.py``, ``methods_session_control.py``
 and ``methods_session.py`` (``verification.status``).
 """
@@ -208,6 +209,35 @@ class FreeTierAckNoticeResult(Result):
 
 method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeResult,
        doc="Mark the one-time availability notice as shown on the free-tier identity.")
+
+
+# ── shared metrics consent ────────────────────────────────────────────────────────────────────
+
+
+class SharedMetricsConsentResult(Result):
+    """The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while
+    ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults
+    are not an answer)."""
+
+    enabled: bool
+    send: bool
+    decided: bool
+
+
+method("shared_metrics.status", params=ProfileParams, result=SharedMetricsConsentResult,
+       doc="Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered).")
+
+
+class SharedMetricsSetParams(ProfileParams):
+    """``send`` is ignored unless ``enabled``; ``first_run`` marks the Desktop first-run answer."""
+
+    enabled: bool
+    send: bool = False
+    first_run: bool = False
+
+
+method("shared_metrics.set", params=SharedMetricsSetParams, result=SharedMetricsConsentResult,
+       doc="Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows.")
 
 
 # ── model.options ─────────────────────────────────────────────────────────────────────────────

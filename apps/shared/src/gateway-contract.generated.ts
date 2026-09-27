@@ -643,6 +643,19 @@ export interface FreeTierProvisionResult {
 export interface FreeTierAckNoticeResult {
   acked: boolean
 }
+/** The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults are not an answer). */
+export interface SharedMetricsConsentResult {
+  enabled: boolean
+  send: boolean
+  decided: boolean
+}
+/** ``send`` is ignored unless ``enabled``; ``first_run`` marks the Desktop first-run answer. */
+export interface SharedMetricsSetParams {
+  profile?: string | null
+  enabled: boolean
+  send?: boolean
+  first_run?: boolean
+}
 export interface ModelOptionsParams {
   profile?: string | null
   session_id?: string | null
@@ -5135,6 +5148,10 @@ export interface RpcMethods {
   'setup.runtime_check': { params: SetupRuntimeCheckParams; result: SetupRuntimeCheckResult }
   /** Loose provider check: is ANY provider auth state discoverable for the (launch or named) profile. */
   'setup.status': { params: ProfileParams; result: SetupStatusResult }
+  /** Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows. */
+  'shared_metrics.set': { params: SharedMetricsSetParams; result: SharedMetricsConsentResult }
+  /** Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered). */
+  'shared_metrics.status': { params: ProfileParams; result: SharedMetricsConsentResult }
   /** Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution. */
   'shell.exec': { params: ShellExecParams; result: ShellExecResult }
   /** Skills hub backend: list the profile's skills or search / browse / inspect / install from the hub. */
@@ -5417,6 +5434,8 @@ export const RPC_METHODS = [
   'session.workspace.move',
   'setup.runtime_check',
   'setup.status',
+  'shared_metrics.set',
+  'shared_metrics.status',
   'shell.exec',
   'skills.manage',
   'skills.reload',

@@ -249,6 +249,51 @@ def test_explicit_only_drops_anthropic_row_without_oauth_credentials():
     assert "anthropic" not in [row["slug"] for row in payload["providers"]]
 
 
+def test_explicit_only_keeps_minimax_oauth_row_with_persisted_credentials():
+    """The first-party MiniMax OAuth grant is deliberate, not ambient discovery."""
+    rows = [
+        {"slug": "minimax-oauth", "name": "MiniMax (OAuth)", "models": ["MiniMax-M2.7"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+    ]
+    ctx = _empty_ctx(provider="opencode-go", model="glm-5.3")
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
+        patch(
+            "hermes_cli.auth.get_provider_auth_state",
+            return_value={"access_token": "not-a-real-token"},
+        ),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    slugs = [row["slug"] for row in payload["providers"]]
+    assert "minimax-oauth" in slugs
+    assert "copilot" not in slugs
+
+
+def test_explicit_only_drops_minimax_oauth_row_without_persisted_credentials():
+    rows = [
+        {"slug": "minimax-oauth", "name": "MiniMax (OAuth)", "models": ["MiniMax-M2.7"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+    ]
+    ctx = _empty_ctx(provider="opencode-go", model="glm-5.3")
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
+        patch("hermes_cli.auth.get_provider_auth_state", return_value=None),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert "minimax-oauth" not in [row["slug"] for row in payload["providers"]]
+
+
 def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
     """A pool-only OAuth entry (auth.json credential_pool.anthropic) counts.
 

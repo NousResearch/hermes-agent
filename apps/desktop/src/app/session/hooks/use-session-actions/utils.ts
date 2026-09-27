@@ -68,6 +68,7 @@ import type { ClientSessionState } from '../../../types'
 
 import {
   acknowledgedTranscriptBoundary,
+  carriedOverTranscriptIdentity,
   conflictingTranscriptIdentity,
   persistedTurnsEquivalent,
   transcriptRowIds
@@ -819,8 +820,13 @@ export function preserveLocalPendingTurnMessages(
     // A second segment of the acknowledged turn can still be folded into its
     // final row. A new prompt closes that ownership; identical later replies
     // must not be consumed by the already-acknowledged prefix.
+    // A compaction carry re-inserts this turn's rows under new ids, so disjoint
+    // identities alone must not veto the candidate: the text arms below are
+    // gated on this list, and an empty one re-appends the local copy (#117867).
     const candidates = (crossedUserBoundary ? remainingNext : acknowledgedTurn).filter(
-      candidate => !conflictingTranscriptIdentity(message, candidate)
+      candidate =>
+        !conflictingTranscriptIdentity(message, candidate) ||
+        carriedOverTranscriptIdentity(message, candidate, storedRowIds)
     )
 
     const ordinal = previousRoleCounts.get(message.role) ?? 0

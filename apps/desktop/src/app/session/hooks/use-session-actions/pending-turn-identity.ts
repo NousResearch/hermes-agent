@@ -16,6 +16,46 @@ export function conflictingTranscriptIdentity(local: ChatMessage, authoritative:
   return Boolean(localIds.length && authoritativeIds.length && !localIds.some(id => authoritativeIds.includes(id)))
 }
 
+/**
+ * Compaction carry (#117867): a rewrite re-inserts the live turn's rows under
+ * NEW row ids, so disjoint ids prove the local row was SUPERSEDED, not that it
+ * is a different row. Callers that use `conflictingTranscriptIdentity` to veto
+ * candidates need this arm, or the veto empties the candidate list and every
+ * text/tool guard behind it goes blind — the streamed reply is re-appended and
+ * paints twice until the window reloads.
+ *
+ * Evidence is positive on purpose: EVERY id the local bubble names (its folded
+ * row plus every row of its turn receipt) is gone from the page — a page that
+ * still partly holds the turn has not rewritten it, and a genuinely newer equal
+ * reply still holds its own row — and every candidate id is newer than all of
+ * them, i.e. a carried generation rather than an older page.
+ */
+export function carriedOverTranscriptIdentity(
+  local: ChatMessage,
+  authoritative: ChatMessage,
+  pageRowIds: ReadonlySet<number>
+): boolean {
+  const authoritativeIds = transcriptRowIds(authoritative)
+
+  if (!authoritativeIds.length) {
+    return false
+  }
+
+  const localIds = [...transcriptRowIds(local), ...(local.persistedTurn?.row_ids ?? [])]
+
+  if (!localIds.length) {
+    return false
+  }
+
+  if (localIds.some(id => authoritativeIds.includes(id)) || localIds.some(id => pageRowIds.has(id))) {
+    return false
+  }
+
+  const newestLocal = Math.max(...localIds)
+
+  return authoritativeIds.every(id => id > newestLocal)
+}
+
 export function persistedTurnsEquivalent(a: ChatMessage['persistedTurn'], b: ChatMessage['persistedTurn']): boolean {
   return (
     a === b ||

@@ -670,6 +670,31 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserveLocalPendingTurnMessages(summarizedAway, previous)).toEqual(summarizedAway)
   })
 
+  // The same carry while the reply is STILL streaming: the partial receipt
+  // (`complete: false`, `pending: true`) lands short of the rewrite guards
+  // above, so the row reaches the candidate filter — where the disjoint row
+  // ids used to veto the committed twin, leaving every text arm blind and
+  // re-appending the streamed answer below the refreshed one.
+  it('does not re-append a still-streaming reply that a mid-flight compaction rewrote', () => {
+    const previous = [
+      msg('u1', 'user', 'q1', { rowId: 11340 }),
+      msg('user-9-x', 'user', 'q2', { rowId: 11350 }),
+      msg('assistant-stream-9-0', 'assistant', 'r2', {
+        pending: true,
+        rowId: 11359,
+        persistedTurn: partialReceipt
+      })
+    ]
+
+    const rewritten = [
+      msg('s-summary', 'assistant', '[summary]', { rowId: 11440 }),
+      msg('s-u2', 'user', 'q2', { rowId: 11450 }),
+      msg('s-a2', 'assistant', 'r2', { rowId: 11459 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(rewritten, previous)).toEqual(rewritten)
+  })
+
   it('keeps a partially receipted reply the store has not reached or still partly holds', () => {
     const reply = msg('assistant-stream-9-0', 'assistant', 'r2 with unpersisted tail', {
       pending: false,

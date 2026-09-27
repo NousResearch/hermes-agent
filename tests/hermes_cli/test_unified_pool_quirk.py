@@ -33,6 +33,28 @@ def _no_cache(monkeypatch):
     monkeypatch.setattr(hw, "_pool_probe_cache", None)
 
 
+# ── UMA reserve ───────────────────────────────────────────────
+
+
+def test_uma_reserve_is_a_bounded_clamp_sized_from_total():
+    """The OS reserve must be a bounded clamp, not a 20% slice of the pool:
+    a flat fraction refused models that fit on big unified machines (25.6 GiB
+    reserved on a 128 GiB Mac, 51 GiB on a 256 GiB one) while the floor keeps
+    small machines honest."""
+    assert hw._uma_reserve_bytes(8 * GIB) == int(1.5 * GIB)   # floor binds
+    assert hw._uma_reserve_bytes(128 * GIB) == 12 * GIB         # 10% hits the cap
+    assert hw._uma_reserve_bytes(512 * GIB) == 12 * GIB         # cap binds
+    b = hw._uma_budget(128 * GIB, 128 * GIB)
+    assert b.usable_vram_bytes == 128 * GIB - 12 * GIB
+
+
+def test_uma_reserve_never_scales_off_live_free(monkeypatch):
+    """Sizing the reserve off live-free shrinks it exactly when memory is
+    tightest. Live probes owe the pool total's reserve regardless of load."""
+    assert (hw._uma_budget(24 * GIB, 128 * GIB).usable_vram_bytes
+            == 24 * GIB - hw._uma_reserve_bytes(128 * GIB))
+
+
 # ── _unified_pool_bytes: the classification gate ─────────────
 
 
@@ -112,7 +134,7 @@ def test_budget_unified_pool_planning(monkeypatch):
     assert b.uma is True
     assert b.ram_available_bytes == 0
     assert b.total_device_bytes == UMA_POOL
-    assert b.usable_vram_bytes == int(UMA_POOL * (1 - hw._UMA_HEADROOM_FRACTION))
+    assert b.usable_vram_bytes == UMA_POOL - hw._uma_reserve_bytes(UMA_POOL)
     # The whole point: the budget must dwarf the carve-out.
     assert b.usable_vram_bytes > 2 * UMA_SMI_TOTAL
 
@@ -124,8 +146,9 @@ def test_budget_unified_pool_live_counts_dedicated_free_plus_os_available(monkey
     b = hw.probe_budget(planning=False)
     assert b.uma is True
     live = (14848 << 20) + 32 * GIB
-    assert b.usable_vram_bytes == int(min(UMA_POOL, live)
-                                      * (1 - hw._UMA_HEADROOM_FRACTION))
+    # Reserve is sized from the pool's physical extent, not from the live
+    # figure: what the OS is owed does not shrink because memory got tight.
+    assert b.usable_vram_bytes == min(UMA_POOL, live) - hw._uma_reserve_bytes(UMA_POOL)
 
 
 def test_budget_unified_no_smi_still_classifies(monkeypatch):
@@ -139,10 +162,12 @@ def test_budget_unified_no_smi_still_classifies(monkeypatch):
     planning = hw.probe_budget(planning=True)
     assert planning.uma is True
     assert planning.total_device_bytes == UMA_POOL
-    assert planning.usable_vram_bytes == int(
-        UMA_POOL * (1 - hw._UMA_HEADROOM_FRACTION))
+    assert planning.usable_vram_bytes == UMA_POOL - hw._uma_reserve_bytes(UMA_POOL)
     live = hw.probe_budget(planning=False)
-    assert live.usable_vram_bytes == int(32 * GIB * (1 - hw._UMA_HEADROOM_FRACTION))
+    # Reserve is owed off the pool TOTAL even in live probes — the old code
+    # took 20% of FREE ram, so the reserve shrank precisely as the machine
+    # ran out of memory (the 'Too big' verdict drifted with unrelated load).
+    assert live.usable_vram_bytes == 32 * GIB - hw._uma_reserve_bytes(UMA_POOL)
 
 
 def test_budget_discrete_unchanged_when_probe_says_discrete(monkeypatch):

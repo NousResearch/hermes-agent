@@ -245,12 +245,13 @@ function fakeNpmTree(source, { manifest }) {
   json(join(fake, 'real/node_modules/semver/package.json'), { name: 'semver', version: '1.0.0', main: 'index.js' })
   writeFileSync(join(fake, 'real/node_modules/semver/index.js'), 'module.exports = { satisfies: () => true }\n')
   const spawned = join(source, 'spawned.jsonl')
-  writeFileSync(join(npmRoot, 'bin/npm-cli.js'), [
+  const armProbe = ({ exit }) => writeFileSync(join(npmRoot, 'bin/npm-cli.js'), [
     `const { appendFileSync } = require('node:fs')`,
     `appendFileSync(${JSON.stringify(spawned)}, process.argv[2] + '\\n')`,
-    `if (process.argv[2] === '--version') { console.log('10.8.2'); process.exit(${manifest ? 3 : 0}) }`,
+    `if (process.argv[2] === '--version') { console.log('10.8.2'); process.exit(${exit}) }`,
   ].join('\n'))
-  return { fake, npmRoot, spawned }
+  armProbe({ exit: manifest ? 3 : 0 })
+  return { fake, npmRoot, spawned, armProbe }
 }
 
 test.skipIf(process.platform === 'win32')('the npm version reads from the manifest without a child spawn, through a symlinked npm_execpath', async () => {
@@ -283,4 +284,27 @@ test('an npm layout without a readable manifest falls back to the child version 
   prepareNodeDependencies(options)
   // The unresolvable manifest kept the pre-fix behavior: probe first, then ci.
   expect(readFileSync(spawned, 'utf8')).toBe('--version\nci\n')
+}, 30000)
+
+// The receipt key hashes the npm version. An install completed by the probe
+// lane must still count as complete once the manifest supplies the version,
+// or every user re-runs npm ci after this change — and, as in #123933, that
+// reuse must not depend on a version probe that can no longer spawn.
+test('a receipt keyed by the probed version reuses under the manifest version, even when the probe fails', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const { npmRoot, spawned, armProbe } = fakeNpmTree(source, { manifest: null })
+  mkdirSync(join(source, 'node_modules'))
+  writeFileSync(join(source, 'node_modules/.package-lock.json'), '{"packages": {}}')
+  const options = { source, workspaces: ['web'], reuse: true,
+    env: { ...process.env, npm_config_cache: join(source, '.npm-cache'), npm_execpath: join(npmRoot, 'bin/npm-cli.js') } }
+  prepareNodeDependencies(options)
+  expect(readFileSync(spawned, 'utf8')).toBe('--version\nci\n')
+  json(join(npmRoot, 'package.json'), { name: 'npm', version: '10.8.2' })
+  armProbe({ exit: 1 })
+  prepareNodeDependencies({ ...options, install: false })
+  expect(readFileSync(spawned, 'utf8')).toBe('--version\nci\n')
+  // A genuinely different npm still invalidates the receipt.
+  json(join(npmRoot, 'package.json'), { name: 'npm', version: '10.8.3' })
+  expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
 }, 30000)

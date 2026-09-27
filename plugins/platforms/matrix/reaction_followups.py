@@ -28,12 +28,16 @@ class ReactionWatchStore:
                     room_id TEXT NOT NULL,
                     thread_id TEXT NOT NULL,
                     session_key TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
                     requester TEXT NOT NULL,
                     source_json TEXT NOT NULL,
                     emoji_json TEXT NOT NULL,
                     expires_at REAL NOT NULL
                 )
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(watches)")}
+            if "session_id" not in columns:
+                db.execute("ALTER TABLE watches ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5)
@@ -47,6 +51,7 @@ class ReactionWatchStore:
         room_id: str,
         thread_id: str,
         session_key: str,
+        session_id: str,
         requester: str,
         source: dict[str, Any],
         emoji_filter: tuple[str, ...],
@@ -59,6 +64,7 @@ class ReactionWatchStore:
                 room_id,
                 thread_id,
                 session_key,
+                session_id,
                 requester,
                 json.dumps(source),
                 json.dumps(emoji_filter),
@@ -72,7 +78,10 @@ class ReactionWatchStore:
         with closing(self._connect()) as db, db:
             db.execute("DELETE FROM watches WHERE expires_at <= ?", (self.clock(),))
             db.executemany(
-                "INSERT OR REPLACE INTO watches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                """INSERT OR REPLACE INTO watches
+                   (event_id, turn_id, profile, room_id, thread_id, session_key,
+                    session_id, requester, source_json, emoji_json, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
 
@@ -91,16 +100,17 @@ class ReactionWatchStore:
             db.execute("DELETE FROM watches WHERE expires_at <= ?", (self.clock(),))
             row = db.execute(
                 """
-                SELECT turn_id, thread_id, session_key, requester, source_json, emoji_json, expires_at
+                SELECT turn_id, thread_id, session_key, session_id, requester,
+                       source_json, emoji_json, expires_at
                 FROM watches WHERE event_id = ? AND profile = ? AND room_id = ?
             """,
                 (target_event_id, profile, room_id),
             ).fetchone()
-            if row is None or row[3] != sender:
+            if row is None or row[4] != sender or not row[3]:
                 return None
-            if reaction_time is not None and reaction_time < row[6] - WATCH_SECONDS:
+            if reaction_time is not None and reaction_time < row[7] - WATCH_SECONDS:
                 return None
-            allowed = tuple(json.loads(row[5]))
+            allowed = tuple(json.loads(row[6]))
             if allowed and emoji not in allowed:
                 return None
             db.execute("DELETE FROM watches WHERE turn_id = ?", (row[0],))
@@ -109,8 +119,9 @@ class ReactionWatchStore:
             "room_id": room_id,
             "thread_id": row[1],
             "session_key": row[2],
+            "session_id": row[3],
             "requester": sender,
-            "source": json.loads(row[4]),
+            "source": json.loads(row[5]),
             "emoji": emoji,
             "target_event_id": target_event_id,
         }
@@ -119,17 +130,19 @@ class ReactionWatchStore:
         with closing(self._connect()) as db, db:
             row = db.execute(
                 """
-                SELECT profile, thread_id, session_key, requester, source_json, expires_at
+                SELECT profile, thread_id, session_key, session_id, requester,
+                       source_json, expires_at
                 FROM watches WHERE event_id = ? AND room_id = ?
             """,
                 (target_event_id, room_id),
             ).fetchone()
-        if row is None or row[5] <= self.clock():
+        if row is None or row[6] <= self.clock():
             return None
         return {
             "profile": row[0],
             "thread_id": row[1],
             "session_key": row[2],
-            "requester": row[3],
-            "source": json.loads(row[4]),
+            "session_id": row[3],
+            "requester": row[4],
+            "source": json.loads(row[5]),
         }

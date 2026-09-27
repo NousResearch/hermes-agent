@@ -480,7 +480,11 @@ stage_repository() {
         if [ -n "${HERMES_REPO_URL:-}" ]; then
             git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" || fail "cannot point origin at $REPO_URL"
         fi
-        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "$BRANCH" || fail "git fetch failed"
+        # Explicit refspec: a tag-pinned --single-branch checkout from an older
+        # installer maps only the tag, so a by-name fetch writes FETCH_HEAD and
+        # never the origin/$BRANCH everything below resolves (#125112).
+        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
+            || fail "git fetch failed"
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -500,7 +504,15 @@ stage_repository() {
                 || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun"
             log_warn "local changes stashed as hermes-install-autostash-$stamp"
         fi
-        run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
+        # checkout's branch guess only sees remote refs the refspec maps, so a
+        # narrow checkout (detached at its tag, no local branch) gets the branch
+        # created at the fetched tip.
+        if git -C "$INSTALL_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
+        else
+            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout -b "$BRANCH" "origin/$BRANCH" \
+                || fail "git checkout failed"
+        fi
         if ! run_logged --may-fail "Fast-forwarding to origin/$BRANCH" \
             git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH"; then
             # A release cut off the main line, a force-pushed remote, or the

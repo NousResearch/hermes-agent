@@ -32,14 +32,36 @@ function authoredMessageCount(messages: ChatMessage[]): number {
 }
 
 /**
+ * Latest persisted backend row the view carries. Retention only ever releases
+ * the head (rows older than the window plus its budget — see
+ * app/chat/transcript-retention.ts), so the last durable row is always the
+ * live tail; unpersisted rows (optimistic prompts, live streams) sit past it.
+ */
+function lastDurableRowId(messages: readonly ChatMessage[]): number | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const rowId = messages[index].rowId
+
+    if (typeof rowId === 'number') {
+      return rowId
+    }
+  }
+
+  return undefined
+}
+
+/**
  * Chat messages to install when the authoritative latest page is ahead of the
  * local view. Null when the local view is current.
  *
- * Authored content is compared after `toChatMessages`, so tool rows folded into
- * an assistant bubble are not "ahead", and neither is a backend-authored
- * notice. A backfilled prefix is kept when the refreshed tail anchors inside
- * it. Live stream ids that do not anchor still use the count, so the window
- * that just finished the turn is not blocked when the counts match.
+ * Tips are compared before counts: a view ending on the page's own last
+ * durable row is current however much head retention has paged out — counts
+ * never converge there (#123909), while a peer window's newer row still
+ * changes the tip. Authored content is compared after `toChatMessages`, so
+ * tool rows folded into an assistant bubble are not "ahead", and neither is a
+ * backend-authored notice. A backfilled prefix is kept when the refreshed tail
+ * anchors inside it. Live stream ids that do not anchor still use the count,
+ * so the window that just finished the turn is not blocked when the counts
+ * match.
  */
 export function messagesIfTranscriptBehind(
   localMessages: ChatMessage[],
@@ -51,6 +73,13 @@ export function messagesIfTranscriptBehind(
 
   if (localMessages.length === 0) {
     return remoteChat
+  }
+
+  const localTip = lastDurableRowId(localMessages)
+  const remoteTip = lastDurableRowId(remoteChat)
+
+  if (localTip !== undefined && localTip === remoteTip) {
+    return null
   }
 
   const grafted = graftRefreshedTailOntoBackfill(remoteChat, localMessages)

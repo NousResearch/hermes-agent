@@ -13,6 +13,7 @@ import {
   $currentProvider,
   $selectedStoredSessionId,
   $sessions,
+  applySessionTitle,
   sessionMatchesStoredId,
   setActiveSessionId,
   setCurrentBranch,
@@ -23,7 +24,6 @@ import {
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
-  setSessions,
   setTerminalBackend,
   setWorkspaceCwdOwner,
   setYoloActive
@@ -497,7 +497,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''
 
     if (storedId && nextTitle) {
-      setSessions(prev => prev.map(s => (sessionMatchesStoredId(s, storedId) ? { ...s, title: nextTitle } : s)))
+      // Lineage-aware across every slice — the same conversation can render
+      // from any of its ids (#123337); bare recents patching left project
+      // rows stale.
+      applySessionTitle(storedId, nextTitle)
     }
 
     return true

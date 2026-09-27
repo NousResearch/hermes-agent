@@ -292,6 +292,29 @@ class TestMissingRequiredEnvNaming:
             assert reg.create_adapter("fake", MagicMock()) is None
         assert "required env not set: FAKE_PLATFORM_TOKEN" in caplog.text
 
+    def test_scoped_env_not_reported_missing(self, monkeypatch, caplog):
+        # check_fn reads credentials through the active profile secret scope; a multiplexed
+        # profile's .env never mutates os.environ, so the probe must resolve env the same
+        # way or it names every scoped credential as "not set".
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.delenv("FAKE_PLATFORM_TOKEN", raising=False)
+        token = set_secret_scope({"FAKE_PLATFORM_TOKEN": "set"})
+        try:
+            reg = PlatformRegistry()
+            reg.register(self._entry(
+                "fake",
+                check_fn=lambda: False,
+                required_env=["FAKE_PLATFORM_TOKEN"],
+                install_hint="Fake needs the fake-sdk package",
+            ))
+            with caplog.at_level(logging.WARNING, logger="gateway.platform_registry"):
+                assert reg.create_adapter("fake", MagicMock()) is None
+            assert "required env not set" not in caplog.text
+            assert "Fake needs the fake-sdk package" in caplog.text
+        finally:
+            reset_secret_scope(token)
+
 
 # ── GatewayConfig integration ────────────────────────────────────────────
 

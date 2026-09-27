@@ -8,12 +8,12 @@ registry first, then the legacy built-in path. Plugin side: ``platform_registry
 """
 
 import logging
-import os
 import sys
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
+from gateway.config import _getenv
 from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
@@ -386,7 +386,10 @@ class PlatformRegistry:
         if not deps_ok:
             # check_fn mostly gates on required env, so name the unset variables instead of a
             # dependency-flavoured install_hint that answers a different question (#122877).
-            missing_env = [name for name in entry.required_env if not os.environ.get(name, "").strip()]
+            # _getenv, not bare os.environ: gates read the active profile secret scope
+            # (multiplexed profile .env never mutates os.environ), so a bare os.environ
+            # probe would name every scoped credential as "not set".
+            missing_env = [name for name in entry.required_env if not (_getenv(name) or "").strip()]
             if missing_env:
                 logger.warning(
                     "Platform '%s' requirements not met (required env not set: %s)",

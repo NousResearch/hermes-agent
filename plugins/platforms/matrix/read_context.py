@@ -7,9 +7,10 @@ from enum import Enum
 from typing import Any
 from urllib.parse import quote
 
+from plugins.platforms.matrix.effective_event import effective_event, event_content
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
-from plugins.platforms.matrix.reply_context import _effective_content, _label_body, _own_text
+from plugins.platforms.matrix.reply_context import _label_body, _own_text
 
 try:
     from mautrix.api import Method
@@ -27,44 +28,40 @@ def _raw_event(event: Any) -> dict[str, Any]:
 
 async def _visible_event(adapter: Any, raw: dict[str, Any], room_id: str, chat_type: str) -> tuple[dict | None, dict | None]:
     event_id = raw.get("event_id")
-    event: Any = raw
-    if raw.get("type") == "m.room.encrypted":
-        crypto = getattr(adapter._client, "crypto", None)
-        if crypto is None:
-            return None, {"event_id": event_id, "error": "missing decryption keys"}
-        try:
-            from mautrix.types import Event
-            event = await asyncio.wait_for(crypto.decrypt_megolm_event(Event.deserialize(raw)), timeout=10.0)
-        except Exception as exc:
-            error = "missing decryption keys" if type(exc).__name__ == "SessionNotFound" else "decryption failed"
-            return None, {"event_id": event_id, "error": error}
-        if event is None:
-            return None, {"event_id": event_id, "error": "missing decryption keys"}
-
-    content, edited = _effective_content(event)
-    if not content.get("msgtype"):
+    if raw.get("room_id", room_id) != room_id:
+        return None, None
+    if MatrixRelation.from_content(event_content(raw).get("m.relates_to")).is_edit:
+        return None, None
+    state = await effective_event(adapter._client, raw)
+    content = state.content
+    if content is None:
+        return None, state.error
+    if not state.redacted and not content.get("msgtype"):
         return None, None
     body = content.get("body")
     if not isinstance(body, str):
         body = ""
     body = body.strip()
-    if edited and body.startswith("* "):
-        body = body[2:].strip()
-    body = _label_body(str(content.get("msgtype")), _own_text(body))[:1200]
-    relation = MatrixRelation.from_content(content.get("m.relates_to"))
+    body = "[redacted]" if state.redacted else _label_body(str(content.get("msgtype")), _own_text(body))[:1200]
+    relation = MatrixRelation.from_content(state.original_content.get("m.relates_to"))
     sender = str(raw.get("sender") or "")
     authorized = sender == adapter._user_id or adapter._is_sender_authorized(
         sender, chat_type=chat_type, chat_id=room_id
     ) is True
-    return {
+    visible = {
         "event_id": event_id,
         "sender": sender,
         "body": body,
-        "msgtype": str(content.get("msgtype")),
+        "msgtype": None if state.redacted else str(content.get("msgtype")),
         "thread_id": relation.thread_root,
         "timestamp": raw.get("origin_server_ts"),
         "sender_authorized": authorized,
-    }, None
+    }
+    if state.edited:
+        visible["edited"] = True
+    if state.redacted:
+        visible["redacted"] = True
+    return visible, state.error
 
 
 async def read_matrix_context(
@@ -83,7 +80,8 @@ async def read_matrix_context(
     root: dict[str, Any] | None = None
     if kind == "thread":
         try:
-            root = _raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
+            path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(event_id or '', safe='')}"
+            root = _raw_event(await asyncio.wait_for(client.api.request(Method.GET, path), timeout=10.0))
             if root.get("event_id") != event_id:
                 root = None
         except Exception:
@@ -91,7 +89,10 @@ async def read_matrix_context(
 
     try:
         if kind == "event":
-            raw = _raw_event(await asyncio.wait_for(client.get_event(room_id, event_id), timeout=10.0))
+            path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(event_id or '', safe='')}"
+            raw = _raw_event(await asyncio.wait_for(client.api.request(Method.GET, path), timeout=10.0))
+            if raw.get("event_id") != event_id:
+                return {"error": "Matrix event not found in this room"}
             chunk = [raw]
         else:
             room = quote(room_id, safe="")
@@ -126,7 +127,7 @@ async def read_matrix_context(
             continue
         events.append(visible)
 
-    targets = [event for event in events if isinstance(event["event_id"], str)]
+    targets = [event for event in events if isinstance(event["event_id"], str) and not event.get("redacted")]
     snapshots = await fetch_reactions_for_events(
         client, room_id, [event["event_id"] for event in targets],
         limit=50 if kind == "event" else 8,

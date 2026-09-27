@@ -57,6 +57,7 @@ async def fetch_room_entries(
 
     entries: list[MatrixEventContext] = []
     entry_ids: list[str] = []
+    reaction_ids: list[str] = []
     for raw in reversed(earlier[:limit]):
         if not isinstance(raw, dict) or not isinstance(raw.get("event_id"), str):
             continue
@@ -71,13 +72,17 @@ async def fetch_room_entries(
         if stored is not None:
             entries.append(stored)
             entry_ids.append(raw["event_id"])
+            if not stored.redacted:
+                reaction_ids.append(raw["event_id"])
 
-    snapshots = await fetch_reactions_for_events(client, room_id, entry_ids)
+    snapshots = await fetch_reactions_for_events(client, room_id, reaction_ids)
+    by_id = dict(zip(reaction_ids, snapshots))
     return [
-        replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
-                reaction_keys_missing=bool(snapshot.missing_keys),
-                reactions_unavailable=bool(snapshot.error))
-        for entry, snapshot in zip(entries, snapshots)
+        replace(entry, reactions=by_id[event_id].reactions, reactions_truncated=by_id[event_id].truncated,
+                reaction_keys_missing=bool(by_id[event_id].missing_keys),
+                reactions_unavailable=bool(by_id[event_id].error))
+        if event_id in by_id else entry
+        for event_id, entry in zip(entry_ids, entries)
     ]
 
 

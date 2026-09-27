@@ -11,7 +11,10 @@ from gateway.platforms.event import MessageType
 
 
 def _history_request_calls(client):
-    return [call for call in client.api.request.await_args_list if "/m.annotation" not in call.args[1]]
+    return [
+        call for call in client.api.request.await_args_list
+        if "/m.annotation" not in call.args[1] and "/event/" not in call.args[1]
+    ]
 
 
 @pytest.fixture
@@ -1335,10 +1338,10 @@ async def test_reply_without_inline_quote_fetches_parent_with_author_trust():
     adapter._client.state_store.get_members = AsyncMock(
         return_value=["@bot:example.org", "@alice:example.org", "@bob:example.org"]
     )
-    adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
-        sender="@stranger:example.org",
-        content={"msgtype": "m.text", "body": "prior message"},
-    ))
+    adapter._client.api.request = AsyncMock(return_value={
+        "event_id": "$parent", "sender": "@stranger:example.org", "type": "m.room.message",
+        "content": {"msgtype": "m.text", "body": "prior message"},
+    })
     adapter._get_display_name = AsyncMock(side_effect=lambda room, user: user.split(":")[0][1:])
     adapter._is_sender_authorized = MagicMock(side_effect=lambda user, **kwargs: user != "@stranger:example.org")
     adapter._background_read_receipt = MagicMock()
@@ -1365,8 +1368,9 @@ async def test_media_reply_without_inline_quote_fetches_parent_and_survives_fail
     adapter._client.state_store.get_members = AsyncMock(
         return_value=["@bot:example.org", "@alice:example.org"]
     )
-    adapter._client.get_event = AsyncMock(side_effect=[
-        types.SimpleNamespace(sender="@alice:example.org", content={"msgtype": "m.text", "body": "earlier"}),
+    adapter._client.api.request = AsyncMock(side_effect=[
+        {"event_id": "$first-parent", "sender": "@alice:example.org", "type": "m.room.message",
+         "content": {"msgtype": "m.text", "body": "earlier"}},
         RuntimeError("homeserver unavailable"),
     ])
     adapter._download_and_cache_media = AsyncMock(return_value="/tmp/photo.png")
@@ -1393,7 +1397,7 @@ async def test_media_reply_without_inline_quote_fetches_parent_and_survives_fail
         (MessageType.PHOTO, "$first-parent", "earlier", ["/tmp/photo.png"]),
         (MessageType.PHOTO, "$second-parent", None, ["/tmp/photo.png"]),
     ]
-    assert adapter._client.get_event.await_count == 2
+    assert adapter._client.api.request.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -1463,7 +1467,7 @@ async def test_reply_context_uses_edit_and_never_resurfaces_redacted_text():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pause_at", ["get_event", "image_loader"])
+@pytest.mark.parametrize("pause_at", ["raw_event", "image_loader"])
 async def test_redaction_during_reply_image_resolution_returns_no_context(tmp_path, pause_at):
     from plugins.platforms.matrix.reply_context import MatrixEventContextCache
 
@@ -1473,13 +1477,13 @@ async def test_redaction_during_reply_image_resolution_returns_no_context(tmp_pa
     release = asyncio.Event()
     image = tmp_path / "photo.png"
     image.write_bytes(b"png")
-    event = types.SimpleNamespace(
-        sender="@alice:example.org",
-        content={"msgtype": "m.image", "body": "photo.png", "url": "mxc://example.org/photo"},
-    )
+    event = {
+        "event_id": event_id, "sender": "@alice:example.org", "type": "m.room.message",
+        "content": {"msgtype": "m.image", "body": "photo.png", "url": "mxc://example.org/photo"},
+    }
 
-    async def get_event(_room_id, _event_id):
-        if pause_at == "get_event":
+    async def get_event(_method, _path):
+        if pause_at == "raw_event":
             started.set()
             await release.wait()
         return event
@@ -1491,7 +1495,7 @@ async def test_redaction_during_reply_image_resolution_returns_no_context(tmp_pa
         return str(image), "image/png"
 
     client = MagicMock()
-    client.get_event = AsyncMock(side_effect=get_event)
+    client.api.request = AsyncMock(side_effect=get_event)
     cache = MatrixEventContextCache()
     resolving = asyncio.create_task(cache.resolve(client, room_id, event_id, load_image))
     await asyncio.wait_for(started.wait(), timeout=2)
@@ -1556,8 +1560,8 @@ async def test_text_reply_to_image_attaches_the_quoted_image():
     adapter._client.state_store.get_members = AsyncMock(
         return_value=["@bot:example.org", "@alice:example.org"]
     )
-    adapter._client.get_event = AsyncMock(return_value={
-        "sender": "@alice:example.org",
+    adapter._client.api.request = AsyncMock(return_value={
+        "event_id": "$photo", "sender": "@alice:example.org", "type": "m.room.message",
         "content": {"msgtype": "m.image", "body": "photo.png", "url": "mxc://example.org/photo",
                     "info": {"mimetype": "image/png", "size": 12}},
     })
@@ -1588,8 +1592,8 @@ async def test_image_reply_with_plain_fallback_still_attaches_image(tmp_path):
     adapter._client.state_store.get_members = AsyncMock(
         return_value=["@bot:example.org", "@alice:example.org"]
     )
-    adapter._client.get_event = AsyncMock(return_value={
-        "sender": "@alice:example.org",
+    adapter._client.api.request = AsyncMock(return_value={
+        "event_id": "$photo", "sender": "@alice:example.org", "type": "m.room.message",
         "content": {"msgtype": "m.image", "body": "photo.jpg", "url": "mxc://example.org/photo",
                     "info": {"mimetype": "image/jpeg", "size": 4}},
     })
@@ -1652,7 +1656,8 @@ async def test_thread_backfill_uses_root_and_prior_relations_with_author_trust()
         {"event_id": "$first", "sender": "@alice:example.org",
          "content": {"msgtype": "m.text", "body": "earlier",
                      "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
-    ]}])
+    ]}, {"event_id": "$root", "sender": "@alice:example.org", "type": "m.room.message",
+         "content": {"msgtype": "m.text", "body": "root"}}])
     adapter._client.get_event = AsyncMock(return_value=types.SimpleNamespace(
         sender="@alice:example.org", content={"msgtype": "m.text", "body": "root"},
     ))
@@ -1708,8 +1713,8 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages():
     runner._session_key_for_source = lambda source: "matrix-room"
     runner._expand_inbound_context_references = AsyncMock(side_effect=AssertionError("history expanded"))
 
-    with patch("plugins.platforms.matrix.thread_context._decrypt_thread_event", new_callable=AsyncMock) as decrypt:
-        decrypt.return_value = {"content": {"msgtype": "m.text", "body": "Second point"}}
+    with patch("plugins.platforms.matrix.effective_event._decrypt", new_callable=AsyncMock) as decrypt:
+        decrypt.return_value = ({"content": {"msgtype": "m.text", "body": "Second point"}}, None)
         denied = await adapter._build_inbound_event(
             "!room:example.org", "@mallory:example.org", "$denied", "@bot:example.org Read this",
             {"msgtype": "m.text", "body": "@bot:example.org Read this"}, {},
@@ -1766,7 +1771,9 @@ async def test_admitted_thread_mention_backfills_only_earlier_thread_messages():
                      "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
     ]
 
-    async def request(_method, path, *, query_params):
+    async def request(_method, path, *, query_params=None):
+        if "/event/" in path:
+            return {"event_id": "$root", "sender": "@alice:example.org", "content": {}}
         if "/context/" in path:
             return {"start": "trigger-boundary", "event": {"event_id": "$current"}}
         if query_params.get("from") == "trigger-boundary":
@@ -1850,13 +1857,15 @@ async def test_thread_image_cache_can_retry_explicit_reply_download(tmp_path, im
     root_content = image_content if image_event_id == "$root" else {"msgtype": "m.text", "body": "root"}
     chunk = [{"event_id": "$child", "sender": "@alice:example.org", "content": image_content}]
     client = MagicMock()
-    client.api.request = AsyncMock(return_value={"chunk": chunk if image_event_id == "$child" else []})
+    async def request(_method, path, **_kwargs):
+        if "/event/" in path:
+            event_id = "$root" if path.endswith("%24root") else "$child"
+            content = root_content if event_id == "$root" else image_content
+            return {"event_id": event_id, "sender": "@alice:example.org",
+                    "type": "m.room.message", "content": content}
+        return {"chunk": chunk if image_event_id == "$child" else []}
 
-    async def get_event(_room_id, event_id):
-        content = root_content if event_id == "$root" else image_content
-        return types.SimpleNamespace(sender="@alice:example.org", content=content)
-
-    client.get_event = AsyncMock(side_effect=get_event)
+    client.api.request = AsyncMock(side_effect=request)
     cache = MatrixEventContextCache()
     await fetch_thread_entries(client, cache, room_id, "$root", limit=5)
     image = tmp_path / "photo.png"
@@ -1903,7 +1912,7 @@ async def test_thread_backfill_omits_child_redacted_during_relations_fetch():
     cache.redact(room_id, "$child")
     release.set()
 
-    assert await fetching == [root]
+    assert await fetching == [root, MatrixEventContext("@alice:example.org", "", redacted=True)]
 
 
 @pytest.mark.asyncio
@@ -1925,7 +1934,8 @@ async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
              "sender": "@bob:example.org", "content": {"msgtype": "m.text", "body": "Other thread",
              "m.relates_to": {"rel_type": "m.thread", "event_id": "$other-root"}}},
             {"event_id": "$encrypted", "room_id": room_id, "type": "m.room.encrypted",
-             "sender": "@alice:example.org", "content": {"ciphertext": "encrypted"}},
+             "sender": "@alice:example.org", "content": {"ciphertext": "encrypted",
+                 "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
             {"event_id": "$earlier", "room_id": room_id,
              "sender": "@alice:example.org", "content": {"msgtype": "m.text", "body": "Earlier",
              "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
@@ -1938,9 +1948,8 @@ async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
     client.get_event = AsyncMock(return_value={"event_id": "$root", "content": {}})
     cache = MatrixEventContextCache()
 
-    with patch.object(thread_context, "_decrypt_thread_event", new_callable=AsyncMock) as decrypt:
-        decrypt.return_value = {"content": {"msgtype": "m.text", "body": "Secret",
-                                              "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}}
+    with patch("plugins.platforms.matrix.effective_event._decrypt", new_callable=AsyncMock) as decrypt:
+        decrypt.return_value = ({"content": {"msgtype": "m.text", "body": "Secret"}}, None)
         entries = await thread_context.fetch_thread_entries(
             client, cache, room_id, "$root", limit=4, before_event_id="$current",
         )

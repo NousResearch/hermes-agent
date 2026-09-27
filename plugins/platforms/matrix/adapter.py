@@ -3102,6 +3102,8 @@ class MatrixAdapter(BasePlatformAdapter):
             safe_text = neutralize_untrusted_inline_text(entry.text, max_chars=1200)
             trust_tag = "[unverified] " if authorized is False else ""
             lines.append(f"{trust_tag}[{safe_name}] {safe_text}")
+            if entry.state_error:
+                lines.append(f"[Matrix event state unavailable: {entry.state_error}.]")
             for reaction in entry.reactions:
                 reaction_authorized = self._is_sender_authorized(
                     reaction.sender, chat_type=chat_type, chat_id=chat_id,

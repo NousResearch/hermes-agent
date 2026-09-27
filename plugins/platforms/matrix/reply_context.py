@@ -5,15 +5,24 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import Enum
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote
 
+from plugins.platforms.matrix.effective_event import effective_event
 from plugins.platforms.matrix.reaction_context import MatrixReaction
 
 
 logger = logging.getLogger(__name__)
+
+try:
+    from mautrix.api import Method
+except ImportError:
+    class Method(str, Enum):
+        GET = "GET"
 
 
 @dataclass(frozen=True)
@@ -28,6 +37,7 @@ class MatrixEventContext:
     reactions_truncated: bool = False
     reaction_keys_missing: bool = False
     reactions_unavailable: bool = False
+    state_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -41,49 +51,6 @@ class MatrixReplyContext:
     author_authorized: bool | None
     media_path: str | None = None
     media_type: str | None = None
-
-
-def _content_dict(event: Any) -> dict:
-    content = getattr(event, "content", None)
-    if content is None and isinstance(event, dict):
-        content = event.get("content")
-    if isinstance(content, dict):
-        return content
-    if content is None:
-        return {}
-    serialise = getattr(content, "serialize", None)
-    if callable(serialise):
-        try:
-            result = serialise()
-        except Exception:
-            return {}
-        if isinstance(result, dict):
-            return result
-    return {}
-
-
-def _effective_content(event: Any) -> tuple[dict, bool]:
-    content = _content_dict(event)
-    unsigned = getattr(event, "unsigned", None)
-    if unsigned is None and isinstance(event, dict):
-        unsigned = event.get("unsigned")
-    if not isinstance(unsigned, dict) and unsigned is not None:
-        serialise = getattr(unsigned, "serialize", None)
-        if callable(serialise):
-            try:
-                unsigned = serialise()
-            except Exception:
-                unsigned = None
-    relations = unsigned.get("m.relations") if isinstance(unsigned, dict) else None
-    replacement = relations.get("m.replace") if isinstance(relations, dict) else None
-    replacement_content = _content_dict(replacement) if replacement is not None else {}
-    candidate = replacement_content or content
-    new_content = candidate.get("m.new_content")
-    if isinstance(new_content, dict):
-        return {**content, **new_content}, True
-    if replacement_content:
-        return {**content, **replacement_content}, True
-    return content, False
 
 
 def _own_text(body: str) -> str:
@@ -161,18 +128,24 @@ class MatrixEventContextCache:
         self.timeout_seconds = timeout_seconds
         self._entries: OrderedDict[tuple[str, str], MatrixEventContext] = OrderedDict()
 
+    def history_entry(self, room_id: str, event_id: str) -> MatrixEventContext | None:
+        return self._entries.get((room_id, event_id))
+
     def store(self, room_id: str, event_id: str, entry: MatrixEventContext) -> MatrixEventContext | None:
         if not event_id:
             return None
         key = room_id, event_id
         prior = self._entries.get(key)
         if prior is not None and prior.redacted and not entry.redacted:
-            return None
+            if not prior.sender and entry.sender:
+                prior = replace(prior, sender=entry.sender)
+                self._entries[key] = prior
+            return prior
         self._entries[key] = entry
         self._entries.move_to_end(key)
         while len(self._entries) > self.max_entries:
             self._entries.popitem(last=False)
-        return entry if not entry.redacted and (entry.text or entry.media_path) else None
+        return entry if entry.redacted or entry.text or entry.media_path else None
 
     def apply_edit(self, room_id: str, sender: str, content: dict) -> None:
         relation = content.get("m.relates_to")
@@ -221,26 +194,26 @@ class MatrixEventContextCache:
             return cached
 
         try:
-            event = await asyncio.wait_for(client.get_event(room_id, event_id), self.timeout_seconds)
-            if str(getattr(event, "type", "")) == "m.room.encrypted":
-                crypto = getattr(client, "crypto", None)
-                if crypto is None:
-                    return None
-                event = await asyncio.wait_for(crypto.decrypt_megolm_event(event), self.timeout_seconds)
+            path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(event_id, safe='')}"
+            raw = await asyncio.wait_for(client.api.request(Method.GET, path), self.timeout_seconds)
+            if not isinstance(raw, dict) or raw.get("event_id") != event_id or raw.get("room_id", room_id) != room_id:
+                return cached
+            state = await effective_event(client, raw)
+            if state.redacted:
+                self.redact(room_id, event_id)
+                return None
+            if state.content is None:
+                return cached
+            content = state.content
         except Exception as exc:
             logger.debug("Matrix: could not resolve reply target %s in %s: %s", event_id, room_id, exc)
             current = self._entries.get(key)
             return current if current is not None and not current.redacted else None
 
-        sender = str(getattr(event, "sender", "") or "")
-        if not sender and isinstance(event, dict):
-            sender = str(event.get("sender", "") or "")
-        content, edited = _effective_content(event)
+        sender = str(raw.get("sender") or "")
         body = content.get("body")
-        if not isinstance(body, str):
-            body = getattr(getattr(event, "content", None), "body", "")
         body = body.strip() if isinstance(body, str) else ""
-        if edited and body.startswith("* "):
+        if state.edited and body.startswith("* "):
             body = body[2:].strip()
         body = _own_text(body)
         msgtype = str(content.get("msgtype") or "")
@@ -259,4 +232,5 @@ class MatrixEventContextCache:
             media_type=media[1] if media else None,
             is_image=msgtype == "m.image",
         )
-        return self.store(room_id, event_id, entry)
+        stored = self.store(room_id, event_id, entry)
+        return stored if stored is not None and not stored.redacted else None

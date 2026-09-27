@@ -31,14 +31,15 @@ async def test_event_read_includes_current_reactions_once_per_sender_and_emoji()
     ]
 
     async def request(_method, path, **_kwargs):
+        if path.endswith("/event/%24message"):
+            return {
+                "type": "m.room.message", "event_id": target_id, "sender": "@alice:example.org",
+                "content": {"msgtype": "m.text", "body": "hello"},
+            }
         assert path.endswith("/relations/%24message/m.annotation")
         return {"chunk": reactions}
 
     client = SimpleNamespace(
-        get_event=AsyncMock(return_value={
-            "type": "m.room.message", "event_id": target_id, "sender": "@alice:example.org",
-            "content": {"msgtype": "m.text", "body": "hello"},
-        }),
         api=SimpleNamespace(request=AsyncMock(side_effect=request)),
     )
     adapter = SimpleNamespace(

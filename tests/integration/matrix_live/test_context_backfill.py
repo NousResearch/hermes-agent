@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Callable
 
 import pytest
-from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomSendResponse
+from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomRedactResponse, RoomSendResponse
 
 from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom, MatrixAccount, _register
 
@@ -158,5 +158,53 @@ def test_thread_mention_recovers_only_its_earlier_messages(
                 "Matrix thread catch-up exceeded 15 seconds. Gateway logs:\n"
                 + group_gateway.container.get_wrapped_container().logs().decode(errors="replace")[-6000:]
             )
+    finally:
+        record_property("body_seconds", round(time.monotonic() - started, 3))
+
+
+def test_room_catch_up_shows_edits_and_redactions_to_model(
+    group_gateway: LiveGateway,
+    live_room: LiveRoom,
+    record_property: Callable[[str, object], None],
+) -> None:
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        seen: set[str] = set()
+        try:
+            await client.sync(timeout=0)
+            await _send(client, live_room.room_id, f"{live_room.bot.user_id} establish",
+                        mention=live_room.bot.user_id)
+            await _wait_for_final(client, live_room, seen, "Matrix live reply")
+
+            edited_target = await _send(client, live_room.room_id, "Draft room decision")
+            replacement = await client.room_send(live_room.room_id, "m.room.message", {
+                "msgtype": "m.text", "body": "* Final room decision",
+                "m.new_content": {"msgtype": "m.text", "body": "Final room decision"},
+                "m.relates_to": {"rel_type": "m.replace", "event_id": edited_target},
+            })
+            assert isinstance(replacement, RoomSendResponse), replacement
+
+            redacted_target = await _send(client, live_room.room_id, "Withdrawn room decision")
+            redaction = await client.room_redact(live_room.room_id, redacted_target)
+            assert isinstance(redaction, RoomRedactResponse), redaction
+
+            await _send(client, live_room.room_id, f"{live_room.bot.user_id} catch up",
+                        mention=live_room.bot.user_id)
+            await _wait_for_final(client, live_room, seen, "ok")
+
+            requests = group_gateway.model.main_requests()
+            assert len(requests) == 2
+            prompt = json.dumps(requests[1]["messages"])
+            assert "[Recent room messages]" in prompt
+            assert "Final room decision" in prompt
+            assert "[redacted]" in prompt
+            assert "Draft room decision" not in prompt
+            assert "Withdrawn room decision" not in prompt
+        finally:
+            await client.close()
+
+    started = time.monotonic()
+    try:
+        asyncio.run(asyncio.wait_for(exchange(), timeout=20))
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))

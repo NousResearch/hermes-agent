@@ -9,11 +9,10 @@ from enum import Enum
 from typing import Any
 from urllib.parse import quote
 
+from plugins.platforms.matrix.effective_event import effective_event, event_content
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext,
     MatrixEventContextCache,
-    _content_dict,
-    _effective_content,
     _label_body,
     _own_text,
 )
@@ -30,43 +29,34 @@ except ImportError:
         GET = "GET"
 
 
-async def _decrypt_thread_event(client: Any, raw: dict) -> Any | None:
-    crypto = getattr(client, "crypto", None)
-    if crypto is None:
-        return None
-    try:
-        from mautrix.types import Event
-
-        event = Event.deserialize(raw)
-        return await asyncio.wait_for(crypto.decrypt_megolm_event(event), timeout=10.0)
-    except Exception as exc:
-        logger.debug("Matrix: could not decrypt thread event %s: %s", raw.get("event_id"), exc)
-        return None
-
-
 async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dict] | None:
     if raw.get("type", "m.room.message") not in {"m.room.message", "m.room.encrypted"}:
         return None
-    if raw.get("type") == "m.room.encrypted":
-        event = await _decrypt_thread_event(client, raw)
-        if event is None:
-            return None
-    else:
-        event = raw
-
-    original_content = _content_dict(event)
-    content, edited = _effective_content(event)
+    if MatrixRelation.from_content(event_content(raw).get("m.relates_to")).is_edit:
+        return None
+    state = await effective_event(client, raw)
+    content = state.content
+    if content is None:
+        return MatrixEventContext(
+            str(raw.get("sender") or ""), "[encrypted message could not be decrypted]",
+            state_error=state.error["error"] if state.error else None,
+        ), state.original_content
+    if state.redacted:
+        return MatrixEventContext(
+            str(raw.get("sender") or ""), "[redacted]", redacted=True,
+        ), state.original_content
     body = content.get("body")
     if not isinstance(body, str):
         return None
     body = body.strip()
-    if edited and body.startswith("* "):
-        body = body[2:].strip()
     text = _label_body(str(content.get("msgtype") or ""), _own_text(body))
     if not text:
         return None
     sender = str(raw.get("sender") or "")
-    return MatrixEventContext(sender, text, is_image=content.get("msgtype") == "m.image"), original_content
+    return MatrixEventContext(
+        sender, text, is_image=content.get("msgtype") == "m.image",
+        state_error=state.error["error"] if state.error else None,
+    ), state.original_content
 
 
 async def fetch_thread_entries(
@@ -133,10 +123,23 @@ async def fetch_thread_entries(
 
     entries: list[MatrixEventContext] = []
     entry_ids: list[str] = []
-    root = await cache.resolve(client, room_id, thread_id)
+    reaction_ids: list[str] = []
+    root = cache.history_entry(room_id, thread_id)
+    root_path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(thread_id, safe='')}"
+    try:
+        raw_root = await asyncio.wait_for(client.api.request(Method.GET, root_path), timeout=10.0)
+        if (isinstance(raw_root, dict) and raw_root.get("event_id") == thread_id
+                and raw_root.get("room_id", room_id) == room_id):
+            parsed_root = await history_entry(client, raw_root)
+            if parsed_root is not None:
+                root = cache.store(room_id, thread_id, parsed_root[0])
+    except Exception as exc:
+        logger.debug("Matrix: could not fetch thread root %s in %s: %s: %s", thread_id, room_id, exc)
     if root is not None:
         entries.append(root)
         entry_ids.append(thread_id)
+        if not root.redacted:
+            reaction_ids.append(thread_id)
 
     chunk = response.get(event_key) if isinstance(response, dict) else None
     if not isinstance(chunk, list):
@@ -160,11 +163,15 @@ async def fetch_thread_entries(
         if stored is not None:
             entries.append(stored)
             entry_ids.append(event_id)
+            if not stored.redacted:
+                reaction_ids.append(event_id)
 
-    snapshots = await fetch_reactions_for_events(client, room_id, entry_ids)
+    snapshots = await fetch_reactions_for_events(client, room_id, reaction_ids)
+    by_id = dict(zip(reaction_ids, snapshots))
     return [
-        replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
-                reaction_keys_missing=bool(snapshot.missing_keys),
-                reactions_unavailable=bool(snapshot.error))
-        for entry, snapshot in zip(entries, snapshots)
+        replace(entry, reactions=by_id[event_id].reactions, reactions_truncated=by_id[event_id].truncated,
+                reaction_keys_missing=bool(by_id[event_id].missing_keys),
+                reactions_unavailable=bool(by_id[event_id].error))
+        if event_id in by_id else entry
+        for event_id, entry in zip(entry_ids, entries)
     ]

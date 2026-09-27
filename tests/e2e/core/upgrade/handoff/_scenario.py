@@ -9,6 +9,7 @@ settle) is paid once per column, not once per property.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
@@ -39,9 +40,17 @@ _IMPORT_ERR = re.compile(r"ModuleNotFoundError|ImportError|No module named|canno
 
 # Open issues behind a property, per column (a fix PR deletes its entry). Each pattern matches only the
 # verdict text its bug produces; any other failure of the same property propagates.
+# A dashboard started from a shell that runs under a systemd service (every GitHub-hosted job runs in
+# hosted-compute-agent.service) sits in that unit's cgroup; the update restarts the unit instead of
+# respawning the dashboard. The N-1 column keeps this gate until a release carrying the fix is N-1.
+_FOREIGN_UNIT_GATE = (r"the update restarted the systemd unit \S+ the dashboard was started under",
+                      "gated on #124938: the update restarts the systemd unit whose cgroup a manual dashboard "
+                      "was started in instead of respawning the dashboard")
 DASHBOARD_GATES = {
-    "n1": (r"the respawned dashboard died parsing its launcher",
-           "gated on #124778: the update respawns a manual dashboard on a launcher the PM takeover made a shell shim"),
+    "head": [_FOREIGN_UNIT_GATE],
+    "n1": [(r"the respawned dashboard died parsing its launcher",
+            "gated on #124778: the update respawns a manual dashboard on a launcher the PM takeover made a shell "
+            "shim"), _FOREIGN_UNIT_GATE],
 }
 # The respawned dashboard can die after the updater already booked it "restarted": the receipt says
 # success and the update exits 0 with the dashboard dark (racy: an earlier death is "unaccounted", exit 1).
@@ -51,6 +60,18 @@ CRON_GATES = {
     "n1": (r"fired into the update swap window and failed importing",
            "gated on #113293: a cron job due during an update fires into the swap window, fails, and loses its slot"),
 }
+
+# ``hermes update``'s own line for each systemd unit it restarted (or tried to) after stopping a dashboard.
+_UNIT_RESTART = re.compile(r"✓ restarted systemd service (\S+\.service)|⚠ (\S+\.service): systemctl restart returned")
+
+
+@contextlib.contextmanager
+def _gated(entries):
+    """``known_failure`` over several open issues: the one whose pattern the failure matches xfails it."""
+    with contextlib.ExitStack() as stack:
+        for pattern, reason in entries:
+            stack.enter_context(known_failure(pattern, reason))
+        yield
 
 
 class Model:
@@ -356,7 +377,10 @@ def run(column: str, root: Path) -> SimpleNamespace:
         # Workers spawned after the update: every run of the new card, and every re-run of the in-flight one.
         o.post_update_worker_logs = "\n".join(_run_segments(card_log[o.card2]) + _run_segments(card_log[o.card1])[1:])
         inst.logs.append(restart_log)
-        o.diag = (inst.diagnostics(o.up) + f"\n--- gateway.pid history ---\n{watch.render()}"
+        # bwrap keeps the caller's cgroup: the sandbox's processes (the dashboard too) live in ours.
+        o.cgroup = Path("/proc/self/cgroup").read_text(errors="replace").strip() if sys.platform == "linux" else ""
+        o.diag = (inst.diagnostics(o.up) + f"\n--- cgroup of the sandbox ---\n{o.cgroup}"
+                  f"\n--- gateway.pid history ---\n{watch.render()}"
                   f"\n--- cron job ---\n{json.dumps(o.cron_job_after, indent=1)[-2000:]}"
                   f"\n--- kanban ---\ncards={o.cards} provider kanban_complete calls={o.completes}\n"
                   f"peak live workers per card={o.worker_peak} (at, pids)={o.worker_evidence}\nruns={json.dumps(o.runs)}"
@@ -423,7 +447,7 @@ class HandoffProperties:
         o = fleet
         out = o.up.stdout + o.up.stderr
         assert "TypeError" not in out, f"the update tripped over the dashboard\n{o.diag}"
-        with known_gate(DASHBOARD_GATES, o.column):
+        with _gated(DASHBOARD_GATES.get(o.column, ())):
             assert o.dash_new is not None, f"{dashboard_verdict(o)}\n{o.diag}"
         assert len(o.dash_roots) == 1, f"expected exactly one dashboard: {o.dash_roots}\n{o.diag}"
         assert o.dash_listener == o.dash_new, f"the dashboard on port {o.dash_port} churned\n{o.diag}"
@@ -465,6 +489,12 @@ def dashboard_verdict(o) -> str:
     if re.search(r"^SyntaxError", o.dash_restarts, re.M) and "restarted:" in o.up.stdout:
         return (f"the respawned dashboard died parsing its launcher: the update replayed the pre-update argv and "
                 f"Python read a shell script (SyntaxError in logs/dashboard-restart.log); port {o.dash_port} is dark")
+    # The sandbox runs no Hermes unit, so any unit the dashboard stop restarts is the one the test runner
+    # (and so the hand-started dashboard) happens to live in.
+    unit = next((a or b for a, b in _UNIT_RESTART.findall(o.up.stdout)), None)
+    if unit and not o.dash_restarts:
+        return (f"the update restarted the systemd unit {unit} the dashboard was started under (cgroup "
+                f"{o.cgroup}) instead of respawning the dashboard; port {o.dash_port} is dark")
     return f"no new dashboard serves port {o.dash_port} (old pid {o.dash_old}, listener now {o.dash_listener})"
 
 

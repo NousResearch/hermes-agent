@@ -745,8 +745,12 @@ def _complete_source_update(request: dict | None) -> None:
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_ref=None) -> None:
-    """Fast-forward failed: merge on a custom branch (local commits survive) or reset --hard on the
-    same branch after parking the old HEAD behind a rescue ref. ``sys.exit(1)`` on failure."""
+    """Reconcile a proven non-fast-forwardable checkout.
+
+    The caller must first establish that HEAD is not an ancestor of the update target; ordinary
+    fast-forward failures (locks, object transport errors) must never reach this destructive path.
+    Merge on a custom branch (local commits survive) or reset --hard on the same branch after
+    parking the old HEAD behind a rescue ref. ``sys.exit(1)`` on failure."""
     # A custom branch (local commits atop origin/<branch>) also can't ff, and reset --hard
     # would discard that work: merge instead, stop on conflict.
     merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
@@ -764,12 +768,10 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
             print("  Then re-run the update. Local work is untouched.")
             sys.exit(1)
         return
-    # Same branch: the reset below is right either way, but the two causes of divergence here
-    # are indistinguishable from the checkout alone. An upstream force-push/rebase loses
-    # nothing; local commits on this branch lose everything, and the reflog is the only way
-    # back — an expiring log the user has to know to reach for, in a directory Hermes updates
-    # unattended. So park pre_pull_sha behind a rescue ref for BOTH, orphan divergence (no
-    # common ancestor: corrupted HEAD, re-init) included.
+    # Same branch and proven non-ancestor: an upstream force-push/rebase may lose nothing,
+    # while local commits on this branch lose everything. The reflog is only an expiring
+    # recovery path, so park pre_pull_sha behind a rescue ref for BOTH, orphan divergence
+    # (no common ancestor: corrupted HEAD, re-init) included.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", merge_ref])
     has_common_ancestor = bool(
         merge_base_result.returncode == 0 and merge_base_result.stdout.strip())
@@ -900,8 +902,28 @@ def _pull_updates(
                 # untouched by checkout --detach; an autostash protects dirty files.
                 _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
                 _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
-            elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
-                _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
+            else:
+                merge_result = _git_run(git_cmd, ["merge", "--ff-only", merge_ref])
+                if merge_result.returncode != 0:
+                    ancestry = _git_run(
+                        git_cmd, ["merge-base", "--is-ancestor", "HEAD", merge_ref])
+                    if ancestry.returncode == 1:
+                        _reconcile_diverged_checkout(
+                            git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
+                    else:
+                        print("✗ Fast-forward failed; refusing to reset because history divergence was not proven.")
+                        detail = (merge_result.stderr or merge_result.stdout or "").strip()
+                        if detail:
+                            print(f"  {detail}")
+                        if ancestry.returncode == 0:
+                            print(f"  HEAD is still an ancestor of {merge_ref}.")
+                        else:
+                            print(f"  Could not verify whether HEAD is an ancestor of {merge_ref}.")
+                            ancestry_detail = (ancestry.stderr or ancestry.stdout or "").strip()
+                            if ancestry_detail:
+                                print(f"  {ancestry_detail}")
+                        print("  Resolve the Git error and re-run `hermes update`; no reset was attempted.")
+                        sys.exit(1)
         except KeyboardInterrupt:
             raise  # Ctrl-C reached git too (same process group): the tree may be torn, keep the marker
         except BaseException:

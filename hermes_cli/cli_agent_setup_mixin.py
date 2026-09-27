@@ -711,6 +711,9 @@ class CLIAgentSetupMixin:
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
             self.agent._print_fn = self._agent_status_print
+            self.agent._steer_accepted_callback = (
+                lambda text: self._agent_status_print(f"  ⏩ Steer queued: {text}")
+            )
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:

@@ -165,3 +165,19 @@ def test_accepts_atomic_desktop_gateway():
     assert matches_runtime(ATOMIC_DESKTOP) is True
 
 
+# The Windows bundled launcher runs hermes_cli.main IN this process; its argv is not a future child.
+WINDOWS_BUNDLED_BOOTSTRAP = (
+    'python.exe -I -c "import os, sys, runpy; import hermes_bootstrap; '
+    "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)\" gateway run --replace"
+)
+
+
+def test_accepts_windows_bundled_gateway_bootstrap():
+    assert matches(WINDOWS_BUNDLED_BOOTSTRAP) is True
+    assert matches_runtime(WINDOWS_BUNDLED_BOOTSTRAP) is True
+
+
+def test_bundled_bootstrap_does_not_match_non_runtime_subcommands():
+    assert matches_runtime(WINDOWS_BUNDLED_BOOTSTRAP.replace('gateway run --replace', 'gateway status')) is False
+
+

@@ -606,10 +606,20 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
-    # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
-    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
-    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
+    # Generic inline source does not identify a gateway (#107002). The Windows bundled launcher
+    # executes hermes_cli.main in this process; recognise its exact source tail + runtime argv.
     if command_line_runs_inline_source(cased_tokens):
+        flag = inline_source_flag_index(cased_tokens)
+        if flag is not None:
+            marker = (
+                "import hermes_bootstrap; runpy.run_module('hermes_cli.main', "
+                "run_name='__main__', alter_sys=True)"
+            )
+            for argv in (("gateway", "run", "--replace"), ("gateway", "run")):
+                if tokens[-len(argv):] == list(argv) and " ".join(
+                    cased_tokens[flag + 1:-len(argv)]
+                ).endswith(marker):
+                    return "run"
         return None
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.

@@ -108,9 +108,9 @@ def _read_root_yaml(root: Path) -> Optional[dict]:
     if LOCK_SECTION not in raw:  # cheap precheck: the dominant install has no lock at all
         return {}
     try:
-        import yaml
+        import hermes_yaml
 
-        data = yaml.safe_load(raw)
+        data = hermes_yaml.safe_load(raw)
     except Exception:
         logger.warning("settings lock: root config.yaml could not be parsed", exc_info=True)
         return None

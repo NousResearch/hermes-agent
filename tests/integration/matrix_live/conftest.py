@@ -107,24 +107,33 @@ def docker_engine(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
 
 @pytest.fixture(scope="module")
 def gateway_image(docker_engine: None) -> Iterator[str]:
-    image = "hermes-matrix-live:checkout"
-    result = subprocess.run(
-        ["docker", "buildx", "build", "--load", "--progress=plain", "-t", image, str(REPO_ROOT)],
-        capture_output=True,
-        text=True,
-        timeout=1800,
-    )
-    assert result.returncode == 0, f"Linux gateway image build failed:\n{result.stdout[-6000:]}\n{result.stderr[-6000:]}"
-
-    with DockerContainer(image, entrypoint="/opt/hermes/.venv/bin/python").with_command(
-        ["-c", "import olm; import mautrix.crypto"]
-    ) as crypto_probe:
-        status = crypto_probe.get_wrapped_container().wait(timeout=30)
-        assert status["StatusCode"] == 0, (
-            "Linux gateway image lacks Matrix crypto support:\n"
-            + crypto_probe.get_wrapped_container().logs().decode(errors="replace")
+    image = f"hermes-matrix-live:{uuid.uuid4().hex}"
+    try:
+        result = subprocess.run(
+            ["docker", "buildx", "build", "--load", "--progress=plain", "-t", image, str(REPO_ROOT)],
+            capture_output=True,
+            text=True,
+            timeout=1800,
         )
-    yield image
+        assert result.returncode == 0, f"Linux gateway image build failed:\n{result.stdout[-6000:]}\n{result.stderr[-6000:]}"
+
+        with DockerContainer(image, entrypoint="/opt/hermes/.venv/bin/python").with_command(
+            ["-c", "import olm; import mautrix.crypto"]
+        ) as crypto_probe:
+            status = crypto_probe.get_wrapped_container().wait(timeout=30)
+            assert status["StatusCode"] == 0, (
+                "Linux gateway image lacks Matrix crypto support:\n"
+                + crypto_probe.get_wrapped_container().logs().decode(errors="replace")
+            )
+        yield image
+    finally:
+        client = docker.from_env()
+        try:
+            client.images.remove(image=image, force=True)
+        except docker_errors.ImageNotFound:
+            pass
+        finally:
+            client.close()
 
 
 @pytest.fixture

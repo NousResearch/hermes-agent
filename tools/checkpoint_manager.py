@@ -48,6 +48,7 @@ reclaim object storage.  A size-cap pass drops the oldest checkpoints per
 project until total store size is under ``max_total_size_mb``.
 """
 
+import fnmatch
 import hashlib
 import json
 import logging
@@ -211,6 +212,35 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
 def _normalize_path(path_value: str) -> Path:
     """Return a canonical absolute path for checkpoint operations."""
     return Path(path_value).expanduser().resolve()
+
+
+def _excluded_by_config(abs_dir: str, patterns: List[str]) -> Optional[str]:
+    """Return the first ``checkpoints.exclude_paths`` pattern covering ``abs_dir``, else ``None``.
+
+    A directory is excluded when it *equals or lives under* any pattern:
+    every ancestor of ``abs_dir`` (itself included) is matched against the
+    pattern with :func:`fnmatch.fnmatch`, whose ``*``/``**`` cross ``/``
+    boundaries — so ``**/drive_c/**``, ``~/Games/**`` and
+    ``/media/*/4tb/Games`` all cover nested working directories.  A trailing
+    ``/**`` also covers the base directory itself (the snapshot root being
+    the game dir is exactly the ballooning case).  Component-wise matching
+    means ``/Games`` never swallows ``/Games2``.  Absolute and ``~``-rooted
+    patterns are expanded/resolved; relative globs match as written.
+    """
+    ancestors = [abs_dir] + [str(p) for p in Path(abs_dir).parents]
+    for raw in patterns:
+        pattern = str(raw).strip()
+        if not pattern:
+            continue
+        if pattern.startswith(("~", "/")):
+            pattern = str(Path(pattern).expanduser().resolve())
+        candidates = [pattern]
+        if pattern.endswith("/**"):
+            candidates.append(pattern[:-3])
+        for candidate in candidates:
+            if any(fnmatch.fnmatch(anc, candidate) for anc in ancestors):
+                return raw
+    return None
 
 
 def _project_hash(working_dir: str) -> str:
@@ -762,6 +792,11 @@ class CheckpointManager:
     max_file_size_mb : int
         Skip adding any single file larger than this to a checkpoint.
         (Implemented via ``.gitignore`` excludes + a post-stage size check.)
+    exclude_paths : list[str]
+        Working directories (absolute path or glob, ``~`` expanded) that are
+        never snapshotted — e.g. installed games / wine prefixes whose asset
+        trees would balloon the store.  A directory is skipped when it equals
+        or lives under any expanded pattern (see ``_excluded_by_config``).
     """
 
     def __init__(
@@ -770,11 +805,15 @@ class CheckpointManager:
         max_snapshots: int = 20,
         max_total_size_mb: int = 500,
         max_file_size_mb: int = 10,
+        exclude_paths: Optional[List[str]] = None,
     ):
         self.enabled = enabled
         self.max_snapshots = max(1, int(max_snapshots))
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
+        self.exclude_paths: List[str] = [
+            str(p) for p in (exclude_paths or []) if str(p).strip()
+        ]
         self._checkpointed_dirs: Set[str] = set()
 
     # ------------------------------------------------------------------
@@ -910,6 +949,14 @@ class CheckpointManager:
         # Skip root, home, and other overly broad directories
         if abs_dir in {"/", str(Path.home())}:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
+            return False
+
+        # Skip user-configured directory globs (installed games, wine
+        # prefixes, ...) whose asset trees would balloon the store.
+        excluded = _excluded_by_config(abs_dir, self.exclude_paths)
+        if excluded is not None:
+            logger.debug("Checkpoint skipped: directory matches checkpoints.exclude_paths (%s via %s)",
+                         abs_dir, excluded)
             return False
 
         if abs_dir in self._checkpointed_dirs:

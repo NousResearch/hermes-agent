@@ -10,7 +10,7 @@ import os
 import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from agent.interrupt_compat import request_hard_interrupt
 from dataclasses import dataclass, field
 from tools import file_state
@@ -477,7 +477,8 @@ class _SchemaOutcome:
     retries: int
 
 def _validate_child_output_schema(
-    child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any
+    child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any,
+    *, check_retry_deadline: Optional[Callable[[], None]] = None,
 ) -> _SchemaOutcome:
     """Validate the final answer against the attached output_schema with ONE bounded retry. Schema-less children (no
     dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical."""
@@ -492,6 +493,9 @@ def _validate_child_output_schema(
 
     # Exactly one retry turn, carrying the validation errors verbatim (no
     # schema re-paste — the child already holds the contract in its context).
+    # A correction is part of the original worker and must not restart after cancellation.
+    if check_retry_deadline is not None:
+        check_retry_deadline()
     _retry_result = None
     try:
         # Same identity as the main child turn: this runs on the parent worker's thread, and an
@@ -720,6 +724,7 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    schema_outcome: _SchemaOutcome = field(default_factory=lambda: _SchemaOutcome(None, None, [], 0))
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -842,6 +847,18 @@ class _ChildRun:
         from tools.daemon_pool import DaemonThreadPoolExecutor
         child, task_index = self.child, self.task_index
         child_timeout = _get_child_timeout()
+        from tools.delegate_tool_config import _cfg
+        from tools.delegate_tool_deadline import ReviewedDeadline, wait_with_reviewed_deadline
+        reviewed_deadline = None
+        if _cfg().get("reviewed_timeout") is True:
+            reviewed_deadline = ReviewedDeadline(child_timeout)
+            child._delegate_reviewed_deadline = reviewed_deadline
+        cancelled = threading.Event()
+
+        def _check_retry_deadline():
+            if cancelled.is_set() or (reviewed_deadline is not None and reviewed_deadline.remaining() <= 0):
+                raise FuturesTimeoutError("Child deadline expired before schema correction.")
+
         executor = DaemonThreadPoolExecutor(
             max_workers=1, initializer=_set_subagent_approval_cb, initargs=(_get_subagent_approval_callback(),),
         )
@@ -855,9 +872,15 @@ class _ChildRun:
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
+                result = child.run_conversation(
                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )
+                from tools.delegate_tool import _validate_child_output_schema
+                self.schema_outcome = _validate_child_output_schema(
+                    child, result, task_index, self.child_task_id, self.relay_text,
+                    check_retry_deadline=_check_retry_deadline,
+                )
+                return result
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
         # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.
@@ -868,21 +891,33 @@ class _ChildRun:
         future.add_done_callback(lambda _f: settled.set())
         # Set when the stale verdict — not the configured cap — ended the wait; the entry must name that cause.
         stale_after: Optional[float] = None
+        reviewed_wait_expired = False
         try:
-            self.wait_liveness_aware(settled, future, child_timeout)
+            if reviewed_deadline is not None:
+                wait_with_reviewed_deadline(future, reviewed_deadline, settled=settled)
+            else:
+                # Preserve upstream inactivity renewal when explicit parent review is disabled.
+                self.wait_liveness_aware(settled, future, child_timeout)
             if not future.done():
                 stale_after = getattr(self.heartbeat, "stale_threshold_seconds", None)
                 raise FuturesTimeoutError()
             return future.result(), None, False
         except Exception as wait_exc:
             exc: BaseException = wait_exc  # ``as`` targets are unbound after the except block
+            stale_after = getattr(self.heartbeat, "stale_threshold_seconds", None)
+            reviewed_wait_expired = reviewed_deadline is not None and reviewed_deadline.remaining() <= 0
         finally:
+            cancelled.set()
+            if reviewed_deadline is not None:
+                reviewed_deadline.close()
             # Shut down without waiting — a child stuck on blocking I/O would hang wait=True forever.
             executor.shutdown(wait=False)
 
         _late_pending_steer = self.close_steering()
         _signal_child_stop(child)
         is_timeout = isinstance(exc, (FuturesTimeoutError, TimeoutError))
+        if reviewed_deadline is not None:
+            is_timeout = is_timeout and (reviewed_wait_expired or stale_after is not None)
         # What actually ended the wait: the stale threshold pre-empts a longer configured cap.
         timeout_cause = stale_after if stale_after is not None else child_timeout
         duration = self.elapsed()
@@ -920,6 +955,9 @@ class _ChildRun:
                 f"progress in that window (no completed call, tool change, or activity-clock tick): a stalled "
                 f"provider request or an unresponsive network request."
             )
+        if is_timeout and reviewed_wait_expired:
+            _err = (f"Parent-reviewed deadline expired: no accepted renewal within {child_timeout}s; "
+                    f"total child runtime {duration}s. Reports and heartbeats do not renew deadlines.")
         if diagnostic_path:
             _err += f" Diagnostic: {diagnostic_path}"
         status = "timeout" if is_timeout else "error"

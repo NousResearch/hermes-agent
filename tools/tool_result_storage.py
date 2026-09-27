@@ -341,7 +341,8 @@ def enforce_turn_budget(tool_messages: list[dict], env=None,
     sizes = [len(msg.get("content", "")) for msg in tool_messages]
     total_size = sum(sizes)
     candidates = [(i, size) for i, size in enumerate(sizes)
-                  if PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")]
+                  if PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")
+                  and not tool_messages[i].get("_plugin_context_injected")]
     if total_size <= config.turn_budget:
         return tool_messages
     for idx, size in sorted(candidates, key=lambda x: x[1], reverse=True):

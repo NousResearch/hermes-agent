@@ -1,0 +1,3 @@
+name: subagent-progress
+version: "0.1.0"
+description: Durable subagent milestone reports with bounded parent notifications.

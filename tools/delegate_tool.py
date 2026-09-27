@@ -336,7 +336,7 @@ def _run_single_child(
         if failure_entry is not None:
             return failure_entry
 
-        schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
+        schema = run.schema_outcome
         _merge_late_steer(result, _subagent_id, child)
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):

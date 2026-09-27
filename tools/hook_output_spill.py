@@ -5,7 +5,8 @@ inflates every turn and breaks the prompt-cache prefix. Above
 ``hooks.output_spill.max_chars`` (default 10000) the text is written under
 ``hooks.output_spill.directory`` (default ``<HERMES_HOME>/hook_outputs/<session>``)
 and the payload becomes a ``preview_head``/``preview_tail`` excerpt plus the path.
-``enabled: false`` disables. Never raises: an I/O failure still returns a preview.
+``enabled: false`` disables. By default an I/O failure still returns a preview;
+durable-delivery callers can request an exception to retain pending context.
 """
 
 from __future__ import annotations
@@ -63,12 +64,15 @@ def _resolve_spill_dir(directory_override: Optional[str], session_id: Optional[s
 
 def spill_if_oversized(
     text: str, *, session_id: Optional[str] = None, source: str = "hook", config: Optional[Dict[str, Any]] = None,
+    raise_on_failure: bool = False,
 ) -> str:
     """Spill ``text`` to disk if it exceeds the configured cap.
 
     Returns ``text`` unchanged (under cap, disabled, or empty) or a preview
     string pointing at the full content. Non-string input is ``str()``-coerced;
     ``source`` labels the preview header; ``config`` overrides config.yaml.
+    ``raise_on_failure`` lets durable-delivery callers retain pending context
+    instead of acknowledging a preview whose full content was lost.
     """
     if text is None:
         return ""
@@ -100,6 +104,8 @@ def spill_if_oversized(
         saved_path = str(spill_path)
     except Exception as exc:
         logger.warning("hook output spill failed: %s", exc)
+        if raise_on_failure:
+            raise
 
     total = len(text)
     parts = [

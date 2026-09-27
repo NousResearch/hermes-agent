@@ -1,22 +1,28 @@
 name: plan-mode
 title: Plan mode
 repo: https://github.com/100yenadmin/hermes-plan-mode
-sha: b2516184698d030131f6aec4020fe55ffb65cb56
+sha: 33e59f94fd39ebe10b049bc01fcfb68f4276477b
 description: 'Enforced per-session plan mode: /planmode on blocks mutating Hermes tools dispatched through pre_tool_call (writes outside
-  .hermes/plans, terminal, code execution, delegation, MCP) until you /planmode approve the plan. Fails closed. Enforced in the classic CLI on
-  released Hermes (<= 0.21.4); gateway, TUI and Desktop need a build with hermes-agent commits 5943347a2a and 35fdb4608a (after v2026.9.21) and
-  refuse /planmode on until then. Disclosure: Codex app-server native exec and TUI side agents bypass pre_tool_call and are not enforced.'
+  .hermes/plans, terminal, code execution, delegation, MCP) until you /planmode approve the plan. Fails closed. Enforced in the classic CLI on every
+  supported Hermes; gateway, TUI and Desktop are enforced from Hermes v2026.9.24 (0.21.5, which carries hermes-agent commits 5943347a2a and
+  35fdb4608a) and refuse /planmode on on older builds. The plan_mode tool lets the agent enter plan mode itself (on/status/off; approval stays /planmode approve); behind Tool Search the model finds it via tool_search. Disclosure: Codex app-server native exec and TUI side agents bypass pre_tool_call and are not enforced. Disclosure — reads two private Hermes internals without
+  modifying them (gateway.run._gateway_runner_ref via sys.modules to detect a gateway process, and
+  PluginContext._manager.home_path to learn its profile), both guarded with fallbacks; creates .hermes/plans/ under the
+  session working directory; the plan_mode tool''s off action ends only a plan mode the agent entered itself. No network
+  access, no shell, no self-update.'
 maintainer: 100yenadmin
 tier: community
 category: tools
 requires_hermes: '>=0.21.2'
 docs_url: https://github.com/100yenadmin/hermes-plan-mode#readme
-version: "0.1.6"
+version: "0.2.0"
 platforms: []
 capabilities:
-  provides_tools: []
+  provides_tools:
+    - plan_mode
   provides_hooks:
     - pre_tool_call
+    - post_tool_call
     - pre_llm_call
     - on_session_finalize
     - on_session_reset

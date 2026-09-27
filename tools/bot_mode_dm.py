@@ -365,7 +365,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
     # name slugs to 'hermes-mini' captured it. An '@' name no connection answers to still resolves locally.
     if "@" in raw_target.strip().lstrip("@"):
         # The sender's own relay folder, as below: the default's would relay a named bot's DM as the default.
-        relayed = _try_relay_delivery(Path(sender.home), raw_target, content, me, **delivery)
+        relayed = _try_relay_delivery(Path(sender.home), raw_target, content, me, viewer=Path(sender.home), **delivery)
         if relayed is not None:
             return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
@@ -397,25 +397,22 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
 
 
 def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
-                        task_id: Optional[str], agent: Any, wake: Any = "notify",
-                        viewer: Optional[Path] = None) -> Optional[str]:
+                        task_id: Optional[str], agent: Any, viewer: Path, wake: Any = "notify") -> Optional[str]:
     """Cross-connection delivery via the Desktop relay; None when the target doesn't
     resolve against the relay roster. The envelope is queued on disk for the Desktop
     to drain; a background waiter is spawned immediately so the relayed reply wakes
-    the sender through the standard completion-notification path."""
+    the sender through the standard completion-notification path. ``viewer`` is
+    required, as on ``_visible_roster``: a caller that could omit it reached other circles."""
     try:
-        from tools.bot_mode_probe import _handle, _hermes_root, _roster, local_taken_forms
+        from tools.bot_mode_probe import _circle_of, _handle, _hermes_root, _roster, local_taken_forms
         from tools.bot_relay import (
             EnvelopeRefusedError, _target_aliases, enqueue_envelope, read_remote_roster, remote_target_forms,
             resolve_remote_target, waiter_command,
         )
 
-        roster = read_remote_roster(root)
-        if viewer is not None:
-            # Same rule as the local roster: only agents in the caller's circle are reachable.
-            from tools.bot_mode_probe import _circle_of
-            mine = _circle_of(viewer)
-            roster = [row for row in roster if str(row.get("circle") or "") == mine]
+        # Same rule as the local roster: only agents in the caller's circle are reachable.
+        mine = _circle_of(viewer)
+        roster = [row for row in read_remote_roster(root) if str(row.get("circle") or "") == mine]
         match = resolve_remote_target(raw_target, roster) if roster else None
         if match is None:
             return None

@@ -2275,6 +2275,75 @@ class TestMatrixRenderingPayloads:
 
 
     @pytest.mark.asyncio
+    async def test_thread_replies_chain_from_inbound_event_and_preserve_explicit_target(
+        self,
+    ):
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._resolve_room_identity = AsyncMock(
+            return_value=types.SimpleNamespace(
+                display_name="Alice",
+                room_topic="",
+                server_name="example.org",
+            )
+        )
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter.max_message_length = 60
+        self.mock_client.send_message_event = AsyncMock(
+            side_effect=lambda *args: (
+                f"$sent-{self.mock_client.send_message_event.await_count}"
+            )
+        )
+
+        await self.adapter._resolve_message_context(
+            "!room:example.org",
+            "@alice:example.org",
+            "$incoming",
+            "continue",
+            {"msgtype": "m.text", "body": "continue"},
+            {"rel_type": "m.thread", "event_id": "$root"},
+        )
+        result = await self.adapter.send(
+            "!room:example.org",
+            "one two three four five " * 15,
+            metadata={"thread_id": "$root"},
+        )
+
+        contents = self._sent_contents()
+        assert result.success is True
+        assert len(contents) > 1
+        assert [
+            content["m.relates_to"]["m.in_reply_to"]["event_id"] for content in contents
+        ] == [
+            "$incoming",
+            *[f"$sent-{index}" for index in range(1, len(contents))],
+        ]
+
+        await self.adapter.send(
+            "!room:example.org",
+            "explicit",
+            reply_to="$other-thread",
+            metadata={"thread_id": "$root"},
+        )
+        explicit_relation = self._sent_contents()[-1]["m.relates_to"]
+        assert explicit_relation == {
+            "rel_type": "m.thread",
+            "event_id": "$root",
+            "m.in_reply_to": {"event_id": "$other-thread"},
+            "is_falling_back": False,
+        }
+
+        await self.adapter.send(
+            "!room:example.org", "after", metadata={"thread_id": "$root"}
+        )
+        assert self._sent_contents()[-1]["m.relates_to"] == {
+            "rel_type": "m.thread",
+            "event_id": "$root",
+            "m.in_reply_to": {"event_id": f"$sent-{len(self._sent_contents()) - 1}"},
+            "is_falling_back": True,
+        }
+
+    @pytest.mark.asyncio
     async def test_long_response_split_preserves_thread_context(self):
         # Build a payload guaranteed to exceed the adapter's outbound chunk
         # size (configurable since #53026) so send() must split it.
@@ -3121,6 +3190,63 @@ class TestMatrixUploadAndSend:
         assert sent["m.relates_to"]["rel_type"] == "m.thread"
         assert sent["m.relates_to"]["event_id"] == "$root"
         assert sent["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+
+    @pytest.mark.asyncio
+    async def test_encrypted_and_plain_media_extend_thread_fallback_chain(self):
+        adapter = _make_adapter()
+        adapter._encryption = True
+        mock_client = MagicMock()
+        mock_client.crypto = object()
+        mock_client.state_store.is_encrypted = AsyncMock(side_effect=[True, False])
+        mock_client.upload_media = AsyncMock(
+            side_effect=[
+                "mxc://example.org/secret",
+                "mxc://example.org/plain",
+            ]
+        )
+        mock_client.send_message_event = AsyncMock(
+            side_effect=["$text", "$encrypted", "$plain"]
+        )
+        adapter._client = mock_client
+        metadata = {"thread_id": "$root"}
+
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            text_result = await adapter.send(
+                "!room:example.org", "start", metadata=metadata
+            )
+            encrypted_result = await adapter._upload_and_send(
+                "!room:example.org",
+                b"secret",
+                "secret.png",
+                "image/png",
+                "m.image",
+                metadata=metadata,
+            )
+            plain_result = await adapter._upload_and_send(
+                "!room:example.org",
+                b"plain",
+                "plain.png",
+                "image/png",
+                "m.image",
+                metadata=metadata,
+            )
+
+        contents = [
+            call.args[2] for call in mock_client.send_message_event.await_args_list
+        ]
+        assert (
+            text_result.success,
+            encrypted_result.success,
+            plain_result.success,
+        ) == (True, True, True)
+        assert [
+            content["m.relates_to"]["m.in_reply_to"]["event_id"] for content in contents
+        ] == [
+            "$root",
+            "$text",
+            "$encrypted",
+        ]
+        assert ["file" in content for content in contents] == [False, True, False]
 
 
 class TestMatrixDiagnostics:

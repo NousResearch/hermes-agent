@@ -156,9 +156,8 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     # commit runs on its OWN interpreter here, so there is no ABI mix (#122183).
     python = project_python(repo)
     if not python.is_file():
-        logger.warning("cron: dependency venv interpreter %s is missing; running %s on %s",
-                       python, script.name, sys.executable)
-        return [sys.executable, str(script)], {}
+        # The caller's interpreter is the bare store Python here — the #123044 failure mode.
+        raise RuntimeError(f"dependency environment interpreter is missing: {python}")
     return ([str(python), "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(script)],
             {"HERMES_DISABLE_LAZY_INSTALLS": "1"})
 

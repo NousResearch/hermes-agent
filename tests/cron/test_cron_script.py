@@ -360,12 +360,13 @@ class TestRunJobScript:
         assert pickled == "pickled True"  # __main__ outlives the body, as in a plain run
 
     @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("broken", ["selection_raises", "interpreter_missing"])
     def test_posix_unusable_store_selection_fails_the_run_not_the_tick(
-        self, cron_env, monkeypatch
+        self, cron_env, tmp_path, monkeypatch, broken
     ):
-        """A broken PM selection record is reported as a failed run (``selected_venv``'s
-        contract: never silently load another environment) instead of escaping
-        ``_run_job_script`` and stranding the execution row."""
+        """An unusable PM selection (broken record, or a venv whose interpreter is gone) is
+        reported as a failed run naming the cause: never a silent run on the bare store Python,
+        and never an exception escaping ``_run_job_script`` to strand the execution row."""
         from cron.scheduler_script import _run_job_script
 
         def _broken(repo):
@@ -374,12 +375,15 @@ class TestRunJobScript:
         monkeypatch.setattr(
             "hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable)
         )
-        monkeypatch.setattr("pm.environments.selected_venv", _broken)
+        monkeypatch.setattr(
+            "pm.environments.selected_venv",
+            _broken if broken == "selection_raises" else (lambda repo: tmp_path / "gone-venv"),
+        )
         (cron_env / "scripts" / "probe.py").write_text('print("ok")\n', encoding="utf-8")
 
         success, output = _run_job_script("probe.py")
         assert success is False
-        assert "dependency environment is missing" in output
+        assert "dependency environment" in output
 
     def test_emoji_stdout_round_trips_through_script_capture(self, cron_env):
         """Emoji in script stdout must reach the caller intact (#42384).

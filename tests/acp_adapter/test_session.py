@@ -296,6 +296,38 @@ class TestWslCwdTranslation:
 # ---------------------------------------------------------------------------
 
 
+class TestForkSessionLineage:
+    """Regression for #124540: an ACP fork must record the same lineage the
+    CLI /branch, gateway /branch, and API-server fork already do."""
+
+    def test_fork_session_records_parent_and_branch_marker(self, manager):
+        original = manager.create_session(cwd="/tmp/base")
+        original.history.append({"role": "user", "content": "hello"})
+        manager.save_session(original.session_id)
+
+        forked = manager.fork_session(original.session_id, cwd="/tmp/base")
+
+        assert forked is not None
+        assert forked.parent_session_id == original.session_id
+        row = manager._get_db().get_session(forked.session_id)
+        assert row["parent_session_id"] == original.session_id
+        assert json.loads(row["model_config"])["_branched_from"] == original.session_id
+
+    def test_fork_session_marker_survives_a_later_save(self, manager):
+        """``_persist`` reaches ``update_session_meta`` on every later save, which
+        overwrites ``model_config`` wholesale — a session that forgot to re-include
+        ``_branched_from`` would silently erase it on the fork's very next turn."""
+        original = manager.create_session(cwd="/tmp/base")
+        original.history.append({"role": "user", "content": "hello"})
+        manager.save_session(original.session_id)
+        forked = manager.fork_session(original.session_id, cwd="/tmp/base")
+
+        forked.history.append({"role": "assistant", "content": "sure, here goes"})
+        manager.save_session(forked.session_id)
+
+        row = manager._get_db().get_session(forked.session_id)
+        assert row["parent_session_id"] == original.session_id
+        assert json.loads(row["model_config"])["_branched_from"] == original.session_id
 
 
 # ---------------------------------------------------------------------------

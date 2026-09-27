@@ -835,6 +835,13 @@ def _profile_owns_pool_provider(provider: str) -> bool:
     Named profiles with no local rows read the provider through the
     ``read_credential_pool`` global-root fallback ("borrowing").
     """
+    # Classic mode (profile == root) has no root fallback, so the answer is always "owns";
+    # skip the per-call auth.json re-read on this hot load_pool path.
+    try:
+        if auth_mod._global_auth_file_path() is None:
+            return True
+    except Exception:
+        return True
     try:
         pool = _load_auth_store().get("credential_pool")
     except Exception:
@@ -909,8 +916,8 @@ def persist_pool_entries(
 ) -> Optional[List[Dict[str, Any]]]:
     """Persist a provider's pool rows to the store that OWNS them.
 
-    A named profile that sees a single-use-refresh provider (Anthropic,
-    Codex, xAI OAuth) only through the global-root fallback must not
+    A named profile that sees a single-use-refresh provider (see
+    ``SINGLE_USE_REFRESH_POOL_PROVIDERS``) only through the global-root fallback must not
     materialize a local ``credential_pool.<provider>`` copy: that copy forks
     the single-use refresh token, the first profile to rotate commits the new
     pair only to its own file, and root plus every sibling die with
@@ -960,6 +967,8 @@ REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON
 
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
 # sequence must be serialized across processes under the auth-store flock.
+# ``nous`` is deliberately absent even though it is in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+# its refresh path serializes on its own auth-store lock (``_refresh_entry_impl`` nous branch).
 _SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
 
 _REFRESH_TIMEOUT_ENV_VARS = {

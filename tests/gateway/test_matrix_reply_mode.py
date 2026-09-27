@@ -1,5 +1,6 @@
 """Matrix reply references and thread fallbacks."""
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -7,8 +8,72 @@ import pytest
 
 from agent.secret_scope import set_multiplex_active
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import SendResult
 from gateway.run import _profile_runtime_scope
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.matrix.adapter import MatrixAdapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "first", "all"])
+@pytest.mark.parametrize("thread", [None, "root", "known", "latest"])
+@pytest.mark.parametrize("delivery", ["buffered", "live", "fallback"])
+async def test_streamed_response_reply_policy_spans_consumer_chunks(mode, thread, delivery):
+    room_id = "!room:example.org"
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, token="syt_test", reply_to_mode=mode,
+        extra={
+            "homeserver": "https://matrix.example.org", "user_id": "@bot:example.org",
+            "auto_thread": False, "max_message_length": 1000,
+        },
+    ))
+    client = MagicMock()
+    client.send_message_event = AsyncMock(side_effect=[f"$sent{i}" for i in range(20)])
+    adapter._client = client
+    metadata = {"thread_id": "$root"} if thread else {}
+    if thread == "known":
+        metadata["matrix_thread_fallback_event_id"] = "$known"
+    if thread == "latest":
+        adapter._thread_fallbacks.remember(room_id, "$root", "$latest")
+    preview_sent = asyncio.Event()
+    consumer = GatewayStreamConsumer(
+        adapter, room_id, StreamConsumerConfig(edit_interval=0, cursor=""),
+        metadata=metadata, initial_reply_to_id="$request", on_new_message=preview_sent.set,
+    )
+    task = asyncio.create_task(consumer.run())
+    try:
+        if delivery != "buffered":
+            consumer.on_delta("preview " * 25)
+            await asyncio.wait_for(preview_sent.wait(), timeout=5)
+        if delivery == "fallback":
+            adapter.edit_message = AsyncMock(return_value=SendResult(success=False, error="edit refused"))
+        consumer.on_delta("answer " * 350)
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=10)
+    finally:
+        if not task.done():
+            task.cancel()
+            await task
+
+    messages = [(f"$sent{index}", call.args[2])
+                for index, call in enumerate(client.send_message_event.await_args_list)
+                if call.args[2].get("m.relates_to", {}).get("rel_type") != "m.replace"]
+    assert len(messages) >= 3
+    expected = []
+    for index in range(len(messages)):
+        rich_reply = mode == "all" or (mode == "first" and index == 0)
+        relation = {"m.in_reply_to": {"event_id": "$request"}} if rich_reply else None
+        if thread:
+            fallback = "$known" if thread == "known" else messages[index - 1][0]
+            if index == 0:
+                fallback = {"root": "$root", "known": "$known", "latest": "$latest"}[thread]
+            relation = {
+                "rel_type": "m.thread", "event_id": "$root",
+                "m.in_reply_to": {"event_id": "$request" if rich_reply else fallback},
+                "is_falling_back": not rich_reply,
+            }
+        expected.append(relation)
+    assert [message.get("m.relates_to") for _, message in messages] == expected
 
 
 @pytest.mark.asyncio

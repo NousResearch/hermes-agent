@@ -253,18 +253,25 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         progress = "\n".join(self._tool_progress_lines)
         return "\n\n---\n".join(p for p in (self._accumulated, progress) if p)
 
-    def _metadata_for_send(self, *, final: bool = False, expect_edits: bool = False) -> dict | None:
-        """Per-send metadata.  ``final`` → notify=True (Mattermost treats notify-worthy sends
-        as final when a broken thread root may fall back flat); ``expect_edits`` keeps
-        editable previews on Telegram's legacy send path."""
+    def _metadata_for_send(self, *, final: bool = False, expect_edits: bool = False,
+                           continuation: Optional[bool] = None) -> dict:
+        """Metadata for sends within one streamed response.
+
+        ``_stream_continuation`` identifies later chunks; ``_stream_reply_to_message_id``
+        specifies the original request independently of platform reply chains. ``final`` sets
+        notify for Mattermost's flat fallback; ``expect_edits`` keeps editable previews on
+        Telegram's legacy send path.
+        """
         meta = dict(self.metadata) if self.metadata else {}
+        meta["_stream_continuation"] = self._turn_split_delivery if continuation is None else continuation
+        meta["_stream_reply_to_message_id"] = self._initial_reply_to_id
         if self._initial_reply_to_id:
             meta["reply_to_message_id"] = self._initial_reply_to_id
         if expect_edits:
             meta["expect_edits"] = True
         if final:
             meta["notify"] = True
-        return meta or None
+        return meta
 
     # Read-only views for the gateway (flag semantics: see _clear_turn_final_flags).
     already_sent = property(lambda self: self._already_sent)
@@ -759,8 +766,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             chunks = self._split_text_chunks(self._accumulated, self._safe_limit, self._len_fn)
         reply_to = self._initial_reply_to_id
         heads_delivered = len(chunks) > 1
-        for chunk in chunks[:-1]:
-            new_id = await self._send_new_chunk(chunk, reply_to, final=tick.got_done)
+        for index, chunk in enumerate(chunks[:-1]):
+            new_id = await self._send_new_chunk(
+                chunk, reply_to, final=tick.got_done,
+                continuation=self._turn_split_delivery or index > 0)
             if new_id is None or new_id == reply_to:
                 heads_delivered = False  # keep the full text intact for the gateway fallback
                 break

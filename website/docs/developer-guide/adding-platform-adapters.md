@@ -61,6 +61,31 @@ optional_env:
     password: false
 ```
 
+#### Additional platform names: `platform_aliases`
+
+When one deferred plugin registers several platform names, declare its secondary
+names so a fresh CLI or cron process can discover them without first loading the
+primary adapter:
+
+```yaml
+name: wecom-platform
+kind: platform
+platform_aliases:
+  - wecom_callback
+```
+
+These are additional registry names implemented by the same plugin, not target
+rewrites: `register(ctx)` must still call `ctx.register_platform()` for each
+name, including its own target parser and standalone sender where needed.
+Looking up either name materializes the owning plugin once. Deferred loaders and
+concrete registrations share the plugin's profile-scoped lifecycle; unloading
+one profile's plugin does not remove another profile's registrations.
+
+The field is optional. Omitted, null, or empty values retain primary-only lazy
+discovery. Invalid list values or entries are ignored with warnings; non-empty
+strings are trimmed and duplicate names are leased only once. Older Hermes
+versions ignore the unknown metadata and retain their primary-only discovery.
+
 #### Outbound client tools: `provides_tools`
 
 `kind: platform` plugins are **deferred**: the adapter module (and its SDK

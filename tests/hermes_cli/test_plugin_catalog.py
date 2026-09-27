@@ -4,8 +4,11 @@ skipped not raised, kill-list matching is name-or-repo, and the live catalog deg
 from __future__ import annotations
 
 import json
+import os
 
-import yaml
+import pytest
+
+import hermes_yaml as yaml
 
 from hermes_cli import plugin_catalog as pc
 
@@ -68,12 +71,14 @@ def test_screenshots_and_readme_are_parsed_and_readme_defaults_on(tmp_path):
 
 
 def test_invalid_entries_are_skipped_not_raised(tmp_path):
-    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("ok")))
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("ok", description="café")), encoding="utf-8-sig")
     (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("short-sha", sha="abc123")))
     (tmp_path / "c.yaml").write_text(yaml.safe_dump(_entry("http-repo", repo="http://x/y")))
     (tmp_path / "d.yaml").write_text(yaml.safe_dump(_entry("Bad Name")))
     (tmp_path / "e.yaml").write_text("- not\n- a mapping\n")
-    assert [e.name for e in pc.load_catalog(tmp_path)] == ["ok"]
+    entries = pc.load_catalog(tmp_path)
+    assert [e.name for e in entries] == ["ok"]
+    assert entries[0].description == "café"
 
 
 def test_find_removed_matches_name_or_normalized_repo(tmp_path):
@@ -89,18 +94,44 @@ def test_find_removed_matches_name_or_normalized_repo(tmp_path):
     assert pc.find_removed("git@gitlab.com:x/evil.git", tmp_path) is None  # different host stays distinct
 
 
-def test_live_catalog_falls_back_to_in_tree_and_unions_removals(tmp_path, monkeypatch):
-    """Network failure → in-tree entries; a cached live doc contributes entries AND removals."""
+@pytest.mark.parametrize("stale", [False, True])
+def test_live_catalog_falls_back_to_in_tree_and_unions_removals(tmp_path, monkeypatch, stale):
+    """Offline live pins expire, but a cached removal keeps blocking installs."""
+    import httpx
+
+    requests = []
+    get = httpx.get
+
+    def record_get(*args, **kwargs):
+        requests.append(args)
+        return get(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "get", record_get)
     cache = tmp_path / "cache" / "plugin-catalog.json"
     monkeypatch.setattr(pc, "_live_cache_path", lambda: cache)
     monkeypatch.setattr(pc, "LIVE_CATALOG_URL", "http://127.0.0.1:9/nope")  # unreachable
     assert [e.name for e in pc.load_catalog_live()] == [e.name for e in pc.load_catalog()]
 
     cache.parent.mkdir(parents=True)
-    cache.write_text(json.dumps({"entries": [_entry("live-only")],
-                                 "removed": [{"name": "pulled-live", "reason": "cve"}]}))
-    assert [e.name for e in pc.load_catalog_live()] == ["live-only"]
+    cache.write_text(json.dumps({"entries": [_entry("live-only", description="café")],
+                                 "removed": [{"name": "pulled-live", "reason": "cve"}]},
+                                ensure_ascii=False), encoding="utf-8-sig")
+    if stale:
+        os.utime(cache, (1, 1))
+    requests.clear()
+    # The unreachable fetch above armed the failure window; a stale cache must still
+    # trigger a real retry once that window has passed.
+    monkeypatch.setattr(pc, "_live_fetch_failed_until", 0.0)
+    entries = pc.load_catalog_live()
+    if stale:
+        assert [e.name for e in entries] == [e.name for e in pc.load_catalog()]
+    else:
+        assert [e.name for e in entries] == ["live-only"]
+        assert entries[0].description == "café"
+    assert bool(requests) is stale
     assert pc.find_removed("pulled-live").reason == "cve"
+    cache.write_text("{", encoding="utf-8-sig")
+    assert [e.name for e in pc.load_catalog_live()] == [e.name for e in pc.load_catalog()]
 
 
 def _fresh_cache(tmp_path, monkeypatch, doc: dict):
@@ -129,21 +160,6 @@ def test_newer_in_tree_pin_outranks_a_fresh_live_cache(tmp_path, monkeypatch):
     assert {e.name: e.sha for e in pc.load_catalog_live()}["shared"] == old
 
 
-def test_live_cache_past_max_stale_age_stops_supplying_pins_but_keeps_removals(tmp_path, monkeypatch):
-    """Offline for days: a 25-hour-old cache no longer outranks the in-tree catalog (its pins may be
-    older than the checkout's), while its kill-list entries still block."""
-    import os
-    import time
-    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [_entry("live-only")],
-                                                 "removed": [{"name": "pulled-live", "reason": "cve"}]})
-    stale = time.time() - pc.LIVE_CATALOG_MAX_STALE_SECONDS - 3600
-    os.utime(cache, (stale, stale))
-    pc._live_fetch_failed_until = 0.0
-    assert [e.name for e in pc.load_catalog_live()] == [e.name for e in pc.load_catalog()]
-    assert pc.find_removed("pulled-live").reason == "cve"
-    assert pc.cached_removed_entries()[-1].name == "pulled-live"
-
-
 def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatch):
     """The cache is replaced atomically: a reader racing the writer (or a write that dies half-way)
     sees the whole previous document, never a truncated one."""
@@ -167,3 +183,18 @@ def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatc
     pc.fetch_live_catalog(force=True)  # the failed write is swallowed like any other fetch failure
     assert cache.read_text() == previous
     assert not list(cache.parent.glob("*.tmp*"))  # no leftover temp file either
+
+
+def test_curated_fields_the_published_doc_lacks_come_from_the_checkout(tmp_path, monkeypatch):
+    """The docs build stamps generated_at at build time, so a doc rebuilt from an older catalog is "newer"
+    than a checkout that just added `onboarding`. At the same pin, a curated field the doc does not carry
+    comes from the checkout; a doc that carries it (even false) decides, and a different pin never merges."""
+    live = [_entry("same"), {**_entry("says-no"), "onboarding": False}, _entry("repinned", sha="b" * 40)]
+    _fresh_cache(tmp_path, monkeypatch, {"generated_at": "2026-09-22T10:00:00Z", "entries": live, "removed": []})
+    tree = [pc.entry_from_mapping({**_entry(n), "onboarding": True, "title": "T"}, n) for n in ("same", "says-no", "repinned")]
+    monkeypatch.setattr(pc, "load_catalog", lambda catalog_dir=None: tree)
+    monkeypatch.setattr(pc, "in_tree_catalog_time", lambda: 0.0)  # checkout older than the doc
+    by_name = {e.name: e for e in pc.load_catalog_live()}
+    assert (by_name["same"].onboarding, by_name["same"].title) == (True, "T")
+    assert by_name["says-no"].onboarding is False and by_name["says-no"].title == "T"
+    assert by_name["repinned"].onboarding is False and by_name["repinned"].sha == "b" * 40

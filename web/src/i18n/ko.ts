@@ -165,6 +165,10 @@ export const ko: Translations = {
     failedToDeleteSelected: "선택한 세션 삭제에 실패했습니다",
     resumeInChat: "채팅에서 다시 시작",
     newChat: "새 채팅",
+    workspace: "작업 공간",
+    workspaceDefault: "기본값",
+    workspaceRescan: "저장소 다시 검색",
+    workspaceCustom: "다른 경로…",
     previousPage: "이전 페이지",
     nextPage: "다음 페이지",
     roles: {

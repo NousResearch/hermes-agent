@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
+import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { appViewForPath, isOverlayView } from '@/app/routes'
 import {
@@ -11,13 +12,17 @@ import {
   cycleTreeTabInFocusedZone,
   isPaneVisible,
   layoutHasRootSide,
-  togglePaneVisible,
   toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
-import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
+import {
+  contributedKeybindHandler,
+  PROFILE_SLOT_COUNT,
+  SESSION_SLOT_COUNT,
+  TAB_SLOT_COUNT
+} from '@/lib/keybinds/actions'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
@@ -31,7 +36,7 @@ import {
 } from '@/store/find-in-page'
 import { toggleHud } from '@/store/hud'
 import { toggleSimpleMode } from '@/store/interface-mode'
-import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
+import { $capture, $comboIndex, captureStep, endCapture, setBinding } from '@/store/keybinds'
 import {
   cycleSidebarGrouping,
   requestSessionSearchFocus,
@@ -53,7 +58,7 @@ import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { openFolderAsProject } from '@/store/projects'
 import { toggleReview } from '@/store/review'
 import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
-import { reopenLastClosedTile } from '@/store/session-states'
+import { $focusedStoredSessionId, reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
   closeSwitcher,
@@ -66,10 +71,16 @@ import {
   switcherJustClosed
 } from '@/store/session-switcher'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
+import { requestThreadPageScroll } from '@/store/thread-scroll'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import {
+  requestComposerDictation,
+  requestComposerFocus,
+  requestModelMenuToggle,
+  requestVoiceToggle
+} from '../chat/composer/focus'
 import { handleComposerFocusChord } from '../chat/composer/focus-chord'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
 import { openSession } from '../open-session'
@@ -131,16 +142,13 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   }
 
   for (let slot = 1; slot <= PROFILE_SLOT_COUNT; slot += 1) {
-    // ⌘1…⌘9 switch the FOCUSED zone's tab when it's a real tab strip; only a
-    // single-pane (or unfocused) layout falls through to the profile switch.
+    // Unconditional (#92569): ⌘1…⌘9 are PROFILE switchers, period. The old
+    // tab-first dispatch (activateTreeTabSlot before switchProfileToSlot)
+    // lived inside this handler, so session tabs silently ate the chord and
+    // rebinding could not change the semantics. Positional tab switching
+    // moved to the unbound view.tabSlot.N actions below.
     profileSwitchHandlers[`profile.switch.${slot}`] = () => {
-      const pane = activateTreeTabSlot(slot)
-
-      if (pane) {
-        leavePageForWorkspaceChat(pane)
-      } else {
-        switchProfileToSlot(slot)
-      }
+      switchProfileToSlot(slot)
     }
   }
 
@@ -160,6 +168,21 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     }
   }
 
+  // view.tabSlot.N: activate the Nth visible tab in the focused zone's tab
+  // strip. Ships unbound (#92569) — users who want positional tab switching
+  // can assign chords in Settings → Keyboard Shortcuts.
+  const tabSlotHandlers: HandlerMap = {}
+
+  for (let slot = 1; slot <= TAB_SLOT_COUNT; slot += 1) {
+    tabSlotHandlers[`view.tabSlot.${slot}`] = () => {
+      const pane = activateTreeTabSlot(slot)
+
+      if (pane) {
+        leavePageForWorkspaceChat(pane)
+      }
+    }
+  }
+
   commitSwitcherRef.current = () => goToSession(commitOnCtrlUp())
 
   const stepSession = (direction: 1 | -1) => {
@@ -169,7 +192,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
   // falls through to the recent-session switcher. Landing on the workspace
-  // under a full page routes back to the chat (same as ⌘1).
+  // under a full page routes back to the chat (same as view.tabSlot.1).
   const cycleTab = (direction: 1 | -1) => {
     const pane = cycleTreeTabInFocusedZone(direction)
 
@@ -197,6 +220,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
     },
     'composer.voice': requestVoiceToggle,
+    'composer.dictate': requestComposerDictation,
 
     // On the Settings overlay, ⌘K scopes to settings search; the second press
     // (or Esc) still closes as usual via toggle.
@@ -232,9 +256,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.next': () => cycleTab(1),
     'session.prev': () => cycleTab(-1),
     ...sessionSlotHandlers,
+    ...tabSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
     'session.archive': deps.archiveSelectedSession,
+    'conversation.scrollPageUp': () => requestThreadPageScroll(-1, $focusedStoredSessionId.get()),
+    'conversation.scrollPageDown': () => requestThreadPageScroll(1, $focusedStoredSessionId.get()),
     // openWorktreeDialog resolves the target. There is no test for a repo
     // here, so the key works from a detached session that sits inside a
     // project, and not only from a session with a repo. When no repo is in
@@ -250,8 +277,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // ⌘J toggles the right sidebar — but a layout with no right side (e.g.
     // terminal-on-bottom) would leave it a dead key, so it falls back to the
     // terminal there. The single "secondary panel" toggle.
-    'view.toggleRightSidebar': () =>
-      layoutHasRootSide('right') ? toggleFileBrowserOpen() : togglePaneVisible('terminal'),
+    'view.toggleRightSidebar': () => (layoutHasRootSide('right') ? toggleFileBrowserOpen() : toggleTerminalPane()),
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
     'view.toggleProfileRail': toggleProfileRailVisible,
@@ -260,7 +286,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.showFiles': showFiles,
     'view.showBrowser': openBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
-    'view.showTerminal': () => togglePaneVisible('terminal'),
+    'view.showTerminal': () => toggleTerminalPane(),
     // Create first so the pane's open-effect ensure sees a non-empty set and
     // doesn't also spawn one — net effect is exactly one fresh terminal.
     'view.newTerminal': () => {
@@ -326,6 +352,43 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   )
 
   useEffect(() => {
+    const updateF12Ownership = () => {
+      const hasF12Binding = [...$comboIndex.get().keys()].some(combo => combo === 'f12' || combo.endsWith('+f12'))
+      window.hermesDesktop?.setF12ShortcutActive?.(hasF12Binding || $capture.get() !== null)
+    }
+
+    const stopBindings = $comboIndex.subscribe(updateF12Ownership)
+    const stopCapture = $capture.subscribe(updateF12Ownership)
+
+    return () => {
+      stopBindings()
+      stopCapture()
+      window.hermesDesktop?.setF12ShortcutActive?.(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const stopF12Shortcut = window.hermesDesktop?.onF12Shortcut?.(input => {
+      const target = document.activeElement ?? document.body ?? document.documentElement
+      target.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          altKey: input.alt,
+          bubbles: true,
+          cancelable: true,
+          code: input.code,
+          ctrlKey: input.control,
+          key: input.key,
+          metaKey: input.meta,
+          repeat: input.repeat,
+          shiftKey: input.shift
+        })
+      )
+    })
+
+    return () => stopF12Shortcut?.()
+  }, [])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       // An active IME composition owns the keyboard. Windows Chinese IMEs
       // (Microsoft Pinyin, Sogou) use Ctrl+, as their punctuation-mode toggle,
@@ -337,27 +400,26 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      // Capture mode: the next real key becomes the binding. Swallow everything
-      // so e.g. ⌘K rebinds instead of opening the palette.
+      // Capture mode: the next real key becomes the binding. Backspace/Delete
+      // clears it (empty combos) so a shipped chord like the sidebar's mod+b
+      // can be unbound. Escape cancels. Swallow everything so e.g. ⌘K rebinds
+      // instead of opening the palette.
       const capturing = $capture.get()
 
       if (capturing) {
         event.preventDefault()
         event.stopPropagation()
 
-        if (event.key === 'Escape') {
-          endCapture()
+        const step = captureStep(event.key, comboFromEvent(event))
 
+        if (step.type === 'wait') {
           return
         }
 
-        const combo = comboFromEvent(event)
-
-        if (!combo) {
-          return
+        if (step.type === 'set') {
+          setBinding(capturing, step.combos)
         }
 
-        setBinding(capturing, [combo])
         endCapture()
 
         return

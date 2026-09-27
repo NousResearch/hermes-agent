@@ -96,6 +96,12 @@ export interface RemoteBootRetryContext {
    * is terminal like a reauth rejection — not connectivity.
    */
   isHostKeyChanged?: boolean
+  /**
+   * True when SSH rejected the credentials (`auth-failed`). Desktop runs ssh
+   * in BatchMode, so nothing changes until the user loads the key into
+   * ssh-agent or fixes the connection settings: terminal, not connectivity.
+   */
+  isSshAuthFailed?: boolean
 }
 
 /**
@@ -115,6 +121,38 @@ export function isHostKeyChangedBootFailure(error: unknown): boolean {
   return /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|host key for .+ has CHANGED/i.test(
     message
   )
+}
+
+/**
+ * An SSH credential rejection is identifiable by the `auth-failed` kind that
+ * classifySshError puts on the error (`kind` from `SshConnection.open`,
+ * `sshError` once the bootstrap re-wraps a lifecycle failure) and, for errors
+ * that crossed a stringifying boundary, by our own message or ssh's banner.
+ */
+export function isSshAuthFailedBootFailure(error: unknown): boolean {
+  const tagged = error as { kind?: string; sshError?: string } | null | undefined
+
+  if (tagged?.kind === 'auth-failed' || tagged?.sshError === 'auth-failed') {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return /SSH authentication to .+ failed|Permission denied \((?:publickey|password|keyboard-interactive)/i.test(
+    message
+  )
+}
+
+/**
+ * Whether a failed remote boot should latch (into `backendStartFailure`)
+ * because SSH rejected the credentials (#72698). Unlatched, every
+ * `getConnection`/api call re-runs startHermes, re-emits `running: true` and
+ * hides the boot-failure overlay, so its Gateway settings button — the only
+ * way to fix the key — ignores clicks. Released by reset/repair/apply-config
+ * like the host-key latch.
+ */
+export function shouldLatchSshAuthFailure(context: RemoteBootRetryContext): boolean {
+  return context.attemptedRemote && context.isSshAuthFailed === true
 }
 
 /**
@@ -141,12 +179,17 @@ export function shouldLatchHostKeyChangedFailure(context: RemoteBootRetryContext
  * only arms after a completed boot, so the app sat on "Desktop boot failed"
  * until the user manually re-entered the same connection details (which just
  * forced a fresh bootstrap). A missing capability differs from a transient
- * failure: confirmed reauth rejections, host-key changes, and local failures
- * stay out of the retry path; everything else remote is connectivity and
+ * failure: confirmed reauth rejections, host-key changes, SSH credential
+ * rejections, and local failures stay out of the retry path; everything else remote is connectivity and
  * should retry.
  */
 export function isRetryableRemoteBootFailure(context: RemoteBootRetryContext): boolean {
-  return context.attemptedRemote && !context.isReauth && context.isHostKeyChanged !== true
+  return (
+    context.attemptedRemote &&
+    !context.isReauth &&
+    context.isHostKeyChanged !== true &&
+    context.isSshAuthFailed !== true
+  )
 }
 
 export interface BootProgressUpdateLike {

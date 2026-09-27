@@ -165,6 +165,10 @@ export const tr: Translations = {
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
     newChat: "Yeni sohbet",
+    workspace: "çalışma alanı",
+    workspaceDefault: "Varsayılan",
+    workspaceRescan: "Depoları yeniden tara",
+    workspaceCustom: "Başka yol…",
     previousPage: "Önceki sayfa",
     nextPage: "Sonraki sayfa",
     roles: {

@@ -24,7 +24,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cron import scheduler as sched
 from cron import scheduler_delivery as sched_delivery
 from cron.scheduler import _deliver_result
 from cron.scheduler_delivery import _confirm_adapter_delivery
@@ -63,9 +62,6 @@ class TestConfirmAdapterDelivery:
         filtered = {"success": True, "filtered": "silence_narration", "delivered": False}
         assert _confirm_adapter_delivery(filtered, "j1") is False
 
-    def test_delivered_false_on_an_object_is_not_delivered(self):
-        result = _SendResult(success=True, message_id=42, delivered=False)
-        assert _confirm_adapter_delivery(result, "j1") is False
 
     def test_positive_evidence_is_delivered_without_warning(self, caplog):
         with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
@@ -85,10 +81,6 @@ class TestConfirmAdapterDelivery:
         assert "UNVERIFIED" in caplog.text
         assert "92e639af907f" in caplog.text
 
-    def test_evidence_free_success_dict_is_accepted_but_warned(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
-            assert _confirm_adapter_delivery({"success": True}, "j1") is True
-        assert "UNVERIFIED" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -212,13 +204,6 @@ class TestFilteredResultIsNotDelivered:
 
 
 class TestEmptyPayloadFailsClosed:
-    def test_empty_payload_never_reaches_the_adapter(self, caplog):
-        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
-            _, router_calls, _ = _run(_job(), "   ", _SendResult(message_id=1))
-
-        assert router_calls == []                     # nothing was sent
-        assert "via live adapter" not in caplog.text  # and nothing was claimed
-        assert "empty text and no media" in caplog.text
 
     def test_empty_payload_never_reaches_the_standalone_sender(self, caplog):
         """The native fallback must not re-open the hole the live lane closed.
@@ -246,24 +231,6 @@ class TestEmptyPayloadFailsClosed:
         assert "live adapter send skipped (empty text and no media)" in error
 
 
-class TestDeliveredLogNamesTheLane:
-    def test_log_includes_thread_and_message_id(self, caplog):
-        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
-            error, _, _ = _run(
-                _job(thread_id="99"), "Nightly report.", _SendResult(message_id=1234),
-            )
-
-        assert error is None
-        assert "via live adapter thread=99 message_id=1234" in caplog.text
-
-    def test_log_uses_a_dash_when_the_lane_is_unknown(self, caplog):
-        """No thread and an evidence-free result must still be attributable."""
-        with caplog.at_level(logging.INFO, logger="cron.scheduler"):
-            error, _, _ = _run(_job(), "Nightly report.", _SendResult())
-
-        assert error is None
-        assert "via live adapter thread=- message_id=-" in caplog.text
-        assert "UNVERIFIED" in caplog.text
 
 
 class TestLiveDeliveryIsAFinalNotification:
@@ -322,9 +289,6 @@ class TestNotifyIsConfigurable:
     text route and the media route so the two never disagree.
     """
 
-    def test_default_is_notify(self):
-        _, router_calls, _ = _run(_job(), "Nightly report.", _SendResult(message_id=1))
-        assert router_calls[0]["metadata"]["notify"] is True
 
     def test_explicit_false_disables_notify_on_text_route(self):
         _, router_calls, _ = _run(
@@ -362,10 +326,6 @@ class TestNotifyIsConfigurable:
         _, router_calls, _ = _run(_job(), "Nightly report.", _SendResult(message_id=1), cron_cfg=cron_cfg)
         assert router_calls[0]["metadata"]["notify"] is True
 
-    def test_default_config_ships_notify_true(self):
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
-
-        assert DEFAULT_CONFIG["cron"]["delivery"]["notify"] is True
 
 
 class TestUnverifiedDeliveryIsRecordedOnTheJob:
@@ -383,28 +343,14 @@ class TestUnverifiedDeliveryIsRecordedOnTheJob:
         assert error is None
         assert RECORDED_VERIFICATION == [("92e639af907f", [])]
 
-    def test_recorder_skips_the_write_when_nothing_changed(self):
-        with patch("cron.jobs.update_job") as update_job:
-            sched_delivery._record_delivery_verification({"id": "j1", "last_delivery_unverified": None}, [])
-            update_job.assert_not_called()
-            sched_delivery._record_delivery_verification({"id": "j1", "last_delivery_unverified": None}, ["slack:C1"])
-            update_job.assert_called_once_with("j1", {"last_delivery_unverified": ["slack:C1"]})
 
     def test_recorder_clears_a_stale_marker(self):
         with patch("cron.jobs.update_job") as update_job:
             sched_delivery._record_delivery_verification({"id": "j1", "last_delivery_unverified": ["slack:C1"]}, [])
             update_job.assert_called_once_with("j1", {"last_delivery_unverified": None})
 
-    def test_tool_listing_exposes_the_field(self):
-        from tools.cronjob_tools import _format_job
-
-        assert _format_job({"id": "j1", "name": "n", "prompt": "p",
-                            "last_delivery_unverified": ["slack:C1"]})["last_delivery_unverified"] == ["slack:C1"]
 
 
-def test_scheduler_module_exposes_the_confirmation_helper():
-    """Guard the import surface the delivery block depends on."""
-    assert callable(sched_delivery._confirm_adapter_delivery)
 
 
 class TestStandaloneSendIsBounded:

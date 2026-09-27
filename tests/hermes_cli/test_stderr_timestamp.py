@@ -13,8 +13,24 @@ from gateway.restart import (
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    LAUNCHD_LABEL_ENV,
 )
 from hermes_cli import stderr_timestamp
+
+
+def _script(tmp_path, name: str, source: str) -> str:
+    """Write *source* to a real script file and return its path.
+
+    Gateway-lookalike children must run from a FILE, never ``python -c <src> <tail>``: a ``-c``
+    command line is an interpreter running inline source, and the identity matchers deliberately
+    refuse to read the trailing argv off one — that tail belongs to a program the inline source
+    may spawn LATER, which is how the post-update restart watcher was mistaken for a live
+    gateway (#107002).
+    """
+    path = tmp_path / name
+    path.write_text(source, encoding="utf-8")
+    return str(path)
+
 
 _STALE_GATEWAY_ARGV = [
     sys.executable,
@@ -90,8 +106,38 @@ def test_prepare_skips_interactive_xpc_zero_even_for_gateway_argv():
     )
 
 
-# The child is ``python -c <record argv>`` carrying a "gateway run" tail as inert data, which is
-# exactly what the guard's real-gateway spawn check matches; it exits at once.
+def test_child_launchd_label_env_exports_only_hermes_job_labels():
+    assert stderr_timestamp._child_launchd_label_env(_LAUNCHD_ENV) == {LAUNCHD_LABEL_ENV: "ai.hermes.gateway-butler"}
+    # Interactive shells and the grandchild itself read "0": nothing to export. App-coalition labels
+    # (IDE integrated terminals) are not a Hermes job identity either.
+    for env in ({"PATH": "/usr/bin", "XPC_SERVICE_NAME": "0"}, {"PATH": "/usr/bin"},
+                {"PATH": "/usr/bin", "XPC_SERVICE_NAME": "application.com.example.ide.123"}):
+        assert stderr_timestamp._child_launchd_label_env(env) == {}
+
+
+@pytest.mark.parametrize("xpc, expected", [("ai.hermes.gateway-butler", "ai.hermes.gateway-butler"), ("0", "unset")],
+                         ids=["launchd-job", "foreground-xpc-zero"])
+def test_main_forwards_launchd_label_to_child_only_under_launchd(tmp_path, monkeypatch, xpc, expected):
+    """The gateway grandchild must resolve its job (drain cap, restart route) from HERMES_LAUNCHD_LABEL;
+    a foreground/unsupervised start must not inherit a fabricated one."""
+    monkeypatch.setenv("XPC_SERVICE_NAME", xpc)
+    monkeypatch.delenv(LAUNCHD_LABEL_ENV, raising=False)
+    marker_path = tmp_path / "label.txt"
+    code = (
+        "import os\nfrom pathlib import Path\n"
+        f"Path({str(marker_path)!r}).write_text(os.environ.get({LAUNCHD_LABEL_ENV!r}, 'unset'), encoding='utf-8')\n"
+    )
+
+    rc = stderr_timestamp.main(["--error-log", str(tmp_path / "gateway.error.log"), "--", sys.executable, "-c", code])
+
+    assert rc == 0
+    assert marker_path.read_text(encoding="utf-8") == expected
+
+
+# The child is a SCRIPT carrying a "gateway run" tail, which is what the guard's real-gateway
+# spawn check matches; it exits at once. Not ``python -c <src> <tail>``: a ``-c`` command line is
+# an interpreter running inline source, and the identity matchers refuse to read the trailing argv
+# off one — that tail belongs to a program the inline source may spawn LATER (#107002).
 @pytest.mark.spawns_gateway_lookalike
 def test_main_injects_flag_into_stale_gateway_child(tmp_path, monkeypatch):
     """Stale plist inner argv must grow --external-supervisor in the grandchild."""
@@ -99,13 +145,15 @@ def test_main_injects_flag_into_stale_gateway_child(tmp_path, monkeypatch):
     monkeypatch.delenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, raising=False)
     log_path = tmp_path / "gateway.error.log"
     marker_path = tmp_path / "argv.txt"
-    code = (
+    script = _script(
+        tmp_path,
+        "record_argv.py",
         "import sys\n"
-        f"from pathlib import Path\n"
+        "from pathlib import Path\n"
         f"Path({str(marker_path)!r}).write_text("
-        "'\\n'.join(sys.argv[1:]), encoding='utf-8')\n"
+        "'\\n'.join(sys.argv[1:]), encoding='utf-8')\n",
     )
-    stale = [sys.executable, "-c", code, "-m", "hermes_cli.main", "gateway", "run", "--replace"]
+    stale = [sys.executable, script, "-m", "hermes_cli.main", "gateway", "run", "--replace"]
 
     rc = stderr_timestamp.main(
         ["--error-log", str(log_path), "--", *stale]
@@ -179,6 +227,8 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
     please-restart code (75) or a non-gateway child's 78."""
     log_path = tmp_path / "gateway.error.log"
     gateway_tail = ["-m", "hermes_cli.main", "gateway", "run"]
+    exit_config = _script(tmp_path, "exit_config.py", f"raise SystemExit({GATEWAY_FATAL_CONFIG_EXIT_CODE})\n")
+    exit_restart = _script(tmp_path, "exit_restart.py", f"raise SystemExit({GATEWAY_SERVICE_RESTART_EXIT_CODE})\n")
 
     rc_config = stderr_timestamp.main(
         [
@@ -186,8 +236,7 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
             str(log_path),
             "--",
             sys.executable,
-            "-c",
-            f"raise SystemExit({GATEWAY_FATAL_CONFIG_EXIT_CODE})",
+            exit_config,
             *gateway_tail,
         ]
     )
@@ -197,8 +246,7 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
             str(log_path),
             "--",
             sys.executable,
-            "-c",
-            f"raise SystemExit({GATEWAY_SERVICE_RESTART_EXIT_CODE})",
+            exit_restart,
             *gateway_tail,
         ]
     )
@@ -208,8 +256,7 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
             str(log_path),
             "--",
             sys.executable,
-            "-c",
-            f"raise SystemExit({GATEWAY_FATAL_CONFIG_EXIT_CODE})",
+            exit_config,
         ]
     )
 
@@ -219,7 +266,7 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
 
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.platforms("posix")  # POSIX signals
 def test_wrapper_forwards_sigusr1_restart_request_to_child(tmp_path):
     """Regression for #101426: launchd owns the wrapper's PID, so ``hermes update`` sends its
     drain-aware SIGUSR1 to the wrapper. It must reach the gateway child and the wrapper must

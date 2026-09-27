@@ -123,7 +123,7 @@ describe('modeBound resolver', () => {
     expect($bound.get()).toBe('technical')
   })
 
-  it('keeps the profile door open in Simple when there is a second profile to walk through', async () => {
+  it('keeps the profile rail available in Simple for multiple profiles or gateways', async () => {
     const { modeBound, setInterfaceMode, setModeContext } = await loadStore()
     const $pref = atom(true)
     const $bound = modeBound('profileRailVisible', $pref, value => $pref.set(value))
@@ -135,6 +135,12 @@ describe('modeBound resolver', () => {
     expect($bound.get()).toBe(true)
 
     setModeContext({ profileCount: 1 })
+    expect($bound.get()).toBe(false)
+
+    setModeContext({ connectionCount: 2 })
+    expect($bound.get()).toBe(true)
+
+    setModeContext({ connectionCount: 1 })
     expect($bound.get()).toBe(false)
   })
 })

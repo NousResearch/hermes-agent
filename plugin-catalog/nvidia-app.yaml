@@ -1,6 +1,6 @@
 name: nvidia-app
 repo: https://github.com/NousResearch/hermes-nvidia
-sha: 5023f3a4ea5e1b55679090c598b39f04cf4aa848
+sha: 65bb8d89263f920e8599432823d2d4e05cc113e3
 subdir: nvidia-app
 description: "NVIDIA App control through its local MCP server: overlay capture and state, driver status
   and release notes, game optimization, and app launch. Requires NVIDIA App 11.0 or newer on Windows;
@@ -8,6 +8,7 @@ description: "NVIDIA App control through its local MCP server: overlay capture a
   The plugin reads the endpoint and token NVIDIA App publishes in its own McpServer server.json on every
   connection, so a changed port or token needs no reconfiguration. Disclosure: the tools read and change
   NVIDIA App settings on this machine; nothing leaves loopback."
+title: NVIDIA App
 maintainer: NousResearch
 tier: official
 category: tools
@@ -15,6 +16,7 @@ requires_hermes: ">=0.21.4"
 docs_url: https://github.com/NousResearch/hermes-nvidia/tree/main/nvidia-app
 version: "0.1.0"
 platforms: [windows]
+onboarding: true
 capabilities:
   provides_tools: []
   provides_hooks: []

@@ -94,7 +94,7 @@ export function AgentsPanelView({
     .join(' · ')
 
   const summary = `▸ ${counts}`
-  const hints = ' · Ctrl+T expand · F7 restore'
+  const hints = ' · Ctrl+T expand · Ctrl+R restore'
   const activityWidth = cols - stringWidth(summary + hints) - 3
   const firstDetail = rows[0]?.detail ?? processes.rows[0]?.detail ?? ''
   const activity = firstDetail && activityWidth >= 12 ? ` · ${compactPreview(firstDetail, activityWidth)}` : ''
@@ -113,7 +113,7 @@ export function AgentsPanelView({
       ) : null}
       {!collapsed && running ? (
         <Text bold color={t.color.accent} wrap="truncate-end">
-          {`▾ ${running} live agents${hidden ? ` · +${hidden} more` : ''} · Ctrl+T expand · F7 collapse`}
+          {`▾ ${running} live agents${hidden ? ` · +${hidden} more` : ''} · Ctrl+T expand · Ctrl+R collapse`}
         </Text>
       ) : null}
       {!collapsed &&
@@ -130,7 +130,7 @@ export function AgentsPanelView({
       {!collapsed && processes.total ? (
         <Text bold color={t.color.accent} wrap="truncate-end">
           {`▾ Processes · ${processSummary(processes)}${processes.hidden ? ` · +${processes.hidden} more` : ''}${
-            running ? '' : ' · Ctrl+T expand · F7 collapse'
+            running ? '' : ' · Ctrl+T expand · Ctrl+R collapse'
           }`}
         </Text>
       ) : null}

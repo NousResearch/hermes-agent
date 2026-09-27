@@ -17,8 +17,9 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-def connect_plugin_mcp(activation: Dict[str, Any]) -> List[Dict[str, Any]]:
+def connect_plugin_mcp(activation: Dict[str, Any], portable: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Connect every portable MCP server ``activation`` defers, under the caller's profile scope.
+    ``portable`` is the manager's portable server configs, read together with ``activation``.
 
     Returns ``[{name, connected, tools, error?}]``, one row per server; a server that fails to
     connect is reported, never retried. Never raises."""
@@ -26,11 +27,9 @@ def connect_plugin_mcp(activation: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not names:
         return []
     try:
-        from hermes_cli.plugins import get_plugin_manager
         from tools.mcp_tool_config import _filter_suspicious_mcp_servers, _load_mcp_config
         from tools.mcp_tool_discovery import register_mcp_servers
         configured = _load_mcp_config()
-        portable = get_plugin_manager().get_portable_mcp_servers()
     except Exception as exc:
         logger.warning("plugin MCP activation could not read server config: %s", exc)
         return [{"name": n, "connected": False, "tools": [], "error": str(exc)} for n in names]

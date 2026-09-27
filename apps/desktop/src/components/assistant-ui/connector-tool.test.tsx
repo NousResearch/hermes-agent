@@ -76,6 +76,7 @@ function view(sessionId: string): SessionView {
     $model: atom(''),
     $provider: atom(''),
     $reasoningEffort: atom(''),
+    $reasoningEffortPending: atom(false),
     $reasoningEffortWire: atom(''),
     $runtimeId: atom(sessionId),
     $storedId: atom(sessionId),
@@ -119,18 +120,6 @@ afterEach(() => {
 })
 
 describe('ConnectorTool operation card', () => {
-  it('does not call connectors.list or create a timer on mount', () => {
-    vi.useFakeTimers()
-    const request = vi.fn()
-    // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
-    $gateway.set({ request } as never)
-
-    renderOffer()
-
-    expect(request).not.toHaveBeenCalledWith('connectors.list', expect.anything())
-    expect(vi.getTimerCount()).toBe(0)
-  })
-
   it('offers one verb per row and Continue below; nothing per row says no', () => {
     renderOffer({
       ...REQUEST,

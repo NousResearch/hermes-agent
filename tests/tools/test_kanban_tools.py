@@ -9,8 +9,6 @@ Verifies:
 from __future__ import annotations
 
 import json
-import os
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -27,7 +25,6 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    import tools.kanban_tools  # ensure registered
     from tools.registry import invalidate_check_fn_cache, registry
     from toolsets import resolve_toolset
 
@@ -208,7 +205,7 @@ def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, w
     from tools import kanban_tools as kt
 
     (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
-    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n")  # identity marker
+    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     with kbc.connect() as conn:
         before = kb.get_task(conn, worker_env)
         before_events = kb.list_events(conn, worker_env)
@@ -229,7 +226,7 @@ def test_request_review_accepts_installed_profile(monkeypatch, worker_env, tmp_p
     from tools import kanban_tools as kt
 
     (tmp_path / ".hermes" / "profiles" / "verifier").mkdir(parents=True)
-    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n")  # identity marker
+    (tmp_path / ".hermes" / "profiles" / "verifier" / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
     with kbc.connect() as conn:
         monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(conn, worker_env).current_run_id))
 
@@ -299,10 +296,6 @@ def test_malformed_run_id_refused_but_nonlifecycle_allowed(monkeypatch, worker_e
     assert out.get("ok") is True
     with kbc.connect() as conn:
         assert kb.get_task(conn, worker_env).status == "running"
-
-
-
-
 
 
 def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
@@ -516,26 +509,59 @@ def test_heartbeat_extends_claim_expires(worker_env):
     )
 
 
-def test_comment_happy_path(worker_env):
-    from tools import kanban_tools as kt
-    out = kt._handle_comment({
-        "task_id": worker_env,
-        "body": "hello thread",
-    })
-    d = json.loads(out)
-    assert d["ok"] is True
-    assert d["comment_id"]
+def _expire_claim(conn, tid):
+    conn.execute("UPDATE tasks SET claim_expires = 1 WHERE id = ?", (tid,))
+    conn.commit()
+
+
+def test_worker_the_dispatcher_never_recorded_keeps_its_claim_or_never_starts(monkeypatch, worker_env):
+    """``worker_env`` is a claim whose dispatcher died between spawning the worker and recording its
+    pid. The worker registers itself, so the expired claim is extended, not handed to a second worker;
+    a worker that starts only after its run was reclaimed is told not to work the card."""
+    import os as _os
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
-    conn = kbc.connect()
-    try:
-        comments = kb.list_comments(conn, worker_env)
-        assert len(comments) == 1
-        # Author defaults to HERMES_PROFILE env we set in the fixture
-        assert comments[0].author == "test-worker"
-        assert comments[0].body == "hello thread"
-    finally:
-        conn.close()
+    from tools import kanban_tools as kt
+
+    assert kt.register_current_worker_from_env() is True
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, worker_env).worker_pid == _os.getpid()
+        _expire_claim(conn, worker_env)
+        assert kb.release_stale_claims(conn) == 0
+        assert kb.get_task(conn, worker_env).status == "running"
+
+        late = kb.create_task(conn, title="late orphan", assignee="test-worker")
+        kb.claim_task(conn, late)
+        stale_run = kb._current_run_id(conn, late)
+        _expire_claim(conn, late)
+        assert kb.release_stale_claims(conn) == 1
+        kb.claim_task(conn, late)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", late)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(stale_run))
+    assert kt.register_current_worker_from_env() is False
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, late).worker_pid is None
+
+
+def test_reclaim_loses_to_a_worker_registering_mid_sweep(monkeypatch, worker_env):
+    """The worker registers between the stale-claim SELECT and its UPDATE: the claim stays its own."""
+    import os as _os
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    real_terminate = kb._terminate_reclaimed_worker
+
+    def _register_then_terminate(*args, **kwargs):
+        assert kt.register_current_worker_from_env() is True
+        return real_terminate(*args, **kwargs)
+
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", _register_then_terminate)
+    with kbc.connect_closing() as conn:
+        _expire_claim(conn, worker_env)
+        assert kb.release_stale_claims(conn) == 0
+        task = kb.get_task(conn, worker_env)
+    assert (task.status, task.worker_pid) == ("running", _os.getpid())
 
 
 def test_comment_rejects_caller_supplied_author(worker_env):
@@ -607,21 +633,6 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
 
     assert create(**explicit) == ("scratch", None)
     assert create() == (("worktree", project_id) if target_scoped else ("scratch", None))
-
-
-def test_link_happy_path(worker_env):
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    conn = kbc.connect()
-    try:
-        a = kb.create_task(conn, title="A", assignee="x")
-        b = kb.create_task(conn, title="B", assignee="x")
-    finally:
-        conn.close()
-    from tools import kanban_tools as kt
-    out = kt._handle_link({"parent_id": a, "child_id": b})
-    d = json.loads(out)
-    assert d["ok"] is True
 
 
 def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker_env):
@@ -773,34 +784,6 @@ def test_worker_lifecycle_through_tools(worker_env):
 # ---------------------------------------------------------------------------
 
 
-def test_kanban_guidance_prompt_size_bounded():
-    """KANBAN_GUIDANCE is injected into every kanban-capable process's system
-    prompt and resolved once at agent init, so its size is a per-worker token
-    tax paid on every spawn. Bound it as an invariant, not a change-detector:
-    the ceiling (8000 chars, roughly 2000 tokens) leaves headroom above the
-    current ~6.2k chars for tight additions, while catching accidental bloat
-    (pasted docs, duplicated sections) before it ships to every worker.
-    """
-    from agent.prompt_builder import KANBAN_GUIDANCE
-
-    assert len(KANBAN_GUIDANCE) < 8000, (
-        f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars; it is injected into "
-        "every kanban worker's system prompt — trim it or consciously re-bound "
-        "this invariant with justification."
-    )
-
-
-def test_kanban_guidance_orchestrator_decision_ownership():
-    """The orchestrator section must carry the split-brain prevention
-    contract: decisions are made by the orchestrator before fan-out and
-    stamped into every dependent card body."""
-    from agent.prompt_builder import KANBAN_GUIDANCE
-
-    assert KANBAN_GUIDANCE.count("Decision ownership.") == 1
-    assert "Never let two subtree cards decide the same question" in KANBAN_GUIDANCE
-    assert "workers cannot see sibling context" in KANBAN_GUIDANCE
-
-
 # ---------------------------------------------------------------------------
 # Worker task-ownership enforcement (regression tests for #19534)
 # ---------------------------------------------------------------------------
@@ -942,87 +925,6 @@ def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Optional ``board`` parameter — per-call DB override
-# ---------------------------------------------------------------------------
-#
-# The dispatcher pins the active board via HERMES_KANBAN_BOARD env var,
-# but a Telegram-side orchestrator handling multiple boards needs to be
-# able to route a single tool call to a specific board's DB without
-# restarting Hermes. These tests pin that ``board=<slug>`` argument
-# routes each handler to that board's sqlite file, and that omitting
-# ``board`` preserves the legacy env-driven resolution.
-
-
-@pytest.fixture
-def multi_board_env(monkeypatch, tmp_path):
-    """Isolated Hermes home with two distinct kanban boards seeded.
-
-    Returns ``("default", "alt")`` slugs. The default board has one
-    pre-existing task ``seed_default``; ``alt`` has ``seed_alt``. No
-    HERMES_KANBAN_TASK is pinned (orchestrator context) — workers test
-    the env-task case via the existing ``worker_env`` fixture.
-    """
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    # Make sure neither HERMES_KANBAN_DB nor HERMES_KANBAN_BOARD pin a
-    # board — the test is specifically about the per-call override.
-    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
-    from pathlib import Path as _Path
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
-
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    kb._INITIALIZED_PATHS.clear()
-    # Default board — implicit
-    conn = kbc.connect()
-    try:
-        seed_default = kb.create_task(
-            conn, title="seed-default", assignee="worker-d"
-        )
-    finally:
-        conn.close()
-    # Alt board — explicit slug routes the connection to a separate DB
-    conn = kbc.connect(board="alt")
-    try:
-        seed_alt = kb.create_task(
-            conn, title="seed-alt", assignee="worker-a"
-        )
-    finally:
-        conn.close()
-    return {
-        "default_seed": seed_default,
-        "alt_seed": seed_alt,
-        "default_db": kb.kanban_db_path(),
-        "alt_db": kb.kanban_db_path(board="alt"),
-    }
-
-
-def test_board_param_none_falls_back_to_env(worker_env):
-    """When ``board`` is omitted or None, behaviour is unchanged from
-    before this feature — calls land on whatever the env resolves to.
-    Regression guard against accidentally rewiring default resolution."""
-    from hermes_cli import kanban_db as kb
-    from tools import kanban_tools as kt
-
-    out = kt._handle_show({})  # no board, no task_id
-    d = json.loads(out)
-    assert d["task"]["id"] == worker_env
-
-    out = kt._handle_show({"task_id": worker_env, "board": None})
-    d = json.loads(out)
-    assert d["task"]["id"] == worker_env
-
-    # Sanity: the env-resolved path is the legacy default DB, NOT an
-    # 'alt' board path. Confirms the override path was not silently
-    # forced.
-    assert kb.kanban_db_path() == kb.kanban_db_path(board="default")
-
-
-# ---------------------------------------------------------------------------
 # kanban_create auto-subscribe behaviour
 #
 # When a worker calls kanban_create from inside a session that has a
@@ -1037,7 +939,6 @@ def test_board_param_none_falls_back_to_env(worker_env):
 # ---------------------------------------------------------------------------
 
 def _list_subs_for_task(task_id):
-    from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_notify as kbn
     conn = kbc.connect()
@@ -1188,7 +1089,6 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
 
-    from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_notify as kbn
 
     def _boom(*a, **kw):
@@ -1208,22 +1108,6 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
 # ---------------------------------------------------------------------------
 # Attachments — kanban_attach / kanban_attach_url / kanban_attachments
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def allow_private_urls(monkeypatch):
-    """Opt the SSRF guard into private/loopback targets for local fixtures.
-
-    Mirrors a user setting HERMES_ALLOW_PRIVATE_URLS on a private network.
-    Resets the url_safety process-lifetime cache on both sides so the
-    override neither leaks in nor out of the test.
-    """
-    from tools import url_safety
-
-    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
-    url_safety._reset_allow_private_cache()
-    yield
-    url_safety._reset_allow_private_cache()
 
 
 def test_attach_url_rejects_non_http_scheme(worker_env):

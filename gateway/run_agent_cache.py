@@ -160,10 +160,13 @@ class GatewayAgentCacheMixin:
             return
         override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
+        from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+        if is_foreign_provider_endpoint(provider, override.get("base_url")):
+            override["base_url"] = None  # left over from a switch that kept the previous provider's URL
         if provider:
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
-            # falls back to env resolution and layers model/provider.
+            # retries the resolution for that provider on each turn (default route + notice meanwhile).
             try:
                 runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=persisted.get("model") or None)
                 for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
@@ -615,18 +618,53 @@ class GatewayAgentCacheMixin:
             return None
         return f"[Voice channel now: {vc_now or 'not connected to a voice channel'}]"
 
-    def _pinned_session_context_prompt(self, context, redact_pii: bool, session_key: Optional[str]) -> str:
+    def _pinned_session_context_prompt(
+        self, context, redact_pii: bool, session_key: Optional[str], *, internal: bool = False,
+    ) -> str:
         """Session-context prompt pinned per session: key hit → pinned bytes reused VERBATIM (immune
-        to renderer nondeterminism); key miss → re-render and re-pin (rename, topic edit, /sethome)."""
-        _eph_key = self._ephemeral_change_key(context, redact_pii)
+        to renderer nondeterminism); key miss → re-render and re-pin (rename, topic edit, /sethome).
+
+        ``internal`` events (kanban wakes, delegation completions, watch notifications) carry a
+        source rebuilt from the persisted origin, without chat_name/user_name/message_id. Rendering
+        from it re-keyed the pin, and the next human turn re-keyed it back (A→B→A), rewriting
+        already-sent system bytes each time. An internal event is never a real metadata change, so
+        it reuses an existing pin verbatim; with no pin yet it renders and pins as usual."""
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
+        if internal and _eph_pin is not None:
+            return _eph_pin[1]
+        _eph_key = self._ephemeral_change_key(context, redact_pii)
         if _eph_pin is not None and _eph_pin[0] == _eph_key:
             return _eph_pin[1]
         text = build_session_context_prompt(context, redact_pii=redact_pii)
         if session_key:
             self._session_state(session_key).conversation.ephemeral_pin = (_eph_key, text)
         return text
+
+    def _pinned_channel_inputs(
+        self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, internal: bool,
+    ):
+        """``(channel_prompt, source)`` for this turn's agent run.
+
+        The ephemeral system prompt also appends ``channel_prompt`` and the ``channel_overrides``
+        prompt (looked up by chat/thread/``parent_chat_id``). Internal events carry
+        ``channel_prompt=None`` and a source without ``parent_chat_id``, so they dropped both and
+        toggled the system prompt like the context pin did. Human turns record their inputs;
+        internal turns reuse them."""
+        if not session_key:
+            return channel_prompt, source
+        if not internal:
+            self._session_state(session_key).conversation.channel_pin = (channel_prompt, source.parent_chat_id)
+            return channel_prompt, source
+        state = self._peek_session_state(session_key)
+        pin = state.conversation.channel_pin if state else None
+        if pin is None:
+            return channel_prompt, source
+        pinned_prompt, pinned_parent = pin
+        if pinned_parent and not source.parent_chat_id:
+            from gateway.session_identity import replace_source
+            source = replace_source(source, parent_chat_id=pinned_parent)
+        return pinned_prompt, source
 
     @staticmethod
     def _ephemeral_change_key(context, redact_pii: bool) -> str:

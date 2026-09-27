@@ -357,6 +357,7 @@ class OnboardingAnswers(Params):
     layout: str | None = None
     focus: list[str] | None = None
     connectors: list[str] | None = None
+    plugins: list[str] | None = None
     # The onboarding store may carry extra UI-only keys; the writer ignores unknown ones.
     model_config = Params.model_config | {"extra": "allow"}
 
@@ -613,11 +614,23 @@ class SubagentSnapshot(Result):
     accepting_steer: bool | None = None
 
 
+class FailedDelegation(Result):
+    """``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation."""
+
+    delegation_id: str
+    task_index: int = 0
+    status: str
+    goal: str = ""
+    error: str | None = None
+    dispatched_at: float | None = None
+    completed_at: float | None = None
+
+
 class SubagentListResult(Result):
-    """``delegations`` is reserved for async delegation records and is currently always empty."""
+    """``delegations``: recently failed async delegation tasks for the session (durable store), newest first."""
 
     subagents: list[SubagentSnapshot] = Field(default_factory=list)
-    delegations: list[dict[str, JsonValue]] = Field(default_factory=list)
+    delegations: list[FailedDelegation] = Field(default_factory=list)
 
 
 method("subagent.list", params=SessionParams, result=SubagentListResult,

@@ -1,6 +1,11 @@
 [
   {
     "path": "agent/anthropic_adapter.py",
+    "symbol": "<module>",
+    "kind": "known_path_table"
+  },
+  {
+    "path": "agent/anthropic_adapter.py",
     "symbol": "_claude_code_candidates",
     "kind": "bare_which"
   },
@@ -70,6 +75,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "apps/desktop/electron/fixtures/source-backend.py",
+    "symbol": "main",
+    "kind": "bare_which"
+  },
+  {
     "path": "cron/scheduler_delivery.py",
     "symbol": "_deliver_to_bot_chat",
     "kind": "bare_which"
@@ -115,11 +125,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/_early_recovery.py",
-    "symbol": "_find_uv_binary",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/_subprocess_compat.py",
     "symbol": "resolve_node_command",
     "kind": "bare_which"
@@ -127,6 +132,11 @@
   {
     "path": "hermes_cli/auth.py",
     "symbol": "_external_process_spec",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/boot_bootstrap.py",
+    "symbol": "_git_binary",
     "kind": "bare_which"
   },
   {
@@ -145,23 +155,8 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/dep_ensure.py",
-    "symbol": "<module>",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/dep_ensure.py",
-    "symbol": "_has_system_browser",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/dep_ensure.py",
-    "symbol": "ensure_dependency",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/doctor_live.py",
-    "symbol": "_browser_available",
+    "path": "hermes_cli/doctor_platform.py",
+    "symbol": "_check_command_installation",
     "kind": "bare_which"
   },
   {
@@ -172,6 +167,11 @@
   {
     "path": "hermes_cli/doctor_tools.py",
     "symbol": "_safe_which",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/gateway.py",
+    "symbol": "_append_node_dir_for_service",
     "kind": "bare_which"
   },
   {
@@ -195,11 +195,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway_setup_wizard.py",
-    "symbol": "_setup_signal",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/gateway.py",
     "symbol": "_windows_process_listing",
     "kind": "bare_which"
@@ -220,8 +215,8 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway_service_unit.py",
-    "symbol": "_append_node_dir_for_service",
+    "path": "hermes_cli/gateway_setup_wizard.py",
+    "symbol": "_setup_signal",
     "kind": "bare_which"
   },
   {
@@ -260,6 +255,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "hermes_cli/macos_signing.py",
+    "symbol": "sign_managed_python",
+    "kind": "bare_which"
+  },
+  {
     "path": "hermes_cli/main.py",
     "symbol": "_exec_in_container",
     "kind": "bare_which"
@@ -295,6 +295,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "hermes_cli/main_desktop.py",
+    "symbol": "cmd_gui",
+    "kind": "bare_which"
+  },
+  {
     "path": "hermes_cli/main_install_repair.py",
     "symbol": "_resolve_node_runtime_npm",
     "kind": "bare_which"
@@ -306,7 +311,7 @@
   },
   {
     "path": "hermes_cli/main_tui_launch.py",
-    "symbol": "_ensure_tui_node",
+    "symbol": "_make_tui_argv",
     "kind": "bare_which"
   },
   {
@@ -315,13 +320,8 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_web_build.py",
-    "symbol": "_nixos_build_env",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/managed_uv.py",
-    "symbol": "_macos_sign_managed_python",
+    "path": "hermes_cli/main_tui_launch.py",
+    "symbol": "_tui_node_bin",
     "kind": "bare_which"
   },
   {
@@ -332,11 +332,6 @@
   {
     "path": "hermes_cli/mcp_catalog.py",
     "symbol": "_do_git_install",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/nous_subscription.py",
-    "symbol": "_has_agent_browser",
     "kind": "bare_which"
   },
   {
@@ -360,6 +355,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "hermes_cli/setup.py",
+    "symbol": "_check_espeak_ng",
+    "kind": "bare_which"
+  },
+  {
     "path": "hermes_cli/setup_terminal.py",
     "symbol": "_setup_backend_singularity",
     "kind": "bare_which"
@@ -367,6 +367,21 @@
   {
     "path": "hermes_cli/setup_tts.py",
     "symbol": "_install_neutts_deps",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/source_build.py",
+    "symbol": "build_update_products",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/source_build.py",
+    "symbol": "run_source_script",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/source_build.py",
+    "symbol": "source_product_current",
     "kind": "bare_which"
   },
   {
@@ -380,13 +395,8 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/tools_config_cua.py",
-    "symbol": "install_cua_driver",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/tools_config_post_setup.py",
-    "symbol": "_ensure_browser_use_cli",
+    "symbol": "_post_setup_agent_browser",
     "kind": "bare_which"
   },
   {
@@ -397,21 +407,6 @@
   {
     "path": "hermes_cli/update_abort_recovery.py",
     "symbol": "_serve_unit_recovery_available",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/update_cmd_deps.py",
-    "symbol": "_ensure_uv_for_termux",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/update_cmd_deps.py",
-    "symbol": "_update_node_dependencies",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/update_cmd_maint.py",
-    "symbol": "_refresh_cua_driver_after_update",
     "kind": "bare_which"
   },
   {
@@ -430,6 +425,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "hermes_cli/web_routers/audio.py",
+    "symbol": "_ffmpeg_s16le_mono",
+    "kind": "bare_which"
+  },
+  {
     "path": "hermes_cli/web_routers/git.py",
     "symbol": "_probe_gh_auth",
     "kind": "bare_which"
@@ -441,7 +441,27 @@
   },
   {
     "path": "hermes_constants.py",
-    "symbol": "find_node_executable_on_path",
+    "symbol": "find_node_executable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/native_build.py",
+    "symbol": "prepare_windows_environment",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/security_packages.py",
+    "symbol": "IronProxy.verify_provenance",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/shell.py",
+    "symbol": "bash",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/workspace.py",
+    "symbol": "install_node_sidecar",
     "kind": "bare_which"
   },
   {
@@ -456,11 +476,6 @@
   },
   {
     "path": "tools/browser_tool_install.py",
-    "symbol": "_agent_browser_candidates",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/browser_tool_install.py",
     "symbol": "_chromium_installed",
     "kind": "bare_which"
   },
@@ -470,23 +485,13 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/browser_tool_install.py",
-    "symbol": "_resolve_npx_bin",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/browser_use_cli.py",
-    "symbol": "_find_cli",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/browser_use_cli.py",
-    "symbol": "install_cli",
+    "path": "tools/checkpoint_manager.py",
+    "symbol": "_init_store",
     "kind": "bare_which"
   },
   {
     "path": "tools/checkpoint_manager.py",
-    "symbol": "CheckpointManager.ensure_checkpoint",
+    "symbol": "_run_git",
     "kind": "bare_which"
   },
   {
@@ -526,22 +531,7 @@
   },
   {
     "path": "tools/environments/local.py",
-    "symbol": "_find_bash",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/environments/local.py",
     "symbol": "_resolve_hermes_bin_dir",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/environments/local.py",
-    "symbol": "_windows_bash_candidates",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/environments/local_gitbash_probe.py",
-    "symbol": "_mandatory_aslr_enabled",
     "kind": "bare_which"
   },
   {
@@ -552,11 +542,6 @@
   {
     "path": "tools/environments/ssh.py",
     "symbol": "_ensure_ssh_available",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/lazy_deps.py",
-    "symbol": "_uv_binary",
     "kind": "bare_which"
   },
   {
@@ -601,17 +586,7 @@
   },
   {
     "path": "tools/tirith_security.py",
-    "symbol": "_find_local_tirith",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/tirith_security.py",
-    "symbol": "_is_install_failed_on_disk",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/tirith_security.py",
-    "symbol": "_resolve_locally",
+    "symbol": "_local_tirith",
     "kind": "bare_which"
   },
   {
@@ -621,7 +596,7 @@
   },
   {
     "path": "tools/tirith_security.py",
-    "symbol": "_verify_release_provenance",
+    "symbol": "verify_release_provenance",
     "kind": "bare_which"
   },
   {
@@ -681,7 +656,7 @@
   },
   {
     "path": "tools/working_diff.py",
-    "symbol": "collect_working_diff",
+    "symbol": "_run",
     "kind": "bare_which"
   },
   {
@@ -695,13 +670,28 @@
     "kind": "known_path_table"
   },
   {
-    "path": "hermes_cli/_early_recovery.py",
-    "symbol": "_find_uv_binary",
-    "kind": "known_path_table"
+    "path": "tools/bot_desktop/browser.py",
+    "symbol": "_system_executable",
+    "kind": "bare_which"
   },
   {
-    "path": "tools/computer_use/cua_backend_driver.py",
-    "symbol": "_candidate_cua_driver_commands",
-    "kind": "known_path_table"
+    "path": "tools/bot_desktop/install.py",
+    "symbol": "_run",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "missing_binaries",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "package_manager",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "installable",
+    "kind": "bare_which"
   }
 ]

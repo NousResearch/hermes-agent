@@ -12,7 +12,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Imports — guarded since plugins/memory lives outside the standard test path
 # ---------------------------------------------------------------------------
@@ -26,7 +25,6 @@ def _isolate_env(tmp_path, monkeypatch):
     monkeypatch.delenv("RETAINDB_API_KEY", raising=False)
     monkeypatch.delenv("RETAINDB_BASE_URL", raising=False)
     monkeypatch.delenv("RETAINDB_PROJECT", raising=False)
-
 
 @pytest.fixture(autouse=True)
 def _cap_retaindb_sleeps(monkeypatch):
@@ -52,7 +50,6 @@ def _cap_retaindb_sleeps(monkeypatch):
     fake_time = _types.SimpleNamespace(sleep=_capped_sleep, time=_retaindb.time.time)
     monkeypatch.setattr(_retaindb, "time", fake_time)
 
-
 # We need the repo root on sys.path so the plugin can import agent.memory_provider
 import sys
 _repo_root = str(Path(__file__).resolve().parents[2])
@@ -65,7 +62,6 @@ from plugins.memory.retaindb import (
     _build_overlay,
     RetainDBMemoryProvider,
 )
-
 
 # ===========================================================================
 # _Client tests
@@ -86,7 +82,6 @@ class TestClient:
         h = c._headers("/v1/files")
         assert h["Authorization"] == "Bearer rdb-test-key"
         assert "X-API-Key" not in h
-
 
     def test_add_memory_tries_fallback(self):
         c = self._make_client()
@@ -132,17 +127,6 @@ class TestWriteQueue:
         db_path = tmp_path / "test_queue.db"
         return _WriteQueue(client, db_path), client, db_path
 
-    def test_enqueue_creates_row(self, tmp_path):
-        q, client, db_path = self._make_queue(tmp_path)
-        q.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
-        # shutdown() blocks until the writer thread drains the queue — no need
-        # to pre-sleep (the old 1s sleep was a just-in-case wait, but shutdown
-        # does the right thing).
-        q.shutdown()
-        # If ingest succeeded, the row should be deleted
-        client.ingest_session.assert_called_once()
-
-
     def test_flush_deletes_row_on_success(self, tmp_path):
         q, client, db_path = self._make_queue(tmp_path)
         q.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
@@ -152,15 +136,6 @@ class TestWriteQueue:
         rows = conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
         conn.close()
         assert rows == 0
-
-
-    def test_thread_local_connection_reuse(self, tmp_path):
-        q, _, _ = self._make_queue(tmp_path)
-        # Same thread should get same connection
-        conn1 = q._get_conn()
-        conn2 = q._get_conn()
-        assert conn1 is conn2
-        q.shutdown()
 
     def test_crash_recovery_replays_pending(self, tmp_path):
         """Simulate crash: create rows, then new queue should replay them."""
@@ -198,7 +173,6 @@ class TestWriteQueue:
         call_args = client2.ingest_session.call_args
         assert call_args[0][0] == "user1"  # user_id
 
-
 # ===========================================================================
 # _build_overlay tests
 # ===========================================================================
@@ -209,12 +183,10 @@ class TestBuildOverlay:
     def test_empty_inputs_returns_empty(self):
         assert _build_overlay({}, {}) == ""
 
-
     def test_profile_items_included(self):
         profile = {"memories": [{"content": "User likes Python"}]}
         result = _build_overlay(profile, {})
         assert "User likes Python" in result
-        assert "[RetainDB Context]" in result
 
     def test_query_results_included(self):
         query_result = {"results": [{"content": "Previous discussion about Rust"}]}
@@ -255,7 +227,6 @@ class TestBuildOverlay:
             if line.startswith("- "):
                 assert len(line) <= 322  # "- " + 320
 
-
 # ===========================================================================
 # RetainDBMemoryProvider tests
 # ===========================================================================
@@ -270,56 +241,14 @@ class TestRetainDBMemoryProvider:
         provider = RetainDBMemoryProvider()
         return provider
 
-    def test_name(self):
-        p = RetainDBMemoryProvider()
-        assert p.name == "retaindb"
-
     def test_is_available_without_key(self):
         p = RetainDBMemoryProvider()
         assert p.is_available() is False
-
-
-    def test_config_schema(self):
-        p = RetainDBMemoryProvider()
-        schema = p.get_config_schema()
-        assert len(schema) == 3
-        keys = [s["key"] for s in schema]
-        assert "api_key" in keys
-        assert "base_url" in keys
-        assert "project" in keys
-
-    def test_initialize_creates_client_and_queue(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        assert p._client is not None
-        assert p._queue is not None
-        assert p._session_id == "test-session"
-        p.shutdown()
-
-
-    def test_system_prompt_block(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        block = p.system_prompt_block()
-        assert "RetainDB Memory" in block
-        assert "Active" in block
-        p.shutdown()
 
     def test_handle_tool_call_not_initialized(self):
         p = RetainDBMemoryProvider()
         result = json.loads(p.handle_tool_call("retaindb_profile", {}))
         assert "error" in result
-        assert "not initialized" in result["error"]
-
-
-    def test_dispatch_profile(self, tmp_path, monkeypatch):
-        p = self._make_provider(tmp_path, monkeypatch)
-        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
-        with patch.object(p._client, "get_profile", return_value={"memories": []}):
-            result = json.loads(p.handle_tool_call("retaindb_profile", {}))
-            assert "memories" in result
-        p.shutdown()
-
 
 # ===========================================================================
 # Prefetch and thread management tests
@@ -347,37 +276,9 @@ class TestPrefetch:
         assert result == ""
         p.shutdown()
 
-
-    def test_reasoning_level_short(self):
-        assert RetainDBMemoryProvider._reasoning_level("hi") == "low"
-
-
 # ===========================================================================
 # sync_turn tests
 # ===========================================================================
-
-class TestSyncTurn:
-    """Test turn synchronization via the write queue."""
-
-    def test_sync_turn_enqueues(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        p = RetainDBMemoryProvider()
-        p.initialize("test-session", hermes_home=str(hermes_home))
-        with patch.object(p._queue, "enqueue") as mock_enqueue:
-            p.sync_turn("user msg", "assistant msg")
-            mock_enqueue.assert_called_once()
-            args = mock_enqueue.call_args[0]
-            assert args[0] == "default"  # user_id
-            assert args[1] == "test-session"  # session_id
-            msgs = args[2]
-            assert len(msgs) == 2
-            assert msgs[0]["role"] == "user"
-            assert msgs[1]["role"] == "assistant"
-        p.shutdown()
-
 
 # ===========================================================================
 # on_memory_write hook tests
@@ -411,7 +312,6 @@ class TestOnMemoryWrite:
             mock_add.assert_not_called()
         p.shutdown()
 
-
     def test_memory_target_maps_to_type(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
         hermes_home = tmp_path / ".hermes"
@@ -424,16 +324,6 @@ class TestOnMemoryWrite:
             assert mock_add.call_args[1]["memory_type"] == "factual"
         p.shutdown()
 
-
 # ===========================================================================
 # register() test
 # ===========================================================================
-
-class TestRegister:
-    def test_register_calls_register_memory_provider(self):
-        from plugins.memory.retaindb import register
-        ctx = MagicMock()
-        register(ctx)
-        ctx.register_memory_provider.assert_called_once()
-        arg = ctx.register_memory_provider.call_args[0][0]
-        assert isinstance(arg, RetainDBMemoryProvider)

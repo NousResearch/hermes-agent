@@ -158,3 +158,68 @@ def test_split_text_respects_cap_and_preserves_content():
         assert word in joined
 
 
+def test_edge_speak_stream_speaks_each_sentence_instead_of_whole_text_fallback(
+    stream_client, monkeypatch, tmp_path
+):
+    """Edge has no chunked API, but the documented path is per-sentence sync
+    synthesis. speak-stream must stream that PCM — not ``type: fallback``,
+    which makes Desktop POST the whole reply and wait for it.
+    """
+    first = "The first spoken sentence is long enough to stand alone."
+    second = "The second spoken sentence is also long enough to stand alone."
+    reply = f"{first} {second}"
+    pcm = [b"\x11\x00\x22\x00", b"\x33\x00\x44\x00"]
+    calls: list[str] = []
+    pcm_for: dict[str, bytes] = {}
+
+    def fake_tts(*args, **kwargs):
+        raw = kwargs.get("text") if "text" in kwargs else (args[0] if args else "")
+        text = raw if isinstance(raw, str) else ""
+        calls.append(text)
+        path = kwargs.get("output_path") or str(tmp_path / f"sent-{len(calls)}.mp3")
+        # Edge's sync tool writes MP3 bytes, not a WAV container.
+        with open(path, "wb") as fh:
+            fh.write(b"ID3not-a-wav")
+        pcm_for[path] = pcm[len(calls) - 1]
+        return json.dumps({"success": True, "file_path": path, "file_paths": [path]})
+
+    def fake_ffmpeg(_ffmpeg, args, **_kwargs):
+        import subprocess
+
+        path = args[args.index("-i") + 1]
+        assert "s16le" in args and "pipe:1" in args
+        return subprocess.CompletedProcess(args, 0, stdout=pcm_for[path], stderr=b"")
+
+    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: None)
+    monkeypatch.setattr(
+        "tools.tts_tool._load_tts_config",
+        lambda: {"provider": "edge", "streaming": {"min_len": 6}},
+    )
+    monkeypatch.setattr("tools.tts_tool._get_provider", lambda cfg: "edge")
+    monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: 4000)
+    monkeypatch.setattr("tools.tts_tool.text_to_speech_tool", fake_tts)
+    monkeypatch.setattr("tools.tts_tool_delivery._ffmpeg_run", fake_ffmpeg)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None)
+
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": reply, "done": True}))
+        frames = []
+        while True:
+            message = conn.receive()
+            if message.get("bytes") is not None:
+                frames.append(message["bytes"])
+                continue
+            frames.append(json.loads(message["text"]))
+            if frames[-1].get("type") in {"end", "fallback"}:
+                break
+
+    assert {"type": "fallback"} not in frames
+    assert frames[0] == {"type": "start", "sample_rate": 24000, "channels": 1}
+    assert frames[-1] == {"type": "end"}
+    assert frames[1:-1] == pcm
+    assert len(calls) == 2
+    assert first in calls[0] and second not in calls[0]
+    assert second in calls[1] and first not in calls[1]
+    assert reply not in calls
+
+

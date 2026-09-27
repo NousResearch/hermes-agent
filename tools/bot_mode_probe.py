@@ -96,10 +96,10 @@ def _read_yaml_dict(path: Path, needle: str | None = None) -> dict | None:
     def _load():
         if not path.is_file():
             return None
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
         if needle is not None and needle not in raw:
             return None
-        import yaml
+        import hermes_yaml as yaml
 
         data = yaml.safe_load(raw)
         return data if isinstance(data, dict) else None
@@ -318,19 +318,50 @@ def get_bot_mode_protocol_section(home: str | os.PathLike | None = None, *, forc
 
 # ── capability epoch ─────────────────────────────────────────────────────────
 # Bot Chat sessions are effectively eternal, so "build the prompt once" would strand
-# capability changes (skills, toolsets, MCP, SOUL, roster, peers) forever. The fingerprint
-# hashes exactly that surface; the built prompt embeds it and agent/conversation_loop.py
-# rebuilds only when the stored epoch differs from disk — once per change, never per-turn drift.
+# capability changes (skills, toolsets, MCP, SOUL, roster, peers, model capability
+# overrides that change the prompt) forever. The fingerprint hashes exactly that
+# surface; the built prompt embeds it and agent/conversation_loop.py rebuilds only
+# when the stored epoch differs from disk — once per change, never per-turn drift.
 
 _EPOCH_PREFIX = "Capability epoch: "
 _EPOCH_RE_TEXT = r"Capability epoch: ([0-9a-f]{12})"
 
 
+def _model_prompt_capability_surface(model_cfg: object) -> dict:
+    """``model.*`` overrides whose flip changes a rebuilt prompt, coerced like their consumers.
+
+    ``supports_vision`` uses image routing's strict bool so YAML ``yes`` and ``true`` share
+    one epoch. ``context_length`` is the cap ``build_system_prompt_parts`` uses to truncate
+    context files. Routing keys (provider, default, base_url) are identity lines, not this
+    surface — and no model id is special-cased.
+    """
+    from agent.image_routing import _coerce_capability_bool
+
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    raw_ctx = model_cfg.get("context_length")
+    ctx = None
+    # bool is an int subclass; ``context_length: true`` is not a window.
+    if isinstance(raw_ctx, bool):
+        ctx = None
+    elif isinstance(raw_ctx, int):
+        ctx = raw_ctx if raw_ctx > 0 else None
+    elif isinstance(raw_ctx, str) and raw_ctx.strip().isdigit():
+        parsed = int(raw_ctx.strip())
+        ctx = parsed if parsed > 0 else None
+    return {
+        "supports_vision": _coerce_capability_bool(model_cfg.get("supports_vision")),
+        "context_length": ctx,
+    }
+
+
 def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     """12-hex digest of the capability surface for ``home``'s profile: disabled skills +
-    enabled toolsets + MCP config, SOUL.md bytes, installed skill names, the Bot-Mode roster
-    (+ roles), peers and the relay roster. Deliberately NOT cached — the point is detecting
-    on-disk drift against a stored prompt's epoch. Never raises ("unavailable" on failure)."""
+    enabled toolsets + MCP config, model capability overrides that change the prompt
+    (``supports_vision``, ``context_length``), SOUL.md bytes, installed skill names, the
+    Bot-Mode roster (+ roles), peers and the relay roster. Deliberately NOT cached — the
+    point is detecting on-disk drift against a stored prompt's epoch. Never raises
+    ("unavailable" on failure)."""
     import hashlib
     import json
 
@@ -350,6 +381,8 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
             reset_hermes_home_override(token)
         skills_cfg = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
         tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        surface["model_capabilities"] = _model_prompt_capability_surface(model_cfg)
         surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
         surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
         mcp = cfg.get("mcp_servers")

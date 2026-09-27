@@ -9,11 +9,13 @@ description: >-
   prepare the uv environment before connecting. Disclosure: tools execute
   arbitrary Python in Blender with the user's privileges. No automatic
   application/version/liveness gate; server discovery does not prove scene readiness.
+title: Blender
 maintainer: NousResearch
 tier: official
 category: tools
 docs_url: https://github.com/NousResearch/hermes-plugin-blender#readme
 platforms: [windows, macos, linux]
+onboarding: true
 capabilities:
   provides_tools: []
   provides_hooks: []

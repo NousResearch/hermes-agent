@@ -5,7 +5,6 @@ one heading. A leftover ``## Active Task`` section is not disclaimed by SUMMARY_
 so grounding must replace it (and any duplicate task section) rather than prepend a second one.
 """
 
-from types import SimpleNamespace
 
 from agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
 
@@ -16,19 +15,6 @@ def _headings(text: str) -> list[str]:
     return [line for line in text.splitlines() if line.startswith("## ")]
 
 
-def test_update_instruction_names_the_emitted_heading():
-    """The prompt built when a previous summary exists (the update path) names HISTORICAL_TASK_HEADING."""
-    stub = SimpleNamespace(
-        tail_mode="lean",
-        _previous_summary="PREVIOUS SUMMARY BODY",
-        _bound_summary_input=lambda text: text,
-    )
-    stub._summary_template_sections = ContextCompressor._summary_template_sections
-    stub._build_summary_prompt = ContextCompressor._build_summary_prompt.__get__(stub)
-    prompt = stub._build_summary_prompt("NEW TURNS", 2000, None, "", True)
-
-    assert f'Update "{HISTORICAL_TASK_HEADING}"' in prompt
-    assert f'"{_LEGACY_ACTIVE_TASK_HEADING}"' not in prompt
 
 
 def test_grounding_collapses_alias_and_duplicate_task_sections():

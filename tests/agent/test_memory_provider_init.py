@@ -170,3 +170,34 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "honcho_search" in schema_names
 
 
+
+
+def test_aiagent_reuses_handed_in_memory_manager_without_reinitializing():
+    """A caller that rebuilds the agent per turn (gateway api_server) hands back the session's manager:
+    the provider keeps its state — no second load, no second initialize (#120116)."""
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+    common = dict(
+        api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
+        skip_context_files=True, skip_memory=False, session_id="sess-api", platform="api_server",
+    )
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider) as load_memory_provider,
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        first = AIAgent(**common)
+        manager = first._memory_manager
+        assert manager is not None and load_memory_provider.call_count == 1
+        provider.init_session_id = None  # a re-initialize would set it again
+
+        second = AIAgent(memory_manager=manager, **common)
+
+    assert second._memory_manager is manager
+    assert load_memory_provider.call_count == 1
+    assert provider.init_session_id is None

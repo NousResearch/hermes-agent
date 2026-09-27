@@ -19,6 +19,7 @@ import {
   bindToolPaneCollapse,
   declareDefaultTree,
   dismissTreePane,
+  hydrateContributedPanes,
   isPaneVisible,
   markCollapsePane,
   paneRootSide,
@@ -31,8 +32,7 @@ import {
   setStripTabHidden,
   targetZoneTabStripVisible,
   togglePaneVisible,
-  toggleTargetZoneTabStrip,
-  watchContributedPanes
+  toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
 import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -49,7 +49,6 @@ import {
   PanelBottom,
   PanelTop,
   SlidersHorizontal,
-  Terminal,
   Upload,
   Users,
   Zap
@@ -58,6 +57,7 @@ import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
@@ -83,7 +83,16 @@ import {
   openReview,
   REVIEW_PANE_ID
 } from '@/store/review'
-import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
+import {
+  $cronSessions,
+  $currentCwd,
+  $messagingSessions,
+  $selectedStoredSessionId,
+  $sessions,
+  $yoloActive,
+  ownerLookupSessionRows,
+  sessionMatchesStoredId
+} from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
@@ -98,6 +107,7 @@ import { startSessionDrag } from '../chat/session-drag'
 import {
   SessionTileCloseConfirm,
   stackSessionTilesIntoMain,
+  startTileBackendIdentityGuard,
   startUnrestoredTileTitleBackfill,
   watchSessionTiles,
   WorkspaceTabMenu
@@ -105,6 +115,7 @@ import {
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
+import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
 
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
@@ -151,7 +162,7 @@ const workspaceDragPayload = (): SessionDragPayload | null => {
     return null
   }
 
-  const stored = $sessions.get().find(s => sessionMatchesStoredId(s, selected))
+  const stored = ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, selected))
 
   return { id: selected, profile: stored?.profile ?? '', title: stored ? storedSessionTitle(stored) : '' }
 }
@@ -454,8 +465,10 @@ declareDefaultTree(DEFAULT_TREE, BASIC_TREE)
 discoverBundledPlugins()
 
 // Plugin panes join the tree by their `placement` hint the moment they
-// register — incl. runtime plugins arriving seconds after boot.
-watchContributedPanes()
+// register — incl. runtime plugins arriving seconds after boot. The FIRST
+// pass runs as layout hydration: the reload prune→re-register cycle must not
+// record split shares (#108679).
+hydrateContributedPanes()
 
 // Session + route (page) tiles: persisted splits register panes docked beside
 // main. A popped-out Browser and the HUD have no layout tree — registering
@@ -465,6 +478,7 @@ watchContributedPanes()
 if (!isBrowserWindow() && !isHudWindow()) {
   watchSessionTiles()
   startUnrestoredTileTitleBackfill()
+  startTileBackendIdentityGuard()
   watchRouteTiles()
   watchPreviewTiles()
 }
@@ -482,7 +496,12 @@ watchUnreadWriteGuard()
 // above, so the pane content never remounts.
 const syncWorkspaceTitle = () => {
   const selected = $selectedStoredSessionId.get()
-  const stored = selected ? $sessions.get().find(s => sessionMatchesStoredId(s, selected)) : null
+  // Every loaded slice, not just recents: a telegram/discord/cron conversation
+  // is listed ONLY in $messagingSessions / $cronSessions (recents excludes
+  // those sources), so a recents-only scan missed the row and fell through to
+  // the NEW_SESSION_TITLE placeholder — a loaded gateway chat titled
+  // "New session" in the tab while its sidebar row read correctly.
+  const stored = selected ? ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, selected)) : null
 
   registry.register({
     id: 'workspace',
@@ -526,6 +545,11 @@ const syncWorkspaceTitle = () => {
 
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
+// The cron and messaging slices arrive on their OWN fetch, after a restored
+// tab has already registered. Without these listens the workspace tab keeps
+// whatever it resolved at register time — "New session" for a gateway chat.
+$cronSessions.listen(syncWorkspaceTitle)
+$messagingSessions.listen(syncWorkspaceTitle)
 $botChatScopes.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
@@ -593,25 +617,11 @@ bindToolPaneCollapse(
   () => setTerminalTakeover(true),
   $showsAdvancedChrome
 )
-// Policies may consult the install: the profile rail stays in Simple when a
-// second profile makes it the only remaining way to switch.
+// Without the statusbar, the rail is the only way to switch profiles or gateways.
 $profiles.subscribe(profiles => setModeContext({ profileCount: profiles.length }))
-// ⌘K door onto the same pane the keybind and statusbar pill flip — was a
-// one-way "open" row under Go to, so it never showed on/off and couldn't hide.
-// Reads the TREE like every other pane toggle: `$terminalTakeover` stays true
-// behind a stacked sibling tab or a minimized zone, which would light the row
-// "on" for a terminal that isn't on screen.
-registry.register(
-  paletteToggle({
-    id: 'view.showTerminal',
-    label: 'Toggle terminal',
-    action: 'view.showTerminal',
-    icon: Terminal,
-    keywords: ['terminal', 'shell', 'console', 'pty'],
-    get: () => isPaneVisible('terminal'),
-    set: () => togglePaneVisible('terminal')
-  })
-)
+$connectionsRegistry.subscribe(registry => setModeContext({ connectionCount: registry?.connections.length ?? 0 }))
+// ⌘K door onto the same pane the keybind and statusbar pill flip.
+registry.register(terminalPaletteToggle)
 
 // Logs are ⌘K-ONLY chrome: the pane contribution EXISTS only while $logsOpen
 // is on. Off (the default) keeps logs out of the registry and the tree

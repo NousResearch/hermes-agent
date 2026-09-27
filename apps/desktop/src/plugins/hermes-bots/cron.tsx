@@ -43,9 +43,10 @@ import { avatarColor, botAppearance, BotFace } from './avatar'
 import { $focusedBotOwner, $selectedBot, focusedRosterOwner } from './bot-state'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, botSelectionKey, isActiveRosterBot } from './data'
 import { labeled } from './dialog-parts'
-import { botsText, useBots } from './i18n'
+import { botsText, type BotsText, useBots } from './i18n'
 import { displayName } from './labels'
 import { botConnectionRoute, botRosterMeta, requestForBot } from './routing'
+import { ScreenHero } from './screen-hero'
 import { ID } from './shared'
 import type { BotMeta, RosterRow, RoutineJob } from './types'
 
@@ -91,8 +92,8 @@ function routineBot(job: RoutineJob | null | undefined): null | string {
   return match ? match[1].toLowerCase() : null
 }
 
-function routineTitle(job: RoutineJob | null | undefined): string {
-  return (job?.name || '').replace(BOT_TAG_RE, '') || 'Untitled job'
+function routineTitle(job: RoutineJob | null | undefined, c: BotsText['cron']): string {
+  return (job?.name || '').replace(BOT_TAG_RE, '') || c.untitled
 }
 
 export function isLegacyDelegatedRoutine(job: RoutineJob | null | undefined): boolean {
@@ -256,13 +257,13 @@ function shellQuote(value: unknown): string {
   return `'${String(value).replaceAll("'", "'\"'\"'")}'`
 }
 
-export function routineInputError(title: string, instruction: string): null | string {
+export function routineInputError(title: string, instruction: string, c = botsText().cron): null | string {
   if (String(title).includes('\0')) {
-    return 'Job name cannot contain NUL (U+0000).'
+    return c.nameNul
   }
 
   if (String(instruction).includes('\0')) {
-    return 'Job instruction cannot contain NUL (U+0000).'
+    return c.instructionNul
   }
 
   return null
@@ -337,7 +338,7 @@ function routineTimestamp(value: string | undefined): null | string {
  *  unknown one is passed through verbatim rather than hidden. `delivery_failed`
  *  means the agent run succeeded but the brief never reached its target; it
  *  must read as a failure, not as a run result the user can trust. */
-export function routineLastResult(status: string | null | undefined): null | string {
+export function routineLastResult(status: string | null | undefined, c = botsText().cron): null | string {
   const raw = String(status || '').trim()
 
   if (!raw) {
@@ -346,16 +347,16 @@ export function routineLastResult(status: string | null | undefined): null | str
 
   switch (raw) {
     case 'ok':
-      return 'Succeeded'
+      return c.succeeded
 
     case 'error':
-      return 'Failed'
+      return c.failed
 
     case 'delivery_failed':
-      return 'Ran, but delivery failed'
+      return c.deliveryFailed
 
     case 'blocked_config':
-      return 'Blocked by configuration (not run)'
+      return c.blockedConfig
 
     default:
       return raw
@@ -366,7 +367,10 @@ export function routineLastResult(status: string | null | undefined): null | str
  *  rows. Pure so the detail contract is testable without a renderer, and so
  *  the dialog cannot invent a field the gateway never sent: an absent value
  *  drops its row instead of rendering "undefined". */
-export function routineDetailRows(job: RoutineJob | null | undefined): Array<{ label: string; value: string }> {
+export function routineDetailRows(
+  job: RoutineJob | null | undefined,
+  c = botsText().cron
+): Array<{ label: string; value: string }> {
   const paused = job?.enabled === false || job?.state === 'paused'
   const label = scheduleLabel(job?.schedule)
   const raw = String(job?.schedule || '').trim()
@@ -376,23 +380,23 @@ export function routineDetailRows(job: RoutineJob | null | undefined): Array<{ l
   // that narrowing into the map, so the rows are typed as filtered.
   return (
     [
-      ['Status', paused ? 'Paused' : 'Active'],
-      ['Schedule', label],
+      [c.status, paused ? c.paused : c.active],
+      [c.schedule, label],
       // `scheduleLabel` humanizes "every 1440m" and cron expressions; keep the
       // raw string when it says something the label dropped.
-      ['Schedule (raw)', raw && raw !== label ? raw : null],
-      ['Repeat', job?.repeat],
+      [c.rawSchedule, raw && raw !== label ? raw : null],
+      [c.repeat, job?.repeat],
       // A slot parked past the scheduler grace is labelled overdue, never
       // promised as a next run (#114309); the card below makes the same call.
       [
-        job && nextRunOverdueMs(job) !== null ? 'Overdue since' : 'Next run',
+        job && nextRunOverdueMs(job) !== null ? c.overdueSince : c.nextRun,
         paused ? null : routineTimestamp(job?.next_run_at)
       ],
-      ['Last run', routineTimestamp(job?.last_run_at)],
-      ['Last result', routineLastResult(job?.last_status)],
-      ['Delivers to', job?.deliver],
-      ['Model', job?.model],
-      ['Working directory', job?.workdir]
+      [c.lastRun, routineTimestamp(job?.last_run_at)],
+      [c.lastResult, routineLastResult(job?.last_status, c)],
+      [translateNow('cron.deliverLabel'), job?.deliver],
+      [translateNow('cron.modelLabel'), job?.model],
+      [c.workdir, job?.workdir]
     ] as Array<[string, string]>
   )
     .filter(([, value]) => typeof value === 'string' && value.trim())
@@ -424,7 +428,7 @@ interface RoutineDetailDialogProps {
 export function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogProps) {
   const b = useBots()
   const { t } = useI18n()
-  const rows = job ? routineDetailRows(job) : []
+  const rows = job ? routineDetailRows(job, b.cron) : []
   const issue = job ? routineDetailIssue(job) : null
   const instruction = String(job?.prompt_preview || '').trim()
 
@@ -439,8 +443,8 @@ export function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogP
     >
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle className="truncate">{routineTitle(job)}</DialogTitle>
-          <DialogDescription>What this job runs, and when it runs next.</DialogDescription>
+          <DialogTitle className="truncate">{routineTitle(job, b.cron)}</DialogTitle>
+          <DialogDescription>{b.cron.detailDescription}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-3.5">
           {issue ? (
@@ -484,6 +488,7 @@ interface RoutineRowProps {
 }
 
 export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
+  const b = useBots()
   const { t } = useI18n()
   const c = t.cron
   const profile = typeof owner === 'string' ? owner : owner?.name
@@ -559,7 +564,7 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
             className={cn('size-1.5 shrink-0 rounded-full', active ? 'bg-(--ui-success)' : 'bg-(--ui-text-quaternary)')}
           />
           <span className={cn('min-w-0 flex-1 truncate text-xs font-medium', !active && 'text-(--ui-text-tertiary)')}>
-            {routineTitle(job)}
+            {routineTitle(job, b.cron)}
           </span>
         </RowButton>
         <Switch
@@ -596,7 +601,7 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
       </div>
       {legacyUnsafe ? (
         <div className="rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-[0.65rem] leading-4 text-(--ui-accent)">
-          Paused for security: delete and recreate this legacy job before running it again.
+          {b.cron.legacyUnsafe}
         </div>
       ) : null}
     </div>
@@ -625,9 +630,7 @@ interface ScheduleState {
 
 /** Built per call, not frozen at module load: the labels are translated, and
  *  a module const would pin whichever locale happened to be active at import. */
-function frequencies(): Array<{ id: ScheduleFreq; label: string }> {
-  const c = botsText().cron
-
+function frequencies(c: BotsText['cron']): Array<{ id: ScheduleFreq; label: string }> {
   return [
     { id: 'once', label: c.freqOnce },
     { id: 'hourly', label: c.freqHourly },
@@ -651,11 +654,8 @@ const TIMES = (() => {
 
   for (let h = 0; h < 24; h++) {
     for (const m of [0, 30]) {
-      const ampm = h < 12 ? 'AM' : 'PM'
-      const h12 = h % 12 === 0 ? 12 : h % 12
       out.push({
         id: `${h}:${m}`,
-        label: `${h12}:${String(m).padStart(2, '0')} ${ampm}`,
         h,
         m
       })
@@ -701,10 +701,7 @@ function composeSchedule(state: ScheduleState): string {
   }
 }
 
-function scheduleSummary(state: ScheduleState): string {
-  const c = botsText().cron
-  const t = TIMES.find(x => x.id === state.time)
-  const tl = t ? t.label : '9:00 AM'
+function scheduleSummary(state: ScheduleState, c: BotsText['cron'], tl: string): string {
   const unitWord = (u: string) => (u === 'm' ? c.unitMinutes : u === 'd' ? c.unitDays : c.unitHours)
 
   const cap =
@@ -769,6 +766,10 @@ interface SchedulePickerProps {
 
 function SchedulePicker({ state, setState }: SchedulePickerProps) {
   const b = useBots()
+  const { locale } = useI18n()
+  const clock = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
+  const times = TIMES.map(time => ({ ...time, label: clock.format(new Date(2000, 0, 1, time.h, time.m)) }))
+  const timeLabel = times.find(time => time.id === state.time)?.label ?? clock.format(new Date(2000, 0, 1, 9, 0))
 
   const upd = (patch: Partial<ScheduleState>) =>
     setState(prev => ({
@@ -787,7 +788,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
             upd({
               freq: v
             }),
-          frequencies()
+          frequencies(b.cron)
         )}
         {needsTime
           ? pickerSelect(
@@ -796,7 +797,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
                 upd({
                   time: v
                 }),
-              TIMES
+              times
             )
           : null}
       </div>
@@ -821,15 +822,15 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
             [
               {
                 id: 'm',
-                label: 'minutes from now'
+                label: b.cron.minutesFromNow
               },
               {
                 id: 'h',
-                label: 'hours from now'
+                label: b.cron.hoursFromNow
               },
               {
                 id: 'd',
-                label: 'days from now'
+                label: b.cron.daysFromNow
               }
             ]
           )}
@@ -881,15 +882,15 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
             [
               {
                 id: 'm',
-                label: 'minutes'
+                label: b.cron.unitMinutes
               },
               {
                 id: 'h',
-                label: 'hours'
+                label: b.cron.unitHours
               },
               {
                 id: 'd',
-                label: 'days'
+                label: b.cron.unitDays
               }
             ]
           )}
@@ -909,7 +910,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
       ) : null}
       {state.freq !== 'once' && state.freq !== 'advanced' ? (
         <div className="flex items-center gap-2">
-          <span className="text-xs text-(--ui-text-tertiary)">Stop after</span>
+          <span className="text-xs text-(--ui-text-tertiary)">{b.cron.stopAfter}</span>
           <Input
             className="h-7 w-16 text-xs"
             onChange={event =>
@@ -920,10 +921,10 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
             placeholder="∞"
             value={state.repeatN}
           />
-          <span className="text-xs text-(--ui-text-tertiary)">runs (blank = forever)</span>
+          <span className="text-xs text-(--ui-text-tertiary)">{b.cron.runsHint}</span>
         </div>
       ) : null}
-      <div className="text-[0.65rem] text-(--ui-text-quaternary)">{`${scheduleSummary(state)} \u00b7 ${composeSchedule(state) || '\u2014'}`}</div>
+      <div className="text-[0.65rem] text-(--ui-text-quaternary)">{`${scheduleSummary(state, b.cron, timeLabel)} \u00b7 ${composeSchedule(state) || '\u2014'}`}</div>
     </div>
   )
 }
@@ -989,7 +990,7 @@ export function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogP
   const submit = async () => {
     const title = name.trim()
     const task = instruction.trim()
-    const inputError = routineInputError(title, task)
+    const inputError = routineInputError(title, task, b.cron)
 
     if (inputError) {
       setError(inputError)
@@ -1255,6 +1256,9 @@ export function RoutinesPane() {
 
   return (
     <div className="flex h-full flex-col">
+      <div className="px-3 pt-3">
+        <ScreenHero bot={owner} meta={meta} />
+      </div>
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <BotFace color={avatarColor(color, bot)} image={image} name={bot} shape={shape} size={22} />
         <div className="min-w-0 flex-1">

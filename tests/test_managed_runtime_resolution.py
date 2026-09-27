@@ -61,6 +61,7 @@ _EXEMPT_DIRS = (
     "evals",
     "website",
     "node_modules",
+    ".cache",
     ".git",
     ".venv",
     "venv",
@@ -76,24 +77,7 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
-    ("hermes_cli/update_cmd_deps.py", "uv"): (
-        "Termux fallback: a pkg-installed uv lands on PATH but not in the "
-        "managed bin dir, and it is checked only after resolve_uv() misses."
-    ),
-    ("hermes_cli/update_cmd_deps.py", "npm"): (
-        "WSL diagnostic: deliberately inspects what PATH resolves so it can "
-        "warn that the only reachable npm is the Windows one."
-    ),
-    ("tools/lazy_deps.py", "uv"): (
-        "Fallback after resolve_uv(), plus the except-branch for the "
-        "hermes_cli import guard."
-    ),
-    ("tools/browser_use_cli.py", "uv"): (
-        "install_cli()'s fallback after ensure_uv() misses — a user-installed "
-        "uv on PATH is a legitimate last rung before giving up with install "
-        "guidance."
-    ),
-    ("hermes_cli/gateway_service_unit.py", "node"): (
+    ("hermes_cli/gateway.py", "node"): (
         "Fallback rung of _append_node_dir_for_service(), after the managed "
         "dirs from iter_hermes_node_dirs() are already appended."
     ),
@@ -107,9 +91,23 @@ _ALLOWED: dict[tuple[str, str], str] = {
     ("hermes_cli/main_install_repair.py", "npm"): (
         "_resolve_node_runtime_npm()'s WSL re-scan: PATH minus /mnt/* IS the question."
     ),
-    ("tools/browser_tool_install.py", "npx"): (
-        "agent-browser runs via `npx`, resolved against the extended browser "
-        "PATH that _merge_browser_path() already seeds with the managed dirs."
+    ("hermes_cli/source_build.py", "node"): (
+        "PM-composed build context: `which(node)` runs against the PATH pm's "
+        "ensure('npm')/env_for('node') just composed, not the ambient one."
+    ),
+    ("hermes_cli/source_build.py", "npm"): (
+        "Same PM-composed build context as the node lookup above."
+    ),
+    ("hermes_cli/main_desktop.py", "npm"): (
+        "Desktop build resolves npm inside the PM-prepared build_env PATH."
+    ),
+    ("pm/workspace.py", "npm"): (
+        "Plugin workspace installs resolve npm inside the PM runner env that "
+        "pm.ensure('npm') just composed."
+    ),
+    ("apps/desktop/electron/fixtures/source-backend.py", "uv"): (
+        "Test fixture drives the real uv deliberately placed on the test "
+        "runner's PATH; it is not Hermes-owned subprocess resolution."
     ),
 }
 
@@ -357,7 +355,6 @@ def test_allowlist_has_no_stale_entries():
     "helper",
     [
         "find_node_executable",
-        "find_hermes_node_executable",
         "iter_hermes_node_dirs",
         "with_hermes_node_path",
     ],
@@ -370,8 +367,11 @@ def test_managed_node_helpers_exist(helper):
 
 
 def test_managed_uv_helpers_exist():
-    from hermes_cli.managed_uv import ensure_uv, managed_uv_path, resolve_uv
+    """The old managed_uv module is a retirement shim on the PM branch: it
+    exists only so the frozen historical updater fixture can import it, and
+    its entry points route to relaunch instead of doing venv work. PM owns
+    real uv resolution now; the module itself must keep the names live."""
+    from hermes_cli import managed_uv
 
-    assert callable(resolve_uv)
-    assert callable(ensure_uv)
-    assert managed_uv_path().parent.name == "bin"
+    assert callable(managed_uv.resolve_uv)
+    assert callable(managed_uv.ensure_uv)

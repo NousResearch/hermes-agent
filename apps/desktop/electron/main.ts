@@ -130,6 +130,7 @@ import {
   evictConnectionCaches,
   rosterSourceErrors,
   sshInventoryAttemptedAt,
+  sshInventoryFailureCounts,
   sshRosterCache
 } from './connection-caches'
 import {
@@ -15862,6 +15863,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     if (result?.reachable) {
       sshInventoryAttemptedAt.delete(entry.id)
       sshRosterCache.delete(entry.id)
+      sshInventoryFailureCounts.delete(entry.id)
       await probeSshProfileInventory(entry)
     }
 
@@ -15988,7 +15990,8 @@ async function probeSshProfileInventory(connection) {
       sshRosterCache.has(connection.id),
       sshInventoryAttemptedAt.get(connection.id),
       Date.now(),
-      SSH_INVENTORY_RETRY_MS
+      SSH_INVENTORY_RETRY_MS,
+      sshInventoryFailureCounts.get(connection.id) ?? 0
     )
   ) {
     return
@@ -16022,6 +16025,8 @@ async function probeSshProfileInventory(connection) {
       sshRosterCache.set(connection.id, profiles)
     }
 
+    sshInventoryFailureCounts.delete(connection.id)
+
     // Backend identity, on the session we already have open: without it an ssh connection has no
     // install id at all, so two addresses for one machine never collapse into one roster row
     // (#88828 wired this for remote/local only, through /api/status).
@@ -16030,6 +16035,7 @@ async function probeSshProfileInventory(connection) {
       ts: Date.now()
     })
   } catch (error: any) {
+    sshInventoryFailureCounts.set(connection.id, (sshInventoryFailureCounts.get(connection.id) ?? 0) + 1)
     sshRememberLog(`[ssh] profile inventory failed for ${connection.id}: ${error?.message || error}`)
   } finally {
     try {

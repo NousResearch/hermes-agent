@@ -7,6 +7,7 @@ import {
   evictConnectionCaches,
   rosterSourceErrors,
   sshInventoryAttemptedAt,
+  sshInventoryFailureCounts,
   sshRosterCache
 } from './connection-caches'
 import { shouldRetrySshInventory } from './connection-registry'
@@ -14,6 +15,7 @@ import { shouldRetrySshInventory } from './connection-registry'
 beforeEach(() => {
   sshRosterCache.clear()
   sshInventoryAttemptedAt.clear()
+  sshInventoryFailureCounts.clear()
   connectionInstallIds.clear()
   rosterSourceErrors.clear()
 })
@@ -42,6 +44,9 @@ test('evicting a connection id forgets every cache keyed by it', () => {
   assert.deepEqual(sshRosterCache.get('spark'), ['default', 'dixie'])
   assert.equal(connectionInstallIds.get('spark')?.id, 'aaa')
   assert.equal(rosterSourceErrors.get('spark'), 'previous failure')
+  // A recycled id must not inherit the previous machine's backoff streak.
+  assert.equal(sshInventoryFailureCounts.has('spark'), false)
+  sshInventoryFailureCounts.set('spark', 3)
 })
 
 test('an evicted id enumerates from the live target again instead of serving the old one', () => {

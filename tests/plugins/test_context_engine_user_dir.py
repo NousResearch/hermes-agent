@@ -42,3 +42,20 @@ def test_user_installed_engine_is_selected_by_name(tmp_path: Path, monkeypatch, 
         engine = _select_context_engine({"context": {"engine": "ctx_demo"}})
     assert engine is not None and engine.name == "ctx_demo"
     assert "not found" not in caplog.text
+
+
+def test_missing_engine_produces_a_user_notice_and_a_working_engine_does_not(tmp_path: Path, monkeypatch):
+    """The fallback to the built-in compressor must be visible, not only a log line."""
+    engine_dir = tmp_path / "plugins" / "ctx_demo"
+    engine_dir.mkdir(parents=True)
+    (engine_dir / "__init__.py").write_text(_ENGINE_SRC)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent.agent_init import _context_engine_fallback_notice, _select_context_engine
+
+    for cfg in ({"context": {"engine": "compressor"}}, {}):
+        assert _context_engine_fallback_notice(cfg, _select_context_engine(cfg)) is None
+    ok = {"context": {"engine": "ctx_demo"}}
+    assert _context_engine_fallback_notice(ok, _select_context_engine(ok)) is None
+    # A configured engine that did not load (_select_context_engine returned None).
+    notice = _context_engine_fallback_notice({"context": {"engine": "not_installed"}}, None)
+    assert notice and "not_installed" in notice

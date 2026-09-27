@@ -317,6 +317,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     Subagent task_ids collapse to "default" (``_resolve_container_task_id``) so
     delegate_task children share the parent's container; RL/benchmark task_ids
     with a registered env override keep their isolation.
+
+    The cache is validated by OBJECT IDENTITY: the cached handle is only handed
+    back when it still wraps the env currently registered under the key. Any
+    path that replaces the env without clearing this cache (an eviction, a
+    mount-disagreement release, a session cwd hop) leaves a stale handle behind
+    otherwise — see ``_release_active_env``.
     """
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _start_cleanup_thread,
@@ -331,7 +337,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         cached = _file_ops_cache.get(task_id)
     if cached is not None:
         with _env_lock:
-            if task_id in _active_environments:
+            live = _active_environments.get(task_id)
+            # Identity, not key membership: a release+recreate under the SAME key leaves the
+            # key present again, so key membership alone handed back a handle wrapping the
+            # torn-down env and every file op died on ``assert self._container_id``
+            # ("Container not started") while ``terminal`` — which resolves the env through
+            # the live cache — kept working.
+            if live is not None and getattr(cached, "env", None) is live:
                 _last_activity[task_id] = time.time()
                 return cached
             # Env was cleaned up: rescue its cwd into the session record FILL-ONLY

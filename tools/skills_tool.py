@@ -17,7 +17,8 @@ from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, extract_skill_conditions,
+    is_skill_support_path as _is_skill_support_path)
 from tools.skills_tool_setup import (  # noqa: F401
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -181,6 +182,30 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
+def never_resolvable_toolsets(conditions: Dict[str, Any]) -> List[str]:
+    """``requires_toolsets`` names that no toolset on this install resolves to.
+
+    The visibility gate (``agent.prompt_builder._skill_should_show``) checks exact
+    membership and stays silent when a name matches nothing — it cannot tell a typo
+    apart from a valid toolset that is unavailable on this box. A name that resolves
+    to *nothing* (not in ``TOOLSETS``, no plugin toolset, no registry alias) can never
+    pass the gate in ANY session: the skill is permanently invisible (#99877).
+
+    Fail-open: if the toolset registry itself cannot be consulted, nothing is flagged
+    — a false "gated" annotation is worse than none. Tool names are deliberately not
+    checked: plugin/MCP tools are not statically knowable from a bare CLI process.
+    """
+    raw = (conditions or {}).get("requires_toolsets")
+    if raw is None:
+        return []
+    names = [raw] if isinstance(raw, str) else [n for n in raw if isinstance(n, str) and n]
+    try:
+        from toolsets import validate_toolset
+        return [n for n in names if not validate_toolset(n)]
+    except Exception:
+        return []
+
+
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
     by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
@@ -215,7 +240,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                                         if ln and not ln.startswith("#")), description)
                 seen_names.add(name)
                 skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                               "category": _get_category_from_path(skill_md),
+                               "conditions": extract_skill_conditions(frontmatter)})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:

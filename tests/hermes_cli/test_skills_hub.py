@@ -126,6 +126,74 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# requires_toolsets gate visibility (#99877, user-side surface)
+#
+# The prompt-builder gate silently drops a skill whose requires_toolsets names
+# nothing the install registers; the listing must not show such a skill as a
+# bare "enabled".
+# ---------------------------------------------------------------------------
+
+
+def _skills_with_conditions(monkeypatch, skills):
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: list(skills))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+
+
+def test_do_list_annotates_never_resolvable_toolset(hub_env, monkeypatch):
+    _skills_with_conditions(monkeypatch, [
+        {"name": "typo-skill", "category": "x", "description": "d",
+         "conditions": {"requires_toolsets": ["files"]}},
+    ])
+    out = _capture()
+    assert "unknown toolset" in out and "'files'" in out
+
+
+def test_do_list_no_annotation_for_registered_toolset(hub_env, monkeypatch):
+    _skills_with_conditions(monkeypatch, [
+        {"name": "ok-skill", "category": "x", "description": "d",
+         "conditions": {"requires_toolsets": ["terminal"]}},
+    ])
+    assert "unknown toolset" not in _capture()
+
+
+def test_do_list_no_annotation_without_conditions(hub_env, monkeypatch):
+    """Legacy skill dicts (no conditions key) render unchanged."""
+    _skills_with_conditions(monkeypatch, [
+        {"name": "plain-skill", "category": "x", "description": "d"},
+    ])
+    assert "unknown toolset" not in _capture()
+
+
+def test_do_list_plugin_toolset_not_annotated(hub_env, monkeypatch):
+    """Runtime-registered (plugin) toolsets are real and must not be flagged."""
+    import toolsets
+
+    toolsets.create_custom_toolset("tmp-gated-probe", "probe", ["terminal"])
+    try:
+        _skills_with_conditions(monkeypatch, [
+            {"name": "plugin-skill", "category": "x", "description": "d",
+             "conditions": {"requires_toolsets": ["tmp-gated-probe"]}},
+        ])
+        assert "unknown toolset" not in _capture()
+    finally:
+        toolsets.TOOLSETS.pop("tmp-gated-probe", None)
+
+
+def test_do_list_none_conditions_do_not_raise(hub_env, monkeypatch):
+    """An empty `requires_toolsets:` parses to None — must not crash the listing."""
+    _skills_with_conditions(monkeypatch, [
+        {"name": "none-skill", "category": "x", "description": "d",
+         "conditions": {"requires_toolsets": None}},
+    ])
+    assert "none-skill" in _capture()
+
+
+# ---------------------------------------------------------------------------
 # Cross-registry hijack regression tests
 #
 # An update must never change a skill's source registry. Skill names are not

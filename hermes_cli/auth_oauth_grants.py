@@ -41,6 +41,15 @@ def _block_tokens(block: Dict[str, Any]) -> Dict[str, Any]:
     return tokens if isinstance(tokens, dict) else block
 
 
+def _is_forkable_pool_row(provider_id: str, entry: Any) -> bool:
+    # An agent_key-only nous row carries no single-use refresh token: it is not a fork, and
+    # stripping it while its providers block survives lets the profile's next load_pool('nous')
+    # write that block over root's shared row. Same refresh_token gate the block strip uses.
+    if not _is_oauth_pool_payload(entry):
+        return False
+    return provider_id != "nous" or bool(_block_tokens(entry).get("refresh_token"))
+
+
 def _is_oauth_pool_payload(entry: Any) -> bool:
     if not isinstance(entry, dict):
         return False
@@ -106,7 +115,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
             if (provider_id not in SINGLE_USE_REFRESH_POOL_PROVIDERS
                     or not isinstance(entries, list)):
                 continue
-            kept = [e for e in entries if not _is_oauth_pool_payload(e)]
+            kept = [e for e in entries if not _is_forkable_pool_row(provider_id, e)]
             if len(kept) != len(entries):
                 changed = True
                 stripped["pool"].append(provider_id)
@@ -449,8 +458,9 @@ class _HealPass:
     def heal_pool_rows(self) -> None:
         kept_rows: List[Any] = []
         for row in self.p_rows:
-            if not _is_oauth_pool_payload(row):
-                kept_rows.append(row)  # API keys are safe to duplicate
+            if not _is_forkable_pool_row(self.provider_id, row):
+                # API keys (and agent_key-only nous rows) are safe to duplicate
+                kept_rows.append(row)
                 continue
             match_idx = _find_root_counterpart(row, self.r_rows)
             if match_idx is not None:

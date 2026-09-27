@@ -155,21 +155,33 @@ def test_strip_helper_drops_device_code_blocks_and_reports(tmp_path):
     assert "openai-codex" not in store["providers"] and "nous" in store["providers"]
 
 
-def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path):
-    """Nous refresh tokens rotate on use: a cloned pool row or providers block is a fork (#121649)."""
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
+    """Nous refresh tokens rotate on use: a cloned pool row or providers block is a fork (#121649).
+
+    agent_key-only nous rows carry no single-use grant and must survive both strip and heal.
+    """
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants, strip_cloned_single_use_oauth_grants
     pdir = tmp_path / "p"
     pdir.mkdir()
     grant = {"access_token": "AT1", "refresh_token": "RT1", "agent_key": "AK"}
+    ak_row = {"id": "ak", "source": "device_code", "auth_type": "oauth", "agent_key": "PAK"}
     (pdir / "auth.json").write_text(json.dumps({
         "version": 1,
         "providers": {"nous": dict(grant)},
-        "credential_pool": {"nous": [dict(grant, id="n", source="device_code", auth_type="oauth")]},
+        "credential_pool": {"nous": [dict(grant, id="n", source="device_code", auth_type="oauth"), ak_row]},
     }))
     summary = strip_cloned_single_use_oauth_grants(pdir)
     store = json.loads((pdir / "auth.json").read_text())
     assert (summary["pool"], summary["providers"]) == (["nous"], ["nous"])
-    assert "nous" not in store["credential_pool"] and "nous" not in store["providers"]
+    assert store["credential_pool"]["nous"] == [ak_row] and "nous" not in store["providers"]
+
+    # Heal: a fork living only in the providers block (flat nous tokens, shared RT) is dropped.
+    (fleet["root"] / "auth.json").write_text(json.dumps({"version": 1, "providers": {"nous": dict(grant)}}))
+    kid = _profile(fleet, "nousfork")
+    (kid / "auth.json").write_text(json.dumps({"version": 1, "providers": {"nous": dict(grant)}}))
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("nous")["providers_block"] is True
+    assert "nous" not in json.loads((kid / "auth.json").read_text())["providers"]
 
 
 def test_strip_helper_is_a_noop_without_credentials(tmp_path):

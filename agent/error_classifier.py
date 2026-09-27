@@ -1043,7 +1043,11 @@ def _governance_refusal_reason(body: dict) -> str:
     auth_codes = {"authentication_error", "invalid_api_key", "permission_denied", "unauthorized"}
     if any(isinstance(code, str) and code.strip().lower() in auth_codes for code in codes):
         return ""
-    if not any(isinstance(code, str) and code.strip() for code in codes):
+    denied = any(isinstance(code, str) and code.strip().lower() == "wardryx_denied" for code in codes)
+    approval_required = error.get("approval_token_required") is True
+    # A random type plus the word "policy" may describe a policy-service outage,
+    # not a decision. Require the reported denial code or explicit approval flag.
+    if not denied and not approval_required:
         return ""
     if error.get("retryable") is not False:
         return ""

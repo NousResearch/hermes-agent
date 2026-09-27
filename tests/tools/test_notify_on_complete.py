@@ -360,12 +360,10 @@ def test_background_hint_constants_name_the_real_process_tool():
     """Every background-path note that points the agent at polling/waiting
     must call the tool by its registered name, process_manage (#124583) —
     the schemas advertise only the new name, so copy teaching the legacy
-    alias misleads fresh agents into leaning on a deprecated spelling.
-    _HOMEBREW_CI_POLLER_HINT is exempt for now: #85984 rewrites that whole
-    constant and keeps its own wording, so canonicalizing it here would
-    collide with this hunk."""
+    alias misleads fresh agents into leaning on a deprecated spelling."""
     from tools.terminal_tool_background import (
         _ASYNC_UNSUPPORTED_NOTE,
+        _HOMEBREW_CI_POLLER_HINT,
         _SILENT_BACKGROUND_HINT,
         _YIELDED_NOTE,
     )
@@ -374,6 +372,7 @@ def test_background_hint_constants_name_the_real_process_tool():
         _SILENT_BACKGROUND_HINT,
         _ASYNC_UNSUPPORTED_NOTE,
         _YIELDED_NOTE,
+        _HOMEBREW_CI_POLLER_HINT,
     ):
         assert "process(action" not in text, (
             f"note references the non-existent process tool: {text[:60]!r}"

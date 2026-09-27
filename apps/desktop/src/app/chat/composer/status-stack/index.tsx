@@ -28,6 +28,7 @@ import {
 } from '@/store/composer-status'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
+import { $subagentsBySession } from '@/store/subagents'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
@@ -37,6 +38,7 @@ import { useSessionValue } from './session-control-utils'
 import { StatusItemRow } from './status-row'
 import { SubagentSection } from './subagent-section'
 import { useSubagentSnapshot } from './use-subagent-snapshot'
+import { WorkResults } from './work-results'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
 // emit no event when they die). Only armed while a running row is on screen.
@@ -102,6 +104,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // across unrelated writes, so the slice hook bails out unless OUR session's
   // items actually changed.
   const items = useSessionSlice($statusItemsBySession, sessionId)
+  const workers = useSessionSlice($subagentsBySession, sessionId)
   const previews = useSessionSlice($previewStatusBySession, sessionId)
   const controlEntry = useSessionValue($sessionControlBySession, sessionId)
 
@@ -175,6 +178,10 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       : []
 
   const sections: { key: string; node: ReactNode }[] = []
+
+  if (sessionId && workers.some(item => ['completed', 'failed', 'interrupted'].includes(item.status))) {
+    sections.push({ key: 'work-results', node: <WorkResults sessionId={sessionId} /> })
+  }
 
   // Billing wall sits at the very top of the stack — it's the most important
   // thing above the composer when the account is out of credits. Rendered here

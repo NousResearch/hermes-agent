@@ -44,7 +44,7 @@ Sekrety dla Windows:
 ## Jak sprawdzić, że podpis działa
 
 1. Actions → Release desktop → job `Release gate`: w raporcie przy każdym instalatorze ma być `signed`, nie `UNSIGNED`.
-2. Windows: na czystej maszynie uruchom instalator — nie może wyskoczyć „Windows chronił Twój komputer".
+2. Windows: `Get-AuthenticodeSignature` musi zwrócić `Valid` i oczekiwanego wydawcę. SmartScreen może nadal wyświetlić ostrzeżenie dla nowego wydawcy — podpis nie gwarantuje reputacji.
 3. macOS: `spctl -a -vvv -t install plik.dmg` musi zwrócić `accepted`.
 4. Bez sekretów bramka przepuszcza wydanie tylko z `--allow-unsigned` — to tryb próbny, nigdy publiczny.
 
@@ -59,3 +59,15 @@ Sekrety dla Windows:
 - Nie wpisuj sekretów w `.env` ani w pliki repo — tylko GitHub Secrets.
 - Nie publikuj wydania z `--allow-unsigned`.
 - Nie commituj plików .p12/.pfx/.p8, nawet na chwilę.
+
+
+## Konfiguracja wydawcy Agent Czesiek
+
+Twórca: [AI Evolution Polska](https://aievolutionpolska.pl). Kontakt licencyjny: [kontakt@aievolutionpolska.pl](mailto:kontakt@aievolutionpolska.pl).
+Na obecnym stanowisku nie skonfigurowano certyfikatu. Nie wpisuj prywatnego klucza ani hasła do repo. Po uzyskaniu certyfikatu ustaw wybrany komplet sekretów opisany powyżej w GitHub Actions. Uruchom `node apps/desktop/scripts/sign-windows.mjs --dir <katalog-wydania> --require`, a następnie istniejącą bramkę wydania. Brak certyfikatu musi zatrzymać wydanie publiczne; nie używaj `--allow-unsigned` do sprzedaży.
+
+## Czysty Windows bez zainstalowanego Hermesa
+
+Skrypt `apps/desktop/scripts/prepare-clean-windows-test.ps1 -Installer <pełny-instalator.exe> -OutputDirectory <nowy-katalog>` przygotowuje plik `.wsb` do Windows Sandbox. Uruchom go na komputerze z włączonym Sandbox. Mapowane są wyłącznie kopia instalatora/skrypt testowy (tylko do odczytu) oraz pusty katalog wyników. Sieć i schowek są wyłączone; profil gospodarza nie jest udostępniany.
+
+Wynik `results/result.json` musi potwierdzić instalację oraz dwa kolejne starty bez pobierania silnika. Brak raportu oznacza brak potwierdzonego testu. Osobno sprawdź mikrofon, odpowiedź modelu i podpis instalatora; test offline tego nie weryfikuje. Na stanowisku bez Windows Sandbox można użyć świeżej maszyny wirtualnej Windows. Nie włączaj funkcji systemowych ani nie restartuj komputera automatycznie.

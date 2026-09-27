@@ -294,10 +294,27 @@ Zgłoszenie błędu powinno zawierać system, wersję aplikacji, kroki odtworzen
 
 **Użytek prywatny i niekomercyjny.** Osoba prywatna może zainstalować aplikację, korzystać z niej prywatnie i edukacyjnie, testować funkcje oraz używać jej w niezarobkowych projektach hobbystycznych. Warunki korzystania z autorskich elementów marki opisuje [Personal & Non-Commercial License](CZESIEK-ASSETS-LICENSE.md).
 
-**Użytek komercyjny.** Korzystanie z autorskich elementów marki Agent Czesiek w firmie, agencji, płatnych zleceniach, wewnętrznych procesach biznesowych, produktach dla klientów, white-labelingu, hostingu, SaaS, płatnych wdrożeniach lub pakietach z innym produktem wymaga odrębnej zgody albo [Commercial License](CZESIEK-ASSETS-LICENSE.md). W sprawie zakupu skontaktuj się przez [repozytorium](https://github.com/aievolutionpl/AGENT_CZESIEK/issues); oficjalny adres sprzedaży można dodać, gdy zostanie podany.
+**Użytek komercyjny.** Korzystanie z autorskich elementów marki Agent Czesiek w firmie, agencji, płatnych zleceniach, wewnętrznych procesach biznesowych, produktach dla klientów, white-labelingu, hostingu, SaaS, płatnych wdrożeniach lub pakietach z innym produktem wymaga odrębnej zgody albo [Commercial License](CZESIEK-ASSETS-LICENSE.md). W sprawie licencji i korzystania komercyjnego napisz na [kontakt@aievolutionpolska.pl](mailto:kontakt@aievolutionpolska.pl).
 
 **Ważne rozróżnienie:** te warunki dotyczą autorskiego logo i materiałów AI Evolution Polska, a nie zmieniają uprawnień przyznanych przez licencje komponentów zewnętrznych. Kod Hermes Agent © 2025 Nous Research jest na [licencji MIT](LICENSE), która zachowuje własne warunki, w tym prawo do użycia komercyjnego. Pozostałe komponenty zachowują swoje licencje. Agent Czesiek jest rozwijany i dystrybuowany przez AI Evolution Polska. Wszystkie prawa do autorskich elementów nieudzielone wprost są zastrzeżone.
 
 ## Rozwój i zgłaszanie problemów
 
 Zasady pracy nad kodem: [AGENTS.md](AGENTS.md), szybka [mapa repozytorium](docs/REPO_MAP.md). Błędy i propozycje: [GitHub Issues](https://github.com/aievolutionpl/AGENT_CZESIEK/issues). Źródła i instalator mogą mieć różne wersje; przy zgłoszeniu podaj wersję aplikacji, system i kroki odtworzenia, bez kluczy API.
+
+
+## Twórca i kontakt licencyjny
+
+Agent Czesiek jest rozwijany i dystrybuowany przez **AI Evolution Polska — [aievolutionpolska.pl](https://aievolutionpolska.pl)**.
+
+Kontakt w sprawie licencji i korzystania komercyjnego: **[kontakt@aievolutionpolska.pl](mailto:kontakt@aievolutionpolska.pl)**. Komponenty zewnętrzne zachowują własne licencje, w tym Hermes Agent na licencji MIT.
+
+## Diagnostyka, praca w tle i kopie
+
+W **Ustawienia → Czy wszystko działa?** sprawdzisz połączenie z Hermesem, zapisanie kluczy API i konfigurację narzędzi. Osobne przyciski testują mikrofon, głośnik i prawdziwą rozmowę z wybranym dostawcą. Zapisany klucz nie oznacza jeszcze poprawnego połączenia; test rozmowy wymaga internetu i może zużyć środki API. „Napraw połączenie” ponownie uruchamia połączenie — przed użyciem zakończ aktywne zadania.
+
+W rozmowie Live Czesiek przyjmuje zlecenie bez czekania na jego wynik. Możesz dalej rozmawiać, zapytać o status, poprosić o zatrzymanie lub zmianę polecenia aktywnych współpracowników. Karty pokazują stan z backendu, raport i zapisane pliki, jeśli współpracownik je zgłosił. Brak raportu nie jest potwierdzeniem sukcesu. Raporty głosowe dotyczą bieżącej rozmowy; wyniki pozostałych zadań znajdziesz w ich historii.
+
+Pełny pakiet Windows pozwala zapisać lokalną kopię aplikacji, kluczy, ustawień, historii i pamięci oraz przywrócić ją także z ekranu błędu startu. Kopia wymaga dodatkowego miejsca na dysku i zatrzymania zadań. Wbudowana ścieżka aktualizacji Windows zapisuje kopię przed przekazaniem sterowania aktualizatorowi; **przed ręcznym uruchomieniem nowego instalatora EXE kliknij „Zapisz kopię”**. Po starcie sprawdzane są HTTP i WebSocket backendu. Przywrócenie uruchamiasz samodzielnie; aktualne dane zostają zachowane osobno. Zewnętrznej instalacji Hermesa Czesiek nie aktualizuje.
+
+Podpisywanie i test instalacji na czystym Windows opisuje [instrukcja wydania](docs/RELEASE_SIGNING.md). Konfiguracja bez certyfikatu nie oznacza podpisanego instalatora ani zakończonego testu na czystym systemie.

@@ -184,6 +184,7 @@ export function useComposerVoice({
     if (isJarvisMusicPhrase(text)) {
       startJarvisIntroMusic(true)
     }
+
     if (busy) {
       return
     }
@@ -230,6 +231,8 @@ export function useComposerVoice({
   })
 
   const liveConversation = useRealtimeConversation({
+    onInterrupt,
+    sessionId: sessionId ?? null,
     busy: () => busyRef.current,
     enabled: voiceConversationActive && realtime,
     failureLabel: t.notifications.voice.liveFailed,
@@ -365,9 +368,11 @@ export function useComposerVoice({
     if (target !== 'main') {
       return
     }
+
     if (!voiceConversationActive) {
       stopJarvisIntroMusic()
     }
+
     return () => stopJarvisIntroMusic()
   }, [target, voiceConversationActive])
 

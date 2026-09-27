@@ -45,6 +45,7 @@ import { OverlayView } from '../overlays/overlay-view'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
+import { AssistantHealth } from './assistant-health'
 import { BillingSettings } from './billing'
 import { CharacterSettings } from './character-settings'
 import { ConfigSettings } from './config-settings'
@@ -73,10 +74,12 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'character',
   'billing',
   'sessions',
-  'about'
+  'about',
+  'health'
 ]
 
 const MAIN_SETTINGS_ORDER = [
+  'health',
   'config:model',
   'config:voice',
   'character',
@@ -326,6 +329,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('sessions')
       },
       {
+        active: activeView === 'health',
+        icon: Wrench,
+        id: 'health',
+        label: 'Czy wszystko działa?',
+        onSelect: () => setActiveView('health')
+      },
+      {
         active: activeView === 'about',
         gapBefore: true,
         icon: Info,
@@ -453,7 +463,9 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   )
 
   const activeSettingsContent =
-    activeView === 'config:appearance' ? (
+    activeView === 'health' ? (
+      <AssistantHealth key={`${activeConnectionId}:${scopeProfile}`} />
+    ) : activeView === 'config:appearance' ? (
       <AppearanceSettings />
     ) : activeView === 'about' ? (
       <AboutSettings />

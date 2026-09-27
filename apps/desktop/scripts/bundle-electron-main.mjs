@@ -63,3 +63,10 @@ await build({
   logLevel: 'info',
 })
 console.log(`bundled ${preloadOut}${isDev ? ' (dev)' : ''}`)
+
+// Standalone recovery process: it must run after the Electron app has exited.
+await build({
+  entryPoints: [resolve(root, 'electron/recovery-worker.ts')],
+  bundle: true, platform: 'node', format: 'esm', target: 'node20',
+  outfile: resolve(distDir, 'recovery-worker.mjs'), logLevel: 'info'
+})

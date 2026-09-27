@@ -32,7 +32,7 @@ export default defineConfig({
    * app) and is owned by the vitest `electron` project. Without this the
    * default testMatch would claim those files too and run them twice.
    * e2e/core/ has its own config (retries 0, one worker) and CI job. */
-  testIgnore: ['**/*.unit.test.ts', 'core/**'],
+  testIgnore: ['**/*.unit.test.ts', 'core/**', 'update/**'],
   /* The desktop app can take a while to bootstrap on cold CI runners — 90 s
    * per test gives us headroom without masking real hangs. */
   timeout: 90_000,

@@ -285,6 +285,13 @@ def retry_invalid_response(
     # Eager fallback: empty/malformed responses often mean rate limiting.
     if agent._fallback_index < len(agent._fallback_chain):
         agent._buffer_diagnostic_status("⚠️ Empty/malformed response — switching to fallback...")
+        # A successful eager fallback breaks before the retry warning below, so record the
+        # cause now — otherwise the switch leaves no trace of what was wrong with the
+        # primary's response (#124874).
+        logger.warning(
+            "%sInvalid API response — switching to fallback: %s | Provider: %s",
+            agent.log_prefix, ", ".join(error_details), agent.provider,
+        )
     if agent._try_activate_fallback():
         active_system_prompt = _arm_fallback_restart(
             agent, api_messages, active_system_prompt, _retry)

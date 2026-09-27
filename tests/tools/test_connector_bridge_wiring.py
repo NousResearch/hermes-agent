@@ -185,6 +185,33 @@ def test_unparseable_envelope_error_echoes_payload():
     assert "nope{" in err
 
 
+def test_unrepairable_payload_echo_is_redacted():
+    """The rejection tail returns to the model as the tool result; a malformed envelope
+    that happens to carry a credential must not round-trip it into the conversation.
+    Truncated arguments are the guaranteed-unrepairable case (fail-closed by policy)."""
+    envelope = json.dumps([{"name": "t", "arguments": '{"api_key": "sk-test-1234567890abcdef", "b": 2'}])
+    entries, err = normalize_tool_call_entries({"calls": envelope})
+    assert entries == []
+    assert err is not None and "unrepairable" in err
+    assert "sk-test-1234567890abcdef" not in err
+    assert "api_key" in err  # the key name survives for debuggability; the value does not
+
+
+def test_bridge_repairs_as_many_dropped_commas_as_the_native_path():
+    """Parity with the native path: insertions scale with the payload, not a fixed
+    iteration budget. A payload with more dropped separators than the old ~50-iteration
+    cap repaired natively but was rejected by the bridge."""
+    n = 60
+    items = ", ".join(f'{{"k{i}": {i}}}' for i in range(n))
+    valid = '{"a": 1, "b": [' + items + "]}"
+    assert json.loads(valid) is not None
+    broken = valid.replace(",", "", n)
+    envelope = json.dumps([{"name": "read_file", "arguments": broken}])
+    entries, err = normalize_tool_call_entries({"calls": envelope})
+    assert err is None
+    assert entries[0]["arguments"]["b"][0] == {"k0": 0}
+
+
 def test_normalize_parses_string_envelope_single_dict():
     """#114484: a stringified single dict normalizes to a batch of one."""
     entries, err = normalize_tool_call_entries(

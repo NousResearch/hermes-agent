@@ -139,11 +139,18 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
 
 def _payload_snippet(text: Any, limit: int = 200) -> str:
     """Debuggable rejection tail for unparseable model payload text (#122711): a bounded
-    snippet of what was actually received, not just a JSON error offset."""
+    snippet of what was actually received, not just a JSON error offset.
+
+    Redacted before it is echoed: the message wraps into ``tool_error(...)`` and returns
+    to the MODEL as the tool result, so an unparseable envelope that happens to carry a
+    credential must not round-trip it into the conversation. ``redact_sensitive_text``
+    already gates every pattern behind a cheap substring check, so clean payloads pass
+    through byte-identical."""
+    from agent.redact import redact_sensitive_text
     snippet = text if isinstance(text, str) else repr(text)
     if len(snippet) > limit:
         snippet = snippet[:limit] + "…"
-    return snippet
+    return redact_sensitive_text(snippet)
 
 
 def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:

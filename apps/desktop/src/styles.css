@@ -1644,6 +1644,16 @@ body.guest-pointer-lock :is(webview, iframe) {
   margin-block: var(--paragraph-gap) 0;
 }
 
+/* Same Typography trap for images: `.prose :where(img) { margin: 2em }` ties
+   `m-0` on specificity (0,1,0) and wins on source order. Inside the framed
+   markdown image the <img> sits in an absolutely-positioned `h-full` wrapper,
+   so a 2em top margin slides the whole image down and its bottom overhangs the
+   frame's reserved height — the image then paints over the first line of
+   whatever follows it (#122100, #122982). Zero it at higher specificity. */
+[data-slot='aui_assistant-message-content'] .aui-md [data-slot='aui_markdown-image'] :where(img) {
+  margin: 0;
+}
+
 /* Headings are section breaks, so they own a larger top gap than prose — a
    leading `# title` (common in re-entered/delegated turns) no longer butts
    against the block above. Top-owned + bottom snug; the first-child reset

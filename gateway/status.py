@@ -588,6 +588,40 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+def _installed_bootstrap_gateway_subcommand(command: str) -> str | None:
+    """Recognize the installed launcher's exact inline source, not an arbitrary ``-c`` watcher."""
+    import ast
+    from hermes_cli._launchers import runtime_command
+
+    executable, separator, source_and_args = command.partition(" -I -c ")
+    if not separator or not executable or not source_and_args:
+        return None
+    try:
+        if len(shlex.split(executable, posix=False)) != 1:
+            return None
+    except ValueError:
+        return None
+    root = Path(__file__).resolve().parents[1]
+    template = runtime_command(root, python="python")[3]
+    sources = [template]
+    default_home = "str(__import__('hermes_constants').get_default_hermes_root())"
+    before, marker, after = template.partition(default_home)
+    if marker and source_and_args.startswith(before):
+        rest = source_and_args[len(before):]
+        literal, found, _ = rest.partition(after)
+        if found:
+            try:
+                home = ast.literal_eval(literal)
+                if isinstance(home, str):
+                    sources.append(runtime_command(root, python="python", home=home)[3])
+            except (ValueError, SyntaxError):
+                pass
+    for source in sources:
+        if source_and_args.startswith(source + " "):
+            return _gateway_command_subcommand("hermes " + source_and_args[len(source) + 1:])
+    return None
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -596,6 +630,9 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     argv since ``_apply_profile_override`` removes them before argparse."""
     if not command:
         return None
+    bootstrap_command = _installed_bootstrap_gateway_subcommand(command) if " -I -c " in command else None
+    if bootstrap_command is not None:
+        return bootstrap_command
     try:
         raw_tokens = shlex.split(command, posix=False)
     except ValueError:

@@ -165,3 +165,17 @@ def test_accepts_atomic_desktop_gateway():
     assert matches_runtime(ATOMIC_DESKTOP) is True
 
 
+def test_installed_bootstrap_gateway_is_live_but_inline_watcher_is_not():
+    from pathlib import Path
+    from hermes_cli._launchers import runtime_command
+
+    root = Path(__file__).resolve().parents[2]
+    for action, expected in (("run", True), ("status", False)):
+        command = runtime_command(root, ("gateway", action, "--replace"), python="python.exe")
+        assert matches_runtime(" ".join(command)) is expected
+    named = runtime_command(root, ("gateway", "run", "--replace"), python="python.exe", home=root / "profiles" / "work")
+    assert matches_runtime(" ".join(named)) is True
+    watcher = 'python -c "import os" 123 python -m hermes_cli.main gateway run'
+    assert matches_runtime(watcher) is False
+
+

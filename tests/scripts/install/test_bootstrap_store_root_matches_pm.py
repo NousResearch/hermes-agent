@@ -63,22 +63,9 @@ _PIN_END = "# --- END uv state pins ---"
 
 _POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
-# ``nested_under_default`` is the case a rule that only looks for a literal
-# ``profiles`` parent gets wrong: pm folds anything under the platform default
-# home, not only a named profile. ``profiles_segment`` and
-# ``ancestor_profile`` guard the opposite error — folding a path that merely
-# contains a ``profiles`` segment. ``data_dir_suffix`` guards the default-home
-# computation itself: all four resolvers carry their own copy of
-# ``_get_platform_default_hermes_home()``, and a copy that forgets the suffix
-# folds to a home pm never built. ``case_variant`` is a distinct directory that
-# differs only in case — POSIX pathlib never folds it, so a case-insensitive
-# comparison would. The ``*_ellipsis*`` rows feed ``..`` through the resolvers:
-# a single-component pop must empty the chain, not double it (PowerShell's
-# ``0..-1`` is a descending range, so a pop written as ``$out[0..($out.Count - 2)]``
-# on a one-element array keeps the element twice); a ``..`` after a missing
-# segment must collapse lexically; and ``..`` at the physical root stays there.
-# ``symlink_escape`` sends the home through a link out of the default root: the
-# resolver must follow it (it IS the home) without folding.
+# Each row pins one way a bootstrap resolver can drift from pm: the profiles
+# fold (parent vs. anything under the default home), the default-home computation
+# (suffix, case), variable/user expansion, raw aliases, and ``..`` across a link.
 DATA_DIR_SUFFIX = "-suffix-under-test"
 HOME_KINDS = (
     "unset",
@@ -89,26 +76,19 @@ HOME_KINDS = (
     "profiles_segment",
     "ancestor_profile",
     "nested_under_default",
+    "whitespace_surround",
+    "named_user_tilde",
     "data_dir_suffix",
     "case_variant",
     "raw_alias",
     "raw_alias_dot",
     "home_var",
-    # ``dollar_positional``: expandvars leaves a ``$1``-style name literal (no
-    # such exported variable), and a resolver reading the environment with
-    # ${!name} instead of a printenv-style table lookup would ALSO resolve it
-    # to the function's positional parameter — self-doubling the path.
+    # A ``$1``-style name must stay literal: a ${!name} lookup would resolve the
+    # function's positional instead.
     "dollar_positional",
     "root_profiles",
     "relative_profile",
-    # ``..``-bearing homes: a single pop must empty a one-element chain, a
-    # missing-segment `missing/..` pair must collapse lexically, and pops at
-    # the physical root must stay there. ``ellipsis_escape`` pops the EXISTING
-    # default home: a single-segment pop that keeps its component flips the
-    # fold (red on the previous shape, green only with the anchored pop).
-    # ``ellipsis_mid_*``: a mid-path ``..`` must not survive into the containment
-    # check — the fold flips either way. ``ellipsis_profile_leaf``: a
-    # ``profiles/..`` parent is not a profiles parent.
+    # ``..`` homes: a one-element pop must empty the chain, never double it.
     "native_home_ellipsis_parent",
     "ellipsis_missing_mid",
     "ellipsis_consecutive",
@@ -118,6 +98,19 @@ HOME_KINDS = (
     "ellipsis_mid_fold",
     "ellipsis_profile_leaf",
     "symlink_escape",
+    "braced_unset",
+    "braced_unclosed",
+    "braced_empty",
+    "ancestor_link",
+    "missing_then_link",
+    # HERMES_HOME unset with a $-bearing suffix: the suffix is appended LITERALLY
+    # by pm and both bootstraps (the embedded variable must not expand).
+    "data_dir_suffix_literal",
+    # posixpath.expanduser's account-home edges: an EMPTY HOME answers "/" (and
+    # "/x" for "~/x"), an UNSET HOME falls back to the account database.
+    "home_empty",
+    "home_empty_tilde",
+    "home_unset_tilde",
 )
 
 
@@ -131,7 +124,46 @@ def _resolver_source(path: Path, mirror: str) -> str:
     return match.group(1)
 
 
+def _named_user_account() -> tuple[str, str] | None:
+    """An existing POSIX account whose ``~user`` home resolves, or None.
+
+    ``ntpath`` resolves only ``~<USERNAME>`` — the Windows half lives in
+    :func:`_named_user_home` — so the passwd lookup itself is POSIX-only."""
+    try:
+        import pwd
+    except ImportError:
+        return None
+    try:
+        account = pwd.getpwuid(os.getuid())
+    except (KeyError, OSError):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", account.pw_name):
+        return None
+    return account.pw_name, account.pw_dir
+
+
+def _named_user_home() -> str:
+    """A raw ``~user/.../profiles/<name>`` home the platform's own ``expanduser``
+    resolves, else skip.
+
+    POSIX resolves a passwd account; ``ntpath`` resolves only ``~<USERNAME>`` and
+    leaves every other ``~user`` literal, so the Windows row must name the current
+    account or it would pin a divergence rather than a match."""
+    if sys.platform == "win32":
+        user = os.environ.get("USERNAME", "").strip()
+        if user:
+            return f"~{user}/custom-root/profiles/coder"
+        pytest.skip("no USERNAME to build a Windows ~user home from")
+    account = _named_user_account()
+    if account is None:
+        pytest.skip("no POSIX account database entry to resolve a ~user home against")
+    return f"~{account[0]}/custom-root/profiles/coder"
+
+
 def _hermes_home(tmp_path: Path, home_kind: str) -> str | Path | None:
+    if home_kind == "named_user_tilde":
+        # Lazy: probed only for its own row, so an absent account skips one row.
+        return _named_user_home()
     default = tmp_path / "native-home" / ".hermes"
     homes: dict[str, str | Path | None] = {
         "unset": None,
@@ -142,24 +174,20 @@ def _hermes_home(tmp_path: Path, home_kind: str) -> str | Path | None:
         "profiles_segment": str(tmp_path / "profiles" / "alice" / ".hermes"),
         "ancestor_profile": str(tmp_path / "profiles" / "alice" / ".hermes" / "profiles" / "coder"),
         "nested_under_default": str(default / "foo" / "bar"),
+        # ``_staged_store`` strips outer whitespace, so only a home NESTED under
+        # the default discriminates a resolver that never trims.
+        "whitespace_surround": f"  {default}/nested  ",
         "data_dir_suffix": str(tmp_path / "native-home" / f".hermes{DATA_DIR_SUFFIX}"),
-        # A different directory that differs only in case: POSIX pathlib never
-        # folds it (string comparison), so a case-insensitive -eq in a resolver
-        # would stage uv into the default home instead of this one.
+        # Differs only in case: POSIX pathlib never folds it.
         "case_variant": str(tmp_path / "native-home" / ".HERMES"),
-        # Raw environment strings, deliberately NOT built through Path: Path
-        # construction collapses repeated separators and trailing-dot segments,
-        # which erases exactly the aliases a user can export before the shell
-        # ever sees them. The resolver must expand variables and normalize the
-        # string like Path does, or the fold picks a slot pm never reads.
+        # Raw strings (not built through Path, which would collapse these away).
         "raw_alias": f"{tmp_path}/custom-root/profiles//coder",
         "raw_alias_dot": f"{tmp_path}/custom-root/profiles/coder/.",
         "home_var": "${HOME}/.hermes/profiles/coder",
         "dollar_positional": f"{tmp_path}/custom/$1/profile",
         "root_profiles": "/profiles/coder",
         "relative_profile": "profiles/coder",
-        # ``..`` must reach a resolver VERBATIM, so these are raw strings, not
-        # Path arithmetic (Path construction collapses the ``..`` away).
+        # Raw strings too: Path construction would collapse the ``..`` away.
         "native_home_ellipsis_parent": f"{default}/..",
         "ellipsis_missing_mid": f"{tmp_path}/custom/missing/../profile",
         "ellipsis_consecutive": f"{tmp_path}/custom/missing/../../profile",
@@ -169,6 +197,18 @@ def _hermes_home(tmp_path: Path, home_kind: str) -> str | Path | None:
         "ellipsis_mid_fold": f"{tmp_path}/other/../native-home/.hermes/x",
         "ellipsis_profile_leaf": f"{tmp_path}/custom-root/profiles/foo/../bar",
         "symlink_escape": f"{tmp_path}/native-home/.hermes/escape-link",
+        # UNSET/malformed braces stay literal: only a CLOSED brace group expands.
+        "braced_unset": f"{tmp_path}/custom/${{UNSET}}/profiles/coder",
+        "braced_unclosed": f"{tmp_path}/custom/${{UNSET/profiles/coder",
+        "braced_empty": f"{tmp_path}/custom/${{}}/profiles/coder",
+        # A link mid-path (and one reached after a missing segment + ``..``).
+        "ancestor_link": f"{tmp_path}/native-home/.hermes/escape-link/existing-home",
+        "missing_then_link": f"{tmp_path}/native-home/.hermes/missing/../escape-link/new-home",
+        # Folds to the platform default; _set_home owns the exact env shape.
+        "data_dir_suffix_literal": None,
+        "home_empty": None,
+        "home_empty_tilde": "~/custom-hermes",
+        "home_unset_tilde": "~/custom-hermes",
     }
     return homes[home_kind]
 
@@ -176,10 +216,44 @@ def _hermes_home(tmp_path: Path, home_kind: str) -> str | Path | None:
 def _set_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, home_kind: str) -> None:
     """Point both the bootstraps and pm at one home.
 
-    ``USERPROFILE`` rides along because ``Path.home()`` reads it on Windows, and
-    ``LOCALAPPDATA`` is cleared only where pm would not consult it — pm's default
-    home is platform-conditional, and so is the PowerShell resolver's.
-    """
+    ``USERPROFILE`` rides along for ``Path.home()`` on Windows; ``LOCALAPPDATA``
+    is cleared only where pm would not consult it."""
+    if home_kind == "data_dir_suffix_literal":
+        # Both pm and the bootstraps must append the suffix VERBATIM: with
+        # ROOT_CONTRACT_LABEL exported, any expansion turns the literal '$...'
+        # into 'expanded', diverging from _get_platform_default_hermes_home().
+        native = tmp_path / "native-home"
+        monkeypatch.setenv("HOME", str(native))
+        monkeypatch.setenv("USERPROFILE", str(native))
+        monkeypatch.setenv("ROOT_CONTRACT_LABEL", "expanded")
+        monkeypatch.setenv("HERMES_DATA_DIR_SUFFIX", "-$ROOT_CONTRACT_LABEL")
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+        # LOCALAPPDATA follows the same handling as a normal Windows row (the
+        # child is given tmp_path via _child_localappdata); POSIX ignores it.
+        if sys.platform != "win32":
+            monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        return
+    if home_kind in ("home_empty", "home_empty_tilde", "home_unset_tilde"):
+        # posixpath.expanduser's account-home edges: an EMPTY HOME is SET and
+        # answers "/", an UNSET HOME falls back to the account database. The
+        # child gets the same shape so the parity comparison is meaningful.
+        if home_kind == "home_unset_tilde":
+            monkeypatch.delenv("HOME", raising=False)
+            monkeypatch.delenv("USERPROFILE", raising=False)
+        else:
+            monkeypatch.setenv("HOME", "")
+            monkeypatch.setenv("USERPROFILE", "")
+        if sys.platform != "win32":
+            monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
+        value = _hermes_home(tmp_path, home_kind)
+        if value is None:
+            monkeypatch.delenv("HERMES_HOME", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_HOME", value)
+        return
     native = tmp_path / "native-home"
     monkeypatch.setenv("HOME", str(native))
     monkeypatch.setenv("USERPROFILE", str(native))
@@ -194,6 +268,27 @@ def _set_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, home_kind: str) -
         (native / "custom").mkdir(parents=True, exist_ok=True)
         (native / ".hermes").mkdir(parents=True, exist_ok=True)
         (native / ".hermes" / "escape-link").symlink_to(native / "custom", target_is_directory=True)
+    if home_kind in ("ancestor_link", "missing_then_link"):
+        # A link that sits in the MIDDLE of the home path (and, for
+        # ``missing_then_link``, is only reached after a missing segment + "..")
+        # points OUTSIDE the default home, so a resolver that folds lexically
+        # instead of following it lands under the default root. Junction on
+        # Windows (no privilege needed) keeps this row native there.
+        (native / ".hermes").mkdir(parents=True, exist_ok=True)
+        target = native / "custom"
+        leaf = "existing-home" if home_kind == "ancestor_link" else "new-home"
+        (target / leaf).mkdir(parents=True, exist_ok=True)
+        link = native / ".hermes" / "escape-link"
+        if sys.platform == "win32":
+            subprocess.run(
+                [_POWERSHELL or "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 f"New-Item -ItemType Junction -Path '{link}' -Target '{target}' | Out-Null"],
+                check=True,
+            )
+        else:
+            link.symlink_to(target, target_is_directory=True)
+    if home_kind in ("braced_unset", "braced_unclosed"):
+        monkeypatch.delenv("UNSET", raising=False)
     if sys.platform != "win32":
         monkeypatch.delenv("LOCALAPPDATA", raising=False)
     monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
@@ -311,6 +406,61 @@ def test_posix_bootstraps_resolve_pms_store_root(
         )
 
 
+@pytest.mark.platforms("posix")
+def test_posix_resolver_unset_home_uses_the_account_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HOME and HERMES_HOME both unset: the resolver must answer with the ACCOUNT
+    home (id + getent/dscacheutil), not the literal relative ``$HOME/.hermes``.
+
+    A fake account database ahead on PATH pins what the child resolves; the pm
+    expectation is pointed at the same fake home (conftest isolates the native
+    default per-test), so both sides name one directory without touching the
+    runner account.
+    """
+    bash = shutil.which("bash")
+    assert bash, "the shell bootstraps require bash"
+    account = "hermesprobe"
+    fake_home = tmp_path / "acct" / "probehome"
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir(parents=True)
+    (fakebin / "id").write_text(f"#!/bin/sh\nif [ \"$1\" = \"-un\" ]; then echo {account}; fi\n")
+    (fakebin / "getent").write_text(
+        "#!/bin/sh\n"
+        f"if [ \"$1\" = passwd ] && [ \"$2\" = {account} ]; then "
+        f"echo '{account}:x:4242:4242::{fake_home}:/bin/sh'; fi\n",
+        encoding="utf-8",
+    )
+    # macOS hosts have no getent: the resolver then asks dscacheutil.
+    (fakebin / "dscacheutil").write_text(
+        "#!/bin/sh\n"
+        f"echo 'name: {account}'\necho 'dir: {fake_home}'\n",
+        encoding="utf-8",
+    )
+    for tool in ("id", "getent", "dscacheutil"):
+        (fakebin / tool).chmod(0o755)
+
+    for key in ("HOME", "HERMES_HOME", "HERMES_RUNTIME_DIR", "HERMES_DATA_DIR_SUFFIX", "LOCALAPPDATA"):
+        monkeypatch.delenv(key, raising=False)
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: fake_home / ".hermes")
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None, raising=False)
+    expected = _pm_store_root()
+
+    child_env = {"PATH": os.pathsep.join([str(fakebin), "/usr/bin", "/bin"])}
+    for name, (path, mirror) in SH_PAIR.items():
+        body = _resolver_source(path, mirror)
+        result = subprocess.run(
+            [bash, "-c", f"{body}\nprintf '%s\\n%s\\n' \"$(hermes_root_of)\" \"$(hermes_default_home)\""],
+            env=child_env, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
+        root_line, default_line = result.stdout.splitlines()[:2]
+        assert _staged_store(root_line) == expected
+        assert default_line == str(fake_home / ".hermes")
+
+
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("home_kind", HOME_KINDS)
 def test_powershell_bootstraps_resolve_pms_store_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home_kind: str
@@ -408,6 +558,84 @@ def test_powershell_resolver_keeps_unc_and_ellipsis_semantics(tmp_path: Path) ->
 
 
 @pytest.mark.platforms("windows")
+@pytest.mark.parametrize("drive_relative", [False, True])
+def test_powershell_resolver_keeps_drive_relative_home_forms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drive_relative: bool
+) -> None:
+    """``C:rest`` (drive-relative) must not be rewritten to ``C:\\rest``.
+
+    Windows anchors the former at the drive's own current directory and the
+    latter at the drive root; pm keeps both lexical forms (get_default_hermes_root
+    returns a custom home verbatim), so staging for the two must land differently
+    and each must agree with pm. The pre-fix norm/resolve pair collapsed both
+    to the drive-rooted form.
+    """
+    if _POWERSHELL is None:
+        pytest.skip("running the PowerShell bootstraps needs pwsh or Windows PowerShell")
+    drive, _ = os.path.splitdrive(os.getcwd())
+    assert drive, "the Windows lane always runs with a drive-qualified cwd"
+    leaf = f"hermes-data-{os.getpid()}"
+    raw_home = f"{drive}{leaf}" if drive_relative else os.path.join(drive + os.sep, leaf)
+    monkeypatch.setenv("HERMES_HOME", raw_home)
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
+    monkeypatch.chdir(tmp_path)
+    expected = _pm_store_root()
+
+    for name, (path, mirror) in PS1_PAIR.items():
+        probe = tmp_path / f"probe-drive-{name}.ps1"
+        probe.write_text(f"{_resolver_source(path, mirror)}\nGet-HermesRoot\n", encoding="utf-8")
+        result = subprocess.run(
+            [_POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(probe)],
+            env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
+        staged = _staged_store(result.stdout)
+        assert staged == expected, (
+            f"{name} would stage uv into {staged}, but pm resolves {expected} "
+            f"for HERMES_HOME={raw_home!r}"
+        )
+
+
+@pytest.mark.platforms("windows")
+def test_powershell_resolver_keeps_a_bare_drive_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``HERMES_HOME=C:\\`` is the drive root, not the drive-relative ``C:``.
+
+    The trailing-separator trim must not collapse the bare root (``C:\\`` ->
+    ``C:``), which would re-anchor the store at the drive's current directory.
+    """
+    if _POWERSHELL is None:
+        pytest.skip("running the PowerShell bootstraps needs pwsh or Windows PowerShell")
+    drive, _ = os.path.splitdrive(os.getcwd())
+    assert drive, "the Windows lane always runs with a drive-qualified cwd"
+    raw_home = drive + os.sep  # "C:\"
+    monkeypatch.setenv("HERMES_HOME", raw_home)
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
+    monkeypatch.chdir(tmp_path)
+    expected = _pm_store_root()
+
+    for name, (path, mirror) in PS1_PAIR.items():
+        probe = tmp_path / f"probe-bare-root-{name}.ps1"
+        probe.write_text(f"{_resolver_source(path, mirror)}\nGet-HermesRoot\n", encoding="utf-8")
+        result = subprocess.run(
+            [_POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(probe)],
+            env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
+        assert result.stdout.strip() == raw_home, (
+            f"{name} returned {result.stdout.strip()!r} for HERMES_HOME={raw_home!r}"
+        )
+        assert _staged_store(result.stdout) == expected, (
+            f"{name} would stage uv into {_staged_store(result.stdout)}, pm resolves {expected}"
+        )
+
+
+@pytest.mark.platforms("windows")
 def test_powershell_resolver_falls_back_to_the_platform_default_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -466,9 +694,16 @@ def test_install_sh_stages_into_the_root_it_resolved(
     monkeypatch.chdir(tmp_path)
     install_sh = REPO_ROOT / "scripts" / "install.sh"
 
+    # A DEFAULTED home stays shell-local (exporting its literal suffix would
+    # diverge from Python's verbatim-suffix default), so the recomputation must
+    # run with HERMES_HOME raw again; a user-supplied home is exported as-is.
     script = (
+        'raw="${HERMES_HOME-}"\n'  # save the raw configured home before the finalizer normalizes it
         'source "$1" --manifest || exit 1\n'
-        'printf "%s\\n%s\\n" "$HERMES_ROOT" "$(hermes_root_of)"\n'
+        'if [ "${_HERMES_HOME_DEFAULTED:-0}" = 1 ]; then '
+        'recomputed="$(unset HERMES_HOME; hermes_root_of)"; '
+        'else recomputed="$(HERMES_HOME="$raw" hermes_root_of)"; fi\n'
+        'printf "%s\\n%s\\n" "$HERMES_ROOT" "$recomputed"\n'
     )
     result = subprocess.run(
         [bash, "-c", script, "test", str(install_sh)],
@@ -479,6 +714,272 @@ def test_install_sh_stages_into_the_root_it_resolved(
 
     assert resolved == recomputed, "HERMES_ROOT must be the resolver's answer"
     assert _staged_store(resolved) == _pm_store_root()
+
+
+@pytest.mark.platforms("posix")
+def test_install_sh_drops_an_inherited_export_when_it_defaults_the_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An inherited ``export HERMES_HOME=`` must not leak the finalized default.
+
+    A plain assignment to an already-exported variable keeps the export
+    attribute, so the literal-suffix default would reach child Python, which
+    expands the suffix as explicit configuration and selects a different root
+    than the resolver did. install.sh must unset the inherited export first.
+    """
+    bash = shutil.which("bash")
+    assert bash, "install.sh requires bash"
+    native = tmp_path / "native-home"
+    monkeypatch.setenv("HOME", str(native))
+    monkeypatch.setenv("ROOT_CONTRACT_LABEL", "expanded")
+    monkeypatch.setenv("HERMES_DATA_DIR_SUFFIX", "-$ROOT_CONTRACT_LABEL")
+    monkeypatch.setenv("HERMES_HOME", "")  # exported-empty, not unset
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    install_sh = REPO_ROOT / "scripts" / "install.sh"
+
+    script = (
+        'source "$1" --manifest || exit 1\n'
+        'printf "%s\\n" "$HERMES_ROOT"\n'
+        'printf "%s\\n" "$(env | sed -n "s/^HERMES_HOME=//p" | head -1)"\n'
+        'PYTHONPATH="$2" "$3" -c "from hermes_constants import get_default_hermes_root; '
+        'print(get_default_hermes_root())"\n'
+    )
+    result = subprocess.run(
+        [bash, "-c", script, "test", str(install_sh), str(REPO_ROOT), sys.executable],
+        env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    root, child_home, child_root = result.stdout.splitlines()[:3]
+
+    assert root == str(native / ".hermes-$ROOT_CONTRACT_LABEL"), root
+    assert child_home == "", (
+        "a defaulted home must stay shell-local: an exported literal-suffix "
+        "HERMES_HOME makes child Python expand the suffix and pick a different root"
+    )
+    assert child_root == root, (
+        f"child Python resolved {child_root!r}, the bootstrap staged into {root!r}"
+    )
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize(
+    "raw_home,expected",
+    [
+        ("   ", None),                       # whitespace-only == unset -> default
+        ("  /tmp/custom  ", "/tmp/custom"),  # outer whitespace is trimmed
+    ],
+)
+def test_install_sh_trims_outer_whitespace_from_the_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw_home: str, expected: str | None
+) -> None:
+    """Outer whitespace is not part of the home: INSTALL_DIR must follow the
+    trimmed value the resolver and Python's ``str.strip()`` use, not the raw string.
+
+    A whitespace-only HERMES_HOME is "unset", so INSTALL_DIR must fall under the
+    default home, not become a whitespace-prefixed relative path.
+    """
+    bash = shutil.which("bash")
+    assert bash, "install.sh requires bash"
+    native = tmp_path / "native-home"
+    monkeypatch.setenv("HOME", str(native))
+    monkeypatch.setenv("HERMES_HOME", raw_home)
+    monkeypatch.delenv("HERMES_INSTALL_DIR", raising=False)
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
+    monkeypatch.chdir(tmp_path)
+    install_sh = REPO_ROOT / "scripts" / "install.sh"
+
+    script = (
+        'source "$1" --manifest || exit 1\n'
+        'printf "%s\\n%s\\n" "$HERMES_HOME" "$INSTALL_DIR"\n'
+    )
+    result = subprocess.run(
+        [bash, "-c", script, "test", str(install_sh)],
+        env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    hermes_home, install_dir = result.stdout.splitlines()[:2]
+
+    resolved = expected if expected is not None else str(native / ".hermes")
+    assert hermes_home == resolved, hermes_home
+    assert install_dir == resolved + "/hermes-agent", install_dir
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("raw,kind", [
+    ("~/custom-hermes", "native"),        # tilde must expand to HOME/custom-hermes
+    ("$HOME/custom-hermes", "native"),    # $VAR must expand
+    ("${HOME}/custom-hermes", "native"),  # ${VAR} must expand
+    ("custom-hermes", "cwd"),             # relative must anchor at the invocation cwd
+])
+def test_install_sh_expands_and_anchors_the_explicit_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str, kind: str
+) -> None:
+    """F1/F2: the finalizer must hand INSTALL_DIR/INSTALL_LOG and the exported
+    HERMES_HOME the expanded, absolute profile home. A raw ``~``/``$VAR`` lands the
+    checkout under a literal directory (F1); a relative home re-resolves after
+    bootstrap_pm changes cwd (F2). Both consumers must see the same absolute value."""
+    bash = shutil.which("bash")
+    assert bash, "install.sh requires bash"
+    native = tmp_path / "native-home"
+    monkeypatch.setenv("HOME", str(native))
+    monkeypatch.delenv("HERMES_INSTALL_DIR", raising=False)
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
+    monkeypatch.chdir(tmp_path)
+    install_sh = REPO_ROOT / "scripts" / "install.sh"
+
+    expected = (
+        str(native / "custom-hermes") if kind == "native" else str(tmp_path / "custom-hermes")
+    )
+
+    script = (
+        'source "$1" --manifest || exit 1\n'
+        'printf "%s\\n%s\\n%s\\n" "$HERMES_HOME" "$INSTALL_DIR" "$INSTALL_LOG"\n'
+    )
+    result = subprocess.run(
+        [bash, "-c", script, "test", str(install_sh)],
+        env={**os.environ, "HERMES_HOME": raw}, cwd=tmp_path,
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    hermes_home, install_dir, install_log = result.stdout.splitlines()[:3]
+
+    assert hermes_home == expected, hermes_home
+    assert install_dir == expected + "/hermes-agent", install_dir
+    assert install_log == expected + "/logs/install.log", install_log
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("raw,kind", [
+    ("runtime-store", "relative"),  # must anchor at the invocation cwd
+    ("/abs-store", "absolute"),     # left unchanged
+])
+def test_install_sh_binds_the_runtime_override_before_the_chdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str, kind: str
+) -> None:
+    """A relative HERMES_RUNTIME_DIR is resolved on two sides of the checkout chdir
+    (ensure_uv before, PM's child after). The finalizer must export one absolute
+    value so both sides bind the same store; an absolute override is the control."""
+    bash = shutil.which("bash")
+    assert bash, "install.sh requires bash"
+    monkeypatch.setenv("HOME", str(tmp_path / "native-home"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("HERMES_INSTALL_DIR", raising=False)
+    monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
+    monkeypatch.chdir(tmp_path)
+    install_sh = REPO_ROOT / "scripts" / "install.sh"
+
+    want = str(tmp_path / "runtime-store") if kind == "relative" else raw
+    script = (
+        'source "$1" --manifest || exit 1\n'
+        'printf "%s\\n" "$HERMES_RUNTIME_DIR"\n'
+    )
+    result = subprocess.run(
+        [bash, "-c", script, "test", str(install_sh)],
+        env={**os.environ, "HERMES_RUNTIME_DIR": raw}, cwd=tmp_path,
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines()[0] == want, result.stdout
+
+    # PM's child resolves the exported value from the checkout cwd; it must agree
+    # with what the bootstrap stages into (resolve() normalizes macOS symlinks).
+    checkout = tmp_path / "home" / "hermes-agent"
+    checkout.mkdir(parents=True)
+    child = subprocess.run(
+        [sys.executable, "-c",
+         "import os; from pathlib import Path; print(Path(os.environ['HERMES_RUNTIME_DIR']).resolve())"],
+        env={**os.environ, "HERMES_RUNTIME_DIR": want}, cwd=str(checkout),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert child.returncode == 0, child.stdout + child.stderr
+    assert child.stdout.splitlines()[0] == str(Path(want).resolve())
+
+
+_PS1_RUNTIME_ANCHOR = re.compile(
+    r'if \(\$env:HERMES_RUNTIME_DIR -and -not \[System\.IO\.Path\]::IsPathRooted\(\$env:HERMES_RUNTIME_DIR\)\) \{'
+    r'.*?\$env:HERMES_RUNTIME_DIR = \[System\.IO\.Path\]::GetFullPath\(\$env:HERMES_RUNTIME_DIR\)'
+    r'.*?\}',
+    re.DOTALL,
+)
+
+
+@pytest.mark.skipif(_POWERSHELL is None, reason="running the PowerShell anchor needs pwsh or powershell")
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("ps1", [
+    REPO_ROOT / "scripts" / "install.ps1",
+    REPO_ROOT / "setup-hermes.ps1",
+])
+def test_powershell_anchors_a_relative_runtime_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ps1: Path
+) -> None:
+    """The ps1 twins must anchor a relative HERMES_RUNTIME_DIR before Push-Location,
+    so Get-PmStoreRoot (caller cwd) and PM's child (InstallDir) bind the same store.
+    Host-independent: only the relative case is platform-neutral — the absolute and
+    drive-relative controls live in the platforms("windows") test below."""
+    text = ps1.read_text(encoding="utf-8")
+    match = _PS1_RUNTIME_ANCHOR.search(text)
+    assert match, f"{ps1.name}: the runtime-override anchor block is missing"
+    script = (
+        "$env:HERMES_RUNTIME_DIR = 'runtime-store'\n{}\nWrite-Output $env:HERMES_RUNTIME_DIR\n"
+        .format(match.group(0))
+    )
+    result = subprocess.run(
+        [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
+    )
+    assert result.returncode == 0, f"{ps1.name}: {result.stdout}{result.stderr}"
+    got = result.stdout.strip()
+    assert Path(got).resolve() == Path(tmp_path / "runtime-store").resolve(), (
+        f"{ps1.name}: runtime-store -> {got!r}, want {tmp_path / 'runtime-store'!r}"
+    )
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("raw", [
+    "rel-store",          # ordinary relative: anchored at the invocation cwd
+    "C:\\abs\\store",     # drive-rooted: unchanged
+    "C:rel-store",        # drive-relative: anchored at C:'s current directory
+])
+def test_windows_runtime_override_anchor_matches_pm_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """On Windows the anchor must bind the SAME store identity PM's
+    ``Path(override).resolve()`` computes from a different cwd (after
+    Push-Location): a drive-relative ``C:foo`` anchors at the drive's current
+    directory, never converts to a drive-rooted ``C:\\foo``."""
+    text = (REPO_ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
+    match = _PS1_RUNTIME_ANCHOR.search(text)
+    assert match, "the runtime-override anchor block is missing"
+    script = (
+        "$env:HERMES_RUNTIME_DIR = '{}'\n{}\nWrite-Output $env:HERMES_RUNTIME_DIR\n"
+        .format(raw, match.group(0))
+    )
+    result = subprocess.run(
+        [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    anchored = result.stdout.strip()
+    # The anchor must produce an ABSOLUTE identity: only then is the exported
+    # value cwd-independent, so PM's child (after Push-Location into the
+    # checkout) resolves the same store the bootstrap staged into.
+    assert Path(anchored).is_absolute(), f"{raw!r}: anchor left {anchored!r} non-absolute"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir(parents=True)
+    child = subprocess.run(
+        [sys.executable, "-c",
+         "import os; from pathlib import Path; print(Path(os.environ['HERMES_RUNTIME_DIR']).resolve())"],
+        env={**os.environ, "HERMES_RUNTIME_DIR": anchored}, cwd=str(checkout),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert child.returncode == 0, child.stdout + child.stderr
+    pm = child.stdout.strip()
+    assert str(Path(pm)).lower() == str(Path(anchored)).lower(), (
+        f"{raw!r}: bootstrap anchored {anchored!r}, PM from checkout resolved {pm!r}"
+    )
 
 
 @pytest.mark.platforms("posix")

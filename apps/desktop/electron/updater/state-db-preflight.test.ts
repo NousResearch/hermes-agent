@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
-import { preflightStateDb, resolveStateDbSnapshotRunner } from './state-db-preflight'
+import { preflightStateDb, resolveStateDbSnapshotRunner, type StateDbSnapshotRunner } from './state-db-preflight'
 
 const repository: string = path.resolve(import.meta.dirname, '../../../..')
 
@@ -198,5 +198,47 @@ test('the launcher rung is only for managed installs; a plain checkout without a
     assert.equal(runner, null)
   } finally {
     fs.rmSync(plainRoot, { recursive: true, force: true })
+  }
+})
+
+
+test('a Windows .cmd launcher routes through cmd.exe with the CVE screen and /v:off', (): void => {
+  const managedRoot: string = fs.mkdtempSync(path.join(os.tmpdir(), 'cmd-preflight-'))
+  const home: string = path.join(managedRoot, 'home')
+
+  try {
+    fs.mkdirSync(home, { recursive: true })
+    fs.mkdirSync(path.join(managedRoot, 'pm'), { recursive: true })
+    fs.mkdirSync(path.join(managedRoot, '.hermes', 'bin'), { recursive: true })
+    fs.writeFileSync(path.join(managedRoot, '.hermes', 'bin', 'hermes.cmd'), '@echo off\r\n')
+
+    const runner = resolveStateDbSnapshotRunner({
+      python: null,
+      updateRoot: managedRoot,
+      script: path.join(managedRoot, 'hermes_cli', 'backup_sqlite.py'),
+      home,
+      isWindows: true
+    })
+
+    assert.ok(runner, 'a .cmd launcher on a managed install must resolve')
+    assert.equal(runner.viaCmd, true)
+
+    // preflightStateDb builds the cmd.exe argv internally, so assert the
+    // recipe indirectly: the same home with a caret must be refused by the
+    // metacharacter screen (the reviewer-measured ho^me -> home rewrite),
+    // while the plain home still resolves a runner.
+    const caretHome: string = path.join(managedRoot, 'ho^me')
+    assert.throws(
+      (): StateDbSnapshotRunner | null => resolveStateDbSnapshotRunner({
+        python: null,
+        updateRoot: managedRoot,
+        script: path.join(managedRoot, 'hermes_cli', 'backup_sqlite.py'),
+        home: caretHome,
+        isWindows: true
+      }),
+      /unsafe Windows command argument/
+    )
+  } finally {
+    fs.rmSync(managedRoot, { recursive: true, force: true })
   }
 })

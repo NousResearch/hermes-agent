@@ -31,8 +31,12 @@ interface StateDbPreflight extends StateDbSnapshotInput {
 
 // cmd.exe re-parses its command line (CVE-2024-27980 workaround — same screen
 // as updater/checkout-source.ts): any of these in a path or argument would
-// change the command instead of naming a file.
-const CMD_UNSAFE_ARG: RegExp = /["%&|<>\r\n]/
+// change the command instead of naming a file. `^` included: it stays a live
+// escape inside double quotes once delayed expansion is involved, rewriting
+// the home path (verified: ho^me arrives as home) — and backup_sqlite exits 0
+// on a home with no state.db, so a mangled path would silently skip the
+// emergency backup this pre-flight exists to take.
+const CMD_UNSAFE_ARG: RegExp = /["%&|<>^\r\n]/
 
 /**
  * The interpreter that runs the emergency snapshot. The checkout's own Python
@@ -94,7 +98,7 @@ export function preflightStateDb({ python, updateRoot, script, home, log, isWind
     const command: string = viaCmd ? (process.env.ComSpec ?? 'cmd.exe') : runner.command
 
     const args: string[] = viaCmd
-      ? ['/d', '/s', '/c', `""${runner.command}" ${runner.args.map((arg: string): string => `"${arg}"`).join(' ')}"`]
+      ? ['/d', '/v:off', '/s', '/c', `""${runner.command}" ${runner.args.map((arg: string): string => `"${arg}"`).join(' ')}"`]
       : runner.args
 
     const result: string = execFileSync(

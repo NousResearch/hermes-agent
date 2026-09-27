@@ -168,16 +168,51 @@ export async function uploadComposerAttachment(
 
   const stageForSession = async (liveSessionId: string): Promise<ComposerAttachment> => {
     if (attachment.kind === 'image') {
-      const result = imagePayload
-        ? await requestGateway<ImageAttachResponse>('image.attach_bytes', {
-            session_id: liveSessionId,
-            content_base64: imagePayload.contentBase64,
-            filename: imagePayload.filename
-          })
-        : await requestGateway<ImageAttachResponse>('image.attach', {
+      const attachBytes = () =>
+        requestGateway<ImageAttachResponse>('image.attach_bytes', {
+          session_id: liveSessionId,
+          content_base64: imagePayload!.contentBase64,
+          filename: imagePayload!.filename
+        })
+
+      let result: ImageAttachResponse
+
+      if (imagePayload) {
+        result = await attachBytes()
+      } else {
+        try {
+          result = await requestGateway<ImageAttachResponse>('image.attach', {
             path,
             session_id: liveSessionId
           })
+        } catch (err) {
+          // A restored owner's mode can be stale. Recover only a confirmed
+          // missing path, not unsupported images (also 4016) or failed writes.
+          // Keep the same session/dispatcher and preserve working gateway paths.
+          if (
+            !(err instanceof JsonRpcGatewayError) ||
+            err.code !== 4016 ||
+            !err.message.startsWith('image not found:')
+          ) {
+            throw err
+          }
+
+          try {
+            // Read the original client file, never a possibly downscaled preview.
+            imagePayload = await readImageForRemoteAttach(path)
+          } catch {
+            throw err
+          }
+
+          if (!imagePayload) {
+            throw err
+          }
+
+          // Retain bytes if session-not-found recovery replays this operation.
+          // A failed byte upload surfaces; it must not restart the path ladder.
+          result = await attachBytes()
+        }
+      }
 
       if (!result.attached) {
         throw new Error(result.message || `Could not attach ${label}`)

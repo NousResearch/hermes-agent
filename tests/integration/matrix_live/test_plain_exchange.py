@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
+from urllib.parse import quote
 
 import pytest
 from nio import RoomMessageText, RoomSendResponse
@@ -16,6 +18,7 @@ def test_plain_room_exchange(
     gateway: LiveGateway,
     live_room: LiveRoom,
     linux_nio_observer: LinuxNioObserver,
+    record_property: Callable[[str, object], None],
 ) -> None:
     assert linux_nio_observer.account == live_room.observer
     url = live_room.homeserver
@@ -54,7 +57,17 @@ def test_plain_room_exchange(
                     assert replies == [("@hermes:matrix.test", "Matrix live reply")]
                     requests = gateway.model.main_requests()
                     assert len(requests) == 1
-                    assert "Hello Hermes [in:plain]" in json.dumps(requests[0]["messages"])
+                    messages = requests[0]["messages"]
+                    assert "Hello Hermes [in:plain]" in json.dumps(messages)
+                    permalink = (
+                        f"https://matrix.to/#/{quote(room_id, safe='!$:@')}/"
+                        f"{quote(sent.event_id, safe='!$:@')}?via=matrix.test"
+                    )
+                    assert f"[Matrix source: {permalink}]" in json.dumps(messages)
+                    assert all(
+                        permalink not in json.dumps(message)
+                        for message in messages if message["role"] == "system"
+                    )
                     return
             pytest.fail(
                 "No Matrix reply after 15 seconds. Gateway logs:\n"
@@ -63,4 +76,8 @@ def test_plain_room_exchange(
         finally:
             await client.close()
 
-    asyncio.run(exchange())
+    started = time.monotonic()
+    try:
+        asyncio.run(exchange())
+    finally:
+        record_property("body_seconds", round(time.monotonic() - started, 3))

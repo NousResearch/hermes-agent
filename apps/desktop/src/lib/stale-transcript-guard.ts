@@ -21,14 +21,25 @@ export function profileScopeForSessionOwner(owner: SessionOwnerScope): ProfileSc
 }
 
 /**
+ * Transcript content a view actually authored. Backend-written notices
+ * (`ChatMessage.systemNotice`) render on the timeline but belong to no view, so
+ * counting them reports a second window that does not exist: an in-place model
+ * switch alone refused every send with "this window was behind another view of
+ * the same chat".
+ */
+function authoredMessageCount(messages: ChatMessage[]): number {
+  return messages.reduce((count, message) => (message.systemNotice ? count : count + 1), 0)
+}
+
+/**
  * Chat messages to install when the authoritative latest page is ahead of the
  * local view. Null when the local view is current.
  *
- * Length is compared after `toChatMessages`, so tool rows folded into an
- * assistant bubble are not "ahead". A backfilled prefix is kept when the
- * refreshed tail anchors inside it. Live stream ids that do not anchor still
- * use length, so the window that just finished the turn is not blocked when
- * the counts match.
+ * Authored content is compared after `toChatMessages`, so tool rows folded into
+ * an assistant bubble are not "ahead", and neither is a backend-authored
+ * notice. A backfilled prefix is kept when the refreshed tail anchors inside
+ * it. Live stream ids that do not anchor still use the count, so the window
+ * that just finished the turn is not blocked when the counts match.
  */
 export function messagesIfTranscriptBehind(
   localMessages: ChatMessage[],
@@ -43,12 +54,13 @@ export function messagesIfTranscriptBehind(
   }
 
   const grafted = graftRefreshedTailOntoBackfill(remoteChat, localMessages)
+  const localAuthored = authoredMessageCount(localMessages)
 
   if (grafted === remoteChat) {
-    return remoteChat.length > localMessages.length ? remoteChat : null
+    return authoredMessageCount(remoteChat) > localAuthored ? remoteChat : null
   }
 
-  return grafted.length > localMessages.length ? grafted : null
+  return authoredMessageCount(grafted) > localAuthored ? grafted : null
 }
 
 /**

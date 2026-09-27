@@ -42,8 +42,11 @@ def source_git_env() -> dict[str, str]:
     from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
 
     env = noninteractive_git_env()
+    # Pathspec-mode overrides change how every probe's path arguments match
+    # (GIT_LITERAL_PATHSPECS turns a ":(literal)" magic prefix into filename text).
     for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
-                "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE", "GIT_NAMESPACE"):
+                "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE", "GIT_NAMESPACE",
+                "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
         env.pop(key, None)
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env.update(NO_LAZY_FETCH_ENV)

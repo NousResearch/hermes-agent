@@ -66,6 +66,8 @@ vi.mock('@/store/gateway', async importOriginal => ({
 // the stored sessions table and 404s on a runtime id. session.title accepts
 // the runtime id directly.
 const RUNTIME_SESSION_ID = 'rt-abc123'
+// Every typed command also fires this (fire-and-forget); these tests assert the command's own traffic.
+const SLASH_METRIC = 'shared_metrics.slash_command'
 
 function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -341,6 +343,10 @@ describe('usePromptActions /stop', () => {
     const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push({ method, params })
 
       if (method === 'session.interrupt') {
@@ -473,6 +479,10 @@ describe('usePromptActions slash session targeting', () => {
     const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -653,7 +663,11 @@ describe('usePromptActions /wake', () => {
 
     await handle!.submitText('/wake')
 
-    expect(requestGateway.mock.calls.map(([method]) => method)).toEqual(['wake.status', 'wake.stop', 'wake.status'])
+    expect(requestGateway.mock.calls.map(([method]) => method).filter(m => m !== SLASH_METRIC)).toEqual([
+      'wake.status',
+      'wake.stop',
+      'wake.status'
+    ])
     expect(requestGateway).toHaveBeenCalledWith('wake.stop', { persist: true })
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
@@ -1344,6 +1358,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     const states: Record<string, unknown>[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push({ method, params })
 
       if (method === 'slash.exec') {
@@ -1472,6 +1490,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     const busyRef = { current: true }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push({ method, params })
 
       if (method === 'slash.exec') {
@@ -1634,6 +1656,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     const busyRef = { current: false }
 
     const requestGateway = vi.fn(async (method: string) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push(method)
 
       return (method === 'slash.exec' ? { type: 'send', message: 'audit the session states' } : {}) as never
@@ -1853,6 +1879,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     const states: Record<string, unknown>[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push({ method, params })
 
       if (method === 'slash.exec') {

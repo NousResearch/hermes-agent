@@ -2047,7 +2047,7 @@ export interface SessionTileDelegate {
   deleteSession(storedSessionId: string): Promise<void>
   /** Run a slash command against a tile's session (app-level effects — e.g.
    *  branch/handoff — act on the main surface, as they should). */
-  executeSlash(rawCommand: string, sessionId: string): Promise<void>
+  executeSlash(rawCommand: string, sessionId: string, options?: { typed?: boolean }): Promise<void>
   /** Interrupt a tile's running turn. */
   interruptSession(runtimeId: string): Promise<void>
   /** Drop the wiring cache's stored→runtime bindings. Called on gateway

@@ -694,7 +694,8 @@ const CompressConversationAction: FC<{ label: string }> = ({ label }) => {
     }
 
     triggerHaptic('submit')
-    void delegate.executeSlash('/compress', sessionId).catch(error => {
+    // A button, not a typed command: kept out of the slash-command usage count.
+    void delegate.executeSlash('/compress', sessionId, { typed: false }).catch(error => {
       notifyError(error, t.assistant.thread.errorCompressFailed)
     })
   }, [sessionId, t.assistant.thread.errorCompressFailed])

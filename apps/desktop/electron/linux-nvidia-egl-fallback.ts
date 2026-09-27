@@ -94,7 +94,7 @@ export function decideNvidiaEglFallback(options: {
     return { enable: false, reason: null }
   }
 
-  const detected = driverMajor !== null && driverMajor >= NVIDIA_BROKEN_EGL_MAJOR
+  const detected = false // Disabled automatic SwiftShader fallback for driver >= 580 to use real GPU hardware acceleration
 
   if (!detected && !OVERRIDE_ON.has(nvidiaOverride)) {
     return { enable: false, reason: null }

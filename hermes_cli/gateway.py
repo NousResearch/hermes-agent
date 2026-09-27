@@ -3637,6 +3637,13 @@ def systemd_install(
         else:
             print(f"Service already installed at: {unit_path}")
             print("Use --force to reinstall")
+            # An existing, current unit may still be DISABLED (a host whose unit predates
+            # enable-on-install, or a migration whose uninstall took the wrong unit's wants
+            # symlink). Honour enable_on_startup for this branch too — it used to return without
+            # ever enabling, so even the migration's install path was no enablement guarantee
+            # (#124922).
+            if enable_on_startup:
+                _run_systemctl(["enable", get_service_name()], system=system, check=False, timeout=30)
         # Same post-install guarantee as a fresh install: a repaired user unit must survive logout too.
         configured_user = _read_systemd_user_from_unit(unit_path) if system else None
         if configured_user:

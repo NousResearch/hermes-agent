@@ -5,7 +5,6 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
-from hermes_cli.cli_output import line_input
 import json
 import logging
 import os
@@ -29,6 +28,21 @@ if os.name == "posix":
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(sorted(_missing))
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+# Import ``line_input`` defensively: ``hermes update`` keeps running in the
+# pre-pull interpreter, and updaters older than 044acf2bf7 (v2026.8.18 and
+# earlier) do not purge the stale ``hermes_cli.cli_output`` cache entry before
+# the gateway auto-restart phase imports this module. A module-level import of
+# ``line_input`` (added in d0132b582) then ImportErrors against that stale
+# cache, aborting the whole restart phase and exiting ``hermes update`` with 1
+# even though the code update itself succeeded (E2E: update from v2026.8.18).
+# Line_input is only needed by interactive platform-setup flows, which always
+# run in fresh processes — so a plain ``input`` fallback is safe here.
+try:
+    from hermes_cli.cli_output import line_input
+except ImportError:  # stale pre-d0132b582 cli_output cached by an old updater
+    def line_input(prompt_text: str) -> str:
+        return input(prompt_text)
 
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid

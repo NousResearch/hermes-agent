@@ -856,17 +856,20 @@ class TestMcpLogin:
 # Tests: exit status of the real `hermes mcp` command line
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("argv, expected", [
-    (["login", "deadoauth"], 1),
-    (["reauth", "--all"], 1),
-    (["login", "ghost"], 3),
-    (["remove", "ghost"], 3),
-    (["add", "bad", "--command", "/nonexistent/hermes-mcp-fixture"], 1),
+@pytest.mark.parametrize("argv, expected, answer, managed", [
+    (["login", "deadoauth"], 1, "", False),
+    (["reauth", "--all"], 1, "", False),
+    (["login", "ghost"], 3, "", False),
+    (["remove", "ghost"], 3, "", False),
+    (["add", "bad", "--command", "/nonexistent/hermes-mcp-fixture"], 1, "", False),
+    (["remove", "deadoauth"], 1, "n\n", False),  # declined prompt
+    (["add", "deadoauth", "--command", "/nonexistent/hermes-mcp-fixture"], 1, "n\n", False),  # overwrite declined
+    (["remove", "deadoauth"], 1, "y\n", True),  # managed install: save_config() declines the write
 ])
-def test_mcp_action_that_did_not_happen_exits_nonzero(tmp_path, argv, expected):
+def test_mcp_action_that_did_not_happen_exits_nonzero(tmp_path, argv, expected, answer, managed):
     """The process status is the outcome, like ``hermes mcp test``: a failed sign-in, an unknown
-    server or a server that could not be added is never exit 0. Real parser, dispatcher and probe;
-    the OAuth server is a closed loopback port, so nothing leaves the machine."""
+    server, a declined prompt or a change the install refuses to save is never exit 0. Real parser,
+    dispatcher and probe; the OAuth server is a closed loopback port, so nothing leaves the machine."""
     import socket
     import subprocess
     import sys
@@ -877,11 +880,18 @@ def test_mcp_action_that_did_not_happen_exits_nonzero(tmp_path, argv, expected):
     _seed_config(tmp_path, {"deadoauth": {
         "url": f"http://127.0.0.1:{closed_port}/mcp", "auth": "oauth", "connect_timeout": 5}})
     before = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    if managed:  # a managed home is provisioned by the package manager, never created by Hermes
+        from hermes_cli.config import _HERMES_HOME_SUBDIRS
+
+        for subdir in _HERMES_HOME_SUBDIRS:
+            (tmp_path / subdir).mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".managed").write_text("true\n", encoding="utf-8")
 
     result = subprocess.run(
         [sys.executable, "-m", "hermes_cli.main", "mcp", *argv],
-        cwd=Path(__file__).resolve().parents[2], env={**os.environ, "HERMES_HOME": str(tmp_path)},
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=90,
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "HERMES_HOME": str(tmp_path), "HERMES_MANAGED": ""},
+        input=answer, capture_output=True, text=True, encoding="utf-8", timeout=90,
     )
 
     assert result.returncode == expected, result.stdout + result.stderr

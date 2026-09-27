@@ -61,7 +61,11 @@ except ImportError:
 
     EventType = type("_EventTypeStub", (), {  # type: ignore[misc,assignment]
         "ROOM_MESSAGE": "m.room.message", "REACTION": "m.reaction",
-        "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name"})
+        "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name",
+        "ROOM_TOPIC": "m.room.topic", "ROOM_CANONICAL_ALIAS": "m.room.canonical_alias",
+        "ROOM_MEMBER": "m.room.member", "ROOM_TOMBSTONE": "m.room.tombstone",
+        "ROOM_ENCRYPTION": "m.room.encryption", "ROOM_JOIN_RULES": "m.room.join_rules",
+        "ROOM_HISTORY_VISIBILITY": "m.room.history_visibility"})
     PresenceState = type("_PresenceStateStub", (), {  # type: ignore[misc,assignment]
         "ONLINE": "online", "OFFLINE": "offline", "UNAVAILABLE": "unavailable"})
     Membership = type("_MembershipStub", (), {  # type: ignore[misc,assignment]
@@ -71,6 +75,7 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
+from plugins.platforms.matrix.room_context import PendingRoomNotes, room_state_change_note
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -897,6 +902,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identity_cached_at: Dict[str, float] = {}
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
+        self._pending_room_notes = PendingRoomNotes(self._room_identity_cache_max)
         self._joined_rooms: Set[str] = set()
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
@@ -1390,6 +1396,14 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message, wait_sync=True)
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
+        for state_type_name in (
+            "ROOM_TOPIC", "ROOM_NAME", "ROOM_CANONICAL_ALIAS", "ROOM_MEMBER",
+            "ROOM_TOMBSTONE", "ROOM_ENCRYPTION", "ROOM_JOIN_RULES",
+            "ROOM_HISTORY_VISIBILITY",
+        ):
+            state_type = getattr(EventType, state_type_name, None)
+            if state_type is not None:
+                client.add_event_handler(state_type, self._on_room_state, wait_sync=True)
         self._startup_ts = time.time()
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
@@ -2179,6 +2193,10 @@ class MatrixAdapter(BasePlatformAdapter):
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
+            channel_context=(
+                self._pending_room_notes.take(room_id)
+                if extra.get("message_type") == MessageType.TEXT else None
+            ),
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
 
@@ -2317,6 +2335,25 @@ class MatrixAdapter(BasePlatformAdapter):
             return await cache_audio_from_bytes_async(file_bytes, ext=ext)
         filename = body or ("video.mp4" if msg_type == MessageType.VIDEO else "document")
         return await cache_document_from_bytes_async(file_bytes, filename)
+
+    async def _on_room_state(self, event: Any) -> None:
+        room_id = str(getattr(event, "room_id", ""))
+        if not room_id:
+            return
+
+        self._invalidate_room_identities(room_id)
+        if room_id not in self._joined_rooms:
+            return
+        if self._is_self_sender(str(getattr(event, "sender", ""))):
+            return
+        event_ts = _matrix_event_timestamp_seconds(event)
+        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+            return
+
+        change = room_state_change_note(event)
+        if change:
+            kind, note = change
+            self._pending_room_notes.stash(room_id, kind, note)
 
     async def _on_invite(self, event: Any) -> None:
         """Auto-join rooms when invited, recording DM rooms in m.direct."""

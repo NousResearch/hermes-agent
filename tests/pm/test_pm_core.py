@@ -468,6 +468,92 @@ def test_gc_keeps_used_removes_orphans(pm_env):
     assert any(p.name.startswith("faketool-1.0") for p in runtime.iterdir())
 
 
+def test_locked_previous_entry_does_not_fail_a_successful_install(pm_env, monkeypatch, caplog):
+    """A Windows file hold on the displaced ``.previous-<entry>`` (still-mapped
+    DLL of the running gateway's old interpreter, an AV handle) can outlive the
+    whole retry window. By then the new entry is published, verified and the
+    facts are committed — the removal is garbage collection, so failing the
+    install reports a broken update that actually succeeded (#124807)."""
+    import logging
+
+    from pm import install as install_mod
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+
+    # Break the live entry so the next ensure() reinstalls (entry → .previous-
+    # → fresh publish), the exact path `hermes update` drives on a pin change.
+    entry = next(p for p in runtime.iterdir() if p.name.startswith("faketool-"))
+    (entry / "bin/faketool").unlink()
+
+    real_remove = install_mod._remove_entry
+
+    def locked_remove(store, entry_name):
+        if entry_name.startswith(".previous-"):
+            raise OSError(5, "Access is denied")
+        real_remove(store, entry_name)
+
+    monkeypatch.setattr(install_mod, "_remove_entry", locked_remove)
+    with caplog.at_level(logging.WARNING, logger="pm.install"):
+        runner = ensure("faketool", base_env={})
+
+    # The reinstall completed and the new entry is the live one.
+    fact = Facts(runtime / "facts.json").get("faketool")
+    assert fact["entry"] in runner.env["PATH"]
+    assert (runtime / fact["entry"] / "bin/faketool").read_bytes() == b"#!x"
+    # The locked GC target survives on disk, flagged for the next install.
+    assert (runtime / f".previous-{fact['entry']}").is_dir()
+    assert any(
+        "could not be removed" in record.message and fact["entry"] in record.message
+        for record in caplog.records
+    )
+    # Once the hold is gone the next reinstall (the pin change / entry repair
+    # that drives `hermes update`) retries the removal and closes it out.
+    monkeypatch.setattr(install_mod, "_remove_entry", real_remove)
+    entry = runtime / fact["entry"]
+    (entry / "bin/faketool").unlink()  # force the reinstall path through _install
+    ensure("faketool", base_env={})
+    assert (runtime / fact["entry"] / "bin/faketool").read_bytes() == b"#!x"
+    assert not (runtime / f".previous-{fact['entry']}").exists()
+
+
+def test_settle_tolerates_a_locked_previous_entry(pm_env, monkeypatch, caplog):
+    """_settle_previous_entry's remove arm runs when the NEXT install opens the
+    store that still holds a locked ``.previous-`` twin: the facts point at the
+    verified live entry, the twin is leftover garbage, and a file hold must not
+    abort the install before it starts (#124807)."""
+    import logging
+
+    from pm import install as install_mod
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    fact = Facts(runtime / "facts.json").get("faketool")
+    store = Store(runtime)
+    previous = runtime / f".previous-{fact['entry']}"
+    previous.mkdir()
+    (previous / "bin").mkdir()
+    (previous / "bin/faketool").write_bytes(b"#!old")
+
+    real_remove = install_mod._remove_entry
+
+    def locked_remove(store_, entry_name):
+        if entry_name.startswith(".previous-"):
+            raise OSError(5, "Access is denied")
+        real_remove(store_, entry_name)
+
+    monkeypatch.setattr(install_mod, "_remove_entry", locked_remove)
+    with caplog.at_level(logging.WARNING, logger="pm.install"):
+        install_mod._settle_previous_entry(
+            registry.get_package("faketool"), store,
+            store.entry(fact["entry"]), previous, fact, current_target(),
+        )
+    assert previous.is_dir()
+    assert any("could not be removed" in record.message for record in caplog.records)
+
+
 def test_gc_removes_fetch_cache_archives(pm_env):
     """The fetch-<sha> download-cache dirs are install-time only — gc must
     drop them so a staged payload (and the CI cache that stores it) doesn't

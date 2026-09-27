@@ -257,7 +257,21 @@ def _publish_entry(package, store, staged, entry, previous_entry, target):
             _restore_previous_entry(store, entry, previous_entry)
         raise
     if previous_entry.exists():
-        _remove_entry(store, previous_entry.name)
+        try:
+            _remove_entry(store, previous_entry.name)
+        except OSError as e:
+            # Garbage collection only: the new entry is published, verified and
+            # committed by the time this runs. On Windows a still-mapped DLL in
+            # the displaced entry (the running gateway's old interpreter, an AV
+            # handle) can outlive the whole retry window — failing the install
+            # here reports a broken update that actually succeeded (#124807).
+            # The leftover is retried by _settle_previous_entry on the next
+            # install once the hold is gone.
+            LOG.warning(
+                "%s: previous entry %s could not be removed (%s); "
+                "it will be retried on the next install",
+                package.name, previous_entry.name, e,
+            )
 
 
 def _settle_previous_entry(package, store, entry, previous_entry, previous, target) -> None:
@@ -268,7 +282,18 @@ def _settle_previous_entry(package, store, entry, previous_entry, previous, targ
     # an interrupted stage always restores its prior usable bytes.
     if (previous and previous.get("entry") == entry.name
             and _entry_verified(package, previous, store, target)):
-        _remove_entry(store, previous_entry.name)
+        try:
+            _remove_entry(store, previous_entry.name)
+        except OSError as e:
+            # Same GC-only semantics as the tail of _publish_entry: the verified
+            # entry is live, the ``.previous-`` twin is leftover garbage, and a
+            # Windows file hold that outlives the retry window must not abort
+            # the install before it starts (#124807).
+            LOG.warning(
+                "%s: previous entry %s could not be removed (%s); "
+                "it will be retried on the next install",
+                package.name, previous_entry.name, e,
+            )
     else:
         _restore_previous_entry(store, entry, previous_entry)
 

@@ -397,6 +397,13 @@ hermes kanban unblock  t_abc t_def
 hermes kanban block    t_abc "need input" --ids t_def t_hij
 ```
 
+For accepted work parked in `triage` or `blocked`, use `hermes kanban complete
+<id> --result "Accepted: ..."` from a profile other than the implementer. This
+closes the card directly, records the accepting profile and source status in
+the `completed` event, and retains dependency and declared PR-acceptance checks.
+After a review handoff, the recorded original implementer remains excluded;
+the reviewer can accept. `--force` only overrides live claims, not this check.
+
 :::note Where an unblocked task lands
 `unblock` restores the safe source phase: **`review`** for reviewer-origin work
 whose parents are complete, **`ready`** for implementation work whose parents

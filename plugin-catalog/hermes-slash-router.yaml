@@ -1,21 +1,20 @@
 name: hermes-slash-router
 repo: https://github.com/raitoxlol/hermes-slash-router
-sha: 1f6c20b0bf38fe1958a80a9798f5dcfde89dac39
+sha: 0bcfa96c9dfb21b2b65807adadd51bd099245028
 description: >-
   Jev-powered routing for misspelled, shortened, and meaning-based slash commands
-  on Hermes Desktop, CLI, and Telegram. Preserves drafts when unsure. Requires a
+  in the Hermes Desktop composer. Preserves drafts when unsure. Requires a
   TypeSafe API key; every non-exact lookup uses paid TypeSafe API usage.
 maintainer: raitoxlol
 tier: community
 category: desktop
 requires_hermes: ">=0.21.2"
 docs_url: https://github.com/raitoxlol/hermes-slash-router#readme
-version: "0.2.0"
+version: "0.3.0"
 platforms: []
 capabilities:
   provides_tools: []
-  provides_hooks:
-    - pre_gateway_dispatch
+  provides_hooks: []
   provides_middleware: []
   requires_env:
     - TYPESAFE_API_KEY

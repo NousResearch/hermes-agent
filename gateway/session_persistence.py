@@ -105,6 +105,22 @@ class SessionPersistenceMixin:
         except Exception:
             return None
 
+    def _telegram_topic_restore_db(self, topic_db_path):
+        """Require the handler's actual topic DB and routing DB to be the same file.
+
+        The path is an internal identity descriptor only; it never opens a database.
+        Separate handles and filesystem aliases of the same SQLite file are supported.
+        """
+        db = self._routing_db
+        if db is None or topic_db_path is None:
+            raise RuntimeError("Primary routing storage is unavailable")
+        if not Path(db.db_path).samefile(topic_db_path):
+            raise ValueError(
+                "Session restoration is not supported when topic/session storage and "
+                "routing storage use separate databases."
+            )
+        return db
+
     def _named_profile_for_key(self, session_key: Optional[str]) -> Optional[str]:
         """The non-default profile that owns *session_key*, or None (ambient store is authoritative:
         multiplexing off, or legacy ``agent:main``). Deliberately does NOT cover "that profile has
@@ -424,6 +440,11 @@ class SessionPersistenceMixin:
             elif key not in current:
                 continue  # loaded from fallback and deliberately removed
             elif current[key] == baseline[key]:
+                previous = self._entries[key]
+                if (getattr(previous, "_compression_pause_pending", False) is True
+                        and previous.session_id == durable_entry.session_id):
+                    # Recovered primary data cannot forget a failed process-local pause write.
+                    durable_entry._compression_pause_pending = True
                 self._entries[key] = durable_entry  # unchanged fallback data yields to the DB copy
         self._routing_db_loaded = True
         self._routing_fallback_baseline = None
@@ -433,10 +454,15 @@ class SessionPersistenceMixin:
         self._reconcile_recovered_routing_locked()
         return self._entries_as_dicts(), self._next_routing_generation_locked()
 
-    def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
+    def _persist_routing_data(
+        self, data: Dict[str, Any], generation: int, *, require_primary: bool = False,
+        telegram_topic_binding: Optional[Dict[str, str]] = None,
+    ) -> None:
         """Serialize all whole-index writers through one durable write lock."""
         with self._lazy("_save_lock", threading.Lock):
             if generation <= getattr(self, "_persisted_routing_generation", 0):
+                if require_primary:
+                    raise RuntimeError("Stale routing generation cannot commit session policy")
                 return
             # Fold in fast upserts numbered above this snapshot: they were serialized after us and
             # a delayed full rewrite must not regress them.
@@ -447,12 +473,38 @@ class SessionPersistenceMixin:
                         data[key] = json.loads(entry_json)
             db_saved = False
             replacer = self._routing_db_method("replace_gateway_routing_entries")
-            if replacer is not None:
+            if telegram_topic_binding is not None:
+                binding = dict(telegram_topic_binding)
+                db = self._telegram_topic_restore_db(binding.pop("_db_path"))
+                expected_id = binding.pop("expected_session_id")
+                key = binding["session_key"]
+                scope = self._routing_scope()
+                primary_json = db.load_gateway_routing_entries(scope=scope).get(key)
+                primary_id = None
+                if primary_json is not None:
+                    primary = self._routing_entry_from_json(key, primary_json)
+                    if primary is None:
+                        raise RuntimeError("Invalid primary session route")
+                    primary_id = primary.session_id
+                    if primary_id != expected_id:
+                        raise RuntimeError("Session route changed before topic restoration")
+                if not db.commit_telegram_topic_restore(
+                    routing_entries={k: json.dumps(v) for k, v in data.items()}, scope=scope,
+                    expected_route_session_id=primary_id, session_id=data[key]["session_id"],
+                    **binding,
+                ):
+                    raise RuntimeError("Session route changed before topic restoration")
+                db_saved = True
+            elif require_primary and replacer is None:
+                raise RuntimeError("Primary routing storage is unavailable")
+            elif replacer is not None:
                 try:
                     replacer({k: json.dumps(v) for k, v in data.items()}, scope=self._routing_scope())
                     db_saved = True
                 except Exception as exc:
                     logger.warning("gateway.session: state.db routing save failed: %s", exc)
+                    if require_primary:
+                        raise
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 try:
                     self._save_sessions_json(data)

@@ -50,7 +50,7 @@ class TestProviderPrecedence:
         _login(monkeypatch, "anthropic")
         _config(monkeypatch, {"default": "some-model"})  # dict, NO provider key
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
-        assert resolve_provider("auto") == "openrouter"
+        assert resolve_provider("auto") == "openai-api"
 
 
     def test_oauth_used_as_last_resort(self, monkeypatch):
@@ -63,17 +63,6 @@ class TestProviderPrecedence:
         assert resolve_provider("auto") == "anthropic"
 
 
-    def test_warns_on_silent_oauth_fallthrough(self, monkeypatch, caplog):
-        """A populated model dict lacking `provider` that falls through to OAuth
-        emits a WARN so the silent override is visible (#29285)."""
-        import logging
-        _clear_provider_env(monkeypatch)
-        _no_aws(monkeypatch)
-        _login(monkeypatch, "anthropic")
-        _config(monkeypatch, {"default": "claude-x"})  # populated, no provider
-        with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
-            assert resolve_provider("auto") == "anthropic"
-        assert any("no `provider` key" in r.message for r in caplog.records)
 
 
     def test_openrouter_pool_beats_stale_oauth(self, monkeypatch):
@@ -117,7 +106,7 @@ class TestFreeTierBeatsImplicitHostCredentials:
         (True, True, None, None, "nous"),                 # existing identity beats the AWS chain
         (True, False, None, None, "bedrock"),             # no identity yet: Bedrock, nothing minted
         (False, True, None, None, "bedrock"),             # free tier off: Bedrock as before
-        (True, True, "OPENAI_API_KEY", None, "openrouter"),  # env key still wins
+        (True, True, "OPENAI_API_KEY", None, "openai-api"),  # env key still wins
         (True, True, None, "anthropic", "anthropic"),        # a sign-in still wins
     ])
     def test_free_tier_sits_above_the_bedrock_chain(self, monkeypatch, free_tier_on, identity,

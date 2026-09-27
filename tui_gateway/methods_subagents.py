@@ -26,13 +26,37 @@ def _owned_subagent_records(session_id, transport, owner):
                 and r.get("owner_session_record") is owner]
 
 
+def _visible_subagent_records(session_id, transport, owner):
+    """Read-only roster for ``subagent.list``: the exact-owner records PLUS children whose durable
+    conversation lineage (``owner_agent_session_id`` resolved to its compression tip) is this
+    session's agent — the same spine ``delegate_task(action="list")`` walks in-process.
+
+    Spawn freezes ``owner_session_id`` to the UI session id of that moment; a Desktop reconnect /
+    resume remints the id and rebuilds the session record, and compression rotates the durable key,
+    so the exact match alone hid every still-running child from the panel for good (#114909).
+    Control RPCs (steer / interrupt / tail) keep the exact generation authority."""
+    from tools.delegate_tool_registry import (
+        _active_subagents, _active_subagents_lock, _owns_subagent_record, _subagent_transport_matches,
+    )
+
+    with _active_subagents_lock:
+        records = [dict(r) for r in _active_subagents.values()]
+    agent = owner.get("agent")
+    # Lineage resolution may read the session DB — evaluated outside the registry lock.
+    return [r for r in records
+            if (r.get("owner_session_id") == session_id
+                and _subagent_transport_matches(r, transport)
+                and r.get("owner_session_record") is owner)
+            or _owns_subagent_record(r, agent)]
+
+
 @method("subagent.list")
 def _(rid, params):
     session_id = _str_param(params, "session_id")
     transport, owner = _current_session_steer_authority(session_id)
     if transport is None or owner is None:
         return _err(rid, 4001, "session not found or not owned by this transport")
-    live = _owned_subagent_records(session_id, transport, owner)
+    live = _visible_subagent_records(session_id, transport, owner)
     return _ok(rid, {
         "subagents": [{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS} for r in live],
         "delegations": [],

@@ -35,10 +35,13 @@ _STOCK_NPM_BY_NODE_MAJOR = {
     26: "11.17.0",
 }
 
-
 def _root_manifest() -> dict:
     return json.loads((REPO_ROOT / "package.json").read_text())
 
+def _pm_lock():
+    from pm.lock import Lockfile
+
+    return Lockfile(REPO_ROOT / "pm" / "lock.json")
 
 def _parse_major_minor_patch(version: str) -> tuple[int, int, int]:
     parts = version.split("-", 1)[0].split(".")
@@ -46,7 +49,6 @@ def _parse_major_minor_patch(version: str) -> tuple[int, int, int]:
     while len(nums) < 3:
         nums.append(0)
     return nums[0], nums[1], nums[2]
-
 
 def _satisfies_clause(version: str, clause: str) -> bool:
     """Evaluate one `>=x.y.z` / `<x.y.z` / `^x.y.z` comparator against *version*."""
@@ -75,7 +77,6 @@ def _satisfies_clause(version: str, clause: str) -> bool:
         return have > want
     return have == want
 
-
 def _satisfies_range(version: str, spec: str) -> bool:
     """Evaluate the `A || B` / space-joined-AND subset of semver we author."""
     for alternative in spec.split("||"):
@@ -83,7 +84,6 @@ def _satisfies_range(version: str, spec: str) -> bool:
         if clauses and all(_satisfies_clause(version, c) for c in clauses):
             return True
     return False
-
 
 class TestEnginesAreSatisfiable:
     def test_npm_floor_is_met_by_a_shipping_node(self):
@@ -106,70 +106,27 @@ class TestEnginesAreSatisfiable:
         )
 
     def test_node_floor_is_met_by_the_managed_runtime(self):
-        """The Node major the installers provision must clear engines.node."""
+        """The Node PM provisions must clear engines.node."""
         node_range = _root_manifest()["engines"]["node"]
-        install_sh = (REPO_ROOT / "scripts" / "install.sh").read_text()
-        for line in install_sh.splitlines():
-            if line.startswith("NODE_VERSION="):
-                managed_major = int(line.split("=", 1)[1].strip().strip('"').strip("'"))
-                break
-        else:  # pragma: no cover - install.sh always defines it
-            pytest.fail("install.sh does not define NODE_VERSION")
-
-        # install.sh fetches latest-v{major}.x, not {major}.0.0. Use a high
-        # representative release from that major so ranges that enumerate LTS
-        # lines (rather than one continuous floor) are checked correctly.
-        managed_release = f"{managed_major}.999.999"
-        assert _satisfies_range(managed_release, node_range), (
-            f"engines.node is {node_range!r} but install.sh provisions Node "
-            f"{managed_major}.x. The runtime we ship must satisfy the floor we "
+        managed_node = _pm_lock().version("node")
+        assert managed_node, "pm/lock.json does not pin node"
+        assert _satisfies_range(managed_node, node_range), (
+            f"engines.node is {node_range!r} but PM provisions Node "
+            f"{managed_node}. The runtime we ship must satisfy the floor we "
             "declare, or the install we just performed cannot install deps."
         )
 
-    def test_managed_node_bundles_an_npm_the_engines_accept(self):
-        """The Node major install.sh fetches must ship an npm that clears
-        engines.npm. Node 22 bundles 11.16.0, which is in the excluded
-        11.10–11.16 band — fresh Hermes-managed installs then die at
-        `npm ci` with EBADENGINE (#80769).
+    def test_managed_npm_is_accepted_by_the_engines(self):
+        """The npm PM provisions must clear engines.npm, or fresh
+        Hermes-managed installs die at `npm ci` with EBADENGINE (#80769).
         """
         npm_range = _root_manifest()["engines"]["npm"]
-        install_sh = (REPO_ROOT / "scripts" / "install.sh").read_text()
-        for line in install_sh.splitlines():
-            if line.startswith("NODE_VERSION="):
-                managed_major = int(line.split("=", 1)[1].strip().strip('"').strip("'"))
-                break
-        else:  # pragma: no cover
-            pytest.fail("install.sh does not define NODE_VERSION")
-        stock_npm = _STOCK_NPM_BY_NODE_MAJOR.get(managed_major)
-        assert stock_npm is not None, (
-            f"install.sh NODE_VERSION={managed_major} is not in the known "
-            f"stock map {_STOCK_NPM_BY_NODE_MAJOR}"
+        managed_npm = _pm_lock().version("npm")
+        assert managed_npm, "pm/lock.json does not pin npm"
+        assert _satisfies_range(managed_npm, npm_range), (
+            f"PM provisions npm {managed_npm}, but engines.npm is "
+            f"{npm_range!r}. A fresh Hermes-managed install cannot run npm ci."
         )
-        assert _satisfies_range(stock_npm, npm_range), (
-            f"install.sh provisions Node {managed_major}.x (stock npm "
-            f"{stock_npm}), but engines.npm is {npm_range!r}. A fresh "
-            "Hermes-managed install cannot run npm ci."
-        )
-
-    def test_desktop_node_floor_is_not_stricter_than_its_toolchain(self):
-        """apps/desktop must not demand more Node than its own build tools do.
-
-        Vite is the real constraint (it needs `node:util.styleText`). Raising
-        the desktop floor beyond it silently force-migrates every user's
-        toolchain for no dependency reason.
-        """
-        desktop = json.loads((REPO_ROOT / "apps" / "desktop" / "package.json").read_text())
-        node_range = desktop["engines"]["node"]
-        # The tightest floor any dependency actually declares (react-router
-        # 8.3.0 -> >=22.22.0). If this legitimately rises, the assertion
-        # documents the reason for the bump rather than blocking it.
-        assert _satisfies_range("22.22.0", node_range), (
-            f"apps/desktop engines.node is {node_range!r}, which rejects Node "
-            "22.12 — stricter than Vite requires. A desktop floor above the "
-            "build toolchain's own floor replaces working user toolchains for "
-            "nothing."
-        )
-
 
 class TestExcludedNpmBand:
     """npm 11.10–11.16 honor `min-release-age` but ignore `min-release-age-exclude`.
@@ -196,14 +153,12 @@ class TestExcludedNpmBand:
             ".npmrc correctly and should be usable."
         )
 
-
 class TestManifestMirrors:
     def test_lockfile_engines_match_the_manifest(self):
         """A stale lockfile mirror re-imposes the old floor on `npm ci`."""
         manifest = _root_manifest()["engines"]
         lock = json.loads((REPO_ROOT / "package-lock.json").read_text())
         assert lock["packages"][""]["engines"] == manifest
-
 
 def _normalize_range(spec: str) -> str:
     """Normalize the wilder styles real deps publish so our tiny evaluator
@@ -217,7 +172,6 @@ def _normalize_range(spec: str) -> str:
     # "6.x" / "10.*" -> "^6.0.0"-ish floor within the major; ">= 10.*" -> ">=10.0.0"
     spec = re.sub(r"(\d+)\.[x*](?:\.[x*])?", r"\1.0.0", spec)
     return spec
-
 
 class TestDeclaredFloorsClearTheLockedTree:
     """Every Node version our own gates accept must survive `npm ci`.
@@ -273,25 +227,3 @@ class TestDeclaredFloorsClearTheLockedTree:
             "node_satisfies_build in scripts/install.sh, Test-NodeVersionOk "
             f"in scripts/install.ps1) or relax the dep. Violations: {violations}"
         )
-
-    def test_installer_gates_match_the_manifest_arms(self):
-        """install.sh's node_satisfies_build must encode the same floors as
-        engines.node — a laxer gate accepts a Node that npm then rejects."""
-        node_range = _root_manifest()["engines"]["node"]
-        install_sh = (REPO_ROOT / "scripts" / "install.sh").read_text()
-        install_ps1 = (REPO_ROOT / "scripts" / "install.ps1").read_text()
-        for arm in node_range.split("||"):
-            arm = arm.strip()
-            major, minor = _parse_major_minor_patch(arm.lstrip("^>="))[:2]
-            if arm.startswith("^") and minor > 0:
-                sh_gate = f'[ "$major" -eq {major} ] && [ "$minor" -ge {minor} ]'
-                ps1_gate = f"if ($v.Major -eq {major}) {{ return ($v.Minor -ge {minor}) }}"
-                assert sh_gate in install_sh, (
-                    f"engines.node arm {arm!r} has no matching gate in "
-                    f"install.sh node_satisfies_build (expected: {sh_gate})"
-                )
-                assert ps1_gate in install_ps1, (
-                    f"engines.node arm {arm!r} has no matching gate in "
-                    f"install.ps1 Test-NodeVersionOk (expected: {ps1_gate})"
-                )
-

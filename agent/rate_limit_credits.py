@@ -132,17 +132,28 @@ class RateLimitCreditsMixin:
         if not self._credits_notices_enabled() or state is None:
             return
         try:
-            from agent.credits_tracker import evaluate_credits_notices, is_free_tier_model, new_credits_latch
+            from agent.credits_tracker import (
+                _remember_shown_band,
+                evaluate_credits_notices, is_free_tier_model, new_credits_latch, rewarm_pricing_before_depleted_notice,
+            )
             latch = getattr(self, "_credits_latch", None)
             if latch is None:
                 latch = self._credits_latch = new_credits_latch()
             # Free-model gate: a depleted account can still inference on a free model. Local data only.
             model_is_free = is_free_tier_model(getattr(self, "model", "") or "", getattr(self, "base_url", "") or "")
+            if state.depleted and not model_is_free and rewarm_pricing_before_depleted_notice(self):
+                return  # a cold catalog cannot say the model is billed elsewhere; the warm's re-run decides
             to_show, to_clear = evaluate_credits_notices(state, latch, model_is_free=model_is_free)
             for key in to_clear:
                 self._emit_notice_clear(key)
             for notice in to_show:
                 self._emit_notice(notice)
+            # Record the band this session last showed so a desktop reap/resume rebuild
+            # (fresh agent + fresh latch, SAME session_id) restores it instead of
+            # re-announcing the unchanged band as a fresh crossing (#101578). Both the
+            # live-header path and the cold-start seed route through here, so this is the
+            # single chokepoint.
+            _remember_shown_band(getattr(self, "session_id", None), latch.get("usage_band"))
         except Exception:
             logger.warning("credits notice evaluation/emit failed", exc_info=True)
 

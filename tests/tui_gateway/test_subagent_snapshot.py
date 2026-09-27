@@ -15,15 +15,25 @@ def runtime(monkeypatch):
     transport = SimpleNamespace(write=lambda frame: True)
     owner = {"session_key": "parent", "history": [], "transport": transport}
     monkeypatch.setattr(server, "_sessions", {"ui-owner": owner})
-    monkeypatch.setattr(delegate_tool_registry, "_active_subagents", {})
-    monkeypatch.setattr(delegate_tool_registry, "_recent_subagents", {})
-    monkeypatch.setattr(async_delegation, "_records", {})
+    # Empty the shared registries IN PLACE rather than rebinding the module attributes:
+    # tools.delegate_tool_progress binds ``_active_subagents`` by name at import, so a rebound
+    # registry dict forks the two views whenever that module was imported by an earlier test
+    # (run_agent pulls it in) — the relay then writes last_tool into the orphaned original while
+    # ``_register_subagent`` and ``subagent.list`` use the replacement.
+    registries = (delegate_tool_registry._active_subagents, delegate_tool_registry._recent_subagents,
+                  async_delegation._records)
+    saved = [(reg, dict(reg)) for reg in registries]
+    for reg in registries:
+        reg.clear()
 
     def call(method, *, via=transport, **params):
         return server.dispatch({"id": 1, "method": method,
                                 "params": {"session_id": "ui-owner", **params}}, transport=via)
 
-    return server, owner, transport, call
+    yield server, owner, transport, call
+    for reg, snapshot in saved:
+        reg.clear()
+        reg.update(snapshot)
 
 
 def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
@@ -251,3 +261,45 @@ def test_any_attach_path_carries_subagent_authority_without_registry_sync(runtim
         denied = call("subagent." + method, via=old, subagent_id="child", text="stale")
         assert "error" in denied or denied["result"].get("status") == "rejected"
     assert steered == ["go"] and len(stopped) == 1
+
+
+def test_list_follows_the_conversation_across_ui_sid_and_compression_rotation(runtime, tmp_path):
+    """#114909: a Desktop reconnect / resume remints the UI session id (new sid, new session record) and
+    compression rotates the durable key. The read-only roster must keep showing the conversation's still-
+    running children; a foreign conversation on the same transport sees nothing and control stays exact."""
+    from hermes_state import SessionDB
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import _unregister_subagent
+
+    server, owner, transport, call = runtime
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="conv", source="tui", model="test")
+    db.append_message(session_id="conv", role="user", content="hi")
+    db.end_session("conv", end_reason="compression")
+    db.create_session(session_id="conv2", source="tui", model="test", parent_session_id="conv")
+    db.append_message(session_id="conv2", role="user", content="continued")
+    owner["agent"] = parent = SimpleNamespace(session_id="conv", _session_db=db)
+    stopped = []
+    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test",
+                            hard_interrupt=lambda message: stopped.append(message))
+    _register_child(child, parent, "owned task", owner_session_id="ui-owner",
+                    owner_transport=transport, owner_session_record=owner)
+    try:
+        def live_session(key):
+            return {"session_key": key, "history": [], "transport": transport,
+                    "agent": SimpleNamespace(session_id=key, _session_db=db)}
+
+        # Reminted UI sid, rebuilt session record, same durable conversation.
+        server._sessions = {"ui-new": live_session("conv")}
+        assert [r["subagent_id"] for r in call("subagent.list", session_id="ui-new")["result"]["subagents"]] == ["child"]
+        # Compression rotated the durable key as well (conv -> conv2).
+        server._sessions = {"ui-new2": live_session("conv2"), "ui-other": live_session("unrelated")}
+        assert [r["subagent_id"] for r in call("subagent.list", session_id="ui-new2")["result"]["subagents"]] == ["child"]
+        assert call("subagent.list", session_id="ui-other")["result"]["subagents"] == []
+        assert "error" in call("subagent.list", session_id="ui-new2", via=SimpleNamespace(write=lambda frame: True))
+        # Visibility widened, authority not: control from the rotated sid is still refused.
+        assert not call("subagent.interrupt", session_id="ui-new2", subagent_id="child")["result"]["found"]
+        assert stopped == []
+    finally:
+        _unregister_subagent("child")
+        db.close()

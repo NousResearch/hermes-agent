@@ -14,7 +14,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import queue
 import re
 import threading
@@ -201,10 +200,14 @@ def _parse_single_target(index: int, raw: Any) -> Optional[WebhookTarget]:
         warn(".timeout must be an int (got %r); using default %ds", timeout_raw, DEFAULT_TIMEOUT_SECONDS)
         timeout = DEFAULT_TIMEOUT_SECONDS
     name = raw.get("name")
-    # ``secret_env`` (env var name, preferred) wins over inline ``secret``.
+    # ``secret_env`` (env var name, preferred) wins over inline ``secret``. Read through the profile
+    # secret scope: the gateway registers each multiplexed profile's targets inside that profile's
+    # scope, and a raw environ read would sign a secondary's deliveries with the DEFAULT profile's
+    # secret (or leave them unsigned when the var lives only in the secondary's .env).
     secret_env = raw.get("secret_env")
     if isinstance(secret_env, str) and secret_env.strip():
-        secret = os.environ.get(secret_env.strip(), "") or None
+        from agent.secret_scope import get_secret
+        secret = get_secret(secret_env.strip(), "") or None
         if secret is None:
             warn(".secret_env=%r is not set in the environment — deliveries will be UNSIGNED", secret_env.strip())
     else:

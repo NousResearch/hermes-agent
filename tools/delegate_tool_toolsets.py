@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from toolsets import TOOLSETS
+from toolsets import TOOLSETS, resolve_toolset
 from tools.delegate_tool_config import _get_inherit_mcp_toolsets
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -17,7 +17,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
-        "present_wisdom_consent",  # only the main conversation can request user consent
         "cronjob_manage",  # no scheduling more work in the parent's name
     ]
 )
@@ -38,13 +37,19 @@ def _is_mcp_toolset_name(name: str) -> bool:
 
 def _expand_parent_toolsets(parent_toolsets: set) -> set:
     """Add every toolset whose tools are a subset of the parent's tools: a parent on a composite like ``hermes-cli``
-    must still let a child request ``web``/``terminal``; bare name intersection would reject them."""
-    parent_tool_names = {t for ts_name in parent_toolsets for t in (TOOLSETS.get(ts_name) or {}).get("tools", [])}
+    must still let a child request ``web``/``terminal``; bare name intersection would reject them. Both sides use
+    the RESOLVED static surface: a composite's ``includes`` (``debugging`` -> ``web``/``file``, ``safe``) are tools
+    the parent genuinely holds, and the child never gains a tool the parent lacks."""
+    parent_tool_names = {
+        t for ts_name in parent_toolsets if ts_name in TOOLSETS for t in resolve_toolset(ts_name, include_registry=False)
+    }
     expanded = set(parent_toolsets)
     if parent_tool_names:
         expanded.update(
-            ts_name for ts_name, ts_def in TOOLSETS.items()
-            if ts_name not in expanded and ts_def.get("tools") and set(ts_def["tools"]).issubset(parent_tool_names)
+            ts_name for ts_name in TOOLSETS
+            if ts_name not in expanded
+            and (resolved := resolve_toolset(ts_name, include_registry=False))
+            and set(resolved).issubset(parent_tool_names)
         )
     return expanded
 
@@ -52,7 +57,10 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets whose tools are ALL blocked (derived from DELEGATE_BLOCKED_TOOLS so the two can't drift) plus
     composite toolsets children must never get (``delegation``, ``kanban``)."""
     blocked_toolset_names = {"delegation", "kanban"} | {
-        name for name, defn in TOOLSETS.items() if all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
+        name
+        for name in TOOLSETS
+        if (resolved_tools := resolve_toolset(name, include_registry=False))
+        and all(tool in DELEGATE_BLOCKED_TOOLS for tool in resolved_tools)
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 

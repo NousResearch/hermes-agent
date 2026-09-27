@@ -1,5 +1,4 @@
 """The router must serve only admitted presets, retaining refusal and spill facts on read-back."""
-from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_cli.local_runtime import presets, supervisor
@@ -8,7 +7,7 @@ from hermes_cli.local_runtime.estimator import HardwareBudget, ModelProfile
 
 def test_preset_roundtrip_keeps_refusals_and_dense_spill(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    mdir = tmp_path / "models"
+    mdir = tmp_path / "modèles"
     mdir.mkdir()
     for name in ("allowed", "refused"):
         (mdir / f"{name}.gguf").touch()
@@ -18,12 +17,17 @@ def test_preset_roundtrip_keeps_refusals_and_dense_spill(tmp_path, monkeypatch):
         embd_table_bytes=0, n_ctx_train=65536, layers=[]))
     ini = tmp_path / "presets.ini"
     generated = presets.generate_presets(mdir, HardwareBudget(2 << 30, 2 << 30, 8 << 30), ini)
+    raw = ini.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    ini.write_bytes(b"\xef\xbb\xbf" + raw)
     reread = presets.read_preset_decisions(ini)
     assert set(reread) == {p.model_id for p in generated}
     assert reread["refused"].refusal
     assert reread["allowed"].spilled
     assert reread["allowed"].keys["model"] == str(mdir / "allowed.gguf")
     assert "override-tensor" not in reread["allowed"].keys  # Dense spill has no tensor-pattern override.
+    ini.write_text("not an INI section", encoding="utf-8-sig")
+    assert presets.read_preset_decisions(ini) == {}
 
 
 def test_optional_draft_is_enabled_only_with_room_at_the_selected_window(tmp_path, monkeypatch):
@@ -75,12 +79,19 @@ def test_supervisor_with_presets_does_not_scan_unadmitted_files(tmp_path, monkey
     ini = tmp_path / "presets.ini"
     ini.write_text("[allowed]\nmodel = allowed.gguf\nctx-size = 65536\n")
     calls = []
-    monkeypatch.setattr(supervisor, "server_binary", lambda p: Path("llama-server"))
-    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(pid=123))
-    sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=1234, preset_path=ini)
+    binary = tmp_path / "llama-server"
+    monkeypatch.setattr(supervisor.subprocess, "run", lambda *a, **kw:
+                        SimpleNamespace(stdout="--load-mode MODE", stderr=""))
+    monkeypatch.setattr(supervisor, "spawn_server", lambda cmd, **kw: (calls.append(cmd) or SimpleNamespace(pid=123), None))
+    monkeypatch.setattr(supervisor.LlamaServerSupervisor, "_write_state", lambda self: None)
+    sup = supervisor.LlamaServerSupervisor(binary, tmp_path, port=1234, preset_path=ini)
     try:
         sup._spawn()
     finally:
         sup._log_handle.close()
+    assert calls[0][0] == str(binary)
     assert "--models-preset" in calls[0]
     assert "--models-dir" not in calls[0]
+    # llama.cpp b10964 dropped the --no-webui spelling; the router must use --no-ui.
+    assert "--no-ui" in calls[0]
+    assert "--no-webui" not in calls[0]

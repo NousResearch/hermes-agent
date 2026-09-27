@@ -103,7 +103,7 @@ def get_state() -> Optional[dict]:
             continue
         found = True
         with suppress(OSError, ValueError, AttributeError):
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
             if isinstance(raw, dict):
                 state = {"reason": raw.get("reason") or None, "engaged_at": raw.get("engaged_at") or None}
                 break

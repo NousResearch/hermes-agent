@@ -77,11 +77,13 @@ def _active_assistant_row(conn: sqlite3.Connection, session_id: str, row_id: int
 
 
 def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: List[Dict[str, Any]]) -> None:
-    """Stamp _DB_PERSISTED_MARKER and sync canonical row ID / content onto live dicts after commit."""
+    """Stamp _DB_PERSISTED_MARKER and sync canonical durable fields onto live dicts after commit."""
     for written, row in zip(batch_msgs, batch_rows):
         written[_DB_PERSISTED_MARKER] = True
         if isinstance(row.get("_row_id"), int):
             written["_row_id"] = row["_row_id"]
+        if isinstance(row.get("timestamp"), (int, float)):
+            written["timestamp"] = row["timestamp"]
         if "_canonical_content" in row:
             written["content"] = row["_canonical_content"]
 

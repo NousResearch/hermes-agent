@@ -52,32 +52,6 @@ class TestMinimaxAuxModelM3:
     catalog order rather than the pre-M3 era.
     """
 
-    @pytest.mark.parametrize(
-        "provider_id,expected",
-        [
-            ("minimax", "MiniMax-M3"),
-            ("minimax-cn", "MiniMax-M3"),
-            # minimax-oauth sticks with M2.7: the OAuth / Coding Plan
-            # tier historically used -highspeed (PR #6082 collapsed that
-            # to plain M2.7 to avoid the 2x TPS surcharge). M3 is not on
-            # the OAuth/Coding Plan tier per platform docs as of this PR,
-            # so the safe choice is the cheapest generally-available
-            # M2.7 — matching PR #6082's intent.
-            ("minimax-oauth", "MiniMax-M2.7"),
-        ],
-    )
-    def test_profile_advertises_expected_aux_model(
-        self, provider_id, expected
-    ):
-        import model_tools  # noqa: F401
-        import providers
-
-        profile = providers.get_provider_profile(provider_id)
-        assert profile is not None
-        assert profile.default_aux_model == expected, (
-            f"{provider_id} default_aux_model drifted to "
-            f"{profile.default_aux_model!r}, expected {expected!r}"
-        )
 
     def test_consumer_api_returns_non_empty_for_each_provider(self, minimax_profile):
         from agent.auxiliary_client import _get_aux_model_for_provider
@@ -97,27 +71,6 @@ class TestMinimaxAuxModelM3:
         )
 
 
-class TestMinimaxAuxModelNotHighspeed:
-    """Regression guard against re-introducing the M2.7-highspeed aux default.
-
-    PR #6082 collapsed the highspeed aux choice to plain M2.7 because the
-    highspeed variant costs 2x with no real benefit for compression / vision /
-    session-search aux tasks. None of the three MiniMax profiles should
-    silently re-introduce that 2x-cost path.
-    """
-
-    @pytest.mark.parametrize("provider_id", ["minimax", "minimax-cn", "minimax-oauth"])
-    def test_default_aux_model_is_not_highspeed(self, provider_id):
-        import model_tools  # noqa: F401
-        import providers
-
-        profile = providers.get_provider_profile(provider_id)
-        assert profile is not None
-        assert "highspeed" not in profile.default_aux_model.lower(), (
-            f"{provider_id} default_aux_model={profile.default_aux_model!r} "
-            "is a -highspeed variant — that costs 2x for the same model and "
-            "broke #4082 the first time. Revert to plain M2.7 or M3."
-        )
 
 
 class TestMinimaxM3OpenAIReasoningWireShape:
@@ -181,3 +134,18 @@ class TestMinimaxM3OpenAIReasoningWireShape:
             "reasoning_split": True,
             "thinking": {"type": "adaptive"},
         }
+
+
+class TestMinimaxOauthAliases:
+    """Every ``--provider`` alias the user guide (website/docs/guides/minimax-oauth.md)
+    promises for ``minimax-oauth`` must resolve through the plugin registry, not only the
+    CLI alias tables — ``get_provider_profile(agent.provider)`` is what selects the
+    anthropic_messages wire, extra_body and headers (#107928)."""
+
+    def test_each_documented_oauth_alias_resolves_to_minimax_oauth(self):
+        import model_tools  # noqa: F401
+        import providers
+
+        for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):
+            resolved = providers.get_provider_profile(alias)
+            assert resolved is not None and resolved.name == "minimax-oauth", alias

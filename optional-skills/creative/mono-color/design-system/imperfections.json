@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "selection": {
+    "contemporary_effect_count": [0, 2],
+    "material_effect_count": [2, 3],
+    "seed_strategy": "stable hash of subject, exact text, palette, and layout",
+    "preserve_across_retries": true
+  },
+  "effects": [
+    {
+      "id": "imperfection_ink_density",
+      "name": "Uneven ink density",
+      "range_percent": [6, 12],
+      "applies_to": ["image plate", "large display type", "solid shape"]
+    },
+    {
+      "id": "imperfection_dry_edge",
+      "name": "Dry-ink edge breakup",
+      "range_percent": [1, 4],
+      "applies_to": ["large display type", "image silhouette", "solid shape"]
+    },
+    {
+      "id": "imperfection_halftone_drift",
+      "name": "Halftone density drift",
+      "range_percent": [5, 10],
+      "applies_to": ["screened image", "halftone field"]
+    },
+    {
+      "id": "imperfection_registration_drift",
+      "name": "Registration drift",
+      "range_mm": [1, 3],
+      "applies_to": ["two-ink plate", "one-ink second impression"]
+    },
+    {
+      "id": "imperfection_broken_gesture",
+      "name": "Broken manual gesture",
+      "gap_percent": [4, 12],
+      "applies_to": ["loop", "underline", "arrow", "ruled gesture"]
+    }
+  ],
+  "guardrails": [
+    "Never alter supplied wording or factual information.",
+    "Never move the dominant object, headline anchor, or core grid.",
+    "Never reduce display-text readability below thumbnail scale.",
+    "Never create an additional ink color.",
+    "Apply registration drift only to image or display plates, never microcopy."
+  ]
+}

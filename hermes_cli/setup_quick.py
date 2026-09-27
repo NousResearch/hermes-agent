@@ -57,16 +57,19 @@ def _run_nous_flow(config: dict, *, context: str, cancel_exc: tuple, cancel_line
 def _run_portal_one_shot(config: dict) -> None:
     """One-shot Nous Portal setup (``hermes setup --portal`` / ``hermes portal``)."""
     from hermes_cli.setup import _info, _print_banner, print_error, print_info, print_success
-    _print_banner("│     ⚕ Hermes Setup — Nous Portal (one-shot)             │")
+    _print_banner("│     ☤ Hermes Setup — Nous Portal (one-shot)             │")
     _info(None, "  One subscription, 300+ models, plus the Tool Gateway:",
           "    web search, image generation, TTS, browser automation",
           "    — all routed through your Nous Portal sub.", None,
           "  Sign up: https://portal.nousresearch.com/manage-subscription", None)
 
     def _on_error(exc: Exception) -> None:
+        from hermes_cli.auth_error_copy import provider_setup_failure_lines
         print()
-        print_error(f"  Nous Portal setup encountered an error: {exc}")
-        print_info("  You can retry later with `hermes portal`.")
+        lead, *rest = provider_setup_failure_lines(exc, retry_command="hermes portal")
+        print_error(f"  {lead}")
+        for line in rest:
+            print_info(f"  {line}")
 
     if not _run_nous_flow(config, context="`hermes portal`", cancel_exc=(KeyboardInterrupt, EOFError, SystemExit),
                           cancel_lines=(None, "  Setup cancelled.", "  You can retry later with `hermes portal`."),
@@ -95,8 +98,11 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
           "Sign up: https://portal.nousresearch.com/manage-subscription", None)
 
     def _on_error(exc: Exception) -> None:
-        print_warning(f"Nous Portal setup encountered an error: {exc}")
-        print_info("You can try again later with: hermes model")
+        from hermes_cli.auth_error_copy import provider_setup_failure_lines
+        lead, *rest = provider_setup_failure_lines(exc, retry_command="hermes model")
+        print_warning(lead)
+        for line in rest:
+            print_info(line)
 
     _run_nous_flow(config, context="quick setup", cancel_exc=(KeyboardInterrupt, EOFError),
                    cancel_lines=(None, "Nous Portal setup cancelled."), print_error=_on_error)
@@ -164,7 +170,7 @@ def _blank_slate_minimal_toolsets(config: dict):
     keep = {"file", "terminal", "vision", "skills"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
     try:
-        from toolsets import TOOLSETS, resolve_toolset
+        from toolsets import TOOLSETS
         from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
         all_keys = {k for k, _, _ in CONFIGURABLE_TOOLSETS}
         all_keys.update(_get_plugin_toolset_keys())
@@ -178,12 +184,7 @@ def _blank_slate_minimal_toolsets(config: dict):
             # here causes model_tools to subtract their tools (terminal, read_file, …) from the minimal
             # Blank Slate surface (#57315).
             all_keys.add(k)
-        # Disabling a bundle subtracts its tools even if another kept bundle owns them.
-        kept_tools = {tool for name in keep for tool in resolve_toolset(name)}
-        disabled = sorted(
-            name for name in all_keys - keep
-            if kept_tools.isdisjoint(resolve_toolset(name))
-        )
+        disabled = sorted(all_keys - keep)
         if disabled:
             config.setdefault("agent", {})["disabled_toolsets"] = disabled
     except Exception as exc:
@@ -199,7 +200,6 @@ def _blank_slate_minimize_config(config: dict):
     mem["user_profile_enabled"] = False
     config.setdefault("checkpoints", {})["enabled"] = False
     config.setdefault("smart_model_routing", {})["enabled"] = False
-    config.setdefault("display", {})["tool_progress"] = "all"
 
 
 def _set_bundled_skills_opt_out(opt_out: bool, log_label: str, on_success=None, on_error=None) -> None:

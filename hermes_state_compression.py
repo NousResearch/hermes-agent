@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
-    _sql_json_extract, _sql_session_last_active, is_automatic_end_reason)
+    _RESET_CHILD_SQL, _sql_json_extract, _sql_session_last_active, is_automatic_end_reason)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -22,7 +22,10 @@ _COOLDOWN_ROW_SQL = (
     "SELECT compression_failure_cooldown_until, compression_failure_error FROM sessions WHERE id = ?"
 )
 
-# One forward step of get_compression_chain: the preferred continuation child of ``?``.
+# One forward step of get_compression_chain: the preferred continuation child of ``?``. A reset
+# fork is a separate user-visible conversation (_LISTABLE_CHILD_SQL already surfaces it as its
+# own row), so following it here would hijack the lineage tip projection onto the reset sibling
+# and make the real continuation invisible (#114271).
 _CHAIN_STEP_SQL = f"""
                     SELECT child.id
                     FROM sessions parent
@@ -31,6 +34,7 @@ _CHAIN_STEP_SQL = f"""
                       AND parent.end_reason = 'compression'
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE
@@ -98,7 +102,7 @@ class SessionCompressionMixin:
             superseded = conn.execute(
                 "SELECT 1 FROM sessions WHERE parent_session_id = ?"
                 + self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="") + " LIMIT 1",
-                (session_id, session_id, session_id)).fetchone()
+                (session_id,) * 4).fetchone()
             if superseded is not None:
                 return None
             conn.execute(
@@ -137,7 +141,7 @@ class SessionCompressionMixin:
                 ORDER BY s.started_at ASC
                 LIMIT 2
                 """,
-                (parent_session_id, parent_session_id, parent_session_id),
+                (parent_session_id,) * 4,
             ).fetchall()
         return self._session_row_dict(rows[0]) if len(rows) == 1 else None
 
@@ -150,7 +154,7 @@ class SessionCompressionMixin:
         def _do(conn):
             if not _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 return False
-            # Any non-branch/non-delegate/non-tool child is a continuation, ended or not.
+            # Any non-branch/non-delegate/non-reset/non-tool child is a continuation, ended or not.
             child = conn.execute(
                 """
                 SELECT 1
@@ -161,7 +165,7 @@ class SessionCompressionMixin:
                 + """
                 LIMIT 1
                 """,
-                (session_id, session_id, session_id),
+                (session_id,) * 4,
             ).fetchone()
             if child is not None:
                 return False
@@ -204,17 +208,19 @@ class SessionCompressionMixin:
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)
+        # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
+        # before publish), or its first hop to another surface re-derives the array.
         conn.execute(
             """INSERT INTO sessions (
                    id, source, model, model_config, system_prompt,
-                   system_prompt_hash,
+                   system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
                    thread_id, display_name, origin_json, started_at
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, model, json.dumps(model_config) if model_config else None,
-                system_prompt_hash, parent_session_id, cwd or parent["cwd"], parent["git_branch"],
+                system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
@@ -258,7 +264,7 @@ class SessionCompressionMixin:
             parent = conn.execute(
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
-                          thread_id, display_name, origin_json, profile_name
+                          thread_id, display_name, origin_json, profile_name, tool_names
                    FROM sessions WHERE id = ?""",
                 (parent_session_id,),
             ).fetchone()
@@ -430,6 +436,27 @@ class SessionCompressionMixin:
             normalized = 0.0
         self._write_session_column("compression_recovery_deadline", session_id, normalized or None)
 
+    def get_compression_overload_streak(self, session_id: str) -> int:
+        """Return the persisted sustained-overload abort streak (#123167)."""
+        return self._read_session_number("compression_overload_streak", session_id, int, 0)
+
+    def set_compression_overload_streak(self, session_id: str, streak: int) -> None:
+        """Persist the sustained-overload abort streak for one session."""
+        if session_id:
+            self._write_session_column("compression_overload_streak", session_id, max(0, int(streak)))
+
+    def increment_compression_overload_streak(self, session_id: str) -> Optional[int]:
+        """Atomically bump the overload streak and return the new value (None when no row).
+        One UPDATE ... RETURNING, so concurrent agents on one session cannot lose a strike."""
+        if not session_id:
+            return None
+        def _do(conn):
+            row = conn.execute(
+                "UPDATE sessions SET compression_overload_streak = compression_overload_streak + 1"
+                " WHERE id = ? RETURNING compression_overload_streak", (session_id,)).fetchone()
+            return None if row is None else int(row[0])
+        return self._execute_write(_do)
+
     def refresh_compression_lock(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
         """Extend the compression lock lease if ``holder`` still owns it. Ownership is decided by ``holder``
         alone, deliberately NOT ``expires_at``: a live owner whose refresher stalled past its TTL must be
@@ -499,7 +526,7 @@ class SessionCompressionMixin:
         seen = {session_id}
         while current:
             parent_id = current.get("parent_session_id")
-            if not parent_id or parent_id in seen or self._is_explicit_fork_child_row(current):
+            if not parent_id or parent_id in seen or self._is_explicit_fork_child_row(current, include_reset=True):
                 break
             parent = _row(parent_id)
             if not parent or parent.get("end_reason") != "compression":
@@ -674,7 +701,8 @@ class SessionCompressionMixin:
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
-        if not parent_id or self._is_explicit_fork_child_row(child):
+        # A reset fork of a compression-ended parent is its own conversation, not the continuation (#114271).
+        if not parent_id or self._is_explicit_fork_child_row(child, include_reset=True):
             return False
         parent = self.get_session(parent_id)
         return bool(parent and parent.get("end_reason") == "compression")

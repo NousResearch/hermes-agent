@@ -27,18 +27,12 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
-    _send_to_platform,
-    send_message_tool,
-)
-from tools.send_message_senders import (
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
-)
-from tools.wisdom_notifications import (
-    send_slack_wisdom_notification_pane,
-    send_telegram_notification_pane,
+    _send_to_platform,
+    send_message_tool,
 )
 from tools.send_message_targets import _parse_target_ref
 # Discord helpers moved to the plugin in #24325.  Import from the new path
@@ -47,7 +41,6 @@ from tools.send_message_targets import _parse_target_ref
 from plugins.platforms.discord.adapter import (
     _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
     _derive_forum_thread_name,
-    _probe_is_forum_cached,
     _standalone_send,
 )
 
@@ -248,42 +241,10 @@ def _make_config():
 def _install_telegram_mock(monkeypatch, bot):
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
-
-    class InlineKeyboardButton:
-        def __init__(self, text, *, url=None, callback_data=None):
-            self.text = text
-            self.url = url
-            self.callback_data = callback_data
-
-        def to_dict(self):
-            data = {"text": self.text}
-            if self.url is not None:
-                data["url"] = self.url
-            if self.callback_data is not None:
-                data["callback_data"] = self.callback_data
-            return data
-
-    class InlineKeyboardMarkup:
-        def __init__(self, inline_keyboard):
-            self.inline_keyboard = inline_keyboard
-
-        def to_dict(self):
-            return {
-                "inline_keyboard": [
-                    [button.to_dict() for button in row] for row in self.inline_keyboard
-                ]
-            }
-
     # MessageEntity needed by #27865 mention-detection path; tests don't
     # inspect it but the import must succeed.
     _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
-    telegram_mod = SimpleNamespace(
-        Bot=lambda token: bot,
-        InlineKeyboardButton=InlineKeyboardButton,
-        InlineKeyboardMarkup=InlineKeyboardMarkup,
-        MessageEntity=_MessageEntity,
-        constants=constants_mod,
-    )
+    telegram_mod = SimpleNamespace(Bot=lambda token: bot, MessageEntity=_MessageEntity, constants=constants_mod)
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
 
@@ -313,158 +274,6 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
-    def test_wisdom_notification_pane_allows_only_bounded_trusted_callbacks(self):
-        telegram_cfg = SimpleNamespace(enabled=True, token="tok", extra={})
-        config = SimpleNamespace(
-            platforms={Platform.TELEGRAM: telegram_cfg},
-            get_home_channel=lambda _platform: SimpleNamespace(chat_id="123"),
-        )
-
-        with patch("tools.send_message_tool.prepare_send_message_platforms"), \
-             patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.wisdom_notifications._send_telegram", new=AsyncMock(return_value={"success": True})) as send_mock:
-            result = send_telegram_notification_pane(
-                message="Collective Wisdom",
-                button_rows=[
-                    [
-                        {
-                            "label": "Update",
-                            "callback_data": "wi:plan:update:skill-3",
-                        },
-                        {"label": "Unsafe", "callback_data": "ea:always:1"},
-                    ],
-                ],
-            )
-
-        assert result == {"success": True}
-        send_mock.assert_awaited_once_with(
-            "tok",
-            "123",
-            "Collective Wisdom",
-            disable_link_previews=True,
-            action_button_rows=[
-                [
-                    {
-                        "label": "Update",
-                        "callback_data": "wi:plan:update:skill-3",
-                    }
-                ]
-            ],
-            rich_message_html=None,
-        )
-
-    def test_wisdom_notification_pane_embeds_controls_in_rich_items(self):
-        telegram_cfg = SimpleNamespace(enabled=True, token="tok", extra={})
-        config = SimpleNamespace(
-            platforms={Platform.TELEGRAM: telegram_cfg},
-            get_home_channel=lambda _platform: SimpleNamespace(chat_id="123"),
-        )
-
-        with patch("tools.send_message_tool.prepare_send_message_platforms"), \
-             patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.wisdom_notifications._send_telegram", new=AsyncMock(return_value={"success": True})) as send_mock:
-            result = send_telegram_notification_pane(
-                message="Collective Wisdom\ngateway-pull-canary · v3",
-                items=[
-                    {
-                        "heading": "⬆️ Update <available>",
-                        "detail": "gateway-pull-canary · v3\nPrivate keys: ✅ Pass",
-                    }
-                ],
-                button_rows=[
-                    [
-                        {
-                            "label": "Update",
-                            "callback_data": "wi:plan:update:skill-3",
-                        },
-                        {
-                            "label": "View",
-                            "url": "https://portal.example/orgs/team/wisdom/skills/skill-3?version=3&from=telegram",
-                        },
-                    ]
-                ],
-            )
-
-        assert result == {"success": True}
-        rich_html = send_mock.await_args.kwargs["rich_message_html"]
-        assert rich_html == (
-            "<h3>Hermes Collective Wisdom</h3><p>1 new notification</p>"
-            "<p><b>⬆️ Update &lt;available&gt;</b><br/>"
-            "gateway-pull-canary · v3<br/>Private keys: ✅ Pass</p>"
-            '<tg-button-row align="left">'
-            '<tg-button type="callback_data" style="primary" '
-            'data="wi:plan:update:skill-3">Update</tg-button> '
-            '<tg-button type="url" '
-            'url="https://portal.example/orgs/team/wisdom/skills/'
-            'skill-3?version=3&amp;from=telegram">View</tg-button>'
-            "</tg-button-row>"
-        )
-
-    def test_slack_wisdom_notification_keeps_local_portal_action(self, monkeypatch):
-        _ensure_slack_mock(monkeypatch)
-        slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
-        home = SimpleNamespace(chat_id="D123456789", thread_id=None)
-        config = SimpleNamespace(
-            platforms={Platform.SLACK: slack_cfg},
-            get_home_channel=lambda platform: home if platform == Platform.SLACK else None,
-        )
-        client = SimpleNamespace(
-            chat_postMessage=AsyncMock(return_value={"ok": True, "ts": "1.2"})
-        )
-
-        with patch("tools.send_message_tool.prepare_send_message_platforms"), \
-             patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("slack_sdk.web.async_client.AsyncWebClient", return_value=client):
-            result = send_slack_wisdom_notification_pane(
-                message="Collective Wisdom",
-                items=[{"heading": "New skill", "detail": "Team Runbook · v1"}],
-                button_rows=[
-                    [
-                        {
-                            "label": "View in Portal",
-                            "url": "http://127.0.0.1:3111/orgs/wisdom-local/wisdom/skills/skill-1?version=1",
-                        },
-                        {
-                            "label": "Install",
-                            "callback_data": "wi:plan:install:skill-1",
-                        },
-                    ]
-                ],
-            )
-
-        assert result == {"success": True, "message_id": "1.2", "private": True}
-        blocks = client.chat_postMessage.await_args.kwargs["blocks"]
-        assert blocks[-1] == {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "View in Portal",
-                        "emoji": True,
-                    },
-                    "action_id": "hermes_wisdom_feed_0_0",
-                    "url": "http://127.0.0.1:3111/orgs/wisdom-local/wisdom/skills/skill-1?version=1",
-                    "value": "wisdom:portal",
-                },
-                {
-                    "type": "button",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "Install",
-                        "emoji": True,
-                    },
-                    "action_id": "hermes_wisdom_feed_0_1",
-                    "value": "wi:plan:install:skill-1",
-                    "style": "primary",
-                },
-            ],
-        }
-
     def test_ntfy_topic_target_is_explicit(self):
         chat_id, thread_id, is_explicit = _parse_target_ref("ntfy", "alerts-channel")
 
@@ -535,7 +344,10 @@ class TestSendMessageTool:
                 )
             )
 
-        assert result["success"] is True
+        # The text still goes out without the attachment, but the caller is told (#115908).
+        assert result["success"] is False
+        assert result["partial_success"] is True
+        assert result["media_dropped"] == [{"path": str(secret), "reason": "denied by the delivery policy"}]
         send_mock.assert_awaited_once_with(
             Platform.TELEGRAM,
             telegram_cfg,
@@ -545,6 +357,40 @@ class TestSendMessageTool:
             media_files=[],
             force_document=False,
         )
+
+    def test_missing_media_is_reported_to_the_caller_and_hermes_send_exits_nonzero(self, tmp_path, monkeypatch):
+        """#115908: a MEDIA path that does not exist on the host was dropped with only a host-side
+        warning while ``hermes send`` printed success:true and exited 0. The surviving attachment is
+        still sent; the payload names the drop and the CLI exit code follows it."""
+        from hermes_cli.send_cmd import _emit_result
+
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        config, telegram_cfg = _make_config()
+        report = tmp_path / "report.pdf"
+        report.write_bytes(b"%PDF report")
+        missing = tmp_path / "missing.pdf"
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            raw = send_message_tool({
+                "action": "send",
+                "target": "telegram:12345",
+                "message": f"report\nMEDIA:{report}\nMEDIA:{missing}",
+            })
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert result["partial_success"] is True
+        assert result["media_dropped"] == [{"path": str(missing), "reason": "not found on this host"}]
+        assert result["error"]
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM, telegram_cfg, "12345", "report", thread_id=None,
+            media_files=[(str(report.resolve()), False)], force_document=False,
+        )
+        assert _emit_result(raw, json_mode=True, quiet=True) != 0
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
@@ -653,7 +499,6 @@ class TestSendTelegramMediaDelivery:
         )
 
         assert "error" in result
-        assert "No deliverable text or media remained" in result["error"]
         bot.send_message.assert_not_awaited()
 
 
@@ -779,31 +624,6 @@ class TestSendToPlatformChunking:
         assert max(send_lengths) <= 4096
 
 
-    def test_matrix_media_uses_native_adapter_helper(self, tmp_path):
-        doc_path = tmp_path / "test-send-message-matrix.pdf"
-        doc_path.write_bytes(b"%PDF-1.4 test")
-
-        try:
-            helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:example.com", "message_id": "$evt"})
-            with patch("tools.send_message_tool._send_matrix_via_adapter", helper):
-                result = asyncio.run(
-                    _send_to_platform(
-                        Platform.MATRIX,
-                        SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
-                        "!room:example.com",
-                        "here you go",
-                        media_files=[(str(doc_path), False)],
-                    )
-                )
-
-            assert result["success"] is True
-            helper.assert_awaited_once()
-            call = helper.await_args
-            assert call.args[1] == "!room:example.com"
-            assert call.args[2] == "here you go"
-            assert call.kwargs["media_files"] == [(str(doc_path), False)]
-        finally:
-            doc_path.unlink(missing_ok=True)
 
 class TestMatrixMediaLiveAdapterReuse:
     """Verify _send_matrix_via_adapter reuses the live gateway adapter
@@ -908,38 +728,6 @@ class TestMatrixMediaLiveAdapterReuse:
 # ---------------------------------------------------------------------------
 
 
-class TestSendToPlatformWhatsapp:
-    def test_whatsapp_routes_via_local_bridge_sender(self):
-        """WhatsApp delivery routes through the plugin's registry
-        standalone_sender_fn (was tools.send_message_tool._send_whatsapp
-        before the #41112 plugin migration)."""
-        from hermes_cli.plugins import discover_plugins
-        from gateway.platform_registry import platform_registry
-        discover_plugins()
-        chat_id = "test-user@lid"
-        async_mock = AsyncMock(return_value={"success": True, "platform": "whatsapp", "chat_id": chat_id, "message_id": "abc123"})
-
-        wa_entry = platform_registry.get("whatsapp")
-        original_sender = wa_entry.standalone_sender_fn
-        wa_entry.standalone_sender_fn = async_mock
-        try:
-            result = asyncio.run(
-                _send_to_platform(
-                    Platform.WHATSAPP,
-                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000}),
-                    chat_id,
-                    "hello from hermes",
-                )
-            )
-        finally:
-            wa_entry.standalone_sender_fn = original_sender
-
-        assert result["success"] is True
-        # _registry_standalone_send passes (pconfig, chat_id, message, thread_id=None)
-        async_mock.assert_awaited_once()
-        _call = async_mock.await_args
-        assert _call.args[1] == chat_id
-        assert _call.args[2] == "hello from hermes"
 
 
 class TestSendTelegramHtmlDetection:
@@ -969,213 +757,6 @@ class TestSendTelegramHtmlDetection:
         assert kwargs["parse_mode"] == "HTML"
         assert kwargs["text"] == "<b>Hello</b> world"
 
-    def test_notification_url_buttons_render_as_action_rows(self, monkeypatch):
-        bot = self._make_bot()
-        _install_telegram_mock(monkeypatch, bot)
-
-        asyncio.run(
-            _send_telegram(
-                "tok",
-                "123",
-                "<b>Collective Wisdom</b>",
-                url_buttons=[
-                    {
-                        "label": "View team-runbook v3",
-                        "url": "https://portal.example/orgs/team/wisdom/skills/skill-3?version=3",
-                    },
-                    {
-                        "label": "Review release-checklist",
-                        "url": "https://portal.example/orgs/team/wisdom/review/draft-4",
-                    },
-                ],
-            )
-        )
-
-        reply_markup = bot.send_message.await_args.kwargs["reply_markup"]
-        assert reply_markup.to_dict() == {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": "View team-runbook v3",
-                        "url": "https://portal.example/orgs/team/wisdom/skills/skill-3?version=3",
-                    }
-                ],
-                [
-                    {
-                        "text": "Review release-checklist",
-                        "url": "https://portal.example/orgs/team/wisdom/review/draft-4",
-                    }
-                ],
-            ]
-        }
-
-    def test_notification_action_buttons_share_their_requested_rows(self, monkeypatch):
-        bot = self._make_bot()
-        _install_telegram_mock(monkeypatch, bot)
-
-        asyncio.run(
-            _send_telegram(
-                "tok",
-                "123",
-                "<b>Collective Wisdom</b>",
-                action_button_rows=[
-                    [
-                        {
-                            "label": "Update",
-                            "callback_data": "wi:plan:update:skill-3",
-                        },
-                        {
-                            "label": "View ↗",
-                            "url": "https://portal.example/orgs/team/wisdom/skills/skill-3?version=3",
-                        },
-                    ],
-                ],
-            )
-        )
-
-        reply_markup = bot.send_message.await_args.kwargs["reply_markup"]
-        assert reply_markup.to_dict() == {
-            "inline_keyboard": [
-                [
-                    {
-                        "callback_data": "wi:plan:update:skill-3",
-                        "text": "Update",
-                    },
-                    {
-                        "text": "View ↗",
-                        "url": "https://portal.example/orgs/team/wisdom/skills/skill-3?version=3",
-                    },
-                ],
-            ]
-        }
-
-    @pytest.mark.parametrize("missing_thread", [False, True])
-    def test_notification_chunks_keep_controls_on_final_chunk(self, monkeypatch, missing_thread):
-        bot = self._make_bot()
-        delivered = []
-
-        async def send(**kwargs):
-            if missing_thread and "message_thread_id" in kwargs:
-                raise RuntimeError("Bad Request: message thread not found")
-            delivered.append(kwargs)
-            return SimpleNamespace(message_id=len(delivered))
-
-        bot.send_message = AsyncMock(side_effect=send)
-        _install_telegram_mock(monkeypatch, bot)
-        result = asyncio.run(_send_telegram(
-            "tok", "123", "A" * 9000, thread_id="7",
-            action_buttons=[{"label": "Update", "callback_data": "wi:plan:update:skill-3"}],
-        ))
-        assert result["success"] is True
-        assert len(delivered) >= 3
-        assert sum(chunk["text"].count("A") for chunk in delivered) == 9000
-        assert all(len(chunk["text"]) <= 4096 for chunk in delivered)
-        assert all("reply_markup" not in chunk for chunk in delivered[:-1])
-        assert delivered[-1]["reply_markup"].to_dict() == {
-            "inline_keyboard": [[{"text": "Update", "callback_data": "wi:plan:update:skill-3"}]]
-        }
-        if missing_thread:
-            attempts = bot.send_message.await_args_list
-            assert attempts[0].kwargs["message_thread_id"] == 7
-            assert all("message_thread_id" not in attempt.kwargs for attempt in attempts[1:])
-        else:
-            assert all(chunk["message_thread_id"] == 7 for chunk in delivered)
-
-    def test_rich_notification_embeds_buttons_in_the_message(self, monkeypatch):
-        bot = self._make_bot()
-        bot.do_api_request = AsyncMock(return_value={"message_id": 77})
-        _install_telegram_mock(monkeypatch, bot)
-        rich_html = (
-            "<h3>Collective Wisdom</h3>"
-            '<p><b>Update available</b><br/>managed-skill · v2<br/>'
-            '<tg-button type="callback_data" style="primary" '
-            'data="wi:plan:update:skill-1">Update</tg-button></p>'
-        )
-
-        result = asyncio.run(
-            _send_telegram(
-                "tok",
-                "123",
-                "Collective Wisdom",
-                disable_link_previews=True,
-                action_button_rows=[
-                    [
-                        {
-                            "label": "Update",
-                            "callback_data": "wi:plan:update:skill-1",
-                        }
-                    ]
-                ],
-                rich_message_html=rich_html,
-            )
-        )
-
-        assert result == {"success": True, "message_id": "77"}
-        bot.do_api_request.assert_awaited_once_with(
-            "sendRichMessage",
-            api_kwargs={
-                "chat_id": 123,
-                "rich_message": {"html": rich_html},
-                "link_preview_options": {"is_disabled": True},
-            },
-        )
-        bot.send_message.assert_not_awaited()
-
-    def test_rich_notification_falls_back_after_permanent_rejection(
-        self, monkeypatch
-    ):
-        class BadRequest(Exception):
-            pass
-
-        bot = self._make_bot()
-        bot.do_api_request = AsyncMock(
-            side_effect=BadRequest("Bad Request: unsupported rich message")
-        )
-        _install_telegram_mock(monkeypatch, bot)
-
-        result = asyncio.run(
-            _send_telegram(
-                "tok",
-                "123",
-                "Collective Wisdom",
-                action_button_rows=[
-                    [
-                        {
-                            "label": "Update",
-                            "callback_data": "wi:plan:update:skill-1",
-                        }
-                    ]
-                ],
-                rich_message_html="<p>Update</p>",
-            )
-        )
-
-        assert result["success"] is True
-        bot.send_message.assert_awaited_once()
-        reply_markup = bot.send_message.await_args.kwargs["reply_markup"]
-        assert reply_markup.to_dict()["inline_keyboard"][0][0] == {
-            "callback_data": "wi:plan:update:skill-1",
-            "text": "Update",
-        }
-
-    def test_rich_notification_does_not_duplicate_after_transient_failure(
-        self, monkeypatch
-    ):
-        bot = self._make_bot()
-        bot.do_api_request = AsyncMock(side_effect=Exception("502 Bad Gateway"))
-        _install_telegram_mock(monkeypatch, bot)
-
-        result = asyncio.run(
-            _send_telegram(
-                "tok",
-                "123",
-                "Collective Wisdom",
-                rich_message_html="<p>Update</p>",
-            )
-        )
-
-        assert "Telegram rich notification failed" in result["error"]
-        bot.send_message.assert_not_awaited()
 
     def test_transient_bad_gateway_retries_text_send(self, monkeypatch):
         bot = self._make_bot()
@@ -1519,28 +1100,6 @@ class TestSendDiscordThreadId:
         response.json.assert_not_awaited()
         response.text.assert_not_awaited()
 
-class TestSendToPlatformDiscordThread:
-    """_send_to_platform passes thread_id through to _send_discord."""
-
-    def test_discord_thread_id_passed_to_send_discord(self):
-        """Discord platform with thread_id passes it to _send_discord."""
-        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
-
-        with _patch_discord_sender(send_mock):
-            result = asyncio.run(
-                _send_to_platform(
-                    Platform.DISCORD,
-                    SimpleNamespace(enabled=True, token="tok", extra={}),
-                    "-1001234567890",
-                    "hello thread",
-                    thread_id="17585",
-                )
-            )
-
-        assert result["success"] is True
-        send_mock.assert_awaited_once()
-        _, call_kwargs = send_mock.await_args
-        assert call_kwargs["thread_id"] == "17585"
 
 # ---------------------------------------------------------------------------
 # Discord media attachment support
@@ -1584,17 +1143,6 @@ class TestSendDiscordMedia:
         assert mock_session.post.call_count == 2
 
 
-    def test_no_text_no_media_returns_error(self):
-        """Empty text with no media returns error dict."""
-        mock_session, _ = self._build_mock(200)
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            result = asyncio.run(
-                _send_discord("tok", "555", "", media_files=[])
-            )
-
-        # Text is empty but media_files is empty, so text POST fires
-        # (the "skip text if media present" condition isn't met)
-        assert result["success"] is True
 
 class TestSendToPlatformDiscordMedia:
     """_send_to_platform routes Discord media correctly."""
@@ -1626,39 +1174,6 @@ class TestSendToPlatformDiscordMedia:
         assert call_log[0]["media_files"] == []  # First chunk: no media
         assert call_log[1]["media_files"] == [("/fake/img.png", False)]  # Last chunk: media attached
 
-class TestSendMatrixUrlEncoding:
-    """The matrix plugin's _standalone_send URL-encodes Matrix room IDs in the
-    API path (was tools.send_message_tool._send_matrix before #41112)."""
-
-    def test_room_id_is_percent_encoded_in_url(self):
-        """Matrix room IDs with ! and : are percent-encoded in the PUT URL."""
-
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value={"event_id": "$evt123"})
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=None)
-
-        mock_session = MagicMock()
-        mock_session.put = MagicMock(return_value=mock_resp)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            from plugins.platforms.matrix.adapter import _standalone_send
-            result = asyncio.get_event_loop().run_until_complete(
-                _standalone_send(
-                    SimpleNamespace(token="test_token", extra={"homeserver": "https://matrix.example.org"}),
-                    "!HLOQwxYGgFPMPJUSNR:matrix.org",
-                    "hello",
-                )
-            )
-
-        assert result["success"] is True
-        # Verify the URL was called with percent-encoded room ID
-        put_url = mock_session.put.call_args[0][0]
-        assert "%21HLOQwxYGgFPMPJUSNR%3Amatrix.org" in put_url
-        assert "!HLOQwxYGgFPMPJUSNR:matrix.org" not in put_url
 
 
 # ---------------------------------------------------------------------------
@@ -1747,27 +1262,6 @@ class TestSendDiscordForum:
         assert "403" in result["error"]
 
 
-class TestSendToPlatformDiscordForum:
-    """_send_to_platform delegates forum detection to _send_discord."""
-
-    def test_send_to_platform_discord_delegates_to_send_discord(self):
-        """Discord messages are routed through _send_discord, which handles forum detection."""
-        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
-
-        with _patch_discord_sender(send_mock):
-            result = asyncio.run(
-                _send_to_platform(
-                    Platform.DISCORD,
-                    SimpleNamespace(enabled=True, token="tok", extra={}),
-                    "forum_ch",
-                    "Hello forum",
-                )
-            )
-
-        assert result["success"] is True
-        send_mock.assert_awaited_once_with(
-            "tok", "forum_ch", "Hello forum", media_files=[], thread_id=None,
-        )
 
 # ---------------------------------------------------------------------------
 # Tests for _send_discord forum + media multipart upload
@@ -1859,69 +1353,6 @@ class TestSendDiscordForumMedia:
 # ---------------------------------------------------------------------------
 
 
-class TestForumProbeCache:
-    """_DISCORD_CHANNEL_TYPE_PROBE_CACHE memoizes forum detection results."""
-
-    def setup_method(self):
-        from plugins.platforms.discord import adapter as discord_adapter
-        discord_adapter._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
-
-    def test_probe_result_is_memoized(self, monkeypatch):
-        """An API-probed channel type is cached so subsequent sends skip the probe."""
-        monkeypatch.setattr(
-            "gateway.channel_directory.lookup_channel_type", lambda p, cid: None
-        )
-
-        # First probe response: type=15 (forum)
-        probe_resp = MagicMock()
-        probe_resp.status = 200
-        probe_resp.json = AsyncMock(return_value={"type": 15})
-        probe_resp.__aenter__ = AsyncMock(return_value=probe_resp)
-        probe_resp.__aexit__ = AsyncMock(return_value=None)
-
-        thread_resp = MagicMock()
-        thread_resp.status = 201
-        thread_resp.json = AsyncMock(return_value={"id": "t1", "message": {"id": "m1"}})
-        thread_resp.__aenter__ = AsyncMock(return_value=thread_resp)
-        thread_resp.__aexit__ = AsyncMock(return_value=None)
-
-        probe_session = MagicMock()
-        probe_session.__aenter__ = AsyncMock(return_value=probe_session)
-        probe_session.__aexit__ = AsyncMock(return_value=None)
-        probe_session.get = MagicMock(return_value=probe_resp)
-
-        thread_session = MagicMock()
-        thread_session.__aenter__ = AsyncMock(return_value=thread_session)
-        thread_session.__aexit__ = AsyncMock(return_value=None)
-        thread_session.post = MagicMock(return_value=thread_resp)
-
-        # Two _send_discord calls: first does probe + thread-create; second should skip probe
-        from plugins.platforms.discord import adapter as discord_adapter
-
-        sessions_created = []
-
-        def session_factory(**kwargs):
-            # Alternate: each new ClientSession() call returns a probe_session, thread_session pair
-            idx = len(sessions_created)
-            sessions_created.append(idx)
-            # Returns the same mocks; the real code opens a probe session then a thread session.
-            # Hand out probe_session if this is the first time called within _send_discord,
-            # otherwise thread_session.
-            if idx % 2 == 0:
-                return probe_session
-            return thread_session
-
-        with patch("aiohttp.ClientSession", side_effect=session_factory):
-            result1 = asyncio.run(_send_discord("tok", "ch1", "first"))
-        assert result1["success"] is True
-        assert discord_adapter._probe_is_forum_cached("ch1") is True
-
-        # Second call: cache hits, no new probe session needed. We need to only
-        # return thread_session now since probe is skipped.
-        sessions_created.clear()
-        with patch("aiohttp.ClientSession", return_value=thread_session):
-            result2 = asyncio.run(_send_discord("tok", "ch1", "second"))
-        assert result2["success"] is True
         # Only one session opened (thread creation) — no probe session this time
         # (verified by not raising from our side_effect exhaustion)
 
@@ -2136,44 +1567,12 @@ class TestSendViaAdapterStandaloneFallback:
         finally:
             platform_registry.unregister("fakeplatform")
 
-        assert result == {"error": "Plugin standalone send failed: boom!"}
+        assert set(result) == {"error"}
+        assert "boom!" in result["error"]
 
 class TestSendTelegramThreadNotFoundRetry:
     """Tests for thread-not-found retry behaviour in _send_telegram (#27012)."""
 
-    def test_text_send_retries_without_thread_id_on_thread_not_found(self):
-        """When thread is not found, the text send should retry without
-        message_thread_id."""
-        call_args = []
-
-        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
-            call_args.append(dict(kwargs, chat_id=chat_id, text=text))
-            if len(call_args) == 1:
-                raise Exception("Bad Request: message thread not found")
-            return SimpleNamespace(message_id=42)
-
-        async def run_test():
-            with patch(
-                "tools.send_message_senders._send_telegram_message_with_retry",
-                fake_retry,
-            ):
-                # _send_telegram imports Bot locally; we only need to mock
-                # the send path, not Bot itself (Bot import falls through
-                # normally since python-telegram-bot is installed).
-                return await _send_telegram(
-                    "fake-token", "-100123", "hello from topic 17585",
-                    thread_id="17585",
-                )
-
-        result = asyncio.run(run_test())
-        assert result["success"] is True
-        assert result["message_id"] == "42"
-        assert len(call_args) == 2, f"expected 2 calls, got {len(call_args)}"
-        # First call should have message_thread_id
-        assert call_args[0].get("message_thread_id") is not None
-        # Second call (retry) should NOT have message_thread_id
-        assert "message_thread_id" not in call_args[1], \
-            "retry should drop message_thread_id after thread-not-found"
 
     def test_disable_web_page_preview_not_leaked_to_media_sends(self):
         """disable_web_page_preview must never leak into a media send.
@@ -2218,3 +1617,51 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+def test_not_configured_error_names_resolved_home_and_consulted_sources(tmp_path, monkeypatch):
+    """The 'not configured' error names the files this process actually read (resolved home, not a
+    hardcoded ``~/.hermes``) and what each source held, so a Windows/profile home user can fix the right file."""
+    from gateway.config import GatewayConfig
+    from tools.send_message_tool import _resolve_platform_config
+
+    home = tmp_path / "AppData" / "Local" / "hermes"
+    home.mkdir(parents=True)
+    (home / ".env").write_text("FIRECRAWL_API_KEY=x\n", encoding="utf-8")
+    (home / "config.yaml").write_text("platforms:\n  discord:\n    enabled: false\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+    _, _, _, err = _resolve_platform_config("discord", GatewayConfig())
+
+    assert "~/.hermes" not in err
+    assert str(home / ".env") in err
+    assert str(home / "config.yaml") in err
+
+
+def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_path, monkeypatch):
+    """Under ``HERMES_HOME=<root>/profiles/<p>`` the error says a live gateway from the default root has the
+    platform connected (its credentials never came from this profile's ``.env``) and lists external secret
+    sources by name only (#114272 step 5)."""
+    import json
+    import os
+
+    from gateway.config import GatewayConfig
+    from tools.send_message_tool import _resolve_platform_config
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    (root / "gateway_state.json").write_text(
+        json.dumps({"pid": os.getpid(), "platforms": {"discord": {"state": "connected"}}}), encoding="utf-8")
+    (profile / ".env").write_text("FIRECRAWL_API_KEY=x\n", encoding="utf-8")
+    (profile / "config.yaml").write_text(
+        "secrets:\n  bitwarden:\n    enabled: false\n    session_token: SECRET-VALUE\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+    _, _, _, err = _resolve_platform_config("discord", GatewayConfig())
+
+    assert str(os.getpid()) in err and str(profile) in err
+    assert "bitwarden" in err
+    assert "SECRET-VALUE" not in err

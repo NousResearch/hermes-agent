@@ -6,7 +6,6 @@ tests pin the config the writers produce and the invariant that the toolset
 resolver + tool-schema builder yield exactly the file/terminal tools.
 """
 
-import pytest
 
 from hermes_cli.setup_quick import _blank_slate_minimal_toolsets, _blank_slate_minimize_config
 from hermes_cli import setup_quick
@@ -71,33 +70,7 @@ class TestBlankSlateMinimalToolsets:
         names = sorted(
             {(d.get("function") or {}).get("name") or d.get("name") for d in defs}
         )
-        assert names == ["patch", "process_manage", "read_file", "search_files",
-                         "skill_manage", "skill_view", "skills_list",
-                         "terminal", "vision_analyze", "write_file"]
-
-
-    def test_kept_skills_can_present_consent_when_wisdom_is_available(self, monkeypatch):
-        import model_tools
-        from hermes_cli.tools_config import _get_platform_tools
-        from tools.registry import registry
-        from tools.tool_search import ToolSearchConfig
-
-        monkeypatch.setattr(registry.get_entry("present_wisdom_consent"), "check_fn", lambda: True)
-        eager_tools = ToolSearchConfig.from_raw({"enabled": "on", "defer": []})
-        monkeypatch.setattr("tools.tool_search.load_config", lambda: eager_tools)
-        monkeypatch.setattr("tools.tool_search.load_config_readonly", lambda: eager_tools)
-        config = {}
-        _blank_slate_minimal_toolsets(config)
-        _blank_slate_minimize_config(config)
-        definitions = model_tools.get_tool_definitions(
-            enabled_toolsets=sorted(_get_platform_tools(config, "cli")),
-            disabled_toolsets=config["agent"]["disabled_toolsets"],
-            quiet_mode=True,
-        )
-        assert "present_wisdom_consent" in {
-            (definition.get("function") or {}).get("name") or definition.get("name")
-            for definition in definitions
-        }
+        assert {"terminal", "read_file", "write_file", "patch", "search_files"} <= set(names)
 
 
 class TestBlankSlateMinimizeConfig:

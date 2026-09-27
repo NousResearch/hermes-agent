@@ -7,6 +7,7 @@ with ``RedactingFormatter`` so secrets never reach disk.
 """
 
 import atexit
+import contextlib
 import copy
 import io
 import logging
@@ -18,6 +19,56 @@ from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
 from typing import Optional, Sequence
 
+from hermes_constants import get_config_path, get_hermes_home, mkdir_under_hermes_home
+
+# setup_logging() is idempotent: a second call is a no-op unless ``force=True``.
+_logging_initialized = False
+
+# True only when CLH was rejected at import because portalocker cannot take a
+# lock on this Windows box; file handlers then use stdlib rotation (rollover
+# disabled — see the module-header comment) and setup_logging() warns once.
+_WINDOWS_CLH_FALLBACK = False
+_WINDOWS_CLH_FALLBACK_REASON = ""
+_fallback_warned = False
+
+
+def _portalocker_probe() -> bool:
+    """Return True when portalocker can actually take a lock on this box.
+
+    concurrent-log-handler locks every write through portalocker, which on
+    Windows instantiates Win32Locker and imports pywintypes. Bundled payloads
+    have shipped with that import broken (the venv's .pth files were never
+    processed), and portalocker 3.x gives no msvcrt fallback — every emit then
+    dies with the ImportError, CLH retries 20x, and the suppressed "Cannot
+    acquire lock" RuntimeError below hides it completely. Probe a scratch file
+    once at import so we can fall back to stdlib rotation instead of silently
+    dropping every record. No-op (True) off Windows, where stdlib is in use.
+    """
+    global _WINDOWS_CLH_FALLBACK_REASON
+    if sys.platform != "win32":
+        return True
+    try:
+        import portalocker
+        import tempfile
+    except Exception as exc:
+        _WINDOWS_CLH_FALLBACK_REASON = repr(exc)
+        return False
+    fd, path = tempfile.mkstemp(prefix="hermes-portalocker-")
+    try:
+        with os.fdopen(fd, "r+b") as stream:
+            portalocker.lock(stream, portalocker.LOCK_EX)
+            portalocker.unlock(stream)
+    except Exception as exc:
+        _WINDOWS_CLH_FALLBACK_REASON = repr(exc)
+        return False
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return True
+
+
 # Windows-ONLY swap (#44873): stdlib ``RotatingFileHandler.doRollover()`` calls
 # ``os.rename()``, which fails with ``PermissionError [WinError 32]`` whenever
 # another process holds an append handle on ``agent.log`` — essentially always
@@ -28,17 +79,23 @@ from typing import Optional, Sequence
 # relies on stdlib's exact ``_open()``/``doRollover()`` lifecycle for the
 # 0660 chmod and eager file creation; CLH opens lazily and rotates differently.
 if sys.platform == "win32":
-    from concurrent_log_handler import (  # noqa: E402
-        ConcurrentRotatingFileHandler as RotatingFileHandler,
-    )
+    if _portalocker_probe():
+        from concurrent_log_handler import (  # noqa: E402
+            ConcurrentRotatingFileHandler as RotatingFileHandler,
+        )
+    else:
+        # portalocker cannot take a lock on this box (typical cause: a sealed
+        # bundle whose venv never processed pywin32.pth, so `import pywintypes`
+        # fails and portalocker's Win32Locker has no msvcrt fallback). CLH
+        # would silently drop every record through the suppressed lock-timeout
+        # below; fall back to stdlib rotation instead. Rollover is disabled in
+        # the fallback: multi-process appends make Windows renames fail with
+        # WinError 32, the exact #44873 trap CLH exists to avoid.
+        from logging.handlers import RotatingFileHandler  # noqa: E402
+
+        _WINDOWS_CLH_FALLBACK = True
 else:
     from logging.handlers import RotatingFileHandler  # noqa: E402
-
-
-from hermes_constants import get_config_path, get_hermes_home, mkdir_under_hermes_home
-
-# setup_logging() is idempotent: a second call is a no-op unless ``force=True``.
-_logging_initialized = False
 
 # Thread-local per-conversation session context.
 _session_context = threading.local()
@@ -46,6 +103,42 @@ _session_context = threading.local()
 # ``%(session_tag)s`` exists on every LogRecord via _install_session_record_factory().
 _LOG_FORMAT = "%(asctime)s %(levelname)s%(session_tag)s %(name)s: %(message)s"
 _LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s%(session_tag)s - %(message)s"
+
+
+# The stdout stream _line_buffer_piped_stdout() already reconfigured: setup_logging runs on every
+# AIAgent build (per message in the gateway), so later calls skip the flush + reconfigure.
+_line_buffered_stdout = None
+
+
+def _line_buffer_piped_stdout() -> None:
+    """Best-effort line buffering for a piped stdout (#92281).
+
+    Python block-buffers stdout when it isn't a TTY, so an agent loop
+    driving ``print()`` into a supervisor's pipe delivers its output in
+    large delayed bursts — a headless run looks stalled for minutes while
+    the work is actually progressing (only stderr, which we already give
+    ``line_buffering=True`` in ``_safe_stderr()``, shows up on time).
+    Reconfigure the interpreter's own stdout for line buffering when it is
+    piped; interactive TTY stdout is already line-buffered. ACP reaches this
+    too (its AIAgent calls ``setup_logging``) with stdout as its protocol
+    channel — harmless, since line buffering only adds flushes at newlines.
+    """
+    global _line_buffered_stdout
+    stream = sys.stdout
+    if stream is None or stream is _line_buffered_stdout:
+        return
+    if getattr(stream, "line_buffering", False) is True:
+        _line_buffered_stdout = stream
+        return
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return
+    # A closed/detached stream raises ValueError / io.UnsupportedOperation (an OSError);
+    # buffering is observability, not correctness — never crash setup_logging over it.
+    with contextlib.suppress(OSError, ValueError):
+        if not stream.isatty():
+            reconfigure(line_buffering=True)
+            _line_buffered_stdout = stream
 
 
 def _safe_stderr():  # type: ignore[return]
@@ -78,6 +171,41 @@ def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
         sys.platform == "win32"
         and isinstance(exc, RuntimeError)
         and "Cannot acquire lock after 20 attempts" in str(exc)
+    )
+
+
+_windows_lock_timeout_warned = False
+_windows_lock_timeout_warn_lock = threading.Lock()
+
+
+def _warn_windows_lock_timeout_once() -> None:
+    """Report a suppressed CLH lock timeout exactly once per process.
+
+    Every emit after the first failure raises the same RuntimeError, so the
+    warning must be one-shot or it would spam errors.log as badly as the
+    stderr noise it replaces. CLH does not chain the underlying cause (the
+    RuntimeError is raised outside the except, from the retry loop's else
+    clause), so the message cannot include it; a constantly repeating timeout
+    means file logging is degraded — the startup portalocker probe in this
+    module should have caught a dead portalocker and fallen back already.
+    """
+    global _windows_lock_timeout_warned
+    with _windows_lock_timeout_warn_lock:
+        if _windows_lock_timeout_warned:
+            return
+        _windows_lock_timeout_warned = True
+    logging.getLogger("hermes_logging").warning(
+        "concurrent-log-handler timed out acquiring the cross-process log "
+        "lock; this and later records were dropped (the Desktop slash-worker "
+        "surface stays clean, but file logging is degraded)."
+    )
+
+
+def _is_unavailable_log_stream(exc: BaseException | None) -> bool:
+    """True when a file handler lost its backing stream during teardown or I/O."""
+    return (
+        (isinstance(exc, OSError) and exc.errno == 5)
+        or (isinstance(exc, ValueError) and "closed file" in str(exc).lower())
     )
 
 
@@ -157,8 +285,39 @@ COMPONENT_PREFIXES = {
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),
     "cron": ("cron",),
-    "gui": ("hermes_cli.web_server", "hermes_cli.pty_bridge", "tui_gateway", "uvicorn"),
+    "gui": ("hermes_cli.web_server", "hermes_cli.pty_bridge", "hermes_cli.desktop", "tui_gateway", "uvicorn"),
 }
+
+
+def _known_log_homes() -> set[Path]:
+    """Homes the queued file handlers already serve: static handlers by their file, routers by
+    their default home plus every profile home they route. Caller holds ``_queue_state_lock``."""
+    homes: set[Path] = set()
+    for handler in _queued_file_handlers:
+        if isinstance(handler, _ProfileRoutingFileHandler):
+            homes.add(handler._default_home)
+            homes.update(handler._profile_homes)
+        elif isinstance(handler, RotatingFileHandler):
+            try:
+                homes.add(Path(handler.baseFilename).resolve().parent.parent)
+            except (TypeError, ValueError, OSError):
+                continue
+    return homes
+
+
+def _adopt_secondary_home(home: Path) -> bool:
+    """Route *home*'s records to its own files when this process already logs for another home.
+    Enables profile routing for the union of homes (or widens the live routers); False when
+    *home* is the first home seen or is already served."""
+    try:
+        resolved = Path(home).expanduser().resolve()
+    except (TypeError, ValueError, OSError):
+        return False
+    with _queue_state_lock:
+        known = _known_log_homes()
+    if not known or resolved in known:
+        return False
+    return enable_profile_log_routing([*sorted(known), resolved])
 
 
 def setup_logging(
@@ -177,8 +336,23 @@ def setup_logging(
     ``gateway.log`` and ``mode="gui"`` adds ``gui.log``.
     """
     global _logging_initialized
+    global _fallback_warned
     home = hermes_home or get_hermes_home()
     log_dir = mkdir_under_hermes_home(home / "logs")
+
+    # Stdout is block-buffered when piped (no TTY); line-buffer it so a
+    # headless supervisor's log stream tracks the agent loop incrementally
+    # (#92281). Runs before the initialized check so every entry mode that
+    # reaches this function gets it; a no-op once this stdout is line-buffered.
+    _line_buffer_piped_stdout()
+
+    # A second Hermes home in a process that already logs for another one — a dashboard or
+    # ``hermes serve`` backend building agents for several profiles, a multiplexed gateway —
+    # gets routed by record home. Stacking another file handler here would hand it EVERY
+    # profile's records (the handlers carry no home filter), and a duplicate writer on top of
+    # an existing router.
+    if _adopt_secondary_home(home):
+        return log_dir
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
     level_name = (log_level or cfg_level or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -204,6 +378,16 @@ def setup_logging(
             log_dir / filename, level=lvl, max_bytes=size, backup_count=count,
             formatter=RedactingFormatter(_LOG_FORMAT),
             log_filter=_ComponentFilter(COMPONENT_PREFIXES[component]) if component else None,
+        )
+
+    if _WINDOWS_CLH_FALLBACK and not _fallback_warned:
+        # One-shot, and the file handlers above are already live, so this lands
+        # in errors.log/agent.log — the fallback must never be invisible again.
+        _fallback_warned = True
+        logging.getLogger("hermes_logging").warning(
+            "concurrent-log-handler unavailable on this Windows install (%s); "
+            "file logging fell back to stdlib rotation without rollover.",
+            _WINDOWS_CLH_FALLBACK_REASON or "portalocker probe failed",
         )
 
     if _logging_initialized and not force:
@@ -259,6 +443,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     def __init__(self, *args, **kwargs):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
+        self._unavailable_reported = False
         super().__init__(*args, **kwargs)
         self._record_stream_stat()
 
@@ -316,16 +501,38 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         if self.stream is not None or os.path.exists(self.baseFilename):
             self._reopen_if_externally_rotated()
         super().emit(record)
+        # A record actually reached the file: only now has the destination recovered. Resetting
+        # in _open() is wrong — open() succeeds on a device whose write/flush still raise EIO,
+        # which re-armed the report and printed the path once per record.
+        if self.stream is not None:
+            self._unavailable_reported = False
 
     def handleError(self, record: logging.LogRecord) -> None:
         """Suppress the known Windows ``concurrent-log-handler`` lock timeout.
 
         CLH's ``emit()`` routes that RuntimeError here, so this is the single point to
         silence it before stdlib prints to stderr (which the Desktop slash-worker
-        captures into chat output).
+        captures into chat output). Silencing is not silent: warn once through the
+        logging system so a wedged lock is visible in the logs instead of a black hole.
         """
-        if not _is_windows_concurrent_log_lock_timeout(sys.exc_info()[1]):
-            super().handleError(record)
+        exc = sys.exc_info()[1]
+        if _is_windows_concurrent_log_lock_timeout(exc):
+            _warn_windows_lock_timeout_once()
+            return
+        if _is_unavailable_log_stream(exc):
+            # The QueueListener must not turn a failing log destination into a traceback for
+            # every queued record. Name the path once, drop the stale stream; the next emit
+            # reopens it if the destination has recovered.
+            if not self._unavailable_reported:
+                self._unavailable_reported = True
+                _quietly(lambda: print(
+                    f"hermes_logging: {self.baseFilename} unavailable ({exc}); "
+                    "file logging paused until it recovers", file=_safe_stderr()))
+            if self.stream is not None:
+                _quietly(self.stream.close)
+            self.stream = None  # type: ignore[assignment]
+            return
+        super().handleError(record)
 
     def _open(self):
         stream = super()._open()
@@ -345,6 +552,10 @@ def _new_file_handler(
 ) -> "_ManagedRotatingFileHandler":
     """Create the ``logs/`` directory and a configured ``_ManagedRotatingFileHandler``."""
     mkdir_under_hermes_home(path.parent)
+    if _WINDOWS_CLH_FALLBACK:
+        # stdlib fallback: no rollover, or the file pins at the size threshold
+        # and every emit re-triggers the WinError 32 rename failure (#44873).
+        max_bytes, backup_count = 0, 0
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
     )
@@ -396,7 +607,19 @@ class _ProfileRoutingFileHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self._handler_for_home(self._home_for_record(record)).handle(record)
+            home = self._home_for_record(record)
+            handler = self._handler_for_home(home)
+            if home == self._default_home:
+                handler.handle(record)
+                return
+            # Formatted here, on the listener thread, where the record's profile scope is gone: bind its home so
+            # RedactingFormatter applies THAT profile's redact_secrets policy and vault values, not the launch's.
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+            token = set_hermes_home_override(str(home))
+            try:
+                handler.handle(record)
+            finally:
+                reset_hermes_home_override(token)
         except Exception:
             self.handleError(record)
 
@@ -407,6 +630,16 @@ class _ProfileRoutingFileHandler(logging.Handler):
         for handler in handlers:
             _quietly(handler.close)
         super().close()
+
+    def release_profile(self, home: Path) -> bool:
+        """Close and forget the routed files belonging to a deleted profile."""
+        with self._profile_handlers_lock:
+            handler = self._profile_handlers.pop(home, None)
+            self._profile_homes.discard(home)
+        if handler is None:
+            return False
+        _quietly(handler.close)
+        return True
 
 
 # Asynchronous file logging: an ``emit`` can block on the cross-process
@@ -513,6 +746,35 @@ def drain_log_queue(timeout: float = 1.0) -> None:
     t.join(timeout)
 
 
+def release_profile_log_handlers(profile_home: str | Path) -> int:
+    """Release this process's routed log files below a profile before it is removed.
+
+    The Desktop serve process can route records for several profiles through one
+    ``QueueListener``. On Windows, each routed concurrent log handler keeps its
+    lock file open, so closing only external profile resources still leaves
+    ``logs/.__agent.lock`` and ``logs/.__errors.lock`` unavailable to rmtree.
+    """
+    global _queue_listener
+    try:
+        home = Path(profile_home).expanduser().resolve()
+    except (TypeError, ValueError, OSError):
+        return 0
+
+    with _queue_state_lock:
+        listener = _queue_listener
+        if listener is not None:
+            listener.stop()
+            _queue_listener = None
+        released = sum(
+            handler.release_profile(home)
+            for handler in _queued_file_handlers
+            if isinstance(handler, _ProfileRoutingFileHandler)
+        )
+        if listener is not None:
+            _start_queue_listener_locked()
+    return released
+
+
 def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
     """Make the queued file logs follow a desktop profile context.
 
@@ -586,10 +848,15 @@ def _add_rotating_handler(
     """Register a queued ``RotatingFileHandler`` for *path*; idempotent per resolved path."""
     resolved = path.resolve()
     for existing in _queued_file_handlers:
-        # Already attached directly, or already covered by the profile router.
+        # Already attached directly, or already covered by the profile router — for its default
+        # home or any profile home it routes (a bare handler beside it would take every record).
         if getattr(existing, "_hermes_routed_log_path", None) == resolved or (
             isinstance(existing, RotatingFileHandler)
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
+        ):
+            return
+        if isinstance(existing, _ProfileRoutingFileHandler) and existing._filename == resolved.name and (
+            resolved.parent.parent == existing._default_home or resolved.parent.parent in existing._profile_homes
         ):
             return
     handler = _new_file_handler(
@@ -597,6 +864,17 @@ def _add_rotating_handler(
     )
     if log_filter is not None:
         handler.addFilter(log_filter)
+    # Routing already on (a second home adopted earlier): a component log added now —
+    # ``mode="gateway"`` after the fact — must route too, or it takes every home's records.
+    routers = [h for h in _queued_file_handlers if isinstance(h, _ProfileRoutingFileHandler)]
+    if routers:
+        homes: set[Path] = set()
+        for router in routers:
+            homes.add(router._default_home)
+            homes.update(router._profile_homes)
+        routed = _ProfileRoutingFileHandler(handler, sorted(homes))
+        _quietly(handler.close)
+        handler = routed
     # Queue, not ``addHandler``: the rotation-lock wait never runs on the caller's thread.
     _register_queued_handler(handler)
 
@@ -604,27 +882,21 @@ def _add_rotating_handler(
 def _read_logging_config():
     """Best-effort read of ``logging.*`` from config.yaml."""
     try:
-        # Prefer the shared (mtime, size)-keyed raw-config cache so this reuses
-        # hermes_cli.main's early parse (one config.yaml parse per process);
-        # fall back to a direct parse for bare hermes_logging consumers.
+        # Prefer the shared effective-config cache (managed overlay included, so an administrator
+        # can pin logging.*) so this reuses hermes_cli.main's early parse (one config.yaml parse
+        # per process); fall back to a direct parse for bare hermes_logging consumers.
         try:
-            from hermes_cli.config import read_raw_config as _rrc
-            cfg = _rrc() or {}
+            from hermes_cli.config_effective import load_user_config_effective
+            cfg = load_user_config_effective(get_config_path())
         except Exception:
             from utils import fast_safe_load
             config_path = get_config_path()
             cfg = {}
             if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
+                with open(config_path, "r", encoding="utf-8-sig") as f:
                     cfg = fast_safe_load(f) or {}
         if not cfg:
             return (None, None, None)
-        # Managed scope: an administrator can pin logging.* too (fail-open overlay).
-        try:
-            from hermes_cli import managed_scope
-            cfg = managed_scope.apply_managed_overlay(cfg)
-        except Exception:
-            pass
         log_cfg = cfg.get("logging", {})
         if isinstance(log_cfg, dict):
             return (log_cfg.get("level"), log_cfg.get("max_size_mb"), log_cfg.get("backup_count"))

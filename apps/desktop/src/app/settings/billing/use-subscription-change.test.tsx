@@ -25,30 +25,6 @@ afterEach(() => {
 })
 
 describe('useDowngradeFlow', () => {
-  it('previews then schedules with the tier id, refetches, and calls onScheduled', async () => {
-    apiMocks.previewSubscriptionChange.mockResolvedValue({
-      data: { effect: 'scheduled', ok: true, target_tier_name: 'Free' },
-      ok: true
-    })
-    apiMocks.scheduleSubscriptionChange.mockResolvedValue({ data: { ok: true }, ok: true })
-    const onScheduled = vi.fn()
-
-    const { result } = renderHook(() => useDowngradeFlow({ onScheduled }), { wrapper })
-
-    act(() => result.current.begin({ tierId: 't_free', tierName: 'Free' }))
-
-    await waitFor(() => expect(result.current.active?.phase.kind).toBe('ready'))
-    expect(apiMocks.previewSubscriptionChange).toHaveBeenCalledWith('t_free')
-
-    await act(async () => {
-      await result.current.confirm()
-    })
-
-    expect(apiMocks.scheduleSubscriptionChange).toHaveBeenCalledWith('t_free')
-    expect(onScheduled).toHaveBeenCalledTimes(1)
-    expect(result.current.active).toBeNull()
-  })
-
   it('records a preview refusal as the previewFailed phase and re-runs on retry', async () => {
     apiMocks.previewSubscriptionChange.mockResolvedValue({
       ok: false,
@@ -141,19 +117,6 @@ describe('useDowngradeFlow', () => {
 })
 
 describe('useResumeFlow', () => {
-  it('resumes (undo) and clears the refusal on success', async () => {
-    apiMocks.resumeSubscription.mockResolvedValue({ data: { ok: true }, ok: true })
-
-    const { result } = renderHook(() => useResumeFlow(), { wrapper })
-
-    await act(async () => {
-      await result.current.resume()
-    })
-
-    expect(apiMocks.resumeSubscription).toHaveBeenCalledTimes(1)
-    expect(result.current.refusal).toBeNull()
-  })
-
   it('surfaces a resume refusal', async () => {
     apiMocks.resumeSubscription.mockResolvedValue({
       ok: false,

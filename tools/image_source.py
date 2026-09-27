@@ -144,8 +144,10 @@ async def _download_to_bytes(url: str) -> bytes:
 
 
 def _is_local_terminal_backend() -> bool:
-    """True when the terminal backend runs directly on the host (keys off ``TERMINAL_ENV``)."""
-    return os.getenv("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+    """True when the terminal backend runs directly on the host (keys off ``TERMINAL_ENV``, read
+    through the per-turn terminal scope so a routed multiplex profile sees ITS backend)."""
+    from tools.terminal_scope import terminal_env
+    return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
 
 
 # Host-side media caches: the only host paths vision may read under a non-local backend
@@ -232,6 +234,14 @@ async def _resolve_container_fallback(
             f"'{p}' is not reachable inside the sandbox and no active sandbox "
             f"session is available to read it",
             src=src, origin="container")
+    from tools.terminal_tool_config import translate_mounted_host_path
+    translated = translate_mounted_host_path(
+        str(p),
+        getattr(env, "host_cwd", None) or "",
+        getattr(env, "host_cwd_mount", None) or "/workspace",
+    )
+    if translated:
+        p = Path(translated)
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
     # cap" from "over") so /dev/zero can't stream unbounded base64 into host memory. The input
     # redirect avoids argv (leading-dash paths); tr -d instead of GNU-only base64 -w0 (BusyBox).

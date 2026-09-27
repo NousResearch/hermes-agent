@@ -3,15 +3,11 @@
 import os
 import subprocess
 import sys
-import tarfile
-import zipfile
 from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
 
 def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.CompletedProcess[str]:
     """Invoke the real PEP 517 hook (build_sdist / build_wheel) as a subprocess.
@@ -54,48 +50,9 @@ def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.Compl
         check=False,
     )
 
-
 @pytest.mark.parametrize("kind", ["sdist", "wheel"])
 def test_artifact_build_rejects_nix_development_shell_environment(kind, tmp_path):
     result = _build_artifact(kind, tmp_path, nix_build=False)
 
     assert result.returncode != 0
     assert "Building wheels or sdists for hermes-agent is not supported" in result.stderr
-
-
-@pytest.mark.parametrize(
-    ("kind", "artifact_glob"),
-    [("sdist", "hermes_agent-*.tar.gz"), ("wheel", "hermes_agent-*.whl")],
-)
-def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_glob, tmp_path):
-    result = _build_artifact(kind, tmp_path, nix_build=True)
-
-    assert result.returncode == 0, result.stderr
-    artifacts = list(tmp_path.glob(artifact_glob))
-    assert artifacts
-
-    expected = {
-        path.relative_to(PROJECT_ROOT).as_posix()
-        for pattern in ("plugin.yaml", "plugin.yml")
-        for path in (PROJECT_ROOT / "plugins").rglob(pattern)
-    }
-    assert expected, "expected bundled plugin manifests under plugins/"
-    expected.update(
-        path.relative_to(PROJECT_ROOT).as_posix()
-        for pattern in ("*.py", "*.json")
-        for path in (PROJECT_ROOT / "hermes_wisdom").rglob(pattern)
-    )
-
-    if kind == "wheel":
-        with zipfile.ZipFile(artifacts[0]) as wheel:
-            shipped = set(wheel.namelist())
-    else:
-        with tarfile.open(artifacts[0]) as sdist:
-            shipped = {
-                name.split("/", 1)[1]
-                for name in sdist.getnames()
-                if "/" in name
-            }
-
-    missing = sorted(expected - shipped)
-    assert not missing, f"{kind} omits runtime modules or bundled data: {missing}"

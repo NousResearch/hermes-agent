@@ -79,8 +79,8 @@ def _publish_tool_snapshot(
         new_defs, new_names = _drop_side_agent_tools(agent, new_defs, new_names)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
-        # Same NAME set: no change for MCP-reload callers. Content-aware callers
-        # (compaction boundary) also diff serialized bytes.
+        # Same NAME set: no churn for background refreshes. Explicit reload and
+        # compaction callers also compare serialized schemas/descriptions.
         if new_names == current and not (content_aware and _tool_defs_content_changed(agent, new_defs)):
             return None
         agent.tools = new_defs
@@ -100,7 +100,9 @@ def refresh_agent_mcp_tools(
     newly-added tool names (empty when unchanged). The agent snapshots ``agent.tools`` at build
     time, so servers that connect later (slow OAuth, ``/reload-mcp``) are invisible until
     rebuilt. Shared by the TUI RPC, gateway reload, late-binding thread and between-turns
-    refresh: respects the toolset filter, diffs by tool NAME (a count compare misses an
+    refresh. Explicit reloads pass content_aware=True because stable names can gain new
+    parameters or descriptions; background refreshes keep the name-only cache contract.
+    Respects the toolset filter, diffs by tool NAME (a count compare misses an
     equal-size swap), re-injects the memory-provider / context-engine tools ``agent_init``
     appends after ``get_tool_definitions`` plus guarded session capabilities, and publishes
     ``(tools, valid_tool_names)`` together.

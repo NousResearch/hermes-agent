@@ -76,7 +76,7 @@ def record_tools(root: Path, lock_path: Path, target: str, entries: dict[str, st
     facts, lock = Facts(_payload_file(root, "tools/facts.json")), Lockfile(lock_path)
     for name, entry_name in entries.items():
         entry = store / entry_name
-        version, artifacts = lock.version(name), lock.artifacts(name, target)
+        version, artifacts = lock.version(name), lock.shipped_artifacts(name, target)
         if not entry.is_dir() or not version or not artifacts:
             raise ValueError(f"incomplete payload tool: {name}")
         facts.record(name, version, entry_name, get_package(name).env(entry, target), store,

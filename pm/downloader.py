@@ -71,6 +71,9 @@ _OPENER = urllib.request.build_opener(_HttpsRedirectHandler())
 class DownloadError(RuntimeError):
     """Base class for downloader failures."""
 
+    #: Every source attempt behind a failure that exhausted the pinned mirrors.
+    failures: tuple["DownloadTransportError", ...] = ()
+
 
 def _validate_range(response, start: int, end: int, total: int | None = None) -> int:
     """A range body is useful only for the exact requested interval."""
@@ -340,7 +343,9 @@ class Download:
                 if not exc.fallback_allowed or index == len(urls) - 1:
                     if len(failures) == 1:
                         raise
-                    raise DownloadError("\n".join(str(error) for error in failures)) from exc
+                    error = DownloadError("\n".join(str(failure) for failure in failures))
+                    error.failures = tuple(failures)
+                    raise error from exc
                 logging.getLogger(__name__).debug("%s; trying pinned mirror %s", exc, urls[index + 1])
 
     def _transfer(self, source: Source, tick) -> int:

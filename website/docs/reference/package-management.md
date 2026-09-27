@@ -110,6 +110,7 @@ which data root a process uses.
 |---|---|
 | Shared writable tool entries | `tools/` under the resolved default Hermes root. |
 | Resumable downloads | `cache/partials/` under that root, not inside a signed payload. |
+| Re-pins of retired archives | `cache/pm-repins.json` under that root; the shipped `pm/lock.json` is never rewritten. |
 | Per-install selection and journal | `installs/INSTALL_KEY/` under the dependency-state root. |
 | Python generations | `installs/INSTALL_KEY/environments/`. |
 | Sync and update receipts | `logs/update_receipts/` under the active home. |
@@ -567,6 +568,17 @@ other permanent failures. A successful probe followed by a range GET 403 or 404
 retains the CDN fallback: one serial attempt at the missing ranges. Extraction,
 verification and publication are not repeated. Python and npm package requests
 remain under uv and npm's own retry policies.
+
+Rolling suppliers delete old builds (BtbN keeps about two weeks of dated
+ffmpeg autobuilds). When a pinned URL answers 404 or 410 and every mirror
+fallback also refuses (a mirror timeout blocks the re-pin), PM asks the
+supplier's index for the same version line on the same target, the newest
+patch of the locked major.minor for ffmpeg.
+It hashes that build, preferring the release API's digest to a download,
+records it in `cache/pm-repins.json` keyed by the retired row's sha256, and
+retries once. The re-pin applies only while the shipped row is unchanged: a
+Hermes update that moves the pin takes over again. Hash mismatches and
+transient network errors are never re-pinned.
 
 ## Diagnostics
 

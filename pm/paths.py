@@ -59,6 +59,15 @@ def partials_root() -> Path:
     return get_default_hermes_root() / "cache" / "partials"
 
 
+def repins_path() -> Path:
+    """Machine-local re-pins of supplier-retired archives (pm/repins.py).
+    Anchored with the partials: the shipped lockfile and the store may sit in
+    a read-only payload, and a git checkout must not be dirtied by a repair."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "cache" / "pm-repins.json"
+
+
 def facts_path() -> Path:
     return store_root() / "facts.json"
 

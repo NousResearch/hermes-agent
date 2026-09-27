@@ -80,6 +80,7 @@ class Lockfile:
         self._packages = _read(self.path)["packages"]
         self._base = deepcopy(self._packages)
         self._touched: set[str] = set()
+        self._repins: dict | None = None
 
     def version(self, name: str) -> str | None:
         return (self._packages.get(name) or {}).get("version")
@@ -87,7 +88,25 @@ class Lockfile:
     def artifacts(self, name: str, target: str) -> list[dict]:
         """Every archive this target needs, in extraction order. One
         artifact and a list of them are the same thing here — the single
-        form is just the common case written short."""
+        form is just the common case written short. A machine-local re-pin
+        of a retired archive (pm/repins.py) replaces exactly the row it names."""
+        from pm import repins
+
+        if self._repins is None:
+            self._repins = repins.load()
+        return repins.apply(self._repins, name, target, self.shipped_artifacts(name, target))
+
+    def repin_locally(self, name: str, target: str, artifacts: list[dict]) -> None:
+        """Replace this target's shipped row on this machine only; lock.json is untouched."""
+        from pm import repins
+
+        replaces = [row["sha256"] for row in self.shipped_artifacts(name, target)]
+        self._repins = repins.record(name, target, replaces, artifacts)
+
+    def shipped_artifacts(self, name: str, target: str) -> list[dict]:
+        """This target's rows exactly as lock.json ships them, ignoring any
+        machine-local re-pin: for callers that seal the lockfile's identity
+        (payload facts) and for keying a re-pin."""
         artifacts = (self._packages.get(name) or {}).get("artifacts") or {}
         found = artifacts.get(target)
         if found is None:

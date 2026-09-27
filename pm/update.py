@@ -162,6 +162,20 @@ def resolve_best(
     return Resolved(name, locked, style, version=version, per_target={t: version for t in present})
 
 
+def pin_rows(package, version: str, urls: list[str], known: dict[str, str]) -> list[dict]:
+    """Lock rows for ``urls``: a hash already known for a url is reused, then
+    the supplier's published digest, and only then a hashing download.
+    ``known`` gains every hash computed here so sibling targets share it."""
+    from pm.store import hash_url
+
+    rows = []
+    for url in urls:
+        digest = known.get(url) or package.known_sha256(version, url) or hash_url(url)
+        known[url] = digest
+        rows.append({"url": url, "sha256": digest})
+    return rows
+
+
 @reuse_index_responses()
 def resolve_package(package, targets: list[str], locked: Optional[str], *, artifacts: dict | None = None) -> Resolved:
     """Resolve versions and detect new artifacts within a shared minor."""

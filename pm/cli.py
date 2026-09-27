@@ -17,7 +17,7 @@ from pm.package import InstallError
 from pm.paths import repo_root
 from pm.registry import get_package, source_install_packages, tool_roots
 from pm.store import ALL_TARGETS, current_target, hash_url
-from pm.update import Resolved, resolve_package, reuse_index_responses
+from pm.update import Resolved, pin_rows, resolve_package, reuse_index_responses
 
 
 def cmd_lock(args) -> int:
@@ -725,13 +725,9 @@ def _pin_artifacts(package, decision, current: dict) -> dict:
             urls = package.fetch_urls(version, target)
         if urls == [row["url"] for row in old]:
             continue
-        pinned = []
-        for url in urls:
-            digest = known.get(url) or hashes.get(url)
-            if not digest:
-                digest = package.known_sha256(version, url) or hash_url(url)
-                hashes[url] = digest
-            pinned.append({"url": url, "sha256": digest})
+        merged = {**hashes, **known}
+        pinned = pin_rows(package, version, urls, merged)
+        hashes.update({url: digest for url, digest in merged.items() if url not in known})
         artifacts[target] = pinned[0] if len(pinned) == 1 else pinned
     return artifacts
 

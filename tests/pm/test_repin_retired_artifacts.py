@@ -1,82 +1,129 @@
-"""Re-pinning artifacts whose pinned archive the supplier retired (#122240)."""
+"""A supplier-retired archive is re-pinned on this machine, never in lock.json (#122240)."""
 
-from pm.install import _repin_retired_artifacts
+from __future__ import annotations
+
+import hashlib
+import importlib
+import urllib.error
+from email.message import Message
+from pathlib import Path
+
+import pytest
+
+from pm import paths
+from pm.downloader import DownloadError, DownloadTransportError, HashError
 from pm.lock import Lockfile
+from pm.package import InstallError, Package
+from pm.store import Store
 
-OLD = {"url": "https://supplier.example/retired.tar.xz", "sha256": "0" * 64}
-OTHER = {"url": "https://supplier.example/win32.tar.xz", "sha256": "1" * 64}
+install = importlib.import_module("pm.install")
+
+TARGET = "linux-x64"
+RETIRED = "https://supplier.example/autobuild-old/tool-n9.0.1-27.tar.xz"
+LIVE = "https://supplier.example/autobuild-new/tool-n9.0.2-12.tar.xz"
+MIRROR = "https://mirror.example/upstream/sha256/old"
+PAYLOAD = b"live build bytes"
 
 
-class _FakePackage:
-    """Duck type of the two Package hooks the repair consults."""
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
-    name = "ffmpeg"
 
-    def __init__(self, urls=None, known=None, raises=False):
-        self._urls = urls
-        self._known = known
-        self._raises = raises
+class _RollingPackage(Package):
+    """A minor-style package whose supplier only still builds 9.0.2."""
+
+    name = "rolling-tool"
+    version_style = "minor"
+
+    def missing_reason(self, target):
+        return None
+
+    def latest_versions(self, target, locked=None):
+        return ["9.1.0", "9.0.2", "8.1.3"]
 
     def fetch_urls(self, version, target):
-        if self._raises:
-            raise RuntimeError("no advertised artifact")
-        return self._urls
+        if version != "9.0.2":
+            raise InstallError(self.name, f"no advertised {version} artifact for {target}")
+        return [LIVE]
 
     def known_sha256(self, version, url):
-        return self._known
+        return _sha(PAYLOAD)
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        (staged / "bin").mkdir(parents=True)
+        (staged / "bin" / "tool").write_bytes(archive.read_bytes())
+
+    def verify(self, entry: Path, target: str) -> str:
+        return "" if (entry / "bin" / "tool").is_file() else "bin/tool missing"
 
 
-def _seeded_lock(tmp_path):
-    lockfile = Lockfile(tmp_path / "lock.json")
-    lockfile.set_pin("ffmpeg", "9.0.1", {"linux-x64": dict(OLD), "win32-x64": dict(OTHER)})
-    lockfile.save()
-    return Lockfile(tmp_path / "lock.json")
+def _http_failure(url: str, status: int) -> DownloadTransportError:
+    return DownloadTransportError(url, urllib.error.HTTPError(url, status, "", Message(), None))
 
 
-def _rows(tmp_path):
-    fresh = Lockfile(tmp_path / "lock.json")
-    return fresh, fresh.artifacts("ffmpeg", "linux-x64")
+def _combined(*failures: DownloadTransportError) -> DownloadError:
+    error = DownloadError("every source failed")
+    error.failures = failures
+    return error
 
 
-def test_re_pins_the_retired_archive_preferring_the_index_hash(tmp_path, monkeypatch):
-    lockfile = _seeded_lock(tmp_path)
-    package = _FakePackage(["https://supplier.example/live.tar.xz"], known="b" * 64)
-
-    def _fail(url):
-        raise AssertionError("known_sha256 must be preferred over hashing the download")
-
-    monkeypatch.setattr("pm.store.hash_url", _fail)
-    assert _repin_retired_artifacts(package, lockfile, "9.0.1", "linux-x64") is True
-
-    fresh, rows = _rows(tmp_path)
-    assert rows == [{"url": "https://supplier.example/live.tar.xz", "sha256": "b" * 64}]
-    assert fresh.version("ffmpeg") == "9.0.1"  # never a substituted version
-    assert fresh.artifacts("ffmpeg", "win32-x64") == [dict(OTHER)]  # other targets untouched
-
-
-def test_downloads_and_hashes_a_replacement_the_index_cannot_attest(tmp_path, monkeypatch):
-    lockfile = _seeded_lock(tmp_path)
-    package = _FakePackage(["https://supplier.example/live.tar.xz"])
-    monkeypatch.setattr("pm.store.hash_url", lambda url: "c" * 64)
-    assert _repin_retired_artifacts(package, lockfile, "9.0.1", "linux-x64") is True
-
-    _, rows = _rows(tmp_path)
-    assert rows == [{"url": "https://supplier.example/live.tar.xz", "sha256": "c" * 64}]
+@pytest.fixture()
+def sandbox(tmp_path, monkeypatch):
+    store = Store(tmp_path / "runtime")
+    package = _RollingPackage()
+    lock = Lockfile(tmp_path / "lock.json")
+    lock.set_pin(package.name, "9.0.1", {TARGET: {"url": RETIRED, "sha256": "0" * 64}})
+    lock.save()
+    lock = Lockfile(tmp_path / "lock.json")
+    entry = store.entry(f"fetch-{_sha(PAYLOAD)}")  # the live build is cached: no network
+    entry.mkdir(parents=True)
+    (entry / "tool.tar.xz").write_bytes(PAYLOAD)
+    monkeypatch.setattr(install, "get_package", lambda name: package)
+    monkeypatch.setattr(install, "_store", lambda: store)
+    monkeypatch.setattr(install, "_lockfile", lambda: lock)
+    return lock
 
 
-def test_keeps_the_pin_when_the_index_has_not_moved(tmp_path):
-    lockfile = _seeded_lock(tmp_path)
-    package = _FakePackage([OLD["url"]])
-    assert _repin_retired_artifacts(package, lockfile, "9.0.1", "linux-x64") is False
+def _fail_retired_fetch(monkeypatch, error: DownloadError) -> None:
+    real = Store.fetch_many
 
-    _, rows = _rows(tmp_path)
-    assert rows == [dict(OLD)]
+    def fetch_many(self, artifacts, scratch, **kwargs):
+        if any(row["url"] == RETIRED for row in artifacts):
+            raise error
+        return real(self, artifacts, scratch, **kwargs)
+
+    monkeypatch.setattr(Store, "fetch_many", fetch_many)
 
 
-def test_keeps_the_original_failure_when_no_replacement_is_advertised(tmp_path):
-    lockfile = _seeded_lock(tmp_path)
-    package = _FakePackage(raises=True)
-    assert _repin_retired_artifacts(package, lockfile, "9.0.1", "linux-x64") is False
+def test_retired_archive_is_repinned_locally_until_the_shipped_row_moves(sandbox, monkeypatch):
+    # Origin 404 and the mirror 403: the combined failure of a mirror-blocked region.
+    _fail_retired_fetch(monkeypatch, _combined(_http_failure(RETIRED, 404), _http_failure(MIRROR, 403)))
+    shipped = sandbox.path.read_bytes()
 
-    _, rows = _rows(tmp_path)
-    assert rows == [dict(OLD)]
+    entry = install.stage_only("rolling-tool", TARGET)
+
+    assert (entry / "bin" / "tool").read_bytes() == PAYLOAD
+    assert sandbox.path.read_bytes() == shipped  # the checkout stays clean
+    live = [{"url": LIVE, "sha256": _sha(PAYLOAD)}]
+    assert Lockfile(sandbox.path).artifacts("rolling-tool", TARGET) == live  # the next run reuses it
+    moved = {"url": "https://supplier.example/autobuild-next/tool.tar.xz", "sha256": "1" * 64}
+    sandbox.set_pin("rolling-tool", "9.0.1", {TARGET: moved})
+    sandbox.save()
+    assert Lockfile(sandbox.path).artifacts("rolling-tool", TARGET) == [moved]  # upstream wins again
+    paths.repins_path().write_text('{"rolling-tool": {"linux-x64": {"replaces": ["%s"]}}}' % ("1" * 64), encoding="utf-8")
+    assert Lockfile(sandbox.path).artifacts("rolling-tool", TARGET) == [moved]  # a broken entry is ignored
+
+
+@pytest.mark.parametrize("error", [
+    HashError("sha256 mismatch"),
+    DownloadTransportError(RETIRED, TimeoutError("timed out")),
+    # Origin 404 at probe, then the mirror probed fine and timed out mid-transfer.
+    _combined(_http_failure(RETIRED, 404), DownloadTransportError(MIRROR, TimeoutError("timed out"))),
+], ids=["integrity", "transient", "mirror-transient"])
+def test_failures_that_do_not_prove_retirement_are_never_repinned(sandbox, monkeypatch, error):
+    _fail_retired_fetch(monkeypatch, error)
+
+    with pytest.raises(InstallError, match="install failed"):
+        install.stage_only("rolling-tool", TARGET)
+
+    assert Lockfile(sandbox.path).artifacts("rolling-tool", TARGET)[0]["url"] == RETIRED

@@ -3470,8 +3470,16 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
+    # Spawn on the DEPENDENCY ENVIRONMENT's interpreter, not the gateway's. An update can
+    # leave the gateway on a bare provisioned runtime whose site-packages holds pip and
+    # nothing else, while the real dependency environment lives in the selected venv. The
+    # worker then dies at import with ModuleNotFoundError ("ruamel.yaml", "dotenv") before
+    # its ownership ack, so every agent job is reported failed while every systemd unit
+    # still reads `active`. See cron/scheduler_worker_env.py::worker_interpreter.
+    from cron.scheduler_worker_env import worker_interpreter
+
     command = [
-        sys.executable,
+        worker_interpreter(Path(__file__).resolve().parents[1]),
         "-m",
         "cron.scheduler",
         "--external-worker-file",

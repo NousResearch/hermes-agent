@@ -1,6 +1,8 @@
 """Tests for gateway runtime status tracking."""
 
+import errno
 import json
+import logging
 import os
 import threading
 import time
@@ -60,6 +62,54 @@ class TestGatewayPidState:
 
         assert status.is_gateway_runtime_lock_active() is False
 
+    @pytest.mark.parametrize("claim", ["runtime_lock", "pid_file"])
+    def test_disk_full_identity_record_write_preserves_startup_claim(
+        self, claim, tmp_path, monkeypatch, caplog, capsys
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        failure = OSError(errno.ENOSPC, "No space left on device")
+
+        def fail_write(*_args, **_kwargs):
+            raise failure
+
+        if claim == "runtime_lock":
+            monkeypatch.setattr(status.json, "dump", fail_write)
+            try:
+                assert status.acquire_gateway_runtime_lock() is True
+                assert status.owns_gateway_runtime_lock() is True
+            finally:
+                status.release_gateway_runtime_lock()
+            path = tmp_path / "gateway.lock"
+        else:
+            monkeypatch.setattr(status, "_write_json_excl", fail_write)
+            status.write_pid_file()
+            path = tmp_path / "gateway.pid"
+
+        warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert str(path) in warnings[0].getMessage()
+        assert "disk" in warnings[0].getMessage().lower()
+        assert capsys.readouterr().err == ""
+
+    @pytest.mark.parametrize("claim", ["runtime_lock", "pid_file"])
+    def test_identity_record_write_keeps_non_disk_failure(
+        self, claim, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        failure = PermissionError(errno.EACCES, "Permission denied")
+
+        def fail_write(*_args, **_kwargs):
+            raise failure
+
+        if claim == "runtime_lock":
+            monkeypatch.setattr(status.json, "dump", fail_write)
+            write_claim = status.acquire_gateway_runtime_lock
+        else:
+            monkeypatch.setattr(status, "_write_json_excl", fail_write)
+            write_claim = status.write_pid_file
+
+        with pytest.raises(PermissionError):
+            write_claim()
 
     def test_get_running_pid_cached_invalidates_when_pid_file_changes(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

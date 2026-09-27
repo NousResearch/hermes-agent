@@ -144,21 +144,60 @@ def lease_generation(environment: Path) -> Callable[[], None]:
     return lease_directory(environment.parent)
 
 
+# Leases this process created and still holds, keyed by lease path. Holders that exit
+# through ``os.execv`` (bootstrap/relaunch) or ``os._exit`` (gateway watchdogs) skip
+# ``atexit``, so their lease files are swept by the next reader instead (#125609).
+_ACTIVE_LEASES: dict[Path, Callable[[], None]] = {}
+
+
+def _sweep_dead_leases(leases: Path) -> None:
+    """Unlink lease files whose holder is gone; a free lock means the file is abandoned.
+
+    Every lease is taken locked on a staged name and only then renamed into place, so a
+    file under its final name was locked before it became visible: a lock that now probes
+    free belongs to a holder that exited through a path ``atexit`` never runs. Leases this
+    process itself holds are skipped — Windows byte locks are per-process re-entrant, so
+    probing our own would succeed — and so are staged names, which a concurrent creator
+    may not have locked yet.
+    """
+    mine = {held.resolve() for held in _ACTIVE_LEASES}
+    for lease in leases.glob("*"):
+        if lease.name.endswith(".staging") or lease.resolve() in mine:
+            continue
+        try:
+            fd = os.open(lease, os.O_RDWR)
+        except FileNotFoundError:
+            continue  # swept concurrently by another launcher
+        try:
+            if _lock(fd, wait=False):
+                with suppress(OSError):
+                    lease.unlink()
+        finally:
+            os.close(fd)
+
+
 def lease_directory(generation: Path) -> Callable[[], None]:
     """Pin a lease-managed generation directory for this process's lifetime."""
     if not (generation / ".lease-managed").is_file():
         return lambda: None  # Generations produced before leases stay conservatively retained.
     leases = generation / ".leases"
     leases.mkdir(exist_ok=True)
+    staging = leases / f".{uuid.uuid4().hex}.staging"
     lease = leases / uuid.uuid4().hex
-    fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    fd = os.open(staging, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
     try:
         _lock(fd, wait=True)
+        os.replace(staging, lease)
     except BaseException:
         os.close(fd)
+        with suppress(OSError):
+            staging.unlink()
         raise
 
     def release() -> None:
+        if _ACTIVE_LEASES.get(lease) is not release:
+            return  # already released: an explicit call after atexit must not close twice
+        del _ACTIVE_LEASES[lease]
         atexit.unregister(release)
         os.close(fd)
         # Best effort: the collector ignores unlocked lease files, but one per
@@ -166,7 +205,11 @@ def lease_directory(generation: Path) -> Callable[[], None]:
         with suppress(OSError):
             lease.unlink()
 
+    _ACTIVE_LEASES[lease] = release
     atexit.register(release)
+    # Registered before sweeping so this lease is recognised as ours; a crash-looping
+    # service parks one abandoned file per start here, the sweep removes the backlog.
+    _sweep_dead_leases(leases)
     return release
 
 

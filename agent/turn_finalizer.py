@@ -485,7 +485,7 @@ def apply_llm_output_transform(
     if isinstance(recorded, tuple) and len(recorded) == 3 and recorded[0] == turn_id:
         _, transformed, pre_transform = recorded
         return final_response, transformed, pre_transform
-    if not final_response:
+    if getattr(agent, "_private_default_route", False) or not final_response:
         return final_response, False, None
     if platform is None:
         platform = getattr(agent, "platform", None) or ""

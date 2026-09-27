@@ -8,6 +8,7 @@ with ``RedactingFormatter`` so secrets never reach disk.
 
 import atexit
 import contextlib
+import contextvars
 import copy
 import io
 import logging
@@ -233,6 +234,19 @@ def clear_session_context() -> None:
     _session_context.session_id = None
 
 
+_private_child_log: contextvars.ContextVar[bool] = contextvars.ContextVar("private_child_log", default=False)
+
+
+@contextlib.contextmanager
+def private_child_log_scope():
+    """Redact all records emitted while a private child processes ephemeral text."""
+    token = _private_child_log.set(True)
+    try:
+        yield
+    finally:
+        _private_child_log.reset(token)
+
+
 def _install_session_record_factory() -> None:
     """Replace the global LogRecord factory with one that adds ``session_tag``.
 
@@ -246,8 +260,12 @@ def _install_session_record_factory() -> None:
 
     def _session_record_factory(*args, **kwargs):
         record = current_factory(*args, **kwargs)
+        private = _private_child_log.get()
+        if private:
+            record.msg, record.args = "[private child activity]", ()
+            record.exc_info = record.stack_info = None
         sid = getattr(_session_context, "session_id", None)
-        record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
+        record.session_tag = f" [{sid}]" if sid and not private else ""  # type: ignore[attr-defined]
         # QueueListener formats on its own thread, after the profile-scoped
         # ContextVar is gone; keep the resolved home on the record so a
         # multiplex desktop ticker can route to the job owner's files (#97489).

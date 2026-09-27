@@ -178,6 +178,7 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    private_default_route: bool = False,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -188,7 +189,9 @@ def _build_child_agent(
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
     max_spawn = _get_max_spawn_depth()
-    effective_role = "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    effective_role = "leaf" if private_default_route else (
+        "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    )
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
@@ -199,7 +202,9 @@ def _build_child_agent(
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
     delegation_cfg = _load_config()
-    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    child_toolsets, child_disabled_toolsets = (
+        ([], []) if private_default_route else _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    )
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
@@ -211,7 +216,7 @@ def _build_child_agent(
     # Shared ref: session_id once the child exists, delegation_id once
     # delegate_task stamps it — both ride on every relayed event.
     child_session_ref: Dict[str, Any] = {}
-    child_progress_cb = _build_child_progress_callback(
+    child_progress_cb = None if private_default_route else _build_child_progress_callback(
         task_index, goal, parent_agent, task_count, subagent_id=subagent_id, parent_id=parent_subagent_id,
         depth=max(0, child_depth - 1),  # 0 = first-level child for the UI
         model=model or getattr(parent_agent, "model", None), toolsets=child_toolsets, session_ref=child_session_ref,
@@ -223,20 +228,28 @@ def _build_child_agent(
         override_acp_args=override_acp_args,
         routing_cfg=routing_cfg,
     )
+    if private_default_route and (
+        rt["model"] != model or rt["provider"] != override_provider
+        or rt["base_url"] != override_base_url or rt["api_key"] != override_api_key
+        or rt["fallback_model"] or rt["acp_command"]
+    ):
+        raise ValueError("Private child route does not match the configured default bundle.")
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
         # _resolve_delegation_credentials already merged OVER the parent's
         request_overrides = dict(override_request_overrides)
     else:
         request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
-    parent_sid = getattr(parent_agent, "session_id", None)
-    child_session_db = _open_child_session_db(parent_agent)
+    parent_sid = None if private_default_route else getattr(parent_agent, "session_id", None)
+    child_session_db = None if private_default_route else _open_child_session_db(parent_agent)
     with delegated_child_context():
         try:
             child = AIAgent(
-                **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
+                **rt, max_iterations=max_iterations,
+                prefill_messages=None if private_default_route else getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
-                ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
+                ephemeral_system_prompt=None if private_default_route else child_prompt,
+                log_prefix=f"[subagent-{task_index}]", platform="subagent",
                 side_agent=True,
                 skip_context_files=True, skip_memory=True, clarify_callback=None,
                 thinking_callback=(
@@ -254,7 +267,21 @@ def _build_child_agent(
                     from hermes_state_registry import release_or_close
                     release_or_close(child_session_db)
             raise
-    child._print_fn = getattr(parent_agent, "_print_fn", None)
+    child._print_fn = None if private_default_route else getattr(parent_agent, "_print_fn", None)
+    if private_default_route:
+        # The empty selection is explicit (None means all). This is also checked
+        # after construction: plugin discovery/MCP refresh must not add a tool.
+        if (child.tools or child.valid_tool_names or child._fallback_chain
+                or child.provider != rt["provider"] or child.model != rt["model"]
+                or str(child.base_url or "").rstrip("/") != str(rt["base_url"] or "").rstrip("/")
+                or child.api_key != rt["api_key"]):
+            child.close()
+            raise ValueError("Private child route or capabilities changed during construction.")
+        child._private_default_route = True
+        child._persist_disabled = child._skip_mcp_refresh = child.suppress_status_output = True
+        child._end_session_on_close = False
+        # Only attach the sensitive prompt after route/capability verification.
+        child.ephemeral_system_prompt = child_prompt
     _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
@@ -276,12 +303,14 @@ def _build_child_agent(
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
     # Shared pool lets children rotate credentials on rate limits.
-    child_pool = _resolve_child_credential_pool(
+    child_pool = None if private_default_route else _resolve_child_credential_pool(
         rt["provider"], parent_agent, rt["base_url"], effective_requested_provider=rt.get("requested_provider"),
     )
     if child_pool is not None:
         child._credential_pool = child_pool
 
+    if private_default_route:
+        return child
     _attach_child(parent_agent, child)  # interrupt propagation
     # spawn_requested now — the child may queue for seconds when the pool is
     # saturated — then the subagent_start lifecycle hook.

@@ -58,6 +58,9 @@ class SubagentLaunchRequest:
     correlation_id: Optional[str] = None
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     timeout_seconds: Optional[float] = None
+    # Opt in to a private, single-turn child on this profile's configured default route.
+    # This deliberately ignores delegation.provider/model and all fallback chains.
+    private_default_route: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -143,6 +146,7 @@ class _Record:
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     result: Optional[SubagentResult] = None
+    profile_key: Optional[str] = None
 
 
 @dataclasses.dataclass
@@ -222,7 +226,10 @@ _REQUEST_REJECTIONS: tuple[tuple[Callable[[Any], bool], str], ...] = (
     (lambda r: r.context is not None and (not isinstance(r.context, str) or len(r.context) > _MAX_CONTEXT_CHARS),
      "context must be a string of at most 32000 characters."),
     (lambda r: r.role not in {"leaf", "orchestrator"}, "role must be 'leaf' or 'orchestrator'."),
-    (lambda r: r.timeout_seconds is not None, "Per-launch timeout is not supported; configure delegation timeout explicitly."),
+    (lambda r: r.timeout_seconds is not None, "Per-launch timeout is not supported; use wait(timeout_seconds=...) and cancel()."),
+    (lambda r: type(r.private_default_route) is not bool, "private_default_route must be a boolean."),
+    (lambda r: r.private_default_route and (r.model is not None or r.allowed_toolsets is not None or r.role != "leaf"),
+     "Private default-route children must be leaf children without model or toolset overrides."),
     (lambda r: r.working_directory is not None,
      "working_directory is not supported because Hermes delegates use isolated task environments."),
     (lambda r: bool(r.blocked_tools),
@@ -250,18 +257,33 @@ class SubagentLifecycleService:
         parent_session_id = _session_id_of(parent)
         if request.parent_session_id and request.parent_session_id != parent_session_id:
             raise SubagentLifecycleError("parent_session_id does not match the active session.")
-        correlation_key = (parent_session_id, request.correlation_id or "")
+        from hermes_constants import hermes_home_key
+        profile_key = hermes_home_key() if request.private_default_route else None
+        correlation_key = (f"profile:{profile_key}:{parent_session_id}" if profile_key else parent_session_id,
+                           request.correlation_id or "")
         with _REGISTRY.lock:
             self._cleanup_locked()
             if request.correlation_id and correlation_key in _REGISTRY.correlations:
                 raise SubagentLifecycleError("Duplicate correlation_id for this parent session.")
+        # Resolve the entire route before child construction (which embeds goal/context in its prompt)
+        # and before submission. Never use delegation.provider or its fallback policy here.
+        private_route = self._private_route() if request.private_default_route else None
         # Lazy: delegate construction stays internal, plugins never import private delegation helpers.
         from tools.delegate_tool import _build_child_preserving_parent_tools, DEFAULT_MAX_ITERATIONS
-        child = _build_child_preserving_parent_tools(
-            task_index=0, goal=request.goal, context=request.context,
-            toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
-            model=request.model, max_iterations=DEFAULT_MAX_ITERATIONS, task_count=1, parent_agent=parent, role=request.role,
-        )
+        try:
+            child = _build_child_preserving_parent_tools(
+                task_index=0, goal=request.goal, context=request.context,
+                toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
+                model=private_route["model"] if private_route else request.model,
+                max_iterations=1 if private_route else DEFAULT_MAX_ITERATIONS,
+                task_count=1, parent_agent=parent, role=request.role,
+                private_default_route=bool(private_route),
+                **(private_route["overrides"] if private_route else {}),
+            )
+        except Exception as exc:
+            if private_route:
+                raise SubagentLifecycleError("Private default-route child could not be constructed.") from exc
+            raise
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
             raise SubagentLifecycleError("Hermes failed to assign a child identity.")
@@ -271,12 +293,23 @@ class SubagentLifecycleService:
             getattr(child, "provider", None), getattr(child, "model", None), getattr(child, "_delegate_role", request.role),
             int(getattr(child, "_delegate_depth", 1) or 1), self._capability(subagent_id, parent_session_id, created),
         )
-        record = _Record(handle, SubagentState.PENDING, created, agent=child)
+        record = _Record(handle, SubagentState.PENDING, created, agent=child, profile_key=profile_key)
         with _REGISTRY.lock:
             _REGISTRY.records[subagent_id] = record
             if request.correlation_id:
                 _REGISTRY.correlations[correlation_key] = subagent_id
-        record.future = _EXECUTOR.submit(self._run, record, request.goal, parent)
+        # Worker threads do not inherit ContextVars automatically. The bound home AND secret
+        # scope must travel together, including on A -> B -> A multiplexed hosts.
+        ctx = contextvars.copy_context()
+        try:
+            record.future = _EXECUTOR.submit(ctx.run, self._run, record, request.goal, parent, bool(private_route))
+        except BaseException:
+            with _REGISTRY.lock:
+                _REGISTRY.records.pop(subagent_id, None)
+                if request.correlation_id:
+                    _REGISTRY.correlations.pop(correlation_key, None)
+            child.close()
+            raise
         return handle
 
     def status(self, handle: SubagentHandle) -> SubagentStatus:
@@ -342,7 +375,12 @@ class SubagentLifecycleService:
         if _session_id_of(self._parent_agent_resolver()) != handle.parent_session_id:
             return None
         with _REGISTRY.lock:
-            return _REGISTRY.records.get(handle.subagent_id)
+            record = _REGISTRY.records.get(handle.subagent_id)
+            if record is not None and record.profile_key is not None:
+                from hermes_constants import hermes_home_key
+                if record.profile_key != hermes_home_key():
+                    return None
+            return record
 
     @staticmethod
     def _cleanup_locked() -> None:
@@ -353,18 +391,42 @@ class SubagentLifecycleService:
             if record.result is not None and record.completed_at is not None and record.completed_at < cutoff
         ]
         for subagent_id in expired:
-            handle = _REGISTRY.records.pop(subagent_id).handle
+            expired_record = _REGISTRY.records.pop(subagent_id)
+            handle = expired_record.handle
             if handle.correlation_id:
-                _REGISTRY.correlations.pop((handle.parent_session_id, handle.correlation_id), None)
+                # Private records namespace correlations by profile; ordinary ones retain
+                # their existing session-only key.
+                key = (f"profile:{expired_record.profile_key}:{handle.parent_session_id}"
+                       if expired_record.profile_key else handle.parent_session_id)
+                _REGISTRY.correlations.pop((key, handle.correlation_id), None)
 
-    def _run(self, record: _Record, goal: str, parent: Any) -> None:
+    def _run(self, record: _Record, goal: str, parent: Any, private: bool = False) -> None:
         with _REGISTRY.lock:
             if record.state is not SubagentState.CANCEL_REQUESTED:
                 record.state = SubagentState.RUNNING
             record.started_at = record.updated_at = time.time()
         try:
-            from tools.delegate_tool import _run_child_lifecycle
-            raw = _run_child_lifecycle(0, goal, record.agent, parent)
+            if private:
+                # No delegation registry, progress relay, heartbeat, worktree, transcript,
+                # memory finalization, stop hooks, or parent cost mutation.
+                from agent.delegation_context import delegated_child_context
+                from hermes_logging import private_child_log_scope
+                child = record.agent
+                try:
+                    with private_child_log_scope(), delegated_child_context(str(child.session_id)):
+                        response = child.run_conversation(user_message=goal)
+                    raw = {
+                        "status": "interrupted" if child._interrupt_requested else
+                                  "error" if not isinstance(response, dict) or response.get("failed")
+                                  or response.get("error") or response.get("completed") is False else "completed",
+                        "summary": response.get("final_response") if isinstance(response, dict) else None,
+                    }
+                finally:
+                    with private_child_log_scope():
+                        child.close()
+            else:
+                from tools.delegate_tool import _run_child_lifecycle
+                raw = _run_child_lifecycle(0, goal, record.agent, parent)
             is_dict = isinstance(raw, dict)
             raw = raw if is_dict else {}
             status = str(raw.get("status", "error"))
@@ -373,14 +435,16 @@ class SubagentLifecycleService:
             else:
                 state = SubagentState.SUCCEEDED if status == "completed" else SubagentState.FAILED
             fields: dict[str, Any] = dict(
-                summary=_clip(raw.get("summary")), error_message=_clip(raw.get("error") or None),
+                summary=None if private and state is SubagentState.FAILED else _clip(raw.get("summary")),
+                error_message=None if private else _clip(raw.get("error") or None),
                 error_classification=None if state == SubagentState.SUCCEEDED else status.upper(),
                 usage_metadata={"api_calls": raw.get("api_calls", 0)} if is_dict else {},
                 tool_execution_summary={"duration_seconds": raw.get("duration_seconds", 0)} if is_dict else {},
             )
         except Exception as exc:
             state = SubagentState.FAILED
-            fields = dict(error_classification=type(exc).__name__, error_message=_clip(exc))
+            fields = dict(error_classification=type(exc).__name__,
+                          error_message="Private child failed." if private else _clip(exc))
         result = SubagentResult(record.handle, state, True, started_at=record.started_at, completed_at=time.time(), **fields)
         payload = dataclasses.asdict(result)
         payload.pop("result_hash", None)
@@ -414,3 +478,35 @@ class SubagentLifecycleService:
         enabled = getattr(parent, "enabled_toolsets", None)
         if enabled is not None and not set(request.allowed_toolsets).issubset(set(enabled)):
             raise SubagentLifecycleError("Requested toolsets would broaden parent permissions.")
+
+    @staticmethod
+    def _private_route() -> dict[str, Any]:
+        from hermes_cli.config import load_config_readonly
+        from tools.delegate_tool_config import _resolve_delegation_credentials
+
+        model_cfg = (load_config_readonly().get("model") or {})
+        provider = model_cfg.get("provider")
+        model = model_cfg.get("default")
+        if (not isinstance(provider, str) or not provider.strip() or provider.strip().lower() == "auto"
+                or not isinstance(model, str) or not model.strip()):
+            raise SubagentLifecycleError("Private default route requires explicit model.provider and model.default.")
+        try:
+            # Reuse the host's runtime provider resolution, but with an isolated routing
+            # owner. In particular, delegation.base_url/api_key/provider/fallback cannot win.
+            creds = _resolve_delegation_credentials({"provider": provider, "model": model}, None)
+        except Exception as exc:
+            raise SubagentLifecycleError("Configured default provider is unavailable.") from exc
+        # ACP/external processes can execute commands and own their own transcript;
+        # they cannot satisfy the in-process no-tools/no-persistence contract.
+        if creds.get("command"):
+            raise SubagentLifecycleError("Private default route does not support external-process providers.")
+        if not creds.get("api_key") or (not creds.get("base_url")
+                                        and provider.strip().lower() not in {"bedrock", "vertex", "google", "google-genai"}):
+            raise SubagentLifecycleError("Configured default provider has no usable credential or endpoint.")
+        return {"model": model, "overrides": {
+            "override_provider": creds["provider"], "override_base_url": creds["base_url"],
+            "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
+            "override_request_overrides": creds.get("request_overrides"),
+            "override_acp_command": creds.get("command"), "override_acp_args": creds.get("args"),
+            "routing_cfg": {"fallback_providers": []},
+        }}

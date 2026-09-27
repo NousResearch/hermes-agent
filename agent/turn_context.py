@@ -1038,7 +1038,7 @@ def build_turn_context(
     )
     _reset_per_turn_agent_state(agent)
 
-    _preview_text = summarize_user_message_for_log(user_message)
+    _preview_text = "[private child turn]" if getattr(agent, "_private_default_route", False) else summarize_user_message_for_log(user_message)
     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")
     _turn_fmt = (
         "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r"

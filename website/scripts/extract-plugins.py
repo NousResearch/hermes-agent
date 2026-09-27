@@ -43,18 +43,24 @@ DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "website" / "static" / "api"
 # Written by fetch-plugin-stars.py (at most one GitHub probe per day); absent → no ranking data.
 DEFAULT_STARS_FILE = DEFAULT_OUTPUT_DIR / "plugin-stars.json"
-_GITHUB_REPO_RE = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s#?]+?)(?:\.git)?/?$")
+# \Z, not $: $ also matches just before a trailing newline; the emitted JSON
+# feeds installed clients' clone/install paths and must not smuggle one.
+_GITHUB_REPO_RE = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s#?]+?)(?:\.git)?/?\Z")
 
 CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
-SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 # Keep in sync with scripts/validate_plugin_catalog.py (cosmetic fields attached to the pin).
-VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}\Z")
+_REPO_RE = re.compile(r"^https://\S+\Z")
+# Installed clients join subdir onto a pinned clone to install; the feed must not
+# emit traversal or absolute forms (mirrors scripts/validate_plugin_catalog.py).
+_SUBDIR_RE = re.compile(r"^[A-Za-z0-9._/-]+\Z")
 IMAGE_HOSTS = ("raw.githubusercontent.com", "github.com")
 IMAGE_HOST_SUFFIX = ".githubusercontent.com"
 MAX_SCREENSHOTS = 6
 # Forges whose raw-file URL scheme the site knows; ``readme: true`` on any other host is ignored.
-_FORGE_REPO_RE = re.compile(r"^https://(github\.com|gitlab\.com)/([^/\s]+)/([^/\s#?]+?)(?:\.git)?/?$")
+_FORGE_REPO_RE = re.compile(r"^https://(github\.com|gitlab\.com)/([^/\s]+)/([^/\s#?]+?)(?:\.git)?/?\Z")
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 
 
@@ -233,6 +239,9 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
         if not SHA_RE.match(sha):
             _log(f"skipping {path.name} ({name}): sha is not a 40-hex commit pin")
             continue
+        if not _REPO_RE.match(repo):
+            _log(f"skipping {path.name} ({name}): repo is not a whitespace-free https:// URL")
+            continue
 
         tier = str(raw.get("tier") or "community").strip().lower()
         if tier not in CATALOG_TIERS:
@@ -243,7 +252,17 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
             _log(f"{path.name} ({name}): unknown category {category!r}, treating as general")
             category = "general"
 
-        subdir = str(raw.get("subdir") or "").strip()
+        subdir_raw = raw.get("subdir")
+        if "subdir" in raw and (
+            not isinstance(subdir_raw, str)
+            or (isinstance(subdir_raw, str) and subdir_raw and (
+                not _SUBDIR_RE.match(subdir_raw)
+                or any(seg in ("", ".", "..") for seg in subdir_raw.split("/"))
+            ))
+        ):
+            _log(f"skipping {path.name} ({name}): subdir is not a plain relative path")
+            continue
+        subdir = subdir_raw if isinstance(subdir_raw, str) else ""
         entries.append({
             "name": name,
             "description": str(raw.get("description") or "").strip(),

@@ -831,7 +831,7 @@ def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential
 
 def _store_owns_pool_provider(auth_store: Dict[str, Any], provider: str) -> bool:
     """True when an already-loaded *auth_store* has its own rows for *provider*."""
-    pool = auth_store.get("credential_pool") if isinstance(auth_store, dict) else None
+    pool = auth_store.get("credential_pool")
     entries = pool.get(provider) if isinstance(pool, dict) else None
     return isinstance(entries, list) and bool(entries)
 

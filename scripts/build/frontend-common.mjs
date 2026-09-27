@@ -1,10 +1,30 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+
+// A rename that displaces a directory fails with EPERM/EBUSY/EACCES while another process
+// still holds a handle inside it: an antivirus/indexer scan, or the previous build's watcher.
+// The hold is transient, so wait it out — the Windows analogue of the Python side's bounded
+// rename retry. Delays stay short so a permanent failure still surfaces quickly.
+const RENAME_ATTEMPTS = 8
+const renameHolds = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY'])
+
+export async function renameWithRetry(from, to) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      renameSync(from, to)
+      return
+    } catch (error) {
+      if (attempt >= RENAME_ATTEMPTS || !renameHolds.has(error.code)) throw error
+      await delay(50 * attempt)
+    }
+  }
+}
 
 // Look only in the prepared workspace, not a parent checkout's dependency tree.
 // Package symlinks themselves are valid inputs (including Nix store references).
@@ -75,17 +95,17 @@ export function productOutput(source, out, inputs) {
 
 // Never delete the last successful product before a compiler succeeds. The
 // staging and backup directories are siblings so publication stays on one FS.
-export function publishDirectory(staged, out, { source } = {}) {
+export async function publishDirectory(staged, out, { source } = {}) {
   // The destination may have been occupied while the compiler was running.
   requireOwnedOutput(out, source)
   writeFileSync(path.join(staged, productMarker), productOwner)
   const backup = `${staged}.previous`
   const previous = existsSync(out)
-  if (previous) renameSync(out, backup)
+  if (previous) await renameWithRetry(out, backup)
   try {
-    renameSync(staged, out)
+    await renameWithRetry(staged, out)
   } catch (error) {
-    if (previous) renameSync(backup, out)
+    if (previous) await renameWithRetry(backup, out)
     throw error
   }
   if (previous) rmSync(backup, { recursive: true, force: true })
@@ -99,7 +119,7 @@ export async function withProduct(out, compile, { source } = {}) {
   mkdirSync(product)
   try {
     await compile(product, scratch)
-    publishDirectory(product, out, { source })
+    await publishDirectory(product, out, { source })
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }

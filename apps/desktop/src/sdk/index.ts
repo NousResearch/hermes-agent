@@ -1523,7 +1523,7 @@ export const host = {
       offset: '0',
       min_messages: '0',
       archived: 'exclude',
-      order: 'created',
+      order: 'recent',
       profile
     })
 

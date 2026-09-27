@@ -8,10 +8,12 @@ import time
 from collections.abc import Callable
 from textwrap import dedent
 
+import pytest
 from nio import RoomMessageText, RoomSendResponse
 
 from tests.fakes.fake_llm_provider import Text, ToolCall
 from tests.integration.matrix_live.conftest import LinuxNioObserver, LiveGateway, LiveRoom
+from tests.integration.matrix_live.inspection_client import check_inspection
 
 
 def test_model_reads_an_event_and_the_room_from_its_live_matrix_session(
@@ -253,5 +255,31 @@ def test_model_reads_valid_encrypted_edit_and_ignores_edit_without_new_content(
             "errors": [],
             "skipped": 0,
         }]
+    finally:
+        record_property("body_seconds", round(time.monotonic() - started, 3))
+
+
+@pytest.mark.parametrize("gateway", ["inspection"], indirect=True)
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_model_inspects_live_room_state_members_permissions_and_pins(
+    gateway: LiveGateway,
+    live_room: LiveRoom,
+    linux_nio_observer: LinuxNioObserver,
+    record_property: Callable[[str, object], None],
+    encrypted: bool,
+) -> None:
+    assert linux_nio_observer.account == live_room.observer
+    assert live_room.observer.device_id != live_room.bot.device_id
+    started = time.monotonic()
+    try:
+        check_inspection(gateway, live_room, linux_nio_observer, encrypted=encrypted)
+    except Exception as exc:
+        results = [message for request in gateway.model.main_requests()
+                   for message in request["messages"] if message["role"] == "tool"]
+        logs = gateway.container.get_wrapped_container().logs().decode(errors="replace")[-8000:]
+        raise AssertionError(
+            f"Room inspection failed: {exc}\nTool results: {results}\n"
+            f"Auxiliary calls: {gateway.model.aux_requests()}\nGateway logs:\n{logs}"
+        ) from exc
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))

@@ -26,8 +26,11 @@ def _client(slot: str, cls_name: str) -> Any:
         import parallel  # deliberately lazy
         return getattr(parallel, cls_name)(api_key=api_key)
 
-    # The key is checked before the SDK is ensured (cached_sdk_client): without a key the
-    # error names the key, not an install the user may not be allowed to run.
+    # No eager pm ensure_import here: cached_sdk_client checks the API key FIRST and only
+    # then lazy-ensures the extra. Pre-ensuring inverted that order on hosts where the
+    # optional extra is absent and lazy installs are disabled, surfacing "Parallel SDK
+    # not installed" instead of the missing-key error the keyless-disabled contract
+    # (and exa's identical client builder) promises.
     return cached_sdk_client(slot, "PARALLEL_API_KEY", _MISSING_KEY, "parallel-web", _factory)
 
 

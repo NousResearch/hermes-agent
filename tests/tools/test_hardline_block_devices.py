@@ -22,6 +22,7 @@ from tools.approval import (
     disable_session_yolo,
 )
 from tools.approval_context import reset_current_session_key, set_current_session_key
+from tools.approval_detection import _collapse_device_paths, _strip_shell_escapes
 
 
 # Commands that MUST be hardline-blocked: every one destroys a whole disk.
@@ -174,6 +175,30 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     # mdadm's named arrays live in a directory, like /dev/mapper
     "wipefs -a /dev/md/raid1",
     "cat x > /dev/md/boot",
+    # traversal THROUGH a directory under /dev, and the spellings a redirect or `of=` anchor could
+    # not skip past (review on #122771: Enough1122, andrexibiza F1/F2)
+    "wipefs -a /dev/nvme/../sda",
+    "cat x > /dev/nvme/../sda",
+    "wipefs -a /dev/disk/../sda",
+    "cat x > /dev/disk/../sda",
+    "blkdiscard /dev/disk/by-id/../../nvme0n1",
+    "dd if=/dev/zero of=/dev/mapper/../sda",
+    "wipefs -a /dev/a/b/../../sda",
+    "cat x > ..//dev/sda",
+    "dd if=/dev/zero of=..//dev/sda",
+    "wipefs -a .././dev/sda",
+    "cat x > .././dev/sda",
+    "dd if=/dev/zero of=.././dev/sda",
+    "cat x > //dev/sda",
+    "dd if=/dev/zero of=//dev/sda",
+    "cat x > /./dev/sda",
+    "wipefs -a /./dev/sda",
+    "wipefs -a ~/../dev/sda",
+    "wipefs -a $HOME/../dev/sda",
+    'bash -c "wipefs -a ..//dev/sda"',
+    # an escaped BACKSLASH in front of `>` is a literal backslash and then a real redirect
+    'echo foo\\\\> "/dev/sda"',
+    "echo foo\\\\> /dev/sda",
     # A real device path still matches after every boundary that is not a path character.
     "cat x > /dev/sda",
     'cat x > "/dev/sda"',
@@ -305,6 +330,14 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     "mkswap ../dev/sdk/swap.img",
     "shred -u /dev/sda-notes",
     "blkdiscard -v /dev/sdk/token.json",
+    # `..` climbs only above where the path STARTS: under the working directory it is a directory,
+    # and a file that merely sits under some `dev/` elsewhere is a file (review F3 on #122771)
+    "shred -u build/../dev/sda",
+    "shred -u /home/alice/dev/sda",
+    "shred -u ./x/../dev/sda",
+    # an escaped `>` is a literal argument: bash prints `hello > /dev/disk0` and writes nothing
+    'echo hello \\> "/dev/disk0"',
+    "echo hello \\> /dev/disk0",
     # The operand lookahead must not read a trailing comment as the operand.
     "shred -u notes.txt # never do this to /dev/sda",
     # `-n`/`--no-act` is wipefs doing everything except the write: a diagnostic.
@@ -355,6 +388,8 @@ def test_lookalike_commands_stay_runnable(command):
     "tee ../dev/disk0 < x",
     "cp x /tmp/../dev/vda",
     "mv x /dev//nvme0n1",
+    "tee ..//dev/disk0 < x",
+    "cp x /dev/nvme/../sda",
     ]],
     *[(c, False) for c in [
     "echo test > /dev/null",
@@ -418,6 +453,9 @@ def clean_session(monkeypatch):
     "wipefs -a ../dev/sda",
     "cat x > /tmp/../dev/disk0",
     "dd if=/dev/zero of=/dev//sda",
+    "cat x > ..//dev/sda",
+    "wipefs -a /dev/disk/../sda",
+    'echo foo\\\\> "/dev/sda"',
 ])
 def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     """These reached the approval tier at best (or no tier at all) — exactly what
@@ -431,3 +469,45 @@ def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     assert second["approved"] is False, f"yolo leaked {command!r} (check_all_command_guards)"
     assert second.get("hardline") is True
     assert "BLOCKED (hardline)" in second["message"]
+
+
+# The collapse is a pure function of the spelling: the kernel's rules for `//`, `/./` and `..`,
+# plus one reading the kernel cannot make for us -- a `..` climbing above where the path starts
+# is taken as reaching the root, because the classifier cannot see the working directory.
+@pytest.mark.parametrize("spelling,resolved", [
+    ("../dev/sda", "/dev/sda"),
+    ("..//dev/sda", "/dev/sda"),
+    (".././dev/sda", "/dev/sda"),
+    ("/tmp/../dev/sda", "/dev/sda"),
+    ("/dev/nvme/../sda", "/dev/sda"),
+    ("/dev/disk/by-id/../../sda", "/dev/sda"),
+    ("//dev/sda", "/dev/sda"),
+    ("/./dev/sda", "/dev/sda"),
+    ("~/../dev/sda", "/dev/sda"),
+    ("$HOME/../dev/sda", "/dev/sda"),
+    ("of=../dev/sda", "of=/dev/sda"),
+    ('"../dev/disk0"', '"/dev/disk0"'),
+    # unchanged: a lone `.` and a directory under the working directory never climb, a variable
+    # is not a spelling, a URL is not a path, and nothing that resolves outside /dev is touched
+    ("./dev/sdk/token.json", "./dev/sdk/token.json"),
+    ("build/../dev/sda", "build/../dev/sda"),
+    ("~/dev/sdk/token.json", "~/dev/sdk/token.json"),
+    ("/home/alice/dev/sda", "/home/alice/dev/sda"),
+    ("$D/sda", "$D/sda"),
+    ("https://host/../dev/sda", "https://host/../dev/sda"),
+    ("/tmp/../etc/passwd", "/tmp/../etc/passwd"),
+])
+def test_device_path_spellings_collapse_to_the_node(spelling, resolved):
+    assert _collapse_device_paths(spelling) == resolved
+
+
+# Escapes are read left to right, the way the shell reads them: `\>` is a literal argument and
+# never a redirect, while `\\>` is a literal backslash FOLLOWED by a real redirect.
+@pytest.mark.parametrize("raw,stripped", [
+    ('echo hello \\> "/dev/disk0"', 'echo hello   "/dev/disk0"'),
+    ('echo foo\\\\> "/dev/sda"', 'echo foo\\ > "/dev/sda"'),
+    ("echo foo\\\\\\> x", "echo foo\\  x"),
+    ("r\\m -rf /", "rm -rf /"),
+])
+def test_escaped_redirects_are_arguments_not_operators(raw, stripped):
+    assert _strip_shell_escapes(raw) == stripped

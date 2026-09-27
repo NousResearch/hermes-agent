@@ -51,17 +51,14 @@ _BLOCK_DEVICE_PATH = (
     # so ``shred -u ~/dev/sdk/token.json`` and ``mkswap /home/user/dev/sdk/swapfile`` hit an
     # unapprovable floor. A real device path is never preceded by a word character, a dot or
     # a tilde; ``//dev/sda``, ``of=/dev/sda`` and a quoted operand all still match.
-    r'(?<![\w.~-])'
-    # A ``..`` segment directly in front of ``dev/`` may climb to the root: from /tmp,
-    # ``../dev/sda`` IS /dev/sda, and so are ``../../dev/sda`` and ``/tmp/../dev/sda``. The floor
-    # reads them the way the kernel resolves them, as the rm root rule in HARDLINE_PATTERNS reads
-    # ``/..``. A lone ``.`` never climbs, so ``./dev/sdk/token.json`` stays a relative file.
-    r'(?:(?:[^\s;&|<>()"\'`=:]*/)?\.\.)?'
-    # The kernel collapses ``/dev//sda`` and ``/dev/./sda`` to ``/dev/sda``; so does this.
-    r'/dev/(?:\.?/)*'
+    # Traversal and collapsed spellings of the same node (``../dev/sda``, ``/tmp/../dev/sda``,
+    # ``/dev/nvme/../sda``, ``//dev/sda``, ``/dev/./sda``) never reach this fragment: every
+    # detection variant has them rewritten to ``/dev/sda`` by _collapse_device_paths first, so
+    # each rule sees one spelling however it anchors the operand (``of=``, ``>``, a lookahead).
+    r'(?<![\w.~-])/dev/'
     # A device node is the LAST path component: ``sda`` is a disk, while ``sda-notes`` and
     # ``sdk/token.json`` are files under some directory called ``dev`` (``../dev/sdk/token.json``
-    # is reachable now that ``..`` is accepted). ``mapper``, ``md`` and ``disk/by-*`` are the
+    # reaches here as ``/dev/sdk/token.json``). ``mapper``, ``md`` and ``disk/by-*`` are the
     # directories that hold device links, so those take a name.
     r'(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*(?![\w/-])'
     r'|r?disk[0-9]+[a-z0-9]*(?![\w/-])'
@@ -190,7 +187,9 @@ HARDLINE_PATTERNS = [
     # of the command (see _QUOTE_MASKED_HARDLINE / _mask_quoted_strings) so quoted prose (`echo "cat f >
     # /dev/sda"`) cannot trip it, while shell-carrying wrappers (sh -c / bash -c / eval) still surface their
     # payload as a raw detection variant — quoting is not a bypass (#93392).
-    (rf'>\s*["\']?{_BLOCK_DEVICE_PATH}\b', "redirect to raw block device"),
+    # `\>` is a literal argument, never a redirect. _strip_shell_escapes blanks it on the normalized
+    # variants; the raw structural variants keep their escapes, so the operator is not read through one.
+    (rf'(?<!\\)>\s*["\']?{_BLOCK_DEVICE_PATH}\b', "redirect to raw block device"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
@@ -270,8 +269,10 @@ def _mask_quoted_prose(command: str) -> str:
         if stripped:
             # An ESCAPED `>` is a literal argument, not a redirect operator -- real bash prints
             # `hello > /dev/disk0` for `echo hello \> "/dev/disk0"` and writes nothing -- so it
-            # must not arm the exception. Recording the backslash keeps it distinct from an
-            # operator without needing a second flag.
+            # must not arm the exception. _strip_shell_escapes already blanks that `\>` on the
+            # normalized variants; this arm covers the raw structural variants, which keep their
+            # escapes, and the `\ ` that an escaped backslash leaves in front of a real `>`.
+            # Recording the backslash keeps it distinct from an operator without a second flag.
             last_significant = "\\" if kind == "esc" else stripped[-1]
     return "".join(out)
 
@@ -603,6 +604,73 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 
 
 # ---- Detection ----------------------------------------------------------------------------
+def _strip_shell_escapes(command: str) -> str:
+    """Strip backslash escapes for matching (``r\\m`` runs as ``rm``), left to right as the shell reads
+    them. An escaped redirect operator is the one escape that must NOT become its bare character:
+    ``echo hello \\> "/dev/disk0"`` prints ``hello > /dev/disk0`` and writes nothing, so its ``\\>``
+    becomes a space. ``echo foo\\\\> "/dev/disk0"`` is the word ``foo\\`` followed by a REAL redirect,
+    so the operator survives with the literal backslash detached from it (``foo\\ >``); left glued,
+    _mask_quoted_prose would read ``\\>`` as an escape and let the write past the floor."""
+    out: list[str] = []
+    i, n = 0, len(command)
+    while i < n:
+        char = command[i]
+        if char == "\\" and i + 1 < n and command[i + 1] != "\n":
+            following = command[i + 1]
+            if following in "<>":
+                out.append(" ")
+            else:
+                out.append(following)
+                if following == "\\" and i + 2 < n and command[i + 2] in "<>":
+                    out.append(" ")
+            i += 2
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
+# A device path is matched on its RESOLVED spelling. The kernel collapses ``//`` and ``/./`` and pops a
+# segment for ``..``, so ``//dev/sda``, ``/dev/./sda``, ``/dev/nvme/../sda``, ``/dev/disk/by-id/../../sda``
+# and ``/tmp/../dev/sda`` all open ``/dev/sda``. A fragment anchored on ``/dev/`` sees none of them, and
+# each hardline rule anchors the operand differently (``of=``, ``>``, a lookahead), so the collapse happens
+# in the text, once, before any rule runs. Only a token that resolves to ``/dev/...`` is rewritten; nothing
+# else in the command changes shape.
+#
+# A ``..`` that climbs above where the token starts -- a relative ``../dev/sda``, ``~/../dev/sda`` or
+# ``$HOME/../dev/sda`` -- is read as reaching the root: the classifier cannot see the working directory,
+# and from /tmp (or, as root, from ~) that IS /dev/sda (review P1 #2 on #120926). A lone ``.`` never
+# climbs, so ``./dev/sdk/token.json`` stays a relative file, and ``build/../dev/sda`` is a path under the
+# working directory, not the device. What no spelling rule can see -- ``D=/dev; wipefs -a $D/sda``,
+# ``cd /dev && wipefs -a sda`` -- is the execution boundary's to resolve.
+_DEVICE_PATH_TOKEN_RE = re.compile(r'(?<![\w.~$/:-])(\$\{?\w+\}?|~|\.\.?|)(/[^\s;&|<>()"\'`]*)')
+
+
+def _collapse_device_paths(command: str) -> str:
+    def collapse(match: re.Match) -> str:
+        token, head, rest = match.group(0), match.group(1), match.group(2)
+        if "dev" not in rest.lower():
+            return token
+        rooted = head in ("", "..")
+        stack: list[str] = []
+        for segment in rest.split("/"):
+            if segment in ("", "."):
+                continue
+            if segment == "..":
+                if stack:
+                    stack.pop()
+                elif not rooted:
+                    rooted = True  # climbed above the start: read as the root
+                continue
+            stack.append(segment)
+        if not rooted or not stack or stack[0].lower() != "dev":
+            return token
+        collapsed = "/" + "/".join(stack)
+        return collapsed if collapsed != token else token
+
+    return _DEVICE_PATH_TOKEN_RE.sub(collapse, command)
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
     forms, and shell splicing tricks cannot bypass detection."""
@@ -619,11 +687,14 @@ def _normalize_command_for_detection(command: str) -> str:
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
-    command = re.sub(r'\\([^\n])', r'\1', command)
+    command = _strip_shell_escapes(command)
     command = re.sub(r"''|\"\"", '', command)
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.
-    return re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+    command = re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+    # Last, after escapes are gone (``..\/dev\/sda`` is a path only once the backslashes are): a path that
+    # resolves to a device node is spelled the way the kernel resolves it.
+    return _collapse_device_paths(command)
 
 
 def _lower_preserving_flags(command: str) -> str:

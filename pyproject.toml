@@ -402,9 +402,9 @@ pty = []
 # module names.
 mcp = [
   "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "httpx2==2.12.0",
   "starlette==1.3.1",
-] # starlette: CVE-2026-48710
+] # starlette: CVE-2026-48710; httpx2/httpcore2 2.12.0: GHSA-7mj9-2mp8-4m2p + 4 siblings
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
@@ -418,9 +418,9 @@ teams = [
 # provides the MCP client, independently of the native driver package.
 computer-use = [
   "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "httpx2==2.12.0",
   "starlette==1.3.1",
-] # starlette: CVE-2026-48710
+] # starlette: CVE-2026-48710; httpx2/httpcore2 2.12.0: GHSA-7mj9-2mp8-4m2p + 4 siblings
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
@@ -544,12 +544,12 @@ dev = [
   "pytest==9.1.1",
   "pytest-asyncio==1.3.0",
   "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "httpx2==2.12.0",
   "starlette==1.3.1",
   "ty==0.0.82",
   "ruff==0.15.10",
   "setuptools==83.0.0",
-] # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
+] # starlette: CVE-2026-48710; httpx2/httpcore2 2.12.0: GHSA-7mj9-2mp8-4m2p + 4 siblings; setuptools: 83 (torch >=2.13 requires setuptools 83)
 # Native launcher and provider-catalog E2E dependencies belong in the test
 # environment, not the core runtime. Keep the Anthropic SDK at the same
 # reviewed version as the optional runtime extra above.

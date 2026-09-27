@@ -493,7 +493,7 @@ import {
   quickEntryWindowBounds,
   sanitizeQuickEntrySettings
 } from './quick-entry'
-import { createQuitFinalization } from './quit-finalization'
+import { createManagedUpdateQuitCoordinator, createQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
   backendOwnedByApp,
@@ -9757,8 +9757,17 @@ const managedConnectionUpdateGate = new ManagedConnectionUpdateGate(
 const managedConnectionUpdates = new Map<string, Promise<any>>()
 const managedConnectionRecoveries = new Map<string, Promise<void>>()
 const managedPrimaryRestoreOwners = new Map<string, { correlationId: string; profile: string; source: any }>()
-let managedUpdateQuitWait: Promise<void> | null = null
-let managedUpdateQuitWaitDone = false
+
+const managedUpdateQuit = createManagedUpdateQuitCoordinator({
+  hasInFlightUpdates: () => managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0,
+  waitForUpdates: () =>
+    waitForManagedUpdateOperations(() => [
+      ...managedConnectionUpdates.values(),
+      ...managedConnectionRecoveries.values()
+    ]),
+  requestQuit: () => app.quit(),
+  armSealedTeardown: delayMs => quitFinalization.armAfterSealedTeardown(delayMs)
+})
 
 function assertCanMutateManagedPrimaryRouting() {
   const durableIds = readManagedSshRecoveryRecords().map(record => record.connectionId)
@@ -12678,14 +12687,7 @@ const quitFinalization = createQuitFinalization({
 // and the overlay says the app couldn't start. The sealed-teardown timer is
 // the exit that follow-up quit failed to deliver.
 function armSealedQuitExit(delayMs?: number): void {
-  if (
-    !managedUpdateQuitWaitDone &&
-    (managedUpdateQuitWait || managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0)
-  ) {
-    return
-  }
-
-  quitFinalization.armAfterSealedTeardown(delayMs)
+  managedUpdateQuit.armSealedQuitExit(delayMs)
 }
 
 const quitTeardown = createQuitTeardownCoordinator(() => {
@@ -19697,22 +19699,7 @@ app.on('before-quit', event => {
   // normal teardown. A crash still fails closed on next launch via the remote
   // install-marker preflight in both POSIX and Windows lifecycle
   // implementations.
-  if (
-    !managedUpdateQuitWaitDone &&
-    (managedUpdateQuitWait || managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0)
-  ) {
-    event.preventDefault()
-
-    if (!managedUpdateQuitWait) {
-      managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
-        ...managedConnectionUpdates.values(),
-        ...managedConnectionRecoveries.values()
-      ]).finally(() => {
-        managedUpdateQuitWaitDone = true
-        app.quit()
-      })
-    }
-
+  if (managedUpdateQuit.handleBeforeQuit(event)) {
     return
   }
 

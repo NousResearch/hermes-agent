@@ -2,6 +2,7 @@
 
 import copy
 import importlib
+import importlib.util
 import json
 import os
 import sys
@@ -336,6 +337,12 @@ def _install_fake_mem0(monkeypatch):
         "mem0.llms.openai": types.ModuleType("mem0.llms.openai"),
         "mem0.utils.factory": types.ModuleType("mem0.utils.factory"),
         "openai": types.ModuleType("openai"),
+        # OSS ollama tests configure ollama providers; the backend's missing-dep
+        # guard probes importlib for the package, so the fake surface must
+        # provide it — with a spec, or find_spec raises (#125234).
+        "ollama": importlib.util.module_from_spec(
+            importlib.util.spec_from_loader("ollama", loader=None, is_package=True)
+        ),
     }
     setattr(package_names["mem0"], "Memory", Memory)
     setattr(package_names["mem0.configs.base"], "MemoryConfig", MemoryConfig)
@@ -600,6 +607,27 @@ class TestOSSBackend:
         assert "hermes_openai" not in factory.provider_to_class
         assert state.clients == []
         assert raw == before
+
+    def test_missing_provider_dep_fails_loudly_not_interactively(self, monkeypatch):
+        """An undeclared ollama must raise a canonical error before mem0's
+        factory can hit its interactive input() prompt (EOFError in TTY-less
+        processes, #125234)."""
+        state, Memory, factory = _install_fake_mem0(monkeypatch)
+        # The fake surface installs an ollama module — remove it to model the
+        # pruned environment.
+        monkeypatch.delitem(sys.modules, "ollama", raising=False)
+        raw = {
+            "llm": {"provider": "ollama", "config": {"model": "llama3.1:8b"}},
+            "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+
+        with pytest.raises(RuntimeError, match=r"ollama not installed"):
+            OSSBackend(raw)
+
+        # The backend never reached mem0's factories — no interactive prompt fired.
+        assert Memory.instances == []
+        assert state.from_config_calls == 0
 
 
 httpx = pytest.importorskip("httpx")

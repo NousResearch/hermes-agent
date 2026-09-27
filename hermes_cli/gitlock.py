@@ -349,10 +349,11 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
     break ``merge-base`` and push ``hermes update`` into the orphan-divergence reset path
     on every run. Keep only the boundaries that still protect referenced tips (HEAD,
     FETCH_HEAD, and every ref tip): the dropped commits are already unreachable and their
-    objects are left for ``git gc``. Returns the number of graft lines removed; never
-    raises, and restores the original file if the trimmed set breaks history walking
-    (including the ``--reflog`` walk, so a graft a reflog-only commit still needs is
-    never dropped, #108286).
+    objects are left for ``git gc``. Fetch reflogs naming a dropped graft are expired
+    first — otherwise they pin it and the prune rolls back forever (#124645). Returns
+    the number of graft lines removed; never raises, and restores the original file if
+    the trimmed set breaks history walking (including the ``--reflog`` walk, so a graft
+    a reflog-only commit still needs is never dropped, #108286).
     """
     try:
         shallow_path = _shallow_file_path(repo_root)
@@ -371,6 +372,22 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
             }
             if len(keep) == len(lines):
                 return 0
+            # A dropped graft's parent was never fetched (depth-1), so a fetch reflog
+            # still naming it makes the fail-safe walk below fail and rolls the prune
+            # back on every run — grafts keep accumulating and the next update falls
+            # into orphan divergence (#124645). Fetch-history reflogs are the only safe
+            # ones to expire; reflogs users read (HEAD, local branches) keep their
+            # entries, and the fail-safe still rolls the prune back for those.
+            dropped = set(lines) - keep
+            for ref in _git_stdout_lines(
+                repo_root, ["for-each-ref", "--format=%(refname)", "refs/remotes/"]
+            ):
+                entries = _git_stdout_lines(repo_root, ["reflog", "show", "--format=%H", ref])
+                if set(entries) & dropped:
+                    subprocess.run(
+                        ["git", "reflog", "expire", "--expire=now", ref],
+                        cwd=str(repo_root), capture_output=True, timeout=10,
+                    )
             _write_shallow(shallow_path, "\n".join(sorted(keep)) + "\n", suffix=".hermes-prune")
             # Fail-safe: if any reachable walk now crosses a boundary we wrongly
             # removed, put the grafts back — a growing file beats a broken repo.

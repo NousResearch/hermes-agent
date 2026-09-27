@@ -27,6 +27,7 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import TypeGuard
 
+from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import get_version_info
 from hermes_cli.models_catalog_static import (
@@ -533,7 +534,7 @@ _nous_caps_disk_checked = False
 _nous_caps_warm_started = False
 
 
-from agent.reasoning_effort import clamp_effort as _clamp_effort, is_astra_model
+from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, clamp_effort as _clamp_effort, is_astra_model
 
 
 def clamp_reasoning_effort_to_supported(
@@ -542,6 +543,18 @@ def clamp_reasoning_effort_to_supported(
     else the nearest WEAKER supported level (never silently escalate cost), else the weakest; unknown
     supported-sets and bespoke level names pass through unchanged."""
     return _clamp_effort(effort, supported_efforts)
+
+
+def clamp_github_reasoning_effort(effort: Any, supported: list[str]) -> str:
+    """Copilot/GitHub Models effort for a non-empty *supported* list: the level itself when listed,
+    else the nearest WEAKER listed level; bespoke names the ladder can't place fall to ``medium``
+    (or the first listed level)."""
+    effort = str(effort or "medium").strip().lower()
+    if effort not in supported:
+        effort = _clamp_effort(effort, supported)
+        if effort not in supported:
+            effort = "medium" if "medium" in supported else supported[0]
+    return effort
 
 
 def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tuple[list, dict[str, dict[str, Any]]]]:
@@ -1605,8 +1618,8 @@ def _chat_catalog_rows(models):
 def _configured_relay_base_url(provider: str) -> str:
     """``model.base_url`` when it points the *configured* provider at a relay/proxy, else "".
 
-    Discovery must probe the same endpoint inference uses (#121387): with ``model.base_url``
-    set for the configured provider, the vendor's canonical host is NOT the catalog to list.
+    Discovery must probe the same endpoint inference uses (#121387): when ``model.base_url``
+    differs from the provider's own endpoint, the vendor's canonical host is NOT the catalog to list.
     Mirrors the ``$OPENAI_BASE_URL`` -> ``model.base_url`` -> canonical precedence of
     ``_openai_discovery_base_url`` for every built-in provider, not just OpenAI.
     """
@@ -1618,11 +1631,27 @@ def _configured_relay_base_url(provider: str) -> str:
     if not cfg_provider or not provider:
         return ""
     try:
-        if normalize_provider(provider) != normalize_provider(cfg_provider):
+        normalized = normalize_provider(provider)
+        if normalized != normalize_provider(cfg_provider):
             return ""
     except Exception:
         return ""
-    return str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        return ""
+    # A base_url equal to the provider's own endpoint is not a relay (setup persists canonical
+    # URLs too): keep native discovery, which OAuth providers such as Codex need because the
+    # generic relay probe only speaks api_key. Profiles cover providers PROVIDER_REGISTRY lacks
+    # (OpenRouter).
+    try:
+        from providers import get_provider_profile
+
+        canonical = getattr(get_provider_profile(normalized), "base_url", "") or ""
+    except Exception:
+        return base_url  # lookup failed: stay a relay, never widening where credentials go
+    if canonical and normalize_route_base_url(base_url) == normalize_route_base_url(canonical):
+        return ""
+    return base_url
 
 
 def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
@@ -2335,6 +2364,8 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     if raw.startswith(("openai/o1", "openai/o3", "openai/o4", "o1", "o3", "o4")):
         return list(COPILOT_REASONING_EFFORTS_O_SERIES)
     normalized = normalize_copilot_model_id(model_id).lower()
+    if is_astra_model(normalized):
+        return list(CODEX_ASTRA_EFFORTS)
     if normalized.startswith("gpt-5"):
         return list(COPILOT_REASONING_EFFORTS_GPT5)
     return []

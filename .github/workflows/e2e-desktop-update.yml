@@ -83,8 +83,9 @@ jobs:
               df -h / "$RUNNER_TEMP" | tail -n +2; free -g | head -2
               echo "procs=$(ps -e --no-headers | wc -l) upload-packs=$(pgrep -c -f git-upload-pack || true)"
               ps -eo pid,ppid,etimes,rss,args --sort=-rss | head -6 | cut -c1-200
-              # The client side of any git transfer, with its ancestry.
-              p=$(pgrep -f -o 'git(-core/git)? .*(fetch|clone)' || true)
+              ps -eo args | grep -E '(^|/)git[ -]' | cut -c1-160 | sort | uniq -c | sort -rn | head -8
+              # Ancestry of the newest upload-pack: who is asking for all these packs?
+              p=$(pgrep -n -f git-upload-pack || true)
               while [ -n "$p" ] && [ "$p" != 1 ]; do
                 ps -o pid=,etimes=,args= -p "$p" | cut -c1-220; p=$(ps -o ppid= -p "$p" | tr -d ' ')
               done

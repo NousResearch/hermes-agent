@@ -65,6 +65,15 @@ def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+# ``display_metadata`` flag stamped on the user row a busy-queue accept writes (#111868/#121374
+# accept-time durability). The in-memory queue drain re-places an unmarked row at the transcript
+# end and deactivates this one; a backend restart discards the queue with nothing left to retire
+# the accept-time row, so ``reopen_session`` deactivates still-marked rows (#125577) — the marker
+# is exactly what distinguishes a never-drained accept row from a dispatched-then-interrupted
+# turn's row (which #123532 deliberately keeps active).
+QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
+
+
 def _sql_json_extract(expression: str, path: str) -> str:
     """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
 

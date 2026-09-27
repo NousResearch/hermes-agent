@@ -1,5 +1,6 @@
 """Agent reactions keep their annotations separate from lifecycle tapbacks."""
 
+import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -66,5 +67,45 @@ async def test_failed_reaction_redaction_remains_available_for_retry():
         {"success": False, "message_id": TARGET},
         {(ROOM, TARGET): ["$first"]},
         {"success": True, "message_id": TARGET},
+        {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_unreact_calls_do_not_redact_the_same_annotation_twice():
+    adapter = _adapter()
+    await adapter.add_reaction(chat_id=ROOM, message_id=TARGET, emoji="👍")
+
+    redaction_started = asyncio.Event()
+    second_reached_or_finished = asyncio.Event()
+    finish_redaction = asyncio.Event()
+    redaction_calls = 0
+
+    async def redact(*_args):
+        nonlocal redaction_calls
+        redaction_calls += 1
+        redaction_started.set()
+        if redaction_calls == 2:
+            second_reached_or_finished.set()
+        await finish_redaction.wait()
+        return True
+
+    adapter._redact_reaction = AsyncMock(side_effect=redact)
+    first = asyncio.create_task(adapter.remove_reaction(chat_id=ROOM, message_id=TARGET))
+    await asyncio.wait_for(redaction_started.wait(), timeout=2)
+    second = asyncio.create_task(adapter.remove_reaction(chat_id=ROOM, message_id=TARGET))
+    second.add_done_callback(lambda _: second_reached_or_finished.set())
+    try:
+        await asyncio.wait_for(second_reached_or_finished.wait(), timeout=2)
+    finally:
+        finish_redaction.set()
+
+    results = await asyncio.gather(first, second)
+    assert (results, redaction_calls, adapter._agent_reactions) == (
+        [
+            {"success": True, "message_id": TARGET},
+            {"success": False, "error": "no reaction of ours recorded on that message"},
+        ],
+        1,
         {},
     )

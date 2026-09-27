@@ -583,6 +583,67 @@ def test_launch_external_worker_degrades_by_default_with_real_helper(
     assert not (tmp_path / "cron/external-workers/exec-1.json").exists()
 
 
+def test_launch_external_worker_runs_on_the_committed_dependency_interpreter(
+    tmp_path, monkeypatch,
+):
+    """#125269: under a managed store install sys.executable is the bare store Python —
+    the repo and managed site-packages live only on the parent's in-process sys.path,
+    so the worker died on its first third-party import ("No module named 'ruamel'") before
+    its ack. The worker command must use the committed dependency venv's interpreter (the
+    same resolution cron scripts get, #123044); elsewhere the current interpreter is kept.
+    The interpreter resolves at launch time (updates can rebuild the venv between fires)."""
+    import cron.scheduler as scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("degraded", command),
+    )
+    venv_python = tmp_path / "generations" / "gen-1" / "bin" / "python3"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"")
+    monkeypatch.setattr(
+        "hermes_cli._launchers.resolve_store_python", lambda _repo: tmp_path / "store-python3"
+    )
+    monkeypatch.setattr("pm.environments.project_python", lambda _repo: venv_python)
+
+    spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+
+    assert scheduler._launch_external_cron_worker(job) is True
+    assert spawned[0][0][0] == str(venv_python)
+    assert spawned[0][0][1:3] == ["-m", "cron.scheduler"]
+
+
+def test_launch_external_worker_keeps_sys_executable_without_a_store_install(
+    tmp_path, monkeypatch,
+):
+    """Outside a managed store install the running interpreter already imports the
+    dependencies: the command prefix stays [sys.executable] (venv checkout and
+    wheel/pipx installs are unchanged)."""
+    import sys
+
+    import cron.scheduler as scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("degraded", command),
+    )
+    monkeypatch.setattr(
+        "hermes_cli._launchers.resolve_store_python", lambda _repo: None
+    )
+
+    spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+
+    assert scheduler._launch_external_cron_worker(job) is True
+    assert spawned[0][0][0] == sys.executable
+    assert spawned[0][0][1:3] == ["-m", "cron.scheduler"]
+
+
 def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
     tmp_path, monkeypatch,
 ):

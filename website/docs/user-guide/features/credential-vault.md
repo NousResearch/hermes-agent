@@ -1,6 +1,6 @@
 ---
 title: Passwords & Logins
-description: The agent signs into sites, pays and fills addresses for you without ever seeing a password.
+description: Fill saved site credentials without sending them in the vault tool result.
 ---
 
 # Passwords & Logins
@@ -8,7 +8,9 @@ description: The agent signs into sites, pays and fills addresses for you withou
 Say **"log into GitHub"** and the agent signs in for you. The first time it
 reaches a sign-in page it has no login for, it asks you, right there, in a
 masked prompt. After that it just works. Passwords are encrypted on this
-machine and injected straight into the page; the model never sees them.
+machine and the vault fill tool sends them directly to the selected page rather
+than returning them to the model. Later browser inspection is a separate risk;
+see [What this does and does not guarantee](#what-this-does-and-does-not-guarantee).
 
 There is nothing to set up.
 
@@ -22,7 +24,8 @@ There is nothing to set up.
    Type the email / username you sign in with (shown), then Enter.
    ...
    Now the password (hidden). It is encrypted on this machine, bound to
-   https://github.com, and filled into the page without the model ever seeing it.
+   https://github.com, and filled into the page without appearing in the
+   vault tool's result.
 ```
 
 **Desktop** — a "Save your github.com login?" card with an identifier field and
@@ -31,8 +34,9 @@ tells the agent to stop asking for this turn.
 
 From then on the agent lists your saved logins, types the identifier itself and
 fills the password through Hermes. The tool result it sees is
-`{filled_fields: 1, origin: "https://github.com"}`; the password is also
-registered with the redactor so a later page read cannot echo it back.
+`{filled_fields: 1, origin: "https://github.com"}`. The password's literal
+value is registered for best-effort redaction of subsequent browser text in
+this process. This is not a guarantee against arbitrary page reads.
 
 ## Two-factor codes
 
@@ -45,7 +49,8 @@ Sites that ask for a code after the password are handled the same way:
   or `hermes vault add`; the item shows a *2FA auto* badge.
 - **Code sent to your phone or email**: a small prompt appears in your
   surface ("Verification code for github.com"), you type the code, Hermes
-  enters it into the page. The code never enters the conversation either.
+  enters it into the page. The code is omitted from the vault tool's response;
+  later page inspection may still expose it.
 - **Passkeys, hardware keys, app approvals** ("tap Approve in Duo"): nothing
   to type. The agent tells you to complete it on your device and waits for
   the page to move on.
@@ -143,16 +148,21 @@ vault:
 
 ## What this does and does not guarantee
 
-**Does:** the password never enters the model's context through Hermes: not in
-tool results, logs, the session database, or the CLI arguments of any process.
-Fills happen over the supervised browser session's direct CDP socket or the
-pinned Camofox transport described above. They are refused unless the page
-origin exactly matches the saved origin, checked again inside the page
-immediately before the write. Nonce-stamped controls bind each write to its
-own inspection; a changed tab/document or restamped control cannot retarget it.
+**Does:** the vault tool omits the credential from its own result, CLI
+arguments and session metadata. It fills over the supervised browser session's
+direct CDP socket or the pinned Camofox transport described above. Fills are
+refused unless the page origin exactly matches the saved origin, checked again
+inside the page immediately before the write. Nonce-stamped controls bind each
+write to its inspection; a changed tab/document or restamped control cannot
+retarget it.
 
-**Does not:** protect against the page itself. Once a password is typed into a
-site, that site (and any script it runs) has it, exactly as when you type it
-yourself. On a cloud browser backend the vendor's browser sees the page like any
-other. The origin binding is the guard against filling on the wrong site, not
-against a compromised right one.
+**Does not:** confine the credential after it reaches the page. The page and
+its scripts can read it. Browser tools that evaluate page JavaScript can also
+read or transform form values; screenshots/vision may capture revealed fields.
+Exact-value redaction of browser text is best effort, retains limited values
+in the current process only, and is lost after a process restart. Masked dots
+are a display choice, not an inspection boundary. The browser server and any
+cloud browser operator can observe page content or secret-bearing requests.
+Never ask the agent to inspect a filled password/card field, and use only a
+browser/server you trust. Origin binding prevents filling on the wrong site;
+it does not make the authorized site safe.

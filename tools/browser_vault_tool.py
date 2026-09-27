@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vault-backed model-blind browser autofill tools.
+"""Vault-backed browser autofill tools with private fill responses.
 
 Two model-facing tools, gated on the local vault having at least one item
 (zero schema cost otherwise, same ``check_fn`` pattern as the Home Assistant
@@ -16,9 +16,9 @@ tools):
   the field is chosen by the ported login-control classifier, injection runs
   over the supervisor CDP WebSocket or pinned Camofox REST session (never argv), and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
-  password never appears in tool results, logs, or the session DB, and its
-  exact bytes are registered with the browser-result redaction boundary so
-  no later browser tool call can echo them back to the model.
+  password is omitted from this tool's response and registered for best-effort
+  literal redaction in later browser results. Arbitrary page inspection and
+  screenshots after filling are not a confidentiality boundary.
 
 Ported design from Merit-Systems/OpenInstinct (MIT): opaque-handle vault
 autofill (kernel-login-autofill.ts / fill_from_vault.ts).
@@ -656,7 +656,9 @@ BROWSER_VAULT_FILL_SCHEMA = {
         "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
         "the password field (type the identifier/username yourself first with the browser's input tool); a "
         "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
-        "fills the address fields. Values are resolved server-side and never appear in the conversation. "
+        "fills the address fields. Values are resolved server-side and omitted from this tool's response. "
+        "Do not inspect filled password/card fields with later page reads or screenshots; those can reveal "
+        "a secret even when a field is visually masked. "
         "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
         "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
         "payment_declined result."
@@ -698,8 +700,9 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
     "description": (
         "The page asks for a one-time / verification / 2FA code after the password: call this. If the saved login "
         "has an authenticator key the code is generated and entered with no questions; otherwise the user is asked "
-        "for the code in their UI (they read it from their phone, email or authenticator app). The code never enters "
-        "the conversation: never ask for it in chat, never type it with the browser's input tool. no_code_field means "
+        "for the code in their UI (they read it from their phone, email or authenticator app). The code is not "
+        "included in this tool's response: never ask for it in chat, never type it with the browser's input tool. "
+        "Later page inspection may expose a code. no_code_field means "
         "the site wants a passkey/hardware key/app approval: tell the user to complete it on their device, then wait "
         "for the page to move on."
     ),

@@ -83,7 +83,14 @@ mcp_servers:
       GITHUB_PERSONAL_ACCESS_TOKEN: "${env:GITHUB_TOKEN}"   # same as "${GITHUB_TOKEN}"
 ```
 
-Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder.
+Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder — and is then sent to the server verbatim, which usually surfaces downstream only as an opaque 401/connect failure. To catch that early, every config load (gateway startup, session connect, `/reload-mcp`) logs a WARNING per unresolved reference naming the server, the config key path, and the variable name:
+
+```
+MCP server 'github': config value 'env.GITHUB_PERSONAL_ACCESS_TOKEN' references env var(s)
+'GITHUB_TOKEN' that are not set — the literal placeholder will be sent to the server ...
+```
+
+The check is advisory — the entry still loads and connects, so a server whose auth arrives another way is not blocked.
 
 ### Context variables
 

@@ -162,7 +162,7 @@ def _is_terminal(status: Any) -> bool:
 class VercelSandboxEnvironment(BaseEnvironment):
     """Vercel cloud sandbox backend."""
 
-    _stdin_mode = "heredoc"
+    _stdin_mode = "payload"
 
     def __init__(self, runtime: str | None = None, cwd: str = DEFAULT_VERCEL_CWD, timeout: int = 60,
                  cpu: float = 1, memory: int = 5120, disk: int = _DEFAULT_CONTAINER_DISK_MB,
@@ -339,17 +339,56 @@ class VercelSandboxEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120, stdin_data: str | None = None):
         """``timeout`` is enforced by the base ``_wait_for_process`` via ``cancel_fn`` (the SDK has no
-        per-exec timeout); ``stdin_data`` is already embedded as a heredoc by the base ``execute()``."""
-        del timeout, stdin_data
+        per-exec timeout). Payload stdin is staged through the SDK so it never becomes a shell argv."""
+        del timeout
         sandbox, workspace_root, lock = self._require_sandbox(), self._workspace_root, self._lock
+
+        # Guarded by ``lock`` so cancel() and dispatch agree on whether the shell
+        # has taken ownership of (opened + unlinked) the staged stdin file.
+        state = {"cancelled": False, "staged": None, "dispatched": False}
+
+        def scrub_staged() -> None:  # caller holds ``lock``
+            if state["staged"] and not state["dispatched"]:
+                # Staged but never dispatched: scrub the payload (may hold a
+                # sudo password). Once dispatched the user shell unlinks it
+                # itself, so kill() sends no extra command.
+                with contextlib.suppress(Exception):
+                    sandbox.write_files([{"path": state["staged"], "content": b"", "mode": 0o600}])
+                state["staged"] = None
 
         def cancel() -> None:
             with lock:
+                state["cancelled"] = True
+                scrub_staged()
                 self._stop_sandbox(sandbox)
 
         def exec_fn() -> tuple[str, int]:
-            return _result_parts(
-                sandbox.run_command("bash", ["-lc" if login else "-c", cmd_string], cwd=workspace_root))
+            command = cmd_string
+            if stdin_data:  # empty stdin == no stdin, as on base (heredoc skipped it)
+                with lock:
+                    if state["cancelled"]:
+                        return ("", 130)
+                remote_stdin = self._staged_stdin_path()
+                _retry_vercel_call(
+                    "stdin upload",
+                    lambda: sandbox.write_files([{
+                        "path": remote_stdin,
+                        "content": stdin_data.encode("utf-8", "surrogateescape"),
+                        "mode": 0o600,
+                    }]),
+                    attempts=_WRITE_RETRY_ATTEMPTS,
+                )
+                command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
+                with lock:
+                    state["staged"] = remote_stdin
+            with lock:
+                if state["cancelled"]:
+                    # cancel() may have run mid-upload, before ``staged`` was set.
+                    scrub_staged()
+                    return ("", 130)
+                state["dispatched"] = True
+            return _result_parts(sandbox.run_command(
+                "bash", ["-lc" if login else "-c", command], cwd=workspace_root))
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 
     def cleanup(self):

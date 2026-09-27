@@ -134,6 +134,12 @@ class PluginLedgerMixin:
         self._remove_identity(callbacks, callback)
         if not callbacks:
             mapping.pop(key, None)
+        # The suppression token dies with the callback (#123188): id() is
+        # recycled, so a stale entry would leak the old identity onto a fresh
+        # callback that reuses the address. Direct `_hooks[...]` writes (tests,
+        # legacy callers) never mint a token, and a missing token degrades to
+        # the old id()-keyed behavior — never a crash.
+        self._hook_registration_tokens.pop(id(callback), None)
 
     def _restore_mapping(self, mapping: Dict[str, Any], key: str, current: Any, previous: Optional[Any]) -> bool:
         """Restore a manager-local mapping only when *current* is still present."""

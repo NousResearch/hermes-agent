@@ -224,10 +224,10 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for slot, cb in enumerate(self._hooks.get(hook_name, [])):
+        for cb in self._hooks.get(hook_name, []):
             try:
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout, slot)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
@@ -267,8 +267,7 @@ class PluginDispatchMixin:
             surface, hook_name, callback_name, exc, surface.lower(), ", ".join(sorted(kwargs)) or "no fields")
 
     def _run_hook_callback_bounded(
-        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float,
-        slot: int = -1,
+        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
         suppressed, still running for this call id, over the abandoned-worker cap, timed out
@@ -277,13 +276,14 @@ class PluginDispatchMixin:
         callback_name = getattr(cb, "__name__", repr(cb))
         # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
         # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
-        # Key by registration slot + name, never by id(cb): a CPython address is reused
-        # after the callback is collected, so a fresh callback can inherit a dead one's
-        # back-off window. Slots are stable while plugins register by appending; the
-        # name disambiguates a slot shifted by a removal.
-        suppression_key = (hook_name, slot, callback_name)
+        # Key by the registration token minted in register_hook(): id(cb) is recycled
+        # by CPython after a callback is collected (#123188), and list removals shift
+        # slots — both would hand a healthy callback a dead one's back-off window and
+        # abandoned-worker budget. No token (direct _hooks writes) falls back to id().
+        token = self._hook_registration_tokens.get(id(cb))
+        suppression_key = (hook_name, token if token is not None else id(cb))
         gate_key = (*suppression_key, _hook_call_identity(kwargs))
-        token = object()
+        run_token = object()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)
             if (gate_key in self._hook_running_callbacks
@@ -307,7 +307,7 @@ class PluginDispatchMixin:
                 return _HOOK_SKIPPED
             if suppressed_until is not None:
                 self._hook_timeout_suppressed_until.pop(suppression_key, None)
-            self._hook_running_callbacks[gate_key] = token
+            self._hook_running_callbacks[gate_key] = run_token
 
         context = contextvars.copy_context()
         done = threading.Event()
@@ -316,7 +316,7 @@ class PluginDispatchMixin:
 
         def _release_token() -> None:
             with self._hook_timeout_lock:
-                if self._hook_running_callbacks.get(gate_key) is token:
+                if self._hook_running_callbacks.get(gate_key) is run_token:
                     self._hook_running_callbacks.pop(gate_key, None)
                     abandoned = self._hook_abandoned.get(suppression_key)
                     if abandoned is not None:
@@ -350,7 +350,7 @@ class PluginDispatchMixin:
                 # The worker may have finished (and released its token) between the wait
                 # expiring and this lock; recording it as abandoned then would block the
                 # callback for that call id until reload with no thread behind it.
-                if self._hook_running_callbacks.get(gate_key) is token:
+                if self._hook_running_callbacks.get(gate_key) is run_token:
                     self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)

@@ -814,6 +814,12 @@ class CuaDriver(BinaryPackage):
     }
 
     def fetch_url(self, version: str, target: str) -> str:
+        # The bionic target reuses the plain linux glibc artifact: cua-driver
+        # publishes no separate bionic build (it is a static Rust binary), and
+        # the lock pins it for completeness. Without this remap `pm lock
+        # --bump` crashes with KeyError before set_pin() runs (#125463).
+        if target == "linux-arm64-bionic":
+            target = "linux-arm64"
         arch = {
             "darwin-x64": "darwin-universal",
             "darwin-arm64": "darwin-universal",

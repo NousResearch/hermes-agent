@@ -105,6 +105,39 @@ describe('preprocessMarkdown / raw-URL autolinking inside markdown links', () =>
   })
 })
 
+describe('preprocessMarkdown / bare loopback URLs in prose', () => {
+  // A loopback URL the model writes into a sentence is user-facing content —
+  // "the dev server is at http://localhost:3000" must render the address,
+  // not leave a hole (#121683). The only legitimate suppression is the fenced
+  // preview hand-off (a whole fenced block whose body is just the URL),
+  // owned by LOCAL_PREVIEW_ONLY_RE in normalizeFenceBlocks.
+  it.each([
+    ['Bare autolink: http://localhost:3000', 'http://localhost:3000'],
+    ['With a path: http://localhost:3000/dashboard', 'http://localhost:3000/dashboard'],
+    ['Loopback IP: http://127.0.0.1:8080', 'http://127.0.0.1:8080'],
+    ['Wildcard bind: http://0.0.0.0:8000', 'http://0.0.0.0:8000'],
+    ['IPv6 loopback: http://[::1]:8080/status', 'http://[::1]:8080/status'],
+    ['Trailing slash: http://localhost:3000/ - panel', 'http://localhost:3000/'],
+    ['Server at http://localhost:3000 and docs at https://example.com', ['http://localhost:3000', 'https://example.com']]
+  ])('preserves bare loopback URLs in prose: %s', (input, expected) => {
+    expect(hrefs(input)).toEqual([expected].flat())
+  })
+
+  it('keeps a markdown-labeled loopback link intact', () => {
+    const input = '[my dev server](http://localhost:3000)'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+    expect(hrefs(input)).toEqual(['http://localhost:3000'])
+  })
+
+  it('still drops a fenced block whose whole body is a loopback URL (preview hand-off)', () => {
+    const input = 'Before\n\n```\nhttp://localhost:3000\n```\n\nAfter'
+
+    expect(preprocessMarkdown(input)).toBe('Before\n\n\nAfter')
+    expect(hrefs(input)).toEqual([])
+  })
+})
+
 describe('preprocessMarkdown / bare-URL trailing punctuation', () => {
   it.each([
     ['Visit https://example.com/a.', 'https://example.com/a'],

@@ -488,14 +488,32 @@ function isRemoteMode(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
-function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
-  const behind = res.behind ?? 0
+export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
+  // The producer's contract (web_routers/actions.py): behind is 0 = up to
+  // date, -1 = update available but the count is unknown (shallow clone
+  // without a merge-base, unusable GitHub compare), null = the check could
+  // not run at all. DesktopUpdateStatus types "unknown count" as null —
+  // "never render it as a literal number" — so pass that through instead of
+  // clamping the sentinel to a byte-identical copy of "up to date".
+  const behind = res.behind === undefined ? 0 : res.behind
+
+  // `behind: null` from a supported (git) backend is the endpoint's "the check
+  // could not run" answer (GitHub unreachable, rate limited, offline) and
+  // carries the explanation in `message`. Folding it to 0 made the overlay
+  // report "the backend is on the latest version" whenever the check failed,
+  // and hid that message. Surface the failure state the local check path
+  // already uses so the overlay shows the reason and a retry; only a check
+  // that actually ran may claim there is nothing to update. Backends that
+  // cannot self-update also answer `behind: null`, but `can_apply: false`
+  // renders the unsupported copy first — those must not become failures.
+  const checkFailed = res.can_apply && res.behind === null
 
   return {
     supported: res.can_apply,
+    error: checkFailed ? 'check-failed' : undefined,
     message: res.message ?? undefined,
     updateAvailable: res.update_available,
-    behind: behind > 0 ? behind : 0,
+    behind: behind === null || behind < 0 ? null : behind,
     currentVersion: res.current_version,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
     commits: res.commits,

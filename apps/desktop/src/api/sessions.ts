@@ -18,7 +18,8 @@ import {
   getApiRequestProfile,
   hermesApi,
   type ProfileScope,
-  profileScoped
+  profileScoped,
+  sessionReadOwnerPin
 } from './client'
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
@@ -435,10 +436,14 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
 // 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
 // cross-profile list scan when locating an unknown id's owner.
 export function getSession(id: string, profile?: ProfileScope): Promise<SessionInfo> {
-  const suffix = sessionScopeQuery(profile)
+  // Pin the read to the session's OWNER connection (#125372): the ambient dial
+  // 404s on the wrong backend whenever two connections expose a same-named
+  // profile.
+  const scope = { ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
+  const suffix = scope.profile ? `?profile=${encodeURIComponent(scope.profile)}` : ''
 
   return hermesApi<SessionInfo>({
-    ...sessionScoped(profile),
+    ...scope,
     path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
   })
 }
@@ -455,7 +460,8 @@ export function getSessionMessages(
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
-  const sessionScope = sessionScoped(profile)
+  // Owner connection pin (#125372) — see getSession.
+  const sessionScope = { ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
 
   if (sessionScope.profile) {
     query.set('profile', sessionScope.profile)
@@ -504,7 +510,7 @@ export function getLatestSessionMessages(
   // (ambient, profile string, or explicit pin). Otherwise refreshes create
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
   // Capture before awaiting: the active gateway may change during the read.
-  const route = { ...connectionScoped(), ...sessionScoped(profile) }
+  const route = { ...connectionScoped(), ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
   // Only the lookup key is normalized — backfill replays `route` verbatim.
   const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
   const ambientProfile = getApiRequestProfile() || 'default'

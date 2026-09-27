@@ -317,7 +317,7 @@ def tree_digest(root: Path) -> str:
     by posix relpath, hash `relpath\\0<content>` per entry. No mtimes, no
     mode bits. Symlinks contribute their LINK TARGET TEXT (os.readlink),
     not the target's bytes — the link is the data. Directory symlinks and
-    junctions are not followed.
+    junctions are not followed. FIFOs, sockets and devices are skipped.
 
     ``__pycache__`` directories are skipped: CPython writes .pyc caches
     into them the first time the staged interpreter runs (uv venv/uv sync
@@ -337,7 +337,10 @@ def tree_digest(root: Path) -> str:
         dirnames[:] = descend
         for fname in filenames:
             path = Path(dirpath) / fname
-            files.append((path.relative_to(root).as_posix(), path))
+            # A FIFO, socket or device is a runtime endpoint, not package bytes: opening one to
+            # hash it blocks until its other end shows up (a plugin's data/events.fifo hung update).
+            if path.is_symlink() or stat.S_ISREG(path.lstat().st_mode):
+                files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])
 
     digest = hashlib.sha256()

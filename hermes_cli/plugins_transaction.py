@@ -76,6 +76,20 @@ def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *
             f"Update declined: {reason}. The installed plugin and active environment are unchanged.")
 
 
+def _not_plugin_files(directory: str, names: list[str]) -> set[str]:
+    """``copytree`` ignore: bytecode caches, plus FIFOs, sockets and devices. Those are runtime
+    endpoints the plugin re-creates, and copying one either blocks on its other end or raises."""
+    import os
+    import stat
+
+    skipped = set()
+    for name in names:
+        mode = os.lstat(os.path.join(directory, name)).st_mode
+        if name == "__pycache__" or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+            skipped.add(name)
+    return skipped
+
+
 def update_plugin(
     target: Path,
     *,
@@ -149,7 +163,7 @@ def update_plugin(
                 write_catalog_sidecar_record(staged, catalog_record, revision)
             else:
                 # Copy Git metadata and local changes. Autostash only ever touches the copy.
-                shutil.copytree(target, staged, symlinks=True, ignore=shutil.ignore_patterns("__pycache__"))
+                shutil.copytree(target, staged, symlinks=True, ignore=_not_plugin_files)
                 if feed_revision:
                     git = pc._resolve_git_executable()
                     status = pc._git_or_raise(git, target, "status", "--porcelain", failure_prefix="Could not inspect plugin edits: ")

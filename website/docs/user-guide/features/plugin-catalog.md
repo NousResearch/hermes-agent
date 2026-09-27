@@ -200,6 +200,8 @@ Symlinks among those untracked files are never followed into the new code: the
 update stops before publishing and names them, so replace each with a regular file.
 Dependency and cache directories (`.venv/`, `venv/`, `node_modules/`, tool caches)
 are not carried at all, links included; the updated plugin rebuilds its dependencies.
+Named pipes (FIFOs), sockets and device files are runtime endpoints, not data: an
+update neither reads nor carries them, and the plugin re-creates them when it starts.
 For monorepo/subdirectory installs, which do not carry a local Git checkout,
 update preserves user-state files the new revision does not ship. Plugin code and
 control surfaces remain revision-owned and are not resurrected from the old install:

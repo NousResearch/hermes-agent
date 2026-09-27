@@ -54,28 +54,28 @@ def _sent(a):
             for c in a.client.chat.completions.create.call_args_list]
 
 
-def test_a_retried_continuation_keeps_its_overrides_and_the_next_turn_drops_them(agent):
-    from tests.agent.test_run_agent import _mock_assistant_msg, _mock_response
+def test_a_retried_continuation_keeps_its_overrides_until_the_call_is_answered(agent):
+    from tests.agent.test_run_agent import _mock_assistant_msg, _mock_response, _mock_tool_call
 
     thinking_only = SimpleNamespace(id="c1", model="test/model", usage=None, choices=[SimpleNamespace(
         index=0, message=_mock_assistant_msg(content=""), finish_reason=FINISH_REASON_LENGTH)])
     agent.reasoning_config = {"enabled": True, "effort": "high"}
     agent._supports_reasoning_extra_body = lambda: True
     agent.client.chat.completions.create.side_effect = [
-        thinking_only, _ProviderError("Service Unavailable", status_code=503), _mock_response(content="answer"),
-        _mock_response(content="next turn")]
+        thinking_only, _ProviderError("Service Unavailable", status_code=503),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call(name="nope_tool")]),
+        _mock_response(content="answer")]
 
     assert _run(agent, "long report")["completed"] is True
-    first, continuation, retry = _sent(agent)
+    first, continuation, retry, after_answer = _sent(agent)
     assert continuation[1] == {"enabled": False, "effort": "none"} and continuation[0] is not None
     assert retry == continuation
+    # The continuation got its answer (a tool call): the loop's next call is an ordinary one again.
+    assert after_answer == first
 
-    _run(agent, "and now?")
-    assert _sent(agent)[3] == first
 
-
-def test_a_retried_clamped_request_keeps_its_clamp(agent):
-    from tests.agent.test_run_agent import _mock_response
+def test_a_retried_clamped_request_keeps_its_clamp_until_the_call_is_answered(agent):
+    from tests.agent.test_run_agent import _mock_response, _mock_tool_call
 
     agent.max_tokens = 100000
     agent.compression_enabled = True
@@ -84,8 +84,10 @@ def test_a_retried_clamped_request_keeps_its_clamp(agent):
                 "of either one, or use the \"middle-out\" transform.")
     agent.client.chat.completions.create.side_effect = [
         _ProviderError(overflow, status_code=400), _ProviderError("Service Unavailable", status_code=503),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call(name="nope_tool")]),
         _mock_response(content="fine")]
 
     assert _run(agent, "hi")["completed"] is True
     caps = [cap for cap, _reasoning in _sent(agent)]
     assert caps[1] < 100000 and caps[2] == caps[1]
+    assert caps[3] == 100000

@@ -82,6 +82,16 @@ _LOCK = threading.Lock()
 _HANDLES: Dict[Identity, int] = {}
 
 
+class WalGuardArmedIncompleteError(RuntimeError):
+    """hold(strict=True) could not arm every guard range on a runtime that supports OFD locks.
+
+    Raised by the state writer's open paths: a partially armed guard leaves the WAL generation
+    exposed to exactly the deleted-sidecar split-brain this module exists to prevent (#125184).
+    HERMES_STATE_WAL_GUARD_BYPASS=1 keeps the old WARNING-and-proceed behavior for operators
+    who explicitly accept the degraded mode.
+    """
+
+
 def supported() -> bool:
     return _F_OFD_SETLK is not None
 
@@ -143,11 +153,15 @@ def _guard_ranges(db_path) -> Held:
     return ranges
 
 
-def hold(db_path, held: Optional[Held] = None) -> Held:
+def hold(db_path, held: Optional[Held] = None, *, strict: bool = False) -> Held:
     """Lock the guard ranges on every descriptor this process has open on ``state.db`` and its
     ``-shm``. Returns the record :func:`release` needs; pass it back to extend an existing one
     (a ``-shm`` minted after open, a reopened connection). Idempotent per handle: an inode already
-    in *held* is re-locked (cheap, covers a new descriptor) without a second handle count."""
+    in *held* is re-locked (cheap, covers a new descriptor) without a second handle count.
+
+    With ``strict=True`` a supported runtime that cannot arm EVERY range raises
+    ``WalGuardArmedIncompleteError`` instead of returning a partially armed record — the
+    write path refuses to run unguarded (#125184's hard-fail ask)."""
     held = {} if held is None else held
     if not supported():
         return held
@@ -180,6 +194,13 @@ def hold(db_path, held: Optional[Held] = None) -> Held:
             "EXCLUSIVE holder or lock failure) — the WAL generation is partially unguarded",
             os.fspath(db_path), len(unguarded), len(ranges),
         )
+        if strict:
+            raise WalGuardArmedIncompleteError(
+                f"WAL lock guard could not arm {len(unguarded)} of {len(ranges)} ranges for "
+                f"{os.fspath(db_path)} — refusing to run an unguarded state writer on a "
+                "runtime that supports OFD locks (set HERMES_STATE_WAL_GUARD_BYPASS=1 to "
+                "proceed degraded)"
+            )
     return held
 
 

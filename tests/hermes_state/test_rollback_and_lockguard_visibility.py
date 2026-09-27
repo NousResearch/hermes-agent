@@ -98,6 +98,49 @@ class TestLockguardArmingFailureVisibility:
         finally:
             __import__("os").close(fd)
 
+    def test_strict_raises_when_a_range_is_missing(self, tmp_path, caplog, monkeypatch):
+        """strict=True turns the same refusal into WalGuardArmedIncompleteError — the write
+        path's hard-fail contract from #125184 — while the WARNING still fires."""
+        if not lg.supported():
+            pytest.skip("OFD locks unavailable on this platform")
+
+        db = tmp_path / "state.db"
+        db.touch()
+        (tmp_path / "state.db-shm").touch()
+
+        real_ofd_lock = lg._ofd_lock
+        refusing_ranges = set()
+
+        def refusing_ofd_lock(fd, lock_type, start, length, *, cmd=None):
+            if cmd is None and (fd, start) not in refusing_ranges:
+                refusing_ranges.add((fd, start))
+                raise BlockingIOError()
+            return real_ofd_lock(fd, lock_type, start, length, cmd=cmd)
+
+        monkeypatch.setattr(lg, "_ofd_lock", refusing_ofd_lock)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            with pytest.raises(lg.WalGuardArmedIncompleteError, match="refusing to run"):
+                lg.hold(db, strict=True)
+        assert "WAL lock guard incomplete" in caplog.text
+
+    def test_strict_happy_path_does_not_raise(self, tmp_path):
+        """strict=True with every range arming is a plain hold — the normal open path."""
+        if not lg.supported():
+            pytest.skip("OFD locks unavailable on this platform")
+
+        db = tmp_path / "state.db"
+        db.touch()
+        import os as _os
+        fd = _os.open(db, _os.O_RDWR)
+        held: dict = {}
+        try:
+            held = lg.hold(db, strict=True)
+            assert held
+        finally:
+            lg.release(held)
+            _os.close(fd)
+
 
 # ---------------------------------------------------------------------------
 # 2. Failed rollback stops the retry loop instead of being swallowed

@@ -618,6 +618,10 @@ class SessionDB(
         self._retire_connection: Optional[Callable[[Any], None]] = None
         self._connection_pinned = False  # one unmatched C reference taken at most once per handle
         self._wal_lock_guard: dict = {}  # hermes_state_lockguard.hold() record, see _open_writer
+        # Explicit degraded-mode opt-out for the strict WAL guard arming check (#125184):
+        # HERMES_STATE_WAL_GUARD_BYPASS=1 keeps WARNING-and-proceed for operators who accept
+        # an unguarded WAL generation. Read once per instance; deliberately not a config key.
+        self._wal_guard_degraded = bool(os.environ.get("HERMES_STATE_WAL_GUARD_BYPASS"))
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
@@ -706,8 +710,10 @@ class SessionDB(
         if self._wal_active:
             # OFD copies of the two POSIX locks that keep a sibling's close from unlinking this WAL
             # generation: any in-process open()/close() of state.db or -shm cancels SQLite's own
-            # (howtocorrupt §2.2); these survive it. Lifted in close().
-            self._wal_lock_guard = _lockguard.hold(self.db_path)
+            # (howtocorrupt §2.2); these survive it. Lifted in close(). Strict: on a supported
+            # runtime a guard that failed to arm is not a guard — refuse the writer (#125184),
+            # unless HERMES_STATE_WAL_GUARD_BYPASS explicitly accepts the degraded mode.
+            self._wal_lock_guard = _lockguard.hold(self.db_path, strict=not self._wal_guard_degraded)
 
     def _open_read_only(self) -> None:
         """Read-only attach for cross-profile aggregation: no schema init, NO write
@@ -980,7 +986,7 @@ class SessionDB(
                 f"this worker finished — #94736) and the automatic reopen failed: {exc}"
             ) from exc
         if self._wal_active:  # a reopened writer is a live generation holder like the first open
-            self._wal_lock_guard = _lockguard.hold(self.db_path)
+            self._wal_lock_guard = _lockguard.hold(self.db_path, strict=not self._wal_guard_degraded)
 
     def _execute_write(
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,

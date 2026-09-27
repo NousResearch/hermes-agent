@@ -5,7 +5,7 @@ from prompt_toolkit.document import Document
 
 from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
-from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
+from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_MAX_SLASH_COMMANDS, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -254,8 +254,9 @@ class TestSlackAppManifest:
         """Slack rejects a manifest whose app would hold more than 25 slash
         commands outright ("Too many commands. Each app can have up to 25
         commands associated with it."), so the generator must never emit one."""
+        assert _SLACK_MAX_SLASH_COMMANDS == 25
         m = slack_app_manifest()
-        assert len(m["features"]["slash_commands"]) <= 25
+        assert len(m["features"]["slash_commands"]) <= _SLACK_MAX_SLASH_COMMANDS
 
 
 

@@ -93,7 +93,9 @@ def _make_runner(
     store.load_transcript.return_value = []
     store.has_platform_message_id.return_value = False
     if durable_prompt_pin is not None:
-        def _get_prompt_pin(_key):
+        def _get_prompt_pin(_key, *, expected_session_id=None):
+            if expected_session_id is not None:
+                assert expected_session_id == "sess-wiring"
             value = durable_prompt_pin.get("value")
             return dict(value) if isinstance(value, dict) else None
 

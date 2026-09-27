@@ -618,7 +618,9 @@ class GatewayAgentCacheMixin:
             return None
         return f"[Voice channel now: {vc_now or 'not connected to a voice channel'}]"
 
-    def _rehydrate_prompt_pins(self, session_key: Optional[str]) -> None:
+    def _rehydrate_prompt_pins(
+        self, session_key: Optional[str], expected_session_id: Optional[str] = None,
+    ) -> None:
         """Restore durable prompt pins lazily for the first internal turn after a gateway restart."""
         if not session_key:
             return
@@ -630,7 +632,7 @@ class GatewayAgentCacheMixin:
         if not callable(getter):
             return
         try:
-            persisted = getter(session_key)
+            persisted = getter(session_key, expected_session_id=expected_session_id)
         except Exception:
             logger.debug("Failed to read persisted prompt pin for %s", session_key, exc_info=True)
             return
@@ -697,6 +699,7 @@ class GatewayAgentCacheMixin:
 
     def _pinned_session_context_prompt(
         self, context, redact_pii: bool, session_key: Optional[str], *, internal: bool = False,
+        expected_session_id: Optional[str] = None,
     ) -> str:
         """Session-context prompt pinned per session: key hit → pinned bytes reused VERBATIM (immune
         to renderer nondeterminism); key miss → re-render and re-pin (rename, topic edit, /sethome).
@@ -709,7 +712,7 @@ class GatewayAgentCacheMixin:
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if internal and _eph_pin is None:
-            self._rehydrate_prompt_pins(session_key)
+            self._rehydrate_prompt_pins(session_key, expected_session_id)
             _pin_state = self._peek_session_state(session_key) if session_key else None
             _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if internal and _eph_pin is not None:
@@ -724,6 +727,7 @@ class GatewayAgentCacheMixin:
 
     def _pinned_channel_inputs(
         self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, internal: bool,
+        expected_session_id: Optional[str] = None,
     ):
         """``(channel_prompt, source)`` for this turn's agent run.
 
@@ -740,7 +744,7 @@ class GatewayAgentCacheMixin:
         state = self._peek_session_state(session_key)
         pin = state.conversation.channel_pin if state else None
         if pin is None:
-            self._rehydrate_prompt_pins(session_key)
+            self._rehydrate_prompt_pins(session_key, expected_session_id)
             state = self._peek_session_state(session_key)
             pin = state.conversation.channel_pin if state else None
         if pin is None:

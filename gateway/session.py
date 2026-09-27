@@ -1173,11 +1173,17 @@ class SessionStore(
             entry.prompt_pin = dict(cleaned) if cleaned is not None else None
             return True
 
-    def get_prompt_pin(self, session_key: str) -> Optional[Dict[str, Any]]:
-        """Return a defensive copy of the persisted effective prompt-pin snapshot."""
+    def get_prompt_pin(
+        self, session_key: str, *, expected_session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the prompt pin only while the route still owns the caller's session."""
         with self._lock:
             entry = self._entry_locked(session_key)
-            return dict(entry.prompt_pin) if entry and entry.prompt_pin else None
+            if entry is None:
+                return None
+            if expected_session_id is not None and entry.session_id != expected_session_id:
+                return None
+            return dict(entry.prompt_pin) if entry.prompt_pin else None
 
     def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""

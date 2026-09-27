@@ -397,6 +397,9 @@ _SQLITE_AUTH_DBS = frozenset({"Cookies", "Login Data", "Login Data For Account",
 _AUTH_BACKUP_DEADLINE_S = 5.0
 _AUTH_DB_LOCKED = ("SQLite backup made no progress within five seconds — "
                    "a running browser holds a write lock on it")
+# The OS itself refused the read (macOS TCC without Full Disk Access, or plain owner/perms).
+# A sentinel, not str(e): the message layer must tell this apart from a browser lock.
+_AUTH_DB_DENIED = "the OS denied reading the file"
 
 
 def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
@@ -430,9 +433,16 @@ def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
         else:
             shutil.copy2(src_file, dst_file)
         return None
+    except PermissionError as e:
+        logger.debug("real-profile: could not copy %s: %s", src_file, e)
+        return _AUTH_DB_DENIED
     except (OSError, sqlite3.Error) as e:
         # A raw DB copy can lose committed WAL or overwrite a locked destination.
         logger.debug("real-profile: could not copy %s: %s", src_file, e)
+        # sqlite surfaces an unreadable source (TCC/perms deny the open) as CANTOPEN, not OSError;
+        # the timeout the deadline raises stays a lock, everything else stays its own reason.
+        if isinstance(e, sqlite3.OperationalError) and "unable to open database file" in str(e):
+            return _AUTH_DB_DENIED
         return str(e) or type(e).__name__
 
 
@@ -462,6 +472,10 @@ def _unavailable_auth_dbs_error(browser: str, failed: dict[str, str]) -> str:
                 "raw file copy (it could lose committed logins). Fully quit "
                 f"{browser} (including any background instance) and retry, or turn "
                 "browser.use_real_profile off.")
+    if all(reason == _AUTH_DB_DENIED for reason in failed.values()):
+        # Per-file TCC denial: the profile dir lists fine but the auth DBs are unreadable —
+        # closing the browser fixes nothing here (#120396).
+        return _profile_denied_error(browser, names)
     details = "; ".join(f"{name}: {reason}" for name, reason in failed.items())
     return (f"could not read the '{browser}' profile's login data ({details}). "
             f"Close {browser} and retry, or turn browser.use_real_profile off.")
@@ -588,7 +602,11 @@ def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _profile_is_locked(src, source_profile):
-            return True, "closed the browser and the profile lock released."
+            if platform.system() == "Windows":
+                return True, "closed the browser and the profile lock released."
+            # POSIX has no deny-all lock to confirm release for — a read denial would still
+            # stand after the kill, so claim only what the kill actually did.
+            return True, "closed the browser processes."
         time.sleep(0.5)
     return False, (
         "closed the browser processes but the profile is still locked — "
@@ -644,11 +662,13 @@ def _locked_profile_error(browser: str) -> str:
     return _PROFILE_LOCKED_PREFIX + msg
 
 
-def _profile_denied_error(browser: str, err: OSError) -> str:
+def _profile_denied_error(browser: str, err: OSError | str | None = None) -> str:
     """Fail-closed message when the OS itself denies reading the profile. macOS TCC denies reads
     of the Chrome profile without Full Disk Access; reporting that as a browser/profile lock
     sends the user through pointless Chrome restarts (#120396), so name the real blocker."""
-    base = f"could not read the '{browser}' profile ({err})"
+    base = f"could not read the '{browser}' profile"
+    if err:
+        base += f" ({err})"
     if platform.system() == "Darwin":
         return (base + " — macOS is blocking the read, not the browser. Grant Hermes Full Disk "
                 "Access (System Settings → Privacy & Security → Full Disk Access; "
@@ -699,11 +719,16 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         return None, _locked_profile_error(browser)
     # On POSIX a PermissionError is macOS TCC / Unix perms, never a browser lock: fail fast with
     # the distinct denial message BEFORE the heavy copy hits the same error deeper in the tree.
+    # Any other OSError here (e.g. the resolved profile dir no longer exists — _last_used_profile
+    # falls back to the literal "Default" without checking it) keeps base's generic snapshot
+    # error instead of crashing the launch.
     try:
         with os.scandir(os.path.join(src, source_profile)):
             pass
     except PermissionError as e:
         return None, _profile_denied_error(browser, e)
+    except OSError as e:
+        return None, f"could not snapshot the '{browser}' profile into {dst}: {e}"
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
     # Only a copy that previously COMPLETED counts as populated; a half-written tree is
     # rebuilt — otherwise a torn first copy poisons freshness forever.

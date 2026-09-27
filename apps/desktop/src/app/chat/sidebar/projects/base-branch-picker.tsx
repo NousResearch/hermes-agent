@@ -53,6 +53,7 @@ export function BaseBranchPicker({
   useEffect(() => {
     let active = true
     setBranches([])
+
     if (!repoPath) {
       return () => {
         active = false

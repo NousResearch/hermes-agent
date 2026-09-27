@@ -96,7 +96,9 @@ describe('contributed @ completion sources', () => {
     // A bot tagged by its title slug (`@john`) is the same routable identity
     // the gateway lists by raw profile name (`@john-2`) — one row must
     // survive, and it must be the contributed one (title + connection meta).
-    addSource('bots', q => ('john'.startsWith(q) ? [{ insert: '@john', meta: 'Bot · John ♥', handles: ['@john-2'] }] : []))
+    addSource('bots', q =>
+      'john'.startsWith(q) ? [{ insert: '@john', meta: 'Bot · John ♥', handles: ['@john-2'] }] : []
+    )
 
     const gateway = gatewayStub([
       { text: '@default', display: '@default', meta: 'Windows troubleshooting' },

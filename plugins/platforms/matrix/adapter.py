@@ -41,6 +41,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field, replace
 
@@ -99,11 +100,13 @@ from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote, _label_body,
     _MATRIX_REPLY_FALLBACK_PILL_RE, _has_reply_fallback, _split_reply_fallback,
 )
-from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
+from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY, PreviousTurnCheck, fetch_thread_entries
 from plugins.platforms.matrix.read_context import SessionAccess, check_session_access, read_matrix_context
 from plugins.platforms.matrix.room_admin import administer_matrix_pin, administer_matrix_room
 from plugins.platforms.matrix.room_inspection import inspect_matrix_room
 from plugins.platforms.matrix.image_packs import matrix_image_packs
+from plugins.platforms.matrix.reaction_followups import ReactionWatchStore
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -877,6 +880,8 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         self._reaction_redaction_delay_seconds = 5.0
         self._reaction_redaction_tasks: set[asyncio.Task] = set()
         self._agent_reactions: dict[tuple[str, str], list[str]] = {}
+        self._reaction_followup_actions: dict[str, tuple[str, tuple[str, ...]]] = {}
+        self._reaction_watch_store: ReactionWatchStore | None = None
 
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
         if self._proxy_url:
@@ -1408,6 +1413,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         if not content:
             return SendResult(success=True)
         last_event_id = None
+        event_ids: list[str] = []
         for chunk in self.truncate_message(
                 self.format_message(content), self.max_message_length, len_fn=self.message_len_fn):
             msg_content = self._build_text_message_content(chunk)
@@ -1416,6 +1422,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 msg_content[NON_CONVERSATIONAL_KEY] = True
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
+                event_ids.append(last_event_id)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
                 if not (self._encryption and getattr(self._client, "crypto", None)):
@@ -1424,11 +1431,54 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 try:  # E2EE error: retry once after sharing keys
                     await self._client.crypto.share_keys()
                     last_event_id = await self._send_room_message(chat_id, msg_content)
+                    event_ids.append(last_event_id)
                     logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return SendResult(success=False, error=str(retry_exc))
-        return SendResult(success=True, message_id=last_event_id)
+        return SendResult(success=True, message_id=last_event_id,
+                          continuation_message_ids=tuple(event_ids[:-1]))
+
+    def _followup_store(self) -> ReactionWatchStore:
+        store = getattr(self, "_reaction_watch_store", None)
+        if store is None:
+            store_dir = self._store_dir or self._resolve_store_dir()
+            store = self._reaction_watch_store = ReactionWatchStore(
+                store_dir.parent / "reaction-followups.sqlite")
+        return store
+
+    async def configure_reaction_followups(
+        self, session_key: str, enabled: bool, emoji_filter: tuple[str, ...],
+    ) -> bool:
+        if session_key not in self._active_sessions:
+            return False
+        if enabled:
+            self._reaction_followup_actions[session_key] = (uuid.uuid4().hex, emoji_filter)
+        else:
+            self._reaction_followup_actions.pop(session_key, None)
+        return True
+
+    async def send_final_ledgered(
+        self, event: MessageEvent, session_key: str, text_content: str,
+        metadata: Dict[str, Any], *, reply_to: Optional[str],
+        is_ephemeral_response: bool = False,
+    ) -> tuple[SendResult, BasePlatformAdapter]:
+        result, delivery_adapter = await super().send_final_ledgered(
+            event, session_key, text_content, metadata, reply_to=reply_to,
+            is_ephemeral_response=is_ephemeral_response)
+        action = self._reaction_followup_actions.get(session_key)
+        if not action or not text_content or not result.success or not result.message_id:
+            return result, delivery_adapter
+        source = event.source
+        if not source.user_id:
+            return result, delivery_adapter
+        ids = (*result.continuation_message_ids, result.message_id)
+        self._followup_store().arm(
+            action[0], ids, profile=source.profile or "", room_id=source.chat_id,
+            thread_id=source.thread_id or "", session_key=session_key,
+            requester=source.user_id, source=source.to_dict(), emoji_filter=action[1],
+        )
+        return result, delivery_adapter
 
     async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
@@ -2839,6 +2889,8 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         task.add_done_callback(self._reaction_redaction_tasks.discard)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
+        if actions := getattr(self, "_reaction_followup_actions", None):
+            actions.pop(self._event_session_key(event), None)
         msg_id, room_id = event.message_id, event.source.chat_id
         if self._reactions_enabled and msg_id and room_id:
             reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
@@ -2846,6 +2898,8 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        if actions := getattr(self, "_reaction_followup_actions", None):
+            actions.pop(self._event_session_key(event), None)
         msg_id, room_id = event.message_id, event.source.chat_id
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
             return
@@ -2879,6 +2933,50 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                         self._handle_choice_picker_reaction):
             if await handler(room_id, reacts_to, key, sender):
                 return
+        await self._handle_followup_reaction(
+            room_id, reacts_to, key, sender, event_id,
+            reaction_time=_matrix_event_timestamp_seconds(event))
+
+    async def _handle_followup_reaction(
+        self, room_id: str, target_event_id: str, emoji: str, sender: str,
+        reaction_event_id: str, *, reaction_time: float | None = None,
+    ) -> None:
+        store = self._followup_store()
+        candidate = store.candidate(room_id, target_event_id)
+        if candidate is None or candidate["requester"] != sender:
+            return
+        if (not self._is_authorized_user(sender)
+                or self._is_system_or_bridge_sender(sender)
+                or any(pattern.search(sender) for pattern in self._ignored_user_patterns)
+                or not await self._is_allowed_matrix_room_event(room_id)):
+            return
+
+        saved = candidate["source"]
+        source = self.build_source(
+            chat_id=room_id, chat_name=saved.get("chat_name"),
+            chat_type=saved.get("chat_type", "group"), user_id=sender,
+            user_name=saved.get("user_name"), thread_id=candidate["thread_id"] or None,
+            chat_topic=saved.get("chat_topic"), scope_id=saved.get("scope_id"),
+            parent_chat_id=saved.get("parent_chat_id"), message_id=reaction_event_id,
+        )
+        if source.profile_route_rejected or self._source_session_key(source) != candidate["session_key"]:
+            return
+        if (source.profile or "") != candidate["profile"]:
+            return
+        claimed = store.claim(
+            source.profile or "", room_id, target_event_id, sender, emoji,
+            reaction_time=reaction_time)
+        if claimed is None:
+            return
+        context = (f"Matrix reaction by {sender}: {emoji} on reply {target_event_id} "
+                   f"(reaction event {reaction_event_id}).")
+        await self.handle_message(MessageEvent(
+            text=context, source=source, message_id=reaction_event_id,
+            raw_message={"m.relates_to": {"rel_type": "m.annotation",
+                                          "event_id": target_event_id, "key": emoji}},
+            reply_to_message_id=target_event_id, channel_context=context,
+            user_id=sender, allow_gateway_control=False,
+        ))
 
     async def _claim_reaction_prompt(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,

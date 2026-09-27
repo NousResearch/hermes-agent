@@ -1344,6 +1344,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             target_ref = release_sha
             completion_request["expected_sha"] = release_sha
         else:
+            assert target.branch is not None  # a SourceTarget without a commit names its branch
             branch = target.branch
             completion_request["branch"] = branch
             target_ref = f"origin/{branch}"

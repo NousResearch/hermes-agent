@@ -1,0 +1,41 @@
+name: litco_turn-platform
+label: LitCo Turn Server
+kind: platform
+version: 0.1.0
+description: >
+  LitCo matter-host turn server. Exposes POST /turn (SSE of agent2-shaped events),
+  POST /interrupt/{turnId}, GET /health and GET /deliverables/{fileId} so a LitKit
+  instance can drive this profile's agent for one matter. Runs inside the gateway
+  beside cron, memory, skills and the other channels. Code lives in the top-level
+  ``litco`` package; this plugin only registers the adapter.
+author: LitCo
+requires_env:
+  - name: LITCO_HOST_SECRET
+    description: "Shared secret LitKit sends in X-Host-Secret; also the HMAC key for user assertions"
+    prompt: "LitCo host secret"
+    password: true
+  - name: LITCO_MATTER_ID
+    description: "The one LitKit matter this host serves; turns for any other matter are refused"
+    prompt: "LitKit matter id"
+    password: false
+optional_env:
+  - name: LITCO_TURN_HOST
+    description: "Bind host for the turn server (default 127.0.0.1)"
+    prompt: "Turn server bind host"
+    password: false
+  - name: LITCO_TURN_PORT
+    description: "Port for the turn server (default 8765)"
+    prompt: "Turn server port"
+    password: false
+  - name: LITCO_MATTER_HOME
+    description: "Root of the per-thread working directories (default ~/matter)"
+    prompt: "Matter home directory"
+    password: false
+  - name: LITCO_AGENT_TOKEN
+    description: "Matter-pinned LitKit bearer token (lkm_...) used to fetch attachments and call LitKit"
+    prompt: "LitKit agent token"
+    password: true
+  - name: LITCO_INSTANCE_URL
+    description: "Base URL of the firm's LitKit instance"
+    prompt: "LitKit instance URL"
+    password: false

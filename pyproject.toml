@@ -821,6 +821,8 @@ include = [
   "pm.*",
   "tools",
   "tools.*",
+  "litco",
+  "litco.*",
 ]
 
 [tool.setuptools.package-data]

@@ -261,9 +261,11 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     add("-v", "--verbose", action="store_true", default=SUPPRESS, help="Verbose output")
     add("-Q", "--quiet", action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.")
-    add("--format", choices=["text", "stream-json"], default="text", dest="output_format", help=(
+    add("--format", choices=["text", "json", "stream-json"], default="text", dest="output_format", help=(
         "Output format for single-query mode (-q). 'text' prints the final response as plain text (default). "
-        "'stream-json' emits newline-delimited JSON events (JSONL), implies --quiet, and cannot be combined with --tui."))
+        "'json' emits one final result; 'stream-json' emits JSONL events. Both imply --quiet and forbid --tui."))
+    add("-o", "--output-last-message", metavar="FILE", help="Write only the successful final response to FILE (one-shot; implies --quiet).")
+    add("--output-schema", metavar="FILE", help="Validate the final JSON answer against a local JSON Schema (one-shot; implies --quiet).")
     add("--resume", "-r", metavar="SESSION_ID", default=SUPPRESS, help=(
         "Resume a previous session by ID (shown on exit), or 'latest' "
         "for the most recent session"))

@@ -155,17 +155,18 @@ class MatrixEventContextCache:
         self.timeout_seconds = timeout_seconds
         self._entries: OrderedDict[tuple[str, str], MatrixEventContext] = OrderedDict()
 
-    def store(self, room_id: str, event_id: str, entry: MatrixEventContext) -> None:
+    def store(self, room_id: str, event_id: str, entry: MatrixEventContext) -> MatrixEventContext | None:
         if not event_id:
-            return
+            return None
         key = room_id, event_id
         prior = self._entries.get(key)
         if prior is not None and prior.redacted and not entry.redacted:
-            return
+            return None
         self._entries[key] = entry
         self._entries.move_to_end(key)
         while len(self._entries) > self.max_entries:
             self._entries.popitem(last=False)
+        return entry if not entry.redacted and (entry.text or entry.media_path) else None
 
     def apply_edit(self, room_id: str, sender: str, content: dict) -> None:
         relation = content.get("m.relates_to")
@@ -222,7 +223,8 @@ class MatrixEventContextCache:
                 event = await asyncio.wait_for(crypto.decrypt_megolm_event(event), self.timeout_seconds)
         except Exception as exc:
             logger.debug("Matrix: could not resolve reply target %s in %s: %s", event_id, room_id, exc)
-            return cached
+            current = self._entries.get(key)
+            return current if current is not None and not current.redacted else None
 
         sender = str(getattr(event, "sender", "") or "")
         if not sender and isinstance(event, dict):
@@ -251,5 +253,4 @@ class MatrixEventContextCache:
             media_type=media[1] if media else None,
             is_image=msgtype == "m.image",
         )
-        self.store(room_id, event_id, entry)
-        return entry if text or entry.media_path else None
+        return self.store(room_id, event_id, entry)

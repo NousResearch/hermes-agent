@@ -427,3 +427,26 @@ async def test_close_all_survives_key_popped_by_concurrent_reap():
 
     assert not reg._sessions
     assert all(b.closed for b in bridges)
+
+
+@pytest.mark.asyncio
+async def test_close_other_sessions_removes_old_profile_session():
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    old_bridge = FakeBridge([b""])
+    current_bridge = FakeBridge([b""])
+    old = PtySession("token\0alpha\0session-a", old_bridge, buffer_cap=1024, read_timeout=0.01)
+    current = PtySession("token\0beta\0session-b", current_bridge, buffer_cap=1024, read_timeout=0.01)
+    await old.start()
+    await current.start()
+    old.detach(None)
+    reg._sessions[old.key] = old
+    reg._sessions[current.key] = current
+
+    await reg.close_other_sessions("token", keep_key=current.key)
+
+    assert old_bridge.closed
+    assert old.key not in reg._sessions
+    assert reg._sessions[current.key] is current
+    await reg.close_all()

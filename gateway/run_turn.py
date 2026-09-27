@@ -3663,6 +3663,11 @@ class GatewayTurnMixin:
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+            while pending_event is not None and not await self._strict_session_current(
+                pending_event, session_key,
+            ):
+                pending_event = _dequeue_pending_event(adapter, session_key)
+                pending_event = self._promote_queued_event(session_key, adapter, pending_event)
             if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                 interrupt_message = result.get("interrupt_message")
                 if _is_control_interrupt_message(interrupt_message):
@@ -3830,6 +3835,11 @@ class GatewayTurnMixin:
         if not result.get("interrupted"):
             await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
 
+        if pending_event is not None and not await self._strict_session_current(
+            pending_event, session_key, session_id=session_id,
+        ):
+            return result
+
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
@@ -3918,6 +3928,14 @@ class GatewayTurnMixin:
         # (the helper's own ``except Exception`` does not catch cancellation).
         try:
             await self._refresh_agent_cache_message_count(session_key, session_id)
+
+            if pending_event is not None and not await self._strict_session_current(
+                pending_event, next_session_key, session_id=session_id,
+            ):
+                await _run_followup_processing_hook(
+                    _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.CANCELLED,
+                )
+                return result
 
             followup_result = await self._run_agent(
                 message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,

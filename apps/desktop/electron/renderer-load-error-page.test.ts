@@ -12,7 +12,7 @@ test('error page names the failure and carries a Reload button', () => {
     repairHint: 'hermes desktop --force-build'
   })
 
-  assert.match(html, /Hermes couldn.t start the desktop UI/)
+  assert.match(html, /Agent Czesiek couldn.t start the desktop UI/)
   assert.match(html, /incomplete after the last update \(2 missing file\(s\)\)/)
   assert.match(html, /-6/)
   assert.match(html, /assets\/app-C0ffee\.js/)

@@ -140,8 +140,8 @@ test('appIconCandidates keeps the documented precedence ladder', () => {
   )
 })
 
-test('package metadata uses the AI Evolution Jarvis app identity consistently', () => {
-  assert.equal(pkg.productName, 'AI Evolution Jarvis')
+test('package metadata uses the Agent Czesiek app identity consistently', () => {
+  assert.equal(pkg.productName, 'Agent Czesiek')
   assert.equal(pkg.description, 'AI Evolution Jarvis, powered by Hermes Agent.')
   assert.equal(pkg.author, 'AI Evolution')
   assert.equal(pkg.repository.url, 'git+https://github.com/aievolutionpl/AGENT_CZESIEK.git')
@@ -180,7 +180,7 @@ test('the Windows installer creates the shortcuts a non-technical install depend
   // run after the user deleted it.
   assert.equal(pkg.build.nsis.createDesktopShortcut, 'always')
   assert.equal(pkg.build.nsis.createStartMenuShortcut, true)
-  assert.equal(pkg.build.nsis.shortcutName, 'AI Evolution Jarvis')
+  assert.equal(pkg.build.nsis.shortcutName, pkg.productName)
   // Per-user, no elevation prompt, and the app opens when the installer closes.
   assert.equal(pkg.build.nsis.perMachine, false)
   assert.equal(pkg.build.nsis.runAfterFinish, true)

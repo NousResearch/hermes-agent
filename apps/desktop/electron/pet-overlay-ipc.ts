@@ -135,6 +135,12 @@ export function registerPetOverlayIpc({
         mainWindow.focus()
       } else {
         mainWindow.minimize()
+
+        // Headless Linux window managers may ignore minimize on a frameless
+        // window. Hiding keeps the orb usable; the branch above restores it.
+        if (process.platform === 'linux' && !mainWindow.isMinimized()) {
+          mainWindow.hide()
+        }
       }
 
       return

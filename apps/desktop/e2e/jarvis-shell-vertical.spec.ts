@@ -184,11 +184,13 @@ test.describe('Jarvis product shell', () => {
       return { bounds: orb.getBounds(), top: orb.isAlwaysOnTop() }
     })
     expect(before.top).toBe(true)
-    await expect.poll(() => app.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows().find(
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+      const main = BrowserWindow.getAllWindows().find(
         (window: import('electron').BrowserWindow) => !window.webContents.getURL().includes('win=overlay')
-      )!.isMinimized()
-    )).toBe(true)
+      )!
+
+      return main.isMinimized() || !main.isVisible()
+    })).toBe(true)
     expect(await overlay.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgba(0, 0, 0, 0)')
     await expect(overlay.locator('.desktop-orb')).toBeVisible()
     await overlay.locator('.desktop-orb__sphere').hover()
@@ -219,11 +221,13 @@ test.describe('Jarvis product shell', () => {
       )
       .toBe(false)
     await page.getByRole('button', { name: 'Wróć do kuli', exact: true }).first().click()
-    await expect.poll(() => app.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows().find(
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+      const main = BrowserWindow.getAllWindows().find(
         (window: import('electron').BrowserWindow) => !window.webContents.getURL().includes('win=overlay')
-      )!.isMinimized()
-    )).toBe(true)
+      )!
+
+      return main.isMinimized() || !main.isVisible()
+    })).toBe(true)
     await overlay.getByRole('button', { name: 'Otwórz Cześka' }).click()
     await overlay.getByRole('button', { name: 'Schowaj kulę' }).click()
     await expect.poll(() => app.windows().some(window => window.url().includes('win=overlay'))).toBe(false)

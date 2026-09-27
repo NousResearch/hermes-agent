@@ -89,7 +89,7 @@ describe('local desktop pack stays out of the publish path', () => {
     assert.ok(Array.isArray(configs) && configs.length > 0)
     assert.equal(configs[0].provider, 'github')
     assert.equal(configs[0].owner, 'aievolutionpl')
-    assert.equal(configs[0].repo, 'ai-evolution-jarvis')
+    assert.equal(configs[0].repo, 'AGENT_CZESIEK')
   })
 
   test('a package without the repository field is what breaks resolution', async () => {

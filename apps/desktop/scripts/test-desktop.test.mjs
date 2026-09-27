@@ -16,9 +16,9 @@ test('resolves packaged app paths from desktop package metadata', () => {
     productName,
     executableName
   })
-  expect(mac.appPath).toBe(path.join(releaseRoot, 'mac-arm64', 'AI Evolution Jarvis.app'))
+  expect(mac.appPath).toBe(path.join(releaseRoot, 'mac-arm64', `${productName}.app`))
   expect(mac.binary).toBe(
-    path.join(releaseRoot, 'mac-arm64', 'AI Evolution Jarvis.app', 'Contents', 'MacOS', 'AI Evolution Jarvis')
+    path.join(releaseRoot, 'mac-arm64', `${productName}.app`, 'Contents', 'MacOS', executableName)
   )
 
   const win = resolveDesktopAppLayout({
@@ -28,7 +28,7 @@ test('resolves packaged app paths from desktop package metadata', () => {
     productName,
     executableName
   })
-  expect(win.binary).toBe(path.join(releaseRoot, 'win-unpacked', 'AI Evolution Jarvis.exe'))
+  expect(win.binary).toBe(path.join(releaseRoot, 'win-unpacked', `${executableName}.exe`))
 
   const linux = resolveDesktopAppLayout({
     releaseRoot,
@@ -37,7 +37,7 @@ test('resolves packaged app paths from desktop package metadata', () => {
     productName,
     executableName
   })
-  expect(linux.binary).toBe(path.join(releaseRoot, 'linux-unpacked', 'AI Evolution Jarvis'))
+  expect(linux.binary).toBe(path.join(releaseRoot, 'linux-unpacked', executableName))
 })
 
 test('expands DMG artifact names from electron-builder artifactName metadata', () => {

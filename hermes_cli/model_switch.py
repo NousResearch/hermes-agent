@@ -316,16 +316,33 @@ def direct_alias_api_key(alias: DirectAlias) -> str:
 def direct_alias_runtime_request(alias: DirectAlias) -> tuple[str, Optional[str]]:
     """``(requested_provider, explicit_api_key)`` for resolving *alias*.
 
-    Single owner of the invariant that a URL-bearing direct alias resolves its credential for
-    the alias HOST, never for its provider label: a label like ``anthropic`` on an unrelated URL
-    would otherwise reach that provider's explicit-runtime branch and put the live vendor token
-    on the foreign wire. Bare ``custom`` is host-gated, so an authoritative URL still resolves
-    its vendor key and a foreign one resolves none. An alias with no base_url keeps its label —
-    there is no foreign host, and the label is the only routing information.
+    A URL-bearing alias normally resolves as ``custom``: a provider label such as ``anthropic``
+    on an unrelated URL must never make the provider runtime send its vendor credential to that
+    host. The exception is an exact match for that provider's registered canonical endpoint. It
+    is not a foreign credential boundary, and retaining the provider is required for provider
+    authentication such as OpenAI Codex OAuth. An alias with no base_url keeps its label — there
+    is no foreign host, and the label is the only routing information.
 
     See #28660.
     """
-    return ("custom" if alias.base_url else (alias.provider or "custom")), direct_alias_api_key(alias) or None
+    requested = alias.provider or "custom"
+    if alias.base_url and not _is_provider_canonical_alias_endpoint(alias):
+        requested = "custom"
+    return requested, direct_alias_api_key(alias) or None
+
+
+def _is_provider_canonical_alias_endpoint(alias: DirectAlias) -> bool:
+    """Whether an alias URL is exactly the declared provider's trusted endpoint."""
+    if not alias.base_url or not alias.provider or alias.provider == "custom":
+        return False
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(alias.provider)
+        canonical = _clean(profile.base_url if profile else "").rstrip("/")
+    except Exception:
+        return False
+    return bool(canonical and canonical == _clean(alias.base_url).rstrip("/"))
 
 
 # Hosts where plaintext HTTP is not a downgrade — no network hop to intercept.

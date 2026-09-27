@@ -1829,6 +1829,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            existing.append_channel_context(event.channel_context)
             existing.absorb_reply_expected(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
@@ -1844,6 +1845,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
+            existing.append_channel_context(event.channel_context)
             existing.absorb_reply_expected(event)
             return
     pending_messages[session_key] = event
@@ -2585,11 +2587,7 @@ class BasePlatformAdapter(ABC):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
-            if event.channel_context:
-                existing.channel_context = (
-                    f"{existing.channel_context}\n{event.channel_context}"
-                    if existing.channel_context else event.channel_context
-                )
+            existing.append_channel_context(event.channel_context)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -3875,6 +3873,7 @@ class BasePlatformAdapter(ABC):
         else:
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
+            state.event.append_channel_context(event.channel_context)
             state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)

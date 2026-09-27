@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
 
 logger = logging.getLogger(__name__)
@@ -1925,8 +1926,8 @@ class BasePlatformAdapter(ABC):
         # could drop a newer guard.
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
-        # Consecutive in-band drains per session of an event the runner DEMOTED back into the queue
-        # (tagged ``_busy_requeued``); drives the drain back-off (#123229).
+        # Consecutive in-band drains per session of the just-dispatched event bouncing straight
+        # back into the queue (session busy elsewhere); drives the drain back-off (#123229).
         self._requeue_counts: Dict[str, int] = {}
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
@@ -4549,12 +4550,14 @@ class BasePlatformAdapter(ABC):
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
             if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
+                pending_event = self._pending_messages[session_key]
+                delay = self._requeue_backoff_delay(session_key, pending_event, event)
+                if not delay:  # a backed-off event stays queued until the drain task wakes
+                    self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-                self._spawn_drain_task(pending_event, session_key,
-                                       delay=self._requeue_backoff_delay(session_key, pending_event))
+                self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
@@ -4586,20 +4589,21 @@ class BasePlatformAdapter(ABC):
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     _REQUEUE_BACKOFF_MAX_SECONDS = 5.0
 
-    def _requeue_backoff_delay(self, session_key: str, pending_event: MessageEvent) -> float:
-        """Delay before re-dispatching the popped follow-up.
+    def _requeue_backoff_delay(self, session_key: str, pending_event: MessageEvent,
+                               dispatched_event: MessageEvent) -> float:
+        """Delay before re-dispatching the queued follow-up.
 
-        Only an event the runner DEMOTED back into this queue (tagged ``_busy_requeued`` at the
-        re-queue site — rewrite-hook copies included) backs off; re-dispatching it at once hot-loops
-        for the whole busy window (#123229). Anything else — a genuine follow-up after a normal
-        (e.g. streamed, None-returning) turn — resets the counter and runs immediately. The first
-        demotion stays immediate (restart auto-resume relies on one self-bounce), then back off
+        Only the event this task just dispatched coming straight back (same object, or the same
+        ``message_id`` for rewrite-hook copies) backs off: the handler put it back because the
+        session is busy elsewhere, and re-dispatching it at once hot-loops for the whole busy
+        window (#123229). Any other follow-up resets the counter and runs immediately. The first
+        bounce stays immediate (restart auto-resume relies on one self-bounce), then back off
         exponentially to a cap. Defers, never drops."""
-        if not getattr(pending_event, "_busy_requeued", False):
+        same = pending_event is dispatched_event or bool(
+            pending_event.message_id and pending_event.message_id == dispatched_event.message_id)
+        if not same:
             self._requeue_counts.pop(session_key, None)
             return 0.0
-        from agent.retry_utils import jittered_backoff
-        pending_event._busy_requeued = False  # the runner re-tags it if it demotes it again
         attempts = self._requeue_counts.get(session_key, 0)
         self._requeue_counts[session_key] = attempts + 1
         if attempts == 0:
@@ -4615,21 +4619,21 @@ class BasePlatformAdapter(ABC):
                           delay: float = 0.0) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained
         follow-ups grew the C stack to SIGSEGV). Clearing (not deleting) the Event keeps the guard
-        live for concurrent inbound; ownership moves so stale-lock detection works. ``delay`` is
-        slept INSIDE the new owner task, before its processing try/finally, so a cancel during the
-        back-off just ends it — it can't hit ``_finish_session_task``'s late-arrival respawn."""
+        live for concurrent inbound; ownership moves so stale-lock detection works. With ``delay``
+        the event stays in ``_pending_messages`` and the new owner task pops the slot only after
+        sleeping, so a cancel/discard during the back-off needs no put-back and can't drop a
+        newer message."""
         self._clear_session_guard(session_key)
         self._track_session_task(
             session_key, asyncio.create_task(self._drain_after(pending_event, session_key, delay)))
 
     async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float) -> None:
         if delay > 0:
-            try:
-                await asyncio.sleep(delay)
-            except asyncio.CancelledError:
-                # Not yet processing: hand the event back unless something newer took the slot.
-                self._pending_messages.setdefault(session_key, pending_event)
-                raise
+            await asyncio.sleep(delay)
+            pending_event = self._pending_messages.pop(session_key, None)
+            if pending_event is None:  # consumed elsewhere during the back-off
+                self._cleanup_finished_session_task(session_key, self._active_sessions.get(session_key))
+                return
         await self._process_message_background(pending_event, session_key)
 
     def _clear_session_guard(self, session_key: str) -> None:

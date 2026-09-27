@@ -12,7 +12,7 @@ from typing import Any, MutableMapping, Optional, TypeVar
 # never prices bytes the provider never receives (an edit's inline_diff in
 # display_metadata is ~9KB and would trigger premature compaction).
 PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
-    {"timestamp", "display_kind", "display_metadata", "_row_id", "_db_row_snapshot"}
+    {"timestamp", "display_kind", "display_metadata", "_row_id", "_db_row_snapshot", "_canonical_row"}
 )
 
 _Message = TypeVar("_Message", bound=MutableMapping[str, Any])

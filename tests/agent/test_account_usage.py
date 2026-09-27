@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -77,7 +78,7 @@ def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_
     assert snapshot is not None
     assert snapshot.provider == "openai-codex"
     assert snapshot.plan == "Plus"
-    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
+    assert [w.label for w in snapshot.windows] == ["5-hour block", "Weekly"]
     assert snapshot.windows[0].used_percent == 21
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer live-agent-token"
@@ -114,7 +115,7 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     snapshot = account_usage.fetch_account_usage("openai-codex")
 
     assert snapshot is not None
-    assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[0].label == "5-hour block"
     assert snapshot.windows[1].label == "Weekly"
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer pooled-token"
@@ -151,14 +152,58 @@ def test_codex_window_labels_follow_duration_with_positional_fallback(monkeypatc
         "secondary_window": {"used_percent": 21, "limit_window_seconds": 18000},
     }}
     snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
-    assert [w.label for w in snapshot.windows] == ["Weekly", "Session"]
+    assert [w.label for w in snapshot.windows] == ["Weekly", "5-hour block"]
     # Missing / unrecognized durations keep the legacy positional labels.
     payload = {"rate_limit": {
         "primary_window": {"used_percent": 4},
         "secondary_window": {"used_percent": 21, "limit_window_seconds": 12345},
     }}
     snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
-    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
+    assert [w.label for w in snapshot.windows] == ["5-hour block", "Weekly"]
+
+
+def test_codex_relative_reset_after_seconds_is_normalized_to_an_absolute_reset(monkeypatch):
+    """The usage API may return only ``reset_after_seconds``; without it the window renders
+    'resets unknown'. An absolute ``reset_at``, when present, still wins."""
+    monkeypatch.setattr(
+        account_usage, "_utc_now", lambda: datetime.fromtimestamp(1_899_999_940, tz=timezone.utc),
+    )
+    payload = {"plan_type": "pro", "rate_limit": {
+        "primary_window": {"used_percent": 15, "reset_after_seconds": 60, "limit_window_seconds": 18000},
+        "secondary_window": {"used_percent": 40, "reset_at": 1_900_500_000,
+                             "reset_after_seconds": 1, "limit_window_seconds": 604800},
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert [w.label for w in snapshot.windows] == ["5-hour block", "Weekly"]
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+    assert snapshot.windows[1].reset_at == datetime.fromtimestamp(1_900_500_000, tz=timezone.utc)
+
+
+def test_codex_unusable_reset_after_seconds_leaves_reset_unknown(monkeypatch):
+    """Booleans and non-finite values are not durations — they must not become a reset time."""
+    payload = {"rate_limit": {
+        "primary_window": {"used_percent": 15, "reset_after_seconds": True},
+        "secondary_window": {"used_percent": 40, "reset_after_seconds": float("nan")},
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert [w.reset_at for w in snapshot.windows] == [None, None]
+
+
+def test_codex_negative_reset_after_seconds_leaves_reset_unknown(monkeypatch):
+    payload = {"rate_limit": {
+        "primary_window": {"used_percent": 15, "reset_after_seconds": -1},
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert snapshot.windows[0].reset_at is None
+
+
+def test_codex_extreme_relative_reset_does_not_crash_usage(monkeypatch):
+    payload = {"rate_limit": {
+        "primary_window": {"used_percent": 15, "reset_after_seconds": 1e300},
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert snapshot is not None
+    assert snapshot.windows[0].reset_at is None
 
 
 def test_codex_snapshot_exposes_exact_raw_payload_with_one_get(monkeypatch, codex_usage_payload):
@@ -168,7 +213,7 @@ def test_codex_snapshot_exposes_exact_raw_payload_with_one_get(monkeypatch, code
     assert snapshot.raw == codex_usage_payload
     assert snapshot.raw["future_field"] == {"nested": [1, 2]}
     assert len(calls) == 1
-    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]  # normalized limits unchanged
+    assert [w.label for w in snapshot.windows] == ["5-hour block", "Weekly"]  # normalized limits unchanged
     # Additive: existing constructor calls stay valid and default to no raw body.
     assert account_usage.AccountUsageSnapshot(provider="anthropic", source="x", fetched_at=snapshot.fetched_at).raw is None
 
@@ -248,7 +293,7 @@ def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_pa
     snapshot = account_usage.fetch_account_usage("openai-codex")
 
     assert snapshot is not None
-    assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[0].label == "5-hour block"
     assert credential_calls == [
         {"refresh_if_expiring": True},
         {"refresh_if_expiring": True, "force_refresh": True},

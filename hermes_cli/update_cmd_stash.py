@@ -224,6 +224,31 @@ def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
     return saw_untracked_error
 
 
+def _stashed_untracked_entries_intact(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
+    """True when every untracked entry of *stash_ref* is in the worktree with its stashed content.
+
+    ``--include-untracked`` parks the untracked files in the stash's third parent, so an
+    "already exists, no checkout" refusal only means *restored* when the tree's copy is the user's
+    own — the push could not delete it (the permission-denied class). When the update itself ships
+    files at those paths the tree holds upstream's content and the stash is the only copy of the
+    user's, so it must not be dropped (#124641). Compares blob ids; any verification failure counts
+    as not intact, so the stash survives.
+    """
+    from hermes_cli.update_cmd_git import _git_run
+    listing = _git_run(git_cmd, ["ls-tree", "-r", "-z", f"{stash_ref}^3"], cwd)
+    if listing.returncode != 0:
+        return False  # no/unreadable untracked parent — the entries cannot be accounted for
+    for record in listing.stdout.split("\0"):
+        if not record:
+            continue
+        meta, _, path = record.partition("\t")
+        stashed_blob = meta.rsplit(" ", 1)[-1]
+        worktree_blob = _git_run(git_cmd, ["hash-object", "--", path], cwd)
+        if worktree_blob.returncode != 0 or worktree_blob.stdout.strip() != stashed_blob:
+            return False
+    return True
+
+
 def _park_stashed_changes(stash_ref: str) -> None:
     """Leave a pre-update autostash parked (``--keep-stash``, the desktop updater's mode): local source
     edits must never be silently re-applied onto updated code; the entry stays in ``git stash``."""
@@ -316,8 +341,10 @@ def _confirm_restore(stash_ref: str, input_fn) -> bool:
 
 
 def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
-    """``git stash apply``; False (tree reset, stash kept) on conflicts or any failure other than the
-    undeletable-untracked class."""
+    """``git stash apply``; False (disposition recorded, stash kept) on conflicts or any failure other
+    than the undeletable-untracked class — the tree is reset then — or when the stashed untracked
+    entries were not restored because the update ships files at their paths; the tracked part stays
+    applied in that case (#124641)."""
     from hermes_cli.update_cmd_git import _git_run
     print("→ Restoring local changes...")
     restore = _git_run(git_cmd, ["stash", "apply", stash_ref], cwd)
@@ -326,10 +353,22 @@ def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
     if restore.returncode == 0 and not conflicted_files:
         return True
     if not conflicted_files and _stash_apply_failed_only_on_existing_untracked(restore.stderr):
-        # Tracked changes applied; only undeletable-at-stash-time untracked files were refused. Their
-        # content is untouched — treat as restored.
-        print("  ⚠ Some stashed untracked files already exist in the working tree and were kept as-is.")
-        return True
+        if _stashed_untracked_entries_intact(git_cmd, cwd, stash_ref):
+            # Tracked changes applied; only undeletable-at-stash-time untracked files were refused. Their
+            # content is untouched — treat as restored.
+            print("  ⚠ Some stashed untracked files already exist in the working tree and were kept as-is.")
+            return True
+        # The tree's copies at those paths are the update's, not the user's: the stashed untracked
+        # entries were NOT restored, so the stash is the only copy of that content — keep it and
+        # name it instead of dropping it as restored (#124641). The tracked changes stay applied.
+        print("  ⚠ Some stashed untracked files could not be restored: the update ships files at the")
+        print("    same paths, and the working tree keeps the update's copies.")
+        print(f"  Your copies remain preserved in stash: {stash_ref}")
+        print(f"  List them with: git ls-tree -r --name-only {stash_ref}^3")
+        print(f"  Recover one with: git show {stash_ref}^3:<path> > <path>")
+        print("  Review `git status` / `git diff` if Hermes behaves unexpectedly.")
+        _record_stash_disposition("parked", stash_ref, "untracked entries collide with updated paths")
+        return False
     print("✗ Update pulled new code, but restoring local changes hit conflicts.")
     _print_nonempty(restore.stdout)
     _print_nonempty(restore.stderr)

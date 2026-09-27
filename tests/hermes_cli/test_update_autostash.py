@@ -283,6 +283,42 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
         os.chmod(pkg, 0o755)
 
 
+def test_untracked_file_colliding_with_a_new_upstream_file_is_not_lost(tmp_path, capsys):
+    """#124641: when the update ships a file at a path the user had untracked, ``git stash apply``
+    fails with "already exists" and the worktree copy is the update's, not the user's. The restore
+    must keep (and name) the stash — the only copy of the user's content — instead of dropping it
+    as if the entries had been restored."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "tracked.txt").write_text("v1\n")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    (tmp_path / "collide.txt").write_text("user's private copy\n")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+
+    # The update lands upstream's file at the same path (fast-forward equivalent).
+    (tmp_path / "collide.txt").write_text("upstream copy\n")
+    git("add", "-A")
+    git("commit", "-qm", "upstream ships the path")
+
+    restored = hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
+
+    assert restored is False
+    assert (tmp_path / "collide.txt").read_text() == "upstream copy\n"
+    assert git("show", f"{stash_ref}^3:collide.txt").stdout == "user's private copy\n"
+    output = capsys.readouterr().out
+    assert "remain preserved in stash" in output
+    assert f"git show {stash_ref}^3:<path>" in output
+
+
 def test_stash_selector_is_a_bare_index_never_a_brace_selector(tmp_path):
     """The updater drops its autostash through a selector read back from ``git stash list``; on
     native Windows MSYS strips the braces from ``stash@{N}`` in git.exe's argv, so the selector

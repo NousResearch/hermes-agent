@@ -187,6 +187,25 @@ def resolve_streaming_provider(
     return _try_instantiate(pinned or (preferred or _get_provider(tts_config)).lower().strip(), tts_config)
 
 
+def streaming_text_limit(streamer: StreamingTTSProvider, provider: str, tts_config: Dict, base_limit: int) -> int:
+    if base_limit <= 0:
+        return base_limit
+
+    from tools.tts_tool_delivery import _resolve_max_text_length
+    from tools.tts_tool_instructions import _tts_instructions_channel, _tts_text_chunk_limit
+
+    key = next((name for name, cls in _REGISTRY.items() if isinstance(streamer, cls)), provider)
+    config = getattr(streamer, "tts_config", tts_config)
+    section = getattr(streamer, "section", None)
+    if key == "elevenlabs" and isinstance(section, dict):
+        from tools.tts_tool_providers import DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
+
+        model_id = section.get("streaming_model_id", section.get("model_id", DEFAULT_ELEVENLABS_STREAMING_MODEL_ID))
+        config = {**config, "elevenlabs": {**section, "model_id": model_id}}
+    limit = min(base_limit, _resolve_max_text_length(key, config))
+    return _tts_text_chunk_limit(key, _tts_instructions_channel(config), config, limit)
+
+
 def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:
     """Pass chunks through, aborting past the per-sentence byte cap (runaway/hostile upstream)."""
     total = 0
@@ -208,16 +227,18 @@ class ElevenLabsStreamer(StreamingTTSProvider):
 
     def stream(self, text: str) -> Iterator[bytes]:
         from tools.tts_tool import _import_elevenlabs
+        from tools.tts_tool_instructions import _elevenlabs_text_with_instructions, _tts_instructions_channel
         from tools.tts_tool_providers import (
             DEFAULT_ELEVENLABS_STREAMING_MODEL_ID, DEFAULT_ELEVENLABS_VOICE_ID, _elevenlabs_environment_kwargs,
         )
+        model_id = self.section.get("streaming_model_id", self.section.get("model_id", DEFAULT_ELEVENLABS_STREAMING_MODEL_ID))
+        text = _elevenlabs_text_with_instructions(text, _tts_instructions_channel(self.tts_config), str(model_id))
         client = _import_elevenlabs()(
             api_key=_resolve_key("ELEVENLABS_API_KEY", "elevenlabs"), **_elevenlabs_environment_kwargs(self.section),
         )
         yield from client.text_to_speech.convert(
             text=text, voice_id=self.section.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID),
-            model_id=self.section.get("streaming_model_id",
-                                      self.section.get("model_id", DEFAULT_ELEVENLABS_STREAMING_MODEL_ID)),
+            model_id=model_id,
             output_format="pcm_24000")
 
 
@@ -308,7 +329,8 @@ class GeminiStreamer(StreamingTTSProvider):
         import json as _json
         import requests
         from tools.tts_tool_providers import (
-            DEFAULT_GEMINI_TTS_BASE_URL, DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE)
+            DEFAULT_GEMINI_TTS_BASE_URL, DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE,
+            _gemini_prompt_with_instructions)
         from hermes_cli.config import get_env_value
         api_key = _gemini_key()
         model = str(self.section.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
@@ -317,8 +339,18 @@ class GeminiStreamer(StreamingTTSProvider):
         base_url = normalize_gemini_base_url(
             self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
         )
+        prompt_text = _gemini_prompt_with_instructions(text, self.section, self.tts_config, model)
+        from tools.tts_tool_delivery import _resolve_max_text_length
+
+        max_len = _resolve_max_text_length("gemini", self.tts_config)
+        if len(prompt_text) > max_len:
+            raise ValueError(
+                "Gemini TTS composed prompt exceeds the provider request limit "
+                f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
+                "prompt or lower tts.gemini.max_text_length so long-form text is "
+                "split with enough prompt headroom.")
         payload = {
-            "contents": [{"parts": [{"text": text}]}],
+            "contents": [{"parts": [{"text": prompt_text}]}],
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}}}}
@@ -457,7 +489,7 @@ class XAIStreamer(StreamingTTSProvider):
 
         import websockets
 
-        from tools.tts_tool_providers import DEFAULT_XAI_LANGUAGE, DEFAULT_XAI_VOICE_ID
+        from tools.tts_tool_providers import DEFAULT_XAI_LANGUAGE, DEFAULT_XAI_VOICE_ID, _xai_text_with_instructions
         from tools.xai_http import resolve_xai_http_credentials
         api_key = str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip()
         if not api_key:
@@ -475,11 +507,12 @@ class XAIStreamer(StreamingTTSProvider):
         })
         sep = "&" if "?" in base else "?"
         ws_url = f"{base}{sep}{params}"
+        rendered_text = _xai_text_with_instructions(text, self.tts_config)
 
         async with websockets.connect(
             ws_url, additional_headers={"Authorization": f"Bearer {api_key}"}
         ) as ws:
-            await ws.send(_json.dumps({"type": "text.delta", "delta": text}))
+            await ws.send(_json.dumps({"type": "text.delta", "delta": rendered_text}))
             await ws.send(_json.dumps({"type": "text.done"}))
             enqueued = 0
             while True:

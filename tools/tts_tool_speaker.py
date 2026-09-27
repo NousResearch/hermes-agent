@@ -345,15 +345,16 @@ def stream_tts_to_speaker(
         tts_config = origin._load_tts_config()
         # Prefer a chunked streamer for low time-to-first-audio; otherwise per-sentence sync
         # synthesis (universal — edge + every non-streamer).
-        from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
+        from tools.tts_streaming import SentenceChunker, resolve_streaming_provider, streaming_text_limit
         streamer = resolve_streaming_provider(tts_config, preferred=provider)
         stream_max_len = 0
         if streamer is None:
             sync_pipeline = _SyncSentencePipeline(stop_event)
         else:
             with contextlib.suppress(Exception):
-                stream_max_len = origin._resolve_max_text_length(
-                    provider or origin._get_provider(tts_config), tts_config)
+                resolved_provider = provider or origin._get_provider(tts_config)
+                base_limit = origin._resolve_max_text_length(resolved_provider, tts_config)
+                stream_max_len = streaming_text_limit(streamer, resolved_provider, tts_config, base_limit)
             playback = _StreamerPlayback(streamer, stop_event)
         chunker = SentenceChunker.from_config(tts_config)
         spoken_sentences: list[str] = []  # skip duplicate/near-duplicate sentences (LLM repetition)

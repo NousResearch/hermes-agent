@@ -56,6 +56,13 @@ def _elevenlabs_supports_instruction_tags(model_id: str) -> bool:
     return "v3" in (model_id or "").strip().lower()
 
 
+def _elevenlabs_text_with_instructions(text: str, instructions: str, model_id: str) -> str:
+    if not instructions or not _elevenlabs_supports_instruction_tags(model_id):
+        return text
+    audio_tag = re.sub(r"\s+", " ", re.sub(r"[<>\[\]{}]", " ", instructions)).strip()
+    return f"[{audio_tag}] {text}" if audio_tag else text
+
+
 def _tts_instructions_overhead(
     provider: Optional[str], instructions: str, tts_config: Optional[Dict[str, Any]] = None,
 ) -> int:

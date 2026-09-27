@@ -127,7 +127,7 @@ MiniMax TTS selects its region, endpoint, and credential together:
 
 ### Style instructions
 
-The `text_to_speech` tool accepts a freeform `instructions` argument ("whisper", "excited", "calm and slow") that shapes delivery. Set a global default with `tts.instructions`, or a provider default with `tts.<provider>.instructions`. Command providers use `tts.providers.<name>.instructions`. The model can override the default per call. The per-call argument wins over config, and an explicit empty string suppresses a configured default for that call. Values are sanitised (brackets stripped, whitespace collapsed) and capped at 200 characters.
+The `text_to_speech` tool accepts a freeform `instructions` argument ("whisper", "excited", "calm and slow") that shapes delivery. Set a global default with `tts.instructions`, or a provider default with `tts.<provider>.instructions`. Command providers use `tts.providers.<name>.instructions`. The model can override the default per call. The per-call argument wins over config, and an explicit empty string suppresses a configured default for that call. Values have whitespace collapsed and are capped at 200 characters. ElevenLabs removes markup brackets when it forms a v3 audio tag.
 
 Each provider renders the value in its own native way:
 
@@ -142,7 +142,7 @@ Each provider renders the value in its own native way:
 | Plugin providers | `instructions=...` keyword via `synthesize(**extra)` |
 | Edge, Mistral, NeuTTS, KittenTTS, Piper | Ignored because these engines have no style input |
 
-Providers report `instructions_applied: true` only when Hermes can confirm that the request was applied. Forwarding instructions to a plugin or auxiliary rewrite does not make that guarantee. Hermes budgets the xAI and ElevenLabs inline syntax and Gemini's composed prompt around each transcript chunk so every provider request stays within its limit.
+Providers report `instructions_applied: true` only when Hermes can confirm that the request was applied. Forwarding instructions to a plugin or auxiliary rewrite does not make that guarantee. Hermes reserves room for xAI and ElevenLabs inline syntax and Gemini's composed prompt when it splits transcript text. An xAI auxiliary rewrite can change the final text length after that budget is calculated.
 
 ### Gemini Persona Prompts
 

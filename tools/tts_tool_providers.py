@@ -222,15 +222,12 @@ def _elevenlabs_environment_kwargs(el_config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    from tools.tts_tool_instructions import _elevenlabs_supports_instruction_tags, _tts_instructions_channel
+    from tools.tts_tool_instructions import _elevenlabs_text_with_instructions, _tts_instructions_channel
     api_key = _require_key("ELEVENLABS_API_KEY", "elevenlabs", "Get one at https://elevenlabs.io/")
     el_config = tts_config.get("elevenlabs") or {}
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
     instructions = _tts_instructions_channel(tts_config)
-    if instructions and _elevenlabs_supports_instruction_tags(str(model_id)):
-        audio_tag = re.sub(r"\s+", " ", re.sub(r"[<>\[\]{}]", " ", instructions)).strip()
-        if audio_tag:
-            text = f"[{audio_tag}] {text}"
+    text = _elevenlabs_text_with_instructions(text, instructions, str(model_id))
     client = _origin()._import_elevenlabs()(api_key=api_key, **_elevenlabs_environment_kwargs(el_config))
     audio_generator = client.text_to_speech.convert(
         text=text, voice_id=el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID),
@@ -321,6 +318,20 @@ def _apply_xai_auto_speech_tags(text: str, direction: str = "") -> str:
     )
 
 
+def _xai_text_with_instructions(text: str, tts_config: Dict[str, Any]) -> str:
+    from tools.tts_tool_instructions import _tts_instructions_channel, _xai_instructions_wrap_tag
+
+    xai_config = tts_config.get("xai") or {}
+    instructions = _tts_instructions_channel(tts_config)
+    wrap_tag = _xai_instructions_wrap_tag(instructions) if instructions else ""
+    if wrap_tag:
+        text = f"<{wrap_tag}>{text}</{wrap_tag}>"
+    auto_speech_tags = xai_config.get("auto_speech_tags", xai_config.get("speech_tags"))
+    if _config_bool(auto_speech_tags, DEFAULT_XAI_AUTO_SPEECH_TAGS):
+        text = _apply_xai_auto_speech_tags(text, direction="" if wrap_tag else instructions)
+    return text
+
+
 def _clamped_number(raw: Any, cast, lo, hi):
     """Parse an optional numeric knob and clamp into [lo, hi]; ``None``/unparseable -> None. An empty
     string is deliberately clamped unconverted (its TypeError surfaces as a generic TTS failure)."""
@@ -335,7 +346,6 @@ def _clamped_number(raw: Any, cast, lo, hi):
 
 
 def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    from tools.tts_tool_instructions import _tts_instructions_channel, _xai_instructions_wrap_tag
     from tools.xai_http import resolve_xai_http_credentials
 
     # TTS is API-billed: a subscription OAuth bearer can authorize chat while
@@ -350,13 +360,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
     sample_rate, bit_rate = (int(xai_config.get("sample_rate", DEFAULT_XAI_SAMPLE_RATE)),
                              int(xai_config.get("bit_rate", DEFAULT_XAI_BIT_RATE)))
-    auto_speech_tags = xai_config.get("auto_speech_tags", xai_config.get("speech_tags"))
-    instructions = _tts_instructions_channel(tts_config)
-    wrap_tag = _xai_instructions_wrap_tag(instructions) if instructions else ""
-    if wrap_tag:
-        text = f"<{wrap_tag}>{text}</{wrap_tag}>"
-    if _config_bool(auto_speech_tags, DEFAULT_XAI_AUTO_SPEECH_TAGS):
-        text = _apply_xai_auto_speech_tags(text, direction="" if wrap_tag else instructions)
+    text = _xai_text_with_instructions(text, tts_config)
     # ``tts.xai.<knob>`` overrides global ``tts.<knob>``; out-of-range values are clamped into the
     # API's band rather than 400ing the request.
     speed = _clamped_number(xai_config.get("speed", tts_config.get("speed")), float,
@@ -616,6 +620,21 @@ def _compose_gemini_tts_prompt(
     return "\n\n".join(sections).strip()
 
 
+def _gemini_prompt_with_instructions(
+    text: str, gemini_config: Dict[str, Any], tts_config: Dict[str, Any], model: str,
+) -> str:
+    from tools.tts_tool_instructions import _tts_instructions_channel
+
+    persona_prompt = _read_gemini_persona_prompt(gemini_config)
+    tts_script = text
+    if _gemini_audio_tags_enabled(gemini_config, model):
+        tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
+    return _compose_gemini_tts_prompt(
+        tts_script, gemini_config, persona_prompt=persona_prompt,
+        instructions=_tts_instructions_channel(tts_config),
+    )
+
+
 def _gemini_error_detail(response: Any) -> str:
     """Best-effort ``error.message`` from a non-200 Gemini reply, else the first 300 body chars."""
     raw_body = _read_tts_response_bytes(response, label="Gemini TTS")
@@ -642,14 +661,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     base_url = normalize_gemini_base_url(
         gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
     )
-    persona_prompt = _read_gemini_persona_prompt(gemini_config)
-    tts_script = text
-    if _gemini_audio_tags_enabled(gemini_config, model):
-        tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
-    from tools.tts_tool_instructions import _tts_instructions_channel
-    prompt_text = _compose_gemini_tts_prompt(
-        tts_script, gemini_config, persona_prompt=persona_prompt,
-        instructions=_tts_instructions_channel(tts_config))
+    prompt_text = _gemini_prompt_with_instructions(text, gemini_config, tts_config, model)
     max_len = origin._resolve_max_text_length("gemini", tts_config)
     if len(prompt_text) > max_len:
         raise ValueError(

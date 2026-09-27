@@ -267,3 +267,49 @@ def test_worktree_add_from_origin_base_does_not_track(client, repo_with_remote):
         cwd=repo_with_remote, capture_output=True, text=True,
     )
     assert probe.returncode != 0
+
+
+def test_worktree_add_from_origin_base_on_tag_pinned_clone(tmp_path):
+    """A tag-only fetch refspec must still materialize origin/main (#125686).
+
+    ``git clone --single-branch --branch <tag>`` maps ``remote.origin.fetch`` to
+    the tag. ``git fetch origin main`` then writes FETCH_HEAD and leaves
+    ``origin/main`` missing, so ``worktree add`` dies with invalid reference.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+
+    def git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main", cwd=origin)
+    git("-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "--allow-empty", "-m", "init", cwd=origin)
+    git("tag", "v0", cwd=origin)
+    git("-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "--allow-empty", "-m", "tip", cwd=origin)
+    tip = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=origin, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", "--single-branch", "--branch", "v0", str(origin), str(clone)],
+        check=True, capture_output=True, text=True,
+    )
+    missing = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/main"],
+        cwd=clone, capture_output=True,
+    )
+    assert missing.returncode != 0
+
+    from hermes_cli.web_git import worktree_add
+
+    added = worktree_add(str(clone), {"base": "origin/main", "name": "x"})
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=added["path"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert head == tip
+    upstream = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", f"{added['branch']}@{{upstream}}"],
+        cwd=clone, capture_output=True, text=True,
+    )
+    assert upstream.returncode != 0

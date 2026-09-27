@@ -322,6 +322,48 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
   }
 })
 
+test('addWorktree: base origin/main resolves on a tag-pinned narrow clone', async () => {
+  // `--single-branch --branch <tag>` maps remote.origin.fetch to the tag only.
+  // A by-name `git fetch origin main` writes FETCH_HEAD and never origin/main.
+  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-narrow-remote-'))
+  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-narrow-clone-'))
+  const ident = ['-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes']
+
+  try {
+    execFileSync('git', ['init', '-q', '-b', 'main', remoteDir])
+    execFileSync('git', ['-C', remoteDir, ...ident, 'commit', '-q', '--allow-empty', '-m', 'init'])
+    execFileSync('git', ['-C', remoteDir, 'tag', 'v0'])
+    execFileSync('git', ['-C', remoteDir, ...ident, 'commit', '-q', '--allow-empty', '-m', 'tip'])
+    const tip = execFileSync('git', ['-C', remoteDir, 'rev-parse', 'HEAD']).toString().trim()
+
+    execFileSync('git', ['clone', '-q', '--single-branch', '--branch', 'v0', remoteDir, cloneDir])
+
+    const result = await addWorktree(
+      cloneDir,
+      { base: 'origin/main', branch: 'from-main', name: 'from-main' },
+      'git'
+    )
+
+    const head = execFileSync('git', ['-C', result.path, 'rev-parse', 'HEAD']).toString().trim()
+
+    assert.equal(head, tip)
+    assert.equal(result.branch, 'from-main')
+
+    let hasUpstream = true
+
+    try {
+      execFileSync('git', ['-C', cloneDir, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', 'from-main@{u}'])
+    } catch {
+      hasUpstream = false
+    }
+
+    assert.equal(hasUpstream, false)
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})
+
 // A pair of repos: a bare "remote" with `main` and the extra branches in
 // `branches`, plus a clone of it. Returns both paths. The caller must remove
 // them.

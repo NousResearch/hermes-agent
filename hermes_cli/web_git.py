@@ -635,7 +635,11 @@ def worktree_add(cwd: str, options: dict) -> dict:
         # (offline / no remote) are ignored — git uses the local ref or raises a clear error
         # below if it is entirely missing.
         if base.startswith("origin/"):
-            _git(root, ["fetch", "origin", base[len("origin/"):]])
+            # A by-name fetch writes only FETCH_HEAD when remote.origin.fetch maps a
+            # tag (#125686). The updater's tracking refspec still creates origin/<branch>.
+            from hermes_cli.update_cmd_check import tracking_refspec
+
+            _git(root, ["fetch", "origin", tracking_refspec("origin", base[len("origin/"):])])
             # Branching off a remote-tracking ref auto-wires upstream tracking; the user wants
             # a standalone local branch (Electron-op parity).
             args.append("--no-track")

@@ -307,7 +307,13 @@ async function addWorktree(repoPath, options, gitBin) {
       const remoteBranch = base.slice('origin/'.length)
 
       try {
-        await runGit(gitBin, ['fetch', 'origin', remoteBranch], root)
+        // A by-name fetch writes only FETCH_HEAD on a tag-pinned narrow clone,
+        // so origin/<branch> never appears (#125686). Same refspec as hermes update.
+        await runGit(
+          gitBin,
+          ['fetch', 'origin', `+refs/heads/${remoteBranch}:refs/remotes/origin/${remoteBranch}`],
+          root
+        )
       } catch {
         // The fetch isn't mandatory, but it would be nice to do if possible.
         // If it's not possible, just use the local ref of the remote branch.

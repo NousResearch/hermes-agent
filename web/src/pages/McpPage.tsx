@@ -139,7 +139,7 @@ export default function McpPage() {
       });
     } catch (error) {
       showToast(
-        error instanceof Error ? error.message : "Invalid MCP server",
+        error instanceof Error ? error.message : t.mcp.invalidServer,
         "error",
       );
       return;
@@ -150,8 +150,8 @@ export default function McpPage() {
       await api.addMcpServer(body);
       showToast(
         transport === "http" && httpAuth === "oauth"
-          ? "Added — authenticate with OAuth"
-          : "Add ✓",
+          ? t.mcp.addedOauth
+          : t.mcp.added,
         "success",
       );
       setName("");
@@ -177,9 +177,17 @@ export default function McpPage() {
       const result = await api.testMcpServer(server.name);
       setTestResults((prev) => ({ ...prev, [server.name]: result }));
       if (result.ok) {
-        showToast(`${server.name}: ${result.tools.length} tool(s)`, "success");
+        showToast(
+          `${server.name}: ${t.mcp.testTools
+            .replace("{count}", String(result.tools.length))
+            .replace("{s}", result.tools.length !== 1 ? "s" : "")}`,
+          "success",
+        );
       } else {
-        showToast(`${server.name}: ${result.error ?? "Failed"}`, "error");
+        showToast(
+          `${server.name}: ${result.error ?? t.mcp.testFailedShort}`,
+          "error",
+        );
       }
     } catch (e) {
       showToast(t.mcp.testFailed.replace("{error}", errorMessage(e)), "error");
@@ -201,7 +209,7 @@ export default function McpPage() {
         ...prev,
         [server.name]: { ok: true, tools: result.tools ?? [] },
       }));
-      showToast(`${server.name}: OAuth authentication complete`, "success");
+      showToast(`${server.name}: ${t.mcp.oauthComplete}`, "success");
     } catch (e) {
       showToast(t.mcp.signInFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
@@ -217,9 +225,7 @@ export default function McpPage() {
       setServers((prev) =>
         prev.map((s) => (s.name === server.name ? { ...s, enabled: next } : s)),
       );
-      setRestartNote(
-        "Enable/disable takes effect on the next gateway restart.",
-      );
+      setRestartNote(t.mcp.restartNote);
     } catch (e) {
       showToast(t.mcp.updateFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
@@ -296,7 +302,10 @@ export default function McpPage() {
       (item) => item.required && !(installEnv[item.name] ?? "").trim(),
     );
     if (missing.length > 0) {
-      showToast(`${missing[0].prompt} required`, "error");
+      showToast(
+        t.mcp.envRequired.replace("{name}", missing[0].prompt),
+        "error",
+      );
       return;
     }
     const envMap: Record<string, string> = {};
@@ -306,7 +315,7 @@ export default function McpPage() {
     void runInstall(installEntry, envMap);
   };
 
-  // Put "Add Server" button in page header
+  // Put the add-server button in the page header
   useLayoutEffect(() => {
     setEnd(
       <Button
@@ -314,13 +323,13 @@ export default function McpPage() {
         size="sm"
         onClick={() => setCreateModalOpen(true)}
       >
-        Add Server
+        {t.mcp.addServer}
       </Button>,
     );
     return () => {
       setEnd(null);
     };
-  }, [setEnd, loading]);
+  }, [setEnd, loading, t.mcp.addServer]);
 
   if (loading) {
     return (
@@ -343,11 +352,14 @@ export default function McpPage() {
         open={serverDelete.isOpen}
         onCancel={serverDelete.cancel}
         onConfirm={serverDelete.confirm}
-        title="Remove MCP server"
+        title={t.mcp.removeTitle}
         description={
           serverDelete.pendingId
-            ? `"${truncateText(serverDelete.pendingId, 40)}" — this will remove the server.`
-            : "This will remove the server."
+            ? t.mcp.removeDescNamed.replace(
+                "{name}",
+                truncateText(serverDelete.pendingId, 40),
+              )
+            : t.mcp.removeDesc
         }
         loading={serverDelete.isDeleting}
       />
@@ -605,7 +617,7 @@ export default function McpPage() {
             className="flex items-center gap-2 text-muted-foreground"
           >
             <Server className="h-4 w-4" />
-            Your MCP servers ({servers.length})
+            {t.mcp.yourServers.replace("{count}", String(servers.length))}
           </H2>
         </div>
 
@@ -614,10 +626,7 @@ export default function McpPage() {
         {servers.length === 0 && (
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-8 text-center text-sm text-muted-foreground">
-              <p>
-                No MCP servers yet. MCP servers give the agent extra tools (GitHub, databases,
-                browsers…). Pick one from the catalog below, or click Add Server at the top of the page.
-              </p>
+              <p>{t.mcp.emptyServers}</p>
               <Button
                 size="sm"
                 onClick={() =>
@@ -627,7 +636,7 @@ export default function McpPage() {
                 }
                 prefix={<Package className="h-3.5 w-3.5" />}
               >
-                Browse catalog
+                {t.mcp.browseCatalog}
               </Button>
             </CardContent>
           </Card>
@@ -681,7 +690,9 @@ export default function McpPage() {
                     )}
                     {envCount > 0 && (
                       <span>
-                        {envCount} env var{envCount === 1 ? "" : "s"}
+                        {t.mcp.envVars
+                          .replace("{count}", String(envCount))
+                          .replace("{s}", envCount === 1 ? "" : "s")}
                       </span>
                     )}
                   </div>
@@ -690,14 +701,14 @@ export default function McpPage() {
                       {result.ok ? (
                         <p className="text-success">
                           {result.tools.length === 0
-                            ? "Connected — no tools"
-                            : `Tools: ${result.tools
+                            ? t.mcp.connectedNoTools
+                            : `${t.mcp.toolsHeading}: ${result.tools
                                 .map((tool) => tool.name)
                                 .join(", ")}`}
                         </p>
                       ) : (
                         <p className="text-destructive">
-                          {result.error ?? "Connection failed"}
+                          {result.error ?? t.mcp.connectionFailed}
                         </p>
                       )}
                     </div>
@@ -709,7 +720,7 @@ export default function McpPage() {
                     <Button
                       ghost
                       size="sm"
-                      title="Authenticate with OAuth"
+                      title={t.mcp.authenticateOauth}
                       onClick={() => handleAuthenticate(server)}
                       disabled={authenticating === server.name}
                       prefix={
@@ -720,7 +731,7 @@ export default function McpPage() {
                         )
                       }
                     >
-                      Authenticate
+                      {t.mcp.authenticate}
                     </Button>
                   )}
 
@@ -736,7 +747,7 @@ export default function McpPage() {
                     }
                     className={server.enabled ? "text-success" : undefined}
                   >
-                    {server.enabled ? "Disable" : "Enable"}
+                    {server.enabled ? t.mcp.disable : t.mcp.enable}
                   </Button>
 
                   <Button
@@ -827,7 +838,7 @@ export default function McpPage() {
                     )}
                     {entry.installed && <Badge tone="success">{t.badges.installed}</Badge>}
                     {entry.installed && !entry.enabled && (
-                      <Badge tone="outline">disabled</Badge>
+                      <Badge tone="outline">{t.mcp.disabledBadge}</Badge>
                     )}
                   </div>
                   {entry.description && (
@@ -844,7 +855,7 @@ export default function McpPage() {
                   )}
                   {entry.transport === "stdio" && entry.command && (
                     <p className="mt-1 text-xs text-muted-foreground break-all">
-                      <span className="font-medium">Runs:</span>{" "}
+                      <span className="font-medium">{t.mcp.runs}</span>{" "}
                       <code className="font-mono">
                         {[entry.command, ...entry.args].join(" ")}
                       </code>
@@ -854,7 +865,7 @@ export default function McpPage() {
                       before they install (matches the docs trust model). */}
                   {entry.install_url && (
                     <p className="mt-1 text-xs text-muted-foreground break-all">
-                      <span className="font-medium">Installs from:</span>{" "}
+                      <span className="font-medium">{t.mcp.installsFrom}</span>{" "}
                       {isHttpUrl(entry.install_url) ? (
                         <a
                           href={entry.install_url}
@@ -873,7 +884,10 @@ export default function McpPage() {
                   {entry.bootstrap.length > 0 && (
                     <details className="mt-1 text-xs text-muted-foreground">
                       <summary className="cursor-pointer select-none">
-                        Bootstrap commands ({entry.bootstrap.length})
+                        {t.mcp.bootstrapCommands.replace(
+                          "{count}",
+                          String(entry.bootstrap.length),
+                        )}
                       </summary>
                       <ul className="mt-1 ms-3 list-disc space-y-0.5">
                         {entry.bootstrap.map((cmd, i) => (

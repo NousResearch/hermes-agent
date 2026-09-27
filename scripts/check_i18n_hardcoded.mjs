@@ -116,7 +116,12 @@ const PATTERNS = [
   },
   {
     tag: "jsx-text",
-    re: /(>|^)\s*([A-Z][a-z]+\s+[a-z][A-Za-z'’,.!?;:()\- ]{8,})\s*(<|$)/,
+    // JSX text node: capitalized start, ≥9 more chars, allows acronyms
+    // ("Add Server", "No MCP servers yet", "Browse catalog") — the 2026-09-27
+    // MCP-page escape proved Title-Case/acronym-only text evades any pattern
+    // that demands a lowercase second word. Real-word filter still applies in
+    // looksUserFacing (some lowercase somewhere, ≥2 words).
+    re: /(^|>)\s*([A-Z][A-Za-z0-9'’,.!?;:()\- ]{9,})(<|$)/,
     lit: (m) => m[2],
   },
   {
@@ -133,6 +138,18 @@ function looksUserFacing(literal) {
     literal.startsWith("`") ? templateResidue(literal) : literal
   ).replace(/^[`"']|[`"']$/g, "");
   if (VALUE_NOISE.test(s)) return false;
+  // Code, not prose: JS expressions ("Math.max(0, prev - x)"), type
+  // signatures ("Icon: React.ComponentType"), comma-separated identifier
+  // lists (multi-import JSX re-exports).
+  if (/^\s*(Math\.|\w+\()/.test(s)) return false;
+  if (/\bReact\.\w/.test(s)) return false;
+  const tokens = s.split(/,\s*/).filter(Boolean);
+  if (
+    tokens.length > 1 &&
+    tokens.every((tok) => /^[A-Z][A-Za-z0-9]*$/.test(tok.trim()))
+  ) {
+    return false;
+  }
   const words = s.split(/\s+/).filter(Boolean);
   if (words.length < 2) return false;
   return words.some((w) => /[a-z]/.test(w)) && words.some((w) => /[A-Za-z]/.test(w));

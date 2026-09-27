@@ -605,6 +605,7 @@ export const en: Translations = {
     catalogToolsChip: "{count} tools",
     catalogHooksChip: "{count} hooks",
     catalogMiddlewareChip: "{count} middleware",
+    pythonDependencies: "Python dependencies",
   },
 
   skills: {
@@ -1436,6 +1437,30 @@ export const en: Translations = {
     authBadge: "auth: {type}",
     sourceLink: "source ↗",
     disabledBadge: "disabled",
+    yourServers: "Your MCP servers ({count})",
+    emptyServers:
+      "No MCP servers yet. MCP servers give the agent extra tools (GitHub, databases, browsers…). Pick one from the catalog below, or click Add Server at the top of the page.",
+    browseCatalog: "Browse catalog",
+    removeTitle: "Remove MCP server",
+    removeDesc: "This will remove the server.",
+    removeDescNamed: "\"{name}\" — this will remove the server.",
+    added: "Add ✓",
+    addedOauth: "Added — authenticate with OAuth",
+    invalidServer: "Invalid MCP server",
+    testTools: "{count} tool{s}",
+    testFailedShort: "Failed",
+    oauthComplete: "OAuth authentication complete",
+    authenticate: "Authenticate",
+    authenticateOauth: "Authenticate with OAuth",
+    restartNote: "Enable/disable takes effect on the next gateway restart.",
+    connectedNoTools: "Connected — no tools",
+    toolsHeading: "Tools",
+    connectionFailed: "Connection failed",
+    envVars: "{count} env var{s}",
+    runs: "Runs:",
+    installsFrom: "Installs from:",
+    bootstrapCommands: "Bootstrap commands ({count})",
+    envRequired: "{name} required",
   },
 
   files: {
@@ -1707,5 +1732,9 @@ export const en: Translations = {
     openBotFather: "Open @BotFather",
     botFatherTokenInvalid:
       "Paste the complete token from @BotFather (for example, 123456789:ABC…).",
+    whatsappExistingConfigured: "Existing WhatsApp settings are configured.",
+    telegramAllowedUsers: "Allowed users",
+    telegramOwnerDetected: "owner detected",
+    telegramOpen: "Open Telegram",
   },
 };

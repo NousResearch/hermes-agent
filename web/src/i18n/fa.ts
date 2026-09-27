@@ -569,6 +569,7 @@ export const fa = defineLocale({
     catalogToolsChip: "{count} ابزار",
     catalogHooksChip: "{count} قلاب",
     catalogMiddlewareChip: "{count} میان‌افزار",
+    pythonDependencies: "وابستگی‌های پایتون",
   },
 
   skills: {
@@ -1402,6 +1403,30 @@ export const fa = defineLocale({
     authBadge: "احراز هویت: {type}",
     sourceLink: "منبع ↗",
     disabledBadge: "غیرفعال",
+    yourServers: "سرورهای MCP شما ({count})",
+    emptyServers:
+      "هنوز سرور MCP ندارید. سرورهای MCP به عامل ابزارهای اضافه می‌دهند (GitHub، پایگاه‌های داده، مرورگرها…). یکی را از کاتالوگ پایین برگزینید یا روی «افزودن سرور» بالای صفحه کلیک کنید.",
+    browseCatalog: "مرور کاتالوگ",
+    removeTitle: "حذف سرور MCP",
+    removeDesc: "این کار سرور را حذف می‌کند.",
+    removeDescNamed: "«{name}» — این کار سرور را حذف می‌کند.",
+    added: "افزوده شد ✓",
+    addedOauth: "افزوده شد — با OAuth احراز هویت کنید",
+    invalidServer: "سرور MCP نامعتبر است",
+    testTools: "{count} ابزار",
+    testFailedShort: "ناموفق",
+    oauthComplete: "احراز هویت OAuth کامل شد",
+    authenticate: "احراز هویت",
+    authenticateOauth: "احراز هویت با OAuth",
+    restartNote: "فعال/غیرفعال‌سازی در راه‌اندازی بعدی دروازه اعمال می‌شود.",
+    connectedNoTools: "متصل شد — بدون ابزار",
+    toolsHeading: "ابزارها",
+    connectionFailed: "اتصال ناموفق بود",
+    envVars: "{count} متغیر محیطی",
+    runs: "اجرا:",
+    installsFrom: "نصب از:",
+    bootstrapCommands: "دستورهای بوت‌استرپ ({count})",
+    envRequired: "{name} الزامی است",
   },
 
   files: {
@@ -1675,5 +1700,9 @@ export const fa = defineLocale({
     openBotFather: "باز کردن @BotFather",
     botFatherTokenInvalid:
       "توکن کامل را از @BotFather بچسبانید (مثلاً 123456789:ABC…).",
+    whatsappExistingConfigured: "تنظیمات قبلی واتساپ پیکربندی شده است.",
+    telegramAllowedUsers: "کاربران مجاز",
+    telegramOwnerDetected: "مالک شناسایی شد",
+    telegramOpen: "باز کردن تلگرام",
   },
 });

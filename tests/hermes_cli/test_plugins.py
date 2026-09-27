@@ -2218,7 +2218,7 @@ class TestPluginContext:
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         plugin_dir = plugins_dir / "terminal_plugin"
         plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "terminal_plugin"}))
+        (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump({"name": "terminal_plugin"}))
         (plugin_dir / "__init__.py").write_text(
             'def register(ctx):\n'
             '    ctx.register_tool(\n'

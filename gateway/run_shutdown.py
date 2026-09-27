@@ -1070,10 +1070,16 @@ class GatewayShutdownMixin:
                     notified.add(dedup_key)
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
-            scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
-                     if source is not None else nullcontext())
-            async with scope:
-                presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
+            try:
+                scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
+                         if source is not None else nullcontext())
+                async with scope:
+                    presented = await present_notification(
+                        _send_active, platform=platform, diagnostic=restart_key != dedup_key
+                    )
+            except Exception as e:
+                logger.debug("Failed to send shutdown notification to %s:%s: %s", platform_str, chat_id, e)
+                continue
             if not presented:
                 notified.add(dedup_key)  # suppressed: latch so the home-channel pass does not re-target it
         if self._restart_requested and restart_source is not None:

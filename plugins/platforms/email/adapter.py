@@ -53,8 +53,9 @@ _CHARSET_ALIASES = {"unknown-8bit": "utf-8", "unknown": "utf-8", "x-unknown": "u
 _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[^>]*>", re.IGNORECASE), "\n"),
               (re.compile(r"</p>", re.IGNORECASE), "\n"), (re.compile(r"<[^>]+>"), ""), (re.compile(r"&nbsp;"), " "),
               (re.compile(r"&amp;"), "&"), (re.compile(r"&lt;"), "<"), (re.compile(r"&gt;"), ">"), (re.compile(r"\n{3,}"), "\n\n"))
-# Unquoted From: with exactly one <addr> pair; fallback for real-world values strict parseaddr rejects.
-_SINGLE_BRACKET_FROM_RE = re.compile(r'[^"<>]*<([^<>\s]+@[^<>\s]+)>\s*')
+# ``display <bracketed>`` split for the _extract_email_address fallback (linear: neither part can match the other's delimiters).
+_SINGLE_BRACKET_FROM_RE = re.compile(r'([^"<>]*)<([^<>\s]+)>\s*')
+_DMARC_CLAUSE_RE = re.compile(r"\s*dmarc\s*=\s*([a-z]+)", re.IGNORECASE)
 # "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
 _AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
@@ -247,12 +248,22 @@ def _strip_html(html: str) -> str:
 def _extract_email_address(raw: str) -> str:
     """Bare lowercased addr-spec from a From: value. Uses parseaddr, not a first-<...> regex (GHSA-rxqh-5572-8m77);
     RFC 5322 folding is unfolded first because parseaddr misreads a folded quoted display name. Unquoted
-    ``Name <addr>`` values parseaddr rejects (``Doe, John <j@x>``) fall back to their single bracketed address."""
+    ``Name <addr>`` values parseaddr rejects (``Doe, John <j@x>``) fall back to their single bracketed address,
+    but only when the display part cannot hold another mailbox, group or comment: no quotes, ``;``, ``:``,
+    ``(`` or ``)``, and no ``@`` unless it is exactly the bracketed address (``a@x <a@x>``)."""
     value = re.sub(r"\r?\n[ \t]+", " ", str(raw or ""))
     _, addr = parseaddr(value)
     if not addr and (m := _SINGLE_BRACKET_FROM_RE.fullmatch(value)):
-        addr = m.group(1)  # no quotes, exactly one <...> pair: nothing to hide a second mailbox in
+        display, bracketed = m.group(1).strip(), m.group(2)
+        if ("@" in bracketed[1:-1] and not any(c in display for c in ";:()")
+                and ("@" not in display or display.lower() == bracketed.lower())):
+            addr = bracketed
     return addr.strip().lower()
+
+
+def _auth_props(text: str) -> List[Tuple[str, str]]:
+    """Authentication-Results ``(property, value)`` pairs (``header.from=x``), property lowercased, quotes stripped."""
+    return [(p.lower(), v.strip().strip('"')) for p, v in _AUTH_PROP_RE.findall(text)]
 
 
 def _domain_of(address: str) -> str:
@@ -285,12 +296,12 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     if trusted is None:
         return False, "no Authentication-Results from trusted authserv-id"
     methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
-    props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(trusted)}
-    # header.from of the dmarc clause only; a later dkim/spf clause's header.from must not stand in for it.
-    dmarc_from = next((v.strip().strip('"') for clause in trusted.split(";") if re.search(r"\bdmarc\s*=", clause, re.I)
-                       for p, v in _AUTH_PROP_RE.findall(clause) if p.lower() == "header.from"), "")
-    if methods.get("dmarc") == "pass" and (not dmarc_from or _domains_aligned(_domain_of(dmarc_from), from_domain)):
-        return True, "dmarc=pass"  # the verdict must be for the From domain we parsed
+    props = dict(_auth_props(trusted))
+    # Verdict and header.from come from ONE clause: the first starting with dmarc= once (comments) are gone.
+    dmarc = next((c for c in re.sub(r"\([^()]*\)", " ", trusted).split(";") if _DMARC_CLAUSE_RE.match(c)), "")
+    if (m := _DMARC_CLAUSE_RE.match(dmarc)) and m.group(1).lower() == "pass":
+        if all(_domains_aligned(_domain_of(v), from_domain) for p, v in _auth_props(dmarc) if p == "header.from"):
+            return True, "dmarc=pass"  # the verdict must be for the From domain we parsed (absent header.from: trust it)
     if methods.get("spf") == "pass":  # envelope/MAIL FROM domain must align with From
         spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get("smtp.from", "") or props.get("envelope-from", "")
         if _domains_aligned(_domain_of(spf_domain) if "@" in spf_domain else spf_domain, from_domain):
@@ -581,12 +592,12 @@ class EmailAdapter(BasePlatformAdapter):
     def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[Dict[str, Any]]:
         """Parse one RFC822 payload into a dispatchable dict; ``None`` for automated senders. Raises on pathological input (caller logs + continues)."""
         msg = email_lib.message_from_bytes(raw_email)
-        sender_addr, sender_name = _extract_email_address(msg.get("From", "")), _decode_header_value(msg.get("From", ""))
-        if "<" in sender_name:
-            sender_name = sender_name.split("<")[0].strip().strip('"')
-        if not sender_addr:  # malformed/multi-address/group From: never dispatch an empty identity
+        if not (sender_addr := _extract_email_address(msg.get("From", ""))):  # never dispatch an empty identity
             logger.debug("[Email] Dropping message with no parseable From address: %r", msg.get("From", ""))
             return None
+        sender_name = _decode_header_value(msg.get("From", ""))
+        if "<" in sender_name:
+            sender_name = sender_name.split("<")[0].strip().strip('"')
         subject = _decode_header_value(msg.get("Subject", "(no subject)"))
         if _is_automated_sender(sender_addr, dict(msg.items())):
             logger.debug("[Email] Skipping automated sender: %s", sender_addr)

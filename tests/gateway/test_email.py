@@ -13,6 +13,7 @@ Covers:
 """
 
 import os
+import time
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -72,10 +73,19 @@ class TestHelperFunctions(unittest.TestCase):
             "john@example.com"
         )
         # Unquoted forms strict parseaddr rejects still resolve to their single bracketed address.
-        for raw in ("john@example.com <john@example.com>", "Doe, John <John@example.com>", "a@x.test <john@example.com>"):
+        for raw in ("john@example.com <john@example.com>", "Doe, John <John@example.com>"):
             self.assertEqual(_extract_email_address(raw), "john@example.com", raw)
-        for raw in ("a@x.com, b@y.com", "Group: a@x.com, b@y.com;", "<>"):
+        # ...but never when the display part could hold another mailbox, group or comment.
+        for raw in ("a@x.com, b@y.com", "Group: a@x.com, b@y.com;", "<>", "a@x.test <john@example.com>",
+                    "attacker@evil.test, <victim@x>", "attacker@evil.test,\r\n <victim@x>",
+                    "attacker@evil.test (c) <victim@x>", "attacker@evil.test; <victim@x>",
+                    "Grp: attacker@evil.test; <victim@x>", "undisclosed-recipients:; <victim@x>"):
             self.assertEqual(_extract_email_address(raw), "", raw)
+        # The fallback regex stays linear on hostile input (a backtracking one took ~20s at 32KB, GIL held).
+        from plugins.platforms.email.adapter import _SINGLE_BRACKET_FROM_RE
+        start = time.monotonic()
+        _SINGLE_BRACKET_FROM_RE.fullmatch("<" + "a@" * 50_000)
+        self.assertLess(time.monotonic() - start, 0.5)
 
     def test_extract_email_address_ignores_angle_brackets_in_display_name(self):
         from plugins.platforms.email.adapter import _extract_email_address
@@ -182,6 +192,8 @@ class TestDispatchMessage(unittest.TestCase):
 
         asyncio.run(adapter._dispatch_message(msg_data))
         adapter._message_handler.assert_not_called()
+        # A From with no usable address is dropped at parse time, before dispatch.
+        self.assertIsNone(adapter._parse_fetched_message(b"2", b"From: a@x.com, b@y.com\r\nSubject: x\r\n\r\nbody"))
 
     def test_subject_included_in_text(self):
         """Subject should be prepended to body for non-reply emails."""
@@ -1202,10 +1214,16 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertTrue(ok, reason)
         # A dmarc=pass issued for another domain must not vouch for this From,
         # even when a later dkim clause carries an aligned header.from.
+        # Verdict and header.from are read from the one dmarc clause, with (comments) stripped first.
         for ar in ("mx.google.com; dmarc=pass header.from=evil.test",
-                   "mx.google.com; dmarc=pass header.from=evil.test; dkim=pass header.d=x.test header.from=example.com"):
+                   "mx.google.com; dmarc=pass header.from=evil.test; dkim=pass header.d=x.test header.from=example.com",
+                   "mx.google.com; dmarc=pass (p=none; sp=none) header.from=evil.test",
+                   "mx.google.com; dmarc=fail header.from=example.com; dmarc=pass header.from=evil.test"):
             ok, reason = self._verify("Admin <admin@example.com>", [ar])
             self.assertFalse(ok, ar)
+        ok, reason = self._verify("Admin <admin@example.com>", [
+            "mx.google.com; arc=pass (dmarc=fail header.from=evil.test); dmarc=pass header.from=example.com"])
+        self.assertTrue(ok, reason)
 
 
     def test_dkim_pass_aligned_authenticates(self):

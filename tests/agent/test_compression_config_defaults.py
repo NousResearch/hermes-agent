@@ -24,3 +24,4 @@ def test_threshold_tokens_default_and_null_opt_out(agent_cfg, expected):
     cs = _parse_compression_config(_agent(), agent_cfg)
     assert cs.threshold_tokens == expected
     assert cs.threshold == DEFAULT_CONFIG["compression"]["threshold"]
+    assert cs.min_tail_users == DEFAULT_CONFIG["compression"]["min_tail_user_messages"]

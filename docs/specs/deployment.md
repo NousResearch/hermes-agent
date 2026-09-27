@@ -64,6 +64,15 @@ are suitable for later user-managed integrations. Do not advertise dashboard
 key rotation while a higher-precedence Railway variable silently overrides it.
 The exact initial provisioning flow remains to be specified.
 
+## Authentication at deployment
+
+Perform Codex login on the deployed Hermes service and persist its native auth
+store on the Railway volume. Development on a laptop does not require that
+login. Do not copy the Codex app's local credentials or share rotating refresh
+tokens between installs. Live model, image and Hindsight checks happen against
+the deployed profile after login; local protocol tests cannot prove account
+entitlement. Native Hermes already includes an `openai-codex` image provider.
+
 ## Evidence checked
 
 - Railway services, volumes and private networking:

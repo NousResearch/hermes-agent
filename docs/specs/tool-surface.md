@@ -3,7 +3,8 @@
 Status: tool decisions agreed; implementation pending.
 
 This document defines the model-visible tool surface of this Hermes fork.
-It does not authorize implementation yet or settle the rest of the product spec.
+Implementation follows [the master specification](employee.md); this document
+records contracts rather than claiming they are already implemented.
 
 ## Agreed decisions
 

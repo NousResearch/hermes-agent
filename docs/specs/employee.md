@@ -1,6 +1,7 @@
 # Employee behavior on native Hermes
 
-Status: agreed product direction and contracts; implementation has not started.
+Status: implementation started. Native runtime defaults are implemented; the
+remaining work packages and live deployment checks are pending.
 This is the entry point for the specification. Linked documents own detailed
 contracts; they must remain consistent with the decisions summarized here.
 Implementation proposals and unverified integration requirements are labelled.
@@ -137,6 +138,6 @@ hosted compatibility layer to hide them.
 Keep mechanical extraction separate from behavior changes. Reuse current native
 fixes rather than replacing newer files with older reference copies. Add concise
 [downstream intent](../downstream/README.md) entries when runtime divergences
-land, with merge rules and behavior checks. The current ledger only documents
-implemented guidance restructuring, not this future runtime. Retire fork code
+land, with merge rules and behavior checks. The ledger records implemented guidance and runtime-default changes; future
+work packages get entries when their behavior lands. Retire fork code
 when upstream provides equivalent behavior.

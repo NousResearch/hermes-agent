@@ -75,7 +75,7 @@ Hermes has two separate compression layers that operate independently:
                                    │
                                    ▼
                      ┌──────────────────────────┐
-                     │   Agent ContextCompressor │  Fires at 50% of context (default)
+                     │   Agent ContextCompressor │  Fires at 85% of context (default)
                      │   (in-loop, real tokens)  │  Normal context management
                      └──────────────────────────┘
 ```
@@ -94,11 +94,11 @@ grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 - **Fires**: Only when `len(history) >= 4` and compression is enabled
 - **Purpose**: Catch sessions that escaped the agent's own compressor
 
-The gateway hygiene threshold is intentionally higher than the agent's compressor.
-Setting it at 50% (same as the agent) caused premature compression on every turn
-in long gateway sessions.
+This fork defaults the agent compressor to 85% too. Gateway hygiene remains a
+separate between-turn guard; lowering it to 50% previously caused premature
+compression in long gateway sessions.
 
-### 2. Agent ContextCompressor (50% threshold, configurable)
+### 2. Agent ContextCompressor (85% threshold, configurable)
 
 Located in `agent/context_compressor.py`. This is the **primary compression
 system** that runs inside the agent's tool loop with access to accurate,
@@ -234,14 +234,14 @@ All compression settings are read from `config.yaml` under the `compression` key
 ```yaml
 compression:
   enabled: true              # Enable/disable compression (default: true)
-  threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
+  threshold: 0.85            # Fraction of context window (default: 0.85 = 85%)
   # model_thresholds:        # Per-model threshold overrides (substring match,
   #   "glm-5.2": 0.40        # longest key wins). See "Per-model threshold
   #   "claude-sonnet": 0.35  # overrides" below.
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   tail_mode: lean            # Tail retention policy: lean | legacy (default: lean)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
-  min_tail_user_messages: 1  # Real user messages guaranteed in the tail (default: 1)
+  min_tail_user_messages: 3  # Real user messages guaranteed in the tail (default: 3)
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
@@ -261,13 +261,13 @@ auxiliary:
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` (floored at 0.75 below 512K windows) |
+| `threshold` | `0.85` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` (floored at 0.75 below 512K windows) |
 | `threshold_tokens` | `256000` | int or `null` | Absolute cap on the trigger: compaction fires at the lower of the ratio trigger and this count, so a 1M window compacts at 256K instead of 500K. `null` = ratio-only |
 | `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. The small-context floor still applies on top (see below) |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
 | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models without the `threshold_tokens` cap). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
-| `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
+| `min_tail_user_messages` | `3` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `3` keeps the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `idle_compact_after_seconds` | `0` | ≥0 seconds | Opt-in: compact up front when a session resumes after this many seconds idle (0 = disabled). Skips when context ≤ threshold × target_ratio; honors cooldown/anti-thrash/lock guards |
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.4/5.5/5.6 and gpt-6 Astra on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
@@ -744,4 +744,4 @@ The CLI shows caching status at startup:
 
 ## Context Pressure Warnings
 
-Intermediate context-pressure warnings have been removed (see the iteration-budget block in `agent/turn_iteration_prep.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.
+Intermediate context-pressure warnings have been removed (see the iteration-budget block in `agent/turn_iteration_prep.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 85%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.

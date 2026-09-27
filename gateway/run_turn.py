@@ -680,8 +680,8 @@ class GatewayTurnMixin:
     async def _hmwa_hygiene_settings(self, source, session_key):
         """Resolve model/provider/context-length + hygiene knobs (fail-soft: errors keep defaults).
 
-        The 0.85 threshold is deliberately HIGHER than the agent's compressor (0.50): a safety net
-        for sessions that grew between turns. ``max_turn_hold_seconds`` bounds the TURN wait
+        The 0.85 threshold catches sessions that grew between turns, independently of the
+        configurable in-loop compressor. ``max_turn_hold_seconds`` bounds the TURN wait
         (compressor keeps running detached, commit fenced); kept below transport idle-timeouts."""
         from gateway.run import _load_gateway_config
         hs = self._HygieneSettings(

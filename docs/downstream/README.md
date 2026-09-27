@@ -47,3 +47,5 @@ is removed or upstream satisfies it. Use this shape:
 ## Active entries
 
 - [Scoped agent guidance](divergences/scoped-agent-guidance.md) — route agent guidance instead of growing one root file.
+
+- [Employee runtime defaults](divergences/employee-runtime-defaults.md) — preserve native defaults and explicit local transcription.

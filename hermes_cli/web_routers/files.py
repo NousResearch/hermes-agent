@@ -177,7 +177,10 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
 
 @contextlib.contextmanager
 def _serve_offline(target: Path):
-    """Hold ``offline_file_access`` for serving ``target``; 409 while a SQLite connection to it is live."""
+    """Hold ``offline_file_access`` for serving ``target``; 409 while a SQLite connection to it is live.
+
+    Callers keep the block open through the file's close: a raw close cancels this process's
+    SQLite POSIX locks on it."""
     try:
         with offline_file_access(target, what="serve"):
             yield
@@ -200,14 +203,11 @@ def _refuse_live_database(target: Path) -> None:
 def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
     """Read (a prefix of) ``target``; 403/400 on failure, 409 while a SQLite connection to it is live."""
     try:
-        # Keep admission through close; a raw close cancels this process's SQLite locks.
-        with offline_file_access(target, what="preview file"):
+        with _serve_offline(target):
             if limit is None:
                 return target.read_bytes()
             with target.open("rb") as handle:
                 return handle.read(limit)
-    except LiveConnectionError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PermissionError:
         raise HTTPException(status_code=403, detail="File is not readable")
     except OSError as exc:
@@ -272,9 +272,10 @@ def _media_serve_roots() -> list[Path]:
 
 def _read_base64_file(path: Path) -> str:
     """Read and encode a bounded file from a worker thread; 409 while a SQLite connection to it is live."""
-    # Keep admission through close; a raw close cancels this process's SQLite locks.
     with _serve_offline(path):
-        return base64.b64encode(path.read_bytes()).decode("ascii")
+        data = path.read_bytes()
+    # Encode after release: only the open/read/close needs the registry lock.
+    return base64.b64encode(data).decode("ascii")
 
 
 @router.get("/api/media")

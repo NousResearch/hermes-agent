@@ -4,11 +4,73 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
 from typing import Any
+import asyncio
+import logging
+from urllib.parse import quote
 
 from gateway.session import format_untrusted_prompt_value
+from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+from plugins.platforms.matrix.thread_context import Method, PreviousTurnCheck, history_entry
 
+
+logger = logging.getLogger(__name__)
 
 _FIELD_TYPES = {"encrypted": bool, "tombstoned": bool}
+
+
+async def fetch_room_entries(
+    client: Any, cache: MatrixEventContextCache, room_id: str, event_id: str, *, limit: int,
+    is_previous_turn: PreviousTurnCheck | None = None,
+) -> list[MatrixEventContext]:
+    if client is None or limit <= 0:
+        return []
+
+    path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/context/{quote(event_id, safe='')}"
+    messages_path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages"
+    try:
+        boundary = await asyncio.wait_for(
+            client.api.request(Method.GET, path, query_params={"limit": "0"}), timeout=10.0,
+        )
+        token = boundary.get("start") if isinstance(boundary, dict) else None
+        if isinstance(token, str) and token:
+            response = await asyncio.wait_for(
+                client.api.request(
+                    Method.GET, messages_path,
+                    query_params={"from": token, "dir": "b", "limit": str(limit)},
+                ), timeout=10.0,
+            )
+            earlier = response.get("chunk") if isinstance(response, dict) else None
+        else:
+            response = await asyncio.wait_for(
+                client.api.request(Method.GET, path, query_params={"limit": str(limit * 2)}),
+                timeout=10.0,
+            )
+            earlier = response.get("events_before") if isinstance(response, dict) else None
+    except Exception as exc:
+        logger.debug("Matrix: could not fetch room context for %s in %s: %s", event_id, room_id, exc)
+        return []
+
+    if not isinstance(earlier, list):
+        return []
+
+    newest_first: list[MatrixEventContext] = []
+    for raw in earlier[:limit]:
+        if not isinstance(raw, dict) or not isinstance(raw.get("event_id"), str):
+            continue
+        parsed = await history_entry(client, raw)
+        if parsed is None:
+            continue
+        entry, content = parsed
+        relation = MatrixRelation.from_content(content.get("m.relates_to"))
+        if relation.thread_root or relation.is_edit:
+            continue
+        if is_previous_turn is not None and is_previous_turn(entry.sender, content):
+            break
+        stored = cache.store(room_id, raw["event_id"], entry)
+        if stored is not None:
+            newest_first.append(stored)
+    return newest_first[::-1]
 
 
 @dataclass(frozen=True)

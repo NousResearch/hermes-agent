@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
 
 logger = logging.getLogger(__name__)
@@ -1927,6 +1928,9 @@ class BasePlatformAdapter(ABC):
         # could drop a newer guard.
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        # Consecutive in-band drains per session of the just-dispatched event bouncing straight
+        # back into the queue (session busy elsewhere); drives the drain back-off (#123229).
+        self._requeue_counts: Dict[str, int] = {}
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
@@ -3864,6 +3868,7 @@ class BasePlatformAdapter(ABC):
                        self.name, session_key)
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
+        self._requeue_counts.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
         return True
@@ -3901,6 +3906,7 @@ class BasePlatformAdapter(ABC):
         """Cancel in-flight processing for one session. ``release_guard=False`` keeps the guard so
         reset-like commands finish atomically; the await is bounded (5s) so a wedged finally can't
         stall."""
+        self._requeue_counts.pop(session_key, None)
         task = self._session_tasks.pop(session_key, None)
         if task is not None and not task.done():
             logger.debug("[%s] Cancelling active processing for session %s", self.name, session_key)
@@ -4549,11 +4555,14 @@ class BasePlatformAdapter(ABC):
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
             if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
+                pending_event = self._pending_messages[session_key]
+                delay = self._requeue_backoff_delay(session_key, pending_event, event)
+                if not delay:  # a backed-off event stays queued until the drain task wakes
+                    self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-                self._spawn_drain_task(pending_event, session_key)
+                self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
@@ -4582,14 +4591,67 @@ class BasePlatformAdapter(ABC):
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)
 
-    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str) -> None:
+    _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
+    # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot
+    # meanwhile waits out the remainder; 1 dispatch/s is still ~250x below the unbounded loop.
+    _REQUEUE_BACKOFF_MAX_SECONDS = 1.0
+
+    def _requeue_backoff_delay(self, session_key: str, pending_event: MessageEvent,
+                               dispatched_event: MessageEvent) -> float:
+        """Delay before re-dispatching the queued follow-up.
+
+        Only the event this task just dispatched coming straight back backs off: the same
+        ``message_id``, or for an id-less event the same ``timestamp`` (rewrite-hook
+        ``dataclasses.replace`` copies keep both; a genuine new message gets a fresh timestamp).
+        The handler put it back because the session is busy elsewhere, and re-dispatching it at
+        once hot-loops for the whole busy window (#123229). Any other follow-up resets the counter
+        and runs immediately. The first bounce stays immediate (restart auto-resume relies on one
+        self-bounce), then back off exponentially to a cap. Defers, never drops."""
+        # The identical object always matches too: its id equals itself, and when empty the
+        # timestamp comparison does.
+        same = (pending_event.message_id == dispatched_event.message_id
+                and (bool(pending_event.message_id)
+                     or pending_event.timestamp == dispatched_event.timestamp))
+        if not same:
+            self._requeue_counts.pop(session_key, None)
+            return 0.0
+        attempts = self._requeue_counts.get(session_key, 0)
+        self._requeue_counts[session_key] = attempts + 1
+        if attempts == 0:
+            return 0.0
+        delay = jittered_backoff(attempts, base_delay=self._REQUEUE_BACKOFF_INITIAL_SECONDS,
+                                 max_delay=self._REQUEUE_BACKOFF_MAX_SECONDS, jitter_ratio=0.0)
+        (logger.info if attempts == 1 else logger.debug)(
+            "[%s] Handler re-queued a pending event for %s again (session busy elsewhere); "
+            "backing off %.2fs", self.name, session_key, delay)
+        return delay
+
+    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str,
+                          delay: float = 0.0) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained
         follow-ups grew the C stack to SIGSEGV). Clearing (not deleting) the Event keeps the guard
-        live for concurrent inbound; ownership moves so stale-lock detection works."""
+        live for concurrent inbound; ownership moves so stale-lock detection works. With ``delay``
+        the event stays in ``_pending_messages`` and the new owner task pops the slot only after
+        sleeping, so a cancel/discard during the back-off needs no put-back and can't drop a
+        newer message."""
         self._clear_session_guard(session_key)
+        # Capture the guard this drain owns now: a /stop//new guard swapped in during the
+        # back-off must survive the slot-empty exit (#48300).
+        guard = self._active_sessions.get(session_key)
         self._track_session_task(
             session_key,
-            asyncio.create_task(self._process_message_background(pending_event, session_key)))
+            asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
+
+    async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
+                           guard: Optional[asyncio.Event]) -> None:
+        if delay > 0:
+            await asyncio.sleep(delay)
+            await self._flush_text_debounce_now(session_key)  # as every other task exit does
+            pending_event = self._pending_messages.pop(session_key, None)
+            if pending_event is None:  # consumed elsewhere during the back-off
+                self._cleanup_finished_session_task(session_key, guard)
+                return
+        await self._process_message_background(pending_event, session_key)
 
     def _clear_session_guard(self, session_key: str) -> None:
         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""
@@ -4614,6 +4676,7 @@ class BasePlatformAdapter(ABC):
         self._release_session_guard(session_key, guard=interrupt_event)
         if session_key not in self._active_sessions:
             self._session_tasks.pop(session_key, None)
+            self._requeue_counts.pop(session_key, None)
 
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
@@ -4642,7 +4705,8 @@ class BasePlatformAdapter(ABC):
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
-                       self._pending_messages, self._active_sessions, self._text_debounce_store()):
+                       self._pending_messages, self._active_sessions, self._requeue_counts,
+                       self._text_debounce_store()):
             bucket.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:

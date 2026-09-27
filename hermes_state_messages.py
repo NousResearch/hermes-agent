@@ -14,6 +14,7 @@ from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
     _newest_checkpoint_carrier, split_user_originated_turn)
 from agent.memory_manager import sanitize_context
+from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
@@ -32,9 +33,10 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
-_MESSAGE_SCHEMA_KEYS = frozenset(
+_MESSAGE_WRITE_COLUMNS = tuple(
     re.findall(r"\w+", _INSERT_MESSAGE_SQL.split("(", 1)[1].split(")", 1)[0])
-) | {"id", "compacted", "display_order"}
+)
+_MESSAGE_SCHEMA_KEYS = frozenset(_MESSAGE_WRITE_COLUMNS) | {"id", "compacted", "display_order"}
 _BUMP_GENERATION_SQL = """
             INSERT INTO conversation_generations (source, session_key, generation)
             VALUES (?, ?, 1)
@@ -285,6 +287,60 @@ class SessionMessagesMixin:
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))
 
+    def _serialized_message_row(
+        self, session_id: str, msg: Dict[str, Any], message_timestamp: float
+    ) -> Dict[str, Any]:
+        """Serialize one live message with the exact durable shape used by INSERT."""
+        role = msg.get("role", "unknown")
+        params = self._message_row_params(
+            session_id,
+            role,
+            msg,
+            _parse_tool_calls(msg.get("tool_calls")),
+            message_timestamp,
+            keep_reasoning=role == "assistant",
+        )
+        return dict(zip(_MESSAGE_WRITE_COLUMNS, params))
+
+    def _decoded_repair_row(self, row) -> Dict[str, Any]:
+        """Decode one durable row without replay dedupe, alternation repair, or content stripping."""
+        msg: Dict[str, Any] = {
+            "role": row["role"],
+            "content": self._decode_content(row["content"]),
+        }
+        for column in ("tool_call_id", "tool_name", "effect_disposition", "token_count", "finish_reason"):
+            if row[column] is not None:
+                msg[column] = row[column]
+        if row["tool_calls"]:
+            msg["tool_calls"] = _json_or(
+                row["tool_calls"], [], "Failed to deserialize repaired tool_calls, falling back to []"
+            )
+        if row["platform_message_id"] is not None:
+            msg["message_id"] = row["platform_message_id"]
+            msg["platform_message_id"] = row["platform_message_id"]
+        if row["observed"]:
+            msg["observed"] = True
+        if row["_compressed_summary"]:
+            msg["_compressed_summary"] = True
+        if row["api_content"] is not None:
+            msg["api_content"] = row["api_content"]
+        if row["display_kind"] is not None:
+            msg["display_kind"] = row["display_kind"]
+        if row["display_metadata"] is not None:
+            metadata = self._decode_display_metadata(row["display_metadata"])
+            if metadata is not None:
+                msg["display_metadata"] = metadata
+        if row["role"] == "assistant":
+            for column in ("reasoning", "reasoning_content"):
+                if row[column] is not None:
+                    msg[column] = row[column]
+            for column in ("reasoning_details", "codex_reasoning_items", "codex_message_items"):
+                if row[column]:
+                    msg[column] = _json_or(
+                        row[column], None, f"Failed to deserialize repaired {column}, falling back to None"
+                    )
+        return msg
+
     @staticmethod
     def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
         """Bump sessions.* counters after an insert; *unit* bakes the ``+ 1`` literal into the SQL."""
@@ -378,12 +434,49 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             from agent.transcript_repair import resolve_and_repair_transcript_batch
-            inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
-                encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
+            inserted_rows = resolve_and_repair_transcript_batch(
+                conn,
+                session_id,
+                messages,
+                encode_content_fn=self._encode_content,
+                decode_content_fn=self._decode_content,
+                serialize_message_fn=lambda msg, timestamp: self._serialized_message_row(
+                    session_id, msg, timestamp
+                ),
+                decode_row_fn=self._decoded_repair_row,
+            )
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
-        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp")
+
+    def _execute_transcript_write(self, fn, messages: List[Dict[str, Any]], **kwargs):
+        """``_execute_write(fn)`` for callbacks that stamp row state onto the caller's *messages* (every
+        :meth:`_insert_message_rows` caller that passes caller-owned dicts; rewind and import insert fresh copies). Each attempt, and a final failure, restores the caller's
+        ``_row_id`` / digest / timestamp: a rolled-back insert's id is reused by SQLite, so a stale stamp
+        would make a later flush adopt another writer's row and drop this message."""
+        _absent = object()
+        pre_state = [tuple(m.get(k, _absent) for k in self._ROW_STATE_KEYS) for m in messages]
+
+        def _restore() -> None:
+            for msg, state in zip(messages, pre_state):
+                msg.pop(CANONICAL_ROW, None)
+                for key, value in zip(self._ROW_STATE_KEYS, state):
+                    if value is _absent:
+                        msg.pop(key, None)
+                    else:
+                        msg[key] = value
+
+        def _attempt(conn):
+            _restore()
+            return fn(conn)
+        try:
+            return self._execute_write(_attempt, **kwargs)
+        except BaseException:
+            _restore()
+            raise
 
     def set_latest_matching_message_display_kind(self, session_id: str, *, role: str, content: str,
                                                  display_kind: str,
@@ -611,6 +704,11 @@ class SessionMessagesMixin:
             now_ts = max(now_ts, message_timestamp) + 1e-6
         if prune_checkpoints:
             self._prune_shadowed_checkpoints(conn, session_id, messages)
+        # Every inserter (flush, compaction clone, replace, rotation handoff, import) gets the new rows' own
+        # stored-row digest, so a later re-flush of these dicts takes the versioned rewrite path instead of the
+        # legacy one. One batched SELECT; hash the STORED rows (column affinity rewrites bind values).
+        from agent.transcript_repair import stamp_inserted_row_snapshots
+        stamp_inserted_row_snapshots(conn, session_id, messages)
         return inserted, tool_calls_total
 
     def _prune_shadowed_checkpoints(self, conn, session_id: str, live_messages: List[Dict[str, Any]]) -> None:
@@ -678,7 +776,7 @@ class SessionMessagesMixin:
             inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
                          (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
-        self._execute_write(_do)
+        self._execute_transcript_write(_do, messages)
 
     @classmethod
     def _row_identity(cls, role: str, content: Any, tool_call_id: Any, tool_calls: Any) -> tuple:
@@ -976,7 +1074,7 @@ class SessionMessagesMixin:
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted
-        return self._execute_write(_do)
+        return self._execute_transcript_write(_do, compacted_messages)
 
     def _message_column_names(self, conn) -> List[str]:
         """Column names of the messages table, cached per-connection era."""

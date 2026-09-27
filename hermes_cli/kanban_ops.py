@@ -333,16 +333,7 @@ def _cmd_gc(args: argparse.Namespace) -> int:
         # managed root, never the root itself (which holds every task's scratch dir).
         if not kbw._is_managed_scratch_path(path):
             continue
-        try:
-            path = path.resolve()
-        except OSError:
-            continue
-        try:
-            path.relative_to(scratch_root.resolve())
-        except ValueError:
-            # Safety: never delete outside the scratch root.
-            continue
-        if path.exists() and path.is_dir():
+        if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
             removed_ws += 1
 

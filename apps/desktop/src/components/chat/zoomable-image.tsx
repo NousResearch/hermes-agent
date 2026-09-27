@@ -1,12 +1,14 @@
 'use client'
 
-import { type ComponentProps, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { type ComponentProps } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { Download } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $transcriptLightbox, closeTranscriptLightbox, openTranscriptLightbox } from '@/store/transcript-lightbox'
 
 export interface ZoomableImageProps extends ComponentProps<'img'> {
   containerClassName?: string
@@ -38,7 +40,14 @@ export function ZoomableImage({
   // thumbnail (`src`) stays the cheap paint.
   const fullSrc = zoomSrc || src || ''
   const { download, saving } = useImageDownload(fullSrc)
-  const [lightboxOpen, setLightboxOpen] = useState(false)
+  // The open flag lives in a store keyed by source identity, not local state:
+  // transcript rows (and the markdown leaves inside them) remount routinely
+  // while a turn streams — the render-budget slice can drop the row, and the
+  // streaming re-parse re-mounts AST leaves — which used to close a
+  // user-opened lightbox with no gesture (#123018). A remounted row reads the
+  // same store and re-presents its own open dialog.
+  const openSrc = useStore($transcriptLightbox)
+  const lightboxOpen = openSrc !== null && openSrc === fullSrc
   const canOpen = Boolean(src)
 
   return (
@@ -51,7 +60,7 @@ export function ZoomableImage({
           aria-label={canOpen ? copy.openImage : undefined}
           className="contents"
           disabled={!canOpen}
-          onClick={() => canOpen && setLightboxOpen(true)}
+          onClick={() => canOpen && openTranscriptLightbox(fullSrc)}
           type="button"
         >
           <img alt={alt ?? ''} className={className} src={src} {...props} />
@@ -65,7 +74,7 @@ export function ZoomableImage({
           alt={alt}
           copy={copy}
           onClick={download}
-          onOpenChange={setLightboxOpen}
+          onOpenChange={open => (open ? openTranscriptLightbox(fullSrc) : closeTranscriptLightbox(fullSrc))}
           open={lightboxOpen}
           saving={saving}
           src={fullSrc}

@@ -110,6 +110,74 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertEqual(_extract_email_address("Plain <user@example.com>"), "user@example.com")
         self.assertEqual(_extract_email_address("bare@example.com"), "bare@example.com")
 
+    def test_extract_sender_name_uses_parseaddr_not_first_angle_bracket(self):
+        from plugins.platforms.email.adapter import _extract_sender_name
+        # The old first-``<`` split turned a comment into an attacker-chosen display name:
+        # ``attacker (real <real@victim.test>) <attacker@evil.test>`` yielded the fragment
+        # ``attacker (real`` — the pairing card then showed a trusted-looking tail.
+        self.assertEqual(
+            _extract_sender_name("attacker (real <real@victim.test>) <attacker@evil.test>"),
+            "attacker",
+        )
+        # The comment is gone, so the name can no longer borrow a second mailbox.
+        self.assertEqual(
+            _extract_sender_name("Weird Name (note <nested@x>) <attacker@evil.test>"),
+            "Weird Name",
+        )
+        # parseaddr resolves the display phrase the mailbox the address parser accepts.
+        for raw, expected in (
+            ("Real Name <real@victim.test>", "Real Name"),
+            ("John Doe (Work) <j@x>", "John Doe"),
+            ("attacker <attacker@evil.test>", "attacker"),
+            ("bare@example.com", ""),
+            ("", ""),
+        ):
+            self.assertEqual(_extract_sender_name(raw), expected, raw)
+        # Hostile size/nesting takes the same ceiling the address parser applies.
+        self.assertEqual(_extract_sender_name("x" * 3000 + " <a@example.com>"), "")
+
+    def test_extract_sender_name_decodes_rfc2047_display_phrases(self):
+        from plugins.platforms.email.adapter import _extract_sender_name
+        # The address parser always decoded the header, so non-ASCII senders used to render as
+        # their real name; the parseaddr rewrite must keep decoding the phrase it extracted.
+        self.assertEqual(_extract_sender_name("=?utf-8?B?SsO2cmc=?= <a@evil.test>"), "Jörg")
+        self.assertEqual(_extract_sender_name("=?iso-8859-1?Q?J=F6rg?= <a@evil.test>"), "Jörg")
+        self.assertEqual(
+            _extract_sender_name("=?utf-8?B?SsO2cmc=?= =?utf-8?B?TcOtc3A==?= <a@evil.test>"),
+            "JörgMísp",
+        )
+
+    def test_extract_sender_name_does_not_trust_brackets_from_decoded_phrases(self):
+        from plugins.platforms.email.adapter import _extract_sender_name
+        # An encoded phrase can decode to text holding a ``<``. Decoding first and re-parsing would
+        # hand the shown name to a mailbox the address parser never accepted; the decoded phrase must
+        # only ever contribute its pre-bracket text.
+        self.assertEqual(
+            _extract_sender_name("=?utf-8?B?RmFrZSA8dmljdGltQHgudGVzdD4=?= <attacker@evil.test>"),
+            "Fake",
+        )
+        # A decoded comment can carry its own mailbox: strip comments before splitting on ``<``.
+        self.assertEqual(
+            _extract_sender_name(
+                "=?utf-8?B?YXR0YWNrZXIgKHJlYWwgPHJlYWxAdmljdGltLnRlc3Q+KQ==?= <attacker@evil.test>"
+            ),
+            "attacker",
+        )
+
+    def test_parse_fetched_message_carries_the_parsed_name(self):
+        # The name flowing into build_source/pairing must match the mailbox's display phrase,
+        # not an attacker-chosen fragment of the raw header.
+        from plugins.platforms.email.adapter import EmailAdapter
+        raw = (
+            b"From: attacker (real <real@victim.test>) <attacker@evil.test>\r\n"
+            b"Subject: hi\r\n\r\nbody"
+        )
+        adapter = object.__new__(EmailAdapter)
+        adapter._authserv_id = None
+        adapter._skip_attachments = False
+        parsed = EmailAdapter._parse_fetched_message(adapter, b"2", raw)
+        self.assertEqual(parsed["sender_addr"], "attacker@evil.test")
+        self.assertEqual(parsed["sender_name"], "attacker")
 
     def test_strip_html_basic(self):
         from plugins.platforms.email.adapter import _strip_html

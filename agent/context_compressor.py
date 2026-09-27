@@ -5475,18 +5475,18 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(
-            messages, compress_start, compress_end, scan, summary, source_messages=canonical_messages,
+            messages, compress_start, compress_end, scan, summary,
         )
         return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images)
 
     def _assemble_compressed(
         self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int,
-        scan: "_HandoffScan", summary: str, *, source_messages: List[Dict[str, Any]] | None = None,
+        scan: "_HandoffScan", summary: str,
     ) -> List[Dict[str, Any]]:
-        """Head + summary + tail; temporary prune copies never become durable rows."""
-        source = source_messages if source_messages is not None else messages
-        compressed = self._assemble_head(source, compress_start)
-        tail_messages = self._assemble_tail(source, compress_end, scan.tail_start, scan.summary_indices)
+        """Head + summary + tail from the pruned copy: its tool-result demotions are what let an oversized
+        head/tail compress at all (#61932); tool-call arguments are never rewritten by pruning."""
+        compressed = self._assemble_head(messages, compress_start)
+        tail_messages = self._assemble_tail(messages, compress_end, scan.tail_start, scan.summary_indices)
         summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (
             self._summary_placement(compressed, tail_messages, compress_start)
         )

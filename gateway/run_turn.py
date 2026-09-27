@@ -3778,6 +3778,9 @@ class GatewayTurnMixin:
                 # the completion send stays the fallback so the user is not left with nothing.
                 if _text_delivered and isinstance(result, dict):
                     result["already_sent"] = True
+                    if _already_streamed:
+                        self._run_agent_notify_streamed_final_delivery(
+                            adapter, turn_ctx.source, session_key, _sc, first_response)
                     # The queued lane already uploaded this response's MEDIA: attachments; without
                     # this the completion path's already_sent rescan uploads every file twice.
                     result["media_already_delivered"] = _deliver_media
@@ -4110,6 +4113,15 @@ class GatewayTurnMixin:
                 "possible duplicate send (see wecom ack-timeout RCA).",
                 _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
             )
+        if response.get("already_sent") and _sc is not None:
+            self._run_agent_notify_streamed_final_delivery(
+                getattr(_sc, "adapter", None), source, session_key, _sc, _final)
+
+    @staticmethod
+    def _run_agent_notify_streamed_final_delivery(adapter, source, session_key, consumer, final_text) -> None:
+        callback = getattr(adapter, "on_streamed_final_delivery", None)
+        if callable(callback):
+            callback(source, session_key, getattr(consumer, "final_message_ids", ()), final_text)
 
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.

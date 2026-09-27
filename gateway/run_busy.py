@@ -840,10 +840,9 @@ class GatewayBusySessionMixin:
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
-        # Internal synthetic events (delegation / background completions) must never interrupt or
-        # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
-        # queue them through the FIFO (security metadata kept apart).
-        if getattr(event, "internal", False):
+        # Internal completions and external events that request a new turn must not interrupt or
+        # steer. Queue them through the FIFO after the normal external sender checks above.
+        if event.internal or event.defer_until_idle:
             self._queue_or_replace_pending_event(session_key, event)
             return True
         if (

@@ -1500,10 +1500,15 @@ def _emit_compression_attempt_telemetry(
         _record_compression_metric(agent, commit_status=commit_status, failure_class=failure_class)
 
 
+# Per-thread, not on the compressor or the agent: abort paths restore the compressor snapshot (seed
+# included) before they emit, and a stalled attempt's worker can unwind after its stall-fallback retry
+# began on another thread. An attempt begins and emits on one thread (the pool worker or the caller).
+_attempt_metric = threading.local()
+
+
 def _record_compression_metric(agent: Any, *, commit_status: str, failure_class: str | None) -> None:
-    """Count this attempt once in shared metrics. The pending record lives on the agent, not the
-    compressor: abort paths restore the compressor snapshot (seed included) before they emit."""
-    pending = vars(agent).pop("_compression_metric_pending", None)
+    """Count this thread's pending attempt once in shared metrics."""
+    pending, _attempt_metric.pending = getattr(_attempt_metric, "pending", None), None
     if not pending:
         return
     from hermes_cli.observability.shared_metrics_events import record_compression
@@ -4014,7 +4019,7 @@ def _begin_compression_attempt(
     trigger = trigger or ("manual" if force else "auto")
     with contextlib.suppress(Exception):
         agent._compression_attempt_id = attempt_id
-        agent._compression_metric_pending = {
+        _attempt_metric.pending = {
             "trigger": trigger,
             "tokens_before": approx_tokens or getattr(agent.context_compressor, "last_prompt_tokens", None),
         }

@@ -125,6 +125,8 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Deliver this external event as a new turn when its session is busy.
+    defer_until_idle: bool = False
     # Snapshot from ``BasePlatformAdapter.prepare_turn_context``. The user transcript row saves it,
     # and the saved snapshot is the baseline for the adapter's next comparison.
     channel_state: Optional[Dict[str, Any]] = None

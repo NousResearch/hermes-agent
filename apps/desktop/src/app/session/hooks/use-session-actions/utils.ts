@@ -1118,34 +1118,24 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
-    // A synthetic starting prompt (process_complete, hidden, …) carries the
-    // display typing its persisted row will get: render it through the same
-    // timeline projection history uses instead of as a user bubble (#112144).
-    // `toChatMessages` yields nothing for `hidden`, so the prompt is omitted.
+    // Project the prompt through the same conversion history uses, so the live
+    // bubble matches its persisted twin: attachment refs lift into the chip row,
+    // and a synthetic starting prompt (process_complete, hidden, …) takes the
+    // display typing its row will get (#112144) — `hidden` yields nothing.
     const displayKind = projection.inflight?.display_kind
 
-    const typed = displayKind
-      ? toChatMessages([
-          {
-            role: 'user',
-            content: inflightUser,
-            display_kind: displayKind,
-            ...(projection.inflight?.display_metadata !== undefined
-              ? { display_metadata: projection.inflight.display_metadata }
-              : {})
-          }
-        ])
-      : null
-
-    if (typed) {
-      projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
-    } else {
-      projected.push({
-        id: `user-inflight-${sessionId}`,
+    const typed = toChatMessages([
+      {
         role: 'user',
-        parts: [textPart(inflightUser)]
-      })
-    }
+        content: inflightUser,
+        ...(displayKind ? { display_kind: displayKind } : {}),
+        ...(displayKind && projection.inflight?.display_metadata !== undefined
+          ? { display_metadata: projection.inflight.display_metadata }
+          : {})
+      }
+    ])
+
+    projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
   }
 
   // Keep a pending assistant boundary even before the first delta when a
@@ -1546,14 +1536,29 @@ export function overlayConcurrentMessageChanges(
       const text = textWithoutReferenceLines(chatMessageText(current)).trim()
       const lastUser = overlaid.findLastIndex(message => message.role === 'user')
 
-      const committed = overlaid.some(
-        (message, index) =>
-          index > lastUser &&
-          message.role === 'assistant' &&
-          !baselineById.has(message.id) &&
-          !isLiveTailRow(message) &&
-          textWithoutReferenceLines(chatMessageText(message)).trim() === text
-      )
+      const committed = overlaid.some((message, index) => {
+        if (
+          !(index > lastUser) ||
+          message.role !== 'assistant' ||
+          baselineById.has(message.id) ||
+          isLiveTailRow(message)
+        ) {
+          return false
+        }
+
+        // The committed row and the settled live row capture the same reply
+        // at two moments while it kept streaming, so neither side is
+        // guaranteed to be textually identical: accept either as a forward
+        // text-extension of the other, the same trade
+        // removeRepresentedLocalLiveProjection made in 2494b95929.
+        const candidate = textWithoutReferenceLines(chatMessageText(message)).trim()
+
+        return (
+          candidate === text ||
+          isStrictAnswerTextExtension(candidate, text) ||
+          isStrictAnswerTextExtension(text, candidate)
+        )
+      })
 
       if (text && committed) {
         continue

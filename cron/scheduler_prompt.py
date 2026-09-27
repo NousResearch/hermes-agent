@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -63,6 +64,49 @@ _UPSTREAM_CONTEXT_INTRO = (
 )
 
 
+def _extract_context_payload_from_job_output(raw_output: str) -> str:
+    """Reduce stored cron markdown to the most useful downstream context payload.
+
+    For chained cron jobs, the downstream agent usually needs the upstream
+    model/script result, not the full wrapper with repeated prompts and schedule
+    metadata. Prefer the ``## Response`` body, then ``## Error`` for failed runs,
+    otherwise fall back to the full stored text.
+    """
+    document = raw_output or ""
+    length_match = re.match(r"\A\*\*Result Chars:\*\*[ \t]*(\d+)[ \t]*\r?\n", document)
+    # A payload length cannot exceed its document; bound conversion of corrupt metadata.
+    if length_match and len(length_match.group(1)) <= len(str(len(document))):
+        result_chars = int(length_match.group(1))
+        content_end = len(document) - 1 if document.endswith("\n") else len(document)
+        if 0 < result_chars <= content_end:
+            return document[content_end - result_chars:content_end]
+
+    text = document.strip()
+    if not text:
+        return ""
+
+    # Script-mode archives have no structural result heading. Their stdout may
+    # contain arbitrary Markdown, so keep the upstream whole-document contract.
+    if re.match(
+        r"\A# Cron Job:[^\n]*\r?\n\r?\n"
+        r"\*\*Job ID:\*\*[^\n]*\n\*\*Run Time:\*\*[^\n]*\n"
+        r"\*\*Mode:\*\* no_agent \(script\)\r?(?:\n|$)", text
+    ):
+        return text
+
+    # Legacy successes may discuss an Error heading in their answer; failures
+    # are identified by the writer's FAILED title, not arbitrary body Markdown.
+    # Without length metadata identical prompt/result headings remain ambiguous,
+    # so retain upstream's last-Response rule for successful legacy archives.
+    failed = re.match(r"\A# Cron Job:[^\r\n]* \(FAILED\)\r?(?:\n|$)", text)
+    response_headings = list(re.finditer(r"(?m)^## Response[ \t]*\r?$", text))
+    error_headings = list(re.finditer(r"(?m)^## Error[ \t]*\r?$", text))
+    headings = error_headings if failed and error_headings else response_headings or error_headings
+    if headings:
+        return text[headings[-1].end():].lstrip()
+    return text
+
+
 def _archive_answer(archive: str) -> str | None:
     """The reusable answer of a stored run: the text after the last ``## Response``.
 
@@ -70,15 +114,18 @@ def _archive_answer(archive: str) -> str | None:
     occurrence is the writer's boundary — the assembled prompt half can itself carry
     the literal heading (a skill documenting its response format, an injected previous
     answer quoting it), so an early split would re-inject the prompt noise this
-    extraction exists to drop.
+    extraction exists to drop. New run documents use their length metadata first, so
+    literal headings inside the response remain payload; legacy error documents fall
+    back to their final ``## Error`` section.
     ``None`` marks "no usable answer" — a blank or silent response (any form the
     delivery lane itself suppresses) — so the caller falls through to an older
     archive instead of injecting prompt noise the job already has.
     """
-    if "## Response" not in archive:
-        return archive
-    answer = archive.rpartition("## Response")[2].strip()
-    if not answer or _sched._is_cron_silence_response(answer):
+    response_headings = list(re.finditer(r"(?m)^## Response[ \t]*\r?$", archive))
+    answer = _extract_context_payload_from_job_output(archive)
+    if not answer.strip():
+        return None
+    if response_headings and _sched._is_cron_silence_response(answer):
         return None
     return answer
 
@@ -122,7 +169,8 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             latest_output = ""
             for output_file in output_files:
-                candidate = output_file.read_text(encoding="utf-8-sig").strip()
+                with output_file.open("r", encoding="utf-8-sig", newline="") as stream:
+                    candidate = stream.read()
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
                 header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]

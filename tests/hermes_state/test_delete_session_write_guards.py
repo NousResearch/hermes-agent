@@ -89,3 +89,23 @@ def test_delete_sessions_bulk_skips_active_write_guards(tmp_path):
     assert db.get_session("deleg-root") is not None and db.get_session("deleg-child") is not None
     db.release_session_turn_lease("deleg-child", child_holder)
     db.close()
+
+
+def test_delete_session_if_empty_refuses_when_write_guard_active(tmp_path):
+    """delete_session_if_empty shares the guarded-delete refusal: the emptiness predicate
+    reads committed state, so a row whose first turn is leased but not yet flushed would
+    be deleted mid-turn (#123583)."""
+    path = tmp_path / "state.db"
+    db = SessionDB(path)
+    db.create_session("empty-live", source="test")
+    turn_holder = f"pid={os.getpid()}:turn=1"
+    assert db.try_acquire_session_turn_lease("empty-live", turn_holder, ttl_seconds=300.0) is True
+
+    with pytest.raises(SessionActiveWriteGuardError):
+        db.delete_session_if_empty("empty-live")
+    assert db.get_session("empty-live") is not None
+
+    db.release_session_turn_lease("empty-live", turn_holder)
+    assert db.delete_session_if_empty("empty-live") is True
+    assert db.get_session("empty-live") is None
+    db.close()

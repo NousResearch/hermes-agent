@@ -1608,8 +1608,15 @@ class SessionSessionsMixin:
 
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
-        share one transaction so a concurrent flush can't be lost."""
+        share one transaction so a concurrent flush can't be lost. A row under an active turn lease
+        or compression lock is never a candidate: the emptiness predicate reads committed state, so a
+        row whose first turn is already leased but not yet flushed would be deleted mid-turn
+        (#123583). Raises :class:`SessionActiveWriteGuardError` like the guarded deletes."""
         def _do(conn):
+            if self._guarded_ids(conn, [session_id]):
+                raise SessionActiveWriteGuardError(
+                    f"session '{session_id}' has an active turn lease or compression lock"
+                )
             cursor = conn.execute(
                 """
                 DELETE FROM sessions

@@ -1767,7 +1767,9 @@ class GatewayStartupMixin:
         # Ensure a session_store entry exists for this key; switch_session then re-points it.
         await self.async_session_store.get_or_create_session(dest.source)
         # switch_session ends the prior session and reopens the CLI session under the new key.
-        switched = await self.async_session_store.switch_session(session_key, cli_session_id)
+        switched = await self.async_session_store.switch_session(
+            session_key, cli_session_id, preserve_prompt_pin=False,
+        )
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale

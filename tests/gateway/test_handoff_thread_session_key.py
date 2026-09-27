@@ -29,7 +29,7 @@ import pytest
 
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 def _organic_discord_thread_key(thread_id: str, parent_id: str, user_id: str) -> str:
@@ -212,3 +212,50 @@ def test_matrix_handoff_key_matches_the_thread_reply_key(is_dm, monkeypatch):
     _dest, handoff = _handoff_destination(Platform.MATRIX, room_id, "$seed", None, adapter)
     assert handoff == _organic_matrix_reply_key(adapter, room_id, "$seed")
     assert handoff.split(":")[3] == ("dm" if is_dm else "group")
+
+@pytest.mark.asyncio
+async def test_cli_handoff_drops_previous_route_prompt_pin():
+    """CLI handoff is a conversation boundary: the synthetic internal turn must not inherit
+    prompt bytes from whatever conversation previously occupied the destination routing key."""
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="handoff-thread",
+        chat_type="thread",
+        user_id="system:handoff",
+        thread_id="handoff-thread",
+    )
+    dest = SimpleNamespace(
+        source=source,
+        platform_name="discord",
+        home=SimpleNamespace(chat_id="parent-channel"),
+        effective_thread_id="handoff-thread",
+        transport=SimpleNamespace(send=AsyncMock()),
+    )
+    runner._handoff_resolve_destination = AsyncMock(return_value=dest)
+    runner._handoff_session_key = MagicMock(return_value="agent:main:discord:thread:handoff-thread:handoff-thread")
+    runner._evict_cached_agent = MagicMock()
+    runner._release_running_agent_state = MagicMock()
+    runner._handle_message = AsyncMock(return_value=None)
+
+    store = MagicMock()
+    store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:discord:thread:handoff-thread:handoff-thread",
+        session_id="previous-gateway-session",
+        created_at=None,
+        updated_at=None,
+    )
+    store.switch_session.return_value = SessionEntry(
+        session_key="agent:main:discord:thread:handoff-thread:handoff-thread",
+        session_id="cli-session",
+        created_at=None,
+        updated_at=None,
+    )
+    runner.session_store = store
+
+    await runner._process_handoff(
+        {"id": "cli-session", "title": "work", "handoff_platform": "discord"}
+    )
+
+    assert store.switch_session.call_args.kwargs["preserve_prompt_pin"] is False
+

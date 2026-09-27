@@ -375,9 +375,11 @@ class RaftAdapter(BasePlatformAdapter):
         endpoint = f"http://{self._host}:{port}{self._path}"
         cmd: List[str] = [raft_bin, "--profile", profile, "agent", "bridge", "--wake-adapter", "wake-channel",
                           "--wake-channel-endpoint", endpoint]
+        from tools.environments.local import hermes_subprocess_env
+        # The raft CLI needs its own profile and channel token, never Hermes' credentials.
+        env = {**hermes_subprocess_env(), "RAFT_PROFILE": profile, "RAFT_CHANNEL_TOKEN": self._bridge_token}
         try:
-            self._bridge_process = subprocess.Popen(
-                cmd, env={**os.environ, "RAFT_CHANNEL_TOKEN": self._bridge_token}, stdin=subprocess.DEVNULL)
+            self._bridge_process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL)
             logger.info("[raft] Spawned bridge pid=%d profile=%s endpoint=%s", self._bridge_process.pid, profile, endpoint)
         except Exception:
             logger.exception("[raft] Failed to spawn bridge")

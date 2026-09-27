@@ -186,7 +186,7 @@ class MattermostAdapter(BasePlatformAdapter):
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
             config.extra.get("reply_mode", "") or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")).lower()
-        self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
+        self._last_post_status: Optional[int] = None  # POST diagnostics only; never retry authority
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
 
@@ -228,7 +228,9 @@ class MattermostAdapter(BasePlatformAdapter):
                     if is_post and path == "posts" and resp.status >= 500:
                         # A server/proxy failure does not establish that the POST was rejected.
                         return {"_delivery_uncertain": True}
-                    return {"_post_rejection_status": resp.status} if is_post and path == "posts" else {}
+                    return {"_post_rejection_status": resp.status,
+                            "_post_broken_thread_root": self._post_failure_is_broken_thread_root(resp.status, body)
+                            } if is_post and path == "posts" else {}
                 try:
                     data = await resp.json()
                 except ValueError:
@@ -242,6 +244,7 @@ class MattermostAdapter(BasePlatformAdapter):
                         return {"_delivery_uncertain": True}
                     # Internal evidence comes only from the HTTP status, never response JSON.
                     data.pop("_post_rejection_status", None)
+                    data.pop("_post_broken_thread_root", None)
                 return data
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             if is_post:
@@ -268,10 +271,10 @@ class MattermostAdapter(BasePlatformAdapter):
         # The gateway's timeout guard also prevents replay after a lost POST acknowledgement.
         return error in {_POST_DELIVERY_UNCERTAIN, _POST_DELIVERY_PARTIAL} or BasePlatformAdapter._is_timeout_error(error)
 
-    def _last_post_failure_is_broken_thread_root(self) -> bool:
+    def _post_failure_is_broken_thread_root(self, status: Optional[int], error: str) -> bool:
         """Return True only for clear invalid/missing Mattermost thread roots."""
-        body = (self._last_post_error or "").lower()
-        if self._last_post_status not in {400, 404} or not body:
+        body = (error or "").lower()
+        if status not in {400, 404} or not body:
             return False
         return (any(marker in body for marker in ("root_id", "rootid", "root id", "thread", "post"))
                 and any(marker in body for marker in ("invalid", "not found", "does not exist", "missing")))
@@ -280,9 +283,10 @@ class MattermostAdapter(BasePlatformAdapter):
         self, chat_id: str, payload: Dict[str, Any], metadata: _Metadata) -> Dict[str, Any]:
         """Post once, optionally falling back flat for final notify content."""
         data = await self._api_post("posts", payload)
+        broken_thread_root = data.pop("_post_broken_thread_root", False)
         if ((data and not _post_was_rejected(data)) or "root_id" not in payload
                 or not (isinstance(metadata, dict) and metadata.get("notify"))
-                or not self._last_post_failure_is_broken_thread_root()):
+                or not broken_thread_root):
             return {**data, "content_attempted": True,
                     "content_uncertain": bool(data.get("_delivery_uncertain"))}
         flat_payload = {k: v for k, v in payload.items() if k != "root_id"}

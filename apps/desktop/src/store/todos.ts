@@ -70,6 +70,11 @@ export function todosForHydration(todos: readonly TodoItem[] | null): TodoItem[]
 const FINISHED_LINGER_MS = 4_000
 const clearTimers = keyedTimeouts()
 
+const hasSessionTodos = (map: Record<string, TodoItem[]>, sid: string): boolean => Object.hasOwn(map, sid)
+
+const getSessionTodos = (map: Record<string, TodoItem[]>, sid: string): TodoItem[] | undefined =>
+  hasSessionTodos(map, sid) ? map[sid] : undefined
+
 function acceptRevision(sid: string, revision?: null | number): boolean {
   const revisions = $todoRevisionsBySession.get()
   const current = revisions[sid]
@@ -113,7 +118,7 @@ function dropSessionTodos(sid: string, forgetRevision: boolean) {
 
   const map = $todosBySession.get()
 
-  if (sid in map) {
+  if (hasSessionTodos(map, sid)) {
     const { [sid]: _drop, ...rest } = map
     $todosBySession.set(rest)
   }
@@ -121,7 +126,7 @@ function dropSessionTodos(sid: string, forgetRevision: boolean) {
   if (forgetRevision) {
     const revisions = $todoRevisionsBySession.get()
 
-    if (sid in revisions) {
+    if (Object.hasOwn(revisions, sid)) {
       const { [sid]: _drop, ...rest } = revisions
       $todoRevisionsBySession.set(rest)
     }
@@ -138,7 +143,7 @@ export function clearSessionTodos(sid: string) {
 // composer forever. A finished list is left untouched so its short linger
 // still shows the last checkmark landing.
 export function clearActiveSessionTodos(sid: string) {
-  const todos = $todosBySession.get()[sid]
+  const todos = getSessionTodos($todosBySession.get(), sid)
 
   if (!todos || !todoListActive(todos)) {
     return

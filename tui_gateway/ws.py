@@ -6,6 +6,7 @@ after accept). Mount as ``@app.websocket("/api/ws") async def ws(ws): await hand
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import concurrent.futures
 import json
 import logging
@@ -17,6 +18,7 @@ from typing import Any
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
+from tui_gateway.transport import serialize_frame
 
 _log = logging.getLogger(__name__)
 
@@ -92,8 +94,9 @@ class WSTransport:
         self._ws = ws
         self._loop = loop
         self._peer = peer
-        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server._ws_auth_reason``; None
-        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers.
+        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server_chat._ws_auth_reason``; None
+        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
+        #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
         self._closed = False
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
@@ -104,15 +107,19 @@ class WSTransport:
         self._token_flush_armed = False
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
+        self._abort_requested = False
+
+    def _on_loop(self) -> bool:
+        try:
+            return asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            return False
 
     def write(self, obj: dict) -> bool:
         if self._closed:
             return False
-        line = json.dumps(obj, ensure_ascii=False)
-        try:
-            on_loop = asyncio.get_running_loop() is self._loop
-        except RuntimeError:
-            on_loop = False
+        line = serialize_frame(obj, self._peer, _log)
+        on_loop = self._on_loop()
         # Streamed token: buffer it and arm the flush timer; the worker returns immediately.
         # call_soon_threadsafe is safe from a worker or the loop.
         params = obj.get("params") if isinstance(obj, dict) else None
@@ -176,7 +183,7 @@ class WSTransport:
             return False
         with self._token_lock:
             batch, self._pending_tokens = self._pending_tokens, []
-            batch.append(json.dumps(obj, ensure_ascii=False))
+            batch.append(serialize_frame(obj, self._peer, _log))
         await self._safe_send_many(batch)
         return not self._closed
 
@@ -199,7 +206,7 @@ class WSTransport:
                     self._closed = True
                     _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
                                  self._peer, _WS_SEND_DEADLINE_S)
-                    self._loop.create_task(self._close_stalled_socket())
+                    self._loop.create_task(self._close_socket(1011, "send deadline"))
                     return
                 except UnicodeEncodeError as exc:
                     # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
@@ -217,13 +224,32 @@ class WSTransport:
             self._token_flush_handle.cancel()
             self._token_flush_handle = None
 
-    async def _close_stalled_socket(self) -> None:
-        """Close the peer socket after a send deadline so ``handle_ws``'s ``receive_text`` unblocks and its
-        disconnect teardown runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
+    def abort(self) -> None:
+        """Close from any thread and drop the socket with 1011 so the client reconnects and replays
+        (fanout overflow). One-shot: N mirrored sessions overflowing on this socket schedule one close."""
+        self._closed = True
+        with self._token_lock:
+            if self._abort_requested:
+                return
+            self._abort_requested = True
+        if self._on_loop():
+            self._finish_abort()
+            return
+        # A loop that already shut down has nothing left to cancel or close.
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._finish_abort)
+
+    def _finish_abort(self) -> None:  # loop thread
+        self.close()
+        self._loop.create_task(self._close_socket(1011, "fanout overflow"))
+
+    async def _close_socket(self, code: int, reason: str) -> None:
+        """Close the peer socket so ``handle_ws``'s ``receive_text`` unblocks and its disconnect teardown
+        runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
         try:
-            await self._ws.close(code=1011)
+            await self._ws.close(code=code)
         except Exception as exc:  # noqa: BLE001 - the peer is already gone; teardown is what matters
-            _log.debug("ws close after send deadline failed peer=%s error=%s", self._peer, exc)
+            _log.debug("ws close after %s failed peer=%s error=%s", reason, self._peer, exc)
 
 
 def _ws_peer_label(ws: Any) -> str:
@@ -304,6 +330,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # Live-apply skins Hermes activates mid-conversation, and track this peer for session-less
             # global broadcasts write_json can't route.
             server._ensure_skin_watcher()
+            server._ensure_lease_watcher()  # cross-process lease moves → display.lease
             server.register_live_transport(transport)
         # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
         # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the

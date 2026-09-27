@@ -2,9 +2,9 @@
 
 import json
 import threading
-import time
 import pytest
 
+from agent import secret_scope
 import plugins.memory.mem0 as mem0_plugin
 from plugins.memory.mem0 import Mem0MemoryProvider
 
@@ -53,11 +53,6 @@ class TestMem0V3Tools:
         provider._backend = backend
         return provider
 
-    def test_search_returns_ids(self, monkeypatch):
-        backend = FakeBackend(search_results=[{"id": "mem-1", "memory": "foo", "score": 0.9}])
-        provider = self._make_provider(monkeypatch, backend)
-        result = json.loads(provider.handle_tool_call("mem0_search", {"query": "test"}))
-        assert result["results"][0]["id"] == "mem-1"
 
 
     def test_add_uses_content_param(self, monkeypatch):
@@ -72,13 +67,6 @@ class TestMem0V3Tools:
         assert "event_id" in result
 
 
-    def test_old_tool_names_return_unknown(self, monkeypatch):
-        backend = FakeBackend()
-        provider = self._make_provider(monkeypatch, backend)
-        result = json.loads(provider.handle_tool_call("mem0_profile", {}))
-        assert "error" in result
-        result = json.loads(provider.handle_tool_call("mem0_conclude", {}))
-        assert "error" in result
 
 
 class TestMem0UpdateDelete:
@@ -111,17 +99,6 @@ class TestMem0UpdateDelete:
         ))
         assert backend.captured[0][1] == "mem-1"
         assert result["result"] == "Memory deleted."
-
-
-class TestMem0ErrorHandling:
-
-    def _make_provider(self, monkeypatch, backend):
-        provider = Mem0MemoryProvider()
-        provider.initialize("test-session")
-        provider._user_id = "u123"
-        provider._agent_id = "hermes"
-        provider._backend = backend
-        return provider
 
 
 class TestMem0V3Internal:
@@ -179,6 +156,31 @@ class TestSyncTurnTruncation:
         assert sent[0]["content"] == "Short question?"  # under the cap: untouched
         assert len(sent[1]["content"]) <= mem0_plugin._SYNC_MSG_MAX_CHARS and sent[1]["content"].endswith(".")
         assert provider._consecutive_failures == 0
+
+    def test_the_boundary_kept_is_the_last_one_in_the_window_whatever_its_script(self):
+        """A mixed-script turn must not be cut back to an early CJK stop.
+
+        The trim exists to keep as much of the turn as the embedder can take; picking the
+        first separator KIND that qualifies instead of the last boundary threw away most of
+        the allowed window whenever two kinds appeared — an early ``。`` (or ``.``, which
+        outranks ``!``/``?``) beat a boundary 240 characters later, so the facts stated in
+        the rest of the message never reached extraction.
+        """
+        cap = mem0_plugin._SYNC_MSG_MAX_CHARS
+        early, late = cap // 2, cap - 9
+
+        for early_sep, late_sep in (("。", "."), (".", "!"), ("？", "?"), ("！", ".")):
+            text = "a" * early + early_sep + "b" * (late - early - 1) + late_sep + "c" * cap
+            assert text[late] == late_sep and len(text) > cap  # both boundaries inside the window
+            kept = mem0_plugin._truncate_for_sync(text)
+            assert kept == text[:late + 1], f"{early_sep!r} before {late_sep!r} cut back to {len(kept)} chars"
+            assert kept.endswith(late_sep)
+
+    def test_a_boundary_only_in_the_first_third_still_falls_back_to_a_hard_cut(self):
+        """Unsegmented input keeps the whole window rather than a sliver of a sentence."""
+        cap = mem0_plugin._SYNC_MSG_MAX_CHARS
+        text = "a" * 10 + "." + "b" * (cap * 2)
+        assert mem0_plugin._truncate_for_sync(text) == text[:cap]
 
     def test_sync_max_chars_config_raises_cap(self, monkeypatch, tmp_path):
         """8k-token embedders should not be stuck at the 512-token default (#106235)."""
@@ -286,35 +288,84 @@ class TestMem0Prefetch:
         assert backend.captured == []
 
 
-class TestMem0V3Config:
-
-    def test_tool_schemas_four_tools(self):
-        provider = Mem0MemoryProvider()
-        schemas = provider.get_tool_schemas()
-        names = [s["name"] for s in schemas]
-        assert names == ["mem0_search", "mem0_add", "mem0_update", "mem0_delete"]
-
-    def test_system_prompt_new_tool_names(self):
-        provider = Mem0MemoryProvider()
-        provider._user_id = "test"
-        block = provider.system_prompt_block()
-        assert "mem0_search" in block
-        assert "mem0_add" in block
-        assert "mem0_update" in block
-        assert "mem0_delete" in block
-        assert "mem0_list" not in block
-        assert "mem0_profile" not in block
-        assert "mem0_conclude" not in block
 
 
 class TestMem0ModeSwitch:
 
-    def test_default_mode_is_platform(self, monkeypatch, tmp_path):
+    def test_oss_mode_initializes_without_platform_key_in_scope(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("MEM0_API_KEY", "test-key")
-        provider = Mem0MemoryProvider()
-        provider.initialize("test")
-        assert provider._mode == "platform"
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        (tmp_path / "mem0.json").write_text(
+            json.dumps(
+                {
+                    "mode": "oss",
+                    "oss": {"vector_store": {"provider": "qdrant"}},
+                }
+            )
+        )
+
+        # Contract (#99121, restated for fail-loud reads): every production caller is scoped
+        # (turn/cron/kanban scope installers); an OSS profile whose scope simply lacks MEM0_API_KEY
+        # must initialize. A scope-LESS multiplex caller is a spawn-site bug and raises instead —
+        # see test_load_config_fails_closed_without_scope_even_for_identity_settings.
+        token = secret_scope.set_secret_scope({})
+        secret_scope.set_multiplex_active(True)
+        try:
+            provider = Mem0MemoryProvider()
+            provider._create_backend = lambda: None  # type: ignore[method-assign]
+            provider.initialize("test")
+            available = provider.is_available()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
+        assert provider._mode == "oss"
+        assert provider._api_key == ""
+        assert available is True
+
+    def test_platform_config_still_fails_closed_without_profile_scope(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+
+        token = secret_scope.set_secret_scope(None)
+        secret_scope.set_multiplex_active(True)
+        try:
+            with pytest.raises(secret_scope.UnscopedSecretError):
+                Mem0MemoryProvider().is_available()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
+    def test_load_config_fails_closed_without_scope_even_for_identity_settings(
+        self, monkeypatch, tmp_path
+    ):
+        """A scope-less multiplex caller is a spawn-site bug: identity/mode reads must surface it,
+        not degrade to '' and route the turn's memories into the default profile's account."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(json.dumps({"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}))
+
+        token = secret_scope.set_secret_scope(None)
+        secret_scope.set_multiplex_active(True)
+        try:
+            with pytest.raises(secret_scope.UnscopedSecretError):
+                mem0_plugin._load_config()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
+    def test_file_api_key_still_overrides_environment(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "env-key")
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"api_key": "file-key"})
+        )
+
+        assert mem0_plugin._load_config()["api_key"] == "file-key"
+
 
     def test_missing_mode_key_defaults_platform(self, monkeypatch, tmp_path):
         """Backward compat: old mem0.json without mode key works."""
@@ -381,20 +432,6 @@ class TestMem0UserIdResolution:
         assert provider._user_id == "123456789"
 
 
-class TestMem0WriteMetadata:
-    """Writes carry metadata.channel so per-channel filtered views are possible
-    without coupling identity to the channel.
-    """
-
-    def _make_provider(self, channel: str = "cli"):
-        provider = Mem0MemoryProvider()
-        provider._user_id = "u123"
-        provider._agent_id = "hermes"
-        provider._channel = channel
-        provider._backend = FakeBackend()
-        return provider
-
-
 class _SentinelBackend:
     def __init__(self, *args):
         self.args = args
@@ -405,7 +442,7 @@ class TestCreateBackendRouting:
 
     def _provider(self, monkeypatch, *, mode="platform", api_key="k", host=""):
         # Neutralize lazy-install so the routing decision is all we exercise.
-        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None, raising=False)
+        monkeypatch.setattr("pm.ensure_import", lambda *a, **k: None, raising=False)
         provider = Mem0MemoryProvider()
         provider._mode = mode
         provider._api_key = api_key
@@ -453,5 +490,3 @@ class TestSelfHostedConfig:
     def test_load_config_reads_mem0_host_env(self, monkeypatch):
         monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
-
-

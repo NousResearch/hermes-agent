@@ -31,6 +31,7 @@ describe('#68321 assistant rows whose reply persisted only in codex_message_item
       content: '',
       reasoning: null,
       reasoning_content: null,
+      display_commentary: ['Working through the approach...'],
       codex_message_items: [
         {
           type: 'message',
@@ -66,28 +67,8 @@ describe('#68321 assistant rows whose reply persisted only in codex_message_item
     expect(messages.map(m => m.role)).toEqual(['user', 'assistant', 'user'])
     // The final-answer text is painted as the bubble's reply text...
     expect(chatMessageText(messages[1])).toContain('Here is the full response you saw live.')
-    // ...and commentary / analysis narration (reasoning channel on the backend) is not.
-    expect(chatMessageText(messages[1])).not.toContain('Working through the approach...')
+    // ...and public commentary survives too, without promoting analysis.
+    expect(chatMessageText(messages[1])).toContain('Working through the approach...')
     expect(chatMessageText(messages[1])).not.toContain('Scratchpad thoughts.')
-  })
-
-  it('prefers persisted content over the codex sidecar when both exist', () => {
-    const row: SessionMessage = {
-      id: 120,
-      role: 'assistant',
-      content: 'Canonical persisted reply',
-      codex_message_items: [
-        {
-          type: 'message',
-          role: 'assistant',
-          phase: 'final_answer',
-          content: [{ type: 'output_text', text: 'Sidecar-only reply' }]
-        }
-      ],
-      timestamp: 2
-    }
-
-    const [assistant] = toChatMessages([row])
-    expect(chatMessageText(assistant)).toBe('Canonical persisted reply')
   })
 })

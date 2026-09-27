@@ -1,7 +1,7 @@
 # Radio
 
 Bundled Hermes Desktop plugin, **off by default**. Enable **Radio** in
-Settings → Plugins. Playback starts only when you press Play.
+Capabilities → Plugins. Playback starts only when you press Play.
 
 ## Controls
 

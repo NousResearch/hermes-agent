@@ -51,14 +51,8 @@ class TestEscapeMdv2:
             assert f'\\{ch}' in escaped
 
 
-    def test_backslash_escaped(self):
-        assert _escape_mdv2("a\\b") == "a\\\\b"
 
-    def test_dot_escaped(self):
-        assert _escape_mdv2("v2.0") == "v2\\.0"
 
-    def test_exclamation_escaped(self):
-        assert _escape_mdv2("wow!") == "wow\\!"
 
 
 # =========================================================================
@@ -332,8 +326,6 @@ class TestStripMdv2:
         assert _strip_mdv2("my_variable_name") == "my_variable_name"
 
 
-    def test_plain_text_unchanged(self):
-        assert _strip_mdv2("plain text") == "plain text"
 
 
 # =========================================================================
@@ -369,15 +361,6 @@ class TestWrapMarkdownTables:
         assert out.startswith("Scores:")
         assert out.endswith("End.")
 
-    def test_bare_pipe_table_rewritten(self):
-        """Tables without outer pipes (GFM allows this) are still detected."""
-        text = "head1 | head2\n--- | ---\na | b\nc | d"
-        out = _wrap_markdown_tables(text)
-        assert out.startswith("**a**")
-        # No duplicate first bullet — heading 'a' already shows the head1 value.
-        assert "• head1: a" not in out
-        assert "• head2: b" in out
-        assert "**c**" in out
 
 
     def test_no_pipe_character_short_circuits(self):

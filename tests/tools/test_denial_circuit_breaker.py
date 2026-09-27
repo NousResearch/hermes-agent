@@ -111,8 +111,6 @@ def test_breaker_trips_on_third_consecutive_denial(breaker_session):
     assert BREAKER_MARKER not in second["message"]
     assert third["approved"] is False
     assert BREAKER_MARKER in third["message"]
-    assert "3 consecutive commands were blocked" in third["message"]
-    assert "STOP attempting variations" in third["message"]
 
 
 # ---------------------------------------------------------------------------

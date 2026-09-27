@@ -1,0 +1,51 @@
+name: entropicmem
+repo: https://github.com/Ufonik88/EntropicMem
+sha: 060063d45111e05f6ab213132927059fa8b2e194
+subdir: "plugins/entropicmem"
+description: >-
+  Durable local memory for Hermes agents: SQLite FTS5 facts with cited, explainable recall; a
+  Markdown vault with knowledge-graph export and an interactive visual graph; and turn-prefetch
+  context injection with reason tokens. Write policy auto-redacts high-confidence secrets at write
+  time (other PII types are warn-only findings) and stored-content injection screening flags and
+  warns on recall and prefetch payloads (flag-and-warn, fail-open by design, not a blocking
+  filter). Includes a 34-command CLI, destructive-op gates with automatic backups, and an
+  append-only audit log. Disclosure — all memory data (vault markdown, memory.db, index.db, backups) stays local under
+  HERMES_HOME/entropicmem/; a shared publish DB defaults to ~/.hermes/entropicmem-shared/. The CLI init command appends
+  ENTROPICMEM_* settings to HERMES_HOME/.env (append-only). If the optional sentence-transformers extra is importable in
+  the host venv, the provider's remember path downloads all-MiniLM-L6-v2 weights from huggingface.co on first use (no
+  config gate); otherwise the provider has no network egress. The CLI ingest command fetches a user-supplied URL; CLI
+  graph export writes to ./export in the cwd by default and its HTML loads D3/marked from d3js.org and cdn.jsdelivr.net
+  when opened; CLI graph serve starts a loopback HTTP server. entropicmem_patch_core edits the plugin's own Core-memory
+  markdown (Persona/User_Profile), not Hermes core, and is off by default.
+maintainer: Ufonik88
+tier: community
+category: memory
+requires_hermes: ">=0.21"
+docs_url: https://github.com/Ufonik88/EntropicMem/blob/060063d45111e05f6ab213132927059fa8b2e194/docs/SELF_INSTALL.md
+version: "2.8.0"
+image: https://raw.githubusercontent.com/Ufonik88/EntropicMem/060063d45111e05f6ab213132927059fa8b2e194/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/060063d45111e05f6ab213132927059fa8b2e194/docs/assets/graph-galaxy.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/060063d45111e05f6ab213132927059fa8b2e194/docs/assets/note-modal.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/060063d45111e05f6ab213132927059fa8b2e194/docs/assets/cli-recall.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/060063d45111e05f6ab213132927059fa8b2e194/docs/assets/timeline.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/060063d45111e05f6ab213132927059fa8b2e194/docs/assets/prefetch-context.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - entropicmem_remember
+    - entropicmem_recall
+    - entropicmem_query
+    - entropicmem_patch_core
+    - entropicmem_stats
+    - entropicmem_get
+    - entropicmem_consolidate
+  provides_hooks:
+    - on_memory_write
+    - on_session_switch
+    - on_session_end
+    - on_turn_start
+    - on_pre_compress
+  provides_middleware: []
+  requires_env: []

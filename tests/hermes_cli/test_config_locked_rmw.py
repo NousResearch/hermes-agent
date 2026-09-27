@@ -21,7 +21,7 @@ _A_SENTINEL = "a-value-7f3e"  # value written by the stale saver; must never rea
 
 
 def _disk(path: Path) -> dict:
-    return hermes_yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return hermes_yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
 
 
 def _interleaved_write(writer: str) -> None:
@@ -77,7 +77,7 @@ def test_stale_whole_document_save_keeps_a_write_that_landed_after_its_read(
     assert after["approvals"]["destructive_slash_confirm"] is False, "the interleaved write was reverted"
     assert after["approvals"]["mode"] == "smart"
     assert after["a_writer"]["key"] == _A_SENTINEL
-    assert "# user comment" in cfg_path.read_text(encoding="utf-8")
+    assert "# user comment" in cfg_path.read_text(encoding="utf-8-sig")
     # One audit line for the stale save: it names the path the caller changed, never a value, and
     # never claims the key it did not touch.
     audit = [r.getMessage() for r in caplog.records if str(cfg_path) in r.getMessage()]

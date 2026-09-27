@@ -108,7 +108,11 @@ _STORE_ACTIONS = {
                 lambda label, content, old_text: (f"replace in {label}",
                                                   f"entry matching: {old_text}\nwhole entry becomes: {content}")),
     "remove": (lambda store, target, content, old_text, entry=None: store.remove(target, old_text, entry),
-               lambda label, content, old_text: (f"remove from {label}", old_text or ""))}
+               lambda label, content, old_text: (f"remove from {label}", old_text or "")),
+    "patch": (lambda store, target, content, old_text, entry=None: store.patch(target, old_text, content, entry),
+              lambda label, content, old_text: (f"patch in {label}",
+                                                f"entry matching: {old_text}\nspan '{old_text}' becomes: {content} "
+                                                "(rest of the entry is kept)"))}
 
 
 def _batch_op_line(op: Dict[str, Any]) -> str:
@@ -116,6 +120,8 @@ def _batch_op_line(op: Dict[str, Any]) -> str:
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
         return f"- remove: {old}"
+    if act == "patch":
+        return f"- patch span '{old}' -> '{content}' (rest of the entry is kept)"
     # Whole-entry contract (#117952): the approver must not read this as a span patch.
     return (f"- replace entry matching '{old}' -> whole entry becomes: {content}" if act == "replace"
             else f"- {act}: {content}")
@@ -139,7 +145,7 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     the Codex backend rejects): return the inventory plus a retry instruction."""
     if action == "add" and not content:
         return tool_error("Content is required for 'add' action.", success=False)
-    if action in ("replace", "remove") and not old_text:
+    if action in ("replace", "remove", "patch") and not old_text:
         replace_hint = (" For 'replace', content is the COMPLETE new entry -- the whole "
                         "matched entry is overwritten, not just the old_text span."
                         if action == "replace" else "")
@@ -151,10 +157,12 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
             "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
     if action == "replace" and not content:
         return tool_error("content is required for 'replace' action.", success=False)
+    if action == "patch" and not content:
+        return tool_error("content (the new span text) is required for 'patch' action.", success=False)
     return None
 
 
-_BG_DELETE_ACTIONS = ("replace", "remove")
+_BG_DELETE_ACTIONS = ("replace", "remove", "patch")
 
 
 def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -232,7 +240,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
             return gate_result
         return json.dumps(store.apply_batch(target, operations), ensure_ascii=False)
     if action not in _STORE_ACTIONS:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, patch, remove", success=False)
     invalid = (_validate_single_op(store, action, target, content, old_text)
                or _background_delete_gate(store, action, None, target, content, old_text)
                or _apply_write_gate(store, action, target, content, old_text))
@@ -333,8 +341,11 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform (single-op shape). Omit when using 'operations'."
+                "enum": ["add", "replace", "patch", "remove"],
+                "description": ("The action to perform (single-op shape). Omit when using 'operations'. "
+                                "'patch' edits ONE SPAN inside the matched entry (old_text -> content, rest of the "
+                                "entry kept) -- prefer it when changing part of a multi-fact entry instead of "
+                                "rewriting the whole entry with 'replace'.")
             },
             "target": {
                 "type": "string",
@@ -343,11 +354,11 @@ MEMORY_SCHEMA = {
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace'. For 'replace' it is the COMPLETE new entry text: the whole matched entry is overwritten, so include everything you want to keep. Alias: 'new_text' is also accepted (same full-entry meaning)."
+                "description": "The entry content. Required for 'add', 'replace' and 'patch'. For 'replace' it is the COMPLETE new entry text: the whole matched entry is overwritten, so include everything you want to keep. For 'patch' it is only the NEW SPAN TEXT that replaces old_text inside the matched entry. Alias: 'new_text' is also accepted."
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry, it is not spliced out. Omit only for 'add'."
+                "description": "REQUIRED for 'replace', 'patch' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry ('patch' also splices exactly this span out; 'replace'/'remove' do not splice it). Omit only for 'add'."
             },
             "new_text": {
                 "type": "string",
@@ -363,8 +374,8 @@ MEMORY_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                        "content": {"type": "string", "description": "Entry content for add/replace. For replace, the COMPLETE new entry (whole entry is overwritten). Alias: 'new_text'."},
+                        "action": {"type": "string", "enum": ["add", "replace", "patch", "remove"]},
+                        "content": {"type": "string", "description": "Entry content for add/replace. For replace, the COMPLETE new entry (whole entry is overwritten); for patch, the NEW SPAN TEXT replacing old_text inside the entry. Alias: 'new_text'."},
                         "new_text": {"type": "string", "description": "Alias for 'content' in a batch op."},
                         "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
                     },

@@ -9,6 +9,7 @@ import pytest
 
 from plugins.platforms.matrix.read_context import read_matrix_context
 from plugins.platforms.matrix.reply_context import MatrixEventContextCache
+from tests.gateway.test_matrix import _make_adapter
 
 
 def _message(event_id, body, *, ts=None, thread=None, sender="@alice:server"):
@@ -44,7 +45,9 @@ def _adapter(client, **overrides):
         _is_sender_authorized=lambda user, **kw: user == "@alice:server",
     )
     values.update(overrides)
-    return SimpleNamespace(**values)
+    adapter = _make_adapter()
+    vars(adapter).update(values)
+    return adapter
 
 
 def test_gateway_binds_receiving_adapter_and_gateway_loop_for_matrix_reads():

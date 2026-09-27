@@ -187,6 +187,13 @@ share the lane. With `group_sessions_per_user: true` (default), Alice and Bob ge
 separate Project B sessions. With `group_sessions_per_user: false`, the room has
 one shared Project B transcript.
 
+During a live Matrix turn, the agent can use `matrix_read` to inspect the
+current room's name, topic, alias, join rule, history visibility, encryption,
+joined members, power levels, and pinned messages. Member and pin results are
+bounded by the tool's `limit` argument. Pinned messages use the bot's Matrix
+client and report individual fetch or decryption errors. The tool applies the
+same room and sender access rules as Matrix history reads.
+
 This guide walks you through the full setup process — from creating your bot account to sending your first message.
 
 ## Step 1: Create a Bot Account

@@ -40,3 +40,33 @@ def test_launcher_delegates_to_argparse_entrypoint(monkeypatch):
     runpy.run_path(str(launcher_path), run_name="__main__")
 
     assert called == ["hermes_cli.main"]
+
+
+def test_installation_command_refuses_unpublished_launcher(monkeypatch, tmp_path):
+    """PM workspace copies resolve a store Python without ever publishing
+    .hermes/bin — the returned command must stay executable everywhere
+    instead of embedding a missing path (issue #125043)."""
+    from hermes_cli import _launchers
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: Path("/usr/bin/python3"))
+
+    command = _launchers.installation_command(workspace, ["gateway", "run"])
+    assert str(workspace / ".hermes" / "bin" / "hermes") not in command
+    assert command[0] == "/usr/bin/python3" and command[1:3] == ["-I", "-c"]
+    assert command[-2:] == ["gateway", "run"]
+
+    # A published, executable launcher keeps the exact-install path.
+    local = workspace / ".hermes" / "bin"
+    local.mkdir(parents=True)
+    shim = local / "hermes"
+    shim.write_text("#!/bin/sh\n", encoding="utf-8")
+    shim.chmod(0o755)
+    assert _launchers.installation_command(workspace, ["gateway", "run"])[0] == str(shim)
+    assert _launchers.installation_command(
+        workspace, module="gateway.cgroup_cleanup")[1] == "--run-module"
+
+    # A non-executable launcher is as unusable as a missing one.
+    shim.chmod(0o644)
+    assert _launchers.installation_command(workspace, ["gateway", "run"])[0] != str(shim)

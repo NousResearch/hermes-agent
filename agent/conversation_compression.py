@@ -1497,6 +1497,22 @@ def _emit_compression_attempt_telemetry(
         logger.info(
             "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
+        _record_compression_metric(agent, commit_status=commit_status, failure_class=failure_class)
+
+
+def _record_compression_metric(agent: Any, *, commit_status: str, failure_class: str | None) -> None:
+    """Count this attempt once in shared metrics. The pending record lives on the agent, not the
+    compressor: abort paths restore the compressor snapshot (seed included) before they emit."""
+    pending = vars(agent).pop("_compression_metric_pending", None)
+    if not pending:
+        return
+    from hermes_cli.observability.shared_metrics_events import record_compression
+
+    outcome = "success" if commit_status == "committed" else "skipped" if failure_class == "lock_contended" else "failed"
+    record_compression(
+        trigger=pending["trigger"], outcome=outcome, tokens_before=pending["tokens_before"],
+        context_length=getattr(agent.context_compressor, "context_length", None),
+    )
 
 
 def _existing_system_prompt(agent: Any, system_message: str) -> str:
@@ -3968,7 +3984,10 @@ class _Attempt:
         )
 
 
-def _begin_compression_attempt(agent: Any, *, force: bool, defer_notification: bool) -> _Attempt:
+def _begin_compression_attempt(
+    agent: Any, *, force: bool, defer_notification: bool, trigger: Optional[str] = None,
+    approx_tokens: Optional[int] = None,
+) -> _Attempt:
     """Snapshot + claim the compressor, reset per-attempt agent signals, seed telemetry.
     The claim stops a late-unwinding sibling (stall-fallback overlap) from restoring its snapshot over ours or
     clearing our cancellation consult. Signals are cleared at the VERY TOP, before codex/breaker
@@ -3992,11 +4011,15 @@ def _begin_compression_attempt(agent: Any, *, force: bool, defer_notification: b
     agent._compression_blocked_transient = None
     started_at = time.monotonic()
     attempt_id = uuid.uuid4().hex
+    trigger = trigger or ("manual" if force else "auto")
     with contextlib.suppress(Exception):
         agent._compression_attempt_id = attempt_id
+        agent._compression_metric_pending = {
+            "trigger": trigger,
+            "tokens_before": approx_tokens or getattr(agent.context_compressor, "last_prompt_tokens", None),
+        }
         agent.context_compressor._compression_telemetry_seed = {
-            "attempt_id": attempt_id, "session_id": agent.session_id or "",
-            "trigger_source": "manual" if force else "auto",
+            "attempt_id": attempt_id, "session_id": agent.session_id or "", "trigger_source": trigger,
         }
     return _Attempt(snapshot, generation, started_at)
 
@@ -4042,6 +4065,7 @@ def compress_context(
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
     commit_fence: Optional[CompressionCommitFence] = None, verbatim_tail: Optional[list] = None,
+    trigger: Optional[str] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
     ``force`` (manual /compress) clears the summary-failure cooldown; ``bypass_cooldown`` (provider-proven
@@ -4064,8 +4088,13 @@ def compress_context(
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
     session state after its caller has moved on. verbatim_tail: The exchanges ``/compress here N`` keeps
     after ``messages``; an in-place commit stores them after the compacted head and returns head + tail.
+    trigger: Why this attempt runs (``"overflow"`` for provider-rejected requests); defaults to manual/auto
+    from ``force``. Feeds attempt telemetry only.
     """
-    attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
+    attempt = _begin_compression_attempt(
+        agent, force=force, defer_notification=defer_context_engine_notification, trigger=trigger,
+        approx_tokens=approx_tokens,
+    )
 
     # Codex owns the real thread; route compaction to its own compact (config
     # compression.codex_app_server_auto). Memory handoff is Hermes-only: no native

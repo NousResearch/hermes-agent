@@ -3372,15 +3372,23 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
     def _prune_old_tool_results(
         self, messages: list[dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None, min_prune_chars: int = _PRUNE_MIN_CHARS,
+        protect_head_count: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
         """Project old tool-result bodies to bounded summaries without rewriting tool-call arguments.
         Returns ``(messages, count)``; token budget (when given) takes priority over the
-        message-count floor."""
+        message-count floor.
+
+        ``protect_head_count`` shields the first N messages from the demote pass, matching the
+        ``protect_first_n`` head that the later summarization phase already honours (#123935). Dedup
+        (Pass 1) stays head-agnostic — it is lossless (older exact copies back-reference the newest full
+        one), so it never stubs the head. The head bound decays to 0 after the first compression via
+        ``_effective_protect_first_n``."""
         if not messages:
             return messages, 0
         result = [m.copy() for m in messages]
         call_id_to_tool = _tool_calls_by_id(result)
         prune_boundary = self._prune_boundary(result, protect_tail_count, protect_tail_tokens)
+        head_bound = max(0, protect_head_count)
         # The pending tool round is output the model asked for and has not read yet: a stub makes it re-run the
         # call (side effects included) or answer blind. Passes 2-4 spare it, call args included, unless it alone
         # exceeds the tail's hard share of the input budget the threshold is computed from (the output reservation
@@ -3394,10 +3402,12 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         protected_skills = _collect_protected_skill_names(result, prune_boundary)
         # Pass 2: summarize old tool results. Tool-call arguments are canonical execution
         # records and are never rewritten; summary input is bounded separately by
-        # _render_tool_call_for_summary().
+        # _render_tool_call_for_summary(). Starts at ``head_bound`` so a protected-head tool result
+        # (e.g. the first kanban_show task card) is never demoted to a 1-line stub while
+        # ``protect_first_n`` still applies (#123935).
         pruned += sum(
             self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, protected_skills)
-            for i in range(max(0, prune_boundary))
+            for i in range(head_bound, max(0, prune_boundary))
         )
         # Pass 3: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
@@ -3518,7 +3528,9 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
             return messages, 0
         pruned_msgs, pruned_count = self._prune_old_tool_results(
-            messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
+            messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None,
+            min_prune_chars=self.proactive_prune_min_result_chars,
+            protect_head_count=self._protect_head_size(messages),
         )
         if not pruned_count:
             # No-op contract: return the INPUT object so callers can gate on `result is not input`.
@@ -5665,9 +5677,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
         # assembled and measured from the pruned copy (#61932).
         canonical_messages = self._drop_blank_echoes(messages)
-        # Phase 1: Prune old tool results (cheap, no LLM call)
+        # Phase 1: Prune old tool results (cheap, no LLM call). Shield the same protected head the
+        # summarization phase honours, so the first turn's tool results aren't stubbed first (#123935).
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
+            protect_head_count=self._protect_head_size(messages),
         )
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)

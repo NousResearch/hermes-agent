@@ -83,3 +83,38 @@ def test_forced_refspec_updates_shallow_clone_to_new_tip(narrow_clone: Path) -> 
     assert compare_branch == "origin/main"
     landed = _run(narrow_clone, "rev-parse", "--verify", "--quiet", "origin/main").stdout.strip()
     assert landed == new_tip
+
+
+def test_detached_narrow_clone_counts_from_the_pre_checkout_head(narrow_clone: Path, monkeypatch) -> None:
+    """A narrow clone is detached with no local branch, so the updater runs ``checkout -B main
+    origin/main``, which lands ON the target. Counting ``HEAD..origin/main`` afterwards read 0 and
+    the update finished as "Already up to date!" with dependencies and migrations skipped."""
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", narrow_clone)
+    monkeypatch.setattr("hermes_cli.source_check._github_compare_behind", lambda *a, **k: None)
+    pinned = _run(narrow_clone, "rev-parse", "HEAD").stdout.strip()
+
+    def plan():
+        fetch_result, _ = update_cmd_check.fetch_compare_branch(git_cmd, narrow_clone, "main", ["--depth", "1"])
+        assert fetch_result.returncode == 0, fetch_result.stderr
+        return update_cmd._prepare_checkout_for_update(
+            git_cmd, "main", update_cmd._current_branch_name(git_cmd, check=True), is_fork=False,
+            assume_yes=True, gateway_mode=False, gw_input_fn=None, switch_branch=False,
+            _windows_gateway_resume=None)
+
+    # Pinned tag == origin/main: genuinely up to date.
+    assert plan().commit_count == 0
+
+    # Back to the narrow shape, then advance origin/main past the pinned tag.
+    assert _run(narrow_clone, "checkout", "-q", "--detach", "v1").returncode == 0
+    assert _run(narrow_clone, "branch", "-q", "-D", "main").returncode == 0
+    adv = narrow_clone.parent / "advance"
+    assert _run(narrow_clone.parent, "clone", "-q", f"file://{narrow_clone.parent / 'origin.git'}", str(adv)).returncode == 0
+    assert _run(adv, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "b").returncode == 0
+    assert _run(adv, "push", "-q", "origin", "main").returncode == 0
+
+    behind = plan()
+    assert behind.commit_count != 0  # -1 here: shallow, and the compare API is stubbed out
+    # _pull_updates' did-HEAD-move guard compares against this, not the already-moved HEAD.
+    assert behind.pre_sync_sha == pinned

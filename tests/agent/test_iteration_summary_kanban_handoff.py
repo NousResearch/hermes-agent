@@ -16,6 +16,7 @@ import pytest
 
 from agent.chat_completion_helpers import _EMPTY_SUMMARY_RESPONSE
 from agent.kanban_stop import _HANDOFF_TEXT_FIELDS, _TERMINAL_KANBAN_TOOLS, terminal_handoff_text
+from agent.redact import redact_sensitive_text
 
 _ANSWER = "Two of the three exports were rebuilt; the third needs the missing date range."
 
@@ -92,6 +93,26 @@ def test_the_hand_off_wins_over_narration_next_to_it(agent, worker):
     response = _completion(_call("kanban_block", {"reason": _ANSWER}), content="I'll hand this card back now.")
 
     assert _summarize(agent, response)[0] == _ANSWER
+
+
+def test_the_hand_off_text_is_redacted_like_the_kanban_tools_store_it(agent, worker, monkeypatch):
+    # The board call never runs, so the tool's own redaction never sees these bytes; the summary
+    # path redacts them itself, even with ``security.redact_secrets: false``.
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    reason = "need the prod key: sk-ant-api03-REALLOOKINGKEY0123456789abcdefXYZ"
+
+    text, messages = _summarize(agent, _completion(_call("kanban_block", {"reason": reason})))
+
+    assert text == redact_sensitive_text(reason, force=True) != reason
+    assert "REALLOOKINGKEY" not in text
+    assert messages[-1]["content"] == text
+
+
+def test_a_lone_surrogate_in_the_hand_off_text_is_replaced(agent, worker):
+    text, messages = _summarize(agent, _completion(_call("kanban_block", {"reason": "blocked on \ud800 input"})))
+
+    assert text == "blocked on \ufffd input"
+    assert messages[-1]["content"].encode("utf-8")
 
 
 def test_outside_a_worker_the_tool_calls_are_still_discarded(agent, monkeypatch, caplog):

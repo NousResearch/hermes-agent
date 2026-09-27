@@ -13,6 +13,8 @@ import os
 from typing import Any, Iterable, Optional
 
 from agent.delegation_context import owned_kanban_task
+from agent.message_sanitization import _sanitize_surrogates
+from agent.redact import redact_sensitive_text
 
 
 # Every tool that ends this worker's responsibility for the card, not just the two that
@@ -96,7 +98,9 @@ def terminal_handoff_text(tool_calls: Iterable[Any] | None) -> str:
     """Hand-off text of the first terminal board call in ``tool_calls``; ``""`` when none.
 
     A call wrapped in the tool-search bridge (``tool_call``) is unwrapped with the parser the
-    bridge dispatcher uses."""
+    bridge dispatcher uses. The call itself never runs, so its own redaction never applies: the
+    text is redacted here as the kanban tools store it (``force=True``) and scrubbed of lone
+    surrogates, before it becomes the final response and the transcript row."""
     from tools.tool_search_catalog import TOOL_CALL_NAME
     from tools.tool_search_validation import normalize_tool_call_entries
 
@@ -111,7 +115,7 @@ def terminal_handoff_text(tool_calls: Iterable[Any] | None) -> str:
             for field in _HANDOFF_TEXT_FIELDS.get(entry["name"], ()):
                 value = entry["arguments"].get(field)
                 if isinstance(value, str) and value.strip():
-                    return value.strip()
+                    return redact_sensitive_text(_sanitize_surrogates(value.strip()), force=True)
     return ""
 
 

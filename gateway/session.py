@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field, fields
 from typing import Dict, List, Optional, Any
 
+from hermes_constants import VALID_REASONING_EFFORTS
+
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
 from gateway.session_identity import transport_profile_of
@@ -477,6 +479,43 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
     return cleaned or None
 
 
+PERSISTABLE_REASONING_OVERRIDE_KEYS = ("enabled", "effort")
+
+
+def sanitize_reasoning_override(
+    override: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Return the credential-free canonical shape for a /reasoning override."""
+    if not isinstance(override, dict):
+        return None
+    enabled = override.get("enabled")
+    if not isinstance(enabled, bool):
+        return None
+    cleaned: Dict[str, Any] = {"enabled": enabled}
+    if enabled:
+        effort = override.get("effort")
+        if effort not in VALID_REASONING_EFFORTS:
+            return None
+        cleaned["effort"] = str(effort)
+    return {
+        key: cleaned[key]
+        for key in PERSISTABLE_REASONING_OVERRIDE_KEYS
+        if key in cleaned
+    }
+
+
+# /fast tiers stored as-is. "normal" is the explicit-normal choice (live ``None``); an absent
+# field means "inherit agent.service_tier", so the two must stay distinct on disk.
+PERSISTABLE_SERVICE_TIERS = frozenset({"priority", "auto", "cold"})
+
+
+def sanitize_service_tier_override(value: Any) -> Optional[str]:
+    """``"normal"`` or a persistable tier, else ``None`` (inherit); drops unknown values."""
+    if value == "normal" or value in PERSISTABLE_SERVICE_TIERS:
+        return str(value)
+    return None
+
+
 @dataclass
 class SessionEntry:
     """Routing-index entry: maps a session key to its current session ID and metadata."""
@@ -529,6 +568,12 @@ class SessionEntry:
     # Session-scoped /model override (model/provider/base_url ONLY — never credentials, see
     # sanitize_model_override). Persisted so a restart keeps the chosen model.
     model_override: Optional[Dict[str, str]] = None
+    # Session-scoped /reasoning override. Only ``enabled`` and a canonical
+    # effort are persisted; arbitrary runtime/provider fields are discarded.
+    reasoning_override: Optional[Dict[str, Any]] = None
+    # Session-scoped /fast tier: "normal" (explicit normal), "priority", "auto" or "cold";
+    # None = inherit the configured tier (see sanitize_service_tier_override).
+    service_tier_override: Optional[str] = None
     # Profile owning the bot that received this lane's traffic (``RoutingIdentity.transport_profile``,
     # "default" spelled out). The key namespace only says where the turn RUNS; after a restart this is
     # what says which bot may deliver to it. None = unknown (row predates the field, or standalone).
@@ -562,6 +607,13 @@ class SessionEntry:
         if self.model_override:
             # Defence-in-depth against an unsanitized dict stored directly.
             result["model_override"] = sanitize_model_override(self.model_override)
+        if self.reasoning_override is not None:
+            result["reasoning_override"] = sanitize_reasoning_override(
+                self.reasoning_override
+            )
+        tier = sanitize_service_tier_override(self.service_tier_override)
+        if tier is not None:
+            result["service_tier_override"] = tier
         if self.transport_profile:
             result["transport_profile"] = self.transport_profile
         if self.origin:
@@ -604,6 +656,10 @@ class SessionEntry:
             last_resume_marked_at=_parse_iso(data.get("last_resume_marked_at")),
             active_turn_token=token, active_turn_started_at=started_at,
             model_override=sanitize_model_override(data.get("model_override")),
+            reasoning_override=sanitize_reasoning_override(
+                data.get("reasoning_override")
+            ),
+            service_tier_override=sanitize_service_tier_override(data.get("service_tier_override")),
             transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
             **plain,
         )
@@ -1088,21 +1144,8 @@ class SessionStore(
 
     def set_model_override(self, session_key: str, override: Optional[Dict[str, Any]]) -> None:
         """Persist (or clear, with ``None``) the /model override; non-secret keys only."""
-        from dataclasses import replace
-
-        cleaned = sanitize_model_override(override)
-
-        with self._lock:
-            entry = self._entry_locked(session_key)
-            if entry is None or entry.model_override == cleaned:
-                return
-            # Publish only after persistence so a failed clear remains retryable.
-            data, generation = self._snapshot_routing_locked()
-            # Snapshot reconciliation may replace the entry after database recovery.
-            entry = self._entries[session_key]
-            data[session_key] = replace(entry, model_override=cleaned).to_dict()
-            self._persist_routing_data(data, generation)
-            entry.model_override = cleaned
+        # Publish only after persistence so a failed clear remains retryable.
+        self._replace_entry_fields(session_key, {"model_override": sanitize_model_override(override)})
 
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""

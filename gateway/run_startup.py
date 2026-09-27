@@ -591,6 +591,11 @@ class GatewayStartupMixin:
             # Already being resumed (e.g. scheduled at startup, still in-flight) — no second turn.
             if self._is_session_running(entry.session_key):
                 continue
+            # This claim cannot await the admission lock: while a runtime-options commit owns it,
+            # defer instead of claiming underneath it. The commit reschedules on release.
+            if self._session_admission_lock_held(entry.session_key):
+                self._defer_resume_until_admission_free(entry.session_key, platform)
+                continue
             source = self._restored_source(entry)
             adapter = self._delivery_adapter_for(source)
             if adapter is None:

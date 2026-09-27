@@ -887,6 +887,18 @@ export function excludeProjectSessions(
   }
 }
 
+/** A retained drill-in snapshot must yield to explicit, newer project ownership. */
+export function reconcileProjectOwnership(
+  project: SidebarProjectTree,
+  owners: ReadonlyMap<string, string>
+): SidebarProjectTree {
+  return excludeProjectSessions(project, session => {
+    const owner = ownerOf(owners, session)
+
+    return owner !== undefined && owner !== project.id
+  })
+}
+
 /** Project-level overlay: {@link overlayRepoLanes} across every repo subtree. */
 export function overlayLiveLanes(
   project: SidebarProjectTree,

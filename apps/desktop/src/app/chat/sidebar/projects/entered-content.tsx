@@ -21,6 +21,7 @@ import {
   liveSessionsForProject,
   mergeRepoWorktreeGroups,
   overlayRepoLanes,
+  reconcileProjectOwnership,
   type SidebarProjectTree,
   type SidebarSessionGroup,
   type SidebarWorkspaceTree
@@ -32,7 +33,7 @@ import { WorkspaceAddButton, WorkspaceHeader, WorkspaceShowMoreRow } from './wor
 // linked worktrees nest, shown by branch. Multi-folder projects keep per-repo
 // headers so the folders stay distinguishable.
 export function EnteredProjectContent({
-  project,
+  project: snapshot,
   renderRows,
   onNewSession,
   onNewSessionSplit,
@@ -50,6 +51,7 @@ export function EnteredProjectContent({
 }) {
   const projects = useStore($projects)
   const owners = useStore($projectOwnerBySessionId)
+  const project = useMemo(() => reconcileProjectOwnership(snapshot, owners), [snapshot, owners])
 
   const projectLiveSessions = useMemo(
     () => liveSessionsForProject(project, liveSessions ?? [], projects, owners),

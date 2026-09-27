@@ -885,6 +885,16 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True and result.should_fallback is False
 
+    def test_proxy_paraphrase_without_thinking_word_reaches_signature_strip(self):
+        """Relay proxies paraphrase the thinking-signature 400 without the word "thinking"
+        ("bad request: invalid signature"); the phrase must still reach the one-shot thinking
+        strip instead of hard-looping — the degrade promise the preserve_thinking opt-in makes
+        (#120723)."""
+        e = MockAPIError("Error code: 400 - bad request: invalid signature", status_code=400)
+        result = classify_api_error(e, provider="custom", model="claude-sonnet-4")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True and result.should_fallback is False
+
     @pytest.mark.parametrize(("provider", "model", "message", "code"), [
         ("azure-foundry", "gpt-6-astra", "Conflicting authenticated continuation identities.", "invalid_value"),
         # Custom Responses endpoint wraps the replay rejection in a generic bad_request (#95834).

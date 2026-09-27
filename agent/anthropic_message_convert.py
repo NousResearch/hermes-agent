@@ -596,7 +596,11 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
                 if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
             ]
             m["content"] = new_content or [_text_block("(empty)")]
-        elif trusted_proxy:
+        elif trusted_proxy and idx == last_assistant_idx:
+            # Latest turn only — the same gate the native arm below applies. Older turns fall
+            # through to the strip: their signatures are stale on replay and a verbatim
+            # pass-through answers 400 to them (review #123021: keep-all also paid per-turn
+            # wire bytes for blocks the endpoint cannot validate).
             new_content = _keep_valid_latest_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
             m["content"] = new_content or [_text_block("(empty)")]
         elif is_third_party or idx != last_assistant_idx:
@@ -724,9 +728,9 @@ def convert_messages_to_anthropic(
     extracted into its own param (a string, or a block list when cache_control is present).
     ``base_url``/``model`` drive thinking-signature policy — third-party endpoints strip signatures
     (proprietary, they 400 on them); ``preserve_thinking=True`` relaxes that strip to the native
-    keep path for trusted re-signing proxies (#120723, the endpoint's provider entry supplies it) —
-    valid signed thinking survives every turn, mirroring the Kimi replay semantics; Kimi-family
-    endpoints/models keep unsigned
+    latest-turn keep path for trusted re-signing proxies (#120723, the endpoint's provider entry
+    supplies it) — the latest assistant turn's signed thinking survives, mirroring direct
+    Anthropic; Kimi-family endpoints/models keep unsigned
     reasoning_content-derived blocks, which Kimi requires even when empty."""
     system = None
     result: List[Dict[str, Any]] = []

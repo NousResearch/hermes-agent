@@ -623,6 +623,7 @@ function Invoke-Native([scriptblock]$Command) {
 # under a UTF-8 window so the bytes survive; the caller still judges
 # $LASTEXITCODE, exactly like Invoke-Native.
 function Invoke-NativeUtf8([scriptblock]$Command) {
+    $ErrorActionPreference = 'Continue'
     $previous = [Console]::OutputEncoding
     try {
         [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)

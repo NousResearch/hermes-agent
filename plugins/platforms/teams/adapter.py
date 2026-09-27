@@ -649,7 +649,17 @@ class TeamsAdapter(BasePlatformAdapter):
         request_id = str(data.get("request_id") or "") or None
         if not has_blocking_approval(session_key):
             return self._invoke_card([TextBlock(text="⚠️ Approval already resolved or expired.", wrap=True)])
-        resolve_gateway_approval(session_key, choice, request_id=request_id)
+        # Resolve FIRST, render after: a tap whose own request already settled (count == 0 —
+        # expired or withdrawn while ANOTHER request is still pending in the session) must not
+        # show the success label. The resolver's result, not the preflight session predicate,
+        # authorizes the acknowledgement — same resolve-then-ack order as Telegram/Slack/Discord.
+        try:
+            count = resolve_gateway_approval(session_key, choice, request_id=request_id)
+        except Exception as exc:
+            logger.error("Failed to resolve gateway approval from Teams card action: %s", exc)
+            count = 0
+        if not count:
+            return self._invoke_card([TextBlock(text="⚠️ Approval already resolved or expired.", wrap=True)])
         body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
         body.append(TextBlock(text=_APPROVAL_LABELS[choice], wrap=True, weight="Bolder"))
         return self._invoke_card(body)

@@ -903,7 +903,7 @@ class MatrixAdapter(BasePlatformAdapter):
             "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "\u267e\ufe0f": "always",
             "\u267e": "always", "❌": "deny", "❎": "deny"}
         self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
-        self._approval_prompt_by_session: Dict[str, str] = {}
+        self._approval_prompt_by_session: Dict[str, Set[str]] = {}
         self._approval_require_sender: bool = _env_truthy("MATRIX_APPROVAL_REQUIRE_SENDER", "true")
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
@@ -1685,10 +1685,11 @@ class MatrixAdapter(BasePlatformAdapter):
         session_key, chat_id = prompt.session_key, prompt.chat_id
 
         def _make(message_id, requester, expires_at):
-            old_event = self._approval_prompt_by_session.get(session_key)
-            if old_event:
-                self._approval_prompts_by_event.pop(old_event, None)
-            self._approval_prompt_by_session[session_key] = message_id
+            # Retain EVERY live card for this session (multi-request safety, #124974): the
+            # previous card is NOT evicted — it stays answerable until IT settles, expires or
+            # is withdrawn. The session index tracks all live events; removal paths pop only
+            # the matching event, never a sibling card.
+            self._approval_prompt_by_session.setdefault(session_key, set()).add(message_id)
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id,
                 request_id=prompt.request_id, requester_user_id=requester,
@@ -2470,6 +2471,17 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._send_invalid_reaction_feedback(room_id, reacts_to, invalid_text)
         return True, prompt, selection
 
+    def _drop_approval_prompt_event(self, session_key: str, message_id: str) -> None:
+        """Retire ONE approval card's registration. The session index tracks every live card for
+        the session; only the matching event is dropped, so settling/expiring one card never
+        erases a sibling that is still answerable (multi-request safety, #124974)."""
+        events = self._approval_prompt_by_session.get(session_key)
+        if events is not None:
+            events.discard(message_id)
+            if not events:
+                self._approval_prompt_by_session.pop(session_key, None)
+        self._approval_prompts_by_event.pop(message_id, None)
+
     async def _handle_approval_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
         """Resolve a pending exec-approval prompt from a reaction. True if it was the target."""
         handled, prompt, choice = await self._claim_reaction_prompt(
@@ -2483,8 +2495,7 @@ class MatrixAdapter(BasePlatformAdapter):
             count = resolve_gateway_approval(prompt.session_key, choice, request_id=prompt.request_id)
             if count:
                 prompt.resolved = True
-                self._approval_prompts_by_event.pop(reacts_to, None)
-                self._approval_prompt_by_session.pop(prompt.session_key, None)
+                self._drop_approval_prompt_event(prompt.session_key, reacts_to)
                 logger.info(
                     "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, prompt.session_key, choice, sender)
@@ -2566,8 +2577,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _expire_matrix_approval_prompt(self, room_id: str, target_event_id: str, prompt: Any) -> None:
         prompt.resolved = True
-        self._approval_prompts_by_event.pop(target_event_id, None)
-        self._approval_prompt_by_session.pop(prompt.session_key, None)
+        self._drop_approval_prompt_event(prompt.session_key, target_event_id)
         await self._redact_bot_approval_reactions(room_id, prompt)
         await self._send_invalid_reaction_feedback(
             room_id, target_event_id,

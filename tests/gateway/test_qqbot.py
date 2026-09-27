@@ -635,7 +635,9 @@ class TestApprovalButtonData:
     def test_parse_with_request_id(self):
         from gateway.platforms.qqbot.keyboards import parse_approval_button_data
         rid = "ab" * 16
-        result = parse_approval_button_data(f"approve:sess:{rid}:deny")
+        # Request-scoped payloads are versioned (v2); the unversioned form stays legacy
+        # because a session identity may itself end in 32-hex (andrexibiza F2).
+        result = parse_approval_button_data(f"approve:v2:sess:{rid}:deny")
         assert result == ("sess", rid, "deny")
 
 

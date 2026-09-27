@@ -478,6 +478,8 @@ The `matrix_image_packs` toolset lists and sends image-pack stickers, as describ
 
 The agent can use `matrix_reaction` to add an emoji reaction or remove its own reactions from a message. The gateway records those reactions in memory for the 1,000 most recently used messages, so the agent can remove only reactions that it added since the gateway process started. Both tools operate in the current room. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
 
+`matrix_followup` can enable one reaction-triggered follow-up for the current turn. The agent can restrict it to specific emoji. For ten minutes after the final reply is delivered, a new matching reaction from the requester to any part of that reply starts one follow-up turn in the same room and thread. The action is disabled by default, and the last call in the turn decides its setting.
+
 Room administration requires the additional `matrix_admin` toolset. Enable it
 for Matrix in `hermes tools`, or select it in the owning profile's config:
 

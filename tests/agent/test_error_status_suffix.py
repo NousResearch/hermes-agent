@@ -21,3 +21,15 @@ def test_non_object_or_plain_string_contributes_nothing():
 
 def test_result_without_status_fields_adds_no_suffix():
     assert _error_status_suffix(json.dumps({"output": "x"})) == ""
+
+
+def test_error_value_is_bounded_exit_code_stays_intact():
+    """A huge ``error`` payload must not re-inflate the log line the 200-char preview
+    bounds (#125248 review); ``exit_code`` stays untruncated."""
+    huge = "E" * (200 * 1024)
+    suffix = _error_status_suffix({"output": "x" * 500, "error": huge, "exit_code": 137})
+    assert suffix.startswith(" exit_code=137")
+    error_part = suffix.split(" error=", 1)[1]
+    assert len(error_part) <= 200 + len("... (+204692 chars elided)") + 2  # repr quotes + marker
+    assert error_part.startswith("'")
+    assert error_part.endswith(f"... (+{200 * 1024 + 2 - 200} chars elided)'")

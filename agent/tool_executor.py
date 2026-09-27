@@ -1049,6 +1049,11 @@ def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata
 
 _STATUS_PREVIEW_FIELDS = ("exit_code", "error")
 
+# The whole point of the suffix is classification (#125238): ``exit_code`` must land intact,
+# but ``error`` re-appended verbatim can dwarf the 200-char preview it annotates (a 200 KiB
+# stderr dump produced a ~200 KB line — worse than base, which caps at 200). Cap it.
+_ERROR_VALUE_MAX_CHARS = 200
+
 
 def _error_status_suffix(result: Any) -> str:
     """Small status fields (``exit_code``, ``error``) extracted from a JSON-object
@@ -1057,7 +1062,10 @@ def _error_status_suffix(result: Any) -> str:
     The preview keeps only the first ~200 chars of the serialized result; terminal
     results serialize ``output`` first, so any real failure output pushes the status
     fields past the cut and the log line can no longer be classified (#125238).
-    Non-JSON-object results contribute nothing.
+    Non-JSON-object results contribute nothing. ``exit_code`` is short by nature and
+    is appended untruncated; the ``error`` value is bounded to
+    ``_ERROR_VALUE_MAX_CHARS`` with an elision marker so the suffix cannot
+    re-inflate the line the preview exists to bound.
     """
     if not isinstance(result, (str, dict)):
         return ""
@@ -1067,7 +1075,21 @@ def _error_status_suffix(result: Any) -> str:
         return ""
     if not isinstance(payload, dict):
         return ""
-    fields = [f"{key}={payload[key]!r}" for key in _STATUS_PREVIEW_FIELDS if key in payload]
+    fields = []
+    for key in _STATUS_PREVIEW_FIELDS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if key == "error":
+            value_repr = repr(value)
+            if len(value_repr) > _ERROR_VALUE_MAX_CHARS:
+                value_repr = value_repr[:_ERROR_VALUE_MAX_CHARS] + \
+                    f"... (+{len(value_repr) - _ERROR_VALUE_MAX_CHARS} chars elided)"
+                if value_repr[0] in "\"'":  # keep the repr's quote balanced after slicing
+                    value_repr += value_repr[0]
+        else:
+            value_repr = repr(value)
+        fields.append(f"{key}={value_repr}")
     return (" " + " ".join(fields)) if fields else ""
 
 

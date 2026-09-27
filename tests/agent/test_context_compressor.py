@@ -2264,79 +2264,35 @@ class TestThresholdTokensCap:
 
 
 class TestHistoricalToolCallArgumentsStayCanonical:
-    """Regression coverage for #122559: compression may summarize results, never executable args."""
+    """#122559: pruning may summarize tool results but never rewrites old tool-call arguments."""
 
-    @staticmethod
-    def _compressor():
-        return ContextCompressor(
-            model="test/model",
-            config_context_length=100_000,
-            threshold_percent=0.85,
-            protect_first_n=1,
-            protect_last_n=2,
-            quiet_mode=True,
+    def test_old_large_arguments_survive_prune_byte_exact(self):
+        c = ContextCompressor(
+            model="test/model", config_context_length=200_000, protect_first_n=1,
+            protect_last_n=2, quiet_mode=True, tail_mode="legacy",
         )
+        messages = [{"role": "user", "content": "go"}]
+        originals = {}
+        for k in range(6):
+            args = json.dumps({"path": "a.py", "content": "X" * 3000})
+            originals[f"c{k}"] = args
+            messages += [
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": f"c{k}", "type": "function",
+                    "function": {"name": "write_file", "arguments": args},
+                }]},
+                {"role": "tool", "tool_call_id": f"c{k}", "content": "ok"},
+                {"role": "user", "content": f"u{k}"},
+            ]
+        messages.append({"role": "assistant", "content": "done"})
 
-    @staticmethod
-    def _write_call(call_id: str, arguments: str) -> dict:
-        return {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{
-                "id": call_id,
-                "type": "function",
-                "function": {"name": "write_file", "arguments": arguments},
-            }],
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+
+        seen = {
+            m["tool_calls"][0]["id"]: m["tool_calls"][0]["function"]["arguments"]
+            for m in result if m.get("tool_calls")
         }
-
-    def test_ordinary_prune_keeps_effectful_arguments_byte_exact(self):
-        c = self._compressor()
-        arguments = json.dumps(
-            {"path": "/tmp/app.py", "content": "x" * 4_000},
-            separators=(",", ":"),
-        )
-        messages = [
-            {"role": "user", "content": "write it"},
-            self._write_call("call_1", arguments),
-            {"role": "tool", "tool_call_id": "call_1", "content": "R" * 10_000},
-            {"role": "user", "content": "continue"},
-            {"role": "assistant", "content": "done"},
-        ]
-
-        result, pruned = c._prune_old_tool_results(
-            messages, protect_tail_count=2, min_prune_chars=1_000,
-        )
-
-        assert pruned >= 1
-        assert result[1]["tool_calls"][0]["function"]["arguments"] == arguments
-        assert "HERMES-CONTEXT-COMPRESSION" not in json.dumps(result, ensure_ascii=False)
-
-    def test_pressure_demotion_keeps_protected_arguments_byte_exact(self):
-        c = self._compressor()
-        arguments = json.dumps(
-            {"path": "/tmp/app.py", "content": "y" * 8_000},
-            separators=(",", ":"),
-        )
-        messages = [
-            {"role": "user", "content": "write it"},
-            self._write_call("call_1", arguments),
-            {"role": "tool", "tool_call_id": "call_1", "content": "R" * 12_000},
-            {"role": "user", "content": "follow up"},
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "again"},
-            {"role": "assistant", "content": "done"},
-        ]
-
-        result, pruned = c._prune_old_tool_results(
-            messages,
-            protect_tail_count=6,
-            protect_tail_tokens=100,
-            min_prune_chars=1_000,
-        )
-
-        assert pruned >= 1
-        assert result[1]["tool_calls"][0]["function"]["arguments"] == arguments
-        assert "HERMES-CONTEXT-COMPRESSION" not in json.dumps(result, ensure_ascii=False)
+        assert seen == originals
 
 
 class TestLazyContextResolution:

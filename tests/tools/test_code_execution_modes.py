@@ -73,6 +73,60 @@ print(json.dumps({{
 
 
 @pytest.mark.platforms("linux", "macos", "windows")
+def test_pm_runtime_site_packages_reach_the_bundled_kernel_child(child_env, monkeypatch):
+    """Regression for #124049: a PM install runs the bundled interpreter with no
+    pyvenv.cfg, so the runtime site-packages the strip removed must be re-appended
+    to the kernel's PYTHONPATH or every third-party import in a cell fails."""
+    import json as _json
+
+    import pm.environments
+    import tools.environments.local as local
+    from pm.environments import site_packages as pm_site_packages
+
+    gen_venv = child_env / "gen-venv"
+    sp = pm_site_packages(gen_venv)
+    sp.mkdir(parents=True)
+    (sp / "pm_runtime_dep_probe.py").write_text("VALUE = 'pm-runtime-dep'\n", encoding="utf-8")
+    monkeypatch.setattr(local, "_in_venv", False)
+    monkeypatch.setattr(local, "_hermes_site_packages", None)
+    monkeypatch.setattr(pm.environments, "runtime_facts_path", lambda root: child_env / "facts.json")
+    monkeypatch.setattr(pm.environments, "selected_venv", lambda root: gen_venv)
+    (child_env / "facts.json").write_text(
+        _json.dumps({"packages": {"venv": {"environment": str(gen_venv)}}}), encoding="utf-8")
+
+    result = run_code(
+        "import json, os, sys\n"
+        "import pm_runtime_dep_probe\n"
+        "print(json.dumps({'dep': pm_runtime_dep_probe.VALUE,\n"
+        "                  'pythonpath': os.environ['PYTHONPATH'].split(os.pathsep)}))",
+        "strict",
+    )
+    assert result["dep"] == "pm-runtime-dep"
+    assert any(os.path.normcase(str(sp)) == os.path.normcase(entry) for entry in result["pythonpath"])
+
+
+@pytest.mark.platforms("linux", "macos", "windows")
+@pytest.mark.parametrize("mode", ["strict", "project"])
+def test_venv_child_is_not_given_runtime_site_packages(child_env, project_python, monkeypatch, mode):
+    """A venv child picks its own site-packages up from pyvenv.cfg; the PM
+    re-append must stay gated on the bundled (non-venv) interpreter."""
+    import tools.environments.local as local
+
+    monkeypatch.setattr(local, "_in_venv", False)
+    monkeypatch.setattr(local, "_hermes_site_packages", None)
+
+    result = run_code(
+        "import json, os, sys\n"
+        "print(json.dumps({'pythonpath': os.environ['PYTHONPATH'].split(os.pathsep),\n"
+        "                  'prefix': sys.prefix}))",
+        mode,
+    )
+    # The child is the project venv python (its own site-packages via pyvenv.cfg);
+    # no Hermes runtime site-packages entry may leak into it.
+    assert not any("site-packages" in entry and "gen-venv" in entry for entry in result["pythonpath"])
+
+
+@pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("mode", ["strict", "project"])
 def test_credential_policy_and_whitelist_in_real_child(child_env, monkeypatch, mode):
     from tools.env_passthrough import register_env_passthrough

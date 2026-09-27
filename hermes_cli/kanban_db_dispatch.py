@@ -2469,8 +2469,29 @@ def _rotate_worker_log(
 
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    console-script target — there is no top-level ``hermes`` package).
+
+    Routed through ``hermes_cli._launchers.runtime_command`` — the same
+    bootstrap the ``hermes`` launcher script and ``hermes gateway run
+    --replace`` already use — rather than a bare ``sys.executable -m
+    hermes_cli.main``. A standalone-Python install (store interpreter +
+    ``hermes_bootstrap``-selected dependency venv, no ``hermes_cli`` in
+    ``sys.executable``'s own site-packages) only has ``hermes_cli``
+    importable in THIS process because its launch line did
+    ``sys.path.insert(0, repo_root); import hermes_bootstrap`` itself; a
+    bare ``-m`` in a freshly spawned child does not inherit that in-memory
+    sys.path mutation and dies with ``ModuleNotFoundError: No module named
+    'hermes_cli'`` the instant the child's env has no Hermes-owned
+    PYTHONPATH to fall back on (routed/multiplexed worker envs strip it by
+    design, see ``tools.environments.local_pythonpath``). ``runtime_command``
+    re-does the bootstrap fresh in the child from ``repo_root`` alone, so it
+    works for both deployment kinds and is independent of the parent's
+    ambient environment.
+    """
+    from hermes_cli._launchers import runtime_command
+    from pm.paths import repo_root
+
+    return runtime_command(repo_root(), module="hermes_cli.main")
 
 
 def _absolute_hermes_path(path: str) -> str:
@@ -2534,14 +2555,19 @@ def _hermes_path_argv(path: str) -> list[str]:
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
+    same-directory file), then the running interpreter's self-bootstrapping
+    module form (``_module_hermes_argv``; exactly this install, safe for a
+    standalone-Python + managed-venv deployment as well as a traditional
+    venv install; also covers shim-less cron, systemd ``User=``, launchd),
+    then ``which("hermes")`` (Windows: safe PATH search, batch shims fall
+    back to the module form) only when ``hermes_cli`` is not importable in
+    THIS process. The module argv must win over PATH: a PATH-first lookup
     lets an attacker-planted ``hermes`` shadow the running install (#111569).
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
-    sits below ``gateway`` in the dependency order.
+    sits below ``gateway`` in the dependency order. NOTE: ``gateway.run.
+    _resolve_hermes_bin`` still returns the bare (non-bootstrapped) module
+    argv and carries the same latent bug this function had — worth mirroring
+    this fix there too.
     """
     import importlib.util
     import shutil

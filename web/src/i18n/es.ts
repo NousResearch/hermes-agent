@@ -165,6 +165,10 @@ export const es: Translations = {
     failedToDeleteSelected: "No se pudieron eliminar las sesiones seleccionadas",
     resumeInChat: "Reanudar en el chat",
     newChat: "Nuevo chat",
+    workspace: "espacio de trabajo",
+    workspaceDefault: "Predeterminado",
+    workspaceRescan: "Volver a buscar repositorios",
+    workspaceCustom: "Otra ruta…",
     previousPage: "Página anterior",
     nextPage: "Página siguiente",
     roles: {
@@ -325,6 +329,8 @@ export const es: Translations = {
     disableRuntime: "Deshabilitar",
     enableAfterInstall: "Habilitar tras instalar",
     enableRuntime: "Habilitar",
+    toggleTakesEffectAfterRestart:
+      "Guardado: reinicia el gateway para aplicar el cambio.",
     forceReinstall: "Forzar reinstalación (eliminar carpeta existente primero)",
     headline:
       "Descubre, instala, habilita y actualiza complementos de Hermes (equivalente a `hermes plugins`).",

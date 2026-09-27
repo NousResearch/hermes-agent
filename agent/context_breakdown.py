@@ -32,7 +32,8 @@ _DETAILS_TABLE_LIMIT = 15  # display cap only; the underlying data keeps everyth
 
 
 def _chars_to_tokens(text: str) -> int:
-    return (len(text) + 3) // 4
+    from agent.model_metadata import estimate_tokens_rough
+    return estimate_tokens_rough(text)
 
 
 def _json_tokens(value: Any) -> int:
@@ -40,7 +41,8 @@ def _json_tokens(value: Any) -> int:
 
 
 def _bytes_to_tokens(size: Optional[int]) -> Optional[int]:
-    return None if size is None else (int(size) + 3) // 4
+    from agent.model_metadata import CHARS_PER_TOKEN
+    return None if size is None else (int(size) + 3) // CHARS_PER_TOKEN
 
 
 def _skills_block(stable: str) -> str:
@@ -106,6 +108,7 @@ def context_usage_fields(compressor: Any) -> Dict[str, Any]:
     maximum = getattr(compressor, "context_length", 0) or 0
     if not used or not maximum:
         return {}
+    used = min(used, maximum)
     source = context_display_source(compressor)
     return {"context_used": used, "context_max": maximum,
             "context_percent": max(0, min(100, round(used / maximum * 100))),
@@ -161,6 +164,9 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
         if delta and delta[0].get("role") == "assistant":
             delta = delta[1:]
         source = "provider_usage_plus_estimate" if delta else "provider_usage"
+    # A single prompt can never exceed the model window; any excess is estimate drift.
+    if context_max:
+        context_used = min(context_used, context_max)
 
     return {
         "categories": [

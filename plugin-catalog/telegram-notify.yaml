@@ -1,0 +1,29 @@
+name: telegram-notify
+repo: https://github.com/madpower2000/hermes-telegram-notify
+sha: 78a3c297d5b0a8f2489eb672e814a38f5d2fa210
+description: >-
+  Remote Telegram lifecycle notifications for the main Hermes agent: turn
+  start, completion with a bounded final answer, interruption/failure, and
+  user-facing approval requests. Suppresses subagent and automatic/smart-approval
+  noise. Outbound-only, no input channel. Disclosure — enabled by default once installed and
+  reuses the core Telegram gateway's TELEGRAM_BOT_TOKEN and TELEGRAM_HOME_CHANNEL when present,
+  so each main-agent turn's final answer (up to 3,200 chars) and approval-request command text
+  (up to 700 chars) from CLI, Desktop and any gateway platform are sent to api.telegram.org for
+  delivery to that one chat; token and state are stored 0600 under HERMES_HOME/telegram-notify.
+maintainer: madpower2000
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/madpower2000/hermes-telegram-notify
+version: "1.1.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - on_session_end
+    - pre_approval_request
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

@@ -32,7 +32,7 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
     if not auth_path.exists():
         raise _qwen_err("Qwen CLI credentials not found. Run 'qwen auth qwen-oauth' first.", "qwen_auth_missing")
     try:
-        data = json.loads(auth_path.read_text(encoding="utf-8"))
+        data = json.loads(auth_path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         raise _qwen_err(
             f"Failed to read Qwen CLI credentials from {auth_path}: {exc}", "qwen_auth_read_failed",
@@ -43,9 +43,9 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
 
 
 def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
-    from hermes_cli.auth import _qwen_cli_auth_path, _write_private_file_atomic
+    from hermes_cli.auth import _qwen_cli_auth_path, _save_private_json
     auth_path = _qwen_cli_auth_path()
-    _write_private_file_atomic(auth_path, json.dumps(tokens, indent=2, sort_keys=True) + "\n")
+    _save_private_json(auth_path, tokens, sort_keys=True)
     return auth_path
 
 

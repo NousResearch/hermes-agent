@@ -17,6 +17,15 @@ describe('providerWaitText', () => {
     expect(providerWaitText('⏳ waiting on local-model — 30s with no output yet')).not.toBe('')
     expect(providerWaitText('◉_◉ cogitating...')).toBe('')
   })
+
+  it('accepts the near-deadline update minted by agent/chat_completion_wait_notice.wait_notice_text', () => {
+    // Exact output of wait_notice_text('gpt-5.5', 290, 'first_event', ('TTFB', 10)); rejecting it
+    // left the status row on the stale first notice until the reconnect.
+    const frame =
+      '⏳ still waiting on gpt-5.5 — 290s waiting for the first provider event (auto-reconnect: TTFB watchdog in 10s)'
+
+    expect(providerWaitText(frame)).toBe(frame)
+  })
 })
 
 describe('parseModelLoadWait', () => {

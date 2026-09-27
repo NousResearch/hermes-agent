@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 from gateway import run as gateway_run
 

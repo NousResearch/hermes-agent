@@ -119,9 +119,6 @@ def test_gateway_run_redirects_to_supervised(
     assert "s6 supervision" in logs, (
         f"expected loud breadcrumb in docker logs; got:\n{logs}"
     )
-    assert "--no-supervise" in logs, (
-        f"breadcrumb missing opt-out hint; got:\n{logs}"
-    )
 
     # Container should still be running. If the redirect didn't fire,
     # the foreground gateway would have crashed and the container

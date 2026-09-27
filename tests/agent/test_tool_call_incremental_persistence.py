@@ -22,6 +22,7 @@ read snapshots captured at flush time, so removing any production flush call
 makes the corresponding assertion fail.
 """
 
+import sqlite3
 import copy
 from types import SimpleNamespace
 from pathlib import Path
@@ -749,19 +750,32 @@ def test_flush_stale_row_id_from_other_session_does_not_fill_child_blank(tmp_pat
 
 
 def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_path):
-    """The outbound sanitizer pops ``_db_persisted``; active rows keep their ``_row_id`` and are not re-inserted."""
+    """The outbound sanitizer pops ``_db_persisted``; active rows keep their ``_row_id`` and are not re-inserted.
+
+    The row-version digest must not be priced by the token estimator, and a row another writer changed after our
+    flush must survive the re-flush (the concurrent winner is adopted, never clobbered or duplicated).
+    """
     from agent.message_sanitization import _sanitize_messages_surrogates
+    from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = _make_agent()
     session_id = "sess-sanitized-active-rows"
     db = _attach_real_session_db(agent, tmp_path / "state.db", session_id)
     messages = [
-        {"role": "user", "content": "hi \ud800 there"},
+        {"role": "user", "content": "hi \ud800 there " + "x" * 4000},
         {"role": "assistant", "content": "ok"},
         {"role": "tool", "tool_call_id": "c1", "name": "terminal", "content": "r \ud800"},
     ]
+    estimate_before = estimate_messages_tokens_rough(messages)
     agent._flush_messages_to_session_db(messages)
+    assert estimate_messages_tokens_rough(messages) - estimate_before < 50
     durable_ids = [message["_row_id"] for message in messages]
+
+    # Another writer replaces the tool row after our flush; our live dict still carries the old version.
+    other = sqlite3.connect(tmp_path / "state.db")
+    with other:
+        other.execute("UPDATE messages SET content = ? WHERE id = ?", ("winner", durable_ids[2]))
+    other.close()
 
     assert _sanitize_messages_surrogates(messages) is True
     assert not any(message.get("_db_persisted") for message in (messages[0], messages[2]))
@@ -772,6 +786,9 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     rows = db.get_messages(session_id, include_inactive=True)
     assert [row["id"] for row in rows] == durable_ids
     assert [message["_row_id"] for message in messages] == durable_ids
+    assert rows[0]["content"].startswith("hi \ufffd there")
+    assert rows[2]["content"] == "winner"
+    assert messages[2]["content"] == "winner"
 
 
 def test_flush_sanitized_archived_user_and_tool_rows_do_not_append_duplicates(tmp_path):
@@ -821,8 +838,8 @@ def test_flush_sanitized_archived_user_and_tool_rows_do_not_append_duplicates(tm
         assert len(matching) == 1
         assert matching[0]["id"] == durable_ids[role]
         assert matching[0]["timestamp"] == durable_timestamps[role]
-        assert matching[0]["active"] in (0, False)
-        assert matching[0]["compacted"] in (1, True)
+        assert matching[0]["active"] == 0
+        assert matching[0]["compacted"] == 1
         live = next(message for message in messages if message["role"] == role)
         assert live["_row_id"] == durable_ids[role]
         assert live["_db_persisted"] is True

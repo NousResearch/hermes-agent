@@ -4,34 +4,49 @@ clone lookup) and sync markers after commit."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
+from hermes_state_common import _placeholders
 
 
 _DB_ROW_SNAPSHOT = "_db_row_snapshot"
 _CANONICAL_ROW = "_canonical_row"
-_REPAIR_COLUMNS = (
-    "content", "tool_call_id", "tool_calls", "tool_name", "effect_disposition", "token_count",
-    "finish_reason", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
-    "codex_message_items", "platform_message_id", "observed", "_compressed_summary", "api_content",
-    "display_kind", "display_metadata",
-)
-_SYNC_FIELDS = (
-    "role", "content", "tool_call_id", "tool_calls", "tool_name", "effect_disposition", "token_count",
-    "finish_reason", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
-    "codex_message_items", "message_id", "platform_message_id", "observed",
-    "_compressed_summary", "api_content", "display_kind", "display_metadata",
-)
+def _write_columns() -> tuple:
+    # Late import: hermes_state_messages imports this module lazily inside its methods.
+    from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
+
+    return _MESSAGE_WRITE_COLUMNS
 
 
-def transcript_row_snapshot(row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-    """Serialized durable values used as the CAS version, or ``None`` for a partial SELECT."""
-    keys = set(row.keys()) if hasattr(row, "keys") else set(row)
+# Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
+# role, active flag and the ones owned by the display index / timestamp / session linkage.
+_NON_PAYLOAD_COLUMNS = frozenset({"session_id", "role", "timestamp", "active", "display_identity"})
+_REPAIR_COLUMNS = tuple(c for c in _write_columns() if c not in _NON_PAYLOAD_COLUMNS)
+_SYNC_FIELDS = ("role", "message_id") + _REPAIR_COLUMNS
+
+
+def _canonical_value(value: Any) -> Any:
+    return value.hex() if isinstance(value, (bytes, bytearray, memoryview)) else value
+
+
+def transcript_row_snapshot(row: Mapping[str, Any]) -> Optional[str]:
+    """Fixed-size digest of the durable repair columns (the CAS version), or ``None`` for a partial SELECT.
+
+    A digest rather than a row copy: the value rides on live message dicts, so a full copy would double
+    transcript memory and anything that prices dict bytes.
+    """
+    keys = set(row.keys())
     if not set(_REPAIR_COLUMNS) <= keys:
         return None
-    return {column: row[column] for column in _REPAIR_COLUMNS}
+    canonical = json.dumps(
+        [_canonical_value(row[column]) for column in _REPAIR_COLUMNS],
+        ensure_ascii=True, separators=(",", ":"), default=str,
+    )
+    return hashlib.blake2b(canonical.encode("utf-8"), digest_size=16).hexdigest()
 
 
 def is_content_blank(content: Any) -> bool:
@@ -75,8 +90,10 @@ def resolve_and_repair_transcript_batch(
         msg["_row_id"] = target_id
         serialized = serialize_message_fn(msg, float(target_row["timestamp"]))
         expected = msg.get(_DB_ROW_SNAPSHOT)
-        has_snapshot = isinstance(expected, dict) and all(column in expected for column in _REPAIR_COLUMNS)
-        repaired = _compare_and_swap_row(conn, session_id, target_row, serialized, expected) if has_snapshot else False
+        has_snapshot = isinstance(expected, str)
+        if has_snapshot and transcript_row_snapshot(target_row) == expected:
+            # The caller holds BEGIN IMMEDIATE, so the row cannot change between this compare and the UPDATE.
+            _rewrite_row(conn, session_id, target_row, serialized)
         if not has_snapshot and role == "assistant" and is_content_blank(decode_content_fn(target_row["content"])):
             # Blank assistant rows are the pre-existing interrupted-stream repair path. Keep its narrow
             # content-only CAS for live dicts that predate durable row snapshots.
@@ -94,14 +111,13 @@ def resolve_and_repair_transcript_batch(
     return inserted_rows
 
 
-def _compare_and_swap_row(
+def _rewrite_row(
     conn: sqlite3.Connection,
     session_id: str,
     target_row: Mapping[str, Any],
     serialized: Mapping[str, Any],
-    expected: Mapping[str, Any],
-) -> bool:
-    """Rewrite one durable payload only while it still equals the live dict's last committed snapshot."""
+) -> None:
+    """Rewrite one durable payload whose digest matched the live dict's last committed version."""
     old_identity = target_row["display_identity"]
     old_peer_ids = [
         int(row["id"])
@@ -113,17 +129,11 @@ def _compare_and_swap_row(
     ] if old_identity is not None else []
 
     assignments = ", ".join(f"{column} = ?" for column in _REPAIR_COLUMNS)
-    predicates = " AND ".join(f"{column} IS ?" for column in _REPAIR_COLUMNS)
-    params = [serialized[column] for column in _REPAIR_COLUMNS]
-    params += [int(target_row["id"]), session_id]
-    params += [expected[column] for column in _REPAIR_COLUMNS]
-    cur = conn.execute(
-        f"UPDATE messages SET {assignments} WHERE id = ? AND session_id = ? AND {predicates}", params,
+    conn.execute(
+        f"UPDATE messages SET {assignments} WHERE id = ? AND session_id = ?",
+        [*(serialized[column] for column in _REPAIR_COLUMNS), int(target_row["id"]), session_id],
     )
-    if cur.rowcount != 1:
-        return False
     _restore_display_index(conn, session_id, target_row, serialized, old_identity, old_peer_ids)
-    return True
 
 
 def _restore_display_index(
@@ -136,7 +146,7 @@ def _restore_display_index(
 ) -> None:
     """Restore display identities/orders invalidated by the payload-update trigger."""
     if old_peer_ids:
-        placeholders = ", ".join("?" for _ in old_peer_ids)
+        placeholders = _placeholders(old_peer_ids)
         old_order = min(old_peer_ids)
         conn.execute(
             f"UPDATE messages SET display_identity = ?, display_order = ? "
@@ -213,8 +223,8 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
             written["_row_id"] = row["_row_id"]
         if isinstance(row.get("timestamp"), (int, float)):
             written["timestamp"] = row["timestamp"]
-        if isinstance(row.get(_DB_ROW_SNAPSHOT), dict):
-            written[_DB_ROW_SNAPSHOT] = dict(row[_DB_ROW_SNAPSHOT])
+        if isinstance(row.get(_DB_ROW_SNAPSHOT), str):
+            written[_DB_ROW_SNAPSHOT] = row[_DB_ROW_SNAPSHOT]
         canonical = row.get(_CANONICAL_ROW)
         if isinstance(canonical, dict):
             for key in _SYNC_FIELDS:

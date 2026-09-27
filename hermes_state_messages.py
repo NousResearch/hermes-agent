@@ -317,8 +317,6 @@ class SessionMessagesMixin:
         if row["platform_message_id"] is not None:
             msg["message_id"] = row["platform_message_id"]
             msg["platform_message_id"] = row["platform_message_id"]
-        if row["role"] == "tool" and row["tool_name"] is not None:
-            msg["name"] = row["tool_name"]
         if row["observed"]:
             msg["observed"] = True
         if row["_compressed_summary"]:
@@ -1426,11 +1424,7 @@ class SessionMessagesMixin:
             # durable-snapshot adoption, incremental persists with no history arg) would otherwise re-append
             # the ENTIRE transcript on flush.
             if include_row_ids and row["id"] is not None:
-                from agent.transcript_repair import _DB_ROW_SNAPSHOT, transcript_row_snapshot
-
                 msg["_row_id"] = row["id"]
-                if (snapshot := transcript_row_snapshot(row)) is not None:
-                    msg[_DB_ROW_SNAPSHOT] = snapshot
             msg.update((col, row[col]) for col in ("api_content", "display_kind") if row[col])
             if row["display_metadata"] and (decoded := self._decode_display_metadata(row["display_metadata"])) is not None:
                 msg["display_metadata"] = decoded

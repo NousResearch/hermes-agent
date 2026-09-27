@@ -225,8 +225,8 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
-    if isinstance(msg.get(_DB_ROW_SNAPSHOT), dict):
-        row[_DB_ROW_SNAPSHOT] = dict(msg[_DB_ROW_SNAPSHOT])
+    if isinstance(msg.get(_DB_ROW_SNAPSHOT), str):
+        row[_DB_ROW_SNAPSHOT] = msg[_DB_ROW_SNAPSHOT]
     return row
 
 
@@ -370,7 +370,9 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
         # A replaced/quarantined handle will not take this batch again — keep it on disk.
         try:
-            divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "", batch_rows)
+            # The CAS digest is local repair bookkeeping, not transcript payload.
+            divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "",
+                                            [{k: v for k, v in r.items() if k != _DB_ROW_SNAPSHOT} for r in batch_rows])
         except Exception:
             logger.warning("JSONL divert failed after state.db %s for %s",
                            agent._last_persistence_error_cause, getattr(agent, "session_id", None), exc_info=True)

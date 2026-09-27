@@ -97,6 +97,7 @@ from plugins.platforms.matrix.reply_context import (
 )
 from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
 from plugins.platforms.matrix.read_context import read_matrix_context
+from plugins.platforms.matrix.room_inspection import inspect_matrix_room
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -2034,7 +2035,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         if self._is_allowed_matrix_room(room_id):
             return True
         try:
-            return await self._is_dm_room(room_id)
+            chat_type = "dm" if await self._is_dm_room(room_id) else "group"
+            return self._is_allowed_matrix_room(room_id, chat_type)
         except Exception as exc:
             logger.debug("Matrix: could not resolve room identity for allowlist check in %s: %s", room_id, exc)
             return False
@@ -3210,6 +3212,11 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             self, kind, room_id, event_id, limit,
             requester=requester,
         )
+
+    async def inspect_matrix_room(
+        self, kind: str, room_id: str, limit: int, *, requester: str,
+    ) -> dict:
+        return await inspect_matrix_room(self, kind, room_id, limit, requester=requester)
 
     async def _fetch_m_direct(self, *, log_failure: bool = False, require_dict: bool = False):
         """Return the m.direct account-data mapping, or None when absent/unreadable."""

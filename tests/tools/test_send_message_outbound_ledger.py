@@ -86,3 +86,36 @@ def test_ledger_disabled_books_no_row(ledger_db, monkeypatch):
     result = _send("deploy finished")
     assert result["success"] is True
     assert _rows(ledger_db) == []
+
+
+def test_identical_sends_book_distinct_rows(ledger_db):
+    """The obligation id carries a per-send random ref (``outbound-{uuid4().hex[:12]}``), so two
+    identical sends are two audit events. Pins the key's width: the row is written with INSERT OR
+    REPLACE keyed on obligation_id, so a constant ref would silently collapse duplicate sends
+    into one audit record while every single-send test stays green."""
+    assert _send("deploy finished")["success"] is True
+    assert _send("deploy finished")["success"] is True
+    rows = _rows(ledger_db)
+    assert len(rows) == 2, rows
+    assert rows[0] == rows[1]  # same family fields — the rows differ only in obligation id
+
+
+def test_outbound_row_carries_session_profile(ledger_db, monkeypatch):
+    """The row attributes the muxed profile the sending agent ran under (session env), so a
+    multiplexed gateway can tell the outbound families apart; a bare CLI send — no session
+    profile bound — lands as 'default'."""
+    monkeypatch.setenv("HERMES_SESSION_PROFILE", "team-a")
+    assert _send("deploy finished")["success"] is True
+    with sqlite3.connect(ledger_db) as conn:
+        dl._initialize_schema(conn)
+        profiles = conn.execute("SELECT adapter_profile FROM delivery_obligations").fetchall()
+    assert profiles == [("team-a",)]
+
+
+def test_outbound_row_defaults_profile_without_session(ledger_db, monkeypatch):
+    monkeypatch.delenv("HERMES_SESSION_PROFILE", raising=False)
+    assert _send("deploy finished")["success"] is True
+    with sqlite3.connect(ledger_db) as conn:
+        dl._initialize_schema(conn)
+        profiles = conn.execute("SELECT adapter_profile FROM delivery_obligations").fetchall()
+    assert profiles == [("default",)]

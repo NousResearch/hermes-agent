@@ -88,3 +88,51 @@ def test_resume_does_not_retire_drained_or_plain_rows(monkeypatch, tmp_path):
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def test_restart_between_drains_retires_only_the_later_prompt(monkeypatch, tmp_path):
+    """Two prompts accepted busy; the first drains (its row re-placed unmarked), then the backend
+    dies before the second drains. The restart retires the SECOND prompt's still-marked row while
+    the drained first turn's row — same text family — stays active in its healed position."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        server._ensure_session_db_row(session)
+        db.append_message(key, "user", content="prompt A")
+        _busy(session)
+        session["attached_images"] = ["/tmp/b.png"]  # non-mergeable: two separate envelopes
+        assert server._handle_busy_submit("r1", sid, session, "prompt B DRAIN-RESTART-B", "ws-1",
+                                          queued=True, display_kind=None)["result"]["status"] == "queued"
+        session["attached_images"] = ["/tmp/c.png"]
+        assert server._handle_busy_submit("r2", sid, session, "prompt C DRAIN-RESTART-C", "ws-1",
+                                          queued=True, display_kind=None)["result"]["status"] == "queued"
+        db.append_message(key, "assistant", content="reply A")
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+        from tests.tui_gateway.test_queued_prompt_persistence import _run_turn
+        monkeypatch.setattr(server, "_run_prompt_submit",
+                            lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B"))
+        assert server._drain_queued_prompt("r3", sid, session) is True  # drains B only
+        # The restart: queue gone; C never drained. The cold reopen retires C's row, not B's turn.
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        fresh = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            fresh.reopen_session(key)
+            repaired = fresh.get_messages_as_conversation(key, repair_alternation=True, include_row_ids=True)
+            assert [(r["role"], r["content"]) for r in repaired] == [
+                ("user", "prompt A"), ("assistant", "reply A"),
+                ("user", "prompt B DRAIN-RESTART-B"), ("assistant", "reply B")]
+            every = fresh.get_messages_as_conversation(key, include_inactive=True, include_row_ids=True)
+            # C never ran: no ACTIVE row carries it. Its copies survive inactive (durable history
+            # never deletes — the drain's re-placement left one, the reopen retired the other).
+            assert not [r for r in _active_rows(fresh, key) if "DRAIN-RESTART-C" in str(r["content"])]
+            assert any("DRAIN-RESTART-C" in str(r["content"])
+                       for r in every if "DRAIN-RESTART-B" not in str(r["content"]))
+        finally:
+            fresh.close()
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()

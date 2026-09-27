@@ -79,18 +79,25 @@ def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
     )
 
 
-def _post_override_content(msg: Dict, override: Any) -> Any:
-    """The live content the persist override rewrites a user row to. A plain row takes the override
+def _post_override_content(msg: Dict, content: Any, override: Any) -> Any:
+    """The content the persist override rewrites a user row to, shared by BOTH override writers
+    (the live finalize path and the DB-row / replay-heal path). A plain row takes the override
     alone; a row the alternation-repair merge pass produced re-attaches its pre-merge prefix
     (``USER_MERGE_PREFIX_KEY``, stamped by ``_merge_consecutive_users``), otherwise an earlier
-    unanswered user message — left durable without a reply by a crash/restart between turn start and
-    the answer — would drop out of the live list at finalize (#124731). The DB row path
-    (``durable_user_row_content``) deliberately keeps the plain override: the pre-merge row stays an
-    active store row, so the merged bytes would duplicate it on the next load-time repair."""
+    unanswered user message — left durable without a reply by a crash/restart between turn start
+    and the answer — would drop out of the live list at finalize, and, on the session-row-heal
+    replay path (where R's own row has already been confirmed gone, so there is no old row to
+    duplicate it against), out of the durable transcript (#124731). The rewrite is idempotent on
+    a second replay pass: ``prefix + override`` still carries the prefix."""
     if override is None or not isinstance(override, str):
         return override
     prefix = msg.get(USER_MERGE_PREFIX_KEY)
-    if isinstance(prefix, str) and prefix:
+    if not (isinstance(prefix, str) and prefix):
+        return override
+    # Only re-attach when the current content actually STARTS with the pre-merge bytes: an
+    # intervening rewrite (e.g. a micro-compaction merge that appended text after the merge)
+    # leaves the prefix stale, and a plain override is the only safe move there.
+    if isinstance(content, str) and content.startswith(prefix + "\n\n"):
         return prefix + "\n\n" + override
     return override
 
@@ -99,12 +106,16 @@ def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -
     """``(content, api_content)`` as the current turn's user row is written: the persist override is the
     clean transcript, the live content is what the wire sent — so when they differ and nothing else was
     injected, the live bytes ARE the sidecar. Shared by the flush and the turn-start stamp so the stamp
-    matches the row the flush wrote."""
+    matches the row the flush wrote. A repair-merged row re-attaches its pre-merge prefix (the heal/replay
+    path is the only row writer that reaches such a row, and there R's own row is already gone, so the
+    merged bytes are kept rather than duplicated); the api_content sidecar always captures the pre-override
+    wire bytes."""
     override = getattr(agent, "_persist_user_message_override", None)
     if _override_replaces_content(msg, content, override):
-        if api_content is None and isinstance(content, str) and content != override:
+        new_content = _post_override_content(msg, content, override)
+        if api_content is None and isinstance(content, str) and content != new_content:
             api_content = content
-        content = override
+        content = new_content
     return content, api_content
 
 
@@ -412,7 +423,7 @@ class SessionPersistenceMixin:
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             return
         if _override_replaces_content(msg, msg.get("content"), override):
-            msg["content"] = _post_override_content(msg, override)
+            msg["content"] = _post_override_content(msg, msg.get("content"), override)
         if timestamp is not None:
             msg["timestamp"] = timestamp
         if platform_id is not None:  # load-bearing for restart drain-window recovery dedup (has_platform_message_id)

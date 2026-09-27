@@ -44,9 +44,30 @@ async def test_matrix_read_uses_session_owner_and_room():
 
 
 @pytest.mark.asyncio
+async def test_matrix_room_inspection_uses_session_owner():
+    adapter = SimpleNamespace(
+        read_matrix_context=AsyncMock(),
+        inspect_matrix_room=AsyncMock(return_value={"room_id": "!room:server", "name": "Planning"}),
+    )
+    tokens = _bind_matrix_session(adapter)
+    try:
+        result = json.loads(await asyncio.to_thread(
+            registry.dispatch, "matrix_read", {"kind": "state"},
+        ))
+    finally:
+        clear_session_vars(tokens)
+
+    assert result == {"room_id": "!room:server", "name": "Planning"}
+    adapter.inspect_matrix_room.assert_awaited_once_with(
+        "state", "!room:server", 20, requester="@alice:server",
+    )
+    adapter.read_matrix_context.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("args", "error"), [
-    ({}, "kind must be room, thread, or event"),
-    ({"kind": "search"}, "kind must be room, thread, or event"),
+    ({}, "kind must be room, thread, event, state, members, permissions, or pins"),
+    ({"kind": "search"}, "kind must be room, thread, event, state, members, permissions, or pins"),
     ({"kind": "thread"}, "event_id is required for thread and event reads"),
     ({"kind": "event"}, "event_id is required for thread and event reads"),
     ({"kind": "event", "event_id": "not-an-event"}, "event_id is required for thread and event reads"),

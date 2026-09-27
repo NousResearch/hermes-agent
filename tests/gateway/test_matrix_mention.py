@@ -314,6 +314,11 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
     assert dispatched == ([("!room1:example.org", "$voice")] if claims else [(mention_room, "$text")])
     if claims:  # the bare mention is the newest event; the read marker must reach it
         adapter._background_read_receipt.assert_any_call("!room1:example.org", "$text")
+        claimed_event = adapter.handle_message.await_args.args[0]
+        adapter.fetch_room_context = AsyncMock(return_value="[Recent room messages]\n[alice] Earlier")
+        assert await adapter.fetch_mention_context(claimed_event) == (
+            "[Recent room messages]\n[alice] Earlier"
+        )
 
 
 # ---------------------------------------------------------------------------

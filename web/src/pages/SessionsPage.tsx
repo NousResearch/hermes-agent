@@ -1396,21 +1396,21 @@ export default function SessionsPage() {
         ids,
         owners.size === 1 ? [...owners][0] : undefined,
       );
-      showToast(
-        t.sessions.selectedSessionsDeleted.replace(
-          "{count}",
-          String(resp.deleted),
-        ),
-        "success",
-      );
-      if (resp.skipped_active?.length) {
-        // Rows a live turn owns were refused server-side; say so instead of implying all went.
+      const skippedCount = resp.skipped_active?.length ?? 0;
+      if (skippedCount) {
         showToast(
-          t.sessions.selectedSessionsSkippedActive.replace(
-            "{count}",
-            String(resp.skipped_active.length),
-          ),
+          t.sessions.selectedSessionsSkippedActive
+            .replace("{deleted}", String(resp.deleted))
+            .replace("{count}", String(skippedCount)),
           "error",
+        );
+      } else {
+        showToast(
+          t.sessions.selectedSessionsDeleted.replace(
+            "{count}",
+            String(resp.deleted),
+          ),
+          "success",
         );
       }
       setDeleteSelectedOpen(false);

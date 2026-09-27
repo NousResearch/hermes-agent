@@ -237,6 +237,12 @@ jobs:
           mode: start
           output: ${{ github.workspace }}\gui-e2e-proof\recording.mkv
 
+      # Product steps below never see setup-pm's HERMES_RUNTIME_DIR or
+      # HERMES_PYTHON: windows-e2e.ps1 drops both on entry, so the installer,
+      # the app, `hermes update` and every chat turn share the leg's one store
+      # (<HERMES_HOME>\tools), as on a user's machine. setup-pm reaches the
+      # driver's own tooling only through HERMES_PYTHON (and PATH for older
+      # installers' uv/ripgrep).
       - name: Stage serve repo (main -> ${{ inputs.install-ref }})
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -UpdateRef "${{ inputs.update-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}

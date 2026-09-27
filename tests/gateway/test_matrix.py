@@ -4630,8 +4630,10 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.parametrize("body, expected_text", [
         ("report.pdf", ""),
         ("a useful caption", "a useful caption"),
+        ("@bot:example.org report.pdf", "report.pdf"),
     ])
     async def test_declared_filename_controls_caption_even_without_download(self, body, expected_text):
+        self.adapter._require_mention = True
         self.adapter.handle_message = AsyncMock()
 
         await self.adapter._handle_media_message(

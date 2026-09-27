@@ -3,12 +3,29 @@
 Nie trzeba wcześniej instalować Hermes Agent, Pythona ani konfigurować CLI.
 Pełny instalator Windows zawiera aplikację, kod silnika, Python, jego zależności,
 Git Bash i Node.js. Pierwszy start nie klonuje repozytorium ani nie uruchamia pip.
-Kod startuje z `resources/runtime`, a dane użytkownika pozostają poza instalacją.
+Dla nowego współpracownika kod startuje z `resources/runtime`, a dane użytkownika pozostają poza instalacją.
 
 Do instalacji i uruchomienia lokalnego backendu nie potrzeba internetu. Rozmowy
 z Gemini, OpenRouter i innymi usługami API wymagają internetu i własnych kluczy.
 Opcjonalne narzędzia, modele lokalne i integracje mogą mieć dodatkowe wymagania;
 nie są obietnicą całkowicie offline działającego asystenta.
+
+## Wybór współpracownika przy pierwszym starcie
+
+Czesiek prowadzi rozmowę i planuje pracę. Hermes jest silnikiem wykonującym zadania — jego współpracownikiem.
+
+- **Przygotuj nowego współpracownika**: pełny pakiet Windows uruchamia dołączony silnik bez pobierania repozytorium i bez pip.
+- **Mam już Hermesa**: aplikacja sprawdza standardowe katalogi instalacji oraz środowisko Python. Możesz również wskazać folder zawierający `hermes_cli` i `venv` lub `.venv`.
+
+Wybór jest zapisywany w `runtime-collaborator.json` w katalogu danych aplikacji.
+Kolejny start używa tego samego silnika, bez ponownej instalacji. Jeśli zapisany
+folder zniknie lub zapis będzie uszkodzony, wybór pojawi się ponownie. Opcja naprawy
+po błędzie pozwala ponownie wybrać współpracownika.
+
+Istniejąca instalacja oznacza ponowne użycie jej kodu i Pythona, a nie przejęcie
+uruchomionej sesji Hermesa. Czesiek uruchamia własny proces z własnym profilem.
+Nie kopiuje kluczy, historii ani ustawień innego Hermesa. Zewnętrzna wersja silnika
+może mieć inny zestaw funkcji; dołączony silnik jest wariantem testowanym z tym wydaniem.
 
 ## Własne środowisko
 
@@ -54,7 +71,7 @@ Windows. Przed publikacją sprawdź instalator w nowym koncie lub maszynie wirtu
 
 1. Brak zainstalowanego Hermesa, Pythona i Node.js.
 2. Instalacja NSIS, obecność skrótu i poprawna ikona.
-3. Pierwszy start: postęp pobierania, instalacja silnika, dojście do onboardingu.
+3. Pierwszy start: wybór nowego lub istniejącego współpracownika, dojście do onboardingu bez pobierania silnika.
 4. Zapis klucza przez ustawienia i rzeczywista odpowiedź modelu.
 5. Ponowny start bez ponownej instalacji silnika.
 6. Aktualizacja zachowuje profil, a istniejąca oddzielna instalacja Hermesa działa dalej.

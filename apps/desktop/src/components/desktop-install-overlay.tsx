@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { CollaboratorPicker } from './collaborator-picker'
+
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -440,6 +442,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy.installLocalDesc}</p>
             </button>
           </div>
+
+          {state.setupChoice.platform === 'win32' && <CollaboratorPicker />}
 
           {localStartError ? (
             <div className="mt-4 flex items-start gap-2 text-sm text-destructive">

@@ -3948,14 +3948,14 @@ export const en: Translations = {
     viewDocs: 'View install docs',
     installTo: 'Will install to',
     retryAfterRun: 'I’ve run it -- retry',
-    setupChoiceTitle: 'Set up Agent Czesiek Desktop',
+    setupChoiceTitle: 'Meet Czesiek’s collaborator',
     setupChoiceDesc:
-      'Install Agent Czesiek on this computer with its own runtime. An internet connection is required.',
+      'Czesiek talks with you and plans the work. Hermes helps execute tasks. Prepare a new collaborator or choose an existing installation.',
     connectExistingTitle: 'Connect to existing Agent Czesiek',
     connectExistingShort: 'Connect existing',
     connectExistingDesc: 'Use a remote backend with a session token or browser sign-in. No local install will start.',
-    installLocalTitle: 'Install Agent Czesiek locally',
-    installLocalDesc: 'Download Agent Czesiek, create its Python environment, and run the backend on this computer.',
+    installLocalTitle: 'Prepare a new collaborator',
+    installLocalDesc: 'The full Windows package includes a ready engine. Czesiek uses its own profile without changing other installations.',
     localStartUnavailable: 'Local installation could not start. Restart Agent Czesiek Desktop and try again.',
     remoteSetupTitle: 'Connect to existing Agent Czesiek',
     remoteSetupDesc:

@@ -519,6 +519,8 @@ declare global {
       onBatteryChanged?: (callback: (onBattery: boolean) => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
+      detectCollaborators: (browse?: boolean) => Promise<Array<{ root: string; python: string }>>
+      selectCollaborator: (root: string) => Promise<{ ok: boolean }>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
       recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>

@@ -830,7 +830,7 @@ export function splitRunItems(toolNames: readonly string[]): RunItem[] {
  * list growing down the page. When the run settles the ticker goes away and
  * the summary above it is all that's left.
  */
-// The one grey line that stands in for a run of tool calls — "Explored 3
+// The one grey line that stands in for a run of tool calls — "Read 3
 // files, ran 5 commands". Live, it narrates in the present tense above the
 // ticker by default; its toggle can reveal the activity before it settles.
 function ToolRunHeader({

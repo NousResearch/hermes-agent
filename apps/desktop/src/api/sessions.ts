@@ -1,7 +1,7 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
-import { recordTranscriptTail } from '@/store/transcript-tail'
+import { pageHonorsLatestOrder, recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
   SessionInfo,
@@ -521,7 +521,19 @@ export function getLatestSessionMessages(
       includeCompacted: true
     },
     options
-  ).then(page => {
+  ).then(async page => {
+    // Order-echo guard. A backend built before the `order` param silently drops
+    // it (FastAPI ignores unknown query params) and serves the OLDEST page
+    // while still answering with a `pagination` object — so a full page looked
+    // like a truncated tail and the transcript silently became its first N
+    // rows, with "Show earlier" then prepending rows N..2N counted from the
+    // oldest end. Only a page that echoes `order: 'latest'` may be adopted as
+    // the tail; anything else is read as the complete transcript instead, which
+    // is the one paging contract both backend generations honour.
+    const authoritativePage = pageHonorsLatestOrder(page)
+      ? page
+      : await readCompleteTranscriptForOrderlessBackend(id, profile, page)
+
     // Record whether the tail was truncated (page came back full) and where
     // the next older page starts, so "Show earlier" can backfill over REST
     // (app/chat/transcript-backfill). Keyed under both the requested id and
@@ -534,14 +546,39 @@ export function getLatestSessionMessages(
       profile: route.profile || page.profile || ambientProfile
     }
 
-    recordTranscriptTail(id, page, route, owner)
+    recordTranscriptTail(id, authoritativePage, route, owner)
 
-    if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, route, owner)
+    if (authoritativePage.session_id && authoritativePage.session_id !== id) {
+      recordTranscriptTail(authoritativePage.session_id, authoritativePage, route, owner)
     }
 
-    return page
+    return authoritativePage
   })
+}
+
+/**
+ * Complete chronological transcript for a backend that did not honour
+ * `order=latest` (#92508).
+ *
+ * `getAllSessionMessages` pages with `order: 'oldest'`: the newer generation
+ * honours that explicitly and the older one drops the param and always paged
+ * from the start, so both return the same full history. The synthesized
+ * response carries NO `pagination`, the established "this is everything"
+ * signal (`tailStateFromPage`), so nothing arms a REST backfill against the
+ * wrong end of the transcript.
+ */
+async function readCompleteTranscriptForOrderlessBackend(
+  id: string,
+  profile: ProfileScope | undefined,
+  page: SessionMessagesResponse
+): Promise<SessionMessagesResponse> {
+  const complete = await getAllSessionMessages(id, profile)
+
+  return {
+    session_id: page.session_id || complete.session_id,
+    ...(page.profile ? { profile: page.profile } : {}),
+    messages: complete.messages
+  }
 }
 
 /**

@@ -82,6 +82,39 @@ describe('session transcript pagination ownership', () => {
     }
   )
 
+  it('reads the whole transcript instead of adopting the oldest page from a backend that ignores order', async () => {
+    setApiRequestConnection(null)
+    const owner = { connectionId: 'local', profile: 'default' }
+    const oldest = Array.from({ length: LATEST_SESSION_MESSAGES_LIMIT }, (_, index) => row(index + 1))
+    // A backend built before the `order` param: FastAPI drops the unknown query
+    // param, the handler pages from the OLDEST row, and the response still
+    // carries `{limit, offset, returned}` — with no honoured-order echo.
+    api.mockResolvedValueOnce({
+      session_id: 'stored-session',
+      messages: oldest,
+      pagination: { limit: LATEST_SESSION_MESSAGES_LIMIT, offset: 0, returned: oldest.length }
+    })
+    const all = Array.from({ length: 400 }, (_, index) => row(index + 1))
+    // The full history that backend does serve (oldest-first paging).
+    api.mockResolvedValueOnce({
+      session_id: 'stored-session',
+      messages: all,
+      pagination: { limit: 500, offset: 0, returned: all.length }
+    })
+
+    const authoritative = await getLatestSessionMessages('stored-session')
+
+    // The oldest page is NOT the tail: the desktop reads the complete
+    // transcript instead, and drops `pagination` so nothing arms a backfill
+    // that would prepend rows counted from the oldest end.
+    expect(authoritative.messages.map(message => message.id)).toEqual(all.map(message => message.id))
+    expect(authoritative.pagination).toBeUndefined()
+    expect(transcriptBackfillAvailable('stored-session', owner)).toBe(false)
+    expect(api).toHaveBeenLastCalledWith({
+      path: '/api/sessions/stored-session/messages?limit=500&offset=0&order=oldest&include_compacted=true'
+    })
+  })
+
   it('coalesces spellings against a backend that predates the profile field', async () => {
     setApiRequestConnection(null)
     const owner = { connectionId: 'local', profile: 'default' }

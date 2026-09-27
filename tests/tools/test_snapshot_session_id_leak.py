@@ -140,6 +140,7 @@ def test_snapshot_does_not_turn_later_commands_into_delegated_children(tmp_path)
 # itself) must not persist into the shared snapshot either.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.platforms("posix")  # POSIX bash snapshot path
 def test_export_dump_drops_every_kanban_env_var():
     """Any ``HERMES_KANBAN_*`` name — including ones the fixed exclusion list
     (``agent.delegation_context.KANBAN_ENV_KEYS``) does not know about — must

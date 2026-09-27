@@ -22,6 +22,13 @@ _BATCH_MAX_OPS = 20
 # entries) and prunes only ``EXCLUDED_SKILL_DIRS``, so a park left in there is itself a
 # loadable skill, and one declaring the live skill's frontmatter ``name`` makes that
 # name resolve twice in a single root.
+#
+# It must ALSO be on the parked entry's own filesystem. The eviction is an atomic
+# ``rename`` and nothing else: a cross-device ``shutil.move`` is copy-then-delete, so a
+# process killed mid-copy leaves the original still inside the walked root and loadable
+# while a partial park sits off-tree — precisely the state the park exists to prevent.
+# A park directory that cannot be renamed into is therefore refused before the first
+# move (see ``_park_dir_for``), never reached for with a copy.
 _ASIDE_DIRNAME = ".skill-rollback-asides"
 # A park lives for the length of one restore. Anything older than this was abandoned by
 # a process that died mid-restore (SIGKILL, host restart, power cut) and is dropped by
@@ -184,19 +191,111 @@ def _remove_path(path: Path) -> None:
         logger.warning("skill_manage: could not remove %s", path)
 
 
-def _asides_root() -> Path:
-    """Directory a rollback parks the broken entry in — never inside a skills root."""
-    from tools import skill_manager_tool as _smt
-    base = Path(_smt._skills_dir()).parent / _ASIDE_DIRNAME
+def _loader_roots() -> list:
+    """Every directory the skill loader walks, as ``Path``s. ``[]`` when the resolver fails:
+    a resolver failure must not block a rollback, and an empty list only widens the
+    candidates (the file-system check below is what keeps the park atomic)."""
     try:
         from agent.skill_utils import get_all_skills_dirs
-        for root in get_all_skills_dirs():
-            if base == root or base.is_relative_to(root):
-                # A HERMES_HOME configured as a skills root would be walked: park off-tree.
-                return Path(tempfile.gettempdir()) / _ASIDE_DIRNAME
+        return [Path(root) for root in get_all_skills_dirs()]
     except Exception:  # noqa: BLE001 — a resolver failure must not block a rollback
-        logger.debug("skill_manage: asides-root check failed", exc_info=True)
-    return base
+        logger.debug("skill_manage: skills-root resolution failed", exc_info=True)
+        return []
+
+
+def _real(path: Path) -> Path:
+    """*path* with symlinks resolved, whether or not it exists — ``Path.resolve`` raises for a
+    path that is not there yet, and every park directory is one we are about to create.
+
+    Both sides of "is this inside a skills root?" go through here: a root reached by a
+    symlink (``/var`` vs ``/private/var``, a linked profile home) is the same directory to the
+    loader's walk, so a spelling mismatch must not put the park back inside it.
+    """
+    return Path(os.path.realpath(path))
+
+
+def _device_of(path: Path):
+    """``st_dev`` of *path* — or of its nearest existing ancestor, for a park dir that does
+    not exist yet. ``None`` when nothing on the chain is readable."""
+    probe = Path(path)
+    while True:
+        try:
+            return probe.stat().st_dev
+        except OSError:
+            if probe.parent == probe:
+                return None
+            probe = probe.parent
+
+
+def _aside_candidates(path: Path) -> list:
+    """Park-dir candidates for *path*, nearest first.
+
+    Each is the ``_ASIDE_DIRNAME`` sibling of a directory that holds a skills root, so no
+    candidate sits inside a walked tree by construction; the ladder climbs from the entry's
+    OWN root outward. When the local base would itself be walked (a HERMES_HOME configured
+    as a skills root), the next ancestor out is still on the entry's filesystem — a tempdir
+    fallback is not, and that is what made the park cross-device in the first place.
+    """
+    from tools import skill_manager_tool as _smt
+    primary = Path(_smt._skills_dir())
+    out, seen = [], set()
+
+    def add(candidate: Path) -> None:
+        if candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+
+    add(primary.parent / _ASIDE_DIRNAME)
+    real_path = _real(path)
+    containing = [root for root in _loader_roots() if real_path.is_relative_to(_real(root))]
+    ancestor = max(containing, key=lambda root: len(root.parts)) if containing else primary
+    while True:
+        add(ancestor.parent / _ASIDE_DIRNAME)
+        if ancestor.parent == ancestor:  # filesystem root: nothing left to climb
+            return out
+        ancestor = ancestor.parent
+
+
+def _park_dir_for(path: Path) -> Path:
+    """A directory *path* can be atomically parked in: outside every skills root AND on the
+    entry's own filesystem. Raises ``_NoAtomicPark`` when no such directory exists.
+
+    Both halves are load-bearing. Inside a skills root the park is itself a loadable skill;
+    on another filesystem ``rename`` cannot be used at all, and the copy-then-delete
+    substitute can be interrupted into exactly the split state (original in-root and
+    loadable, park partial) the park exists to avoid. So this refuses — before anything
+    moves — rather than half-moving, and the caller reports the limitation.
+    """
+    source_dev = _device_of(path.parent)  # a symlinked entry moves as a LINK: its dir decides
+    roots = [_real(root) for root in _loader_roots()]
+    tried = []
+    for candidate in _aside_candidates(path):
+        real_candidate = _real(candidate)
+        if any(real_candidate == root or real_candidate.is_relative_to(root) for root in roots):
+            tried.append(f"{candidate} (inside a skills root)")
+            continue
+        if source_dev is None or _device_of(candidate) != source_dev:
+            tried.append(f"{candidate} (other filesystem)")
+            continue
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            tried.append(f"{candidate} ({exc.strerror or exc})")
+            continue
+        if _device_of(candidate) != source_dev:  # re-check: mkdir may have resolved elsewhere
+            tried.append(f"{candidate} (other filesystem)")
+            continue
+        return candidate
+    raise _NoAtomicPark(
+        f"no directory on the same filesystem as '{path.parent}' that is outside every "
+        f"skills root, so '{path}' cannot be parked atomically — a cross-device copy is "
+        f"not a park and would leave the entry loadable in the skills root if interrupted. "
+        f"Skipped: {'; '.join(tried) or 'no candidate'}"
+    )
+
+
+class _NoAtomicPark(RuntimeError):
+    """No same-filesystem, non-loadable park directory exists (see ``_park_dir_for``)."""
 
 
 def _sweep_stale_asides(asides_root: Path) -> None:
@@ -216,16 +315,18 @@ def _sweep_stale_asides(asides_root: Path) -> None:
 
 
 def _park_entry_aside(path: Path) -> Path:
-    """Rename *path* (a dir, a file or a symlink) out of its skills root; return the park."""
-    asides_root = _asides_root()
-    asides_root.mkdir(parents=True, exist_ok=True)
+    """Rename *path* (a dir, a file or a symlink) out of its skills root; return the park.
+
+    The move is a same-filesystem ``rename`` — atomic, so a kill at any instant leaves the
+    entry either in the root or in the park, never in both. When no park directory
+    qualifies, ``_park_dir_for`` raises BEFORE anything moves and the caller reports it;
+    the copy-then-delete substitute this used to fall back on is deliberately gone.
+    """
+    asides_root = _park_dir_for(path)
     _sweep_stale_asides(asides_root)
     aside = asides_root / f"{path.name}-{os.getpid()}-{time.time_ns()}"
     _remove_path(aside)
-    try:
-        path.rename(aside)
-    except OSError:  # another filesystem: a move copies first and never deletes on failure
-        shutil.move(str(path), str(aside))
+    path.rename(aside)
     try:  # stamp the PARK, not the parked entry's own mtime, for the stale sweep
         os.utime(aside, None, follow_symlinks=False)
     except (OSError, NotImplementedError):
@@ -261,9 +362,10 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()
         return
     # Move the broken state aside and delete it only after the snapshot is
     # back, so a failed copytree (disk full, locked file) can't mean total loss.
-    # The park lives outside every skills root: a park inside one is itself a
-    # loadable skill, and a process killed between here and the copy landing used
-    # to leave exactly that behind.
+    # The park lives outside every skills root and on the entry's own filesystem:
+    # a park inside one is itself a loadable skill, and the eviction has to be one
+    # atomic rename, so no park directory means NO move — this raises and the
+    # rollback reports the limitation instead of a cross-device copy.
     aside = _park_entry_aside(Path(post_dir))
     try:
         shutil.copytree(snap, pre_dir)

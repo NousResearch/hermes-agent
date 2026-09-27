@@ -12,8 +12,16 @@ skills root and was deleted with ``shutil.rmtree`` — which REFUSES a symlink. 
   could never be removed at all — the rmtree raised and ``ignore_errors=True`` ate it.
 
 Both parks also stayed forever: nothing ever collected them.
+
+A third invariant rides the same failure path: the eviction is ONE ATOMIC ``rename``, so
+the park directory has to be on the entry's own filesystem. Across filesystems ``rename``
+raises ``EXDEV`` and the only substitute is a copy-then-delete, which a kill mid-copy turns
+into the very state above (original still loadable in the root, park partial). With no
+qualifying park directory the rollback therefore ABORTS before the first move and reports
+the limitation instead of copying.
 """
 
+import errno
 import importlib
 import json
 import os
@@ -25,6 +33,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -64,8 +73,13 @@ sys.exit(3)  # unreachable: the batch reaches its rollback
 
 class TestRollbackParkLocation(unittest.TestCase):
     def setUp(self):
-        self.home = Path(tempfile.mkdtemp(prefix="skmbatch_park_"))
-        self.addCleanup(shutil.rmtree, self.home, True)
+        self._tmp = Path(tempfile.mkdtemp(prefix="skmbatch_park_"))
+        self.addCleanup(shutil.rmtree, self._tmp, True)
+        # HERMES_HOME sits a level below the temp dir, so "the ancestor out" and "the
+        # tempdir this used to park in" are different directories and a test can tell them
+        # apart. A home directly inside TMPDIR cannot distinguish the two.
+        self.home = self._tmp / "hermes"
+        self.home.mkdir()
         self._env = {k: os.environ.get(k) for k in ("HERMES_HOME", "HERMES_YOLO_MODE")}
         self.addCleanup(self._restore_env)
         os.environ["HERMES_HOME"] = str(self.home)
@@ -130,6 +144,71 @@ class TestRollbackParkLocation(unittest.TestCase):
         self.assertFalse(park.is_relative_to(self.root), park)
         self.assertEqual(self._loadable(), [])
         self.assertEqual(self._parked(), [park.name])
+
+    def test_a_cross_device_park_is_refused_before_anything_moves(self):
+        """``rename`` cannot cross filesystems, and ``shutil.move`` is copy-then-delete: a
+        kill mid-copy leaves the original loadable in the root beside a partial park. The
+        park must refuse — not copy — and the entry must stay exactly where it was."""
+        from tools import skill_manager_batch as smb
+
+        entry = self._skill()
+        before = (entry / "SKILL.md").read_text()
+
+        with mock.patch.object(Path, "rename",
+                               side_effect=OSError(errno.EXDEV, "Invalid cross-device link")), \
+             mock.patch.object(smb.shutil, "move",
+                               side_effect=AssertionError("a cross-device copy is not a park")):
+            with self.assertRaises(OSError) as caught:
+                smb._park_entry_aside(entry)
+
+        self.assertEqual(caught.exception.errno, errno.EXDEV)
+        self.assertEqual(self._loadable(), ["yoyodine/probe/SKILL.md"],
+                         "the entry left the root without a park to land in")
+        self.assertEqual((entry / "SKILL.md").read_text(), before, "the entry was half-moved")
+        self.assertEqual(self._parked(), [], self._parked())
+
+    def test_a_walked_park_base_yields_to_a_same_device_ancestor_not_a_tempdir(self):
+        """When the local base is itself a skills root (a HERMES_HOME configured as one) the
+        park climbs one ancestor out, which is on the entry's filesystem. The old rule
+        handed the park to a tempdir, and that is the filesystem it is not necessarily on."""
+        from tools import skill_manager_batch as smb
+
+        entry = self._skill()
+        walked_base = [*smb._loader_roots(), self.home.resolve()]
+
+        with mock.patch.object(smb, "_loader_roots", lambda: walked_base):
+            park = smb._park_entry_aside(entry)
+
+        self.assertTrue(park.exists(), park)
+        self.assertFalse(park.is_relative_to(self.root), park)
+        self.assertNotEqual(park.parent, self.asides, "the walked base was used anyway")
+        self.assertNotEqual(park.parent, Path(tempfile.gettempdir()) / smb._ASIDE_DIRNAME)
+        self.assertEqual(smb._device_of(park.parent), smb._device_of(entry.parent),
+                         "the park is not on the entry's own filesystem")
+        self.assertEqual(self._loadable(), [])
+
+    def test_no_qualifying_park_dir_aborts_before_the_move_and_reports_it(self):
+        """Fail closed: with no same-filesystem park directory the batch aborts with the
+        entry untouched, keeps the snapshot, and the failure text names the limitation."""
+        from tools import skill_manager_batch as smb
+
+        entry = self._skill()
+        device_of = smb._device_of
+
+        def off_device(path):  # every candidate reports a filesystem the entry is not on
+            path = Path(path)
+            return -1 if path.name == smb._ASIDE_DIRNAME else device_of(path)
+
+        with mock.patch.object(smb, "_device_of", off_device):
+            result = self._failing_batch()
+
+        self.assertFalse(result["success"], result)
+        self.assertIn("ROLLBACK FAILED", result["error"])
+        self.assertIn("same filesystem", result["error"])
+        self.assertEqual(self._loadable(), ["yoyodine/probe/SKILL.md"],
+                         "the entry was moved into a park that cannot be atomic")
+        self.assertTrue(entry.is_dir(), entry)
+        self.assertEqual(self._parked(), [], self._parked())
 
     def test_a_symlinked_entry_park_lands_outside_the_root_and_removes(self):
         """A farm links each skill into a shared tree; rmtree could not delete that park."""

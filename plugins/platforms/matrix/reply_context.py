@@ -20,6 +20,8 @@ class MatrixEventContext:
     text: str
     media_path: str | None = None
     media_type: str | None = None
+    is_image: bool = False
+    redacted: bool = False
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,9 @@ class MatrixEventContextCache:
         if not event_id:
             return
         key = room_id, event_id
+        prior = self._entries.get(key)
+        if prior is not None and prior.redacted and not entry.redacted:
+            return
         self._entries[key] = entry
         self._entries.move_to_end(key)
         while len(self._entries) > self.max_entries:
@@ -172,29 +177,41 @@ class MatrixEventContextCache:
         if not isinstance(body, str) or not body.strip():
             return
         prior = self._entries.get((room_id, target))
+        if prior is not None and prior.redacted:
+            return
         if prior is not None and prior.sender and prior.sender != sender:
             return
-        self.store(room_id, target, MatrixEventContext(sender, _own_text(body.strip())))
+        self.store(room_id, target, MatrixEventContext(
+            sender, _own_text(body.strip()),
+            media_path=prior.media_path if prior else None,
+            media_type=prior.media_type if prior else None,
+            is_image=prior.is_image if prior else False,
+        ))
 
     def redact(self, room_id: str, event_id: str) -> None:
         prior = self._entries.get((room_id, event_id))
         sender = prior.sender if prior is not None else ""
-        self.store(room_id, event_id, MatrixEventContext(sender, ""))
+        self.store(room_id, event_id, MatrixEventContext(sender, "", redacted=True))
 
     async def resolve(
         self, client: Any, room_id: str, event_id: str,
         image_loader: Callable[[dict, str], Awaitable[tuple[str, str] | None]] | None = None,
     ) -> MatrixEventContext | None:
         key = room_id, event_id
+        cached = None
         if key in self._entries:
             self._entries.move_to_end(key)
             entry = self._entries[key]
+            if entry.redacted:
+                return None
             if entry.media_path and not Path(entry.media_path).is_file():
                 self._entries.pop(key)
             else:
-                return entry if entry.text or entry.media_path else None
+                cached = entry
+                if not entry.is_image or entry.media_path or image_loader is None:
+                    return entry if entry.text or entry.media_path else None
         if client is None:
-            return None
+            return cached
 
         try:
             event = await asyncio.wait_for(client.get_event(room_id, event_id), self.timeout_seconds)
@@ -205,7 +222,7 @@ class MatrixEventContextCache:
                 event = await asyncio.wait_for(crypto.decrypt_megolm_event(event), self.timeout_seconds)
         except Exception as exc:
             logger.debug("Matrix: could not resolve reply target %s in %s: %s", event_id, room_id, exc)
-            return None
+            return cached
 
         sender = str(getattr(event, "sender", "") or "")
         if not sender and isinstance(event, dict):
@@ -232,6 +249,7 @@ class MatrixEventContextCache:
             sender=sender, text=text,
             media_path=media[0] if media else None,
             media_type=media[1] if media else None,
+            is_image=msgtype == "m.image",
         )
         self.store(room_id, event_id, entry)
-        return entry if text else None
+        return entry if text or entry.media_path else None

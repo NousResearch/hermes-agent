@@ -192,6 +192,21 @@ def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
     assert heal_forked_single_use_oauth_grants("nous")["providers_block"] is True
     assert "nous" not in json.loads((kid / "auth.json").read_text())["providers"]
 
+    # Heal: an agent_key-only profile row that copied root's id (and looks "fresher") is not a
+    # fork; heal_pool_rows must keep it rather than match it to root's refresh-bearing row.
+    rrow = dict(grant, id="r1", source="device_code", auth_type="oauth",
+                last_refresh="2026-01-01T00:00:00+00:00")
+    (fleet["root"] / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {"nous": [rrow]}}))
+    akid = _profile(fleet, "nousakid")
+    ak_copied = {"id": "r1", "source": "device_code", "auth_type": "oauth", "access_token": "",
+                 "agent_key": "PAK", "last_refresh": "2026-06-01T00:00:00+00:00"}
+    (akid / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {"nous": [ak_copied]}}))
+    fleet["use"](akid)
+    heal_forked_single_use_oauth_grants("nous")
+    assert json.loads((akid / "auth.json").read_text())["credential_pool"]["nous"] == [ak_copied]
+    root_rows = json.loads((fleet["root"] / "auth.json").read_text())["credential_pool"]["nous"]
+    assert [(r["id"], r.get("refresh_token"), r.get("agent_key")) for r in root_rows] == [("r1", "RT1", "AK")]
+
 
 def test_strip_helper_is_a_noop_without_credentials(tmp_path):
     from hermes_cli.auth import strip_cloned_single_use_oauth_grants

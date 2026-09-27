@@ -167,16 +167,22 @@ def test_merge_does_not_mutate_caller_list(hermes_env):
     assert my_payload == [], "caller's list was mutated in place by the merge"
 
 
-def test_corrupt_disk_file_does_not_break_save(hermes_env):
-    """A corrupt jobs.json under a save must not recurse or crash: the
-    non-repairing peek returns None and the save overwrites cleanly."""
+def test_save_over_corrupt_store_fails_closed(hermes_env):
+    """A merging save over an unreadable jobs.json must refuse (the jobs in it
+    are unknown, so overwriting would drop them) and leave the bytes intact;
+    ``replace=True`` stays available as the explicit recovery rewrite."""
     import cron.jobs as jobs
     from cron.jobs import load_jobs, save_jobs
 
     jobs.ensure_dirs()
     jobs_file = jobs._current_cron_store().jobs_file
-    jobs_file.write_text('{"jobs": [{"id": "ccc', encoding="utf-8")
-    save_jobs([{"id": "aaaaaaaaaaaa", "name": "a"}])
+    corrupt = b'{"jobs": [{"id": "ccc'
+    jobs_file.write_bytes(corrupt)
+    with pytest.raises(RuntimeError):
+        save_jobs([{"id": "aaaaaaaaaaaa", "name": "a"}])
+    assert jobs_file.read_bytes() == corrupt
+
+    save_jobs([{"id": "aaaaaaaaaaaa", "name": "a"}], replace=True)
     assert [j["id"] for j in load_jobs()] == ["aaaaaaaaaaaa"]
 
 

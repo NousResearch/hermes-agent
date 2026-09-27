@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
-from utils import atomic_replace, atomic_write_text
+from utils import atomic_replace, atomic_write_text, fsync_directory
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
@@ -1412,7 +1412,7 @@ def load_jobs() -> List[Dict[str, Any]]:
                 return load_jobs()
         for note in notes:
             logger.warning("%s", note)
-        save_jobs(jobs)
+        save_jobs(jobs, replace=True)  # locked full-store read: the repaired list is authoritative
         logger.warning("Auto-repaired jobs.json (%s)", repair)
     _record_load_stamp(pre_read_stamp)
     return jobs
@@ -1534,6 +1534,9 @@ def _save_jobs_unlocked(
     recovery)."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
+    # Fail closed: merging against an unreadable store would silently overwrite every job in it.
+    if not replace and jobs_file.exists() and _peek_jobs_unlocked() is None:
+        raise RuntimeError(f"Cron database corrupted; refusing to overwrite {jobs_file}")
     # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.
     _stat_before = None
     for probe in (jobs_file, jobs_file.parent):
@@ -1559,6 +1562,7 @@ def _save_jobs_unlocked(
                 continue
             atomic_replace(tmp_path, jobs_file)
             tmp_path = None
+            fsync_directory(jobs_file.parent)
             _secure_file(jobs_file)
             _preserve_file_ownership(jobs_file, _stat_before)
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk

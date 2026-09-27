@@ -16,6 +16,7 @@ site-packages, dropped venv markers) stand.
 from __future__ import annotations
 
 import os
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -40,3 +41,28 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     existing = [e for e in worker_env.get("PYTHONPATH", "").split(os.pathsep) if e]
     worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([root, *existing]))
     return worker_env
+
+
+def external_worker_command_prefix(repo_root: Path) -> list[str]:
+    """Interpreter argv prefix that can import the external worker's dependencies.
+
+    Under a managed store install ``sys.executable`` is the bare store Python: the repo
+    and managed site-packages exist only on the parent's in-process ``sys.path``
+    (installed by ``activate_dependencies`` at bootstrap) and a fresh child re-runs no
+    dependency activation, so it dies on its first third-party import -- "No module
+    named 'ruamel'" (#125269). Cron scripts already run the committed dependency venv's
+    own interpreter for exactly this (#123044/#123440); the worker takes the same
+    interpreter. Elsewhere (venv checkout, wheel/pipx) the current interpreter is
+    already the right one.
+    """
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import project_python
+
+    if resolve_store_python(repo_root) is None:
+        return [sys.executable]
+    python = project_python(repo_root)
+    if not python.is_file():
+        # Caller's interpreter is the bare store Python here (the #123044 mode): a named
+        # failure beats a spawn that dies before its ownership ack.
+        raise RuntimeError(f"dependency environment interpreter is missing: {python}")
+    return [str(python)]

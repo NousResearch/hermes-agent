@@ -3470,8 +3470,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
+    repo_root = Path(__file__).resolve().parent.parent
+    from cron.scheduler_worker_env import external_worker_command_prefix
     command = [
-        sys.executable,
+        *external_worker_command_prefix(repo_root),
         "-m",
         "cron.scheduler",
         "--external-worker-file",
@@ -3561,7 +3563,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
     # (PYTHONSAFEPATH / stale editable mapping, #112729). See cron/scheduler_worker_env.py.
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    repo_root = Path(__file__).resolve().parent.parent
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

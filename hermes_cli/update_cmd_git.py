@@ -58,9 +58,10 @@ def _prune_orphan_rescue_refs(
 ) -> None:
     """Expire old rescue refs (``refs/hermes-update-backups/<kind>-<branch>-<ts>-<sha>``).
 
-    ``<kind>`` is ``orphan`` (no common ancestor) or ``diverged`` (local commits on the target
-    branch). Both are written before the same ``reset --hard`` and both pin objects, so both
-    expire on the same terms; each kind keeps its own ``keep`` newest.
+    ``<kind>`` is ``orphan`` (no common ancestor), ``diverged`` (local commits on the target
+    branch), or ``detached`` (an unreferenced detached HEAD before a branch switch). All three
+    pin commits before an updater move would make recovery difficult, so they expire on the same
+    terms; each kind keeps its own ``keep`` newest.
 
     Each ref pins a possibly multi-GB snapshot against ``git gc``, so a repeatedly corrupted install would
     grow ``.git`` unbounded. Keep the ``keep`` newest AND drop any older than ``max_age_days`` by the
@@ -74,7 +75,7 @@ def _prune_orphan_rescue_refs(
     from hermes_cli.update_cmd_git import _git_run
     with suppress(OSError):
         stale: set[str] = set()
-        for kind in ("orphan", "diverged"):
+        for kind in ("orphan", "diverged", "detached"):
             prefix = f"refs/hermes-update-backups/{kind}-{branch}-"
             list_result = _git_run(
                 git_cmd, ["for-each-ref", "--format=%(refname)", "--sort=refname", f"{prefix}*"], cwd)

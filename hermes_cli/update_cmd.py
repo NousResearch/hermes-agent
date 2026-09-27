@@ -926,6 +926,64 @@ def _apply_parked_branch_guard(
     return False, True, switch_block_reason
 
 
+def _park_unreferenced_detached_head(
+    git_cmd, branch: str, *, _windows_gateway_resume
+) -> str | None:
+    """Pin an otherwise-unreferenced detached HEAD before switching branches.
+
+    A detached commit can disappear from every ref when the updater checks out
+    the target branch. Reflog-only recovery is not durable enough for an
+    unattended updater, so either prove another ref already contains HEAD or
+    create a rescue ref before moving it. Verification/backup failures stop the
+    update while the detached commit is still checked out.
+    """
+    root = _m().PROJECT_ROOT
+    head_sha = _capture_head_sha(git_cmd, root)
+
+    def _refuse(message: str) -> NoReturn:
+        print(f"✗ {message}")
+        print("  Update stopped before switching branches; detached HEAD was left unchanged.")
+        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        sys.exit(1)
+
+    if not head_sha:
+        _refuse("Could not resolve detached HEAD to a commit.")
+
+    try:
+        containing = _git_run(
+            git_cmd,
+            ["for-each-ref", f"--contains={head_sha}", "--format=%(refname)"],
+            root,
+        )
+    except OSError:
+        _refuse("Could not verify whether detached HEAD is reachable from another ref.")
+    if containing.returncode != 0:
+        _refuse("Could not verify whether detached HEAD is reachable from another ref.")
+    if containing.stdout.strip():
+        return None
+
+    rescue_ref = (
+        f"refs/hermes-update-backups/detached-{branch}-"
+        f"{_time.strftime('%Y%m%d-%H%M%S', _time.gmtime())}-{head_sha[:12]}"
+    )
+    try:
+        parked = _git_run(git_cmd, ["update-ref", rescue_ref, head_sha], root)
+    except OSError:
+        parked = None
+    if parked is None or parked.returncode != 0:
+        _refuse(
+            f"Detached HEAD {head_sha[:12]} is not reachable from any ref and "
+            "the rescue ref could not be created."
+        )
+
+    print(
+        f"  ⚠ Detached HEAD {head_sha[:12]} is not reachable from any ref — "
+        f"backed it up to {rescue_ref} before switching."
+    )
+    _prune_orphan_rescue_refs(git_cmd, root, branch)
+    return rescue_ref
+
+
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
     switch_branch, target_ref=None, _windows_gateway_resume):
@@ -945,6 +1003,8 @@ def _prepare_checkout_for_update(
             _windows_gateway_resume=_windows_gateway_resume)
 
     if not release_tag and not in_place_update and current_branch == "HEAD" != branch:
+        _park_unreferenced_detached_head(
+            git_cmd, branch, _windows_gateway_resume=_windows_gateway_resume)
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
     auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
     if (

@@ -191,6 +191,8 @@ When the parked branch has **uncommitted changes** (dirty tree), Hermes does **n
 
 Commits made directly on the update target (`main`) stop fast-forwards once upstream moves, and the checkout cannot tell them apart from an upstream force-push, so the update resets `main` to `origin/main`. Before the reset it saves the old HEAD as `refs/hermes-update-backups/diverged-main-<stamp>-<sha>` and prints that ref along with how many commits leave the branch. `git log origin/main..<ref>` lists them; `git branch <name> <ref>` or `git cherry-pick` brings them back. Re-running the installer over an existing checkout (`install.sh` / `install.ps1`, which desktop bootstrap does) writes the same refs. Whenever `hermes update` writes one, it keeps the ten newest per kind and drops any older than 30 days. To carry patches across updates, keep them on a custom branch with `updates.parked_branch_strategy: update_in_place` instead.
 
+A branch-tracking update that starts on a **detached HEAD** also checks the current commit before switching branches. If no Git ref contains that commit, Hermes first pins it as `refs/hermes-update-backups/detached-<branch>-<stamp>-<sha>` and prints the ref. If reachability cannot be verified or the rescue ref cannot be written, the update stops before checkout and leaves the detached HEAD unchanged. Detached rescue refs use the same ten-per-kind / 30-day retention policy.
+
 ### Local changes on non-interactive updates
 
 When you run `hermes update` in a terminal, Hermes stashes any uncommitted source-tree changes, pulls, then **asks** whether to restore them — exactly as it always has. Nothing changes for interactive updates.

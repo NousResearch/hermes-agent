@@ -81,15 +81,105 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
             assert 'commit(s) not on origin/main leave the branch' in output
 
 
+def _prepare_detached_main_update(t, monkeypatch):
+    t.args.channel = "main"
+    monkeypatch.setattr(
+        hermes_main, "_sync_with_upstream_if_needed", update_cmd._sync_with_upstream_if_needed)
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ())
+
+
+def test_update_parks_unreferenced_detached_commit_before_switch(
+    update_tree, monkeypatch, capsys,
+):
+    """#124643: a detached local commit must stay reachable after update switches to main."""
+    t = update_tree
+    git(t.clone, "checkout", "-q", "--detach", t.base)
+    (t.clone / "detached.txt").write_text("keep me\n", encoding="utf-8")
+    git(t.clone, "add", "detached.txt")
+    git(t.clone, "-c", "commit.gpgsign=false", "commit", "-qm", "detached work")
+    before = git(t.clone, "rev-parse", "HEAD")
+    _prepare_detached_main_update(t, monkeypatch)
+
+    hermes_main.cmd_update(t.args)
+
+    refs = git(
+        t.clone, "for-each-ref", "--format=%(refname)",
+        "refs/hermes-update-backups/detached-main-",
+    ).splitlines()
+    assert len(refs) == 1
+    assert git(t.clone, "rev-parse", refs[0]) == before
+    assert git(t.clone, "rev-parse", "HEAD") == t.newer
+    output = capsys.readouterr().out
+    assert refs[0] in output
+    assert "not reachable from any ref" in output
+
+
+def test_update_does_not_backup_referenced_detached_head(
+    update_tree, monkeypatch, capsys,
+):
+    """A detached HEAD already contained by a ref needs no extra rescue anchor."""
+    t = update_tree
+    git(t.clone, "checkout", "-q", "--detach", "main")
+    _prepare_detached_main_update(t, monkeypatch)
+
+    hermes_main.cmd_update(t.args)
+
+    refs = git(
+        t.clone, "for-each-ref", "--format=%(refname)",
+        "refs/hermes-update-backups/detached-main-",
+    )
+    assert refs == ""
+    assert git(t.clone, "rev-parse", "HEAD") == t.newer
+    assert "backed it up to refs/hermes-update-backups/detached-" not in capsys.readouterr().out
+
+
+def test_update_refuses_to_leave_unreferenced_detached_head_when_backup_fails(
+    update_tree, monkeypatch, capsys,
+):
+    """If the rescue ref cannot be created, fail before checkout rather than orphan work."""
+    t = update_tree
+    git(t.clone, "checkout", "-q", "--detach", t.base)
+    (t.clone / "detached.txt").write_text("keep me\n", encoding="utf-8")
+    git(t.clone, "add", "detached.txt")
+    git(t.clone, "-c", "commit.gpgsign=false", "commit", "-qm", "detached work")
+    before = git(t.clone, "rev-parse", "HEAD")
+    _prepare_detached_main_update(t, monkeypatch)
+    original = subprocess.run
+
+    def fault(command, *args, **kwargs):
+        if (
+            "update-ref" in command
+            and any("refs/hermes-update-backups/detached-main-" in str(arg) for arg in command)
+        ):
+            return subprocess.CompletedProcess(
+                command, 128, stdout="", stderr="fixture rescue-ref refusal")
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fault)
+
+    with pytest.raises(SystemExit) as error:
+        hermes_main.cmd_update(t.args)
+
+    assert error.value.code == 1
+    assert git(t.clone, "rev-parse", "HEAD") == before
+    assert git(t.clone, "branch", "--show-current") == ""
+    assert not t.requests
+    assert t.resumed
+    output = capsys.readouterr().out
+    assert "rescue ref could not be created" in output
+    assert "detached HEAD was left unchanged" in output
+
+
+@pytest.mark.parametrize('kind', ['orphan', 'detached'])
 @pytest.mark.parametrize('mode', ['count', 'age', 'unparseable'])
-def test_rescue_retention_uses_real_refs(tmp_path, monkeypatch, mode):
+def test_rescue_retention_uses_real_refs(tmp_path, monkeypatch, mode, kind):
     from datetime import datetime, timedelta, timezone
 
     git(tmp_path, 'init', '-q', '-b', 'main')
     git(tmp_path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'base')
     now = datetime.now(timezone.utc)
-    prefix = 'refs/hermes-update-backups/orphan-main-'
+    prefix = f'refs/hermes-update-backups/{kind}-main-'
     if mode == 'count':
         refs = [prefix + (now - timedelta(hours=20-i)).strftime('%Y%m%d-%H%M%S') + '-abc'
                 for i in range(update_cmd._ORPHAN_RESCUE_REFS_TO_KEEP + 2)]

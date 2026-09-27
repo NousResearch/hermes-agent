@@ -6,6 +6,7 @@ import {
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
+import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import {
@@ -257,6 +258,14 @@ export async function reconcileTileTranscripts({
       }
 
       const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
+
+      // A freshly minted draft tile has no state.db row until the first prompt
+      // persists it (#123622) — reading its transcript before anything was ever
+      // sent only ever 404s.
+      if (!messagesAtRequest?.length && sessionCreatedThisRun(storedSessionId)) {
+        continue
+      }
+
       // Passive: a hidden tile's refresh must never cold-start its owner
       // backend or hold a pool slot (#103375); no warm backend = retry next tick.
       const latest = await getLatestSessionMessages(storedSessionId, profileScope, { passive: true })
@@ -497,6 +506,13 @@ export async function reconcileActiveTranscript({
   // Busy at both endpoints can be false even though an entire turn streamed
   // while HTTP was in flight. Never let that older read replace newer text.
   const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
+
+  // A freshly minted draft has no state.db row until the first prompt persists it
+  // (#123622) — reading its transcript before anything was ever sent only ever
+  // 404s, since an empty local view already IS the correct (empty) render.
+  if (!messagesAtRequest?.length && sessionCreatedThisRun(storedSessionId)) {
+    return
+  }
 
   try {
     const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)

@@ -360,6 +360,31 @@ class TestExecutionGuidanceInjection:
             "deepseek/deepseek-v4-pro", valid_tool_names=())
 
 
+class TestAsyncDelegationHandoffGuidance:
+    """A background child cannot re-enter until the parent yields its current turn (#124072)."""
+
+    def _prompt(self, valid_tool_names):
+        return _stable_prompt(_make_agent(
+            valid_tool_names=list(valid_tool_names),
+            model="openai/gpt-5.5",
+            _tool_use_enforcement="auto",
+            _execution_guidance="auto",
+        ))
+
+    @pytest.mark.parametrize("tools,expected", [
+        (("delegate_task", "execute_code"), True),
+        (("execute_code",), False),
+    ])
+    def test_handoff_injected_only_with_delegate_task(self, tools, expected):
+        stable = self._prompt(tools)
+        assert ("Async handoff" in stable) is expected
+        if expected:
+            assert stable.count("Async handoff") == 1
+            # Must follow the generic "keep working" blocks so it reads as their exception.
+            assert stable.index("Async handoff") > stable.index("Tool-use enforcement")
+            assert stable.index("Async handoff") > stable.index("Execution discipline")
+
+
 class TestNamedProfileHintIntegration:
     """The same defect through the REAL resolution chain (#72894).
 

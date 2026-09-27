@@ -15,9 +15,7 @@ describe('MarkdownLink authored labels', () => {
   afterEach(cleanup)
 
   it('preserves an inline-code link label with its exact casing', async () => {
-    render(
-      <MarkdownTextContent isRunning={false} text="Tagged [`v1.0.1`](https://example.com/releases/tag/v1.0.1)." />
-    )
+    render(<MarkdownTextContent isRunning={false} text="Tagged [`v1.0.1`](https://example.com/releases/tag/v1.0.1)." />)
 
     await screen.findByText('v1.0.1')
     const anchor = screen.getByRole('link') as HTMLAnchorElement

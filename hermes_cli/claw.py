@@ -14,7 +14,7 @@ from typing import Callable, Optional
 from hermes_cli.config import get_hermes_home, get_config_path, load_config, save_config
 from hermes_constants import get_optional_skills_dir
 from hermes_cli.setup import (Colors, color, print_header, print_info, print_success, print_error,
-                              prompt_yes_no)
+                              print_warning, prompt_yes_no)
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +379,11 @@ def _apply_migration(run_migrator: Callable[[bool], dict], opts: SimpleNamespace
                 print_success(f"Pre-migration backup: {backup_archive} "
                               f"({_format_size(backup_archive.stat().st_size)})")
                 print_info(f"Restore with: hermes import {backup_archive.name}")
+            else:
+                print()
+                print_warning("Pre-migration backup was not created (nothing to back up, the write "
+                              "failed, or it was incomplete); if incomplete, a partial "
+                              "pre-migration-*.incomplete.zip may exist in the backups dir.")
         except Exception as e:
             return _error_block(
                 f"Could not create pre-migration backup: {e}",

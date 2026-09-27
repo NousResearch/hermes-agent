@@ -95,13 +95,17 @@ def _session_filter_where(
     *, exclude_children: bool = False, source: str = None, sources: List[str] = None,
     session_key: str = None, exclude_sources: List[str] = None, cwd_prefix: str = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
+    include_subagents: bool = False,
 ) -> Tuple[List[str], List[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
-    (``_LISTABLE_CHILD_SQL``). Clause order is part of the SQL text contract."""
+    (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only
+    (``sessions.show_subagents``). Clause order is part of the SQL text contract."""
     where: List[str] = []
     params: List[Any] = []
-    if exclude_children:
+    if exclude_children and include_subagents:
+        where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
+    elif exclude_children:
         where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
     # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
     # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
@@ -216,6 +220,9 @@ _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
     f"                       {col} = COALESCE(sessions.{col}, excluded.{col})" for col in (
         "session_key", "chat_id", "chat_type", "thread_id", "parent_session_id", "cwd", "profile_name",
         "transport_profile", "git_repo_root", "origin_json", "display_name",
+        # Immutable provenance (#56439): stamped once at first creation, never overwritten by later
+        # upserts — unlike ``source``, which stays live routing state.
+        "created_source",
     )
 )
 
@@ -338,12 +345,12 @@ class SessionSessionsMixin:
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(
                 """INSERT INTO sessions (
-                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
+                   id, source, created_source, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, system_prompt_hash,
                    parent_session_id, cwd, profile_name, transport_profile, git_repo_root,
                    origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        source = CASE
                            WHEN sessions.source = 'unknown'
@@ -382,7 +389,7 @@ class SessionSessionsMixin:
                        END,
 """ + _UPSERT_KEEP_EXISTING_SQL,
                 (
-                    session_id, source, user_id, session_key, chat_id, chat_type, thread_id, model,
+                    session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, model,
                     json.dumps(model_config) if model_config else None, system_prompt_hash,
                     parent_session_id, cwd, profile_name, transport_profile, git_repo_root, origin_json,
                     display_name, time.time(),
@@ -1051,6 +1058,11 @@ class SessionSessionsMixin:
                 merged["title"] = s.get("title")
             merged["_lineage_root_id"] = s["id"]
             merged["_lineage_ids"] = chain
+            # #121148: the projected row IS an automatic continuation, not a fresh conversation and
+            # not a user branch. The server already classifies the edge (_COMPRESSION_CHILD_SQL) but
+            # only ever used it to hide rows — surface the kind so clients can label the provenance
+            # instead of rendering a sealed-and-rotated chat as a brand-new session.
+            merged["continuation_kind"] = "compression"
             projected.append(merged)
         return projected
 
@@ -1254,6 +1266,7 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str = None, search_query: str = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str = None, include_hidden: bool = False,
+        include_subagents: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
@@ -1264,7 +1277,7 @@ class SessionSessionsMixin:
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
-            archived_only=archived_only, include_archived=include_archived,
+            archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         )
         # The archived-only view is the recovery surface for rows that dropped out of every
         # default list: a session that is archived AND hidden (Bot Mode marks its sessions
@@ -1342,6 +1355,7 @@ class SessionSessionsMixin:
                 exclude_children=not include_children, source=source, sources=sources,
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
+                include_subagents=include_subagents,
             )
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")
@@ -1464,13 +1478,13 @@ class SessionSessionsMixin:
     def session_count(
         self, source: str = None, sources: List[str] = None, cwd_prefix: str = None,
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
-        exclude_children: bool = False, exclude_sources: List[str] = None,
+        exclude_children: bool = False, exclude_sources: List[str] = None, include_subagents: bool = False,
     ) -> int:
         """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
-            archived_only=archived_only, include_archived=include_archived,
+            archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         )
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
@@ -1513,11 +1527,14 @@ class SessionSessionsMixin:
 
     @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
-        """Remove ``<id>.json``/``.jsonl`` and gateway ``request_dump_<id>_*.json``; OSError is swallowed
-        so a filesystem hiccup never blocks a DB operation."""
+        """Remove ``<id>.json``/``.jsonl``, the legacy ``session_<id>.json`` snapshot, and gateway
+        ``request_dump_<id>_*.json``; OSError is swallowed so a filesystem hiccup never blocks a
+        DB operation. Every historical writer name is swept because a "deleted" session's snapshot
+        can carry plaintext secrets (#20334, #60207)."""
         if sessions_dir is None:
             return
         targets = [sessions_dir / f"{session_id}{suffix}" for suffix in (".json", ".jsonl")]
+        targets.append(sessions_dir / f"session_{session_id}.json")
         try:
             # glob.escape: a session id carrying ``[`` / ``?`` / ``*`` is a PATTERN otherwise, so the
             # dump sweep either matches nothing or matches another session's files.

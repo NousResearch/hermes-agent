@@ -533,15 +533,21 @@ _URL_BARE_TOKEN_RE = re.compile(
 # Incoming-webhook URLs. The URL IS the credential: anyone holding it can post into the
 # workspace as the app, with no other secret. Web URLs are otherwise passed through on purpose
 # (magic links, OAuth callbacks the agent must follow), so this stays vendor-shaped like
-# _DB_CONNSTR_RE and _URL_BARE_TOKEN_RE: only the three fixed host/path forms below match, and
+# _DB_CONNSTR_RE and _URL_BARE_TOKEN_RE: only the fixed host/path forms below match, and
 # only the credential segment is masked, leaving the host and ids readable for diagnosis.
+# Teams "Workflows" webhooks (the Power Automate replacement for Office 365 connectors) are
+# logic.azure.com / api.powerplatform.com trigger URLs whose only secret is the ``sig`` query
+# parameter; Slack workflow triggers live under hooks.slack.com/triggers/.
 # Hermes stores one as ``incoming_webhook_url`` for Teams delivery and ships Slack and Discord
 # adapters, so these land in config dumps, tool output and logs. Telegram's is already covered
 # by _TELEGRAM_RE, which masks the bot token inside its API URL.
 _WEBHOOK_URL_RE = re.compile(
-    r"(https://hooks\.slack\.com/(?:services|workflows)/[A-Z0-9]+/[A-Z0-9]+/)([A-Za-z0-9]{8,})"
+    r"(https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Z0-9]+/[A-Z0-9]+/)([A-Za-z0-9]{8,})"
     r"|(https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/)([\w-]{8,})"
-    r"|(https://[A-Za-z0-9.-]*\.?(?:webhook\.office\.com/webhookb2|outlook\.office\.com/webhook)/)(\S+)",
+    r"|(https://[A-Za-z0-9.-]*\.?(?:webhook\.office\.com/webhookb2|outlook\.office\.com/webhook)/)"
+    r"([^\s\"'<>]+)"
+    r"|(https://[A-Za-z0-9.-]+\.(?:logic\.azure\.com|api\.powerplatform\.com)(?::\d+)?/"
+    r"(?:[^\s?#\"'<>]*/)?workflows/[^\s?#\"'<>]+\?(?:[^\s#\"'<>]*?&)?sig=)([A-Za-z0-9_%-]{8,})",
     re.IGNORECASE,
 )
 
@@ -870,8 +876,8 @@ def _redact_url_credentials(text: str, code_file: bool, *, file_read: bool = Fal
         # file_read: the non-reusable sentinel, so an agent that reads a stored webhook out of a
         # config file cannot write a truncated-looking mask back over it (#35519).
         mask = _mask_token_nonreusable if file_read else _mask_token
-        for prefix, secret in ((m.group(1), m.group(2)), (m.group(3), m.group(4)),
-                               (m.group(5), m.group(6))):
+        groups = m.groups()
+        for prefix, secret in zip(groups[::2], groups[1::2]):
             if prefix:
                 return f"{prefix}{mask(secret)}"
         return m.group(0)

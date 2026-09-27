@@ -572,6 +572,62 @@ class TestIncomingWebhookUrls:
         ):
             assert redact_sensitive_text(benign) == benign
 
+    SIG = "Xq9vT2mK8pL4rN6sW0yZ3aB5cD7eF1gH9jJ2kL4mN6o"
+    SLACK_TRIGGER_SECRET = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    # Teams "Workflows" (Power Automate) webhooks: the ``sig`` query parameter is the secret.
+    TEAMS_WORKFLOW = (
+        "https://prod-27.westus.logic.azure.com:443/workflows/0a1b2c3d4e5f67890a1b2c3d4e5f6789"
+        "/triggers/manual/paths/invoke?api-version=2016-06-01&sp=%2Ftriggers%2Fmanual%2Frun"
+        f"&sv=1.0&sig={SIG}")
+    TEAMS_POWER_PLATFORM = (
+        "https://default0a1b2c3d4e5f.67.environment.api.powerplatform.com:443/powerautomate"
+        "/automations/direct/workflows/0a1b2c3d4e5f67890a1b2c3d4e5f6789/triggers/manual/paths"
+        f"/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig={SIG}")
+    SLACK_TRIGGER = f"https://hooks.slack.com/triggers/T0123ABCD/7412589630125/{SLACK_TRIGGER_SECRET}"
+
+    @pytest.mark.parametrize("url_attr,secret_attr", [
+        ("TEAMS_WORKFLOW", "SIG"),
+        ("TEAMS_POWER_PLATFORM", "SIG"),
+        ("SLACK_TRIGGER", "SLACK_TRIGGER_SECRET"),
+    ])
+    def test_workflow_and_trigger_urls_masked_on_production_paths(self, url_attr, secret_attr):
+        """terminal output (.env dump and plain), read_file of config.yaml and log lines."""
+        from agent.redact import redact_terminal_output
+
+        url, secret = getattr(self, url_attr), getattr(self, secret_attr)
+        env_dump = redact_terminal_output(f"TEAMS_WEBHOOK_URL={url}\n", "cat .env")
+        plain = redact_terminal_output(f'curl -X POST "{url}"\n', "history")
+        read = redact_sensitive_text(
+            f'platforms:\n  teams:\n    incoming_webhook_url: "{url}"\n', file_read=True)
+        record = logging.LogRecord("gateway", logging.INFO, "", 0, "POST %s -> 202", (url,), None)
+        log = RedactingFormatter("%(message)s").format(record)
+
+        for out in (env_dump, plain, read, log):
+            assert secret not in out
+            assert secret[6:-4] not in out
+        # Only the secret is masked: host, ids and the closing quote stay put.
+        prefix = url[: url.index(secret)]
+        assert f'"{prefix}' in plain and plain.rstrip().endswith('"')
+        assert "redacted-secret" in read
+
+    def test_teams_connector_mask_keeps_the_closing_quote(self):
+        result = redact_sensitive_text(f'url: "{self.TEAMS}"', file_read=True)
+        assert self.TEAMS not in result
+        assert result.endswith('"')
+
+    def test_ordinary_logic_app_and_slack_urls_pass_through(self):
+        from agent.redact import redact_terminal_output
+
+        for benign in (
+            "https://prod-27.westus.logic.azure.com:443/workflows/abc/runs?api-version=2016-06-01",
+            "https://management.azure.com/subscriptions/x/workflows/y?api-version=2019-05-01",
+            "https://app.slack.com/client/T0123ABCD/C0123ABCD",
+            "https://slack.com/help/articles/360041352714",
+            "https://api.slack.com/automation/triggers/webhook",
+        ):
+            assert redact_terminal_output(benign, "echo") == benign
+            assert redact_sensitive_text(benign, file_read=True) == benign
+
 
 class TestPassthrough:
     def test_empty_string(self):

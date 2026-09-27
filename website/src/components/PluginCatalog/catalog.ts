@@ -92,16 +92,16 @@ export const TIER_CONFIG: Record<
 > = {
   official: {
     label: "Official",
-    color: "#ffd700",
-    bg: "rgba(255, 215, 0, 0.08)",
-    border: "rgba(255, 215, 0, 0.25)",
+    color: "var(--plugin-catalog-official)",
+    bg: "var(--plugin-catalog-official-bg)",
+    border: "var(--plugin-catalog-official-border)",
     icon: "\u{2713}",
   },
   community: {
     label: "Community",
-    color: "#94a3b8",
-    bg: "rgba(148, 163, 184, 0.08)",
-    border: "rgba(148, 163, 184, 0.2)",
+    color: "var(--plugin-catalog-community)",
+    bg: "var(--plugin-catalog-community-bg)",
+    border: "var(--plugin-catalog-community-border)",
     icon: "\u{2756}",
   },
 };

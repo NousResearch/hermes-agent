@@ -1,0 +1,106 @@
+# Commits on main authored as `Hermes Agent <agent@hermes.local>` that were Brooklyn Nicholson's
+# (GitHub: OutThisLife) agent-assisted work. A repo-local git identity on her machine stamped them
+# with an address no GitHub account can verify, so GitHub credited them to nobody. main can't be
+# rewritten, so each row below has a matching attribution commit, authored by her at the original
+# date, that names the original commit.
+# original_sha	author_date	subject
+b50bb77ec5cf44babadbd2aa8b6338bf505ef972	2026-09-24T19:36:22-05:00	fix(desktop): preserve implicit default local route
+f26825eb2d8809018a7416fc93755a3d830b688e	2026-09-24T19:48:13-05:00	test(desktop): keep rebased checks green
+f1247d2e0146bbd8edd4e510b9e67e0d259509a4	2026-09-24T19:25:16-05:00	fix(desktop): adopt a published session token on the post-update relaunch
+6c4a983e8de6340737735b98dea11ab64ea78242	2026-09-24T19:54:10-05:00	style(desktop): format session action hook
+da931c9ea822f301cd668dc5b701e9860ddda181	2026-09-24T23:12:30-05:00	fix(desktop): ignore auto-repeat and post-focus Ctrl+W/Ctrl+R
+f9f1413f4e28a93e1a1aa1395f82f9b343c0a591	2026-09-24T23:12:16-05:00	fix(desktop): stop an entered project refetching on every tree refresh (#77591)
+f216e446430f9c1b404d57c79e8575681f074bab	2026-09-24T23:12:16-05:00	fix(desktop): list a compressed project chat once (#77591)
+c19a35d8c9b018d17a84c788eaa56f4afaa8630b	2026-09-24T23:34:29-05:00	fix(desktop): keep pip downloads and cache files out of Artifacts
+99a161531cc7b6ce8d91869666ea19cee0610156	2026-09-24T23:42:58-05:00	fix(desktop): decide image bytes vs path from the session owner's own backend
+69948c005791d4d0e51670ca015238c2c7663749	2026-09-24T23:43:55-05:00	fix(desktop): log what ssh did when an SSH connect fails
+953ca9e094e80061174b8e1716e8781bee8cd356	2026-09-24T23:59:07-05:00	refactor(desktop): move project scope into a dependency-light store module
+4869d3812c2d3197b9647675bb9e1d8e4a5547eb	2026-09-24T23:59:07-05:00	fix(desktop): leave the entered project when switching profile or backend
+cc6bfebfabf5ca2bd0d95527860236f215149ee9	2026-09-24T18:45:26-05:00	fix(desktop): tear down a HUD whose renderer dies before first paint (#108230)
+b401fb2e49b34b2b0e585ed47167651a6e28cb41	2026-09-24T18:59:35-05:00	fix(desktop): clear PrimaryProfilePin on current-owner exit/error and make one launch-profile decision per start (#108417)
+df293160cea1c7356d82ace3ad51b1036e31ad2d	2026-09-24T19:59:29-05:00	fix(desktop): preserve tile widths across reload via hydration suspend + partner-validated recall (#108679)
+b200d3a690ccfd2dea12b478c62501076cf0ffa1	2026-09-24T20:03:11-05:00	fix(desktop): gate the HUD resize frame's hit test on engagement (#108793)
+490037b87d887ed95f344cf8444695409ffdfe9d	2026-09-24T21:22:37-05:00	fix(desktop): statusbar timer shows focus-since on tiles and says so
+0e31fd3b45e123c91f54ecf4860f989748604101	2026-09-24T19:34:05-05:00	test(desktop): type the session-timer element props instead of casting unknown
+fe3c6837be5389bb28717f9b8c1c0aaf7a10c3bb	2026-09-24T23:23:28-05:00	fix(desktop): gate the session.info branch write on the selected session
+4050c915802499d31c5e0dfe8c7aaafe9e18a4c9	2026-09-24T18:56:16-05:00	fix(desktop): track the pointer when dragging a nested section's sash
+8a0371f0f6dfdc58cdd7fbebf60d3ca90225267b	2026-09-24T18:58:41-05:00	fix(desktop): portal dropdown submenus into the parent menu's container
+761ad9639f886f9207109098bb2154759cee775c	2026-09-24T18:57:43-05:00	fix(desktop): spin the bot row while a cold chat opens
+a78aa6927bc6a9820aaec918c55485c9ca0c8ff4	2026-09-24T23:43:57-05:00	test(desktop): give the relay test's plugin-sdk mock an atom
+fa58e4ab753b6283c80525b12f72fd1fdc5c90e2	2026-09-24T18:52:49-05:00	fix(desktop): let the boot-failure overlay be dismissed
+de16db2b6b36590206ec51ee88399917e1417065	2026-09-24T19:27:18-05:00	fix(desktop): sort close-stop-kill after the cli-provision import
+354d499511adc75769cafd9224de8b0ac6ea16ec	2026-09-24T19:36:44-05:00	style(desktop): format close-stop handling
+658e6c885d40a2b27a5c3f35bb6276fa5801daf8	2026-09-24T23:19:53-05:00	revert(agent): drop the no-op side-channel length-stop change
+4b2429624af53507adfb6918e15b73ee9880d5f1	2026-09-24T23:42:33-05:00	fix(desktop): verify close/stop after the backend teardown, not before it
+d7f06c964b2eec4fb4bba1c0ce2575be53efe7a6	2026-09-24T19:33:21-05:00	style(desktop): format no-console-git and pad new spawn statements
+22a7acd810b9d7a97d81e0368954d4177d3deb2b	2026-09-24T23:17:40-05:00	fix(desktop): latch SSH auth failures so the boot overlay stays clickable
+7b761da2de4979e424510ca7022bf9527aa65b68	2026-09-25T00:10:48-05:00	style(desktop): sort backend-start-failure named imports
+5307e93252ac655cd13fadbd561c0995142138c6	2026-09-25T01:33:05-05:00	ci(e2e): keep the upgrade suite out of the e2e job again
+f27bde1fdd2370362b8f1b870cf714e2f124be3f	2026-09-24T23:31:38-05:00	fix(state): skip out-of-window timestamps when computing last_active
+f8d35574ab435b992a2cf231a52055380cd7327e	2026-09-24T23:31:38-05:00	fix(recovery): repair out-of-window timestamp cells in the recovered database
+c29114ea9acc209426c58d4f040e25130da21be9	2026-09-25T10:04:24-05:00	fix(state): filter the started_at fallback of last_active to the epoch window
+c953b2a03ef5681c2b29e714c8f8c3a12f3efe48	2026-09-25T10:53:10-05:00	fix(tui): never auto-resume a source='unknown' guard placeholder
+85c7e87fc7bbbd2b646da3398b402c42c88454cb	2026-09-25T11:04:04-05:00	fix(gateway): recognize Atomic desktop-gateway.py in gateway detection
+58497395d3d118bd19bcca565009e0eb681e6cd3	2026-09-25T10:56:24-05:00	fix(desktop): declare macOS Contacts and Apple Events usage strings
+8a639e80fec245797a0f031051e65e61a87fd1cd	2026-09-24T23:13:45-05:00	fix(tui-gateway): log when a client model override beats the profile default at session.create
+ba1c1296920923da5101baeec7228062a16fac51	2026-09-25T01:21:19-05:00	fix(desktop): add "Use Settings default" to the composer model menu
+722a02f9675228a60da7af082c275435b4b6f05a	2026-09-25T11:28:56-05:00	test(desktop): import settings panels once so first-test imports can't time out
+42d9d05f493fca422f04b05931aad6839f17358d	2026-09-25T11:19:35-05:00	fix(desktop): name real interrupt controls in busy-guard copy, not /interrupt
+28545254ddd02eaf01107a9ddf83b3ee9ae127f8	2026-09-25T11:39:38-05:00	fix(desktop): preserve the active chat across a sleep/wake gateway reconnect
+8bde3a72e8606993de4d2287edbc83a3ffe455c1	2026-09-24T19:43:15-05:00	fix(gateway): preserve settled host identity across restart
+7d171329785fadeecb616d8690bd6d5c4121d7fc	2026-09-24T19:46:38-05:00	test(gateway): cover settled default multiplex restart
+d0cb567273716ffb48c213dd046b26e58e20401a	2026-09-24T20:31:06-05:00	fix(gateway): take host identity from the live host record on replay
+788d82fc9759de268c63fc2c6446718acd04ff8c	2026-09-25T11:38:51-05:00	fix(tui): honor agent.disabled_toolsets in the desktop/TUI gateway (#44499)
+37d062b2fa8dc4cee3cd213e113c9e309871a7d2	2026-09-24T19:48:13-05:00	test(desktop): keep rebased checks green
+eda61f644e33a80ee7d5970744cb3faddf20f72f	2026-09-25T11:22:46-05:00	fix(tui-gateway): grant the WS orphan-reap grace in awake time
+35ad70c035dec839846056073ad81a9bdceffca4	2026-09-25T11:48:49-05:00	fix(tui-gateway): measure reap sleep by clock divergence, re-arm via scheduler
+a3a85a3143a54305cafd79065a22de5b51395027	2026-09-25T11:36:20-05:00	fix(agent): close non-interrupted tool-tail turns with a visible response
+94f3dbec9bf4480f8c771c4d90c85aff9260df8b	2026-09-25T12:27:39-05:00	fix(agent): close one-shot AIAgents on every exit path
+ec5c9c738acc0b3ed5770c25497ec335cbfe8d33	2026-09-25T11:28:21-05:00	fix(processes): persist_on_release keeps background jobs alive across lifecycle kill sweeps (#41225)
+0cf900ea172d84fc0aef3afbc1de2bd787cc2043	2026-09-24T23:45:27-05:00	fix(skills): keep built-in provenance for skills the catalog dropped
+70f7fa05caf880ba3ae2bac4e13655cfde1dfca5	2026-09-24T23:13:53-05:00	fix(providers): keep llamacpp as the model table's managed-runtime id
+4c286ae7a0dcb86e70a7ad8c23c0f05c89e33ec3	2026-09-25T14:02:49-05:00	test(desktop): load @hermes/shared once in the connection-registry contract test
+541e4dc0ba6d50e3e4554611c3e6b2c0865187c4	2026-09-25T12:36:17-05:00	fix(agent): protect the runtime's own interpreter from agent deletes
+3bbe5c593a3d10ced10fad09489b0123890abc11	2026-09-25T11:42:31-05:00	fix(tui): propagate the live agent's provider into the slash worker (#57283)
+954d94c3b008117a067d978dcedbdee0a09ce740	2026-09-25T12:27:19-05:00	fix(cli): name Windows Smart App Control when it blocks the dashboard runtime
+f8123d2401ec505e6a220ec51d3b454a404c0b9b	2026-09-25T11:25:15-05:00	test(desktop): hold the composer's PageUp/PageDown default-prevent in the mirror harness
+d99bb06862c06d21eb0aa20a2df3c19d6ff94d65	2026-09-25T12:19:08-05:00	fix(nix/desktop): compile node-pty against electron.headers
+b93c915fab8044baa411bb9829435b7c66d46db5	2026-09-25T17:04:57-05:00	fix(desktop): gate composer CJK fonts on UI language
+3cc05c239ccf289d26e046310352be0e6658480e	2026-09-25T12:30:28-05:00	fix(desktop): keep the Sessions label when the grouped sidebar has no projects
+658578bdbf87300d0e9728b2e72a678d86a6cc10	2026-09-25T10:57:51-05:00	fix(desktop): shift overlay close button clear of native window controls
+f9b991f9185c544c1b9a5d7be5a64515863b9ed6	2026-09-25T17:08:28-05:00	fix(desktop): keep macOS overlay close position unchanged
+5ba3dfceab9674e2f6bb8e5a805a34479914a949	2026-09-25T13:58:21-05:00	fix(desktop): scope remote-profile session list reads and stop relabeling rows (#64999)
+ffa40b07f0203543778ad3a00c3b0ecb9a27a370	2026-09-25T13:58:22-05:00	fix(desktop): scope per-session remote reads so resume opens the owning state.db (#64999)
+43c1eee1fa6f58a79f54b0770ffe8e479b9fce3a	2026-09-25T12:31:55-05:00	fix(web): bound the /api/model/info context-length probe
+2dcb8d756207e546f8cc2c8d55a4eb49cfb14e2e	2026-09-25T12:31:55-05:00	fix(desktop): degrade model settings when /api/model/info hangs
+faf9231bc29d426dac070aa41f24400337d52a8f	2026-09-25T12:17:35-05:00	fix(desktop): keep submenus pinned to their trigger during scroll
+6d70abc87134a6f1243b90512530e201f08b02c2	2026-09-25T13:05:39-05:00	fix(desktop): label the Anthropic OAuth/Pro card 'Anthropic Account'
+96e036e326e5e27e10486439ff55ccc0faae043f	2026-09-25T12:53:10-05:00	fix(desktop): show the real command on plugin-rule approval cards
+fe59dc2dacf7c27e41c2c0cc3af33ae3924cdf40	2026-09-25T15:27:42-05:00	fix(desktop): revoke optimistic blob previews when the consumer is discarded or replaced
+f6b17285cef057c55c7a19cb2c6cc3d6731af560	2026-09-25T15:49:12-05:00	fix(projects): gate branch switching on non-git folder lanes (#61362)
+c60299e614c202c16aaf37de2b3616fdeb2b603d	2026-09-25T11:40:03-05:00	fix(desktop): surface an exactly-typed command alias in slash completions
+4653130b8d1de90a96dd56bf59906e9d3ac075ca	2026-09-25T12:10:41-05:00	fix(desktop): key the backend-update re-check on profile as well as baseUrl
+133828064816eac6af1c60104d46ce59bcf1f316	2026-09-25T17:06:24-05:00	fix(desktop): include the profile in the backend-update connection key
+20cf14fd6bfa248388c83a3c6c1b665e032be707	2026-09-25T17:06:09-05:00	fix(desktop): drop duplicate link-title-window import and sort local-read-path import
+6dc19ad3c7ad0708c670ebe64f6d97f539b96590	2026-09-24T19:48:12-05:00	test(desktop): keep rebased checks green
+a00fdda6c5dbea7c335894e47fba105cf99cec06	2026-09-25T17:19:28-05:00	fix(desktop): skip lone-tilde escaping on directive lines; align prose tests with the unknown-tag escape
+6231398b21a1f3cd8878ed2fecf6283a6f72f6ca	2026-09-25T12:28:34-05:00	fix(desktop): never remember or restore a delegate subagent session
+e2ee9a6978119cafa7b1eb59fc8833d374fe4ccc	2026-09-25T12:24:29-05:00	fix(desktop): reveal manual model-name input when /v1/models discovery is empty
+81b0ee63234c8e974bd38150f18e7cf5b82983b7	2026-09-25T15:42:12-05:00	test(desktop): resolve runtime timer salvage against current main
+1f30bdbaff7926491188231686886173e51910be	2026-09-25T17:25:41-05:00	fix(desktop): add runtimeStartedAt to onboarding fixture and sort test import
+0fb7c95203ff787eaf85040789e2c3cda7e2d49d	2026-09-25T01:19:32-05:00	fix(desktop): give preview error states a Close that closes the tab
+32b4acf4c876322059dc867601288251b7875537	2026-09-25T01:19:59-05:00	fix(desktop): name the connected Telegram bot after QR setup
+7f35350bf1260e71b9149423c8e211694e5c0e33	2026-09-25T12:33:55-05:00	fix(tui-gateway): single-flight the runtime readiness probes
+cd69be690997ba0391e80a8e2baa5c5d57cbedd7	2026-09-25T17:37:43-05:00	fix(tui-gateway): register the readiness done-callback off the lock and give joiners a short grace
+39e20f4d552718627c5ad8feadfffeeb9245ea5a	2026-09-25T01:19:32-05:00	fix(desktop): keep the tab strip on a lone workspace in auto mode
+3273971a59eafec7de504b42efcc2a1d3c4e3834	2026-09-25T17:56:10-05:00	fix(desktop): keep Close and + on a lone workspace even when tabs are hidden
+7131fe3f03ce3bf51c6a8c4139aaaef0857276df	2026-09-25T12:16:52-05:00	fix(desktop): warn when the GUI is older than the backend (reverse contract check)
+a9756158697202063e90415b72223ae541c42837	2026-09-25T12:24:03-05:00	fix(uninstall): sweep macOS launchd dashboard jobs and caches in the full wipe
+a5e95fb27edcb02726618d06d6f80a2ceae261b3	2026-09-25T16:05:01-05:00	fix(desktop): find UGit's bundled git.exe in the Windows resolver (#61494)
+ab0e060bd77c73bd944dea4aea4c5e1aebfdeb01	2026-09-25T18:08:03-05:00	fix(desktop): sort imports in git-binary-candidates test
+5d0182c5f07cc86d628e345f87c71292a53f77a8	2026-09-25T16:00:26-05:00	fix(desktop): voice chat honors the read-aloud toggle (#44263)
+5dcfd72a968e17cc4dc262c46d918a6841a21722	2026-09-25T17:33:01-05:00	test(desktop): opt voice conversation sibling tests into read-aloud TTS
+29aa6dcca04bed3576f5023588005c775687a03f	2026-09-25T12:26:40-05:00	fix(desktop): render reasoning effort as a badge chip, not part of the model name
+f8dddd71510f72eabe1732506dac53a78fdee3fd	2026-09-25T18:16:52-05:00	test(desktop): match the leaf name span now that badge chips wrap the row label
+f84db42a32b28a00a2ef1e11e5471a27d22cc37f	2026-09-25T11:06:00-05:00	fix(cron): deduplicate cross-profile jobs in GET /api/cron/jobs
+40347fd40d732bfad9b403cc224b2054becd22d5	2026-09-25T11:37:53-05:00	fix(mcp): resolve bare uv/uvx under GUI-style PATHs (#37589)

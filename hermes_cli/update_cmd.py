@@ -91,7 +91,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
-    _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
+    _normalize_managed_eol, _park_detached_head, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
     _sync_with_upstream_if_needed)
@@ -824,8 +824,7 @@ def _pull_updates(
             if merge_ref != f"origin/{branch}":
                 # Keep detached local commits reachable, too. Named branches are
                 # untouched by checkout --detach; an autostash protects dirty files.
-                if pre_pull_sha and not _git_run(git_cmd, ["branch", "--show-current"]).stdout.strip():
-                    _git_run(git_cmd, ["update-ref", f"refs/hermes/pre-release/{pre_pull_sha}", pre_pull_sha], check=True)
+                _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
                 _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
             elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
                 _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
@@ -946,6 +945,8 @@ def _prepare_checkout_for_update(
 
     if not release_tag and not in_place_update and current_branch == "HEAD" != branch:
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
+        # Before the stash: its refs/stash would contain HEAD until it is dropped.
+        _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
     auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
     if (
         not release_tag and not in_place_update and current_branch != branch
@@ -1286,9 +1287,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
 
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
+    # An installed Hermes.app only this update refreshes counts even with no release/ build
+    # beside it: without one it was never rebuilt, so it never got newer (#52339).
     had_desktop_app_before_update = (
         _m()._desktop_packaged_executable(desktop_dir) is not None
-        or _m()._desktop_dist_exists(desktop_dir))
+        or _m()._desktop_dist_exists(desktop_dir)
+        or bool(_m()._installed_desktop_apps()))
 
     use_zip_update, git_cmd, is_fork = _prepare_git_command()
 

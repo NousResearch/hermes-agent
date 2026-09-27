@@ -206,6 +206,9 @@ class TestNonBedrockProvidersKeepVerbatimLabels:
         try:
             adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
             adapter._bot, adapter._app = AsyncMock(), MagicMock()
+            # main's dispatcher now auth-gates every chat-id picker; auth is
+            # covered by test_group_model_picker_switch_follows_callback_allowlist.
+            adapter.set_authorization_check(lambda *a, **k: True)
             models = ["openai.gpt-6-astra", "openai.gpt-5.6-terra"]
             on_selected = AsyncMock(return_value="ok")
             adapter._model_picker_state["12345"] = {

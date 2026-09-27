@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 WS_CLOSE_PROCESS_EXITED = 4410
@@ -43,9 +44,11 @@ async def _close_ws(ws, code: int) -> None:
 
 
 class PtySession:
-    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float) -> None:
+    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float, active_session_file: Optional[Path] = None) -> None:
         self.key = key
         self.bridge = bridge
+        self.active_session_file = active_session_file
+        self.active_session_cleanup: Optional[Callable[[], None]] = None
         self.buffer = RingBuffer(buffer_cap)
         self.alive = True
         self.attached = False
@@ -147,6 +150,17 @@ class PtySession:
             await asyncio.to_thread(self.bridge.close)
         except Exception:
             pass
+        try:
+            if self.active_session_file is not None:
+                self.active_session_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if self.active_session_cleanup is not None:
+            try:
+                self.active_session_cleanup()
+            except Exception:
+                pass
+            self.active_session_cleanup = None
 
 
 class RegistryFull(Exception):
@@ -184,7 +198,7 @@ class PtySessionRegistry:
         # delays NEW chats. Per-key locks if spawn throughput ever matters.
         self._attach_lock = asyncio.Lock()
 
-    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]) -> Tuple[PtySession, bool]:
+    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object], active_session_file: Optional[Path] = None) -> Tuple[PtySession, bool]:
         await self.reap_idle()
         async with self._attach_lock:
             existing = self._sessions.get(key)
@@ -198,7 +212,13 @@ class PtySessionRegistry:
             # PTY spawn does blocking fork/exec work — keep it off the event loop.
             # See #53227.
             bridge = await asyncio.to_thread(spawn)
-            session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout)
+            session = PtySession(
+                key,
+                bridge,
+                buffer_cap=self._buffer_cap,
+                read_timeout=self._read_timeout,
+                active_session_file=active_session_file,
+            )
             await session.start()
             self._sessions[key] = session
             return session, True

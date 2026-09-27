@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import {
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";import {
   type CronTriggerController,
   createCronTriggerController,
 } from "@hermes/shared";
@@ -56,13 +55,11 @@ import { PluginSlot } from "@/plugins";
 import { LoadErrorNotice } from "@/components/LoadErrorNotice";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { AutomationBlueprints } from "@/components/AutomationBlueprints";
-import { cn, themedBody } from "@/lib/utils";
+import { cn, themedBody, formatDateTime } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 
 function formatTime(iso?: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleString();
+  return formatDateTime(iso);
 }
 
 function asText(value: unknown): string {

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 
 import { SidebarDateDivider, SidebarSectionMeta } from '@/app/chat/sidebar/chrome'
 import { OverlayNavItem, OverlaySidebar } from '@/app/overlays/overlay-split-layout'
@@ -44,7 +45,7 @@ function FacetItem({ row, active, onClick }: { row: FacetRow; active: boolean; o
       onClick={onClick}
       pressed={active}
       trailing={
-        row.count !== undefined ? <SidebarSectionMeta>{row.count.toLocaleString()}</SidebarSectionMeta> : undefined
+        row.count !== undefined ? <SidebarSectionMeta>{row.count.toLocaleString(getRuntimeI18nLocale())}</SidebarSectionMeta> : undefined
       }
     />
   )
@@ -104,7 +105,7 @@ export function CatalogFilters({
   return (
     <OverlaySidebar className={className}>
       <div className="flex h-7 shrink-0 items-center gap-2 pb-1">
-        <SidebarPanelLabel meta={resultCount.toLocaleString()}>{c.discover}</SidebarPanelLabel>
+        <SidebarPanelLabel meta={resultCount.toLocaleString(getRuntimeI18nLocale())}>{c.discover}</SidebarPanelLabel>
         {filtered && (
           <Button aria-label={c.clearFilters} className="ms-auto" onClick={onClear} size="inline" variant="text">
             {t.common.clear}

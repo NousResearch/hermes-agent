@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -384,7 +385,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const formatCreated = useCallback((iso: string) => {
     const parsed = new Date(iso)
 
-    return Number.isNaN(parsed.getTime()) ? iso : parsed.toLocaleDateString()
+    return Number.isNaN(parsed.getTime()) ? iso : parsed.toLocaleDateString(getRuntimeI18nLocale())
   }, [])
 
   return (

@@ -1,6 +1,7 @@
 import { groupCatalogPlugins, PLUGIN_CATEGORIES } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -377,7 +378,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                                   {section.label}
                                 </Button>
                                 <span className="text-xs font-normal text-(--ui-text-tertiary)">
-                                  {section.entries.length.toLocaleString()}
+                                  {section.entries.length.toLocaleString(getRuntimeI18nLocale())}
                                 </span>
                               </h3>
                               <Button onClick={() => filters.chooseCategory(section.key)} size="inline" variant="text">

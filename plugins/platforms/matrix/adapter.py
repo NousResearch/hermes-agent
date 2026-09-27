@@ -78,7 +78,9 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
-from plugins.platforms.matrix.room_context import PendingRoomNotes, RoomStateNote, room_state_change_note
+from plugins.platforms.matrix.room_context import (
+    MatrixRoomState, PendingRoomNotes, RoomStateNote, room_state_change_note,
+)
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -2213,6 +2215,12 @@ class MatrixAdapter(BasePlatformAdapter):
         if event.internal or event.message_type != MessageType.TEXT:
             return {}
         return self._pending_room_notes.take_notes(event.source.chat_id, session_key, created_at)
+
+    async def resolve_turn_room_state(self, room_id: str) -> MatrixRoomState | None:
+        if self._client is None:
+            return None
+        identity = await self._resolve_room_identity(room_id, force_refresh=True)
+        return MatrixRoomState(identity.display_name, identity.room_topic, identity.members_digest)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,

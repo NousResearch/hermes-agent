@@ -275,3 +275,20 @@ def test_an_undeclared_model_keeps_top_level_reasoning_effort(custom_profile):
     )
     assert top_level == {"reasoning_effort": "low"}
     assert "chat_template_kwargs" not in extra_body
+
+
+@pytest.mark.parametrize("reasoning", [{"enabled": False}, {"enabled": True, "effort": "low"}])
+def test_declaring_chat_template_reasoning_on_ollama_keeps_the_ollama_reasoning_signals(custom_profile, reasoning):
+    """Ollama reads only its own reasoning fields, so declaring the capability on an Ollama
+    route adds ``chat_template_kwargs`` without dropping what an undeclared model gets."""
+    base_url = "http://127.0.0.1:11434/v1"
+    undeclared_body, undeclared_top = custom_profile.build_api_kwargs_extras(
+        reasoning_config=reasoning, model="qwen3:8b", base_url=base_url,
+    )
+    _declare_chat_template_reasoning("qwen3:8b", base_url)
+    extra_body, top_level = custom_profile.build_api_kwargs_extras(
+        reasoning_config=reasoning, model="qwen3:8b", base_url=base_url,
+    )
+    assert "chat_template_kwargs" in extra_body
+    assert top_level == undeclared_top
+    assert {k: v for k, v in extra_body.items() if k != "chat_template_kwargs"} == undeclared_body

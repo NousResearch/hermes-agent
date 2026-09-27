@@ -239,6 +239,8 @@ providers:
         chat_template_reasoning: true
 ```
 
+Like `prompt_caching`, it is read per model only (not from the provider-level `capabilities:` block) and matches the exact runtime model id. On an Ollama endpoint it is sent in addition to Ollama's own reasoning fields, which are kept.
+
 For a gateway that resolves a bare model alias only after receiving the
 request, opt the alias into prompt-cache markers with the per-model
 `prompt_caching` capability:

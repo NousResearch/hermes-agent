@@ -93,7 +93,9 @@ class CustomProfile(ProviderProfile):
                 if not disabled:
                     template_kwargs["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
                 extra_body["chat_template_kwargs"] = template_kwargs
-                return extra_body, top_level
+                # Ollama honours only its own signals below, so a declaration there adds to them.
+                if not _looks_like_ollama_endpoint(ctx.get("base_url")):
+                    return extra_body, top_level
             if disabled:
                 # See #14820.
                 top_level["reasoning_effort"] = "none"

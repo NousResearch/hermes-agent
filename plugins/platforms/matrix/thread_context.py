@@ -15,6 +15,7 @@ from plugins.platforms.matrix.reply_context import (
     _label_body,
     _own_text,
 )
+from plugins.platforms.matrix.relations import MatrixRelation
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,30 @@ async def _decrypt_thread_event(client: Any, raw: dict) -> Any | None:
         return None
 
 
+async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dict] | None:
+    if raw.get("type", "m.room.message") not in {"m.room.message", "m.room.encrypted"}:
+        return None
+    if raw.get("type") == "m.room.encrypted":
+        event = await _decrypt_thread_event(client, raw)
+        if event is None:
+            return None
+    else:
+        event = raw
+
+    content, edited = _effective_content(event)
+    body = content.get("body")
+    if not isinstance(body, str):
+        return None
+    body = body.strip()
+    if edited and body.startswith("* "):
+        body = body[2:].strip()
+    text = _label_body(str(content.get("msgtype") or ""), _own_text(body))
+    if not text:
+        return None
+    sender = str(raw.get("sender") or "")
+    return MatrixEventContext(sender, text, is_image=content.get("msgtype") == "m.image"), content
+
+
 async def fetch_thread_entries(
     client: Any,
     cache: MatrixEventContextCache,
@@ -48,6 +73,7 @@ async def fetch_thread_entries(
     *,
     limit: int,
     exclude_event_id: str | None = None,
+    before_ts: float | None = None,
 ) -> list[MatrixEventContext]:
     if client is None or limit <= 0 or not thread_id:
         return []
@@ -80,26 +106,16 @@ async def fetch_thread_entries(
         event_id = raw.get("event_id")
         if event_id == exclude_event_id or not isinstance(event_id, str):
             continue
-
-        event: Any = raw
-        if raw.get("type") == "m.room.encrypted":
-            event = await _decrypt_thread_event(client, raw)
-            if event is None:
+        if before_ts is not None:
+            timestamp = raw.get("origin_server_ts")
+            if not isinstance(timestamp, (int, float)) or timestamp >= before_ts * 1000:
                 continue
-
-        content, edited = _effective_content(event)
-        body = content.get("body")
-        if not isinstance(body, str):
+        parsed = await history_entry(client, raw)
+        if parsed is None:
             continue
-        body = body.strip()
-        if edited and body.startswith("* "):
-            body = body[2:].strip()
-        msgtype = str(content.get("msgtype") or "")
-        text = _label_body(msgtype, _own_text(body))
-        if not text:
+        entry, content = parsed
+        if MatrixRelation.from_content(content.get("m.relates_to")).thread_root != thread_id:
             continue
-        sender = str(raw.get("sender") or "")
-        entry = MatrixEventContext(sender, text, is_image=msgtype == "m.image")
         stored = cache.store(room_id, event_id, entry)
         if stored is not None:
             entries.append(stored)

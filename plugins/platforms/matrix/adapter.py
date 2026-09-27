@@ -21,8 +21,8 @@ therefore bypasses MATRIX_ALLOWED_ROOMS, MATRIX_FREE_RESPONSE_ROOMS, and MATRIX_
 and follows MATRIX_DM_AUTO_THREAD / MATRIX_DM_MENTION_THREADS instead of MATRIX_AUTO_THREAD /
 MATRIX_SESSION_SCOPE.
 
-Thread backfill depth is configured by ``matrix.thread_backfill_limit`` in config.yaml
-(default 20; 0 disables backfill).
+Room and thread catch-up depth is configured by ``matrix.room_backfill_limit`` and
+``matrix.thread_backfill_limit`` in config.yaml (default 20; 0 disables each).
 """
 
 from __future__ import annotations
@@ -82,7 +82,8 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.room_context import (
-    MatrixRoomState, PendingRoomNotes, RoomStateNote, room_state_change_note,
+    MatrixRoomState, PendingRoomNotes, RoomStateNote, fetch_room_entries,
+    room_state_change_note,
 )
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import (
@@ -899,6 +900,10 @@ class MatrixAdapter(BasePlatformAdapter):
             self._thread_backfill_limit = max(0, min(100, int(config.extra.get("thread_backfill_limit", 20))))
         except (TypeError, ValueError):
             self._thread_backfill_limit = 20
+        try:
+            self._room_backfill_limit = max(0, min(100, int(config.extra.get("room_backfill_limit", 20))))
+        except (TypeError, ValueError):
+            self._room_backfill_limit = 20
         self._joined_rooms: Set[str] = set()
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
@@ -2223,7 +2228,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, history_before_ts: float | None = None,
+        **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
@@ -2248,6 +2254,8 @@ class MatrixAdapter(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
+        if history_before_ts:
+            extra.setdefault("metadata", {})["matrix_origin_ts"] = history_before_ts
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply.event_id, reply_to_text=reply.text, reply_to_author_id=reply.author_id,
@@ -2299,7 +2307,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._background_read_receipt(room_id, event_id)  # the claim receipted the voice
                 return
         msg_event = await self._build_inbound_event(
-            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
+            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to,
+            history_before_ts=event_ts)
         if msg_event is None:
             return
         self._event_context_cache.store(room_id, event_id, MatrixEventContext(sender, msg_event.text))
@@ -2365,7 +2374,8 @@ class MatrixAdapter(BasePlatformAdapter):
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
-            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
+            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype,
+            history_before_ts=event_ts)
         if msg_event is not None:
             await self.handle_message(msg_event)
 
@@ -3024,19 +3034,50 @@ class MatrixAdapter(BasePlatformAdapter):
         return (await self._resolve_room_identity(room_id)).chat_type == "dm"
 
     async def fetch_thread_context(
-        self, chat_id: str, thread_id: str, *, exclude_event_id: str | None = None
+        self, chat_id: str, thread_id: str, *, exclude_event_id: str | None = None,
+        before_ts: float | None = None,
     ) -> str | None:
         entries = await fetch_thread_entries(
             self._client, self._event_context_cache, chat_id, thread_id,
-            limit=self._thread_backfill_limit, exclude_event_id=exclude_event_id,
+            limit=self._thread_backfill_limit, exclude_event_id=exclude_event_id, before_ts=before_ts,
         )
+        return await self._format_history_context(chat_id, entries, "Earlier messages in this thread")
+
+    async def fetch_room_context(self, chat_id: str, event_id: str) -> str | None:
+        entries = await fetch_room_entries(
+            self._client, self._event_context_cache, chat_id, event_id,
+            limit=self._room_backfill_limit,
+        )
+        return await self._format_history_context(chat_id, entries, "Recent room messages")
+
+    async def fetch_mention_context(self, event: MessageEvent) -> str | None:
+        source = event.source
+        content = event.raw_message
+        if event.internal or source.chat_type == "dm" or not isinstance(content, dict):
+            return None
+        if not self._content_mentions_bot(str(content.get("body") or ""), content):
+            return None
+        if not event.message_id:
+            return None
+
+        relation = MatrixRelation.from_content(content.get("m.relates_to"))
+        if relation.thread_root:
+            return await self.fetch_thread_context(
+                source.chat_id, relation.thread_root, exclude_event_id=event.message_id,
+                before_ts=event.metadata.get("matrix_origin_ts"),
+            )
+        return await self.fetch_room_context(source.chat_id, event.message_id)
+
+    async def _format_history_context(
+        self, chat_id: str, entries: list[MatrixEventContext], heading: str,
+    ) -> str | None:
         if not entries:
             return None
 
         from gateway.session import neutralize_untrusted_inline_text
 
         chat_type = "dm" if await self._is_dm_room(chat_id) else "group"
-        lines = ["[Earlier messages in this thread]"]
+        lines = [f"[{heading}]"]
         has_unverified = False
         for entry in entries:
             authorized = self._is_sender_authorized(
@@ -3453,6 +3494,8 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     seeded = _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE) or {}
     if "thread_backfill_limit" in matrix_cfg:
         seeded["thread_backfill_limit"] = matrix_cfg["thread_backfill_limit"]
+    if "room_backfill_limit" in matrix_cfg:
+        seeded["room_backfill_limit"] = matrix_cfg["room_backfill_limit"]
     return seeded or None
 
 

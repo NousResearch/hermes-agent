@@ -6,8 +6,53 @@ from dataclasses import dataclass
 from datetime import datetime
 import time
 from typing import Any
+import asyncio
+import logging
+from urllib.parse import quote
 
 from gateway.session import _format_untrusted_prompt_value
+from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+from plugins.platforms.matrix.thread_context import Method, history_entry
+
+
+logger = logging.getLogger(__name__)
+
+
+async def fetch_room_entries(
+    client: Any, cache: MatrixEventContextCache, room_id: str, event_id: str, *, limit: int,
+) -> list[MatrixEventContext]:
+    if client is None or limit <= 0:
+        return []
+
+    path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/context/{quote(event_id, safe='')}"
+    try:
+        response = await asyncio.wait_for(
+            client.api.request(Method.GET, path, query_params={"limit": str(limit)}), timeout=10.0,
+        )
+    except Exception as exc:
+        logger.debug("Matrix: could not fetch room context for %s in %s: %s", event_id, room_id, exc)
+        return []
+
+    earlier = response.get("events_before") if isinstance(response, dict) else None
+    if not isinstance(earlier, list):
+        return []
+
+    entries: list[MatrixEventContext] = []
+    for raw in reversed(earlier[:limit]):
+        if not isinstance(raw, dict) or not isinstance(raw.get("event_id"), str):
+            continue
+        parsed = await history_entry(client, raw)
+        if parsed is None:
+            continue
+        entry, content = parsed
+        relation = MatrixRelation.from_content(content.get("m.relates_to"))
+        if relation.thread_root or relation.is_edit:
+            continue
+        stored = cache.store(room_id, raw["event_id"], entry)
+        if stored is not None:
+            entries.append(stored)
+    return entries
 
 
 @dataclass(frozen=True)

@@ -103,8 +103,14 @@ matrix:
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
   max_message_length: 16000       # Outbound chunk size in chars (default: 16000, max: 65535)
-  thread_backfill_limit: 20       # Prior thread messages to fetch for a new session (0 disables)
+  room_backfill_limit: 20         # Earlier room events to scan on a mention (0 disables)
+  thread_backfill_limit: 20       # Earlier thread events to scan (0 disables)
 ```
+
+In shared rooms, an admitted @mention includes earlier room messages or messages from
+its Matrix thread. Each limit bounds the number of events scanned. Thread messages
+stay within their thread; room catch-up excludes thread replies. Set either limit
+to `0` to disable that catch-up source.
 
 Or via environment variables:
 

@@ -1062,6 +1062,29 @@ The same grant also gates `deregister()`: without it, a plugin cannot
 remove a tool it does not own (which would otherwise be a way around the
 override check).
 
+### Pin a messaging-gateway wake to a conversation
+
+`ctx.inject_message(content, role="user", session_key=...)` retains its existing
+host behavior. Two optional keyword arguments are available for messaging-gateway
+injection:
+
+- `expected_session_id`: require the original conversation or a verified
+  compression descendant. A reset/new conversation is not a valid replacement.
+- `on_delivery`: a callback receiving a boolean for actual adapter admission,
+  not model completion or outbound message delivery. The return value of
+  `inject_message` alone only acknowledges scheduling.
+
+Both require the existing `allow_gateway_injection` consent. CLI/TUI hosts do not
+support these optional guarantees; requests requiring them fail closed rather
+than dropping the ownership constraint. Messaging-gateway events queue without
+interrupting an active parent. Plugin-injected internal events pass through
+`pre_gateway_dispatch` when admitted or rescued from the orphan FIFO, allowing
+plugins to reject stale work. Native internal completions still bypass that hook.
+
+The bundled [subagent milestone plugin](https://github.com/NousResearch/hermes-agent/tree/main/plugins/subagent_progress)
+is a consumer of these guarantees, with separate scheduling, admission, and
+display receipts. It is disabled unless explicitly enabled.
+
 ### Register multiple hooks
 
 ```python
@@ -1097,7 +1120,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
+Most hooks are fire-and-forget observers — their return values are ignored. Context-bearing hooks include `pre_llm_call` (turn start) and `tool_result_context` (fresh top-level tool results); `pre_tool_call` can return a block/approve directive.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
@@ -1105,9 +1128,36 @@ The kanban lifecycle hooks fire **after** the board DB change commits, so a call
 
 The **API request hooks** are observers for the raw provider request, one level below the per-turn `pre_llm_call` / `post_llm_call` pair: a single turn that calls tools makes several API requests, and these hooks fire around each one. They exist for observability plugins (tracing, cost accounting, latency dashboards). The `request` and `response` kwargs are sanitized, size-capped JSON views of the provider payload (sensitive keys redacted, long strings truncated, SDK objects normalized), and `usage` is a plain token-summary dict. Every payload carries the correlation fields `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count`, so a plugin can stitch requests, tool calls, and turns together. `api_request_error` fires when a provider call raises and adds `status_code`, `retry_count` / `max_retries`, `retryable`, `reason`, and an `error` dict with `type` and `message`.
 
+### `tool_result_context` — in-turn context delivery
+
+`pre_llm_call` runs once at turn start, not before every provider request. A plugin
+with time-sensitive context (for example, an owning parent's pending child checkpoint)
+can register `tool_result_context`. It runs on a fresh **top-level** tool result before
+canonical session persistence, including inline tools and the outer `execute_code`
+result. It does not run on Python's internal tool RPC results.
+
+The callback receives `session_id`, `parent_session_id`, `platform`, `tool_name` and
+`tool_call_id`. Return a string or `{"context": text, "on_delivery": callback}`.
+`on_delivery(bool)` is optional: true means the appended context was persisted with
+the tool result, **not** that a provider accepted it, the model read it, or a parent
+approved it. A missing database or no-op flush cannot confirm delivery: the exact
+tool row must carry its canonical persistence marker. Keep pending records until
+this callback receives true. A failed or timed-out hook must not consume records
+as a side effect of constructing its return value.
+
+Context is appended without changing prior rows or the system prompt. Multimodal
+content retains its existing blocks. Oversized hook text uses the existing spill
+policy; a failed spill skips that context without acknowledgement, preserving it
+for a later boundary without blocking other plugins. The acknowledged tool result
+is protected from later aggregate-budget replacement. Hooks and delivery receipts run under the plugin callback timeout. A timed-out
+receipt may finish later; it still acknowledges persistence only. Cancellation and disabled
+persistence skip this delivery path. A blocked long tool or provider request is not
+preempted; delivery waits for its next safe tool-result boundary. Keep an idle-turn
+wake/fallback for reports arriving when no tool result remains.
+
 ### `pre_llm_call` context injection
 
-This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
+When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
 
 #### Return format
 

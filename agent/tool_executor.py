@@ -201,6 +201,10 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
     # this tool result as durable. Already-written rows must never be rewritten later.
     _maybe_inject_run_budget_wrapup(agent, messages)
     _maybe_inject_iteration_budget_warning(agent, messages)
+    from agent.tool_result_context import inject_tool_result_context, acknowledge_tool_result_context
+    deliveries = inject_tool_result_context(agent, messages)
+    delivery_message = messages[-1] if deliveries else {}
+    persisted = False
     try:
         persisted = agent._flush_messages_to_session_db(messages) is not False
         if not persisted:
@@ -215,6 +219,11 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
         agent._last_persistence_error_cause = classify_persistence_error(exc)
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False
+    finally:
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        # A no-database/no-op flush is not proof that this exact tool row was written.
+        durable = persisted and bool(delivery_message.get(_DB_PERSISTED_MARKER))
+        acknowledge_tool_result_context(deliveries, durable)
 
 
 def _image_generate_parallel_limit() -> int:

@@ -228,7 +228,8 @@ Subagent hooks describe delegated child-agent work:
 `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`,
 and `child_goal`.
 
-`subagent_stop` fields include parent/child session IDs, role/status fields,
+`subagent_stop` fields include parent/child session IDs, the stable
+`child_subagent_id` (unchanged by child-session compression), role/status fields,
 `child_summary`, `duration_ms`, and a metadata-only `tool_call_history`. Each
 history entry contains the tool name, argument names, bounded side-effect
 targets, input/output byte counts, and outcome. URL query strings and fragments

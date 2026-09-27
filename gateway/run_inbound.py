@@ -218,6 +218,13 @@ class GatewayInboundMixin:
             return None
 
         if is_internal:
+            # Plugin wakes can become stale while queued; native completions still bypass hooks.
+            if (getattr(event, "metadata", None) or {}).get("hermes_plugin_injection") is True:
+                filtered_event = await self._hm_pre_gateway_dispatch_hook(event, source)
+                if filtered_event is None:
+                    return None
+                event = filtered_event
+                source = event.source
             return event, source, True
 
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
@@ -1239,7 +1246,7 @@ class GatewayInboundMixin:
             _handled = _result is not None
         return _handled, _result
 
-    def _hm_rescue_orphaned_fifo(
+    async def _hm_rescue_orphaned_fifo(
         self, event: "MessageEvent", source: SessionSource, is_internal: bool, _quick_key: str
     ) -> Tuple["MessageEvent", SessionSource, bool]:
         """FIFO orphan rescue: a session that went idle with a populated overflow (post-turn drain
@@ -1263,6 +1270,20 @@ class GatewayInboundMixin:
             # Into the slot when the chain was a single orphan (post-turn drain picks it up),
             # otherwise into overflow behind the already-staged next orphan.
             self._enqueue_fifo(_quick_key, event, _orphan_adapter)
+            # Rescued plugin events have not passed this admission check. Keep draining
+            # the FIFO after a rejected wake so a staged user message is not orphaned.
+            while (
+                getattr(_rescued, "internal", False)
+                and (getattr(_rescued, "metadata", None) or {}).get("hermes_plugin_injection") is True
+            ):
+                _filtered = await self._hm_pre_gateway_dispatch_hook(_rescued, _rescued.source)
+                if _filtered is not None:
+                    _rescued = _filtered
+                    break
+                _pending = _orphan_adapter._pending_messages.pop(_quick_key, None)
+                _rescued = self._promote_queued_event(_quick_key, _orphan_adapter, _pending)
+                if _rescued is None:
+                    return event, source, is_internal
             # Same session key by construction; carry the orphan's own source so reply anchors /
             # thread metadata point at the message actually being answered.
             _rescued_source = getattr(_rescued, "source", None)
@@ -1336,7 +1357,7 @@ class GatewayInboundMixin:
             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
             return _limit_message
 
-        event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
+        event, source, is_internal = await self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
 
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
@@ -1810,7 +1831,8 @@ class GatewayInboundMixin:
         get_plugin_manager().clear_gateway_message_injector(self)
 
     def _schedule_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
+        self, *, session_key: str, content: str, plugin_id: str,
+        expected_session_id: str | None = None, on_delivery=None,
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop (thread-safe)."""
         from gateway.run import safe_schedule_threadsafe
@@ -1818,8 +1840,12 @@ class GatewayInboundMixin:
         if not getattr(self, "_running", False) or loop is None or loop.is_closed():
             return False
 
+        options = {"expected_session_id": expected_session_id} if expected_session_id is not None else {}
+        admission_receipt = {}
+        if callable(on_delivery):
+            options["_admission_receipt"] = admission_receipt
         coro = self._dispatch_plugin_message_injection(
-            session_key=session_key, content=content, plugin_id=plugin_id,
+            session_key=session_key, content=content, plugin_id=plugin_id, **options,
         )
         try:
             current_loop = asyncio.get_running_loop()
@@ -1844,14 +1870,25 @@ class GatewayInboundMixin:
                 return False
 
         def _log_result(completed) -> None:
+            # Adoption precedes task completion: cancellation or a later turn failure
+            # must not refund an already accepted wake and cause duplicate retries.
+            event = admission_receipt.get("event")
+            admitted = getattr(event, "_gateway_accepted", False) is True
             try:
-                if completed.result():
+                admitted = (completed.result() is True) or admitted
+                if admitted:
                     return
                 what, exc = "was not routed", None
             except (asyncio.CancelledError, concurrent.futures.CancelledError):
                 return
             except Exception as err:
                 what, exc = "failed", err
+            finally:
+                if callable(on_delivery):
+                    try:
+                        on_delivery(admitted)
+                    except Exception:
+                        logger.warning("Plugin admission receipt callback failed: plugin=%s", plugin_id, exc_info=True)
             logger.warning(
                 "Plugin message injection %s: plugin=%s session=%s", what, plugin_id, session_key, exc_info=exc,
             )
@@ -1859,8 +1896,28 @@ class GatewayInboundMixin:
         future.add_done_callback(_log_result)
         return True
 
+    async def _plugin_parent_matches(self, entry, expected_session_id: str) -> bool:
+        """Accept the original conversation or verified compression, never a reset session."""
+        if not isinstance(expected_session_id, str) or not expected_session_id.strip():
+            return False
+        if entry.session_id == expected_session_id:
+            return True
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return False
+        try:
+            row = await session_db.get_session(expected_session_id)
+            if not row or not row.get("ended_at") or row.get("end_reason") != "compression":
+                return False
+            target = await self._resolve_compression_lineage_target(session_db, entry, expected_session_id)
+            return target == entry.session_id
+        except Exception:
+            logger.warning("Plugin parent-lineage verification failed", exc_info=True)
+            return False
+
     async def _dispatch_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
+        self, *, session_key: str, content: str, plugin_id: str,
+        expected_session_id: str | None = None, _admission_receipt: dict | None = None,
     ) -> bool:
         """Route a plugin-triggered turn through the session's live adapter."""
         def _accepting() -> bool:
@@ -1872,6 +1929,8 @@ class GatewayInboundMixin:
         if entry is None or entry.origin is None or not _accepting():
             return False
 
+        if expected_session_id is not None and not await self._plugin_parent_matches(entry, expected_session_id):
+            return False
         from gateway.session_identity import replace_source
         source = replace_source(self._restored_source(entry))
         try:
@@ -1893,15 +1952,25 @@ class GatewayInboundMixin:
         if adapter is None:
             return False
 
-        await adapter.handle_message(MessageEvent(
+        metadata = {
+            "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
+            "gateway_session_key": session_key,
+            "gateway_session_id": expected_session_id if expected_session_id is not None else entry.session_id,
+            "gateway_session_strict": True,
+        }
+        if expected_session_id is not None:
+            metadata["gateway_session_compression"] = True
+        from gateway.wake import WakeNotAccepted, admit_internal_event
+        event = MessageEvent(
             text=content, message_type=MessageType.TEXT, source=source, internal=True,
-            allow_gateway_control=False,
-            metadata={
-                "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
-                "gateway_session_key": session_key, "gateway_session_id": entry.session_id,
-                "gateway_session_strict": True,
-            },
-        ))
+            allow_gateway_control=False, metadata=metadata,
+        )
+        if _admission_receipt is not None:
+            _admission_receipt["event"] = event
+        try:
+            await admit_internal_event(adapter, event)
+        except WakeNotAccepted:
+            return False
         logger.info(
             "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
             plugin_id, session_key, entry.session_id,

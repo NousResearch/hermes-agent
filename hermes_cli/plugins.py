@@ -108,7 +108,7 @@ _install_plugin_debug_handler()
 VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
-    "transform_llm_output", "pre_llm_call", "post_llm_call",
+    "transform_llm_output", "pre_llm_call", "post_llm_call", "tool_result_context",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
@@ -132,8 +132,8 @@ VALID_HOOKS: Set[str] = {
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
-    # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
-    # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
+    # pre_gateway_dispatch: user and plugin-injected events before dispatch; native internal
+    # completions bypass it. Before user auth/pairing. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch",
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
@@ -602,6 +602,7 @@ class PluginContext:
     # manager's home, never the active profile's (#65593 constraint).
     def inject_message(
         self, content: str, role: str = "user", *, session_key: str | None = None,
+        expected_session_id: str | None = None, on_delivery: Callable[[bool], None] | None = None,
     ) -> bool:
         """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
 
@@ -610,10 +611,15 @@ class PluginContext:
         (the durable key, not the ephemeral UI session id). Non-CLI injection needs that
         ``session_key`` plus ``plugins.entries.<plugin_id>.allow_gateway_injection``.
         ``True`` means a host accepted the request, not that the turn completed.
+        Messaging-gateway injection also supports ``expected_session_id`` (the original
+        conversation or verified compression descendant) and ``on_delivery`` (adapter
+        admission, not model completion). These options fail closed on CLI/TUI hosts.
         """
         cli = self._manager._cli_ref
         msg = content if role == "user" else f"[{role}] {content}"
         if cli is not None:
+            if expected_session_id is not None or on_delivery is not None:
+                return False
             queue_ = cli._interrupt_queue if getattr(cli, "_agent_running", False) else cli._pending_input
             queue_.put(msg)
             return True
@@ -629,7 +635,8 @@ class PluginContext:
         # session_key; a miss falls through so a co-resident messaging gateway
         # still receives its own keys. An exception fails closed — do not also
         # hand the same text to the gateway.
-        if self._manager.has_tui_message_injector:
+        if (expected_session_id is None and on_delivery is None
+                and self._manager.has_tui_message_injector):
             try:
                 if self._manager.inject_tui_message(
                     session_key=session_key, content=msg, plugin_id=self.plugin_id,
@@ -642,9 +649,20 @@ class PluginContext:
         if not self._manager.has_gateway_message_injector:
             logger.warning("inject_message: no live gateway is available")
             return False
+        if expected_session_id is not None and (
+            not isinstance(expected_session_id, str) or not expected_session_id.strip()
+        ):
+            return False
+        options = {}
+        if expected_session_id is not None:
+            options["expected_session_id"] = expected_session_id
+        if on_delivery is not None:
+            if not callable(on_delivery):
+                return False
+            options["on_delivery"] = on_delivery
         try:
             return bool(self._manager.inject_gateway_message(
-                session_key=session_key, content=msg, plugin_id=self.plugin_id,
+                session_key=session_key, content=msg, plugin_id=self.plugin_id, **options,
             ))
         except Exception:
             logger.warning("inject_message: gateway scheduling failed for plugin %s", self.plugin_id,

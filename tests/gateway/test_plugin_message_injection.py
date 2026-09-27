@@ -148,7 +148,9 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
 
 @pytest.mark.asyncio
 async def test_dispatch_uses_stored_origin_and_adapter_message_path():
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    async def admit(event):
+        event._gateway_accepted = True
+    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=admit))
     entry = _entry()
     runner = _runner(entry, adapter)
 

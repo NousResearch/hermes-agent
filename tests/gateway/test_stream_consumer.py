@@ -778,6 +778,81 @@ class TestInitialOverflowRollingEdit:
         assert all(utf16_len(text) <= safe_limit for text in sent_texts)
 
 
+class TestOverflowSplitKeepsCodeFences:
+    """A reply split while a code block is open must still render as code on every
+    message it spans, and the prose after the block must render as prose."""
+
+    CODE_LINES = [f"    value_{i:03d} = compute(value_{i:03d}, step={i})" for i in range(60)]
+
+    def _screen_adapter(self, limit=1000):
+        adapter = TestUtf16OverflowDetection()._make_telegram_like_adapter()
+        setattr(adapter, "MAX_MESSAGE_LENGTH", limit)
+        screen, order = {}, []
+        ids = iter(f"msg_{i}" for i in range(1000))
+
+        async def send(**kw):
+            message_id = next(ids)
+            screen[message_id] = kw["content"]
+            order.append(message_id)
+            return SimpleNamespace(success=True, message_id=message_id)
+
+        async def edit(**kw):
+            screen[kw["message_id"]] = kw["content"]
+            return SimpleNamespace(success=True, message_id=kw["message_id"])
+
+        adapter.send = AsyncMock(side_effect=send)
+        adapter.edit_message = AsyncMock(side_effect=edit)
+        return adapter, lambda: [screen[m] for m in order]
+
+    @staticmethod
+    async def _until(predicate, timeout=5.0):
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not predicate():
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.005)
+
+    def _assert_rendering(self, messages, prose):
+        def in_code(text, needle):
+            return text[: text.index(needle)].count("```") % 2 == 1
+
+        for line in self.CODE_LINES:
+            holder = next(m for m in messages if line.strip() in m)
+            assert in_code(holder, line.strip()), line
+        holder = next(m for m in messages if prose in m)
+        assert not in_code(holder, prose)
+        assert all(m.count("```") % 2 == 0 for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_sealed_preview_reopens_fence_on_continuation(self):
+        adapter, screen = self._screen_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_fence", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"))
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("Here is the function:\n```python\ndef f():\n")
+        await self._until(lambda: adapter.send.await_count >= 1)
+        consumer.on_delta("\n".join(self.CODE_LINES) + "\n")
+        await self._until(lambda: adapter.send.await_count >= 2)
+        consumer.on_delta("```\nThat is the whole function.")
+        consumer.finish()
+        await task
+
+        self._assert_rendering(screen(), "That is the whole function.")
+
+    @pytest.mark.asyncio
+    async def test_first_send_split_tail_drops_synthetic_fence_close(self):
+        adapter, screen = self._screen_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_fence", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"))
+        consumer.on_delta("Here is the function:\n```python\ndef f():\n" + "\n".join(self.CODE_LINES[:-1]) + "\n")
+        task = asyncio.create_task(consumer.run())
+        await self._until(lambda: consumer._turn_split_delivery)
+        consumer.on_delta(self.CODE_LINES[-1] + "\n```\nThat is the whole function.")
+        consumer.finish()
+        await task
+
+        self._assert_rendering(screen(), "That is the whole function.")
+
+
 class TestEditOverflowSplitAndDeliver:
     """When edit_message split-and-delivers an oversized payload across the
     original message + N continuations (Telegram >4096 UTF-16), the consumer

@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
+from gateway.platforms.helpers import fence_state_after
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -771,7 +772,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # preview later deltas extend, so a kept indicator ends up embedded mid-reply.
             tail = chunks[-1]
             indicator = f" ({len(chunks)}/{len(chunks)})"
-            self._accumulated = tail[: -len(indicator)] if tail.endswith(indicator) else tail
+            if tail.endswith(indicator):
+                tail = tail[: -len(indicator)]
+            # The splitter closes a fence the source left open; in the live tail that close
+            # would sit before the next delta, turning the next code line into an info string.
+            # _send_or_edit closes it again for display.
+            if fence_state_after(self._accumulated)[0] and tail.endswith("\n```"):
+                tail = tail[: -len("\n```")]
+            self._accumulated = tail
             # Flag BEFORE the tail send: fresh-final replaces every tracked preview
             # with one message, which is only valid while the active message holds
             # the whole answer — deleting sealed heads drops delivered text.
@@ -816,7 +824,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             ok = await self._send_or_edit(chunk, finalize=True, is_turn_final=False)
             if self._fallback_final_send or not ok:
                 break  # keep the full text intact for the fallback final send
-            self._accumulated = self._accumulated[split_at:].lstrip("\n")
+            # The sealed head was shown with its open fence closed; reopen it on the new
+            # message or the rest of the code block renders as prose.
+            in_code, lang = fence_state_after(chunk)
+            rest = self._accumulated[split_at:].lstrip("\n")
+            self._accumulated = f"```{lang}\n{rest}" if in_code and rest else rest
             self._message_id = None
             self._last_sent_text = ""
             self._turn_split_delivery = True

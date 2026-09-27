@@ -4,10 +4,10 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
 from tools.mcp_tool_errors import _format_connect_error
-from tools.mcp_tool_common import _prepend_path
 from tools.mcp_tool_config import _node_fallback, _resolve_stdio_command
 from tools.mcp_tool_config import _which_with_config_pathext
 
@@ -178,6 +178,26 @@ def test_resolve_stdio_command_uvx_unchanged_when_already_on_path():
     assert command == resolved_path
 
 
+@pytest.mark.platforms("posix")
+def test_resolve_stdio_command_keeps_the_child_path_order(tmp_path):
+    """A command found later on the child's PATH must not pull its directory ahead of
+    earlier entries: the child's other bare lookups (node, python3, git) follow the PATH
+    order the user, or pm.activate(), chose. Hoisting it (#124792) handed a brew
+    command's children brew's node/python3/git instead of the pinned store copies."""
+    first, middle, later = tmp_path / "first", tmp_path / "middle", tmp_path / "later"
+    for directory in (first, middle, later):
+        directory.mkdir()
+    tool = later / "mytool"
+    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    tool.chmod(0o755)
+    path = os.pathsep.join([str(first), str(middle), str(later)])
+
+    command, env = _resolve_stdio_command("mytool", {"PATH": path})
+
+    assert command == str(tool)
+    assert env["PATH"] == path
+
+
 def test_resolve_stdio_command_skips_unknown_commands():
     """Bare command names outside the npx/npm/node/uv/uvx launcher set must NOT
     be matched against the fallback paths — that would rewrite ``command:
@@ -341,66 +361,3 @@ def test_run_stdio_malware_check_times_out_fail_open():
         assert elapsed < 1.0, f"startup did not fail-open promptly ({elapsed:.1f}s)"
 
     asyncio.run(_test())
-
-
-# ---------------------------------------------------------------------------
-# #82309: a managed dir that is ALREADY on the child's PATH (the Hermes
-# installer appends its managed Node dir) must still end up FIRST. "Prepend
-# only when absent" left the older system Node ahead of it, so npm lifecycle
-# children (`node install.js`) resolved the system Node and died with
-# ERR_REQUIRE_ESM even though Hermes had provisioned a compatible runtime.
-# ---------------------------------------------------------------------------
-
-
-def test_prepend_path_makes_an_already_present_dir_first():
-    """The reported layout — system Node first, managed dir already present
-    behind it — must come out with the managed dir first."""
-    managed = os.path.join(os.sep, "managed", "node", "bin")
-    system = os.path.join(os.sep, "system", "node")
-    env = _prepend_path({"PATH": os.pathsep.join([system, "mid-dir", managed]), "KEEP": "v"}, managed)
-
-    assert env["PATH"].split(os.pathsep) == [managed, system, "mid-dir"]
-    assert env["KEEP"] == "v"
-
-
-def test_prepend_path_collapses_duplicate_entries():
-    """Prepending an already-present dir must not grow PATH a duplicate."""
-    managed = "/managed/node/bin"
-    env = _prepend_path({"PATH": os.pathsep.join([managed, "/usr/bin", managed])}, managed)
-
-    assert env["PATH"].split(os.pathsep) == [managed, "/usr/bin"]
-
-
-def test_prepend_path_collapses_windows_case_and_separator_variants(monkeypatch):
-    """Windows PATH lookup is case- and separator-insensitive, so every variant
-    of the managed dir has to be removed for the canonical entry to win."""
-    monkeypatch.setattr(os, "pathsep", ";")
-    monkeypatch.setattr(sys, "platform", "win32")
-    managed = r"C:\Users\x\AppData\Local\hermes\node"
-    variant = "c:\\users\\x\\appdata\\local\\hermes\\node" + "\\"
-    env = _prepend_path(
-        {"PATH": ";".join([r"C:\Program Files\nodejs", variant, r"C:\tools"])}, managed
-    )
-
-    assert env["PATH"].split(";") == [managed, r"C:\Program Files\nodejs", r"C:\tools"]
-
-
-def test_resolve_stdio_command_displaces_a_system_node_already_on_path(tmp_path, monkeypatch):
-    """End-to-end: with the managed dir already on the child PATH behind a system
-    Node dir, the resolved env must put the managed dir first so the spawned
-    launcher's shebang/children (`/usr/bin/env node`) get the managed Node."""
-    node_bin = tmp_path / "node" / "bin"
-    node_bin.mkdir(parents=True)
-    npx_path = node_bin / "npx"
-    npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    npx_path.chmod(0o755)
-    system_bin = tmp_path / "system-node"
-    system_bin.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    inherited = os.pathsep.join([str(system_bin), "/usr/bin", str(node_bin)])
-
-    with patch("tools.mcp_tool_config.shutil.which", return_value=None):
-        command, env = _resolve_stdio_command("npx", {"PATH": inherited})
-
-    assert command == str(npx_path)
-    assert env["PATH"].split(os.pathsep) == [str(node_bin), str(system_bin), "/usr/bin"]

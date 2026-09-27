@@ -49,6 +49,14 @@ describe('resolveVersionStatus', () => {
     expect(client().unknown).toBe(true)
   })
 
+  it('treats the unknown sentinel as missing, without borrowing the client sha for a backend', () => {
+    expect(client({ version: 'unknown', sha: 'abc1234' }).label).toBe('abc1234')
+    expect(client({ version: 'unknown', sha: 'abc1234' }).unknown).toBe(false)
+    expect(client({ version: 'unknown' }).unknown).toBe(true)
+    expect(backend({ version: 'unknown', sha: 'abc1234' }).unknown).toBe(true)
+    expect(client({ version: 'git.abc1234' }).label).toBe('vgit.abc1234')
+  })
+
   it('drops the diff while an apply is in flight', () => {
     const applying = client({ applying: true, behind: 3, sha: 'abc1234', version: '0.4.2' })
 

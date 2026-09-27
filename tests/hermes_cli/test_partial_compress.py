@@ -73,10 +73,12 @@ def test_split_tail_always_starts_on_user():
 
 
 def test_split_counts_only_turns_the_user_started():
-    """Timeline rows and a mid-turn /steer are user-role rows that start no exchange."""
+    """A marker and a mid-turn /steer start no exchange; a wake the model answered does."""
     h = [
         {"role": "user", "content": "u0"},
         {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "w0", "display_kind": "auto_continue"},
+        {"role": "assistant", "content": "aw0"},
         {"role": "user", "content": "u1"},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
         {"role": "tool", "content": "t1", "tool_call_id": "c1"},
@@ -87,9 +89,9 @@ def test_split_counts_only_turns_the_user_started():
         {"role": "assistant", "content": "a2"},
     ]
     head, tail = split_history_for_partial_compress(h, keep_last=2)
-    assert [m["content"] for m in head] == ["u0", "a0"]
     assert tail[0]["content"] == "u1"
     assert head + tail == h
+    assert split_history_for_partial_compress(h, keep_last=3)[1][0]["content"] == "w0"
 
 
 

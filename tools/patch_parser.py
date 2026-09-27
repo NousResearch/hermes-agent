@@ -56,6 +56,8 @@ _OP_MARKERS: list[tuple[OperationType, re.Pattern]] = [
     (OperationType.DELETE, re.compile(r'\*\*\*\s*Delete\s+File:\s*(.+)')),
     (OperationType.MOVE, re.compile(r'\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)'))]
 _HINT_RE = re.compile(r'@@\s*(.+?)\s*@@')
+# Validation-overlay content of a binary file: present, but with no text to edit.
+_BINARY = object()
 
 
 def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], Optional[str]]:
@@ -196,21 +198,33 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
     pending_content: dict = {}
     removed_paths: set = set()
 
-    def _read_checked(path: str) -> tuple[Optional[str], Optional[str], bool]:
-        """(content, error, too_large): too_large means the file exists on disk but is past
-        read_file_raw's cap; the patch's own overlay always answers first."""
+    def _read(path: str) -> tuple[Optional[str], Optional[str]]:
+        key = _overlay_key(path, file_ops)
+        if pending_content.get(key) is _BINARY:
+            return None, "binary file, cannot be edited as text"
+        if key in pending_content:
+            return pending_content[key], None
+        if key in removed_paths:
+            return None, "file not found"
+        r = file_ops.read_file_raw(path)
+        return (None, r.error) if r.error else (r.content, None)
+
+    def _source(path: str, missing: str, *, past_cap_ok: bool = False) -> tuple[Any, Optional[str]]:
+        """``(content, error)`` of a Delete/Move source. The text reader refuses a binary file,
+        but it is still a file to remove or rename. Any other failed read is reported as itself:
+        only ``not_found`` says the path is absent. ``past_cap_ok``: a file over read_file_raw's
+        cap exists, and a Delete needs no content."""
         key = _overlay_key(path, file_ops)
         if key in pending_content:
-            return pending_content[key], None, False
+            return pending_content[key], None
         if key in removed_paths:
-            return None, "file not found", False
+            return None, missing
         r = file_ops.read_file_raw(path)
-        if r.error:
-            return None, r.error, bool(getattr(r, "_too_large", False))
-        return r.content, None, False
-
-    def _read(path: str) -> tuple[Optional[str], Optional[str]]:
-        return _read_checked(path)[:2]
+        if not r.error or (past_cap_ok and getattr(r, "_too_large", False)):
+            return r.content, None
+        if getattr(r, "is_binary", False):
+            return _BINARY, None
+        return None, missing if getattr(r, "not_found", False) else r.error
 
     def _occupied(path: str) -> Optional[str]:
         """Why an Add target or Move destination is not free, or None. Only a read that reports
@@ -275,19 +289,17 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
             continue
         real_change_count += 1
         if op.operation == OperationType.DELETE:
-            # A file over read_file_raw's cap exists; Delete needs no content, so it stays legal.
-            _content, read_err, too_large = _read_checked(op.file_path)
-            if read_err and not too_large:
-                errors.append(f"{op.file_path}: file not found for deletion")
+            if err := _source(op.file_path, "file not found for deletion", past_cap_ok=True)[1]:
+                errors.append(f"{op.file_path}: {err}")
             else:
                 _remove(op.file_path)
         elif op.operation == OperationType.MOVE:
             if not op.new_path:
                 errors.append(f"{op.file_path}: MOVE operation missing destination path")
                 continue
-            src_content, src_err = _read(op.file_path)
+            src_content, src_err = _source(op.file_path, "source file not found for move")
             if src_err:
-                errors.append(f"{op.file_path}: source file not found for move")
+                errors.append(f"{op.file_path}: {src_err}")
             dst_taken = _occupied(op.new_path)
             if dst_taken == "exists":
                 errors.append(f"{op.new_path}: destination already exists — move would overwrite")
@@ -432,11 +444,12 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
 def _apply_delete(op: PatchOperation, file_ops: Any) -> ApplyResult:
     """Delete a file, producing a real unified diff of the removed content."""
     read_result = file_ops.read_file_raw(op.file_path)  # re-read guards validate/apply races
+    binary = bool(read_result.error) and getattr(read_result, "is_binary", False)
     too_large = getattr(read_result, "_too_large", False)  # exists, just past the read cap: no diff
-    if read_result.error and not too_large:
+    if read_result.error and not (binary or too_large):
         return _fail(f"Cannot delete {op.file_path}: file not found")
     result = file_ops.delete_file(op.file_path)
-    diff = (None if too_large else _unified_diff(op.file_path, read_result.content, None)) \
+    diff = (None if binary or too_large else _unified_diff(op.file_path, read_result.content, None)) \
         or f"# Deleted: {op.file_path}"
     return _fail(result.error) if result.error else ApplyResult(True, diff)
 

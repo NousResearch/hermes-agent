@@ -1,6 +1,7 @@
 """Tests for Matrix require-mention gating and auto-thread features."""
 
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -277,6 +278,7 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
     adapter._download_and_cache_media = AsyncMock(return_value="/tmp/voice.ogg")
     adapter._background_read_receipt = MagicMock()
     voice = _make_event("voice message", event_id="$voice")
+    voice.timestamp -= 1000
     voice.content.update({"msgtype": "m.audio", "url": "mxc://example.org/v", "info": {"mimetype": "audio/ogg"},
                           "org.matrix.msc3245.voice": {}, "m.mentions": {}})
     mention = _make_event(mention_body, event_id="$text", room_id=mention_room,
@@ -293,6 +295,7 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
         batch = [voice, mention]
         if same_sync_batch == "two_voices":
             voice2 = _make_event("voice message", event_id="$voice2")
+            voice2.timestamp = voice.timestamp + 500
             voice2.content.update({k: voice.content[k] for k in (
                 "msgtype", "url", "info", "org.matrix.msc3245.voice", "m.mentions")})
             batch.append(voice2)
@@ -300,8 +303,12 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
         if same_sync_batch == "two_voices":
             await adapter._on_room_message(_make_event(
                 "@hermes:example.org", event_id="$text2", mention_user_ids=["@hermes:example.org"]))
-            dispatched = [m.args[0].message_id for m in adapter.handle_message.await_args_list]
-            assert dispatched == ["$voice", "$voice2"]
+            dispatched = [(m.args[0].message_id, m.args[0].timestamp)
+                          for m in adapter.handle_message.await_args_list]
+            assert dispatched == [
+                ("$voice", datetime.fromtimestamp(voice.timestamp / 1000, tz=timezone.utc)),
+                ("$voice2", datetime.fromtimestamp(voice2.timestamp / 1000, tz=timezone.utc)),
+            ]
             assert not adapter._parked_voices._parked and not adapter._parked_voices._inflight
             return
     else:
@@ -314,6 +321,8 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
     assert dispatched == ([("!room1:example.org", "$voice")] if claims else [(mention_room, "$text")])
     if claims:  # the bare mention is the newest event; the read marker must reach it
         adapter._background_read_receipt.assert_any_call("!room1:example.org", "$text")
+        assert adapter.handle_message.await_args.args[0].timestamp == datetime.fromtimestamp(
+            voice.timestamp / 1000, tz=timezone.utc)
         claimed_event = adapter.handle_message.await_args.args[0]
         adapter.fetch_room_history = AsyncMock(return_value=SimpleNamespace(
             render=lambda: "[Recent room messages]\n[alice] Earlier", refresh=AsyncMock(),

@@ -122,7 +122,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
         # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
         # non-allowlisted room must not pull media onto the host only to drop it.
         # First await: mark a voice that may park in-flight so a concurrent bare mention waits for it.
-        gate = self._parked_voices.begin(room_id, sender) if self._voice_may_park(
+        gate = self._parked_voices.begin(room_id, sender, event_ts) if self._voice_may_park(
             room_id, body, source_content, relates_to, mention_claimed) else None
         try:
             ctx = await self._resolve_message_context(
@@ -150,7 +150,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
             problem = "too large" if media_size_limit_exceeded else "could not be downloaded"
             msg_event = await self._build_inbound_event(
                 room_id, sender, event_id, body, source_content, relates_to, ctx=ctx,
-                reply_parent=reply_parent,
+                reply_parent=reply_parent, event_ts=event_ts,
                 message_type=MessageType.TEXT, media_urls=[], media_types=[], media_msgtype=msgtype,
                 metadata={"matrix_mention_claimed": True} if mention_claimed else {})
             if msg_event is not None:
@@ -161,7 +161,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
         media_urls = [cached_path] if cached_path else []
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
-            reply_parent=reply_parent,
+            reply_parent=reply_parent, event_ts=event_ts,
             media_urls=media_urls, media_types=[media_type] if media_urls else [], media_msgtype=msgtype,
             metadata={"matrix_mention_claimed": True} if mention_claimed else {})
         if msg_event is not None:

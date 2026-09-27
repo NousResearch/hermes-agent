@@ -3,7 +3,10 @@ from __future__ import annotations
 
 
 # Dependency generations, downloaded tools, and partial transfers belong to this machine.
-PM_RUNTIME_ROOT_DIRS = frozenset({"installs", "tools", "cache"})
+# ``build-tools`` is the native-dep build cache (vcpkg + static OpenSSL for win-arm64
+# ``cryptography``, ~5 GiB / 65k files) — regenerable, machine-local, and must never be
+# walked into by backups or cloned into a profile (#125237).
+PM_RUNTIME_ROOT_DIRS = frozenset({"installs", "tools", "cache", "build-tools"})
 
 
 def profile_root_entry(parts: tuple[str, ...]) -> str | None:

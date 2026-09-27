@@ -821,6 +821,12 @@ def _pull_updates(
     # A release update moves the tree to its tag, not the branch tip: the marker names what git writes.
     merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
     target_sha = (_git_run(git_cmd, ["rev-parse", f"{merge_ref}^{{commit}}"]).stdout or "").strip()
+    movement_baseline = pre_sync_sha or pre_pull_sha
+    if rollback_branch is not None and pre_sync_sha == target_sha:
+        # The caller already ran the target, but its local update branch was
+        # stale. Verify the fast-forward from that branch's tip, not a round
+        # trip back to the original detached SHA. Rollback still uses the latter.
+        movement_baseline = pre_pull_sha
     with _best_effort('Could not write the interrupted-pull marker: %s'):
         pull_marker.write_text(
             f"pid={os.getpid()}\npre={pre_pull_sha}\ntarget={target_sha}\nstash={auto_stash_ref or ''}\n",
@@ -846,13 +852,13 @@ def _pull_updates(
             # Do not let a second mutation hide a failed origin merge or move an
             # unexpected branch. Keep local edits parked through the final check.
             _verify_head_after_pull(
-                git_cmd, branch, pre_sync_sha or pre_pull_sha, in_place_update=in_place_update,
+                git_cmd, branch, movement_baseline, in_place_update=in_place_update,
                 _windows_gateway_resume=_windows_gateway_resume)
             _m()._sync_with_upstream_if_needed(
                 git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
         # Refuse an unexpected branch before syntax rollback can reset its ref.
         _verify_head_after_pull(
-            git_cmd, branch, pre_sync_sha or pre_pull_sha, in_place_update=in_place_update,
+            git_cmd, branch, movement_baseline, in_place_update=in_place_update,
             _windows_gateway_resume=_windows_gateway_resume)
         _rollback_if_pulled_syntax_error(
             git_cmd, pre_sync_sha or pre_pull_sha,

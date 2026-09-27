@@ -1687,6 +1687,12 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+/** Page-owned header control (the kanban board switcher): projected into the
+ *  workspace page header when the page renders in the workspace pane, and
+ *  rendered inline, in place, anywhere else (a split route tile). Prefer it
+ *  over a raw `<Contribute area={WORKSPACE_PAGE_HEADER_AREA}>`, which nothing
+ *  paints outside the workspace pane. */
+export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
 /** THE overdue test for a cron job's `next_run_at`: non-null once the stored slot
  *  sits past the scheduler grace and the job is expected to fire. Every surface
  *  that prints a next run switches its label on this (`t.cron.next` →
@@ -1930,6 +1936,9 @@ export { formatModifierToken } from '@/lib/keybinds/combo'
 export { LruCache } from '@/lib/lru-cache'
 /** Capture a gateway file download alongside a REST read (see the SDK guide). */
 export { captureGatewayFileDownload } from '@/lib/media'
+/** True when a saved provider id names this `model.options` row: its slug,
+ *  display name, or a custom-provider alias (`custom:<key>` vs the bare key). */
+export { catalogProviderMatches } from '@/lib/model-options'
 /** The app's deterministic identity color for a name (profiles, assignees,
  *  authors), its translucent tag fill, and the curated picker swatches — so
  *  plugin-rendered identities read the same hue as everywhere else. The

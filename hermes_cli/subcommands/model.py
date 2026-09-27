@@ -9,10 +9,16 @@ def build_model_parser(subparsers, *, cmd_model: Callable) -> None:
     """Attach the ``model`` subcommand to ``subparsers``."""
     model_parser = subparsers.add_parser(
         "model", help="Select default model and provider",
-        description="Interactively select your inference provider and default model")
+        description="Select your inference provider and default model")
     model_parser.add_argument(
         "--refresh", action="store_true",
         help="Wipe the model picker disk cache and re-fetch every provider's live /v1/models list.")
+    model_parser.add_argument(
+        "--provider",
+        help="Provider ID to select non-interactively (requires --model).")
+    model_parser.add_argument(
+        "--model", dest="model_id",
+        help="Model ID to select non-interactively (requires --provider).")
     model_parser.add_argument(
         "--portal-url", help="Portal base URL for Nous login (default: production portal)")
     model_parser.add_argument(

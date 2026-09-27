@@ -198,3 +198,46 @@ def test_curated_fields_the_published_doc_lacks_come_from_the_checkout(tmp_path,
     assert (by_name["same"].onboarding, by_name["same"].title) == (True, "T")
     assert by_name["says-no"].onboarding is False and by_name["says-no"].title == "T"
     assert by_name["repinned"].onboarding is False and by_name["repinned"].sha == "b" * 40
+
+
+def test_in_tree_catalog_time_does_not_lazy_fetch_on_treeless_clones(tmp_path, monkeypatch):
+    """``in_tree_catalog_time`` dates the checkout with a pathspec'd ``git log``; the pathspec makes git
+    open every commit's tree. On a treeless (``tree:0``) partial clone — the layout ``hermes update``
+    produces — none of those trees exist locally, so an unrestricted probe lazy-fetches each one against
+    the remote: measured 40-80 s per inventory request, past the desktop's 30 s RPC limit (#125683).
+    The probe must scope ``GIT_NO_LAZY_FETCH`` to itself so missing trees fail fast into the documented
+    ``None`` fallback — never into network work — while a full checkout keeps resolving its time."""
+    import shutil
+    import subprocess as sp
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    src = tmp_path / "src"
+    (src / "plugin-catalog").mkdir(parents=True)
+    (src / "plugin-catalog" / "a.yaml").write_text("name: a\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    sp.run(["git", "init", "-q"], cwd=src, check=True, env=env)
+    sp.run(["git", "add", "-A"], cwd=src, check=True, env=env)
+    sp.run(["git", "commit", "-qm", "seed"], cwd=src, check=True, env=env)
+    sp.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=src, check=True, env=env)
+
+    def local_object_types(repo):
+        out = sp.run(["git", "cat-file", "--batch-all-objects", "--batch-check"], cwd=repo,
+                     capture_output=True, text=True, env=env)
+        return {line.split()[1] for line in out.stdout.splitlines() if line}
+
+    dst = tmp_path / "treeless"
+    # file:// (not a plain path) so the clone goes through upload-pack and honors the filter.
+    sp.run(["git", "clone", "-q", "--filter=tree:0", "--no-checkout", src.as_uri(), str(dst)],
+           check=True, env=env)
+    if "tree" in local_object_types(dst):  # transport ignored the filter: no missing objects to protect
+        pytest.skip("file:// transport did not honor --filter=tree:0")
+
+    monkeypatch.setattr(pc, "get_catalog_dir", lambda: dst / "plugin-catalog")
+    monkeypatch.setattr(pc, "_in_tree_catalog_time", -1.0)  # resolve afresh in this test
+    assert pc.in_tree_catalog_time() is None
+    assert "tree" not in local_object_types(dst)  # the probe lazy-fetched nothing
+
+    monkeypatch.setattr(pc, "get_catalog_dir", lambda: src / "plugin-catalog")
+    monkeypatch.setattr(pc, "_in_tree_catalog_time", -1.0)
+    assert pc.in_tree_catalog_time() is not None  # a full checkout still resolves its commit time

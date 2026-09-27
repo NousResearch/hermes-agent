@@ -1674,9 +1674,9 @@ def _plugin_rows() -> list[dict]:
     pc = _tools_mod("hermes_cli.plugins_cmd")
     cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
-    pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
-    versions = cat.catalog_versions()
-    titles = cat.catalog_titles()  # server-sentence display names: ONE live-catalog resolution
+    # pins power the desktop's "Update to <pin>" affordance; titles are the server-sentence display
+    # names. One live-catalog resolution for the whole listing (see ``catalog_rows_maps``).
+    pins, versions, titles = cat.catalog_rows_maps()
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
     active = pc._category_active_names()

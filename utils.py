@@ -438,8 +438,24 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
     Narrower than :func:`atomic_yaml_write` on purpose: for user-edited config files where a
     single setting mutation must not disturb the rest. Still writes via temp file + atomic replace.
     ``value=None`` removes the key (a ``key: null`` leftover reads as absent everywhere but
-    litters the file and diverges from whole-document writers that drop the key).
+    litters the file and diverges from whole-document writers that drop the key). The read and the
+    replace happen under ``config_write_lock``, so a concurrent config writer — in this process or
+    another — cannot land in between and be overwritten (#96571).
     """
+    from hermes_cli.config_rmw import config_write_lock, log_config_write
+    from hermes_constants import mkdir_under_hermes_home
+
+    path = Path(path)
+    mkdir_under_hermes_home(path.parent)
+    with config_write_lock(path):
+        yaml_rt, config = _roundtrip_load(path)
+        if _set_dotted_rt_key(config, key_path, value):
+            _roundtrip_dump(path, yaml_rt, config)
+            log_config_write(path, [(key_path,)])
+
+
+def _set_dotted_rt_key(config, key_path: str, value: Any) -> bool:
+    """Set (``None``: remove) *key_path* in a ruamel map; ``False`` when there was nothing to remove."""
     from ruamel.yaml.comments import CommentedMap
     # Honor escaped dots and prefer existing literal dotted keys (model IDs like ``glm-5.3``) over
     # blind splitting — same navigation as ``hermes config set``'s ``_set_nested``; otherwise
@@ -447,11 +463,6 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
     # See #91607.
     from hermes_cli.config import _greedy_literal_match, _split_key_path
 
-    path = Path(path)
-    from hermes_constants import mkdir_under_hermes_home
-
-    mkdir_under_hermes_home(path.parent)
-    yaml_rt, config = _roundtrip_load(path)
     current = config
     keys = _split_key_path(key_path)
     i = 0
@@ -463,16 +474,15 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
                 current.pop(seg, None)
             else:
                 current[seg] = value
-            break
+            return True
         next_value = current.get(seg)
         if not isinstance(next_value, CommentedMap):
             if value is None:
-                return  # nothing to remove under a missing/scalar parent
+                return False  # nothing to remove under a missing/scalar parent
             next_value = CommentedMap()
             current[seg] = next_value
         current = next_value
         i += consumed
-    _roundtrip_dump(path, yaml_rt, config)
 
 
 # ruamel's round-trip dumper resolves plain scalars under YAML 1.2, where only true/false/null are
@@ -512,16 +522,23 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
     *new_state* are deleted ("explicit absence": ``cfg.pop(k)`` + save removes ``k`` from disk).
     ``extra_content_on_create`` (commented example blocks) is appended only when the file is
     being created — re-appending it on every rewrite is how the stock boilerplate replaced
-    users' own comments (#92554).
+    users' own comments (#92554). Holds ``config_write_lock`` (reentrant: ``atomic_config_write``
+    already holds it) from the fail-closed read through the replace.
     """
-    from ruamel.yaml.comments import CommentedMap, CommentedSeq
-    from hermes_cli.config import require_readable_config_before_write
-
-    path = Path(path)
+    from hermes_cli.config import _read_config_for_write
+    from hermes_cli.config_rmw import config_write_lock
     from hermes_constants import mkdir_under_hermes_home
 
+    path = Path(path)
     mkdir_under_hermes_home(path.parent)
-    require_readable_config_before_write(path)
+    with config_write_lock(path):
+        _roundtrip_merge_save(path, new_state, extra_content_on_create, _read_config_for_write)
+
+
+def _roundtrip_merge_save(path: Path, new_state: dict, extra_content_on_create: "str | None", require_readable) -> None:
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    require_readable(path)
     creating = not path.exists() or not path.read_text(encoding="utf-8").strip()
     yaml_rt, existing = _roundtrip_load(path)
 

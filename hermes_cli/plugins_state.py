@@ -82,8 +82,10 @@ def save_plugin_setting(plugin_id: str, segments: tuple[str, ...], value: Any) -
         raise PermissionError(f"Plugin setting {dotted_path!r} is administrator-managed")
     partial = _nested_plugin_mapping(full_path[:4], _nested_plugin_mapping(segments, value))
     # The lock covers merge-read plus atomic save so sibling plugin writes (threads or
-    # processes) cannot race between the two steps.
-    with _locked_plugin_state(config_mod.get_config_path()), config_mod._CONFIG_LOCK:
+    # processes) cannot race between the two steps. It is THE config.yaml write lock (same
+    # ``.config.yaml.lock`` file): a second, private flock on it here would block save_config's own.
+    from hermes_cli.config_rmw import config_write_lock
+    with config_write_lock(config_mod.get_config_path()):
         # Fail closed on malformed YAML: save_config degrades parse failures to {} — safe
         # for reads, destructive for read-modify-write.
         config_mod.read_user_config_raw()

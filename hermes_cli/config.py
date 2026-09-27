@@ -51,6 +51,8 @@ from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
     _yaml_error_location)
+from hermes_cli.config_rmw import (
+    changed_paths, config_write_lock, log_config_write, rebase_onto_disk, remember_saved, track_served)
 
 logger = logging.getLogger(__name__)
 
@@ -158,9 +160,9 @@ def validate_env_var_name_for_write(key: str) -> None:
 # C extension is not thread-safe for concurrent safe_load() on one file, and tool threads
 # (approval, browser, setup flows) load/save config concurrently during long agent runs.
 # RLock because callers hold it across a read-modify-write and then call save_config(), which
-# acquires it again (hermes_cli/plugins.py: `with ..., config_mod._CONFIG_LOCK:` then
-# read_user_config_raw() + save_config()). save_config itself no longer re-enters via
-# read_raw_config; it takes its raw mapping from require_readable_config_before_write.
+# acquires it again (``hermes_cli.config_rmw.config_write_lock`` takes it, plus the cross-process
+# ``.config.yaml.lock``, around read_user_config_raw() + save_config()). save_config itself no longer
+# re-enters via read_raw_config; it takes its raw mapping from the fail-closed read.
 _CONFIG_LOCK = threading.RLock()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
@@ -1928,6 +1930,14 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
+def _served_copy(snapshot: Dict[str, Any], config_path: Path, form: str) -> Dict[str, Any]:
+    """A mutable copy of a cached *snapshot* for a caller that may save it back; the snapshot is
+    remembered so that save writes only what the caller changed (``config_rmw``)."""
+    served = copy.deepcopy(snapshot)
+    track_served(served, snapshot, config_path, form)
+    return served
+
+
 def _raw_config_cache_hit(path_key: str, cache_key: Tuple[Any, ...]) -> Optional[Dict[str, Any]]:
     """Pure lookup: the cached raw config for ``path_key`` if its signature equals ``cache_key``,
     else ``None``. Shared by the lock-free fast path and the locked re-check of
@@ -1949,7 +1959,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         cache_key = file_signature(config_path.stat())
         hit = _raw_config_cache_hit(str(config_path), cache_key)
         if hit is not None:
-            return copy.deepcopy(hit) if want_deepcopy else hit
+            return _served_copy(hit, config_path, "raw") if want_deepcopy else hit
     except Exception:
         pass
 
@@ -1965,7 +1975,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         path_key = str(config_path)
         hit = _raw_config_cache_hit(path_key, cache_key)
         if hit is not None:
-            return copy.deepcopy(hit) if want_deepcopy else hit
+            return _served_copy(hit, config_path, "raw") if want_deepcopy else hit
 
         try:
             with open(config_path, encoding="utf-8-sig") as f:
@@ -1981,6 +1991,8 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # invariant: later cache hits return the same dict); the mutable path returns the parse.
         cached_copy = copy.deepcopy(data)
         _RAW_CONFIG_CACHE[path_key] = (*cache_key, cached_copy)
+        if want_deepcopy:
+            track_served(data, cached_copy, config_path, "raw")
         return data if want_deepcopy else cached_copy
 
 
@@ -2000,8 +2012,11 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
         with open(config_path, encoding="utf-8-sig") as f:
             data = fast_safe_load(f) or {}
     except FileNotFoundError:
+        data = {}
+    if not isinstance(data, dict):
         return {}
-    return data if isinstance(data, dict) else {}
+    track_served(data, copy.deepcopy(data), config_path, "raw")
+    return data
 
 
 def read_raw_config_readonly() -> Dict[str, Any]:
@@ -2016,9 +2031,17 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     Guards two collapse-to-empty failure modes that would let a read-then-write caller silently
     wipe user overrides: an unreadable file (permissions / broken mount) and an unparseable or
     non-mapping root — bare-``except`` loaders treat both as ``{}``, so a subsequent write would
-    replace the recoverable file with only the caller's partial dict. Fails closed."""
+    replace the recoverable file with only the caller's partial dict. Fails closed. The mapping is
+    tracked, so saving it back applies only what the caller changed (``config_rmw``)."""
     if config_path is None:
         config_path = get_config_path()
+    loaded = _read_config_for_write(config_path)
+    track_served(loaded, copy.deepcopy(loaded), config_path, "raw")
+    return loaded
+
+
+def _read_config_for_write(config_path: Path) -> Dict[str, Any]:
+    """``require_readable_config_before_write`` without tracking, for the writers' own fresh reads."""
     try:
         config_path.stat()
     except FileNotFoundError:
@@ -2051,11 +2074,20 @@ def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_conten
     comment-preserving (ruamel round-trip merge of *data* onto the on-disk document). Every code
     path that persists a config.yaml — ``save_config``, ``config set``, migrations, plugin
     bookkeeping, gateway/TUI RPCs, auth resets — goes through here; a PyYAML dump of a config
-    path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554)."""
+    path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554).
+    Runs under ``config_write_lock``; a *data* a tracked loader served is rebased onto the fresh
+    file so keys another writer changed since that read survive (#96571). Logs the changed key paths."""
     from utils import atomic_roundtrip_yaml_save
 
     _refuse_failed_read(config_path, data)
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    with config_write_lock(config_path):
+        on_disk = _read_config_for_write(config_path)
+        target = rebase_onto_disk(data, config_path, {"raw": lambda: copy.deepcopy(on_disk)})
+        if target is None:
+            target = data
+        atomic_roundtrip_yaml_save(config_path, target, extra_content_on_create=extra_content_on_create)
+        log_config_write(config_path, changed_paths(on_disk, target))
+    remember_saved(data, config_path)
 
 
 def load_config() -> Dict[str, Any]:
@@ -2296,7 +2328,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             _, fast_sig = _load_config_cache_sig(config_path)
             hit = _load_config_cache_hit(path_key, fast_sig)
             if hit is not None:
-                return copy.deepcopy(hit) if want_deepcopy else hit
+                return _served_copy(hit, config_path, "effective") if want_deepcopy else hit
     except Exception:
         # Any surprise here falls through to the locked path, which is the
         # original fully-defensive implementation.
@@ -2311,7 +2343,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         hit = _load_config_cache_hit(path_key, cache_sig)
         if hit is not None:
-            return copy.deepcopy(hit) if want_deepcopy else hit
+            return _served_copy(hit, config_path, "effective") if want_deepcopy else hit
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -2361,8 +2393,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             # Readonly path returns the same object later calls will see (identity invariant).
             if not want_deepcopy:
                 return cached_copy
+            track_served(expanded, cached_copy, config_path, "effective")
         else:
             _LOAD_CONFIG_CACHE.pop(path_key, None)
+            track_served(expanded, copy.deepcopy(expanded), config_path, "effective")
         # First-load result is a fresh dict (not aliased to the cache); safe to return directly.
         return expanded
 
@@ -2443,23 +2477,27 @@ def save_config(
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
     would hide future default changes. ``merge_existing`` deep-merges the on-disk raw config
-    under *config* so partial callers cannot drop sections they omitted."""
-    with _CONFIG_LOCK:
-        if is_managed():
-            managed_error("save configuration")
-            return
-
-        config_path = get_config_path()
-        _refuse_failed_read(config_path, config)
-        config = _strip_managed_keys_for_save(config)
-
+    under *config* so partial callers cannot drop sections they omitted. A *config* served by
+    ``load_config``/``read_raw_config`` is rebased first: only the keys the caller changed since
+    that read are applied onto the file as it is now, so a key another writer set in between is
+    never reverted (#96571). Runs under ``config_write_lock`` from the read through the replace."""
+    if is_managed():
+        managed_error("save configuration")
+        return
+    config_path = get_config_path()
+    _refuse_failed_read(config_path, config)
+    caller_config = config
+    with config_write_lock(config_path):
         ensure_hermes_home()
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
         # agent.max_turns) so _strip_default_values keeps exactly what the user set. The
         # fail-closed read is the single authority here: ``read_raw_config()`` is cached and
         # swallows transient stat/open errors into ``{}``, and a ``{}`` at this point makes the
         # strip pass drop every user section whose value matches a default (#113301).
-        _raw_for_paths = require_readable_config_before_write(config_path)
+        _raw_for_paths = _read_config_for_write(config_path)
+        rebased = rebase_onto_disk(
+            config, config_path, {"raw": lambda: copy.deepcopy(_raw_for_paths), "effective": load_config})
+        config = _strip_managed_keys_for_save(config if rebased is None else rebased)
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
 
@@ -2479,6 +2517,7 @@ def save_config(
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+    remember_saved(caller_config, config_path)
 
 
 def load_env() -> Dict[str, str]:
@@ -3576,51 +3615,53 @@ def set_config_value(key: str, value: str, force: bool = False):
 
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
     config_path = get_config_path()
-    user_config = require_readable_config_before_write(config_path)
-    value = _coerce_config_set_value(key, value)
-    # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
-    # replaces it with an empty dict and the model id is lost.
-    _model_val = user_config.get("model")
-    if key.strip().lower().startswith("model.") and isinstance(_model_val, str) and _model_val:
-        user_config["model"] = {"default": _model_val}
-    key = _guard_section_overwrite(key, value, user_config, force)
-    value = _refuse_container_type_mismatch(key, value, user_config, force)
-    _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
-    try:
-        _set_nested(user_config, key, value)
-    except ValueError as e:
-        _exit_invalid(f"✗ {e}")
-    if legacy_key and _unset_nested(user_config, legacy_key):
-        print(f"  (removed the shadowed {legacy_key} duplicate)")
-    # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
-    # state of the OLD provider, and the runtime honours them for whatever provider the block now
-    # names — the new provider's key would be posted to the old endpoint (#113719, #40862). Sync
-    # them the way a persisted ``/model`` switch does: the previous route goes unless it is the
-    # new provider's own endpoint.
-    _route_notice = ""
-    _old_provider = str(_old_provider or "").strip() or "the previous provider"
-    if key == "model.provider" and _old_provider.lower() != str(value).strip().lower():
-        from hermes_cli.route_identity import drop_stale_model_route
-        _popped, _unverified = drop_stale_model_route(user_config.get("model"), value, user_config)
-        if _popped:
-            _route_notice = (
-                "  Cleared " + ", ".join(f"model.{k} ({v})" for k, v in _popped.items())
-                + f" — that route belonged to {_old_provider}, not {value}. {value}'s endpoint resolves "
-                "automatically; set model.base_url again if you meant a custom endpoint.")
-        elif _unverified:
-            _route_notice = color(
-                f"⚠ model.base_url ({user_config['model'].get('base_url')}) was set under {_old_provider} and "
-                f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
-                "`hermes config unset model.base_url` (and model.api_mode).", Colors.YELLOW)
-    # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
-    if key.strip().lower() in ("model.api_base", "api_base"):
-        # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
-        # set model.api_base ...` lands on the canonical key the runtime resolver actually reads, instead of
-        # being silently ignored.
-        user_config = _normalize_root_model_keys(user_config)
-        key = "model.base_url"
-        print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    _write_user_config(config_path, user_config)
+    # Held from the read through the replace: the guards below judge the file as it is written.
+    with config_write_lock(config_path):
+        user_config = require_readable_config_before_write(config_path)
+        value = _coerce_config_set_value(key, value)
+        # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
+        # replaces it with an empty dict and the model id is lost.
+        _model_val = user_config.get("model")
+        if key.strip().lower().startswith("model.") and isinstance(_model_val, str) and _model_val:
+            user_config["model"] = {"default": _model_val}
+        key = _guard_section_overwrite(key, value, user_config, force)
+        value = _refuse_container_type_mismatch(key, value, user_config, force)
+        _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
+        try:
+            _set_nested(user_config, key, value)
+        except ValueError as e:
+            _exit_invalid(f"✗ {e}")
+        if legacy_key and _unset_nested(user_config, legacy_key):
+            print(f"  (removed the shadowed {legacy_key} duplicate)")
+        # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
+        # state of the OLD provider, and the runtime honours them for whatever provider the block now
+        # names — the new provider's key would be posted to the old endpoint (#113719, #40862). Sync
+        # them the way a persisted ``/model`` switch does: the previous route goes unless it is the
+        # new provider's own endpoint.
+        _route_notice = ""
+        _old_provider = str(_old_provider or "").strip() or "the previous provider"
+        if key == "model.provider" and _old_provider.lower() != str(value).strip().lower():
+            from hermes_cli.route_identity import drop_stale_model_route
+            _popped, _unverified = drop_stale_model_route(user_config.get("model"), value, user_config)
+            if _popped:
+                _route_notice = (
+                    "  Cleared " + ", ".join(f"model.{k} ({v})" for k, v in _popped.items())
+                    + f" — that route belonged to {_old_provider}, not {value}. {value}'s endpoint resolves "
+                    "automatically; set model.base_url again if you meant a custom endpoint.")
+            elif _unverified:
+                _route_notice = color(
+                    f"⚠ model.base_url ({user_config['model'].get('base_url')}) was set under {_old_provider} and "
+                    f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
+                    "`hermes config unset model.base_url` (and model.api_mode).", Colors.YELLOW)
+        # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
+        if key.strip().lower() in ("model.api_base", "api_base"):
+            # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
+            # set model.api_base ...` lands on the canonical key the runtime resolver actually reads, instead of
+            # being silently ignored.
+            user_config = _normalize_root_model_keys(user_config)
+            key = "model.base_url"
+            print("  (note: 'api_base' is an alias — saved as model.base_url)")
+        _write_user_config(config_path, user_config)
 
     # Keep .env in sync: terminal_tool reads TERMINAL_ENV etc. directly from env vars.
     env_var = terminal_config_env_var_for_key(key)
@@ -3725,25 +3766,26 @@ def unset_config_value(key: str):
         return
 
     config_path = get_config_path()
-    user_config = require_readable_config_before_write(config_path)
+    with config_write_lock(config_path):
+        user_config = require_readable_config_before_write(config_path)
 
-    legacy_key = _legacy_gateway_platforms_key(key)
-    key, _redirect_note = _redirect_platform_display_key(key)
-    if _redirect_note:
-        # Mirror set_config_value's display.platforms canonicalization (#71047).
-        print(_redirect_note.replace("saved as", "resolved as"))
-    removed = _unset_nested(user_config, key)
-    if legacy_key:
-        removed = _unset_nested(user_config, legacy_key) or removed
+        legacy_key = _legacy_gateway_platforms_key(key)
+        key, _redirect_note = _redirect_platform_display_key(key)
+        if _redirect_note:
+            # Mirror set_config_value's display.platforms canonicalization (#71047).
+            print(_redirect_note.replace("saved as", "resolved as"))
+        removed = _unset_nested(user_config, key)
+        if legacy_key:
+            removed = _unset_nested(user_config, legacy_key) or removed
 
-    env_var = terminal_config_env_var_for_key(key)
-    if env_var and key != "terminal.cwd":
-        removed = remove_env_value(env_var) or removed
+        env_var = terminal_config_env_var_for_key(key)
+        if env_var and key != "terminal.cwd":
+            removed = remove_env_value(env_var) or removed
 
-    if not removed:
-        _exit_invalid(f"Config key not set: {key}")
+        if not removed:
+            _exit_invalid(f"Config key not set: {key}")
 
-    _write_user_config(config_path, user_config)
+        _write_user_config(config_path, user_config)
     print(f"✓ Unset {key} from {config_path}")
 
 

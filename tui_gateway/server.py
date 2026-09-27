@@ -1243,17 +1243,21 @@ def _load_cfg_raw() -> dict:
     global _cfg_cache, _cfg_sig, _cfg_path
     from hermes_cli.config import read_user_config_raw
     from hermes_cli.config_read_errors import FailedConfigRead
+    from hermes_cli.config_rmw import track_served
     try:
         p = _active_config_path()
         sig = file_signature(p.stat()) if p.exists() else None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
-                return copy.deepcopy(_cfg_cache)
+                served = copy.deepcopy(_cfg_cache)
+                track_served(served, _cfg_cache, p, "raw")  # _save_cfg applies only what the caller changes
+                return served
         data = read_user_config_raw(p) if p.exists() else {}
     except Exception as exc:
         return FailedConfigRead(error=exc)  # readable as {}, refused by _save_cfg
     with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
         _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
+        track_served(data, _cfg_cache, p, "raw")
     return data
 
 
@@ -1269,15 +1273,17 @@ def _load_cfg() -> dict:
 
 
 def _save_cfg(cfg: dict):
+    """Persist a ``_load_cfg_raw`` round-trip. The write is rebased onto the file as it is now (only
+    the keys changed since the read are applied), so a concurrent writer's keys survive (#96571)."""
     global _cfg_cache, _cfg_sig, _cfg_path
     from hermes_cli.config import atomic_config_write
+    from hermes_cli.config_rmw import config_write_lock
     path = _active_config_path()
-    atomic_config_write(path, cfg)
-    with _cfg_lock:
-        _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
-        try:
-            _cfg_sig = file_signature(path.stat())
-        except Exception:
+    with config_write_lock(path):
+        atomic_config_write(path, cfg)
+        with _cfg_lock:
+            # The written file, not *cfg*: a rebased save may hold keys *cfg* never saw.
+            _cfg_cache, _cfg_path = None, path
             _cfg_sig = None
 
 
@@ -1753,14 +1759,17 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
 
 def _write_config_key(key_path: str, value):
     # Write-back round-trip: raw read is mandatory — saving the overlaid/expanded view would persist it.
-    cfg = current = _load_cfg_raw()
-    *parents, leaf = key_path.split(".")
-    for key in parents:
-        if not isinstance(current.get(key), dict):
-            current[key] = {}
-        current = current[key]
-    current[leaf] = value
-    _save_cfg(cfg)
+    # Read under the write lock so no other writer (thread or process) lands between read and save.
+    from hermes_cli.config_rmw import config_write_lock
+    with config_write_lock(_active_config_path()):
+        cfg = current = _load_cfg_raw()
+        *parents, leaf = key_path.split(".")
+        for key in parents:
+            if not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current[leaf] = value
+        _save_cfg(cfg)
 
 
 _STATUSBAR_MODES = frozenset({"off", "top", "bottom"})

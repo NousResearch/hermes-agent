@@ -20,6 +20,7 @@
   const {
     Card, CardContent,
     Badge, Button, Input, Label, Select, SelectOption,
+    Dialog, DialogContent, DialogTitle, DialogClose,
   } = SDK.components;
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
   const { cn, timeAgo } = SDK.utils;
@@ -3561,11 +3562,6 @@
     // show stale data if we only loaded on mount).
     useEffect(function () { load(); }, [load, props.eventTick]);
     useEffect(function () { loadHomeChannels(); }, [loadHomeChannels]);
-    useEffect(function () {
-      function onKey(e) { if (e.key === "Escape" && !editing) props.onClose(); }
-      window.addEventListener("keydown", onKey);
-      return function () { window.removeEventListener("keydown", onKey); };
-    }, [props.onClose, editing]);
 
     const handleComment = function () {
       const body = newComment.trim();
@@ -3798,25 +3794,75 @@
         });
     };
 
-    return h("div", { className: "hermes-kanban-drawer-shade", onClick: props.onClose },
-      h("div", {
+    const task = data && data.task;
+    const titleText = task
+      ? (task.title || tx(t, "untitled", "(untitled)"))
+      : props.taskId;
+
+    // Radix listens for Esc on the document in the capture phase, before any
+    // field's own onKeyDown, so an editor cannot stopPropagation its way out.
+    // Keep the modal open when Esc lands in an inline editor or an open SDK
+    // Select; the editor's own handler then cancels just that edit.
+    const onEscapeKeyDown = function (e) {
+      const target = e.target;
+      if (target && target.closest && target.closest(
+        "[data-kanban-owns-escape], [role='combobox'][aria-expanded='true']",
+      )) {
+        e.preventDefault();
+      }
+    };
+
+    // The SDK Dialog owns the overlay, focus trap, Esc and outside-click
+    // dismissal (same primitive the desktop modal moved onto in eb3116ccba).
+    // It portals to <body>, outside .hermes-kanban, so plugin rules that must
+    // reach the modal are also scoped to .hermes-kanban-drawer.
+    return h(Dialog, {
+      open: true,
+      onOpenChange: function (open) { if (!open) props.onClose(); },
+    },
+      h(DialogContent, {
         className: "hermes-kanban-drawer",
-        onClick: function (e) { e.stopPropagation(); },
+        showCloseButton: false,
+        "aria-describedby": undefined,
+        onEscapeKeyDown: onEscapeKeyDown,
       },
         h("div", { className: "hermes-kanban-drawer-head" },
-          h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
-          h("button", {
-            type: "button",
-            onClick: props.onClose,
-            className: "hermes-kanban-drawer-close",
-            title: tx(t, "close", "Close (Esc)"),
-          }, "×"),
+          h("div", { className: "hermes-kanban-drawer-head-row" },
+            task ? h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[task.status]) }) : null,
+            h("span", { className: "hermes-kanban-drawer-id" }, props.taskId),
+            h(DialogClose, {
+              className: "hermes-kanban-drawer-close",
+              "aria-label": tx(t, "close", "Close (Esc)"),
+            }, "×"),
+          ),
+          editing && task
+            ? h(TitleEditor, {
+                initial: task.title || "",
+                onSave: function (newTitle) {
+                  return doPatch({ title: newTitle }).then(function () { setEditing(false); });
+                },
+                onCancel: function () { setEditing(false); },
+              })
+            : null,
+          // Always mounted: it is the dialog's accessible name, visually
+          // hidden while the title editor replaces it.
+          h(DialogTitle, {
+            className: cn("hermes-kanban-drawer-title", editing && task ? "hermes-kanban-sr-only" : ""),
+          },
+            task
+              ? h("span", {
+                  className: "hermes-kanban-drawer-title-text",
+                  title: tx(t, "clickToEdit", "Click to edit"),
+                  onClick: function () { setEditing(true); },
+                }, titleText)
+              : titleText,
+          ),
         ),
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },
           tx(t, "loadingDetail", "Loading…")) :
         err ? h("div", { className: "p-4 text-sm text-destructive" }, err) :
         data ? h(TaskDetail, {
-          data, editing, setEditing,
+          data,
           renderMarkdown: props.renderMarkdown,
           allTasks: props.allTasks,
           assignees: props.assignees || [],
@@ -4002,22 +4048,6 @@
     const childResults = props.data.child_results || [];
 
     return h("div", { className: "hermes-kanban-drawer-body" },
-      h("div", { className: "hermes-kanban-drawer-title" },
-        h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[t.status]) }),
-        props.editing
-          ? h(TitleEditor, {
-              initial: t.title || "",
-              onSave: function (newTitle) {
-                return props.onPatch({ title: newTitle }).then(function () { props.setEditing(false); });
-              },
-              onCancel: function () { props.setEditing(false); },
-            })
-          : h("span", {
-              className: "hermes-kanban-drawer-title-text",
-              title: tx(i18n, "clickToEdit", "Click to edit"),
-              onClick: function () { props.setEditing(true); },
-            }, t.title || tx(i18n, "untitled", "(untitled)")),
-      ),
       h("div", { className: "hermes-kanban-drawer-meta" },
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
@@ -4342,13 +4372,17 @@
       if (!trimmed) return;
       props.onSave(trimmed);
     };
-    return h("div", { className: "hermes-kanban-edit-row" },
+    // Esc is owned by the whole row so it cancels from Save/Cancel too.
+    return h("div", {
+      className: "hermes-kanban-edit-row",
+      "data-kanban-owns-escape": true,
+      onKeyDown: function (e) { if (e.key === "Escape") props.onCancel(); },
+    },
       h(Input, {
         value: v, autoFocus: true,
         onChange: function (e) { setV(e.target.value); },
         onKeyDown: function (e) {
           if (e.key === "Enter") { e.preventDefault(); save(); }
-          if (e.key === "Escape") props.onCancel();
         },
         className: "h-8 text-sm flex-1",
       }),
@@ -4382,6 +4416,7 @@
     return h("div", { className: "hermes-kanban-meta-row" },
       h("span", { className: "hermes-kanban-meta-label" }, tx(t, "assignee", "Assignee")),
       h(Input, {
+        "data-kanban-owns-escape": true,
         value: v, autoFocus: true,
         onChange: function (e) { setV(e.target.value); },
         onKeyDown: function (e) {
@@ -4419,6 +4454,7 @@
     return h("div", { className: "hermes-kanban-meta-row" },
       h("span", { className: "hermes-kanban-meta-label" }, tx(t, "priority", "Priority")),
       h(Input, {
+        "data-kanban-owns-escape": true,
         type: "number", value: v, autoFocus: true,
         onChange: function (e) { setV(e.target.value); },
         onKeyDown: function (e) {
@@ -4535,6 +4571,7 @@
       return h("div", { className: "hermes-kanban-meta-row" },
         h("span", { className: "hermes-kanban-meta-label" }, tx(t, "model", "Model")),
         h(Input, {
+          "data-kanban-owns-escape": true,
           value: freeText, autoFocus: true, disabled: busy,
           placeholder: tx(t, "modelFreeTextPlaceholder", "model name (empty = profile default)"),
           onChange: function (e) { setFreeText(e.target.value); },
@@ -4569,6 +4606,7 @@
         ? h("span", { className: "hermes-kanban-meta-value text-muted-foreground" },
             tx(t, "modelLoading", "loading models…"))
         : h("select", {
+            "data-kanban-owns-escape": true,
             className: "hermes-kanban-recovery-select",
             value: currentValue,
             disabled: busy,
@@ -4605,7 +4643,14 @@
     const save = function () {
       props.onPatch({ body: v }).then(function () { setEditing(false); });
     };
-    return h("div", { className: "hermes-kanban-section" },
+    const cancel = function () { setEditing(false); setV(props.task.body || ""); };
+    // While editing, Esc is owned by the whole section so it cancels from
+    // the Save/Cancel buttons as well as the textarea.
+    return h("div", editing ? {
+      className: "hermes-kanban-section",
+      "data-kanban-owns-escape": true,
+      onKeyDown: function (e) { if (e.key === "Escape") cancel(); },
+    } : { className: "hermes-kanban-section" },
       h("div", { className: "hermes-kanban-section-head-row" },
         h("span", { className: "hermes-kanban-section-head" }, tx(t, "description", "Description")),
         editing
@@ -4613,7 +4658,7 @@
               h(Button, { onClick: save,
                 size: "sm",
               }, tx(t, "save", "Save")),
-              h(Button, { onClick: function () { setEditing(false); setV(props.task.body || ""); },
+              h(Button, { onClick: cancel,
                 size: "sm",
               }, tx(t, "cancel", "Cancel")),
             )

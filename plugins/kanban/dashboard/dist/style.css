@@ -48,7 +48,8 @@
  * so the pill renders consistently even when a theme forgets to set
  * ``--color-foreground`` (pre-existing safeguard from #18576).
  */
-.hermes-kanban .hermes-kanban-md code:not(.hermes-kanban-md-code *) {
+.hermes-kanban .hermes-kanban-md code:not(.hermes-kanban-md-code *),
+.hermes-kanban-drawer .hermes-kanban-md code:not(.hermes-kanban-md-code *) {
   background: color-mix(in srgb, currentColor 8%, transparent) !important;
 }
 /* Tighten contrast on the drawer-specific payload class — it lives on
@@ -334,62 +335,55 @@
   width: 36rem;
 }
 
-/* ---- Drawer (task detail side panel) --------------------------------- */
+/* ---- Task modal (task detail) ------------------------------------------ */
 
-.hermes-kanban-drawer-shade {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  z-index: 60;
-  display: flex;
-  justify-content: flex-end;
-}
-
+/* The panel is the SDK DialogContent (Radix): it owns the overlay, focus
+   trap, Esc and outside-click dismissal, and sits above the mobile top bar
+   (z-50 over the shell's z-40), so no header offset hack is needed. Plugin
+   CSS is unlayered, so these rules win over the primitive's Tailwind
+   utilities (max-w-md, grid, uppercase title). Sized to its content up to
+   the desktop modal's cap (apps/desktop drawer.tsx, eb3116ccba). */
 .hermes-kanban-drawer {
-  width: min(var(--hermes-kanban-drawer-width, 640px), 92vw);
-  height: 100vh;
-  /* Dynamic viewport unit excludes the mobile browser's collapsing chrome
-     (URL/nav bars) so the drawer's bottom row stays reachable. Falls back to
-     100vh on browsers without dvh support. */
-  height: 100dvh;
-  max-height: 100dvh;
-  background: var(--color-card);
-  border-left: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  box-shadow: -4px 0 18px rgba(0, 0, 0, 0.35);
-  animation: hermes-kanban-drawer-in 180ms ease-out;
-}
-
-@keyframes hermes-kanban-drawer-in {
-  from { transform: translateX(100%); opacity: 0.3; }
-  to   { transform: translateX(0);    opacity: 1; }
+  width: min(62rem, 94vw);
+  max-width: none;
+  max-height: min(84vh, 54rem);
+  /* dvh excludes the mobile browser's collapsing chrome. */
+  max-height: min(84dvh, 54rem);
+  overflow: hidden;
+  background: var(--color-card);
+  /* The portal sits outside the board tree, so set the text colour the
+     board would otherwise have inherited. */
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 0.5rem);
 }
 
 .hermes-kanban-drawer-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.6rem 0.8rem;
-  /* Honor the top safe-area inset (notch) so the task id / close button are
-     not clipped on mobile. */
-  padding-top: max(0.6rem, env(safe-area-inset-top));
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.75rem 1rem 0.6rem;
   border-bottom: 1px solid var(--color-border);
-  font-family: var(--font-mono, ui-monospace, monospace);
 }
 
-/* On mobile the dashboard shell renders a fixed top bar (min-h-14, hidden at
-   the lg breakpoint). The drawer is a body-level z-60 overlay starting at the
-   viewport top, so its header would sit behind that bar. Push the header down
-   by the bar height (3.5rem) plus the top safe-area inset. */
-@media (max-width: 1023px) {
-  .hermes-kanban-drawer-head {
-    padding-top: calc(3.5rem + env(safe-area-inset-top));
-  }
+.hermes-kanban-drawer-head-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.hermes-kanban-drawer-id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
 }
 
 .hermes-kanban-drawer-close {
   appearance: none;
+  margin-left: auto;
   background: transparent;
   border: 0;
   color: var(--color-muted-foreground);
@@ -399,6 +393,18 @@
   padding: 0 0.25rem;
 }
 .hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
+
+.hermes-kanban-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* Attachment download trigger — styled as a link, rendered as a <button>
    so the click handler can fetch with the session token (#35338). */
@@ -420,7 +426,8 @@
 .hermes-kanban-attachment-link:hover { text-decoration: underline; }
 
 .hermes-kanban-drawer-body {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding: 0.9rem;
   /* When no comment row is rendered (loading / error states), the scrolling
@@ -432,12 +439,16 @@
   gap: 0.85rem;
 }
 
+/* DialogTitle ships display-type caps; the task title reads as prose. */
 .hermes-kanban-drawer-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  margin: 0;
+  font-family: inherit;
   font-size: 1rem;
   font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: normal;
+  text-transform: none;
+  overflow-wrap: anywhere;
 }
 
 .hermes-kanban-drawer-meta {
@@ -829,7 +840,8 @@
  * UA default on <code> elements — otherwise themes that don't set
  * --color-foreground leave code text rendering near-black on dark themes
  * (see issue #18576). */
-.hermes-kanban pre.hermes-kanban-md-code {
+.hermes-kanban pre.hermes-kanban-md-code,
+.hermes-kanban-drawer pre.hermes-kanban-md-code {
   margin: 0.35rem 0;
   padding: 0.5rem 0.6rem;
   /* Higher specificity (``.hermes-kanban pre.hermes-kanban-md-code`` vs

@@ -1,5 +1,7 @@
 """A Matrix reply reaction can resume its owning session once."""
 
+import pytest
+
 from plugins.platforms.matrix.reaction_followups import ReactionWatchStore
 
 
@@ -252,6 +254,7 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
         "source": source,
         "emoji": "👍",
         "target_event_id": "$second",
+        "text_content": "",
     }
     assert restarted.claim("work", "!room:test", "$first", "@alice:test", "👍") is None
 
@@ -311,6 +314,7 @@ def test_existing_watch_database_discards_unbound_rows(tmp_path):
         "source": {"chat_id": "!room:test"},
         "emoji": "👍",
         "target_event_id": "$new",
+        "text_content": "",
     }
 
 
@@ -332,7 +336,9 @@ def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
         adapter._store_dir = tmp_path / "store"
         adapter._reaction_watch_store = None
         adapter._ignored_user_patterns = []
-        adapter._is_authorized_user = lambda user: user == "@alice:test"
+        adapter.set_authorization_check(
+            lambda user, _chat_type, _chat_id, **_kwargs: user == "@alice:test"
+        )
         adapter._is_system_or_bridge_sender = lambda _: False
         adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
         adapter.build_source = lambda **kwargs: SessionSource(
@@ -407,6 +413,69 @@ def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("grant", ("global", "platform", "pairing", "denied"))
+def test_followup_reaction_uses_gateway_source_authorization(tmp_path, monkeypatch, grant):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.pairing import PairingStore
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionStore
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    async def exercise():
+        for key in ("GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS",
+                    "MATRIX_ALLOWED_USERS", "MATRIX_ALLOW_ALL_USERS"):
+            monkeypatch.delenv(key, raising=False)
+        if grant == "global":
+            monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "@alice:test")
+        if grant == "platform":
+            monkeypatch.setenv("MATRIX_ALLOW_ALL_USERS", "true")
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        runner.pairing_store = PairingStore()
+        if grant == "pairing":
+            runner.pairing_store._approve_user("matrix", "@alice:test", "Alice")
+        adapter = MatrixAdapter(PlatformConfig(enabled=True))
+        runner.adapters = {Platform.MATRIX: adapter}
+        runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+        try:
+            adapter.gateway_runner = runner
+            adapter.set_session_store(runner.session_store)
+            adapter._store_dir = tmp_path / "store"
+            adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+            adapter.handle_message = AsyncMock()
+            adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.MATRIX))
+            source = adapter.build_source(
+                chat_id="!room:test", chat_type="group", user_id="@alice:test",
+                thread_id="$thread",
+            )
+            entry = runner.session_store.get_or_create_session(source)
+            assert runner._is_user_authorized_for_source(source) is (grant != "denied")
+            assert adapter._is_authorized_user("@alice:test") is (grant != "denied")
+            adapter._followup_store().arm(
+                "turn", ("$reply",), profile=source.profile or "", room_id="!room:test",
+                thread_id="$thread", session_key=entry.session_key, session_id=entry.session_id,
+                requester="@alice:test", source=source.to_dict(), emoji_filter=(),
+            )
+
+            await adapter._handle_followup_reaction(
+                "!room:test", "$reply", "👍", "@alice:test", "$reaction",
+            )
+
+            if grant == "denied":
+                adapter.handle_message.assert_not_awaited()
+                assert adapter._followup_store().candidate("!room:test", "$reply") is not None
+                return
+            adapter.handle_message.assert_awaited_once()
+        finally:
+            runner.session_store.close_all_db_handles()
+
+    asyncio.run(exercise())
+
+
 def test_reaction_watch_requires_its_original_conversation_at_claim_and_admission(tmp_path):
     import asyncio
     from types import SimpleNamespace
@@ -430,7 +499,9 @@ def test_reaction_watch_requires_its_original_conversation_at_claim_and_admissio
             peek_session_id=lambda _key: current_session[0],
         )
         adapter._ignored_user_patterns = []
-        adapter._is_authorized_user = lambda _user: True
+        adapter.set_authorization_check(
+            lambda _user, _chat_type, _chat_id, **_kwargs: True
+        )
         adapter._is_system_or_bridge_sender = lambda _user: False
         adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
         adapter.build_source = lambda **kwargs: SessionSource(
@@ -470,6 +541,246 @@ def test_reaction_watch_requires_its_original_conversation_at_claim_and_admissio
             lookup_by_session_key=lambda _key: SimpleNamespace(session_id=current_session[0]),
         )
         assert await runner._hmwa_resolve_session(event, event.source) is None
+
+    asyncio.run(exercise())
+
+
+def test_strict_reaction_followup_cannot_queue_into_replacement_turn(tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionStore
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    async def exercise():
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "@alice:test")
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@alice:test")
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        runner._busy_input_mode = "queue"
+        runner._draining = False
+        runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
+        try:
+            adapter = MatrixAdapter(PlatformConfig(enabled=True))
+            runner.adapters = {Platform.MATRIX: adapter}
+            adapter.gateway_runner = runner
+            adapter.set_session_store(runner.session_store)
+            adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.MATRIX))
+            adapter.set_message_handler(AsyncMock())
+            adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
+            adapter._store_dir = tmp_path / "store"
+            adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+            source = adapter.build_source(
+                chat_id="!room:test", chat_type="group", user_id="@alice:test",
+            )
+            entry = runner.session_store.get_or_create_session(source)
+            adapter._followup_store().arm(
+                "turn", ("$reply",), profile=source.profile or "", room_id=source.chat_id,
+                thread_id="", session_key=entry.session_key, session_id=entry.session_id,
+                requester=source.user_id, source=source.to_dict(), emoji_filter=(),
+            )
+            resolving = asyncio.Event()
+            resume = asyncio.Event()
+
+            async def resolve(*_args):
+                resolving.set()
+                await resume.wait()
+                return None
+
+            adapter._event_context_cache.resolve = resolve
+            intake = asyncio.create_task(adapter._handle_followup_reaction(
+                source.chat_id, "$reply", "👍", source.user_id, "$reaction",
+            ))
+            try:
+                await asyncio.wait_for(resolving.wait(), timeout=5)
+                replacement = runner.session_store.reset_session(entry.session_key)
+                assert replacement.session_id != entry.session_id
+                adapter._active_sessions[entry.session_key] = asyncio.Event()
+                resume.set()
+                await asyncio.wait_for(intake, timeout=5)
+            finally:
+                resume.set()
+                if not intake.done():
+                    intake.cancel()
+                await asyncio.gather(intake, return_exceptions=True)
+
+            assert adapter._pending_messages == {}
+            adapter._message_handler.assert_not_awaited()
+
+            runner._hm_busy_slash_or_photo = AsyncMock(return_value=(False, None))
+            runner._queue_or_replace_pending_event = Mock()
+            event = MessageEvent(
+                text="Reaction by Alice", source=source, defer_until_idle=True,
+                allow_gateway_control=False,
+                metadata={
+                    "gateway_session_key": entry.session_key,
+                    "gateway_session_id": entry.session_id,
+                    "gateway_session_strict": True,
+                },
+            )
+            assert await runner._hm_handle_running_session_message(
+                event, source, entry.session_key,
+            ) is None
+            runner._queue_or_replace_pending_event.assert_not_called()
+        finally:
+            runner.session_store.close_all_db_handles()
+
+    asyncio.run(exercise())
+
+
+def test_encrypted_streamed_reply_keeps_final_text_after_restart(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from gateway.config import Platform, PlatformConfig
+    from gateway.session import SessionSource
+    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+    from plugins.platforms.matrix.reply_context import MatrixEventContextCache
+
+    async def exercise():
+        source = SessionSource(
+            platform=Platform.MATRIX, chat_id="!room:test", chat_type="group",
+            user_id="@alice:test", profile="work",
+        )
+        sender = object.__new__(MatrixAdapter)
+        sender._store_dir = tmp_path / "store"
+        sender.config = PlatformConfig()
+        sender.platform = Platform.MATRIX
+        sender.set_owner_profile("work")
+        session_key = sender._source_session_key(source)
+        sender._reaction_followup_actions = {
+            session_key: _MatrixFollowupChoice(
+                "turn", (), "!room:test", "@alice:test", "", "work", "sid",
+            ),
+        }
+        sender.on_streamed_final_delivery(
+            source, session_key, ("$preview",), "Final answer",
+        )
+
+        encrypted_edit = SimpleNamespace(
+            type="m.room.encrypted", content={"ciphertext": "encrypted edit"},
+        )
+        encrypted_preview = SimpleNamespace(
+            type="m.room.encrypted", sender="@hermes:test",
+            unsigned={"m.relations": {"m.replace": encrypted_edit}},
+            content={"ciphertext": "encrypted preview"},
+        )
+        client = SimpleNamespace(
+            get_event=AsyncMock(return_value=encrypted_preview),
+            crypto=SimpleNamespace(decrypt_megolm_event=AsyncMock(
+                return_value=SimpleNamespace(
+                    type="m.room.message", sender="@hermes:test",
+                    unsigned=encrypted_preview.unsigned,
+                    content={"msgtype": "m.text", "body": "Draft answer"},
+                ),
+            )),
+        )
+        restarted = object.__new__(MatrixAdapter)
+        restarted._store_dir = sender._store_dir
+        restarted._reaction_watch_store = None
+        restarted._ignored_user_patterns = []
+        restarted._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        restarted.set_authorization_check(
+            lambda _user, _chat_type, _chat_id, **_kwargs: True
+        )
+        restarted.platform = Platform.MATRIX
+        restarted.config = sender.config
+        restarted.set_owner_profile("work")
+        restarted._session_store = SimpleNamespace(peek_session_id=lambda _key: "sid")
+        restarted._event_context_cache = MatrixEventContextCache()
+        restarted._client = client
+        restarted.handle_message = AsyncMock()
+
+        await restarted._handle_followup_reaction(
+            "!room:test", "$preview", "👍", "@alice:test", "$reaction",
+        )
+
+        restarted.handle_message.assert_awaited_once()
+        delivered = restarted.handle_message.await_args
+        assert delivered is not None
+        assert delivered.args[0].reply_to_text == "Final answer"
+
+    asyncio.run(exercise())
+
+
+def test_strict_reaction_followup_is_discarded_before_recursive_drain():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    async def exercise():
+        source = SessionSource(
+            platform=Platform.MATRIX, chat_id="!room:test", user_id="@alice:test",
+        )
+        event = MessageEvent(
+            text="Reaction by Alice", source=source, defer_until_idle=True,
+            metadata={
+                "gateway_session_key": "session",
+                "gateway_session_id": "old-session",
+                "gateway_session_strict": True,
+            },
+        )
+        runner = object.__new__(GatewayRunner)
+        runner._draining = False
+        runner._session_key_for_source = lambda _source: "session"
+        current_session = ["new-session"]
+        runner.session_store = SimpleNamespace(
+            lookup_by_session_key=lambda _key: SimpleNamespace(session_id=current_session[0]),
+        )
+        overflow = []
+        runner._peek_session_state = lambda _key: SimpleNamespace(
+            conversation=SimpleNamespace(queued_events=overflow),
+        )
+        runner._pending_event_audio_paths = Mock(return_value=[])
+        pending_messages = {"session": event}
+        adapter = SimpleNamespace(
+            _pending_messages=pending_messages,
+            get_pending_message=lambda key: pending_messages.pop(key, None),
+        )
+
+        assert await runner._run_agent_drain_pending(
+            {"final_response": "Current answer"}, adapter, source, "session",
+        ) == (None, None)
+
+        human = MessageEvent(text="Human follow-up", source=source)
+        pending_messages["session"] = event
+        overflow.append(human)
+        assert await runner._run_agent_drain_pending(
+            {"final_response": "Current answer"}, adapter, source, "session",
+        ) == (human, human.text)
+
+        turn = SimpleNamespace(
+            source=source, session_id="old-session", session_key="session",
+            run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata={},
+        )
+        runner._run_agent = AsyncMock()
+        runner._delivery_adapter_for = lambda _source: None
+        runner._intake_adapter_for = lambda _source: None
+        runner._is_goal_continuation_event = lambda _event: False
+        runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value=event.text)
+        runner._reply_anchor_for_event = lambda _event: None
+        runner._pinned_channel_inputs = lambda _key, prompt, source, **_kwargs: (prompt, source)
+        runner._run_agent_deliver_first_response = AsyncMock()
+
+        async def reset_during_refresh(*_args):
+            current_session[0] = "new-session"
+
+        runner._refresh_agent_cache_message_count = reset_during_refresh
+        current_session[0] = "old-session"
+        result = {"final_response": "Current answer", "already_sent": True}
+        assert await runner._run_agent_queued_followup(
+            turn, adapter, event.text, event, result, result, None,
+        ) is result
+        runner._run_agent.assert_not_awaited()
 
     asyncio.run(exercise())
 

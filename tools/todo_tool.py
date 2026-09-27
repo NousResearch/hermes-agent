@@ -4,6 +4,7 @@ a monotonic revision so UI clients can reject stale updates. One ``todo_list`` t
 ``todos`` to write, omit to read; every call returns the full list. No system-prompt mutation."""
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
@@ -19,6 +20,11 @@ _TRUNCATION_MARKER = "… [truncated]"
 # Persisted as ordinary message content; ContextCompressor keys on this stable header to
 # tell the synthetic post-compaction row from a real user message.
 TODO_INJECTION_HEADER = "[Your active task list was preserved across context compression]"
+# Injection line shape (TodoStore.format_for_injection): "{indent}- {marker} {id}. {content} ({status})"
+_INJECTION_ITEM_RE = re.compile(
+    r"^(?P<indent> *)- \[(?P<marker>[x>~ ])\] (?P<id>.+?)\. (?P<body>.*) "
+    r"\((?P<status>pending|in_progress|completed|cancelled)\)\s*$"
+)
 _STATUS_MARKERS = {"completed": "[x]", "in_progress": "[>]", "pending": "[ ]", "cancelled": "[~]"}
 _ACTIVE_STATUSES = {"pending", "in_progress"}
 
@@ -209,6 +215,41 @@ def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
         summary[status] = sum(1 for i in items if i["status"] == status)
     return json.dumps({"todos": items, "revision": store.snapshot()["revision"],
                        "summary": summary}, ensure_ascii=False)
+
+
+def parse_todo_injection(text: str) -> List[Dict[str, str]]:
+    """Recover todo items from an injected snapshot (inverse of ``format_for_injection``).
+
+    Compression demotes old ``todo_list`` tool results to one-line stubs, so after a
+    compaction boundary the snapshot folded into a user row is the only surviving record
+    of the list (#124960); hydration parses it back instead of restoring an empty store.
+    Only active items (plus parents of active subtasks) are injected, so the recovered
+    list may be a subset of the pre-compaction list. Returns ``[]`` when nothing parses.
+    """
+    if not text or not isinstance(text, str) or TODO_INJECTION_HEADER not in text:
+        return []
+    items: List[Dict[str, str]] = []
+    ancestry: List[tuple] = []  # (depth, id) of accepted items, innermost last
+    in_snapshot = False
+    for line in text.splitlines():
+        if not in_snapshot:
+            if TODO_INJECTION_HEADER in line:
+                in_snapshot = True
+            continue
+        match = _INJECTION_ITEM_RE.match(line)
+        if match is None:
+            continue  # blank lines / the pruned-skill reload notice never match the shape
+        depth = len(match.group("indent")) // 2
+        item = {"id": match.group("id").strip(),
+                "content": match.group("body").strip() or "(no description)",
+                "status": match.group("status")}
+        while ancestry and ancestry[-1][0] >= depth:
+            ancestry.pop()
+        if ancestry:  # nested line -> parent is the nearest shallower item
+            item["parent"] = ancestry[-1][1]
+        items.append(item)
+        ancestry.append((depth, item["id"]))
+    return items
 
 
 def check_todo_requirements() -> bool:

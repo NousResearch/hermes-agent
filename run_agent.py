@@ -1065,7 +1065,38 @@ class AIAgent(
                 self._todo_store.restore(last_todo_response, revision=history_revision)
                 if not self.quiet_mode:
                     self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+        else:
+            # Compaction demotes todo tool results to one-line stubs, so after a boundary the
+            # snapshot folded into a user row is the only surviving record — recover from it
+            # instead of silently starting empty (#124960). revision=1 keeps any later verbatim
+            # tool result (revision >= 2) authoritative over this recovery.
+            from tools.todo_tool import parse_todo_injection
+            recovered = parse_todo_injection(self._latest_todo_snapshot_text(history))
+            if recovered and not self._todo_store.has_items():
+                self._todo_store.restore(recovered, revision=1)
+                if not self.quiet_mode:
+                    self._vprint(f"{self.log_prefix}📋 Restored {len(recovered)} todo item(s) from post-compaction snapshot")
         _set_interrupt(False)
+
+    @staticmethod
+    def _latest_todo_snapshot_text(history: List[Dict[str, Any]]) -> str:
+        """Content of the newest user row carrying the todo injection header ("" if none)."""
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        for msg in reversed(history):
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and TODO_INJECTION_HEADER in content:
+                return content
+            if isinstance(content, list):  # multimodal envelope: join text parts
+                text = "\n".join(
+                    str(part.get("text") or "") for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+                if TODO_INJECTION_HEADER in text:
+                    return text
+        return ""
 
     def _latest_todo_response(self, history: List[Dict[str, Any]]) -> Optional[tuple]:
         """Walk history backwards for the newest paired, size-bounded todo result → ``(todos, revision)``."""

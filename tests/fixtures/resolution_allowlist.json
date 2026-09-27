@@ -535,6 +535,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "tools/mcp_tool_config.py",
+    "symbol": "_managed_launcher",
+    "kind": "bare_which"
+  },
+  {
     "path": "tools/process_registry.py",
     "symbol": "_build_systemd_scope_argv",
     "kind": "bare_which"
@@ -677,6 +682,11 @@
   {
     "path": "tools/bot_desktop/runtime.py",
     "symbol": "installable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/file_operations_lint.py",
+    "symbol": "LintMixin._run_managed_node_linter",
     "kind": "bare_which"
   }
 ]

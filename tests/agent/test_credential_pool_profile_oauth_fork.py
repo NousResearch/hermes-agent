@@ -367,6 +367,30 @@ def test_profile_auth_add_owns_only_its_own_rows(fleet):
     assert [e["id"] for e in fleet["rows"](fleet["root"])] == ["abc123"]
 
 
+def test_profile_auth_add_persists_when_root_has_no_rows_to_borrow(fleet):
+    """#125501: with no root rows for the provider, the new profile row must not
+    be routed to the UPDATE-ONLY root write-through (which drops it)."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    kid = _profile(fleet, "kid")
+    fleet["use"](kid)
+    pool = load_pool("openai-codex")
+    assert pool.entries() == []
+    pool.add_entry(PooledCredential(
+        provider="openai-codex", id="cdx-own", label="mine", auth_type=AUTH_TYPE_OAUTH,
+        priority=0, source="manual:loopback_pkce", access_token="cdx-AT-MINE",
+        refresh_token="cdx-RT-MINE",
+    ))
+
+    def codex_rows(home):
+        return (json.loads((home / "auth.json").read_text()).get("credential_pool") or {}).get("openai-codex")
+
+    assert [e["id"] for e in codex_rows(kid)] == ["cdx-own"], "new profile credential was dropped"
+    assert codex_rows(fleet["root"]) is None, "profile credential leaked into the root store"
+    fleet["use"](kid)
+    assert [e.id for e in load_pool("openai-codex").entries()] == ["cdx-own"]
+
+
 def test_classic_mode_persist_is_unchanged(fleet):
     from agent.credential_pool import load_pool
 

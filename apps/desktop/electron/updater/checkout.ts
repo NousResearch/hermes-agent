@@ -270,6 +270,9 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
           ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
         },
+        // Never `true` here: DETACHED_PROCESS leaves the wrapper console-less, so
+        // `start /b` hands PowerShell a new VISIBLE console whose QuickEdit
+        // selection can freeze the hand-off before relaunch (#103222).
         detached: wrapped.detached,
         stdio: 'ignore'
       })

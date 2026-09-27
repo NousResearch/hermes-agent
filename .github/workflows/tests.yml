@@ -143,7 +143,9 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          # `messaging`: tests/e2e/core/platforms runs the real Telegram/Discord/Slack
+          # adapters (their SDKs) against local stand-ins.
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "messaging"]'
           test-environment: 'true'
           prune-python-cache: true
 

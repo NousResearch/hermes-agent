@@ -518,7 +518,16 @@ def _(rid, params: dict, db) -> dict:
         limit = int(params.get("limit", 200) or 200)
         # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
         # surfaces that OWN hidden sessions (Bots pane, pickers).
-        rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"))[:limit]
+        from pathlib import Path
+
+        from hermes_cli.session_listing import show_subagent_sessions
+
+        # ``sessions.show_subagents`` (the store's own profile config) re-admits delegate runs (#97202).
+        # A store without a path has no profile config to read, so it keeps the default shape.
+        db_path = getattr(db, "db_path", None)
+        include_subagents = bool(db_path) and show_subagent_sessions(Path(db_path).parent)
+        rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
+                             include_subagents=include_subagents)[:limit]
         return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
     except Exception as e:
         return _err(rid, 5006, str(e))
@@ -2152,36 +2161,63 @@ def _(rid, params: dict, session: dict) -> dict:
     return _branch_live(rid, params, session, omit_messages=True)
 
 
+def _resume_wake_after_interrupt() -> None:
+    """Re-arm a wake lease held by the interrupt caller or a voice capture.
+
+    ``_wake_resume_if_owner`` no-ops unless that object holds the lease, so an
+    in-progress capture owned by someone else is not stolen. Interrupt already
+    silenced TTS before it can return an error; this matches that cut. A
+    ``not_interrupted`` hosted-task mismatch must not call it.
+    """
+    with _voice_sid_lock:
+        voice_owner = _voice_wake_owner
+    seen = []
+    for owner in (_caller_transport(), voice_owner):
+        if owner is None or any(owner is item for item in seen):
+            continue
+        seen.append(owner)
+        _wake_resume_if_owner(owner)
+
+
 # ── interrupt / steer / redirect ─────────────────────────────────────
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
     _tts_stream_stop()  # keypress barge-in also silences streaming TTS (voice is process-global)
-    session, err = _sess_nowait(params, rid)
-    if err:
-        return err
-    if expected := _str_param(params, "expected_hosted_task_id"):
+    resume_wake = True
+    try:
+        session, err = _sess_nowait(params, rid)
+        if err:
+            return err
+        if expected := _str_param(params, "expected_hosted_task_id"):
+            with session["history_lock"]:
+                task = session.get("_hosted_room_task")
+                if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected):
+                    resume_wake = False
+                    return _ok(rid, {"status": "not_interrupted", "interrupted": False})
+        sid = str(params.get("session_id") or "")
+        if _session_uses_compute_host(session):
+            try:
+                _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
+            except Exception as exc:
+                return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
+            return _ok(rid, {"status": "interrupted", "turn_isolation": True})
+        session, err = _sess(params, rid)
+        if err:
+            return err
+        _interrupt_session_turn(sid, session)
+        # Retire the crash-recovery marker NOW: until the run thread's finally, a backend exit looks like a crash
+        # and session.resume auto-continues the turn the user just stopped (the extra key covers compression
+        # rotating session_key mid-turn).
         with session["history_lock"]:
-            task = session.get("_hosted_room_task")
-            if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected):
-                return _ok(rid, {"status": "not_interrupted", "interrupted": False})
-    sid = str(params.get("session_id") or "")
-    if _session_uses_compute_host(session):
-        try:
-            _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
-        except Exception as exc:
-            return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
-        return _ok(rid, {"status": "interrupted", "turn_isolation": True})
-    session, err = _sess(params, rid)
-    if err:
-        return err
-    _interrupt_session_turn(sid, session)
-    # Retire the crash-recovery marker NOW: until the run thread's finally, a backend exit looks like a crash
-    # and session.resume auto-continues the turn the user just stopped (the extra key covers compression
-    # rotating session_key mid-turn).
-    with session["history_lock"]:
-        active_marker_key = str(session.pop("_active_turn_marker_key", "") or "")
-    _retire_turn_marker(session, active_marker_key)
-    return _ok(rid, {"status": "interrupted"})
+            active_marker_key = str(session.pop("_active_turn_marker_key", "") or "")
+        _retire_turn_marker(session, active_marker_key)
+        return _ok(rid, {"status": "interrupted"})
+    finally:
+        if resume_wake:
+            try:
+                _resume_wake_after_interrupt()
+            except Exception:
+                logger.debug("session.interrupt wake resume failed", exc_info=True)
 
 
 def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str) -> dict:

@@ -131,17 +131,25 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # 6 tools added since 2.9.12, none removed: 83 tools, all 20
 # default_enabled entries resolve.
 #
-# The 44 tools added since 2.8.3 (native objects and tags, attachments,
-# folder rename and delete-by-id, Shortcut-bridge setup, the read-only
-# database query / block / table / transcript readers, HTML and Markdown
-# export, the opt-in native-writer foundation) all stay out of
-# default_enabled.
+# 2.9.31 (2026-09-26) is re-pinned on the same footing — a defect in
+# default_enabled tools: `contentHash` and other revision/identity fields
+# were returned only in `structuredContent`, which a client that shows the
+# model only a tool result's text — Claude Desktop among them — drops
+# entirely (sweetrb/apple-notes-mcp#264, @aaronaccessvr). That silently
+# broke every guarded write gated on `expectedContentHash` for such clients.
+# The default-enabled tool affected here is `get-note-content` (`contentHash`,
+# `writable`, `nativeTags`, `links` now also appear as a trailing
+# `structuredContent: {...}` text block); the guarded write tools this
+# unblocks (`update-note`, `append-to-note`, `delete-note`,
+# `add-native-tags`, `add-attachment`) are outside default_enabled.
+# No new tools since 2.9.30: still 83 tools, all 20 default_enabled entries
+# resolve.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-notes-mcp@2.9.30"
+    - "apple-notes-mcp@2.9.31"
 
 # Drives Apple Notes locally via AppleScript; no credentials.
 auth:

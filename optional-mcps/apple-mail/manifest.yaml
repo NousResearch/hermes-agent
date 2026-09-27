@@ -84,12 +84,34 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # caller's name was NFC-composed, so `list-messages`/`search-messages` on
 # such a mailbox returned `NO [NONEXISTENT]` even though `list-mailboxes`
 # showed it; names are now compared NFC-folded and case-insensitively.
+#
+# 2.19.18 is re-pinned on the same footing — two more defects in
+# default_enabled tools, both against real huge iCloud mailboxes
+# (sweetrb/apple-mail-mcp#256, @j5pu):
+#   - `list-messages`/`search-messages`/`get-thread` ran a whole-mailbox
+#     `UID SEARCH` before applying `limit`/`offset`, so any list against a
+#     793,614- or 255,104-message mailbox failed outright even with
+#     `limit: 1`. Above 10,000 messages (per `STATUS`), an unfiltered list
+#     now pages by sequence number from the top of the mailbox instead
+#     (2.19.17), and a failed `SEARCH`/dropped connection is now reported as
+#     an error instead of silently read as zero matches.
+#   - Even within that fix, a page could come back silently short:
+#     imapflow's token parser gives up past 25 levels of nested
+#     `BODYSTRUCTURE` (an ~11-deep forwarded-as-attachment message), drops
+#     the untagged `FETCH` it can't parse, and the command still completes
+#     `OK` — so the row fetch filtered out UIDs it never received, with no
+#     signal that anything was missing. 2.19.18 retries a missing UID
+#     (without `BODYSTRUCTURE`, then per-UID from raw headers), and anything
+#     still unreadable is named in a new `omittedMessages` field with
+#     `partial: true` rather than silently returned short.
+# No new tools since 2.19.16: still 52 tools, all 18 default_enabled entries
+# resolve.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.19.16"
+    - "apple-mail-mcp@2.19.18"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

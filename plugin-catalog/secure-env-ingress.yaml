@@ -1,16 +1,16 @@
 name: secure-env-ingress
 repo: https://github.com/web3blind/hermes-secure-env-plugin
-sha: 8f42ca9a66a98a446c21e193605a8ee18d5ca417
+sha: 722990caa132a6e8b2c8061ac28c5cefd5e521a4
 subdir: secure_env_ingress
-description: "One-use HTTPS forms for adding missing environment secrets and saving browser logins to the native encrypted Browser Vault, outside messenger chat and LLM input. Disclosure — /senv setup hands the model a skill that installs host packages with sudo (certbot, Let's Encrypt IP certificate) after your approval; the form server binds all interfaces over TLS for one single-use link at a time; the pre_gateway_dispatch hook observes every gateway message on every platform to bind /senv to the sending user; the model-callable browser_vault tool, usable only in an interactive Telegram turn with a live plugin browser page, reads the current page URL and, after you submit a one-time HTTPS form, saves the username and password as a login item in Hermes' native encrypted vault under HERMES_HOME."
+description: "One-use HTTPS forms for missing environment secrets, native encrypted Browser Vault logins/TOTP setup keys, standalone verification codes, and approved secret operations outside chat and LLM input. Disclosure — /senv setup supplies a skill using sudo for host packages and TLS setup after approval; the TLS listener binds all interfaces by default; pre_gateway_dispatch observes gateway messages to bind commands to their sender. In interactive Telegram sessions, browser_vault saves logins or fills a code field through the captured browser supervisor without explicitly submitting the site form. Browser Use compatibility does not prove the latest named tab association. secure_operation executes administrator-allowlisted, SHA-256-pinned external Python consumers with gateway privileges; consumers are trusted, not sandboxed, and none are enabled by default. Secret input is not persisted by this mode; consumers must enforce their own handling policy. Links are bearer authorization, not submitter identity; cancellation cannot stop an already-running consumer."
 maintainer: web3blind
 tier: community
 category: tools
-version: "0.5.1"
+version: "0.6.3"
 docs_url: https://github.com/web3blind/hermes-secure-env-plugin#readme
 platforms: [linux]
 capabilities:
-  provides_tools: [browser_vault]
+  provides_tools: [browser_vault, secure_operation]
   provides_hooks: [pre_gateway_dispatch]
   provides_middleware: []
   requires_env: []

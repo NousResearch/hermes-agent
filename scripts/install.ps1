@@ -544,38 +544,28 @@ function Get-PinnedGit {
         Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $sfxPath
         $extractDir = Join-Path $tmpDir "unpacked"
         New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-        # The pinned artifact is git-for-windows' PortableGit self-extracting
-        # 7z archive. It carries its own extractor, so extraction needs no tar
-        # bzip2 filter and no bzip2.exe on the machine: the old .tar.bz2 pin
-        # died on Windows 10 boxes whose System32 tar cannot run the bzip2
-        # filter ("unable to run program bzip2 -d", issue #122512).
+        # PortableGit's self-extracting 7z carries its own extractor: stock
+        # Windows 10 tar.exe has no bzip2 ("unable to run program bzip2 -d").
         Unblock-File -Path $sfxPath -ErrorAction SilentlyContinue
-        # The SFX stub is a GUI-subsystem exe: PowerShell's `&` would not wait
-        # for it, so drive it explicitly. Under -y the extractor is silent on
-        # every channel (no stdout, stderr, or error box), so report the exit
-        # code and the usual causes instead of promising captured output.
-        # Bound the wait like pm's timeout=600: a stuck post-install must fail
-        # loudly instead of hanging the bootstrap.
+        # A GUI-subsystem exe: `&` would not wait for it. Under -y it reports
+        # nothing, so the exit code is all there is. Bound the wait like pm's
+        # timeout; kill the whole tree, since the stub's post-install children
+        # would otherwise keep $tmpDir held past the cleanup below.
         $sfx = [System.Diagnostics.Process]::Start($sfxPath, "-o`"$extractDir`" -y")
         if (-not $sfx.WaitForExit(600000)) {
-            $sfx.Kill()
+            Invoke-Native { taskkill.exe /T /F /PID $sfx.Id 2>&1 | Out-Null }
             $sfx.WaitForExit()
             Fail "pinned git self-extractor timed out after 600s"
         }
         if ($sfx.ExitCode) {
-            Fail "pinned git self-extractor failed with exit code $($sfx.ExitCode); under -y the GUI stub is silent - check disk full, path-length limits, or antivirus locks"
+            Fail "pinned git self-extractor exited $($sfx.ExitCode) (it reports nothing under -y; usual causes: disk full, path-length limit, antivirus lock)"
         }
-        # PortableGit roots cmd\git.exe directly; still flatten a single
-        # wrapper dir if a layout ever arrives wrapped.
-        $inner = @(Get-ChildItem $extractDir)
-        $src = $extractDir
-        if ($inner.Count -eq 1 -and $inner[0].PSIsContainer) { $src = $inner[0].FullName }
-        if (-not (Test-Path (Join-Path $src "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" }
+        if (-not (Test-Path (Join-Path $extractDir "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" }
         if (Test-Path $entry) { Remove-Item -Recurse -Force $entry }
         # Prerequisites run first, so on a fresh host the store root does not
         # exist yet; Move-Item never creates the destination's parent.
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entry) | Out-Null
-        Move-Item $src $entry
+        Move-Item $extractDir $entry
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }

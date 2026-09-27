@@ -84,8 +84,68 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
         # failure (#125043). Fall back to the interpreter form — the same
         # shape the launcher itself wraps — which is valid everywhere.
         return runtime_command(root, args, module=module, python=python, home=home)
+    if _recorded_venv_for_root(root) is None:
+        # Published but not activatable through this tree: the runtime facts
+        # are keyed to the install that committed the venv (the checkout),
+        # not this workspace copy, so the launcher dies with "no dependency
+        # environment is committed" (#125375). Resolve the entry point from
+        # the environment that actually owns it.
+        entry = _committed_environment_command(_facts_owner_root(root)) or _committed_environment_command(root)
+        if entry is not None:
+            prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
+            return [str(entry), *prefix, *args]
+        return runtime_command(root, args, module=module, python=python, home=home)
     prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
     return [str(launcher), *prefix, *args]
+
+
+def _recorded_venv_for_root(root: Path) -> Path | None:
+    """The dependency environment PM recorded for this root, if any.
+
+    PM keys runtime facts by the *root that installed them* — a PM
+    environment workspace copy resolves the same store Python but hashes
+    to its own install key, so ``facts.json`` never exists for it and
+    every command form that bootstraps through the workspace tree dies
+    with "no dependency environment is committed" (#125375).
+    """
+    try:
+        from pm.environments import runtime_facts_path
+        facts_path = runtime_facts_path(root)
+        data = json.loads(facts_path.read_text(encoding="utf-8-sig"))
+        value = data.get("packages", {}).get("venv", {}).get("environment")
+        return Path(value).resolve() if isinstance(value, str) else None
+    except (FileNotFoundError, OSError, ValueError, RuntimeError):
+        return None
+
+
+def _committed_environment_command(root: Path) -> Path | None:
+    """A resolvable ``hermes`` entry point for a root with committed facts.
+
+    Prefers the environment's own console script (it carries the full
+    entry-point wiring); falls back to its interpreter (the bootstrap
+    form ``installation_command`` builds on it is valid there too).
+    """
+    venv = _recorded_venv_for_root(root)
+    if venv is None:
+        return None
+    bin_dir = venv / ("Scripts" if _is_windows() else "bin")
+    script = bin_dir / ("hermes.exe" if _is_windows() else "hermes")
+    if script.is_file():
+        return script
+    interpreter = bin_dir / ("python.exe" if _is_windows() else "python")
+    return interpreter if interpreter.is_file() else None
+
+
+def _facts_owner_root(root: Path) -> Path:
+    """The blessed checkout root whose install typically owns the committed venv.
+
+    PM workspaces are materialized under the install that created them; the
+    canonical checkout lives at ``<home>/hermes-agent`` (that is where
+    ``gateway start`` from the resolved shell publishes its launcher and its
+    facts). Returned as a candidate only — callers still verify the record.
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "hermes-agent"
 
 
 def _published_launcher(root: Path) -> Path | None:

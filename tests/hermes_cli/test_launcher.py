@@ -1,5 +1,6 @@
 """Tests for the top-level `./hermes` launcher script."""
 
+import json
 import runpy
 import sys
 import types
@@ -48,6 +49,8 @@ def test_installation_command_refuses_unpublished_launcher(monkeypatch, tmp_path
     instead of embedding a missing path (issue #125043)."""
     from hermes_cli import _launchers
 
+    import pm.environments as _pmenv
+    monkeypatch.setattr(_pmenv, "installs_root", lambda: tmp_path / "installs")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: Path("/usr/bin/python3"))
@@ -57,7 +60,12 @@ def test_installation_command_refuses_unpublished_launcher(monkeypatch, tmp_path
     assert command[0] == "/usr/bin/python3" and command[1:3] == ["-I", "-c"]
     assert command[-2:] == ["gateway", "run"]
 
-    # A published, executable launcher keeps the exact-install path.
+    # A published, executable launcher whose root carries committed facts keeps
+    # the exact-install path.
+    from pm.environments import runtime_facts_path
+    runtime_facts_path(workspace).parent.mkdir(parents=True, exist_ok=True)
+    runtime_facts_path(workspace).write_text(
+        json.dumps({"packages": {"venv": {"environment": str(tmp_path / "venv")}}}), encoding="utf-8")
     local = workspace / ".hermes" / "bin"
     local.mkdir(parents=True)
     shim = local / "hermes"
@@ -67,6 +75,79 @@ def test_installation_command_refuses_unpublished_launcher(monkeypatch, tmp_path
     assert _launchers.installation_command(
         workspace, module="gateway.cgroup_cleanup")[1] == "--run-module"
 
-    # A non-executable launcher is as unusable as a missing one.
+    # A non-executable launcher is as unusable as a missing one (facts gone too:
+    # the record without a venv would divert to the owner lookup first).
     shim.chmod(0o644)
+    runtime_facts_path(workspace).unlink()
     assert _launchers.installation_command(workspace, ["gateway", "run"])[0] != str(shim)
+
+
+def test_installation_command_workspace_without_facts_resolves_owner_entry(monkeypatch, tmp_path):
+    """A PM workspace copy publishes the launcher shim but has no facts.json of its
+    own — the command must resolve the entry point from the checkout that owns the
+    committed venv instead of embedding the dead shim (#125375 counter-datapoint)."""
+    from hermes_cli import _launchers
+
+    import pm.environments as _pmenv
+    monkeypatch.setattr(_pmenv, "installs_root", lambda: tmp_path / "installs")
+
+    home = tmp_path / "home"
+    checkout = home / "hermes-agent"
+    workspace = tmp_path / "workspace"
+    venv = tmp_path / "envs" / "525b471e" / "venv"
+    for d in (checkout, workspace, venv / "bin"):
+        d.mkdir(parents=True)
+    script = venv / "bin" / "hermes"
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    # The checkout carries the committed facts; the workspace does not.
+    from pm.environments import runtime_facts_path
+    runtime_facts_path(checkout).parent.mkdir(parents=True, exist_ok=True)
+    runtime_facts_path(checkout).write_text(
+        json.dumps({"packages": {"venv": {"environment": str(venv)}}}), encoding="utf-8")
+
+    # The workspace resolves the same store python and published the shim.
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: Path("/usr/bin/python3"))
+    local = workspace / ".hermes" / "bin"
+    local.mkdir(parents=True)
+    shim = local / "hermes"
+    shim.write_text("#!/bin/sh\n", encoding="utf-8")
+    shim.chmod(0o755)
+
+    monkeypatch.setattr(_launchers, "_facts_owner_root", lambda root: checkout)
+
+    command = _launchers.installation_command(workspace, ["gateway", "run"])
+    assert command[0] == str(script), "the recorded venv's console script, not the dead shim"
+    assert command[-2:] == ["gateway", "run"]
+    assert str(shim) not in command
+
+    # Module form keeps the --run-module flag.
+    module_cmd = _launchers.installation_command(workspace, module="gateway.cgroup_cleanup")
+    assert module_cmd[:2] == [str(script), "--run-module"]
+
+    # With facts of its own, the workspace keeps its published launcher.
+    runtime_facts_path(workspace).parent.mkdir(parents=True, exist_ok=True)
+    runtime_facts_path(workspace).write_text(
+        json.dumps({"packages": {"venv": {"environment": str(venv)}}}), encoding="utf-8")
+    assert _launchers.installation_command(workspace, ["gateway", "run"])[0] == str(shim)
+
+
+def test_installation_command_owner_without_record_falls_back_to_interpreter(monkeypatch, tmp_path):
+    """No facts anywhere: the interpreter bootstrap form stays the answer."""
+    from hermes_cli import _launchers
+
+    import pm.environments as _pmenv
+    monkeypatch.setattr(_pmenv, "installs_root", lambda: tmp_path / "installs")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: Path("/usr/bin/python3"))
+    local = workspace / ".hermes" / "bin"
+    local.mkdir(parents=True)
+    shim = local / "hermes"
+    shim.write_text("#!/bin/sh\n", encoding="utf-8")
+    shim.chmod(0o755)
+    monkeypatch.setattr(_launchers, "_facts_owner_root", lambda root: tmp_path / "nowhere")
+
+    command = _launchers.installation_command(workspace, ["gateway", "run"])
+    assert command[0] == "/usr/bin/python3" and command[1:3] == ["-I", "-c"]

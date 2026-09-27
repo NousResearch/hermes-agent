@@ -372,19 +372,14 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
 
 def _compressed_args(field: str) -> dict:
     """Generate a legacy compression marker for already-contaminated session coverage."""
-    from agent.compression_marker import (
-        _COMPRESSION_MARKER_PREFIX,
-        _COMPRESSION_MARKER_TEMPLATE,
-    )
+    from agent.compression_marker import _COMPRESSION_MARKER_TEMPLATE
 
     original = "z" * 2000
     marker = _COMPRESSION_MARKER_TEMPLATE.format(
         omitted=len(original) - 200,
         total=len(original),
     )
-    parsed = {field: original[:200] + marker}
-    assert _COMPRESSION_MARKER_PREFIX in parsed[field]
-    return parsed
+    return {field: original[:200] + marker}
 
 
 def test_context_pruned_effectful_call_blocks_before_dispatch():

@@ -3132,15 +3132,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         def _protected_region_tokens() -> int:
             return sum(_estimate_msg_budget_tokens(result[i]) for i in range(start, len(result)))
 
-        demoted = pressure_hits = 0
+        demoted = 0
 
         def _shrink_at(i: int) -> None:
-            nonlocal demoted, pressure_hits
+            nonlocal demoted
             if i in spared:
                 return
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
-                pressure_hits += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
             return 0
@@ -3160,12 +3159,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 and _protected_region_tokens() > soft_ceiling
             ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
                 demoted += 1
-                pressure_hits += 1
-        if pressure_hits and not self.quiet_mode:
+        if demoted and not self.quiet_mode:
             logger.info(
                 "Pre-compression pressure demotion: reclaimed protected-tail tool output (%d change(s); "
                 "protected region now ~%s tokens, soft ceiling %s)",
-                pressure_hits, f"{_protected_region_tokens():,}", f"{soft_ceiling:,}",
+                demoted, f"{_protected_region_tokens():,}", f"{soft_ceiling:,}",
             )
         return demoted
 
@@ -3392,7 +3390,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             fn = getattr(tc, "function", None)
             return f"  {getattr(fn, 'name', '?') if fn else '?'}(...)"
         fn = tc.get("function", {})
-        args = _redact_compaction_text(fn.get("arguments", ""))
+        raw = fn.get("arguments", "") or ""
+        # Args are byte-exact now, so they can be huge: cut before the (costly) redaction pass, keeping
+        # slack past the head so a secret straddling the cut still matches and length checks stay honest.
+        args = _redact_compaction_text(raw[:self._TOOL_ARGS_HEAD + 4096] if len(raw) > self._TOOL_ARGS_HEAD + 4096 else raw)
         if len(args) > self._TOOL_ARGS_MAX:
             args = args[:self._TOOL_ARGS_HEAD] + "..."
         return f"  {fn.get('name', '?')}({args})"
@@ -5371,8 +5372,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         self, messages: List[Dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None,
         force: bool = False, memory_context: str = "", bypass_cooldown: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Summarize the middle turns: use pruned tool results only as summary input, protect a canonical
-        head/tail, summarize, then clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
+        """Summarize the middle turns: prune tool-result bodies (tool-call args untouched), protect head and a
+        token-budget tail from the pruned copy, summarize, then clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
         the feasibility skip; ``bypass_cooldown`` runs the summary LLM without clearing the cooldown.
 
         Args: focus_topic: Optional focus string for guided compression. When provided, the summariser will
@@ -5402,7 +5403,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
         spare_pending_images = bool(self._spared_pending_tool_round(messages))
-        # Head rows are carried from canonical history; pruning only feeds the summary and the tail.
+        # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
+        # assembled and measured from the pruned copy (#61932).
         canonical_messages = self._drop_blank_echoes(messages)
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
@@ -5416,9 +5418,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         compress_start, compress_end = self._compress_window(messages)
         if compress_start >= compress_end:
             self._record_compression_regions(
-                head_messages=canonical_messages[:compress_start],
-                middle_messages=[],
-                tail_messages=canonical_messages[compress_end:],
+                head_messages=messages[:compress_start], middle_messages=[], tail_messages=messages[compress_end:],
             )
             self._structural_no_op_result(
                 telemetry, "no_compressible_window",
@@ -5432,9 +5432,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
         turns_to_summarize = scan.turns_to_summarize
         self._record_compression_regions(
-            head_messages=canonical_messages[:compress_start],
-            middle_messages=turns_to_summarize,
-            tail_messages=canonical_messages[compress_end:],
+            head_messages=messages[:compress_start], middle_messages=turns_to_summarize, tail_messages=messages[compress_end:],
         )
         telemetry["chunk_count"] = 1 if turns_to_summarize else 0
         if not turns_to_summarize:

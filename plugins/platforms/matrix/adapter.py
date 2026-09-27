@@ -398,6 +398,7 @@ def _resolve_max_message_length(config) -> int:
 # identity in one crypto.db.
 # Store directory for E2EE keys and sync state. Mirrors the pairing-store fix (a6397c379). See #89168.
 from hermes_constants import get_hermes_dir as _get_hermes_dir
+from plugins.platforms.matrix.voice_mention import ParkedVoices, is_voice_event
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
 
@@ -871,6 +872,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
         self._processed_events_set: set = set()
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
+        self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
         self._free_rooms: Set[str] = _extra_csv_set(config, "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS")
@@ -2046,7 +2048,10 @@ class MatrixAdapter(BasePlatformAdapter):
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned and not body.startswith("/"):
+                if (not is_mentioned and not body.startswith("/")
+                        and not self._parked_voices.consume_claim(event_id)):
+                    if is_voice_event(source_content):  # a bare @mention may follow (Element X)
+                        self._parked_voices.park(room_id, sender, event_id, source_content, relates_to)
                     logger.debug(
                         "Matrix: ignoring message %s in %s — no @mention "
                         "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
@@ -2139,6 +2144,16 @@ class MatrixAdapter(BasePlatformAdapter):
         body = source_content.get("body", "") or ""
         if not body:
             return
+        mentions = source_content.get("m.mentions") or {}
+        if (self._require_mention and not self._strip_mention(body).strip() and self._is_bot_mentioned(
+                body, source_content.get("formatted_body"),
+                mentions.get("user_ids") if isinstance(mentions, dict) else None)):
+            parked = self._parked_voices.claim(room_id, sender)
+            if parked:  # answer the voice this bare mention was typed for, not an empty text
+                voice_id, voice_content, voice_relates = parked
+                await self._handle_media_message(
+                    room_id, sender, voice_id, event_ts, voice_content, voice_relates, "m.audio")
+                return
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
         if msg_event is None:

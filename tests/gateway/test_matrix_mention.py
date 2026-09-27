@@ -242,6 +242,30 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
     assert msg.text == ""
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mention_room, claims", [("!room1:example.org", True), ("!room2:example.org", False)])
+async def test_bare_mention_claims_parked_voice_only_in_same_room(monkeypatch, mention_room, claims):
+    """An unmentioned MSC3245 voice (empty m.mentions) is answered by the sender's bare @mention
+    typed right after it in the SAME room; a bare mention in another room never pulls it across."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._download_and_cache_media = AsyncMock(return_value="/tmp/voice.ogg")
+    voice = _make_event("voice message", event_id="$voice")
+    voice.content.update({"msgtype": "m.audio", "url": "mxc://example.org/v", "info": {"mimetype": "audio/ogg"},
+                          "org.matrix.msc3245.voice": {}, "m.mentions": {}})
+
+    await adapter._on_room_message(voice)
+    adapter.handle_message.assert_not_awaited()
+    await adapter._on_room_message(_make_event(
+        "@hermes:example.org", event_id="$text", room_id=mention_room, mention_user_ids=["@hermes:example.org"]))
+
+    dispatched = [(m.args[0].source.chat_id, m.args[0].message_id) for m in adapter.handle_message.await_args_list]
+    assert dispatched == ([("!room1:example.org", "$voice")] if claims else [(mention_room, "$text")])
+
+
 # ---------------------------------------------------------------------------
 # Auto-thread in _on_room_message
 # ---------------------------------------------------------------------------

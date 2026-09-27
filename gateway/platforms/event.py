@@ -142,7 +142,7 @@ class MessageEvent:
 
     def _reply_context(self) -> tuple:
         return (self.reply_to_message_id, self.reply_to_text, self.reply_to_author_id,
-                self.reply_to_author_name, bool(self.reply_to_is_own_message))
+                self.reply_to_author_name, bool(self.reply_to_is_own_message), self.reply_to_author_authorized)
 
     def reply_context_conflicts(self, other: "MessageEvent") -> bool:
         """True when both events reply to a message and their reply contexts differ. A merged
@@ -155,7 +155,8 @@ class MessageEvent:
         if self._replies_to_message() or not other._replies_to_message():
             return
         (self.reply_to_message_id, self.reply_to_text, self.reply_to_author_id,
-         self.reply_to_author_name, self.reply_to_is_own_message) = other._reply_context()
+         self.reply_to_author_name, self.reply_to_is_own_message,
+         self.reply_to_author_authorized) = other._reply_context()
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

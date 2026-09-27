@@ -1172,9 +1172,21 @@ _MCP_USAGE = (
 )
 
 
+# Actions whose outcome is a config.yaml write. save_config() declines a managed install with a
+# stderr note and no error, so these printed success and exited 0 with nothing saved (and `remove`
+# still deleted the server's OAuth tokens); refuse them before any side effect instead.
+_CONFIG_WRITING_ACTIONS = frozenset({"add", "remove", "rm", "configure", "config", "install"})
+
+
 def mcp_command(args):
     """Main dispatcher for ``hermes mcp`` subcommands."""
     action = getattr(args, "mcp_action", None)
+    if action in _CONFIG_WRITING_ACTIONS:
+        from hermes_cli.config import is_managed, managed_error
+
+        if is_managed():
+            managed_error("change MCP servers")
+            return 1
     if action in ("picker", "catalog", "install"):
         # Catalog subcommands live in mcp_picker / mcp_catalog; import lazily to keep this module cheap.
         from hermes_cli import mcp_picker

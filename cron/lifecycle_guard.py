@@ -871,8 +871,10 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
-def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
-    """Yield the scripts the token at *index* executes, if any."""
+def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, via_shell)`` for the scripts the token at *index* executes, if any.
+    *via_shell* is False only for a script executed directly, where its own shebang picks the
+    interpreter."""
     if index >= len(segment):
         return
     executable = segment[index]
@@ -880,7 +882,7 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     if executable_name in {".", "source"}:
         if len(segment) > index + 1:
-            yield from _resolved_or_nothing(segment[index + 1], cwd)
+            yield from ((path, True) for path in _resolved_or_nothing(segment[index + 1], cwd))
         return
 
     if executable_name in _SHELL_EXECUTABLES:
@@ -901,17 +903,17 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
                 continue
             break
         if arg_index < len(arguments) and arguments[arg_index] not in _SHELL_COMMAND_FLAGS:
-            yield from _resolved_or_nothing(arguments[arg_index], cwd)
+            yield from ((path, True) for path in _resolved_or_nothing(arguments[arg_index], cwd))
         return
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.
     if executable.strip("/") and ("/" in executable or executable.endswith((".sh", ".bash", ".zsh"))):
-        yield from _resolved_or_nothing(executable, cwd)
+        yield from ((path, False) for path in _resolved_or_nothing(executable, cwd))
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
-    """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
+def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, via_shell)`` for scripts executed directly or through a POSIX shell. Each segment is read at the
     original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
     a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
     for segment in _iter_command_segments(command):
@@ -956,29 +958,17 @@ def _has_binary_magic(data: bytes) -> bool:
     return data.startswith(_BINARY_MAGICS)
 
 
-_SHEBANG_INTERPRETER_RE = re.compile(rb"^#!\s*(/usr/bin/env\s+)?(\S+)")
-
-
-def _text_names_shell_interpreter(text: Optional[str]) -> bool:
-    """True when *text* is a script whose shebang names a POSIX shell.
-
-    The reference walk applies POSIX shell semantics (shlex tokenization, segment
-    splitting on ``;&|()``) to every referenced file's text. On a Python/Node/Ruby
-    source that walk is a false-positive generator — a quoted string literal such
-    as ``"/dev/null"`` tokenizes into a bare ``/dev/null`` token that looks like an
-    executed script and fails closed on the character device. ``check_gateway_lifecycle``
-    already exempts ``.py`` scripts for exactly this reason ("the shell reference walk
-    is a false-positive generator on Python sources"); shebang-launched scripts with no
-    extension must get the same treatment. Content over suffix: a file is shell only
-    when its shebang SAYS it is a shell. See #125378.
-    """
-    if not text or not text.startswith("#!"):
+def _runs_outside_posix_shell(text: str) -> bool:
+    """True when *text* opens with a shebang naming a non-shell interpreter (``python3``, ``node``,
+    ``env python3``). Such a script's source is not shell code, so its string literals are data a
+    shell never executes. No shebang, a shell, or an unparseable line all read as shell."""
+    if not text.startswith("#!"):
         return False
-    match = _SHEBANG_INTERPRETER_RE.match(text.encode("utf-8", errors="replace"))
-    if match is None:
-        return False
-    interpreter = Path(match.group(2).decode("utf-8", errors="replace")).name
-    return interpreter in _SHELL_EXECUTABLES
+    words = text[2:].split("\n", 1)[0].split()
+    if words and _executable_name(words[0]) == "env":
+        # `env -S python3 -u`, `env PYTHONPATH=x python3`: skip options and assignments.
+        words = [word for word in words[1:] if not word.startswith("-") and "=" not in word]
+    return bool(words) and _executable_name(words[0]) not in _SHELL_EXECUTABLES
 
 
 def _read_referenced_script(
@@ -1108,7 +1098,7 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 # --- recursive walk ---------------------------------------------------------------------------
 
 def _contains_unsafe_gateway_action(
-    command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
+    command: str, *, cwd: Optional[str], depth: int, visited: set[tuple[Path, bool]], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
@@ -1139,25 +1129,17 @@ def _contains_unsafe_gateway_action(
         if recurse(payload, cwd, executed):
             return True
 
-    # Shell-semantics walks must not descend into non-shell interpreter sources: shlex
-    # tokenization + segment splitting turn Python/Node/Ruby string literals ("/dev/null",
-    # pathlib "/") into bogus executed-script candidates that fail closed. The direct
-    # lifecycle regex above has ALREADY scanned the full command text, so skipping the walk
-    # keeps the regex protection intact — exactly the treatment check_gateway_lifecycle
-    # gives .py scripts (#77131, #78398). A suffixless shebang-launched interpreter
-    # script gets the same exemption by content, not suffix (#125378).
-    if command.startswith("#!") and not _text_names_shell_interpreter(command):
-        return False
-
     # Paths named only inside a masked body are still READ: an interpreter body that hands
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    candidates = [(path, executed, via_shell)
+                  for path, via_shell in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
     if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+        candidates += [(path, False, via_shell)
+                       for path, via_shell in _iter_referenced_shell_scripts(command, cwd=cwd)]
 
-    for script_path, candidate_executed in candidates:
+    for script_path, candidate_executed, via_shell in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:
@@ -1168,19 +1150,22 @@ def _contains_unsafe_gateway_action(
                 )
             continue
         resolved = _resolve_lenient(script_path)
-        if resolved in visited:
+        # Keyed by (path, strict): a strict (executed-as-shell) walk covers every later reference; a
+        # lenient one (mention, or a direct interpreter run) never stands in for a strict one, so
+        # `./tool; bash ./tool` still walks tool as shell code.
+        if (resolved, True) in visited or (not candidate_executed and (resolved, False) in visited):
             continue
         if not budget.charge_path():
             if candidate_executed:
                 return _budget_exhausted(budget, "paths", depth)
             break  # remaining candidates are all mentions
-        visited.add(resolved)
         # Never read more than the walk can still afford to tokenize; a file larger than the
         # remainder fails closed exactly like an oversized one.
         script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
         if unsafe:
             if candidate_executed:
                 return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
+            visited.add((resolved, False))
             continue
         if script_text is None and read_remote_script is not None:
             # Local path missing; the remote backend's output crosses the same trust boundary as a
@@ -1199,11 +1184,19 @@ def _contains_unsafe_gateway_action(
                         f"`{script_path}` read from the backend exceeds the scan cap "
                         f"({_MAX_REFERENCED_SCRIPT_BYTES} bytes) or the remaining walk budget",
                     )
+                visited.add((resolved, False))
                 continue
+        # A directly executed python/node/... script is not shell code: its text is still scanned and
+        # the paths it names are still read, but, as for an interpreter heredoc body (#113944), a path
+        # that cannot be scanned is a string literal, not a block (`print("/dev/null" in argv)`).
+        strict = candidate_executed and (via_shell or not _runs_outside_posix_shell(script_text or ""))
+        if not strict and (resolved, False) in visited:
+            continue
+        visited.add((resolved, strict))
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
-        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed):
+        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, strict):
             return True
     return False
 
@@ -1287,12 +1280,13 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
         # extension gets the same regex-only treatment as .py — the POSIX reference walk on
         # non-shell sources is a false-positive generator (string literals tokenize into bogus
         # executed-script candidates). The direct regex below still scans the full text.
+        # Parser: _runs_outside_posix_shell (from #125378 review) — env-prefix and option
+        # aware, unlike the naive shebang regex this promotion used before the review.
         python_script = (
             resolved_script is not None and resolved_script.suffix == ".py"
         ) or (
             bool(script_text)
-            and script_text.startswith("#!")
-            and not _text_names_shell_interpreter(script_text)
+            and _runs_outside_posix_shell(script_text)
         )
 
     if refusal:

@@ -9,6 +9,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { revealFile } from '@/store/file-actions'
 import { modeBound } from '@/store/interface-mode'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
@@ -378,7 +379,15 @@ export async function openReviewForPath(
 
   if (file) {
     await selectReviewFile(file)
+
+    return
   }
+
+  // Not a git change (and often no repo at all): the changed-files card still
+  // advertises the tool-reported path, so a click must land somewhere useful —
+  // reveal the file in the OS file manager (which toasts when the path is not
+  // on this computer) instead of stranding on an empty pane (#125035).
+  await revealFile(path)
 }
 
 // ── Mutations ────────────────────────────────────────────────────────────────

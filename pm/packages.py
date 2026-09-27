@@ -689,7 +689,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     it baked into the payload; every `hermes update` and `hermes pm install`
     re-ensures it from the new lockfile before the venv sync
     (pm.client.ensure_tools_for_sync), so a pin bump lands. Windows + Linux:
-    BtbN/FFmpeg-Builds (dated autobuild tag; ships ffprobe too).
+    BtbN/FFmpeg-Builds (month-end autobuild tag, kept two years; ships ffprobe too).
     macOS: ffmpeg.martin-riedl.de (uniform ZIP, published sha256;
     single-binary — no ffprobe).
 

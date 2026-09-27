@@ -40,6 +40,13 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if not prop_schema:
             continue
         expected = prop_schema.get("type")
+        if not expected:
+            for union_key in ("anyOf", "oneOf"):
+                if isinstance(branches := prop_schema.get(union_key), list):
+                    branch_types = [b.get("type") for b in branches if isinstance(b, dict) and b.get("type")]
+                    if branch_types:
+                        expected = branch_types if len(branch_types) > 1 else branch_types[0]
+                        break
         is_container = isinstance(value, (list, tuple))
 
         # Bare non-list value for an array schema. Strings go through
@@ -66,7 +73,7 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
         if not isinstance(value, str):
             # Native container: still normalize JSON-encoded elements/sub-fields.
-            if (expected == "array" and is_container) or (expected == "object" and isinstance(value, dict)):
+            if (_schema_accepts_kind(prop_schema, "array") and is_container) or (_schema_accepts_kind(prop_schema, "object") and isinstance(value, dict)):
                 args[key] = _normalize_json_strings_for_schema(value, prop_schema)
             continue
         if not expected and not _schema_allows_null(prop_schema):

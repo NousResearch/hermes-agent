@@ -136,11 +136,20 @@ function prettifyBase(base: string): string {
   return applyVendorCasing(titleCase(base.replace(/-/g, ' ')))
 }
 
+// Snapshot date pins vendors append to otherwise-stable ids — `…-20251101`
+// and `…-2026-05-17` are the same model on a different day, not a different
+// name. Both vendor spellings are recognized, with month/day bounds so a
+// numeric-looking suffix (e.g. `-1234-56-78`) is never eaten as a "date".
+const DATE_PIN = /-(?:\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])|\d{8})$/
+
 // Split the trailing suffixes a local id can carry — a variant tag
 // (`…-flash`, `…-fast`) and a GGUF quant (`…-UD-Q4_K_XL`, `…-Q8_0`) — in
 // EITHER order: `…-flash-Q4_K_XL` and `…-Q4_K_XL-flash` are the same model.
 // One decomposition feeds both the catalog rows and the composer pill, so
 // the two screens can never disagree on which variant an id carries.
+// A date pin can sit under the suffixes (`…-thinking-20251101`), so it is
+// peeled in the same loop — otherwise the pin hides the variant from every
+// surface that reads it.
 function splitTrailingTags(base: string): { base: string; variant: string; quant: string } {
   let variant = ''
   let quant = ''
@@ -171,6 +180,11 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
         progress = true
       }
     }
+
+    if (!variant && !quant && DATE_PIN.test(base)) {
+      base = base.replace(DATE_PIN, '')
+      progress = true
+    }
   }
 
   return { base, variant, quant }
@@ -192,9 +206,6 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
     tags.push(contextWindow[1].toUpperCase())
     base = base.slice(0, -contextWindow[0].length)
   }
-
-  // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
-  base = base.replace(/-\d{8}$/, '')
 
   return { name: prettifyBase(base) || model.trim() || 'No model', tag: tags.join(' ') }
 }

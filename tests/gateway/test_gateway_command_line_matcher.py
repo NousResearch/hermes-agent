@@ -150,6 +150,44 @@ def test_spawn_intent_ignores_inline_source_without_a_gateway_argv():
     assert spawn_intent('python -c "import time; time.sleep(1)" 14980') is None
 
 
+# Hermes's OWN source launcher shim (hermes_cli/_launchers.runtime_command) is the one ``-c`` shape
+# that is NOT the restart watcher: its bootstrap ends in ``runpy.run_module('hermes_cli.main', …,
+# alter_sys=True)``, which hands the trailing argv to the module as ``sys.argv``. Refusing that when
+# the watcher is refused made every gateway Hermes spawns on a store-Python source install invisible:
+# ``hermes gateway status`` reported "no gateway process detected" for a live one, and the updater's
+# post-relaunch liveness poll raised, failing an otherwise successful update (exit 1).
+#
+# The second entry is the exact string ``gateway.status._read_process_cmdline`` produces on Windows:
+# psutil's argv list is joined with spaces, so the ``-c`` source arrives UNQUOTED and split.
+LAUNCHER_SHIM_SOURCE = (
+    "import os, sys, runpy; os.environ.pop('PYTHONHOME', None); "
+    "sys.path.insert(0, 'C:\\\\Users\\\\me\\\\hermes\\\\hermes-agent'); import hermes_bootstrap; "
+    "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+)
+
+LAUNCHER_SHIM = [
+    f'"C:\\Users\\me\\hermes\\tools\\python-3.14.7-win32-x64\\python.exe" -I -c "{LAUNCHER_SHIM_SOURCE}"'
+    " gateway run --replace",
+    f"C:\\Users\\me\\hermes\\tools\\python-3.14.7-win32-x64\\python.exe -I -c {LAUNCHER_SHIM_SOURCE}"
+    " gateway run --replace",
+    f"/opt/hermes/python -I -c {LAUNCHER_SHIM_SOURCE} --profile work gateway run --replace",
+]
+
+
+@pytest.mark.parametrize("cmd", LAUNCHER_SHIM)
+def test_accepts_hermes_own_source_launcher_shim(cmd):
+    assert matches(cmd) is True
+    assert spawn_intent(cmd) == "run"
+
+
+@pytest.mark.parametrize("cmd", LAUNCHER_SHIM)
+def test_launcher_shim_still_reports_its_own_lifecycle_subcommand(cmd):
+    """The shim's trailing argv is identity, so a non-``run`` subcommand must not read as a gateway."""
+    for holder in (cmd, cmd.replace("gateway run --replace", "gateway status")):
+        subcommand = "status" if "status" in holder else "run"
+        assert (matches(holder) is True) == (subcommand == "run")
+
+
 # Atomic Hermes' bundled desktop runner (regression for #22418): it shares
 # HERMES_HOME with the CLI and must be recognised as a gateway so
 # ``gateway run --replace`` enters the replace/lock-handoff path instead of

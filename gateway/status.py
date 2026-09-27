@@ -588,6 +588,44 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+#: The module-runner entry ``hermes_cli/_launchers.runtime_command`` embeds in its bootstrap source.
+#: ``runpy.run_module(..., alter_sys=True)`` makes the trailing argv THIS process's own (sys.argv),
+#: so for this one source the trailing argv is identity rather than spawn intent (#107002).
+_LAUNCHER_MODULE_ENTRY = "runpy.run_module('hermes_cli.main'"
+
+
+def launcher_shim_gateway_subcommand(tokens: list[str]) -> str | None:
+    """Gateway lifecycle subcommand when *tokens* is Hermes's OWN source launcher shim, else None.
+
+    A store-Python source install launches the gateway as
+    ``python -I -c <bootstrap> gateway run --replace`` (``_launchers.runtime_command``), the
+    bootstrap ending in ``runpy.run_module('hermes_cli.main', …, alter_sys=True)``. That form is
+    self-executing — ``alter_sys`` hands the trailing argv to the module as ``sys.argv`` — so the
+    process really is the gateway and has to be recognised as one.
+
+    This is the one case ``command_line_runs_inline_source`` cannot tell apart from the detached
+    restart watcher (``code=`` blob, where the trailing argv is the command the watcher spawns
+    LATER — #107002). The watcher's source is an ``exec(<src>)`` blob and never carries
+    ``_LAUNCHER_MODULE_ENTRY``, so also requiring that entry keeps the #107002 refusal intact for
+    every other inline source.
+
+    *tokens* must be CASE-PRESERVING. The inline source is matched by substring across the whole
+    post-``-c`` region rather than at a fixed offset: ``_read_process_cmdline`` joins psutil's argv
+    list back into one space-separated string, so the interpreter/quoted-source boundary is already
+    gone by the time any matcher sees it, and the source arrives split into many tokens.
+    """
+    index = inline_source_flag_index(tokens)
+    if index is None:
+        return None
+    tail = tokens[index + 1:]
+    if not any(_LAUNCHER_MODULE_ENTRY in token for token in tail):
+        return None
+    for position in range(len(tail) - 1, -1, -1):
+        if tail[position].lower() == "gateway":
+            return tail[position + 1].lower() if position + 1 < len(tail) else "run"
+    return None
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -609,8 +647,13 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
+    #
+    # Exception: Hermes's OWN source launcher shim runs hermes_cli.main IN THIS PROCESS with
+    # alter_sys, so its trailing argv is identity. Refusing it hides every gateway Hermes spawns on
+    # a store-Python source install: `hermes gateway status` reports "no gateway process detected"
+    # for a live one, and the post-update liveness poll fails an otherwise successful update (exit 1).
     if command_line_runs_inline_source(cased_tokens):
-        return None
+        return launcher_shim_gateway_subcommand(cased_tokens)
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":

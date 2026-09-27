@@ -16,10 +16,15 @@ from typing import Optional
 
 def defer_teardown_to_running_worker(
     future: Optional[concurrent.futures.Future], session_db, agent, job_id: str, job_name: str,
-    cron_session_id: str,
+    cron_session_id: str, execution_id: Optional[str] = None,
 ) -> bool:
     """Return True when the worker is still running and its Future will finalize the session
-    and tear the agent down on completion; False when the caller must do it now."""
+    and tear the agent down on completion; False when the caller must do it now.
+
+    ``execution_id``: the attempt's durable execution id, used as the drain
+    record's identity when provided (#125513); falls back to the per-attempt
+    ``cron_session_id``.
+    """
     if future is None or future.done():
         return False
     from cron.scheduler import _finalize_cron_session, _teardown_cron_agent
@@ -30,6 +35,13 @@ def defer_teardown_to_running_worker(
                 _finalize_cron_session(session_db, agent, job_id, job_name, cron_session_id)
         finally:
             _teardown_cron_agent(agent, job_id)
+            # Deferred teardown just completed for the attempt that owned this
+            # Future — including the timeout/interruption case where run_job
+            # already terminalized the ledger row while run_conversation was
+            # still live. Emit the drain signal AFTER teardown so a deployer
+            # sees "drained" only once the worker is provably finished (#125513).
+            from cron.worker_drain import record_drain
+            record_drain(execution_id or cron_session_id, job_id=job_id)
 
     # Runs inline if the worker finished between done() and here — still exactly once.
     future.add_done_callback(_finish)

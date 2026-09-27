@@ -1172,7 +1172,8 @@ def _create_prefixed_full_backup(
 def create_pre_update_backup(
     hermes_home: Optional[Path] = None, keep: int = _PRE_UPDATE_DEFAULT_KEEP) -> Optional[Path]:
     """Full zip backup to ``backups/pre-update-<timestamp>.zip``, auto-pruned; ``None`` if nothing
-    was found, the backup failed, or it was incomplete (salvage kept as ``*.incomplete.zip``). Never raises — ``hermes update`` continues anyway."""
+    was found, the backup failed, or it was incomplete (salvage kept as ``*.incomplete.zip``).
+    Never raises — ``hermes update`` continues anyway."""
     return _create_prefixed_full_backup(hermes_home, _PRE_UPDATE_PREFIX, max(keep, 1), "pre-update", "backup")
 
 
@@ -2037,9 +2038,10 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
 
     errors: list[str] = []
 
-    def _entry_error(rel_path: Path, exc: Exception) -> None:
-        errors.append(f"{rel_path}: {exc}")
-        logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
+    def _capped_errors() -> str:
+        # Cap the logged list: a broken tree can fail thousands of entries in one run.
+        shown = "; ".join(errors[:10])
+        return f"{shown} (+{len(errors) - 10} more)" if len(errors) > 10 else shown
 
     # Salvage name keeps an incomplete archive out of normal retention (otherwise the next
     # complete run would prune the last complete backups by count) and, because the partial is
@@ -2058,7 +2060,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
                 archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
-                on_error=_entry_error,
+                on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))
     except (OSError, _SQLiteSnapshotError) as exc:
@@ -2067,7 +2069,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         return None
 
     if errors and len(errors) >= len(files_to_add):
-        logger.warning("Full-zip backup: every entry failed, nothing salvaged: %s", "; ".join(errors))
+        logger.warning("Full-zip backup: every entry failed, nothing salvaged: %s", _capped_errors())
         return None
     zip_size = (salvage_path if errors else out_path).stat().st_size
     if errors:
@@ -2075,7 +2077,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
             "automatic backup phase=archive status=incomplete duration_ms=%.1f files=%d errors=%d "
             "bytes=%d salvage=%s skipped=%s",
             (time.monotonic() - archive_started) * 1000, len(files_to_add), len(errors), zip_size,
-            salvage_path, "; ".join(errors))
+            salvage_path, _capped_errors())
         return None
 
     logger.info("automatic backup phase=archive status=complete duration_ms=%.1f files=%d bytes=%d",

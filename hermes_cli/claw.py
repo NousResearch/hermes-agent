@@ -382,7 +382,8 @@ def _apply_migration(run_migrator: Callable[[bool], dict], opts: SimpleNamespace
             else:
                 print()
                 print_warning("Pre-migration backup was not created (nothing to back up, the write "
-                              "failed, or it was incomplete); continuing without a restore point.")
+                              "failed, or it was incomplete); if incomplete, a partial "
+                              "pre-migration-*.incomplete.zip may exist in the backups dir.")
         except Exception as e:
             return _error_block(
                 f"Could not create pre-migration backup: {e}",

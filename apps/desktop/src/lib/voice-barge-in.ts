@@ -225,7 +225,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
           throw error
         }
 
-        console.warn('[hermes] configured microphone unavailable, using the system default', error)
+        console.warn('[hermes] configured microphone unavailable for barge-in detection, using the system default', error)
 
         stream = await navigator.mediaDevices.getUserMedia({ audio: bargeConstraints })
       }

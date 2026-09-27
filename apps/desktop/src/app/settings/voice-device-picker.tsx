@@ -54,6 +54,10 @@ export function VoiceDevicePicker({
   }, [kind])
 
   const current = value.trim()
+  // A device with no id cannot be addressed by getUserMedia/setSinkId, and listing one would collide
+  // with the "System default" value. Before microphone permission is granted every entry can be
+  // id-less, so the list stays empty until then — the hint below says why.
+  const selectable = devices.filter(device => device.deviceId)
   const missing = Boolean(current) && loaded && !devices.some(device => device.deviceId === current)
 
   return (
@@ -67,11 +71,8 @@ export function VoiceDevicePicker({
         </SelectTrigger>
         <SelectContent>
           <SelectItem value={EMPTY_SELECT_VALUE}>System default</SelectItem>
-          {devices.map((device, index) => (
-            <SelectItem
-              key={device.deviceId || index}
-              value={device.deviceId || EMPTY_SELECT_VALUE}
-            >
+          {selectable.map((device, index) => (
+            <SelectItem key={device.deviceId} value={device.deviceId}>
               {deviceLabel(device, index, kind)}
             </SelectItem>
           ))}
@@ -82,7 +83,7 @@ export function VoiceDevicePicker({
           That device is not connected — the system default is used until it is back.
         </span>
       ) : null}
-      {loaded && devices.length === 0 ? (
+      {loaded && selectable.length === 0 ? (
         <span className="max-w-56 text-right text-xs text-muted-foreground">
           No devices found. Grant microphone access, then reopen this page.
         </span>

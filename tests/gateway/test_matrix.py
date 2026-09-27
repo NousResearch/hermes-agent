@@ -654,6 +654,7 @@ async def test_room_metadata_changes_keep_prompt_and_agent_signature():
         room_id, "@alice:example.org", "$first", "hello", {"body": "hello"}, {},
     )
     first_source = first[-1]
+    assert first_source.room_members_digest
     session = types.SimpleNamespace(
         origin=SessionSource.from_dict(first_source.to_dict()),
         session_key="matrix-room", session_id="session-1",
@@ -669,6 +670,7 @@ async def test_room_metadata_changes_keep_prompt_and_agent_signature():
         room_id, "@alice:example.org", "$second", "again", {"body": "again"}, {},
     )
     second_source = second[-1]
+    assert second_source.room_members_digest != first_source.room_members_digest
 
     def prompt_and_signature(source):
         context = build_session_context(source, GatewayConfig(), session)
@@ -767,6 +769,72 @@ async def test_room_state_note_reaches_each_existing_thread_once():
         _entries={"$new-thread": types.SimpleNamespace(created_at=datetime.now())},
     )
     assert await message_for("$new-thread") == "hello"
+
+
+@pytest.mark.asyncio
+async def test_restored_room_session_reconciles_offline_state_once(tmp_path):
+    from dataclasses import replace
+
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore, build_session_context, build_session_context_prompt
+    from gateway.config import GatewayConfig
+
+    config = GatewayConfig()
+    initial = SessionSource(
+        platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group",
+        user_id="@alice:example.org", chat_name="Old room", chat_topic="Old topic",
+        room_members_digest="old-members",
+    )
+    store = SessionStore(tmp_path / "sessions", config)
+    entry = store.get_or_create_session(initial)
+    other_thread = replace(initial, chat_type="thread", thread_id="$other-thread")
+    other_entry = store.get_or_create_session(other_thread)
+
+    def runner_for(session_store):
+        runner = object.__new__(GatewayRunner)
+        runner.config = config
+        runner.session_store = session_store
+        runner.adapters = {Platform.MATRIX: _make_adapter()}
+        runner._model = "test-model"
+        runner._base_url = ""
+        runner._session_key_for_source = session_store._generate_session_key
+        return runner
+
+    async def prepare(runner, source, message_id):
+        event = MessageEvent(text="hello", source=source, message_id=message_id)
+        return await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert await prepare(runner_for(store), initial, "$initial") == "hello"
+    assert await prepare(runner_for(store), other_thread, "$other-thread") == "hello"
+    initial_prompt = build_session_context_prompt(build_session_context(initial, config, entry))
+    other_prompt = build_session_context_prompt(build_session_context(other_thread, config, other_entry))
+
+    restored_store = SessionStore(tmp_path / "sessions", config)
+    current = replace(
+        initial, chat_name="New room", chat_topic="New topic", room_members_digest="new-members",
+    )
+    restored = restored_store.get_or_create_session(current)
+    other_current = replace(
+        other_thread, chat_name="New room", chat_topic="New topic", room_members_digest="new-members",
+    )
+    other_restored = restored_store.get_or_create_session(other_current)
+    restored_runner = runner_for(restored_store)
+    assert build_session_context_prompt(build_session_context(current, config, restored)) == initial_prompt
+    assert build_session_context_prompt(build_session_context(other_current, config, other_restored)) == other_prompt
+
+    corrected = await prepare(restored_runner, current, "$after-restart")
+    assert "New room" in corrected
+    assert "New topic" in corrected
+    assert "joined room members or their display names changed" in corrected
+    assert corrected.endswith("[New message]\nhello")
+    assert await prepare(restored_runner, current, "$again") == "hello"
+    assert await prepare(restored_runner, other_current, "$other-thread") == corrected
+    assert await prepare(restored_runner, other_current, "$other-thread") == "hello"
+
+    second_restart = SessionStore(tmp_path / "sessions", config)
+    second_restart.get_or_create_session(current)
+    assert await prepare(runner_for(second_restart), current, "$later") == "hello"
 
 
 @pytest.mark.asyncio

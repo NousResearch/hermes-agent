@@ -270,3 +270,44 @@ async def test_eventless_followup_keeps_effective_prompt_through_next_human(
     assert "Parent persona." in ephemeral[0]
     assert ephemeral[0] == ephemeral[1] == ephemeral[2]
 
+
+@pytest.mark.asyncio
+async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypatch):
+    runner = _make_runner(monkeypatch)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="queued")
+    runner._session_key_for_source = lambda source: KEY
+
+    source = _human_source()
+    adapter = MagicMock()
+    adapter._active_sessions = {}
+    pending_event = MessageEvent(
+        text="queued",
+        source=source,
+        message_id="queued-message-1",
+        channel_prompt="Queued event prompt.",
+    )
+    turn_ctx = TurnContext(
+        source=source,
+        context_prompt="ctx",
+        channel_prompt="Inherited prompt.",
+        session_key=KEY,
+        session_id="sess-wiring",
+        run_generation=1,
+        history=[],
+    )
+    result = {"final_response": "done", "messages": []}
+
+    await runner._run_agent_queued_followup(
+        turn_ctx, adapter, "queued", pending_event, "done", result, None
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["channel_prompt"] == "Queued event prompt."
+    assert calls[0]["channel_prompt"] != turn_ctx.channel_prompt
+    assert calls[0]["source"] is source
+    assert calls[0]["session_key"] == KEY
+

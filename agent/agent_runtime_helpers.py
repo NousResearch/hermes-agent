@@ -663,17 +663,57 @@ _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_users,
 )
 
+# Mirrors ``SessionDB._CONTENT_JSON_PREFIX``: the NUL-prefixed sentinel marking structured
+# (multimodal list/dict) content that was serialized to a scalar for persistence. Kept as a literal so
+# the pre-call repair layer need not import the persistence class; the NUL byte cannot occur in real text.
+_JSON_CONTENT_SENTINEL = "\x00json:"
+
+
+def _decode_sentinel_content(content: Any) -> Any:
+    """Reverse the persistence sentinel for an in-memory row. A multimodal turn (text + image) can
+    re-enter the working set as its encoded ``\\x00json:[…]`` string — e.g. after a proactive prune
+    re-inserts history (#124102) — and the alternation repair would then glue the base64 image onto a
+    neighbouring text turn as plain text (#125299). Decoding restores the structured content so the
+    repair treats it as multimodal. A body that no longer parses (already merged, corrupted) is left
+    untouched."""
+    if isinstance(content, str) and content.startswith(_JSON_CONTENT_SENTINEL):
+        try:
+            return json.loads(content[len(_JSON_CONTENT_SENTINEL):])
+        except (ValueError, TypeError):
+            return content
+    return content
+
+
+def _normalize_sentinel_encoded_content(messages: List[Dict]) -> int:
+    """Decode any sentinel-encoded row content in place before the alternation passes run, so an
+    image-bearing turn is never merged as text. Returns the number of rows restored."""
+    restored = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        decoded = _decode_sentinel_content(content)
+        if decoded is not content:
+            msg["content"] = decoded
+            restored += 1
+    return restored
+
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """Collapse malformed role-alternation left in the live history; returns repair count.
     Providers require strict alternation after the system message (violations: silent empty
     responses or 400s); this is the pre-call belt for host-fed, resumed or replayed histories.
-    Passes in order: merge consecutive assistant turns (BEFORE orphan detection so the merged
-    tool_call-id union is known); drop stray tool results; prune unanswered tool_calls; merge
-    consecutive user turns. A user turn directly after an assistant turn is valid and left alone.
+    Passes in order: decode any sentinel-encoded multimodal rows (so an image is not merged as text);
+    merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union is
+    known); drop stray tool results; prune unanswered tool_calls; merge consecutive user turns. A user
+    turn directly after an assistant turn is valid and left alone.
     """
     if not messages:
         return 0
+    # A re-inserted multimodal turn can arrive as its ``\x00json:`` string; decode before the passes so
+    # the base64 image is not concatenated onto an adjacent text turn (#125299). In-place mutation on the
+    # shared row dicts is visible to the passes and to callers regardless of the alternation count below.
+    _normalize_sentinel_encoded_content(messages)
     repairs = 0
     current = messages
     for repair_pass in _SEQUENCE_REPAIR_PASSES:

@@ -1579,3 +1579,45 @@ def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
     assert repairs == 1
     assert _DB_PERSISTED_MARKER not in messages[0]
     assert agent._db_flush_scan_prefix is None
+
+
+# ── sentinel-encoded multimodal content (#125299) ──────────────────────────
+
+def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
+    """A multimodal turn re-inserted as its ``\x00json:`` string (e.g. after a proactive prune
+    re-inserts history) must be decoded back to structured content, not glued onto an adjacent
+    text turn as a giant base64 blob (#125299)."""
+    import json
+    from agent.agent_runtime_helpers import repair_message_sequence, _JSON_CONTENT_SENTINEL
+
+    parts = [
+        {"type": "text", "text": "look at this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 4000}},
+    ]
+    encoded = _JSON_CONTENT_SENTINEL + json.dumps(parts)
+    messages = [
+        {"role": "user", "content": encoded},
+        {"role": "user", "content": "any follow-up thoughts?"},
+    ]
+
+    repair_message_sequence(_bare_agent(), messages)
+
+    # The encoded turn is restored to structured content and left un-merged; the base64 image
+    # never leaks into the neighbouring text turn.
+    assert len(messages) == 2
+    assert messages[0]["content"] == parts
+    assert messages[1]["content"] == "any follow-up thoughts?"
+    assert "base64" not in messages[1]["content"]
+
+
+def test_repair_leaves_corrupted_sentinel_content_untouched():
+    """A sentinel body that no longer parses (already merged / truncated) is left as-is rather
+    than crashing the pre-call repair (#125299)."""
+    from agent.agent_runtime_helpers import repair_message_sequence, _JSON_CONTENT_SENTINEL
+
+    corrupt = _JSON_CONTENT_SENTINEL + '[{"type": "text"} EXTRA garbage'
+    messages = [{"role": "user", "content": corrupt}]
+
+    repair_message_sequence(_bare_agent(), messages)
+
+    assert messages[0]["content"] == corrupt

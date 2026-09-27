@@ -24,6 +24,7 @@ from agent.redact_headers import (
     redact_header_credentials,
 )
 from agent.redact_pattern_shape import _pattern_structure
+from agent.file_safety import _HOME_CREDENTIAL_BASENAMES
 
 logger = logging.getLogger(__name__)
 
@@ -1415,6 +1416,46 @@ def _redact_userinfo_passwords(text: str) -> str:
     return _URL_USERINFO_PAIR_RE.sub(_sub, text)
 
 
+# Credential-store lines that have no ``KEY=value`` shape, so the assignment passes miss them:
+# ``.netrc`` (``machine h login u password X``), ``.pgpass`` (``host:port:db:user:X``),
+# ``.git-credentials`` (``https://user:X@host``) and ``.npmrc`` (``//registry/:_authToken=X``).
+# They run only for a source already classified as secret-bearing. Each is shaped so ``.env``,
+# shell rc and config.yaml lines do not match: ``PATH=/a:/b:/c:/d:/e`` carries ``=`` in its first
+# field and a ``# password ...`` comment does not start with a netrc keyword.
+_CREDENTIAL_STORE_RES = (
+    re.compile(
+        rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:(?:machine|default|login|account|port)\b[^\n]*?[ \t])?password[ \t]+)(?![=:])(\S+)",
+        re.MULTILINE,
+    ),
+    re.compile(rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:[^:\s=#]*:){{4}})(\S[^\r\n]*)", re.MULTILINE),
+    re.compile(r"(://[^:/\s@]+:)([^@\s]+)(?=@)"),
+    re.compile(r"(:_(?:authToken|auth|password)[ \t]*=[ \t]*)(\S+)"),
+)
+# INI ``password = X`` (``.pypirc``): the anchored config pass only accepts ``key=value``
+# with no spaces around ``=``.
+_INI_SPACED_ASSIGN_RE = re.compile(
+    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*(?:[ \t]+=[ \t]*|=[ \t]+))(\S+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _redact_credential_store_lines(text: str, *, mask_nonreusable: bool) -> str:
+    """Mask the value of every credential-store line (see ``_CREDENTIAL_STORE_RES``). Only
+    for ``secret_file`` sources: in a credential store the value is a secret whatever it
+    looks like, so a weak human password is masked too."""
+    mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
+
+    def _sub(m):
+        value = m.group(2)
+        if value == "***" or value.startswith("«redacted"):
+            return m.group(0)
+        return m.group(1) + mask(value)
+
+    for pattern in _CREDENTIAL_STORE_RES:
+        text = pattern.sub(_sub, text)
+    return _INI_SPACED_ASSIGN_RE.sub(_assignment_sub(lambda g: f"{g[0]}{mask(g[1])}", check_keyword=True), text)
+
+
 def _redact_url_credentials(text: str, code_file: bool) -> str:
     """DB connection-string passwords, bare-token and ``user:pass`` URL userinfo (``://`` text only)."""
     def _redact_db(m):
@@ -1514,6 +1555,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)
+    if secret_file:
+        text = _redact_credential_store_lines(text, mask_nonreusable=file_read)
 
     # Flags and connection-string keys carry a credential in command text, so they are not
     # gated on code_file: the shape (``--password=`` / ``;AccountKey=``) is unambiguous, and
@@ -1680,10 +1723,11 @@ def _is_under_hermes_home(path: str) -> bool:
 
 
 def _is_secret_file_arg(arg: str) -> bool:
-    """``.env``-style or shell rc basename anywhere; ``config.yaml`` only under a
-    ``.hermes`` directory, ``$HERMES_HOME``, or the resolved Hermes home (never arbitrary
-    YAML). The resolved-home arm is what covers native Windows, where the home directory
-    is ``%LOCALAPPDATA%\\hermes`` and carries no ``.hermes`` segment."""
+    """``.env``-style, shell rc or credential-store basename (``.netrc``, ``.pgpass``, ...)
+    anywhere; ``credentials`` only under ``.aws`` (the bare name is too generic), and
+    ``config.yaml`` only under a ``.hermes`` directory, ``$HERMES_HOME``, or the resolved
+    Hermes home (never arbitrary YAML). The resolved-home arm is what covers native Windows,
+    where the home directory is ``%LOCALAPPDATA%\\hermes`` and carries no ``.hermes`` segment."""
     path = arg.strip("\"'").replace("\\", "/")
     hermes_home = False
     for prefix in _HERMES_HOME_PREFIXES:
@@ -1701,6 +1745,8 @@ def _is_secret_file_arg(arg: str) -> bool:
     if not parts:
         return False
     if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
+        return True
+    if parts[-1] in _HOME_CREDENTIAL_BASENAMES or parts[-2:] == [".aws", "credentials"]:
         return True
     # ``config.yaml`` plus the ``config.yaml.good.<stamp>`` / ``.corrupt.<stamp>`` copies Hermes
     # writes under ``backups/config/`` — same contents, same secrets.
@@ -1775,12 +1821,13 @@ def redact_for_egress(text: str) -> str:
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
     """Single redaction policy for ALL terminal-output surfaces: the ENV/YAML-assignment
     pass runs only when ``command`` is an env dump or reads a secret-bearing file (``.env``,
-    shell rc, Hermes ``config.yaml``); otherwise code_file=True avoids false positives on
-    source/config dumps."""
+    shell rc, a credential store like ``.netrc``, Hermes ``config.yaml``); otherwise
+    code_file=True avoids false positives on source/config dumps."""
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
-    redacted = redact_sensitive_text(output, force=force, code_file=code_file)
+    secret_file = _command_reads_secret_file(command)
+    code_file = not (secret_file or is_env_dump_command(command))
+    redacted = redact_sensitive_text(output, force=force, code_file=code_file, secret_file=secret_file)
     # Source-preserving output still gets the Python-repr pass on high-confidence
     # diagnostic lines (pytest ``E   `` introspection, final exception lines): that is
     # where {'BRAVE_API_KEY': '…'} leaks, not in source dumps.

@@ -71,6 +71,11 @@ class TestHelperFunctions(unittest.TestCase):
             _extract_email_address("John Doe <john@example.com>"),
             "john@example.com"
         )
+        # Unquoted forms strict parseaddr rejects still resolve to their single bracketed address.
+        for raw in ("john@example.com <john@example.com>", "Doe, John <John@example.com>", "a@x.test <john@example.com>"):
+            self.assertEqual(_extract_email_address(raw), "john@example.com", raw)
+        for raw in ("a@x.com, b@y.com", "Group: a@x.com, b@y.com;", "<>"):
+            self.assertEqual(_extract_email_address(raw), "", raw)
 
     def test_extract_email_address_ignores_angle_brackets_in_display_name(self):
         from plugins.platforms.email.adapter import _extract_email_address
@@ -90,7 +95,6 @@ class TestHelperFunctions(unittest.TestCase):
         # Ordinary forms must keep resolving the same way.
         self.assertEqual(_extract_email_address("Plain <user@example.com>"), "user@example.com")
         self.assertEqual(_extract_email_address("bare@example.com"), "bare@example.com")
-        self.assertEqual(_extract_email_address("JOHN DOE <John@Example.COM>"), "john@example.com")
 
 
     def test_strip_html_basic(self):
@@ -1196,6 +1200,12 @@ class TestSenderAuthentication(unittest.TestCase):
             ["mx.google.com; dmarc=pass header.from=example.com; spf=pass"],
         )
         self.assertTrue(ok, reason)
+        # A dmarc=pass issued for another domain must not vouch for this From,
+        # even when a later dkim clause carries an aligned header.from.
+        for ar in ("mx.google.com; dmarc=pass header.from=evil.test",
+                   "mx.google.com; dmarc=pass header.from=evil.test; dkim=pass header.d=x.test header.from=example.com"):
+            ok, reason = self._verify("Admin <admin@example.com>", [ar])
+            self.assertFalse(ok, ar)
 
 
     def test_dkim_pass_aligned_authenticates(self):

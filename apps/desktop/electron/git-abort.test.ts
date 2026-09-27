@@ -136,6 +136,49 @@ describe('killChildOnAbort', () => {
     }
   })
 
+  // A child that had already exited when the abort fires carries a non-null
+  // exitCode, and its pid may be reused by then. The exit proof is checked
+  // BEFORE SIGTERM too — not only before the SIGKILL — so no signal reaches it.
+  it('sends no signal at all to a child that already exited (exitCode set)', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child, kills } = fakeChild()
+      const controller = new AbortController()
+
+      killChildOnAbort(child, controller.signal, 20)
+
+      child.exitCode = 0
+
+      controller.abort()
+      vi.advanceTimersByTime(1_000)
+
+      expect(kills).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sends no signal at all to a child that was already signalled (signalCode set)', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { child, kills } = fakeChild()
+      const controller = new AbortController()
+
+      killChildOnAbort(child, controller.signal, 20)
+
+      child.signalCode = 'SIGTERM'
+
+      controller.abort()
+      vi.advanceTimersByTime(1_000)
+
+      expect(kills).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // P1: 'close' waits for the stdio pipes to drain, which a killed git can
   // take time over. Once 'exit' has fired the process is gone and its pid may
   // be reused, so the SIGKILL must not follow. 'exit' is the second proof of

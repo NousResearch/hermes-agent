@@ -294,12 +294,6 @@ interface InFlightRun {
   promise: Promise<BundleSkewResult>
   root: string
   /**
-   * The HEAD sha this run read, once it knows it; null until then. A same-root
-   * caller compares its own HEAD against it, so it never joins a run whose
-   * answer describes a different commit.
-   */
-  headSha: string | null
-  /**
    * The signal this run's git calls carry. A run replaced by one for another
    * root is aborted through it, so its git child is killed instead of holding
    * a core for a tree no caller is waiting on.
@@ -337,11 +331,7 @@ export function createBundleSkewProbe({
   // background, and must not write its late answer over a newer run's.
   let generation = 0
 
-  const run = async (
-    cwd: string,
-    controller: AbortController,
-    onHeadResolved: (headSha: string) => void
-  ): Promise<BundleSkewResult> => {
+  const run = async (cwd: string, controller: AbortController): Promise<BundleSkewResult> => {
     if (!stamp?.commit || stamp.source === 'fallback' || isFallbackCommit(stamp.commit)) {
       return NOT_STALE
     }
@@ -401,10 +391,6 @@ export function createBundleSkewProbe({
         return NOT_STALE
       }
 
-      // Publish the sha this run will answer for, so a same-root caller can
-      // compare its own HEAD against it before joining.
-      onHeadResolved(revision.headSha)
-
       // One sha, resolved once. It is both the cache key and the commit the
       // expensive calls below run against, so a HEAD that moves during the
       // probe cannot make a cached answer describe a commit other than its key.
@@ -446,22 +432,6 @@ export function createBundleSkewProbe({
     }
   }
 
-  /**
-   * Read HEAD the same cheap way a cache hit does, so a caller can prove an
-   * in-flight run answers for its own commit. Null when git cannot resolve HEAD
-   * to a trustworthy sha: there is nothing to compare against, so no in-flight
-   * run can be joined on that reading.
-   */
-  const readHeadSha = async (cwd: string): Promise<string | null> => {
-    try {
-      const head = await runGit(['rev-parse', '--is-shallow-repository', 'HEAD'], { cwd })
-
-      return head.code === 0 ? (parseHeadRevision(head.stdout)?.headSha ?? null) : null
-    } catch {
-      return null
-    }
-  }
-
   return async (): Promise<BundleSkewResult> => {
     // Normalize the root first. The source tree can be retargeted at runtime, so
     // a run already in flight for another root must not be joined — that would
@@ -471,27 +441,26 @@ export function createBundleSkewProbe({
     // generation counter keeps an abandoned run from writing the cache.
     const cwd = resolve(typeof repoRoot === 'function' ? repoRoot() : repoRoot)
 
-    // The entry is captured in a local: the checks below await a git spawn, and
-    // the shared `inFlight` could be replaced in the meantime.
-    const joining = inFlight
-
-    if (joining && joining.root === cwd) {
-      // Join only a run that answers for THIS caller's commit. A run that has
-      // already read HEAD answers for that sha; if HEAD moved since, its answer
-      // describes an older commit and must not be handed over. A run that has
-      // not read HEAD yet reads it after this call, so it cannot be older: join
-      // it without a spawn.
-      if (joining.headSha === null || (await readHeadSha(cwd)) === joining.headSha) {
-        return joining.promise
-      }
+    // Same root: join the run in flight, unconditionally.
+    //
+    // WHY, because the obvious alternative looks safer and is not. A skew answer
+    // is a snapshot of HEAD at the moment the run read it, and HEAD can move a
+    // millisecond after any answer — including one this caller resolved itself.
+    // Comparing HEAD here would buy no extra truth, and it costs a second
+    // rev-parse with no timeout that can fail transiently, a window in which the
+    // run it compared against may already be gone, and a third spawn once the
+    // join fails. The cache key (root, stamp, headSha) is what keeps CACHED
+    // answers correct, and the next call after this run settles re-reads HEAD
+    // and reruns if it moved. So a same-root caller just joins.
+    if (inFlight && inFlight.root === cwd) {
+      return inFlight.promise
     }
 
-    // This run supersedes one for a different root, or for a HEAD that moved
-    // since that run read it. Its caller still waits on it, but its git is
-    // doing work for a tree or a commit nobody else needs: abort its controller
-    // so the child is killed (SIGTERM, then SIGKILL, via killChildOnAbort)
-    // instead of holding a core for minutes. The generation guard already keeps
-    // its late answer out of the cache.
+    // This run supersedes one for a different root. Its caller still waits on
+    // it, but its git is doing work for a tree nobody else needs: abort its
+    // controller so the child is killed (SIGTERM, then SIGKILL, via
+    // killChildOnAbort) instead of holding a core for minutes. The generation
+    // guard already keeps its late answer out of the cache.
     if (inFlight) {
       try {
         inFlight.controller.abort()
@@ -506,14 +475,11 @@ export function createBundleSkewProbe({
 
     const entry: InFlightRun = {
       controller,
-      headSha: null,
       promise: Promise.resolve(NOT_STALE),
       root: cwd
     }
 
-    entry.promise = run(cwd, controller, headSha => {
-      entry.headSha = headSha
-    })
+    entry.promise = run(cwd, controller)
 
     entry.promise = entry.promise.finally(() => {
       if (inFlight === entry) {

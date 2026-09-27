@@ -923,12 +923,13 @@ describe('createBundleSkewProbe', () => {
     }
   })
 
-  // P2: an in-flight run used to be joined on the ROOT alone, so a caller whose
-  // HEAD moved while that run was in flight was handed the OLD commit's answer.
-  // The run now publishes the sha it read; a same-root caller resolves its own
-  // HEAD and joins only a run that answers for that sha. Otherwise it supersedes
-  // the run the way a root change does, aborting its controller.
-  it('does not join an in-flight run whose HEAD has moved, and supersedes it', async () => {
+  // The contract at the join site: a same-root caller joins the run in flight
+  // UNCONDITIONALLY, even if HEAD moved after that run read it. Any skew answer
+  // is a snapshot of HEAD at the moment the run read it, HEAD can move a
+  // millisecond after any answer, and the cache key keeps cached answers
+  // correct. The join costs one rev-parse and one rev-list across both callers;
+  // the call AFTER the run settles re-reads HEAD and reruns.
+  it('joins a same-root run in flight even when HEAD moves after the run read it', async () => {
     const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
     const calls: string[][] = []
     const signals: Array<{ cwd: string; signal?: AbortSignal }> = []
@@ -956,7 +957,7 @@ describe('createBundleSkewProbe', () => {
           })
         }
 
-        return { code: 0, stderr: '', stdout: '6\n' }
+        return { code: 0, stderr: '', stdout: '7\n' }
       }
 
       return { code: 1, stderr: '', stdout: '' }
@@ -967,27 +968,38 @@ describe('createBundleSkewProbe', () => {
     const first = probe()
     await tick()
 
-    const oldSignal = signals.find(call => call.cwd === REPO)?.signal
+    const runSignal = signals.find(call => call.cwd === REPO)?.signal
 
-    expect(oldSignal).toBeDefined()
-    expect(oldSignal?.aborted).toBe(false)
+    expect(runSignal).toBeDefined()
+    expect(runSignal?.aborted).toBe(false)
 
     // HEAD moves while the first run waits on its rev-list.
     head = 'b'.repeat(40)
 
-    // This caller must NOT take the run in flight: its answer describes 'a'.
-    expect(await probe()).toEqual({ desktopCommitsBehind: 6, outOfSync: true })
-    expect(oldSignal?.aborted).toBe(true)
+    // Same root: this caller joins instead of spawning anything of its own.
+    const second = probe()
+    await tick()
 
-    // The abandoned run still answers its own caller with its own commit's count.
+    expect(spawnsOf(calls, 'rev-parse')).toBe(1)
+    expect(spawnsOf(calls, 'merge-base')).toBe(1)
+    expect(spawnsOf(calls, 'rev-list')).toBe(1)
+    // The joined run is not superseded, so its git is not aborted.
+    expect(runSignal?.aborted).toBe(false)
+
     pending.resolve?.({ code: 0, stderr: '', stdout: '9\n' })
     await tick()
 
     expect(await first).toEqual({ desktopCommitsBehind: 9, outOfSync: true })
+    expect(await second).toEqual({ desktopCommitsBehind: 9, outOfSync: true })
+
+    // The next call after the run settles re-reads HEAD (now 'b') and reruns.
+    expect(await probe()).toEqual({ desktopCommitsBehind: 7, outOfSync: true })
+    expect(spawnsOf(calls, 'rev-list')).toBe(2)
+    expect(spawnsOf(calls, 'rev-parse')).toBe(2)
   })
 
-  // The join must still happen when HEAD is unchanged: the comparison spawn is
-  // one rev-parse, and the expensive pair runs once across both callers.
+  // The join must still happen when HEAD is unchanged, and it spawns nothing of
+  // its own: no comparison rev-parse, one merge-base, one rev-list.
   it('joins an in-flight run for the same root and HEAD with a single rev-list', async () => {
     const pending: { resolve?: (value: { code: number; stderr: string; stdout: string }) => void } = {}
     const calls: string[][] = []
@@ -1029,6 +1041,7 @@ describe('createBundleSkewProbe', () => {
     const second = probe()
     await tick()
 
+    expect(spawnsOf(calls, 'rev-parse')).toBe(1)
     expect(spawnsOf(calls, 'rev-list')).toBe(1)
     expect(spawnsOf(calls, 'merge-base')).toBe(1)
 

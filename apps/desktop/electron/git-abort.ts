@@ -109,6 +109,17 @@ export function killChildOnAbort(
     // This runs inside controller.abort(), where an escaped throw is an
     // uncaught exception in whatever callback aborted (the probe's timeout).
     // A kill that throws — an already-reaped pid, EPERM — must not escape.
+    //
+    // An already-exited child is checked BEFORE the SIGTERM, not only before
+    // the SIGKILL: Node sets exitCode/signalCode the moment the process is
+    // gone, and its pid may already be reused by a later spawn. A signal to a
+    // reused pid is a signal to an unrelated process.
+    if (hasExited()) {
+      teardown()
+
+      return
+    }
+
     try {
       child.kill('SIGTERM')
     } catch {

@@ -62,8 +62,18 @@ export function filteredToolsets(
     )
 }
 
-export const visibleToolsetCount = (toolsets: ToolsetInfo[]) =>
-  toolsets.filter(ts => isDesktopToolsetVisible(ts.name)).length
+/** The tab-pill meta: `enabled/total` across the toolsets this surface shows,
+ *  so the pill says how much is actually on, not just installed. */
+export const visibleToolsetMeta = (toolsets: ToolsetInfo[]) => {
+  let total = 0
+  let enabled = 0
+  for (const ts of toolsets) {
+    if (!isDesktopToolsetVisible(ts.name)) continue
+    total++
+    if (ts.enabled) enabled++
+  }
+  return `${enabled}/${total}`
+}
 
 /** Tool names for the search field's rotating placeholder nudges — they teach
  *  that search understands tool names, not just titles. */

@@ -3,6 +3,8 @@
 The ledger records what is known about each attempt; it is not a retry queue. Interrupted attempts
 become ``unknown`` only after their owner process is proved gone — a start-time reading that fails
 to match the claim-time fingerprint is not proof of death. Terminal states are immutable.
+Retention is per job (see the policy constants below), because a global row window evicts the
+lowest-frequency jobs' history first.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -27,10 +29,29 @@ from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
 # that temporarily enter another profile cannot leak that profile's records into the import-time
 # home.
 EXECUTIONS_FILE: Optional[Path] = None
-MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
+
+# --- retention policy ---------------------------------------------------------------------------
+# The ledger is the only durable record of what fired, and it is read per job (``hermes cron runs``,
+# missed-occurrence audits). A single global newest-N window is the wrong shape for it: a
+# minute-level job produces orders of magnitude more rows than a weekly one, so the newest-N set is
+# almost entirely the chatty job's rows and the quiet job loses the record proving its slot was
+# accounted for. Retention is therefore per job, and the hard cap evicts the rows of the jobs
+# holding the MOST rows rather than the oldest rows overall.
+#
+# These constants are the defaults and the test seam; ``cron.executions_*`` tunes them (read at
+# prune time, so a config change needs no restart).
+SUCCESS_FLOOR_DAYS = 7.0        # completed rows younger than this survive regardless of volume
+FAILURE_RETENTION_DAYS = 30.0   # failed/unknown rows are the highest-value audit rows: keep by age
+PER_JOB_TERMINAL_KEEP = 200     # per-job floor for completed rows once past the success window
+MAX_TERMINAL_EXECUTIONS = 1000  # global hard cap on terminal rows (all states)
+# Prune is amortized: deleting on every terminal write pays a full-table sort per write, and a busy
+# fleet finishes executions far more often than retention needs to be exact.
+PRUNE_MIN_INTERVAL_SECONDS = 60.0
+PRUNE_EVERY_N_FINISHES = 20
+_prune_state: Dict[str, Any] = {"last": 0.0, "finishes": 0}
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -171,16 +192,93 @@ def _claim_age_seconds(claimed_at: str) -> float:
     return (_hermes_now() - datetime.fromisoformat(claimed_at)).total_seconds()
 
 
-def _prune_unlocked(conn: sqlite3.Connection) -> None:
+def _retention_policy() -> "tuple[float, float, int, int]":
+    """``(success_floor_days, failure_retention_days, per_job_keep, row_cap)`` for this prune.
+
+    Resolved per prune rather than at import: one process ticks every served profile under a
+    per-profile scope (``cron.env_settings``), when pruning runs, so the values must come from the
+    home being served — and a tuned value lands without a restart.
+    """
+    from cron.jobs import _cron_config_number
+
+    return (
+        max(0.0, _cron_config_number("executions_success_floor_days", SUCCESS_FLOOR_DAYS, float)),
+        max(0.0, _cron_config_number("executions_failure_retention_days", FAILURE_RETENTION_DAYS, float)),
+        max(0, _cron_config_number("executions_per_job_keep", PER_JOB_TERMINAL_KEEP, int)),
+        max(0, _cron_config_number("executions_max_terminal_rows", MAX_TERMINAL_EXECUTIONS, int)),
+    )
+
+
+def _terminal_count(conn: sqlite3.Connection) -> int:
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM executions WHERE status IN ('completed','failed','unknown')"
+        ).fetchone()[0]
+    )
+
+
+def _prune_unlocked(conn: sqlite3.Connection, *, force: bool = False) -> None:
+    """Apply retention on the caller's open connection (inside the caller's transaction).
+
+    ``force`` skips the amortization gate; a table already over the cap skips it too, so the bound
+    holds no matter how the prune schedule lands.
+    """
+    floor_days, failure_days, per_job_keep, row_cap = _retention_policy()
+    if not force and _terminal_count(conn) <= row_cap:
+        _prune_state["finishes"] += 1
+        if (
+            time.monotonic() - _prune_state["last"] < PRUNE_MIN_INTERVAL_SECONDS
+            and _prune_state["finishes"] < PRUNE_EVERY_N_FINISHES
+        ):
+            return
+    _prune_state["last"] = time.monotonic()
+    _prune_state["finishes"] = 0
+
+    now = _hermes_now()
+    cut_success = (now - timedelta(days=floor_days)).isoformat()
+    cut_failure = (now - timedelta(days=failure_days)).isoformat()
+
+    # 1) Aged failures. Bounded by time, never by volume: a failure streak is what an audit needs,
+    #    and a failing job produces few rows.
+    conn.execute(
+        """DELETE FROM executions
+           WHERE status IN ('failed','unknown')
+             AND COALESCE(finished_at, claimed_at) < ?""",
+        (cut_failure,),
+    )
+    # 2) Completed rows past the success window, beyond the per-job floor — so a job that stops
+    #    being scheduled keeps a tail of history instead of aging out row by row.
     conn.execute(
         """DELETE FROM executions WHERE id IN (
-             SELECT id FROM executions
-             WHERE status IN ('completed','failed','unknown')
-             ORDER BY julianday(finished_at) DESC, finished_at DESC,
-                      julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
-           )""",
-        (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
+             SELECT id FROM (
+               SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY job_id
+                        ORDER BY finished_at DESC, claimed_at DESC, id DESC) AS keep_rank
+               FROM executions WHERE status='completed'
+             ) WHERE keep_rank > ?
+           ) AND COALESCE(finished_at, claimed_at) < ?""",
+        (per_job_keep, cut_success),
     )
+    # 3) Hard cap, lowest-value rows first: the jobs holding the most rows pay for the overflow,
+    #    and inside that the oldest row goes first (then unknown, then failed). Ordering by global
+    #    age as the tiebreak keeps the pre-existing contract — when every job holds one row the cap
+    #    trims the oldest rows overall — while a chatty job can no longer push a quiet job's only
+    #    record out of the ledger.
+    overflow = _terminal_count(conn) - row_cap
+    if overflow > 0:
+        conn.execute(
+            """DELETE FROM executions WHERE id IN (
+                 SELECT id FROM (
+                   SELECT id, status, COUNT(*) OVER (PARTITION BY job_id) AS job_rows,
+                          COALESCE(finished_at, claimed_at) AS ended_at
+                   FROM executions WHERE status IN ('completed','failed','unknown')
+                   ORDER BY CASE status WHEN 'completed' THEN 0 WHEN 'unknown' THEN 1 ELSE 2 END,
+                            job_rows DESC, ended_at ASC, id ASC
+                   LIMIT ?
+                 )
+               )""",
+            (overflow,),
+        )
 
 
 def create_execution(
@@ -301,8 +399,11 @@ def finish_execution(
         )
         if cur.rowcount != 1:
             return None
-        _prune_unlocked(conn)
         record = _fetch(conn, execution_id)
+        # Prune after reading the row back: retention must never be able to delete the record this
+        # call is about to return (a zero-length success window would otherwise return None for a
+        # finish that did happen).
+        _prune_unlocked(conn)
     _emit_execution_state(record, delivery_outcome=delivery_outcome)
     record_cron_finish(record, delivery_outcome)
     return record

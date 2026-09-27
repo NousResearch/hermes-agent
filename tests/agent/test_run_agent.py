@@ -753,6 +753,10 @@ class TestHydrateTodoStore:
             agent._hydrate_todo_store(history)
 
         assert agent._todo_store.snapshot() == {"todos": todos, "revision": 3}
+        # The TUI resume path (no AIAgent yet) must pair the same call via the same predicate.
+        from tui_gateway import server
+
+        assert server._todo_state_from_history(history)["todos"] == todos
 
     def test_no_todo_in_history(self, agent):
         history = [

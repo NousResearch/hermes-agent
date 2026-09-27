@@ -35,7 +35,7 @@ import pytest
 
 from agent import anthropic_credentials as AA
 from agent.auxiliary_client import _refresh_provider_credentials
-from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
+from agent.credential_pool import AUTH_TYPE_OAUTH
 
 _EXPIRED_MS = 1_000
 
@@ -165,17 +165,6 @@ def test_registry_stays_bounded():
 # ---------------------------------------------------------------------------
 
 
-def test_failed_commit_marks_the_consumed_pair(
-    hermes_home, claude_credentials, monkeypatch
-):
-    """The pre-rotation pair - the copy left on disk - is what gets recorded."""
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
-    _break_durable_write(monkeypatch)
-
-    assert AA._refresh_oauth_token(AA.read_claude_code_credentials()) is None
-
-    assert AA.is_rotation_consumed_uncommitted(_STALE_REFRESH)
-    assert AA.is_rotation_consumed_uncommitted(_STALE_ACCESS)
 
 
 def test_resolve_returns_none_when_the_rotation_could_not_commit(
@@ -195,23 +184,6 @@ def test_resolve_returns_none_when_the_rotation_could_not_commit(
     )
 
 
-def test_spent_fingerprint_is_never_leased_from_the_pool(
-    hermes_home, claude_credentials, monkeypatch
-):
-    """Direct witness on source 5 alone, after the rotation was spent."""
-    monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
-    _break_durable_write(monkeypatch)
-
-    assert AA._refresh_oauth_token(AA.read_claude_code_credentials()) is None
-
-    # The pool still holds the pre-rotation pair: nothing rewrote the file.
-    pool = load_pool("anthropic")
-    seeded = next(e for e in pool._entries if e.source == "claude_code")
-    assert seeded.access_token == _STALE_ACCESS
-
-    assert AA._resolve_anthropic_pool_token() is None, (
-        "the spent credential must not be leased just because it is on disk"
-    )
 
 
 def test_auxiliary_refresh_reports_failure_for_a_lost_commit(

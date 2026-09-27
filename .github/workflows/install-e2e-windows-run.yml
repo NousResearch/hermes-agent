@@ -58,13 +58,18 @@ on:
         required: false
         type: string
         default: auto
+      update-ref:
+        description: "What to update TO: HEAD (the commit under test), or NEXT -- a synthetic child of install-ref that the driver mints, so a leg that installs HEAD still has an update to take (HEAD's own updater)."
+        required: false
+        type: string
+        default: HEAD
       tag-has-desktop:
         description: "Whether install-ref ships the desktop app (apps/desktop). The caller annotates this from the tag's own tree; desktop-method legs from pre-desktop releases natively skip."
         required: false
         type: boolean
         default: true
       leg-id:
-        description: 'Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg''s logs + player artifacts so the report job can link a row to its zip.'
+        description: "Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg's logs + player artifacts so the report job can link a row to its zip."
         required: true
         type: string
       setup-exe-url:
@@ -77,11 +82,77 @@ on:
         required: false
         type: number
         default: 60
+      bundle-manifest-url:
+        type: string
+        default: ''
+      bundle-manifest-sha256:
+        description: Pinned transition manifest digest for stable acceptance
+        type: string
+        default: ''
+      bundle-arch:
+        type: string
+        default: x64
 
 permissions:
   contents: read
 
 jobs:
+  bundled-e2e:
+    name: packaged bundle (open-app-update)
+    if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
+    runs-on: ${{ inputs.bundle-arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up driver tools only
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          packages: ffmpeg
+          cache: false
+          cache-python: false
+          cache-node: false
+      - name: Install locked chat driver dependencies
+        shell: bash
+        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+      - name: Verify native helpers
+        shell: pwsh
+        run: |
+          node --test tests/install/e2e-assets/windows-bundled-helpers.test.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Start recording
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: start
+          output: ${{ runner.temp }}/hermes-bundled-update-recording.mkv
+      - name: Install, update and observe native relaunch
+        shell: pwsh
+        env:
+          BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
+          BUNDLE_MANIFEST_SHA256: ${{ inputs.bundle-manifest-sha256 }}
+          BUNDLE_ARCH: ${{ inputs.bundle-arch }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/windows-bundled-e2e.ps1 -ManifestUrl $env:BUNDLE_MANIFEST -Arch $env:BUNDLE_ARCH
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Stop recording
+        if: always()
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: stop
+          output: ${{ runner.temp }}/hermes-bundled-update-recording.mkv
+      - name: Upload native acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: install-e2e-logs-${{ inputs.leg-id }}-bundle-${{ inputs.bundle-arch }}
+          path: |
+            ${{ runner.temp }}/hermes-bundled-update/proof/
+            ${{ runner.temp }}/hermes-bundled-update/home/logs/
+            ${{ runner.temp }}/hermes-bundled-update-recording.mkv
+          if-no-files-found: error
+          retention-days: 14
   e2e:
     # Short static name on purpose: name expressions render UNEXPANDED on
     # skipped jobs.
@@ -99,7 +170,7 @@ jobs:
         || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update", "desktop-installer@latest"]'), inputs.update-method) && inputs.tag-has-desktop)
         || (inputs.update-method == 'open-app-update' && inputs.tag-has-desktop
             && contains(fromJSON('["desktop-installer@latest", "installer-script+desktop"]'), inputs.install-method)))
-    runs-on: windows-latest
+    runs-on: windows-latest-32-core
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     env:
@@ -116,10 +187,44 @@ jobs:
       # in that clone. A shallow checkout cannot serve either need.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
-      # One recording mechanism on every OS: the composite action installs
-      # ffmpeg (cached - winget's download is the slow part), starts the
+      # Old installers refresh PATH after winget installs ripgrep, dropping the
+      # process-only uv path. Supply the tool before running those shipped scripts.
+      - name: Set up driver tools only
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          packages: ffmpeg,ripgrep
+          cache: false
+          cache-python: false
+          cache-node: false
+
+      - name: Install locked chat driver dependencies
+        shell: bash
+        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
+
+      # A released tag prints its one-shot chat through prompt_toolkit, whose Windows
+      # output object needs a console screen buffer -- piping the CLI's stdout into the
+      # evidence log takes that away and the turn dies with NoConsoleScreenBufferError.
+      # The driver therefore runs that turn under e2e-assets/pty-run.py, which uses
+      # pywinpty: the same ConPTY spawner the product uses on Windows, pinned to the
+      # version pyproject.toml requires. Install it with uv (the toolchain python ships
+      # without pip) out of HERMES_RUNTIME_DIR, which is the tools directory itself and
+      # is not on PATH for workflow steps; the import check proves it landed.
+      - name: Install the pseudoconsole runner's dependency
+        shell: pwsh
+        run: |
+          $uvDir = Get-ChildItem $env:HERMES_RUNTIME_DIR -Filter 'uv-*' -Directory | Select-Object -First 1
+          if (-not $uvDir) { throw "uv not found under $env:HERMES_RUNTIME_DIR" }
+          & (Join-Path $uvDir.FullName 'uv.exe') pip install --system --python $env:HERMES_PYTHON --quiet "pywinpty==3.0.5"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "import winpty; print('pty-run dependency ready')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # One recording mechanism on every OS: the composite action verifies
+      # ffmpeg from the PM toolchain (packages: ffmpeg above), starts the
       # capture, and record-stop fails on a zero-frame file so a silently
       # missing recording cannot go green.
       - name: Start screen recording
@@ -130,16 +235,25 @@ jobs:
 
       - name: Stage serve repo (main -> ${{ inputs.install-ref }})
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -UpdateRef "${{ inputs.update-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
 
       - name: Install ${{ inputs.install-ref }} (${{ inputs.install-method }})
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase install -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
 
-      - name: Update ${{ inputs.install-ref }} -> HEAD (${{ inputs.update-method }})
+      - name: Update ${{ inputs.install-ref }} -> ${{ inputs.update-ref }} (${{ inputs.update-method }})
         id: update
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase update -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+
+      # After everything, including the new runtime's launch and its smoke
+      # checks: the bootstrap marker can complete on a later run than the
+      # install, so stamp truthfulness is asserted here — not in the install
+      # phase. Known-failure legs legitimately never reach the new HEAD.
+      - name: Verify install stamps describe the updated checkout
+        if: steps.update.outputs.known_failure == ''
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase verify-stamp -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
 
       - name: Stage known-failure receipt
         if: steps.update.outputs.known_failure != ''

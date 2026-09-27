@@ -98,6 +98,8 @@ def _render_template(template: str, payload: Dict[str, Any]) -> str:
 
 class MSGraphWebhookAdapter(BasePlatformAdapter):
     """Receive Microsoft Graph change notifications and surface them internally."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MSGRAPH_WEBHOOK)
@@ -143,12 +145,12 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         app.router.add_post(self._webhook_path, self._handle_notification)
         # Plugin-registered native routes; wired before AppRunner.setup() freezes the router.
         self._wire_plugin_handlers(app)
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self._host, self._port)
-        await site.start()
+        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
+        from gateway.platforms.shared_ingress import bind_listener
+        self._runner = await bind_listener(self, app, self._host, self._port, self._webhook_path)
         self._mark_connected()
-        logger.info("[msgraph_webhook] Listening on %s:%d%s", self._host, self._port, self._webhook_path)
+        if self._runner is not None:
+            logger.info("[msgraph_webhook] Listening on %s:%d%s", self._host, self._port, self._webhook_path)
         return True
 
     async def disconnect(self) -> None:

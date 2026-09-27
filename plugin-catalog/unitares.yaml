@@ -1,0 +1,30 @@
+name: unitares
+repo: https://github.com/cirwel/unitares-host-adapter
+sha: d2cc2ddbf07cf2a3e3b2d75a28e45a4414345f1c
+description: >-
+  Records each Hermes session on a UNITARES server you run: one identity per session and one check-in
+  per completed turn, so the agent's working record carries across sessions. Fail-open; never blocks
+  the agent. Disclosure — sends session metadata and a short turn summary to the server named in
+  UNITARES_MCP_URL, which you host; there is no default server. Per session it sends your model name
+  and platform; per completed turn a fixed check-in marker (never user, assistant or tool text). Hooks
+  run synchronously, so an unresponsive server can add up to ~40 s per call until the plugin
+  auto-disables after 3 consecutive failures.
+maintainer: cirwel
+tier: community
+category: automation
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/cirwel/unitares-host-adapter#hermes-agent
+version: "0.2.5"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - on_session_finalize
+  - on_session_reset
+  - on_session_start
+  - post_llm_call
+  - pre_llm_call
+  provides_middleware: []
+  requires_env:
+  - UNITARES_MCP_URL

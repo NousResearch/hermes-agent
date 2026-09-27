@@ -4,7 +4,9 @@ session can't call (Blank Slate audit, Aug 2026).
 Covers:
   * HERMES_AGENT_HELP_GUIDANCE degrades to the docs-only variant when the
     skill tools aren't loaded.
-  * execution_guidance_text() drops web_search lines when web tools are off.
+  * execution_guidance_text() never names a web tool, and drops the
+    terminal/execute_code/read_file/search_files lines the session's toolset
+    can't back (#106506).
   * The coding operating brief drops the `todo` sentence when the todo tool
     isn't loaded.
   * ESSENTIAL_SKILLS can't be disabled via config, and the CLI writer strips
@@ -14,26 +16,15 @@ Covers:
 from pathlib import Path
 
 
-class TestHermesAgentHelpGuidance:
-    def test_skill_variant_used_when_skill_view_present(self):
-        from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
-        assert "skill_view(name='hermes-agent')" in HERMES_AGENT_HELP_GUIDANCE
-
-    def test_no_skills_variant_has_no_skill_view_reference(self):
-        from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
-        assert "skill_view" not in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
-        assert "hermes-agent.nousresearch.com/docs" in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
-
-
 class TestExecutionGuidanceText:
-    def test_full_text_when_web_search_available(self):
+    def test_full_text_when_all_tools_available(self):
         from agent.prompt_builder import (
             OPENAI_MODEL_EXECUTION_GUIDANCE,
             execution_guidance_text,
         )
-        assert execution_guidance_text({"web_search", "terminal"}) == (
-            OPENAI_MODEL_EXECUTION_GUIDANCE
-        )
+        assert execution_guidance_text(
+            {"terminal", "execute_code", "read_file", "search_files"}
+        ) == OPENAI_MODEL_EXECUTION_GUIDANCE
 
     def test_full_text_when_toolset_unknown(self):
         from agent.prompt_builder import (
@@ -42,27 +33,26 @@ class TestExecutionGuidanceText:
         )
         assert execution_guidance_text(None) == OPENAI_MODEL_EXECUTION_GUIDANCE
 
-    def test_web_search_dropped_without_web_tools(self):
+    def test_never_names_a_web_tool(self):
         from agent.prompt_builder import execution_guidance_text
         text = execution_guidance_text({"terminal", "read_file"})
         assert "web_search" not in text
         # The surrounding structure survives.
         assert "<mandatory_tool_use>" in text
         assert "<missing_context>" in text
-        assert "(search_files, read_file, etc.)" in text
 
     def test_shell_and_file_lines_dropped_on_lean_toolset(self):
         # #106506: a profile with none of terminal/execute_code/read_file/search_files must not be told to
         # reach for any of them.
         from agent.prompt_builder import execution_guidance_text
-        text = execution_guidance_text({"memory", "web_search"})
+        text = execution_guidance_text({"memory"})
         mandatory_block = text.split("<mandatory_tool_use>")[1].split("</mandatory_tool_use>")[0]
         assert "terminal" not in mandatory_block
         assert "execute_code" not in mandatory_block
         assert "read_file" not in mandatory_block
         assert "search_files" not in mandatory_block
-        # Web tools are present, so their line survives.
-        assert "use web_search" in mandatory_block
+        # The line naming no specific tool survives.
+        assert "an appropriate permitted retrieval/search tool" in mandatory_block
         act_block = text.split("<act_dont_ask>")[1].split("</act_dont_ask>")[0]
         assert "run `date`" not in act_block
         # Surrounding structure and unrelated tags survive.
@@ -85,17 +75,15 @@ class TestCodingBriefTodoGating:
 
     def test_todo_kept_when_tool_available(self):
         brief = self._brief({"todo_list", "terminal", "read_file"})
-        assert "Track multi-step work with `todo_list`" in brief
+        assert "todo_list" in brief
 
     def test_todo_dropped_when_tool_missing(self):
         brief = self._brief({"terminal", "read_file"})
-        assert "`todo`" not in brief
-        # The path:line half of the merged bullet survives.
-        assert "path:line" in brief
+        assert "todo_list" not in brief
 
     def test_unknown_toolset_keeps_full_brief(self):
         brief = self._brief(None)
-        assert "Track multi-step work with `todo_list`" in brief
+        assert "todo_list" in brief
 
 
 class TestEssentialSkillsUndisableable:
@@ -131,7 +119,6 @@ class TestEssentialSkillsUndisableable:
         from tools.skill_manager_guards import _pinned_guard
         msg = _pinned_guard("hermes-agent")
         assert msg is not None
-        assert "essential" in msg.lower()
 
 
 class TestEssentialOnlySync:

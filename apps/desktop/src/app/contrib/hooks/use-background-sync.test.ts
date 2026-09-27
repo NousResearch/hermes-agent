@@ -1268,3 +1268,76 @@ describe('an empty persisted page over a populated runtime', () => {
     ).toContain('a newer answer')
   })
 })
+
+describe('live-status poll vs the silence watchdog (#125306)', () => {
+  function renderLivenessHarness(requestGateway: ReturnType<typeof vi.fn>) {
+    const updateSessionState: Parameters<typeof useBackgroundSync>[0]['updateSessionState'] = vi.fn(
+      (sessionId, updater) => {
+        const current = {} as Parameters<typeof updater>[0]
+
+        return updater(current)
+      }
+    )
+
+    return renderHook(() =>
+      useBackgroundSync({
+        activeConnectionId: 'local',
+        activeGatewayProfile: 'default',
+        activeIsMessaging: false,
+        activeSessionId: null,
+        activeStoredSessionId: null,
+        freshDraftReady: false,
+        gatewayState: 'open',
+        refreshActiveTranscript: vi.fn(async () => undefined),
+        refreshCronJobs: vi.fn(async () => undefined),
+        refreshCurrentModel: vi.fn(async () => undefined),
+        refreshHermesConfig: vi.fn(async () => undefined),
+        refreshMessagingSessions: vi.fn(async () => undefined),
+        refreshSessions: vi.fn(async () => undefined),
+        updateSessionState,
+        requestGateway: requestGateway as never
+      })
+    )
+  }
+
+  function activeListCalls(requestGateway: ReturnType<typeof vi.fn>): number {
+    return requestGateway.mock.calls.filter(([method]) => method === 'session.active_list').length
+  }
+
+  it('keeps polling while a turn is live even when the window is not viewed', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    const requestGateway = vi.fn(async () => ({ sessions: [] }))
+
+    const { unmount } = renderLivenessHarness(requestGateway)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    const connectPull = activeListCalls(requestGateway)
+
+    // No live turn: the view gate still pauses the backstop for an unviewed
+    // window (the pre-existing behavior other polls rely on).
+    await act(async () => {
+      vi.advanceTimersByTime(65_000)
+      await Promise.resolve()
+    })
+    expect(activeListCalls(requestGateway)).toBe(connectPull)
+
+    // A live turn exempts ONLY this poll: its report is the silence
+    // watchdog's sole witness while a local model prefills without events.
+    publishSessionState(ACTIVE_RUNTIME_ID, {
+      ...createClientSessionState(ACTIVE_STORED_ID),
+      busy: true,
+      turnLive: true
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+      await Promise.resolve()
+    })
+    expect(activeListCalls(requestGateway)).toBeGreaterThan(connectPull)
+
+    unmount()
+  })
+})

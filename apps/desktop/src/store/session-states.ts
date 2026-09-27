@@ -385,6 +385,20 @@ function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolea
   return Boolean(state && (state.busy || state.awaitingResponse || state.turnLive) && !state.needsInput)
 }
 
+/** True while any known session still has a live turn awaiting events. The
+ *  live-status poll keys its view-gate exemption on this: a slow turn with no
+ *  stream events leaves that poll as the silence watchdog's only witness, so
+ *  it must keep running while one is pending (#125306). */
+export function anyLiveTurnAwaitingEvents(): boolean {
+  for (const state of Object.values($sessionStates.get())) {
+    if (isLiveTurnAwaitingEvents(state)) {
+      return true
+    }
+  }
+
+  return false
+}
+
 const SILENT_TURN_RETRY: ErrorSurface = { code: 'stream_drop', layer: 'streaming', retryable: true }
 
 function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null): ChatMessage[] {

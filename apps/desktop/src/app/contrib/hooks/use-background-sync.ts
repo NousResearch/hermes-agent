@@ -32,6 +32,7 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTiles,
+  anyLiveTurnAwaitingEvents,
   confirmReconnectSettlesExcept,
   noteSessionEvent,
   publishSessionState,
@@ -711,10 +712,13 @@ export function rehydrateLiveSessionStatuses(
       })
     }
 
-    if (working) {
+    if (working || session.status === 'starting') {
       // A poll that still lists the turn is an event. Reset the silence clock
       // so a quiet tool call is not settled; a dead backend stops answering
-      // this poll and the clock runs out.
+      // this poll and the clock runs out. 'starting' feeds the same clock —
+      // for a runtime whose turn the renderer holds live, the agent build IS
+      // the work in flight — without claiming a turn: a lazy resume builds
+      // with no turn at all, so the spinner contract stays off it.
       noteSessionEvent(runtimeSessionId)
     }
 
@@ -829,14 +833,18 @@ export function windowIsActivelyViewed({
   return visibilityState === 'visible' && focused
 }
 
-function visiblePoll(intervalMs: number, tick: () => void): () => void {
+function visiblePoll(intervalMs: number, tick: () => void, keepRunning?: () => boolean): () => void {
   const run = () => {
     // On macOS an unfocused or app-hidden BrowserWindow commonly remains
     // `visibilityState === "visible"`. Visibility alone therefore kept every
     // safety-net gateway poll alive while the user was in another app. These
     // are stale-data backstops, not the live event path, so pause them until
-    // the window is actually being viewed and catch up immediately on focus.
-    if (windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })) {
+    // the window is actually being viewed and catch up immediately on focus —
+    // unless the caller carries liveness a live turn still depends on.
+    if (
+      keepRunning?.() ||
+      windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })
+    ) {
       tick()
     }
   }
@@ -1094,7 +1102,13 @@ export function useBackgroundSync({
 
     const dispose = visiblePoll(
       changeEventsAvailable ? LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS : LIVE_SESSION_STATUS_POLL_INTERVAL_MS,
-      () => void refreshLiveStatuses()
+      () => void refreshLiveStatuses(),
+      // A slow turn — a self-hosted model prefills for minutes with no stream
+      // events and no state.db writes — leaves this poll as the silence
+      // watchdog's only witness. While any turn is live it must keep polling
+      // even when the window is not being viewed, or the watchdog force-settles
+      // a healthy turn as a stream drop 45s in (#125306).
+      anyLiveTurnAwaitingEvents
     )
 
     void refreshLiveStatuses()

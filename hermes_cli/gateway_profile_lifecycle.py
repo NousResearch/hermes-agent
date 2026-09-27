@@ -29,6 +29,8 @@ def profile_lifecycle(command: str, args) -> bool:
         # verbs keep addressing its own gateway process even while a stale host record lists it.
         return False
     marker = parked_marker_path(home)
+    if command == "restart" and profile_is_parked(home) and not gw.find_gateway_pids():
+        command = "start"
     if command == "start":
         if not profile_is_parked(home):
             return False

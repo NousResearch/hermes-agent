@@ -48,7 +48,7 @@ async def _assert_persisted_event(
     assert isinstance(received, RoomGetEventResponse), received
     server_time = received.event.source["origin_server_ts"] / 1000
 
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         row = _persisted_user_row(gateway, sent.event_id)
         if row is not None:

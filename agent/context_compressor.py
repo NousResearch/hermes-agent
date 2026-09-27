@@ -282,6 +282,18 @@ def summary_guard_findings(content: str) -> List[str]:
     return findings
 
 
+def record_directive_guard(compressor: Any, outcome: str, removed: int = 0) -> None:
+    """Count a guard trip on this attempt's ``compression_attempt`` telemetry: ``directive_guard`` is
+    ``regenerated`` or ``sanitized``, ``directive_lines_removed`` the lines cut (the counter #86424
+    would surface). Module-level so the micro path, a mixin method, shares it."""
+    telemetry = getattr(compressor, "_active_compression_telemetry", None)
+    if not isinstance(telemetry, dict):
+        return
+    telemetry["directive_guard"] = outcome
+    if removed:
+        telemetry["directive_lines_removed"] = int(telemetry.get("directive_lines_removed") or 0) + removed
+
+
 def sanitize_summary_directives(content: str) -> Tuple[str, int]:
     """``(content_without_directive_lines, removed_count)``.
 
@@ -3912,6 +3924,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if not findings:
             return content
         logger.warning("Compaction summary tripped the directive guard (%s); regenerating once", "; ".join(findings))
+        record_directive_guard(self, "regenerated")
         from agent.agent_runtime_helpers import strip_think_blocks
 
         retry = strip_think_blocks(None, self._call_summary_llm(prompt, prompt_started_at)).strip()
@@ -3924,6 +3937,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             "Compaction summary tripped the directive guard again (%s); removed %d directive line(s)",
             "; ".join(remaining), removed,
         )
+        record_directive_guard(self, "sanitized", removed)
         if not cleaned:
             raise RuntimeError("Context compression summary was directive-shaped and empty once sanitized")
         if not removed:

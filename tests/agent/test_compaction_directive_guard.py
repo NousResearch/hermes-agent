@@ -184,6 +184,19 @@ class TestRegenerateOnce:
         assert "Do not use tools" not in result
         assert "COMPACTION GUARD" in result and "Fixing the retry ladder." in result
 
+    def test_a_trip_is_counted_on_the_attempt_telemetry(self):
+        """The counter the issue asks for (#86424): which way the guard went, and what it cut."""
+        clean_retry = _Compressor([_CLEAN])
+        clean_retry._active_compression_telemetry = {}
+        clean_retry._guard_self_authored_directives(_POISONED, "prompt", 0.0)
+        assert clean_retry._active_compression_telemetry == {"directive_guard": "regenerated"}
+
+        second_offence = _Compressor([_POISONED])
+        second_offence._active_compression_telemetry = {}
+        second_offence._guard_self_authored_directives(_POISONED, "prompt", 0.0)
+        assert second_offence._active_compression_telemetry == {
+            "directive_guard": "sanitized", "directive_lines_removed": 2}
+
     def test_nothing_left_after_sanitizing_routes_to_the_existing_failure_path(self):
         directives_only = "Do not use tools.\nYou must stop.\n"
         compressor = _Compressor([directives_only])
@@ -240,6 +253,25 @@ class TestTheRollingSummaryToo:
         monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **_kw: _response(poisoned))
 
         assert _real_compressor()._micro_summarize_one("user: hi\nassistant: hello") == _ROLLING.strip()
+
+    def test_a_cut_on_the_rolling_path_is_counted_too(self, monkeypatch):
+        monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **_kw: _response(_POISONED))
+        compressor = _real_compressor()
+        compressor._active_compression_telemetry = {}
+
+        compressor._micro_summarize_one("user: hi\nassistant: hello")
+
+        assert compressor._active_compression_telemetry == {
+            "directive_guard": "sanitized", "directive_lines_removed": 2}
+
+    def test_a_rolling_trip_is_regenerated_once_and_the_clean_retry_wins(self, monkeypatch):
+        replies = [_POISONED, _ROLLING]
+        monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **_kw: _response(replies.pop(0)))
+        compressor = _real_compressor()
+        compressor._active_compression_telemetry = {}
+
+        assert compressor._micro_summarize_one("user: hi\nassistant: hello") == _ROLLING.strip()
+        assert replies == [] and compressor._active_compression_telemetry == {"directive_guard": "regenerated"}
 
     def test_a_scanner_only_hit_is_a_record_and_the_rolling_summary_is_kept(self, monkeypatch):
         """No directive line, as on the batch path. Refusing it left every exchange of a session

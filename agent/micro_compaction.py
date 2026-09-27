@@ -132,6 +132,31 @@ class MicroCompactionMixin:
                 "api_key": self.api_key or "", "api_mode": getattr(self, "api_mode", "") or "",
             })
 
+        content = self._micro_summary_call(call_llm, aux_interrupt_protection, call_kwargs)
+        if content is None:
+            return None
+        # Self-authored directives (#120439): the rolling summary is re-injected into every later
+        # micro-compact pass and into the request, so a directive the summarizer wrote for its
+        # successor compounds. As on the batch path: regenerate once, and if the retry still issues
+        # one, cut those lines and keep the rest. Refusing instead left the exchange unabsorbed, and a
+        # summary that keeps tripping is skipped after a few failures and lost. Only directive lines
+        # trigger this: a scanner-only hit with no such line is a record (a session that ran
+        # `cat .env`), and regenerating it would double every pass for no change. No marker: this
+        # text is fed back every pass and would accumulate one.
+        if not _cc().sanitize_summary_directives(content)[1]:
+            return content
+        logger.warning("micro-summarization wrote an instruction for its successor; regenerating once")
+        _cc().record_directive_guard(self, "regenerated")
+        retry = self._micro_summary_call(call_llm, aux_interrupt_protection, call_kwargs)
+        if retry and not _cc().sanitize_summary_directives(retry)[1]:
+            return retry
+        cleaned, removed = _cc().sanitize_summary_directives(retry or content)
+        logger.warning("micro-summarization: removed %d directive line(s) the summarizer wrote", removed)
+        _cc().record_directive_guard(self, "sanitized", removed)
+        return cleaned or None
+
+    def _micro_summary_call(self, call_llm, aux_interrupt_protection, call_kwargs: Dict[str, Any]) -> Optional[str]:
+        """One micro-summary aux call, or None when it failed or returned nothing usable."""
         try:
             with aux_interrupt_protection():
                 response = call_llm(**call_kwargs)
@@ -158,19 +183,6 @@ class MicroCompactionMixin:
         if _cc()._is_refusal_response(response, content):
             logger.warning("micro-summarization returned refusal content — discarding unusable summary")
             return None
-        # Self-authored directives (#120439): the rolling summary is re-injected into every later
-        # micro-compact pass and into the request, so a directive the summarizer wrote for its
-        # successor compounds. Cut the lines that issue one and keep the rest, as the batch guard
-        # does on a second offence. Refusing instead left the exchange unabsorbed, and a summary
-        # that keeps tripping (a session that ran `cat .env`) is skipped after a few failures and
-        # lost. A scanner-only hit is kept, as on the batch path: with no directive line it is a
-        # record. No marker: this text is fed back every pass and would accumulate one.
-        cleaned, removed = _cc().sanitize_summary_directives(content)
-        if removed:
-            logger.warning("micro-summarization: removed %d directive line(s) the summarizer wrote", removed)
-            if not cleaned:
-                return None
-            return cleaned
         return content
 
     def _needs_defrag(self) -> bool:

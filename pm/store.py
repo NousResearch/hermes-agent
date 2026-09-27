@@ -238,18 +238,19 @@ _APPLE_DOUBLE_PREFIX = "._"
 
 
 def _purge_os_metadata(dest: Path) -> None:
-    for entry in dest.iterdir():
-        if not entry.is_file():
-            continue
-        if entry.name in _OS_METADATA_FILES or entry.name.startswith(
-            _APPLE_DOUBLE_PREFIX
-        ):
-            try:
-                entry.unlink()
-            except OSError:
-                # A metadata file the OS refuses to delete right now (e.g. a
-                # locked Thumbs.db) is inert next to the hoisted layout.
-                pass
+    # Walk the whole subtree, not just the direct children: a node-style
+    # wrapper carries lib/node_modules/..., and Finder drops strays into
+    # freshly browsed directories at any depth, not only beside the layout.
+    for dirpath, _, filenames in os.walk(dest):
+        for fname in filenames:
+            if fname in _OS_METADATA_FILES or fname.startswith(_APPLE_DOUBLE_PREFIX):
+                try:
+                    (Path(dirpath) / fname).unlink()
+                except OSError:
+                    # A metadata file the OS refuses to delete right now (e.g. a
+                    # locked Thumbs.db) is inert next to the hoisted layout —
+                    # and tree_digest skips it, so it cannot move the digest.
+                    pass
 
 
 def flatten_single_dir(dest: Path) -> None:
@@ -298,7 +299,11 @@ def tree_digest(root: Path) -> str:
     ``__pycache__`` directories are skipped: CPython writes .pyc caches
     into them the first time the staged interpreter runs (uv venv/uv sync
     in a bundle build; first boot of a shipped app), so they are runtime
-    state, not package bytes — the digest is over what pm published."""
+    state, not package bytes — the digest is over what pm published.
+    OS metadata sidecars (``_OS_METADATA_FILES``, AppleDouble ``._*``) are
+    the same category: Finder/Explorer write them at any time after the
+    staging purge, so hashing them would make a verified build read as a
+    different one and trip the freshness comparison in verified_tools."""
     import hashlib
 
     files: list[tuple[str, Path]] = []
@@ -312,6 +317,8 @@ def tree_digest(root: Path) -> str:
                 descend.append(name)
         dirnames[:] = descend
         for fname in filenames:
+            if fname in _OS_METADATA_FILES or fname.startswith(_APPLE_DOUBLE_PREFIX):
+                continue
             path = Path(dirpath) / fname
             files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])

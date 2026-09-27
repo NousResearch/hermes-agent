@@ -101,7 +101,9 @@ cache break — keep it the only one. Full detail:
   Every physical attempt funnels through `_relay_sync_completion` / `_relay_async_completion` /
   `_relay_sync_stream`, where `agent/auxiliary_hooks.py` emits `pre_auxiliary_call` /
   `post_auxiliary_call` (observer-only, fail-open, `aux_task` set); the main-loop
-  `pre/post_api_request` events must NOT fire for aux calls (#79733).
+  `pre/post_api_request` events must NOT fire for aux calls (#79733). Stream watchdog,
+  forward-progress hooks, and interrupt-protection plumbing live in
+  `agent/auxiliary_watchdog.py` (facade re-exports its names).
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
   against a temp `HERMES_HOME`, not mocks (root rubric).
 

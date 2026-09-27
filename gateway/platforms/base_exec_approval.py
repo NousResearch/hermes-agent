@@ -11,13 +11,16 @@ No imports from ``gateway.platforms.base`` or ``gateway.run`` — both import th
 
 from __future__ import annotations
 
+import re
+
 # Bare strings; adapters add their own bold/HTML around them.
 EA_HEADER_TEXT = "Hermes wants to run a command that needs your OK"
 EA_REASON_LABEL_TEXT = "Why it was flagged"
 
-# The plain-text fallback shows this many characters of the command before cutting. It matches
-# the button card's ``BasePlatformAdapter._EA_CMD_BUDGET``: a human approving a command has to be
-# able to read it, and 200 characters (the old cap) hid the end of ordinary multi-line commands.
+# The plain-text fallback shows this many characters of the command before cutting: the base
+# ``BasePlatformAdapter._EA_CMD_BUDGET`` default (some adapters lower their button card's budget;
+# the fallback instead fits the adapter's message cap, below). A human approving a command has to
+# be able to read it, and 200 characters (the old cap) hid the end of ordinary multi-line commands.
 EA_FALLBACK_CMD_BUDGET = 3000
 # On an adapter whose message cap cannot hold the full budget the preview shrinks to fit, but
 # never below the old fixed cut.
@@ -30,6 +33,15 @@ def fit_command_preview(command: str, budget: int = EA_FALLBACK_CMD_BUDGET) -> s
     if len(command) <= budget:
         return command
     return f"{command[:budget]}\n... [{len(command) - budget} more characters not shown]"
+
+
+def command_fence(text: str) -> str:
+    """A backtick fence longer than any backtick run in ``text``. A code block closes only on a
+    fence at least as long as the one that opened it, so a command containing ``` cannot close the
+    block early and forge prompt lines (a fake reason, a fake ``/approve``) after it. In plain text
+    the real fence stays distinct from anything inside the command for the same reason."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
 
 # Timeout notice posted when nobody answered the prompt (``{window}`` = "5 minutes").
 APPROVAL_TIMED_OUT_NOTICE = (

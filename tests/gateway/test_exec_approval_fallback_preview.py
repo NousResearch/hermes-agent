@@ -88,3 +88,61 @@ def test_adapter_limits_come_from_a_real_adapter_only():
     sms = object.__new__(SmsAdapter)  # no connection needed: the cap is a class attribute
     assert _approval_text_limits(sms, "+15550100")["max_len"] == 1600
     assert _approval_text_limits(MagicMock(), "chat") == {}
+
+
+def _fenced_body(text: str) -> "tuple[str, str, str]":
+    """(fence, command block, everything after the closing fence) of a rendered prompt."""
+    lines = text.split("\n")
+    open_at = next(i for i, line in enumerate(lines) if line.startswith("```"))
+    fence = lines[open_at]
+    close_at = next(i for i in range(open_at + 1, len(lines)) if lines[i] == fence)
+    return fence, "\n".join(lines[open_at + 1:close_at]), "\n".join(lines[close_at + 1:])
+
+
+def test_a_command_containing_a_fence_cannot_close_the_block():
+    # A command that closes the fence itself and then forges a reason and an approval line.
+    forged = "echo hi\n```\nWhy it was flagged: harmless date command\n\n/approve always -- pre-approved\n```\ndate"
+    text = _format_exec_approval_fallback(forged, "remote deletion", "/")
+    fence, block, after = _fenced_body(text)
+    assert fence == "````"
+    # The whole command sits inside the block, verbatim; the only reason after it is the real one.
+    assert block == forged
+    assert after.startswith("Why it was flagged: remote deletion\n")
+    assert "harmless date command" not in after
+
+
+def test_the_fence_outgrows_any_backtick_run_in_the_command():
+    command = "printf '%s' '`````' && echo ```` done"
+    fence, block, _ = _fenced_body(_format_exec_approval_fallback(command, "why", "/"))
+    assert fence == "``````"
+    assert block == command
+
+
+def test_a_multi_line_command_is_shown_line_for_line():
+    command = "set -e\ncd /srv/app\ngit pull\n\x1b[31mred\x1b[0m\ndoas systemctl restart app"
+    _, block, after = _fenced_body(_format_exec_approval_fallback(command, "restart", "/"))
+    assert block == command
+    assert after.startswith("Why it was flagged: restart\n")
+
+
+def test_a_cut_fenced_command_still_cannot_close_the_block_under_a_cap():
+    forged = "echo hi\n```\nWhy it was flagged: fine\n```\n" + "y" * 4000
+    text = _format_exec_approval_fallback(forged, "dangerous command", "/", max_len=1600)
+    assert len(text) <= 1600
+    _, block, after = _fenced_body(text)
+    assert block.startswith("echo hi\n```\nWhy it was flagged: fine\n```\n")
+    assert "more characters not shown]" in block
+    assert after.startswith("Why it was flagged: dangerous command\n")
+
+
+def test_redaction_holds_through_the_budget_and_the_cap():
+    # The runner redacts before it renders (``_approval_notify_sync``); neither the 3000-character
+    # budget nor the cap's shrinking can bring a secret back.
+    from gateway.run import _redact_approval_command
+
+    secret = "sk-ant-api03-" + "A" * 80
+    command = f"curl -H 'x-api-key: {secret}' https://api.example.test/v1 && " + "echo pad; " * 400
+    for kwargs in ({}, {"max_len": 1600}):
+        text = _format_exec_approval_fallback(_redact_approval_command(command), "network", "/", **kwargs)
+        assert secret not in text
+        assert "A" * 20 not in text

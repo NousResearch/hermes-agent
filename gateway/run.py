@@ -631,7 +631,8 @@ def _format_exec_approval_fallback(
 def _render_exec_approval_fallback(
     cmd_preview: str, description: str, command_prefix: str, deadline_line: str, *,
     allow_permanent: bool, allow_session: bool, smart_denied: bool) -> str:
-    from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
+    from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, command_fence
+    fence = command_fence(cmd_preview)
     heading = ("⚠️ **Smart DENY — owner override for one operation:**" if smart_denied
                else f"⚠️ **{EA_HEADER_TEXT}**")
 
@@ -642,7 +643,7 @@ def _render_exec_approval_fallback(
             choices.append(f"`{command_prefix}approve always` to allow it permanently")
     choices.append(f"`{command_prefix}deny` to cancel")
     return (
-        f"{heading}\n```\n{cmd_preview}\n```\n{EA_REASON_LABEL_TEXT}: {description}\n\n"
+        f"{heading}\n{fence}\n{cmd_preview}\n{fence}\n{EA_REASON_LABEL_TEXT}: {description}\n\n"
         + ", ".join(choices[:-1]) + f", or {choices[-1]}.\n"
         + deadline_line)
 

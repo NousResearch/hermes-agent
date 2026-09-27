@@ -11,13 +11,14 @@ import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { $dismissedWorktreeIds, $removedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { removeWorktreePath } from '@/store/projects'
+import { $projectOwnerBySessionId, $projects, removeWorktreePath } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 
 import { PROJECT_SESSION_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
+  liveSessionsForProject,
   mergeRepoWorktreeGroups,
   overlayRepoLanes,
   type SidebarProjectTree,
@@ -47,6 +48,14 @@ export function EnteredProjectContent({
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
 }) {
+  const projects = useStore($projects)
+  const owners = useStore($projectOwnerBySessionId)
+
+  const projectLiveSessions = useMemo(
+    () => liveSessionsForProject(project, liveSessions ?? [], projects, owners),
+    [project, liveSessions, projects, owners]
+  )
+
   if (!project.repos.length) {
     return null
   }
@@ -65,7 +74,7 @@ export function EnteredProjectContent({
         <RepoFlatSection
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
           key={repo.id}
-          liveSessions={liveSessions}
+          liveSessions={projectLiveSessions}
           onNewSession={onNewSession}
           onNewSessionSplit={onNewSessionSplit}
           removedSessionIds={removedSessionIds}

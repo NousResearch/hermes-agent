@@ -160,6 +160,7 @@ import { ProjectDialog } from './project-dialog'
 import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
+  liveSessionsForProject,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -1107,8 +1108,16 @@ export function ChatSidebar({
   }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
 
   const enteredProjectOverlaySessions = useMemo(
-    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
-    [agentSessions, overviewEnteredProject?.previewSessions]
+    () =>
+      enteredProject
+        ? liveSessionsForProject(
+            enteredProject,
+            reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
+            projects,
+            projectOwners
+          )
+        : [],
+    [agentSessions, overviewEnteredProject?.previewSessions, enteredProject, projects, projectOwners]
   )
 
   // Overlay live `$sessions` onto the entered project so a just-created session

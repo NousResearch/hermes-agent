@@ -595,6 +595,23 @@ const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[]
   return [session, ...rows.filter(row => !isSame(row))].sort((a, b) => sessionRecency(b) - sessionRecency(a))
 }
 
+/** Admit optimistic rows by project ownership, never by a shared repo ancestor. */
+export function liveSessionsForProject(
+  project: SidebarProjectTree,
+  live: SessionInfo[],
+  explicitProjects: ProjectInfo[],
+  owners: ReadonlyMap<string, string>
+): SessionInfo[] {
+  const snapshotOwners = projectOwnerBySessionId([project])
+
+  return live.filter(session => {
+    // Preserve Home and compression-lineage ownership even when cwd is stale.
+    const owner = ownerOf(owners, session) ?? ownerOf(snapshotOwners, session)
+
+    return (owner ?? sessionBucketId(session, explicitProjects)) === project.id
+  })
+}
+
 /** A live row's placement path, with an exact repo-root fallback when cwd is absent. */
 function livePathForRepo(repoRoot: string, session: SessionInfo): string {
   const cwd = (session.cwd || '').trim()

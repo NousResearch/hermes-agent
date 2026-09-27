@@ -39,10 +39,19 @@ def world(tmp_path, monkeypatch):
     return source, target, home, calls
 
 
+def test_legacy_callers_keep_noninteractive_replacement_refusal(world):
+    source, target, home, calls = world
+    result = pc.dashboard_install_plugin(source.as_uri(), force=True, enable=False)
+    assert not result['ok']
+    assert 'dependency install skipped (non-interactive)' in result['error']
+    assert not result.get('consent_required')
+    assert not calls
+
+
 def test_non_tty_replacement_returns_review_without_publication(world):
     source, target, home, calls = world
     before = {p: p.read_bytes() for p in [target / '__init__.py', target / 'plugin.yaml', home / 'config.yaml']}
-    result = pc.dashboard_install_plugin(source.as_uri(), force=True, enable=False)
+    result = pc.dashboard_install_plugin(source.as_uri(), review_python_dependencies=True, force=True, enable=False)
     assert all(p.read_bytes() == content for p, content in before.items())
     assert not calls
     assert result.get('consent_required') is True, result
@@ -74,13 +83,13 @@ def test_acceptance_reaches_real_publication_and_stale_answer_does_not(world, mo
         change = kind(dict(kwargs['plugins'].data))
         change.publish(tmp_path)
     monkeypatch.setattr('pm.client.sync_venv', publish)
-    first = pc.dashboard_install_plugin(source.as_uri(), force=True, enable=fresh)
+    first = pc.dashboard_install_plugin(source.as_uri(), review_python_dependencies=True, force=True, enable=fresh)
     token = first['dependency_consent']
     # Changed install intent cannot borrow a previous answer.
-    stale = pc.dashboard_install_plugin(source.as_uri(), force=True, enable=not fresh, dependency_consent=token)
+    stale = pc.dashboard_install_plugin(source.as_uri(), review_python_dependencies=True, force=True, enable=not fresh, dependency_consent=token)
     assert stale['consent_required']
     assert not calls
-    result = pc.dashboard_install_plugin(source.as_uri(), force=True, enable=fresh, dependency_consent=token)
+    result = pc.dashboard_install_plugin(source.as_uri(), review_python_dependencies=True, force=True, enable=fresh, dependency_consent=token)
     assert result['ok'], result
     assert len(calls) == (2 if fresh else 1)
     if fresh:
@@ -128,16 +137,35 @@ def test_review_answer_cannot_follow_a_changed_candidate(world, tmp_path, drift)
 
 def test_accepted_review_preserves_pm_refusal(world, monkeypatch):
     source, target, home, calls = world
-    first = pc.dashboard_install_plugin(source.as_uri(), force=True, enable=False)
+    first = pc.dashboard_install_plugin(source.as_uri(), review_python_dependencies=True, force=True, enable=False)
     old = (target / '__init__.py').read_bytes()
     def refuse(**kwargs):
         raise RuntimeError('fixture dependency conflict')
     monkeypatch.setattr('pm.client.sync_venv', refuse)
-    result = pc.dashboard_install_plugin(source.as_uri(), force=True, enable=False,
+    result = pc.dashboard_install_plugin(source.as_uri(), review_python_dependencies=True, force=True, enable=False,
                                          dependency_consent=first['dependency_consent'])
     assert not result['ok']
     assert 'fixture dependency conflict' in result['error']
     assert (target / '__init__.py').read_bytes() == old
+
+
+def test_catalog_install_reviews_pinned_candidate_and_keeps_kill_list(world, monkeypatch):
+    from hermes_cli import plugins_cmd_catalog as catalog
+    source, target, home, calls = world
+    sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
+    entry = plugin_catalog.PluginCatalogEntry(name='consent-test', repo=source.as_uri(), sha=sha,
+                                               description='fixture', maintainer='test')
+    monkeypatch.setattr(catalog, 'get_live_catalog_entry', lambda name: entry)
+    result = pc.dashboard_install_plugin('', review_python_dependencies=True, force=True, enable=False, catalog_name='consent-test')
+    assert result['consent_required'], result
+    assert result['python_dependencies'] == ['requests>=2,<3']
+    monkeypatch.setattr(plugin_catalog, 'load_removed_list', lambda *args, **kwargs: [
+        plugin_catalog.RemovedEntry(name='consent-test', repo=source.as_uri(), reason='fixture recall')])
+    result = pc.dashboard_install_plugin('', review_python_dependencies=True, force=True, enable=False, catalog_name='consent-test',
+                                         dependency_consent=result['dependency_consent'])
+    assert not result['ok']
+    assert 'fixture recall' in result['error']
+    assert not calls
 
 
 @pytest.mark.parametrize('kind', ['fresh', 'pyproject', 'external', 'none', 'invalid'])
@@ -155,7 +183,7 @@ def test_declaration_boundaries(world, kind):
             (source / 'pyproject.toml').write_text('[project\n')
         subprocess.run(['git', 'add', '.'], cwd=source, check=True, capture_output=True)
         subprocess.run(['git', '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', kind], cwd=source, check=True, capture_output=True)
-    result = pc.dashboard_install_plugin(source.as_uri(), force=True, enable=False)
+    result = pc.dashboard_install_plugin(source.as_uri(), review_python_dependencies=True, force=True, enable=False)
     if kind in {'fresh', 'pyproject'}:
         assert result['consent_required'], result
         assert not calls

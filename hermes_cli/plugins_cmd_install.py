@@ -539,6 +539,7 @@ def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
     ref: Optional[str] = None,
     dependency_consent: Optional[str] = None,
+    review_python_dependencies: bool = False,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
@@ -550,6 +551,9 @@ def dashboard_install_plugin(
         review_install_dependencies(staged, target, record, enable=enable, force=force,
                                     accepted=dependency_consent)
 
+    # Only clients implementing the review/retry protocol opt in. Other
+    # established callers (e.g. memory-provider migration) retain their contract.
+    reviewer = review if review_python_dependencies or dependency_consent is not None else None
     warnings: list[str] = []
     entry = None
     if catalog_name:
@@ -571,10 +575,10 @@ def dashboard_install_plugin(
     try:
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, allow_removed=False, dependency_review=review)
+                entry, force=force, allow_removed=False, dependency_review=reviewer)
         else:
             target, installed_manifest, installed_name = _pc()._install_plugin_core(
-                identifier, force=force, ref=(ref or "").strip() or None, dependency_review=review)
+                identifier, force=force, ref=(ref or "").strip() or None, dependency_review=reviewer)
     except DependencyConsentRequired as exc:
         return {"ok": False, "consent_required": True, "python_dependencies": list(exc.dependencies),
                 "dependency_consent": exc.token, "error": str(exc)}

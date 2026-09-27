@@ -16,6 +16,7 @@ The record is written as raw JSON so the file collects against a tree without th
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -80,7 +81,10 @@ def test_start_all_never_sweeps_a_live_host_multiplexer(host_owner, monkeypatch,
         raise AssertionError("start --all SIGTERMed the host multiplexer")
 
     monkeypatch.setattr(gw, "kill_gateway_processes", _never)
-    monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer", lambda **k: None)
+    monkeypatch.setattr(
+        gw, "_guard_named_profile_under_multiplexer",
+        lambda **k: pytest.fail("the generic profile guard pre-empted start --all"),
+    )
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda verb: False)
     monkeypatch.setattr(gw, "_service_backend", lambda: None)
     monkeypatch.setattr(gw, "find_gateway_pids", lambda **k: [])
@@ -92,6 +96,70 @@ def test_start_all_never_sweeps_a_live_host_multiplexer(host_owner, monkeypatch,
     # The served set survives the verb: all three profiles are still reported as served.
     for profile in ("default", "ops", "coder"):
         assert profile in out
+
+
+def test_named_profile_start_all_starts_the_default_host_service(monkeypatch, tmp_path):
+    """With no live owner, `-p X gateway start --all` must start the host root, never X's gateway.
+
+    Skipping the generic named-profile guard alone is insufficient on Windows: the Windows backend
+    derives its Scheduled Task name, launcher HERMES_HOME and detached child from the active home.
+    """
+    import hermes_constants
+
+    root = tmp_path / "hermes"
+    named = root / "profiles" / "leinad"
+    root.mkdir()
+    named.mkdir(parents=True)
+    (root / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (named / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(named))
+    hermes_constants._default_hermes_root_memo = None
+    monkeypatch.setattr(
+        gw, "_guard_named_profile_under_multiplexer",
+        lambda **k: pytest.fail("the generic profile guard pre-empted start --all"),
+    )
+    monkeypatch.setattr(gw, "_host_multiplexer_for_all_verb", lambda: None)
+    monkeypatch.setattr(gw, "_service_mgmt_blocked", lambda: False)
+    monkeypatch.setattr(gw, "_service_backend", lambda: "windows")
+
+    calls = []
+
+    def _observe(step):
+        calls.append((
+            step,
+            Path(hermes_constants.get_hermes_home()),
+            os.environ.get("HERMES_HOME"),
+        ))
+
+    def _kill(**kwargs):
+        assert kwargs == {"all_profiles": True}
+        _observe("kill")
+        return 1
+
+    monkeypatch.setattr(gw, "kill_gateway_processes", _kill)
+    monkeypatch.setattr(gw, "_wait_for_gateway_exit",
+                        lambda **k: _observe("wait") or True)
+    monkeypatch.setattr(gw, "_wait_for_api_server_port_free",
+                        lambda **k: _observe("port") or True)
+
+    def _windows_start():
+        _observe("start")
+
+    # Keep the real _service_call dispatch in the path; only replace the OS-specific leaf.
+    monkeypatch.setattr(gw, "_gw_windows", lambda: SimpleNamespace(start=_windows_start))
+
+    gw._cmd_start(SimpleNamespace(system=False, all=True, force=False))
+
+    assert calls == [
+        ("kill", root, str(root)),
+        ("wait", root, str(root)),
+        ("port", root, str(root)),
+        ("start", root, str(root)),
+    ]
+    # The CLI's named-profile scope is restored after the host-scoped operation.
+    assert hermes_constants.get_hermes_home() == named
+    assert os.environ["HERMES_HOME"] == str(named)
 
 
 def test_restart_all_refuses_to_sweep_a_host_multiplexer_owned_by_another_profile(

@@ -1154,6 +1154,16 @@ const buildVoice = () => ({
   setVoiceEnabled: vi.fn(),
   setVoiceRecordKey: vi.fn(),
   setVoiceTts: vi.fn()
+
+  it('opens /model --session as a session-only picker without gateway writes', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --session')).toBe(true)
+    expect(getOverlayState().modelPicker).toEqual({ sessionOnly: true })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
 })
 
 interface Ctx {

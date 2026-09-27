@@ -226,13 +226,24 @@ def _rebalance_json_closers(raw: str) -> str | None:
     return "".join(out) + "".join(_JSON_CLOSERS[ch] for ch in reversed(stack))
 
 
-def _insert_missing_commas(raw: str) -> str:
+def _insert_missing_commas(raw: str, *, _max_inserts: int | None = None) -> str:
     """Insert commas exactly where ``json.loads`` reports one missing ("Expecting ',' delimiter"):
     a dropped separator between object members or array elements — seen from models/gateways
     around values containing ``:`` or non-ASCII text (#122711). Parser-guided and bounded;
-    the caller accepts the result only if it parses."""
+    the caller accepts the result only if it parses.
+
+    The loop is bounded by INSERTIONS, not iterations: after each insertion the parser
+    re-reports a later offset, so a fixed iteration count silently rejected payloads with
+    more dropped commas than the budget (~1 per loop round) while smaller ones repaired
+    fine — the bridge then rejected argument strings the native path repaired. The default
+    budget scales with the text (one comma per 4 characters is already pathological:
+    no real JSON has a separator every 4 chars), capped so a hostile megabyte-sized blob
+    cannot spin the loop; anything past that is left for the caller's fail-closed path.
+    """
     text = raw
-    for _ in range(50):
+    budget = _max_inserts if _max_inserts is not None else min(1 + len(raw) // 4, 10_000)
+    while budget > 0:
+        budget -= 1
         try:
             json.loads(text, strict=False)
             return text

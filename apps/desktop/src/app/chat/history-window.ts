@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { capabilityScoped, hermesApi, type ProfileScope } from '@/api/client'
+import { sessionOwnerScope } from '@/api/sessions'
 import {
   cachedTimelineIndex,
   previousPromptRowId,
@@ -36,7 +37,10 @@ export async function fetchHistoryWindow(
   signal: AbortSignal
 ): Promise<HistoryPage> {
   signal.throwIfAborted()
-  const route = capabilityScoped(scope)
+  // Unscoped: resolve the session's owner so the read cannot ride the window's
+  // ambient connection (#125372); an explicit scope is the caller's decision.
+  const effectiveScope = scope ?? sessionOwnerScope(storedId)
+  const route = capabilityScoped(effectiveScope)
   const query = new URLSearchParams({ row_id: String(rowId), limit: String(HISTORY_WINDOW_LIMIT) })
 
   if (route.profile) {
@@ -48,7 +52,7 @@ export async function fetchHistoryWindow(
   // it does not pretend to cancel backend I/O or fall back to a full transcript.
   const response = await hermesApi<HistoryWindowResponse>({
     ...route,
-    ...(typeof scope === 'object' && scope?.connectionId === 'local' ? { connectionId: 'local' } : {}),
+    ...(typeof effectiveScope === 'object' && effectiveScope?.connectionId === 'local' ? { connectionId: 'local' } : {}),
     method: 'GET',
     path: `/api/sessions/${encodeURIComponent(storedId)}/messages/around?${query}`
   })

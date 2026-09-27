@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { sessionOwnerScope } from '@/api/sessions'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
@@ -1694,5 +1695,26 @@ describe('rekeySessionTile (#98622 — pane identity across compression tip rota
     rekeySessionTile('tip-old', 'tip-old')
 
     expect($sessionTiles.get()).toEqual([{ storedSessionId: 'tip-old' }])
+  })
+})
+
+describe('owner resolver registration for session-scoped REST reads', () => {
+  // Wiring check for #125372: this module registers knownOwnerForSession as
+  // api/sessions' owner resolver at load, so an unscoped detail/messages/
+  // timeline read routes by the session's owner instead of the window's
+  // ambient connection.
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
+  it('answers sessionOwnerScope from the registered owner ladder', () => {
+    const ownerRoute = { connectionId: 'dale-home-lan-9119', mode: 'remote' as const, profile: 'default' }
+
+    $sessionTiles.set([{ ownerRoute, storedSessionId: 'owner-read' } as SessionTile])
+
+    expect(sessionOwnerScope('owner-read')).toEqual({ connectionId: 'dale-home-lan-9119', profile: 'default' })
+    // An id with no tile/hint/row/runtime entry resolves nothing — the read
+    // keeps the ambient path rather than guessing an owner.
+    expect(sessionOwnerScope('never-opened')).toBeUndefined()
   })
 })

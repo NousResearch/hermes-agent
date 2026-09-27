@@ -100,4 +100,57 @@ describe('timeline metadata index', () => {
     expect(await previousPromptRowId('endless', 'default', 99_999)).toBe(1)
     expect(api).toHaveBeenCalledTimes(5)
   })
+
+  it('resolves the owner for an unscoped timeline read and shares the cache with explicit scopes', async () => {
+    // Regression (#125372): an unscoped timeline read used to inherit the
+    // window's ambient connection, so on a two-connection setup exposing the
+    // same profile name the read 404'd on the wrong machine's backend.
+    api.mockResolvedValue(page(1, false))
+    const { setSessionOwnerResolver } = await import('@/api/sessions')
+    const { fetchTimelineIndex } = await import('./timeline-index')
+
+    setSessionOwnerResolver(() => ({ connectionId: 'dale-home-lan-9119', profile: 'default' }))
+
+    try {
+      const resolved = await fetchTimelineIndex('owner-session', undefined)
+
+      expect(api).toHaveBeenCalledTimes(1)
+      expect(api.mock.calls[0][0]).toMatchObject({
+        connectionId: 'dale-home-lan-9119',
+        profile: 'default',
+        passive: true
+      })
+      expect((api.mock.calls[0][0] as { path: string }).path).toContain('/api/sessions/owner-session/timeline')
+
+      // The cache key follows the EFFECTIVE scope: an explicit read of the
+      // same owner scope hits the owner-resolved cache row, not the network.
+      const explicit = await fetchTimelineIndex('owner-session', {
+        connectionId: 'dale-home-lan-9119',
+        profile: 'default'
+      })
+
+      expect(api).toHaveBeenCalledTimes(1)
+      expect(explicit).toBe(resolved)
+    } finally {
+      setSessionOwnerResolver(undefined)
+    }
+  })
+
+  it('keeps the ambient path for an unscoped read when no owner is known', async () => {
+    api.mockResolvedValue(page(1, false))
+    const { setSessionOwnerResolver } = await import('@/api/sessions')
+    const { fetchTimelineIndex } = await import('./timeline-index')
+
+    setSessionOwnerResolver(() => undefined)
+
+    try {
+      await fetchTimelineIndex('unknown-owner', undefined)
+
+      expect(api).toHaveBeenCalledTimes(1)
+      expect(api.mock.calls[0][0]).not.toHaveProperty('connectionId')
+      expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
+    } finally {
+      setSessionOwnerResolver(undefined)
+    }
+  })
 })

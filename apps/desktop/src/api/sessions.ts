@@ -60,6 +60,52 @@ function sessionScopeQuery(scope?: ProfileScope): string {
   return profile ? `?profile=${encodeURIComponent(profile)}` : ''
 }
 
+// A session-scoped read that carries no caller scope inherits the window's
+// ambient connection tag (hermesApi spreads connectionScoped()), so with two
+// registry connections exposing the SAME profile name — both `default` is
+// enough — the read lands on whichever machine the window is activated on and
+// the other machine's session answers 404 "Session not found" (#125372). The
+// renderer already knows each session's owner (tile route → persisted owner
+// hint → connection-stamped row → runtime ledger, session-states); the store
+// registers that ladder here, mirroring client.ts's no-store-import contract
+// for the ambient scope setters. Explicit caller scopes always win; an
+// unknown owner keeps the ambient path unchanged.
+export interface SessionOwnerLookup {
+  connectionId?: null | string
+  profile?: null | string
+  targetProfile?: null | string
+}
+
+type SessionOwnerResolver = (sessionId: string) => SessionOwnerLookup | string | undefined | null
+
+let _resolveSessionOwner: SessionOwnerResolver | undefined
+
+export function setSessionOwnerResolver(resolver?: SessionOwnerResolver): void {
+  _resolveSessionOwner = resolver
+}
+
+/** The owner scope for a session-scoped read whose caller passed none. */
+export function sessionOwnerScope(sessionId: string): ProfileScope | undefined {
+  const owner = _resolveSessionOwner?.(sessionId)
+
+  if (!owner) {
+    return undefined
+  }
+
+  if (typeof owner === 'string') {
+    return owner.trim() || undefined
+  }
+
+  const connectionId = String(owner.connectionId ?? '').trim()
+  const profile = String(owner.targetProfile ?? owner.profile ?? '').trim()
+
+  if (!connectionId && !profile) {
+    return undefined
+  }
+
+  return { ...(connectionId ? { connectionId } : {}), ...(profile ? { profile } : {}) }
+}
+
 /**
  * The active registered gateway owns every row it returns, but its HTTP APIs
  * correctly know nothing about this Desktop-local registry id. Preserve an
@@ -435,10 +481,14 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
 // 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
 // cross-profile list scan when locating an unknown id's owner.
 export function getSession(id: string, profile?: ProfileScope): Promise<SessionInfo> {
-  const suffix = sessionScopeQuery(profile)
+  // Unscoped: consult the owner ladder so the read cannot ride the window's
+  // ambient connection onto the wrong machine (#125372). Explicit scopes
+  // (string or object) are the caller's routing decision and pass through.
+  const scope = profile ?? sessionOwnerScope(id)
+  const suffix = sessionScopeQuery(scope)
 
   return hermesApi<SessionInfo>({
-    ...sessionScoped(profile),
+    ...sessionScoped(scope),
     path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
   })
 }
@@ -455,7 +505,8 @@ export function getSessionMessages(
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
-  const sessionScope = sessionScoped(profile)
+  // Same owner-resolution contract as getSession (#125372).
+  const sessionScope = sessionScoped(profile ?? sessionOwnerScope(id))
 
   if (sessionScope.profile) {
     query.set('profile', sessionScope.profile)

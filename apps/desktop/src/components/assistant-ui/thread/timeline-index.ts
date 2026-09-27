@@ -1,4 +1,5 @@
 import { capabilityScoped, hermesApi, type ProfileScope } from '@/api/client'
+import { sessionOwnerScope } from '@/api/sessions'
 
 import type { TimelineEntry } from './timeline-data'
 
@@ -33,7 +34,12 @@ export const cachedTimelineIndex = (key: string) => cache.get(key)
  * forward from its own cursor instead of answering from the cache.
  */
 export function fetchTimelineIndex(id: string, scope: ProfileScope, beyondRowId?: number): Promise<TimelineIndex> {
-  const key = timelineIndexKey(id, scope)
+  // Unscoped: resolve the session's owner so the read cannot ride the window's
+  // ambient connection (#125372); an explicit scope is the caller's decision.
+  // The cache key follows the EFFECTIVE scope, so an owner-resolved read and
+  // an explicit read of the same scope share one cache row.
+  const effectiveScope = scope ?? sessionOwnerScope(id)
+  const key = timelineIndexKey(id, effectiveScope)
   const cached = cache.get(key)
   const previous = cached?.complete && cached.expires <= Date.now() ? undefined : cached
 
@@ -52,8 +58,8 @@ export function fetchTimelineIndex(id: string, scope: ProfileScope, beyondRowId?
   }
 
   const route = {
-    ...capabilityScoped(scope),
-    ...(typeof scope === 'object' && scope?.connectionId === 'local' ? { connectionId: 'local' } : {})
+    ...capabilityScoped(effectiveScope),
+    ...(typeof effectiveScope === 'object' && effectiveScope?.connectionId === 'local' ? { connectionId: 'local' } : {})
   }
 
   const query = new URLSearchParams({ limit: '500' })

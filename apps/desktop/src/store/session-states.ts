@@ -19,6 +19,7 @@
 import { type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { setSessionOwnerResolver } from '@/api/sessions'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
@@ -2826,3 +2827,12 @@ if ((import.meta.env.DEV || import.meta.env.VITE_PERF_PROBE === '1') && typeof w
       sessionTileDelegate()?.updateSession(runtimeId, updater)
   }
 }
+
+// Register the owner ladder (tile route → persisted hint → stamped row →
+// runtime ledger, knownOwnerForSession) for session-scoped REST reads that
+// arrive without a caller scope: api/sessions resolves the owner before
+// dispatch so a detail/messages/timeline read cannot ride the window's
+// ambient connection onto the wrong machine when two connections expose the
+// same profile name (#125372). One-way store→api import; the resolver is the
+// injection seam (client.ts's setApiRequestProfile contract).
+setSessionOwnerResolver(sessionId => knownOwnerForSession(sessionId))

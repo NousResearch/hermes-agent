@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SidebarSessionsResponse } from './sessions'
 
@@ -17,9 +17,11 @@ const client = await import('./client')
 const {
   deleteSession,
   getSession,
+  getSessionMessages,
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
+  setSessionOwnerResolver,
   listSidebarSessions
 } = await import('./sessions')
 
@@ -245,5 +247,117 @@ describe('listSidebarSessions storage health', () => {
     })
 
     expect(result.storage).toEqual({ default: 'corrupt' })
+  })
+})
+
+describe('unscoped session reads resolve the owner before dispatch', () => {
+  // Regression (#125372): a detail/messages read that carried no caller scope
+  // inherited the window's ambient connection tag, so with two connections
+  // exposing the same profile name the read landed on whichever machine the
+  // window was activated on and the other machine's session answered 404.
+  // The store registers the owner ladder via setSessionOwnerResolver; an
+  // unscoped read must consult it, an explicit scope must not be overridden.
+  const identityCapabilityScoped = () =>
+    vi.mocked(client.capabilityScoped).mockImplementation(
+      // Mirrors the real capabilityScoped for object scopes: pass profile and
+      // connectionId through (the real one also adds priority, irrelevant here).
+      scope => (typeof scope === 'object' && scope !== null ? { ...scope } : scope) as never
+    )
+
+  afterEach(() => {
+    setSessionOwnerResolver(undefined)
+  })
+
+  it('routes an unscoped getSession through the resolved owner route', async () => {
+    hermesApi.mockResolvedValue({ id: '20260926_223922' } as never)
+    identityCapabilityScoped()
+    setSessionOwnerResolver(() => ({ connectionId: 'dale-home-lan-9119', profile: 'default' }))
+
+    await getSession('20260926_223922')
+
+    expect(client.capabilityScoped).toHaveBeenCalledWith({ connectionId: 'dale-home-lan-9119', profile: 'default' })
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      path: '/api/sessions/20260926_223922?profile=default',
+      connectionId: 'dale-home-lan-9119',
+      profile: 'default'
+    })
+  })
+
+  it('prefers the route targetProfile over the desktop-side profile name', async () => {
+    hermesApi.mockResolvedValue({ id: 's1' } as never)
+    identityCapabilityScoped()
+    setSessionOwnerResolver(() => ({ connectionId: 'cloud', profile: 'desktop-name', targetProfile: 'backend-name' }))
+
+    await getSession('s1')
+
+    expect(client.capabilityScoped).toHaveBeenCalledWith({ connectionId: 'cloud', profile: 'backend-name' })
+  })
+
+  it('keeps an explicit local pin explicit when resolving the owner', async () => {
+    hermesApi.mockResolvedValue({ id: 's1' } as never)
+    identityCapabilityScoped()
+    setSessionOwnerResolver(() => ({ connectionId: 'local', profile: 'default' }))
+
+    await getSession('s1')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      path: '/api/sessions/s1?profile=default',
+      connectionId: 'local',
+      profile: 'default'
+    })
+  })
+
+  it('routes a string owner by profile name alone', async () => {
+    hermesApi.mockResolvedValue({ id: 's2' } as never)
+    identityCapabilityScoped()
+    setSessionOwnerResolver(() => 'invest')
+
+    await getSession('s2')
+
+    expect(client.capabilityScoped).toHaveBeenCalledWith('invest')
+  })
+
+  it('keeps the ambient path when no owner is known', async () => {
+    hermesApi.mockResolvedValue({ id: 's3' } as never)
+    identityCapabilityScoped()
+    setSessionOwnerResolver(() => undefined)
+
+    await getSession('s3')
+
+    // sessionScoped short-circuits an unknown owner to the ambient path —
+    // no scope helper runs, no scope key rides the request.
+    expect(client.capabilityScoped).not.toHaveBeenCalled()
+    expect(hermesApi.mock.calls[0][0]).not.toHaveProperty('connectionId')
+    expect(hermesApi.mock.calls[0][0]).not.toHaveProperty('profile')
+    expect((hermesApi.mock.calls[0][0] as { path: string }).path).not.toContain('profile=')
+  })
+
+  it('never consults the resolver when the caller passed an explicit scope', async () => {
+    hermesApi.mockResolvedValue({ id: 's4' } as never)
+    identityCapabilityScoped()
+    const resolver = vi.fn(() => ({ connectionId: 'dale-home-lan-9119', profile: 'default' }))
+
+    setSessionOwnerResolver(resolver)
+
+    await getSession('s4', 'other-profile')
+
+    expect(resolver).not.toHaveBeenCalled()
+    expect(client.capabilityScoped).toHaveBeenCalledWith('other-profile')
+  })
+
+  it('routes an unscoped getSessionMessages through the resolved owner route', async () => {
+    hermesApi.mockResolvedValue({ messages: [] } as never)
+    identityCapabilityScoped()
+    setSessionOwnerResolver(() => ({ connectionId: 'dale-home-lan-9119', profile: 'default' }))
+
+    await getSessionMessages('s5', undefined, { limit: 10, order: 'latest' })
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      connectionId: 'dale-home-lan-9119',
+      profile: 'default'
+    })
+    expect((hermesApi.mock.calls[0][0] as { path: string }).path).toBe(
+      '/api/sessions/s5/messages?profile=default&limit=10&order=latest'
+    )
   })
 })

@@ -3,11 +3,13 @@ import { act, render } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setSessionOwnerResolver } from '@/api/sessions'
 import { stubThreadEnvironment } from '@/components/assistant-ui/test-utils'
 import { type TranscriptWindowValue, useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $transcriptTailBySessionId } from '@/store/transcript-tail'
 
+import { fetchHistoryWindow } from './history-window'
 import { PRIMARY_SESSION_VIEW, SessionViewProvider } from './session-view'
 
 import { ChatRuntimeBoundary } from '.'
@@ -363,5 +365,45 @@ describe('paging earlier from an open history window', () => {
     expect(mounted.window.currentMessages?.[0]?.rowId).toBe(4000)
     expect(await mounted.window.expandWindow()).toBe(false)
     expect(api).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('fetchHistoryWindow owner resolution', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api: vi.fn() } })
+  })
+
+  it('routes an unscoped around-read through the resolved owner (#125372)', async () => {
+    const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
+    setSessionOwnerResolver(() => ({ connectionId: 'dale-home-lan-9119', profile: 'default' }))
+
+    try {
+      await fetchHistoryWindow('stored', 40, undefined, new AbortController().signal)
+
+      expect(api).toHaveBeenCalledTimes(1)
+      expect(api.mock.calls[0][0]).toMatchObject({
+        connectionId: 'dale-home-lan-9119',
+        profile: 'default'
+      })
+      const url = new URL(api.mock.calls[0][0].path, 'http://test')
+      expect(url.pathname).toBe('/api/sessions/stored/messages/around')
+      expect(url.searchParams.get('profile')).toBe('default')
+    } finally {
+      setSessionOwnerResolver(undefined)
+    }
+  })
+
+  it('keeps the ambient path for an unscoped around-read when no owner is known', async () => {
+    const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
+    setSessionOwnerResolver(() => undefined)
+
+    try {
+      await fetchHistoryWindow('stored', 40, undefined, new AbortController().signal)
+
+      expect(api).toHaveBeenCalledTimes(1)
+      expect(api.mock.calls[0][0]).not.toHaveProperty('connectionId')
+    } finally {
+      setSessionOwnerResolver(undefined)
+    }
   })
 })

@@ -1586,7 +1586,16 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    argv = kbd._resolve_hermes_argv()
+    # The module/launcher form boots this install's own interpreter and never
+    # the attacker-planted PATH shim...
+    assert argv[0] == sys.executable
+    assert "/tmp/planted/hermes" not in argv
+    # ...and the plain ``-m`` fallback is only used when the launcher command
+    # itself cannot be built (#125121).
+    assert argv != [sys.executable, "-m", "hermes_cli.main"] or (
+        kbd._module_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    )
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
@@ -1616,6 +1625,42 @@ def test_resolve_hermes_argv_module_actually_runs():
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
+    )
+
+
+
+def test_resolve_hermes_argv_survives_stripped_child_env():
+    """Regression test for #125121.
+
+    On managed-runtime installs the gateway's ``sys.executable`` is the bare
+    store interpreter: ``-m hermes_cli.main`` only resolved because the
+    parent's launcher shim seeded ``sys.path``, and the worker env strip
+    (``_finalize_child_env``) removes that entry from children — so the old
+    argv crashed every spawn with ModuleNotFoundError. The resolved argv must
+    boot even when the child receives an env with every Hermes-owned
+    PYTHONPATH entry stripped, exactly like a dispatcher worker does.
+    """
+    import subprocess
+    from hermes_cli import kanban_db_dispatch as kbd
+    import shutil
+    import unittest.mock as mock
+
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HERMES_BIN", None)
+        with mock.patch.object(shutil, "which", return_value=None):
+            argv = kbd._resolve_hermes_argv()
+    # Mirror the worker env strip: no PYTHONPATH, no VIRTUAL_ENV, no
+    # PYTHONHOME — nothing ambient that could import hermes_cli for the child.
+    child_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV")
+    }
+    r = subprocess.run(argv + ["--version"], capture_output=True, text=True,
+                       timeout=30, env=child_env)
+    assert r.returncode == 0, (
+        f"`{' '.join(argv)} --version` with a stripped child env failed "
+        f"(rc={r.returncode}); stderr={r.stderr[:200]!r}"
     )
 
 

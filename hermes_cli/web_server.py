@@ -399,8 +399,12 @@ def _parse_ssh_runtime_marker(payload: str) -> Optional[Tuple[int, Optional[floa
     match = _SSH_RUNTIME_MARKER_PAYLOAD_RE.fullmatch(payload)
     if match is None:
         return None
-    create_time = float(match.group(2)) if match.group(2) is not None else None
-    return int(match.group(1)), create_time
+    try:
+        pid = int(match.group(1))
+        create_time = float(match.group(2)) if match.group(2) is not None else None
+    except ValueError:
+        return None
+    return pid, create_time
 
 
 def _sweep_dead_ssh_runtime_markers(purelib: str) -> None:

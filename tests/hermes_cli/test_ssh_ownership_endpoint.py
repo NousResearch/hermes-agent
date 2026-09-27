@@ -341,6 +341,17 @@ def test_ssh_runtime_marker_sweep_keeps_marker_when_liveness_lookup_raises(
     assert marker.is_file()
 
 
+def test_ssh_runtime_marker_sweep_skips_pid_too_large_to_parse(tmp_path):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    marker = purelib / ".hermes-ssh-runtime-fedcba9876543210"
+    marker.write_text("pid=" + "1" * 5000 + "\n", encoding="utf-8")
+
+    web_server._sweep_dead_ssh_runtime_markers(str(purelib))
+
+    assert marker.is_file()
+
+
 def test_ssh_runtime_marker_sweep_uses_os_stat_for_both_snapshots(
     tmp_path, monkeypatch
 ):

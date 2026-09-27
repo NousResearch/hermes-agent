@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
@@ -20,11 +20,10 @@ import { localPreviewTarget } from '@/lib/local-preview'
  * SIZE IS CONTENT-DRIVEN. The opaque origin means the parent can't measure
  * the document, but we own the srcdoc string — an injected script posts the
  * content's size up via postMessage (tagged with a per-mount token). Height
- * tracks live within the clamp band; width adopts ONCE from the first
- * report, so a fixed-size widget shrink-wraps and sits left in the message
- * flow like an image, while a fluid page measures the full viewport and
- * stays column-wide. A `height="480"` attribute only sets the starting
- * height — measurement always wins.
+ * tracks live within the clamp band; the frame fills the message column and
+ * tracks its width live, never shrinking below the measured intrinsic floor
+ * (so %-width children can't spiral toward zero). A `height="480"`
+ * attribute only sets the starting height — measurement always wins.
  *
  * NATIVE BY DEFAULT. A theme prelude injects first: the app's resolved
  * theme tokens under friendly names (--foreground, --muted-foreground,
@@ -47,10 +46,32 @@ import { localPreviewTarget } from '@/lib/local-preview'
 const MIN_HEIGHT = 120
 const MAX_HEIGHT = 1200
 const DEFAULT_HEIGHT = 280
-/** The transcript column cap the frame renders inside (`max-w-160` = 40rem). */
-const MAX_COLUMN_WIDTH = 640
 /** Ignore sub-pixel/rounding churn so a vh-sized page can't oscillate. */
 const RESIZE_TOLERANCE = 4
+
+/** Resolve the frame width from the content's intrinsic width and the live
+ *  container width. Fills the transcript like text does: grows with the
+ *  container, never shrinks below the measured intrinsic floor (so %-width
+ *  children can't spiral toward zero), and preserves a wide intrinsic span
+ *  for CSS `max-w-full` to cap to the column.
+ *  Null when nothing is measured yet — the caller falls back to `100%`. */
+export function resolvePreviewFrameWidth(
+  contentWidth: number | null,
+  containerWidth: number | null
+): number | null {
+  if (contentWidth === null) {
+    return containerWidth
+  }
+
+  if (containerWidth === null) {
+    return contentWidth
+  }
+
+  // ponytail: full-width frame even for narrow widgets (transparent canvas
+  // so narrow content still sits left); per-content fluid-vs-fixed detection
+  // if a narrow frame chrome ever matters.
+  return Math.max(contentWidth, containerWidth)
+}
 
 export function directiveFrameHeight(raw: string | undefined): number | null {
   if (!raw) {
@@ -286,6 +307,8 @@ function InlineHtmlFrame({
   const [failed, setFailed] = useState(false)
   const [measured, setMeasured] = useState<number | null>(null)
   const [contentWidth, setContentWidth] = useState<number | null>(null)
+  const [containerWidth, setContainerWidth] = useState<number | null>(null)
+  const containerRef = useRef<HTMLSpanElement | null>(null)
 
   // One token per mount: the message listener only trusts reports from the
   // document THIS mount injected, so two previews in one transcript (or a
@@ -361,12 +384,13 @@ function InlineHtmlFrame({
         Math.abs(next.height - (prev ?? initialHeight ?? DEFAULT_HEIGHT)) > RESIZE_TOLERANCE ? next.height : prev
       )
 
-      // Width adopts ONCE, from the first report — measured at full column
-      // width, so it is the content's intrinsic span. Tracking width live
-      // would feedback-loop: %-width children reflow narrower every time
-      // the frame shrinks, spiraling toward zero.
+      // Intrinsic floor grows monotonically: later reports can raise it when
+      // content truly widens, but never lower it — %-width children reflow
+      // narrower every time the frame shrinks, so tracking shrinks live
+      // would spiral toward zero. Live growth comes from the container
+      // measurement below instead.
       if (next.width > 0) {
-        setContentWidth(prev => prev ?? next.width)
+        setContentWidth(prev => (prev === null ? next.width : Math.max(prev, next.width)))
       }
     }
 
@@ -374,6 +398,33 @@ function InlineHtmlFrame({
 
     return () => window.removeEventListener('message', onMessage)
   }, [initialHeight, token])
+
+  useEffect(() => {
+    // Live container width so the frame fills the transcript and tracks
+    // window resizes; the intrinsic floor above keeps %-width pages from
+    // oscillating.
+    const el = containerRef.current
+
+    if (!el || typeof ResizeObserver === 'undefined') {
+      return
+    }
+
+    setContainerWidth(el.clientWidth || null)
+
+    const ro = new ResizeObserver(entries => {
+      const next = entries[0]?.contentRect.width
+
+      if (typeof next === 'number' && Number.isFinite(next) && next > 0) {
+        setContainerWidth(prev =>
+          prev === null || Math.abs(next - prev) > RESIZE_TOLERANCE ? Math.round(next) : prev
+        )
+      }
+    })
+
+    ro.observe(el)
+
+    return () => ro.disconnect()
+  }, [])
 
   // Rebuild the srcdoc when the color scheme changes so its native controls and
   // transparent canvas stay aligned with the app.
@@ -392,13 +443,12 @@ function InlineHtmlFrame({
   }
 
   const height = measured ?? initialHeight ?? DEFAULT_HEIGHT
-  // Left-aligned in the message flow, like an image: the frame is only as
-  // wide as its content (capped at the column). Fluid pages measure the
-  // full viewport and stay full-bleed.
-  const width = contentWidth !== null ? Math.min(contentWidth, MAX_COLUMN_WIDTH) : undefined
+  // Fill the message column like text does; a wide intrinsic span is kept
+  // so fluid pages stay full-bleed, with `max-w-full` capping overflow.
+  const width = resolvePreviewFrameWidth(contentWidth, containerWidth)
 
   return (
-    <span className="my-2 block w-full max-w-160">
+    <span ref={containerRef} className="my-2 block w-full max-w-full">
       {framedDoc === null ? (
         <span
           className="block w-full animate-pulse rounded-md bg-[color-mix(in_srgb,currentColor_4%,transparent)]"

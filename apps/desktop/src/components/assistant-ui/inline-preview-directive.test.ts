@@ -4,6 +4,7 @@ import {
   directiveFrameHeight,
   frameSizeFromMessage,
   intentFromMessage,
+  resolvePreviewFrameWidth,
   themePrelude,
   withInlineChrome
 } from './inline-preview-directive'
@@ -139,5 +140,28 @@ describe('intentFromMessage', () => {
     expect(intentFromMessage(msg({ prompt: '   ' }), 'tok')).toBeNull()
     expect(intentFromMessage(msg({ prompt: 42 }), 'tok')).toBeNull()
     expect(intentFromMessage(null, 'tok')).toBeNull()
+  })
+})
+
+describe('resolvePreviewFrameWidth', () => {
+  it('returns null when neither content nor container is measured (caller falls back to 100%)', () => {
+    expect(resolvePreviewFrameWidth(null, null)).toBeNull()
+  })
+
+  it('falls back to whichever measurement exists', () => {
+    expect(resolvePreviewFrameWidth(300, null)).toBe(300)
+    expect(resolvePreviewFrameWidth(null, 900)).toBe(900)
+  })
+
+  it('fills the container when content is narrow so wide windows leave no dead column', () => {
+    expect(resolvePreviewFrameWidth(300, 900)).toBe(900)
+  })
+
+  it('grows a fluid page when the container widens instead of sticking at the first report', () => {
+    expect(resolvePreviewFrameWidth(640, 900)).toBe(900)
+  })
+
+  it('preserves a wide intrinsic width and lets CSS max-w-full cap it to the column', () => {
+    expect(resolvePreviewFrameWidth(1200, 900)).toBe(1200)
   })
 })

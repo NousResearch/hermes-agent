@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 
+import { RecoverySettings } from '@/app/settings/recovery-settings'
 import { Button } from '@/components/ui/button'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
@@ -376,7 +377,7 @@ export function BootFailureOverlay() {
       // glass. Contract: `[data-glass-opaque]` in styles.css.
       data-glass-opaque=""
     >
-      <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+      <div className="max-h-[90vh] w-full max-w-[40rem] overflow-y-auto rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
         <div className="flex items-start gap-3 px-5 py-4">
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
@@ -409,6 +410,8 @@ export function BootFailureOverlay() {
             </div>
             <p className="text-xs text-muted-foreground">{hint}</p>
           </div>
+
+          {!remoteFailure && <RecoverySettings />}
 
           {logs.length > 0 ? (
             <div className="grid gap-2">

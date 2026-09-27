@@ -339,6 +339,7 @@ import {
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { createRecoveryController } from './recovery-controller'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -359,7 +360,12 @@ import { isTrustedRendererUrl } from './renderer-document-trust'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
-import { discoverCollaborators, type ExistingCollaborator, readCollaboratorChoice, saveCollaboratorChoice } from './runtime-collaborator'
+import {
+  discoverCollaborators,
+  type ExistingCollaborator,
+  readCollaboratorChoice,
+  saveCollaboratorChoice
+} from './runtime-collaborator'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -405,6 +411,7 @@ import {
 } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { markRecoveryHealthy } from './update-recovery'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
@@ -3936,6 +3943,14 @@ async function releaseBackendLock(updateRoot, tag) {
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
 async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
+  if (IS_PACKAGED && IS_WINDOWS && readCollaboratorChoice(COLLABORATOR_CONFIG)?.mode === 'existing') {
+    return {
+      ok: false,
+      error:
+        'Czesiek nie aktualizuje zewnętrznego Hermesa. Zapisz kopię w „Czy wszystko działa?” i zainstaluj nowe wydanie Cześka.'
+    }
+  }
+
   if (updateInFlight) {
     throw new Error('An update is already in progress.')
   }
@@ -4155,6 +4170,16 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // checkout, so each `hermes update` refreshes the code that drives the
     // next one. Checkouts that predate the script fall back to the binary
     // path unchanged.
+    if (IS_PACKAGED && IS_WINDOWS) {
+      try {
+        await recoveryController.checkpoint()
+      } catch (error) {
+        resetHermesConnection()
+        void startHermes().catch(() => {})
+        throw error
+      }
+    }
+
     const scriptHandoff = resolveUpdateScriptHandoff(updateRoot)
     let child
 
@@ -4995,25 +5020,53 @@ function resolveHermesBackend(backendArgs) {
     const choice = readCollaboratorChoice(COLLABORATOR_CONFIG)
 
     if (!choice) {
-      if (getFirstRunSetupGate().isLocalBootstrapConfirmed()) {getFirstRunSetupGate().resetForRepair()}
+      if (getFirstRunSetupGate().isLocalBootstrapConfirmed()) {
+        getFirstRunSetupGate().resetForRepair()
+      }
 
-      return { kind: 'bootstrap-needed', collaboratorChoice: true, label: 'Wybierz współpracownika Cześka',
-        command: null, args: backendArgs, bootstrap: true, env: {}, shell: false,
-        activeRoot: ACTIVE_HERMES_ROOT, isPackaged: true, platform: process.platform }
+      return {
+        kind: 'bootstrap-needed',
+        collaboratorChoice: true,
+        label: 'Wybierz współpracownika Cześka',
+        command: null,
+        args: backendArgs,
+        bootstrap: true,
+        env: {},
+        shell: false,
+        activeRoot: ACTIVE_HERMES_ROOT,
+        isPackaged: true,
+        platform: process.platform
+      }
     }
 
     if (choice.mode === 'existing') {
-      return { kind: 'python', label: `współpracownik Hermes z ${choice.root}`,
-        command: choice.python, args: ['-m', 'hermes_cli.main', ...backendArgs], root: choice.root,
-        bootstrap: false, shell: false,
-        env: { ...buildDesktopBackendEnv({ hermesHome: HERMES_HOME, pythonPathEntries: [choice.root],
-          venvRoot: path.dirname(path.dirname(choice.python)) }), PYTHONPATH: choice.root, PYTHONHOME: '', PYTHONNOUSERSITE: '1' } }
+      return {
+        kind: 'python',
+        label: `współpracownik Hermes z ${choice.root}`,
+        command: choice.python,
+        args: ['-m', 'hermes_cli.main', ...backendArgs],
+        root: choice.root,
+        bootstrap: false,
+        shell: false,
+        env: {
+          ...buildDesktopBackendEnv({
+            hermesHome: HERMES_HOME,
+            pythonPathEntries: [choice.root],
+            venvRoot: path.dirname(path.dirname(choice.python))
+          }),
+          PYTHONPATH: choice.root,
+          PYTHONHOME: '',
+          PYTHONNOUSERSITE: '1'
+        }
+      }
     }
   }
 
   const bundled = bundledRuntimeBackend({
-    isPackaged: IS_PACKAGED, resourcesPath: process.resourcesPath,
-    hermesHome: HERMES_HOME, args: backendArgs
+    isPackaged: IS_PACKAGED,
+    resourcesPath: process.resourcesPath,
+    hermesHome: HERMES_HOME,
+    args: backendArgs
   })
 
   if (bundled) {
@@ -5184,7 +5237,10 @@ async function ensureRuntime(backend) {
   if (backend.collaboratorChoice) {
     const selected = resolveHermesBackend(backend.args)
 
-    if ('collaboratorChoice' in selected && selected.collaboratorChoice) {throw new Error('Wybierz dostępnego współpracownika Cześka.')}
+    if ('collaboratorChoice' in selected && selected.collaboratorChoice) {
+      throw new Error('Wybierz dostępnego współpracownika Cześka.')
+    }
+
     hideFirstRunSetupChoice()
 
     return ensureRuntime(selected)
@@ -6905,15 +6961,16 @@ function desktopShortcutIconPath() {
     return undefined
   }
 
-  const source = [path.join(APP_ROOT, 'assets', 'icon.png'), path.join(APP_ROOT, 'public', 'apple-touch-icon.png')].find(
-    candidate => {
-      try {
-        return fs.statSync(candidate).isFile()
-      } catch {
-        return false
-      }
+  const source = [
+    path.join(APP_ROOT, 'assets', 'icon.png'),
+    path.join(APP_ROOT, 'public', 'apple-touch-icon.png')
+  ].find(candidate => {
+    try {
+      return fs.statSync(candidate).isFile()
+    } catch {
+      return false
     }
-  )
+  })
 
   if (!source) {
     return undefined
@@ -13304,7 +13361,10 @@ async function startHermes() {
       waitForDecision: waitForFirstRunSetupChoice,
       // Mutual exclusion with an in-app update (#50238). Remote connections
       // return before this waiter; local starts park until the updater exits.
-      waitForLocalStart: waitForUpdateToFinish
+      waitForLocalStart: async () => {
+        await waitForUpdateToFinish()
+        await recoveryController.wait()
+      }
     })
 
     if (setup.kind === 'remote') {
@@ -13504,6 +13564,14 @@ async function startHermes() {
       throw new Error(
         `Local Hermes backend is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
       )
+    }
+
+    if (IS_PACKAGED && IS_WINDOWS) {
+      try {
+        markRecoveryHealthy(path.join(app.getPath('userData'), 'update-recovery'))
+      } catch (error) {
+        console.warn('Could not record recovery health check', error)
+      }
     }
 
     updateBootProgress({
@@ -15543,7 +15611,10 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   // to the normal restart branch, which just kills the current child
   // and respawns it against the same venv. See #74874 — this is what
   // breaks the infinite reinstall loop the user hit.
-  if (IS_PACKAGED && IS_WINDOWS) {fs.rmSync(COLLABORATOR_CONFIG, { force: true })}
+  if (IS_PACKAGED && IS_WINDOWS) {
+    fs.rmSync(COLLABORATOR_CONFIG, { force: true })
+  }
+
   bootstrapRepairRequested = repairDecision.hardReinstall
   bootstrapFailure = null
   backendStartFailure = null
@@ -15552,6 +15623,49 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   resetHermesConnection()
 
   return { ok: true }
+})
+
+const recoveryController = createRecoveryController({
+  root: path.join(app.getPath('userData'), 'update-recovery'),
+  home: HERMES_HOME,
+  executable: process.execPath,
+  version: app.getVersion(),
+  supported: IS_PACKAGED && IS_WINDOWS,
+  stop: () => releaseBackendLockForUpdate(resolveUpdateRoot()),
+  restart: async () => {
+    resetHermesConnection()
+
+    return startHermes()
+  },
+  quit: () => app.quit()
+})
+
+ipcMain.handle('hermes:recovery:status', () => recoveryController.status())
+ipcMain.handle('hermes:recovery:prepare', async () => {
+  const answer = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['Anuluj', 'Zapisz kopię'],
+    defaultId: 0,
+    cancelId: 0,
+    message: 'Zatrzymać zadania i zapisać kopię?',
+    detail:
+      'Backend zostanie na chwilę zatrzymany, aby zapisać spójną pamięć i historię. Aktywne zadania zostaną przerwane. Aplikacja wznowi połączenie po kopii.'
+  })
+
+  return answer.response === 1 ? recoveryController.prepare() : { ok: false }
+})
+ipcMain.handle('hermes:recovery:restore', async () => {
+  const answer = await dialog.showMessageBox({
+    type: 'warning',
+    buttons: ['Anuluj', 'Przywróć kopię'],
+    defaultId: 0,
+    cancelId: 0,
+    message: 'Przywrócić poprzednią aplikację i dane?',
+    detail:
+      'Zakończ aktywne zadania. Aplikacja zamknie się i wróci do zapisanej kopii. Obecne dane i wersja zostaną zachowane oddzielnie.'
+  })
+
+  return answer.response === 1 ? recoveryController.restore() : { ok: false }
 })
 ipcMain.handle('hermes:bootstrap:detect-collaborators', async (_event, browse = false) => {
   const roots = [
@@ -15565,7 +15679,10 @@ ipcMain.handle('hermes:bootstrap:detect-collaborators', async (_event, browse = 
   if (browse) {
     const result = await dialog.showOpenDialog({ title: 'Wybierz folder Hermesa', properties: ['openDirectory'] })
 
-    if (result.canceled) {return detectedCollaborators}
+    if (result.canceled) {
+      return detectedCollaborators
+    }
+
     roots.push(...result.filePaths)
   }
 
@@ -15576,14 +15693,20 @@ ipcMain.handle('hermes:bootstrap:detect-collaborators', async (_event, browse = 
 ipcMain.handle('hermes:bootstrap:select-collaborator', async (_event, root: string) => {
   const candidate = detectedCollaborators.find(item => item.root === root)
 
-  if (!candidate) {throw new Error('Najpierw wykryj i sprawdź instalację Hermesa.')}
+  if (!candidate) {
+    throw new Error('Najpierw wykryj i sprawdź instalację Hermesa.')
+  }
+
   saveCollaboratorChoice(COLLABORATOR_CONFIG, { mode: 'existing', ...candidate })
   continueFirstRunLocalBootstrap()
 
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:continue-local', async () => {
-  if (IS_PACKAGED && IS_WINDOWS) {saveCollaboratorChoice(COLLABORATOR_CONFIG, { mode: 'bundled' })}
+  if (IS_PACKAGED && IS_WINDOWS) {
+    saveCollaboratorChoice(COLLABORATOR_CONFIG, { mode: 'bundled' })
+  }
+
   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
   continueFirstRunLocalBootstrap()
 

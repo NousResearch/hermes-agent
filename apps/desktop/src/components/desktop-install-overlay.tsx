@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { RecoverySettings } from '@/app/settings/recovery-settings'
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -581,6 +582,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             </div>
           )}
 
+          {failed && <RecoverySettings />}
           {failed && state.error && (
             <div className="mb-4 flex items-start gap-2 text-sm">
               <ErrorIcon className="mt-0.5 shrink-0" size="1rem" />

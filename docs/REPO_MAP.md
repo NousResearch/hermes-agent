@@ -59,3 +59,12 @@ Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md
 - `apps/desktop/scripts/stage-windows-runtime.mjs`: pakowanie kodu, Pythona, zależności, Git i Node.
 - `apps/desktop/scripts/before-pack.mjs`: zgodność commita i architektury pakietu.
 - `docs/CZESIEK_INSTALLATION.md`: instrukcja budowania i granice działania offline.
+
+
+## Diagnostyka, współpraca i odzyskiwanie
+
+- `apps/desktop/src/app/settings/assistant-health.tsx`: panel „Czy wszystko działa?”, testy API/audio bez ujawniania sekretów; `health-error.ts` tłumaczy błędy.
+- `apps/desktop/src/app/chat/composer/hooks/use-realtime-conversation.ts`: szybkie przyjęcie zlecenia głosowego, sterowanie podagentami i raporty; `status-stack/work-results.tsx` zachowuje wyniki po zakończeniu.
+- `apps/desktop/electron/update-recovery.ts`: kopia aplikacji i danych, przywracanie z zachowaniem obecnej wersji; `recovery-controller.ts` zatrzymuje backend i blokuje równoległy start podczas kopii.
+- `apps/desktop/src/app/settings/recovery-settings.tsx`: wspólny panel kopii w ustawieniach i przy błędzie startu.
+- `apps/desktop/scripts/prepare-clean-windows-test.ps1`: przygotowanie testu w Windows Sandbox. Samo przygotowanie nie jest potwierdzeniem instalacji.

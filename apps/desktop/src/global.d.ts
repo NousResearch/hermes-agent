@@ -524,6 +524,15 @@ declare global {
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
       recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
+      recoveryStatus: () => Promise<{
+        supported: boolean
+        available: boolean
+        createdAt?: string
+        version?: string
+        status?: string
+      }>
+      prepareRecovery: () => Promise<{ ok: boolean }>
+      restoreRecovery: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void

@@ -1,10 +1,19 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render as renderBase, screen, waitFor } from '@testing-library/react'
+import type { ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import { $desktopBoot } from '@/store/boot'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
+
+const render = (ui: ReactElement) =>
+  renderBase(
+    <I18nProvider configClient={null} initialLocale="en">
+      {ui}
+    </I18nProvider>
+  )
 
 // Remote-backend users hit a hard boot failure that isn't OAuth reauth (token
 // auth, wrong URL, unreachable host). The recovery screen must let them fix the

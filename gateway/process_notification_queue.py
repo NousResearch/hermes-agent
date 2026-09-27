@@ -1,5 +1,7 @@
 """Retain process identity across the gateway FIFO, then discard superseded wakes."""
 
+from hashlib import sha256
+
 
 def notification_metadata(text, event) -> dict:
     """Only process completions/heartbeats have a registry-backed stale verdict."""
@@ -10,7 +12,8 @@ def notification_metadata(text, event) -> dict:
     entries = event.get("_process_notification_entries") or [(text, event)]
     # Keep the renderer's fields, not routing/credentials or an entire producer payload.
     fields = ("type", "session_id", "exit_code", "completion_reason", "output", "started_at")
-    return {"process_notifications": [
+    return {"process_notification_text_sha256": sha256(text.encode()).hexdigest(),
+            "process_notifications": [
         {"text": _redact_gateway_user_facing_secrets(text),
          "event": {key: (_redact_gateway_user_facing_secrets(str(raw[key]))
                          if key == "output" else raw[key]) for key in fields if key in raw}}
@@ -28,6 +31,11 @@ def refresh_process_notification(event, format_batch) -> bool:
         return True
     entries = (event.metadata or {}).get("process_notifications")
     if not entries:
+        return True
+    # Adapter merging can append a human question or media in place without replacing the
+    # notification metadata. Only an unchanged, text-only notification is ours to discard/edit.
+    if (event.media_urls or event.media_types
+            or (event.metadata or {}).get("process_notification_text_sha256") != sha256(event.text.encode()).hexdigest()):
         return True
     from tools.process_registry import process_registry
 
@@ -48,6 +56,9 @@ def refresh_process_notification(event, format_batch) -> bool:
         return False
     if len(live) != len(entries):
         event.metadata["process_notifications"] = live
-        event.text = (live[0]["text"] if len(live) == 1 else
-                      format_batch([(item["text"], item["event"], None) for item in live]))
+        from gateway.run_notifications import _mark_internal_notification
+        event.text = _mark_internal_notification(
+            live[0]["text"] if len(live) == 1 else
+            format_batch([(item["text"], item["event"], None) for item in live]))
+        event.metadata["process_notification_text_sha256"] = sha256(event.text.encode()).hexdigest()
     return True

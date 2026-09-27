@@ -283,6 +283,8 @@ whatsapp_cloud:
 
 Disabling read receipts also disables the typing indicator — Meta's Cloud API only exposes the indicator as part of the mark-as-read request, so there is no way to show "typing…" without also marking the message read.
 
+Restart the gateway (`hermes gateway restart`) for this setting to take effect.
+
 ### Voice messages
 
 WhatsApp distinguishes between a "voice note" (the green waveform bubble) and a generic audio file attachment. The difference is purely codec: voice notes need to be `audio/ogg` with `opus` encoding.

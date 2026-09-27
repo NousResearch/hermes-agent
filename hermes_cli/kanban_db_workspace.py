@@ -92,32 +92,45 @@ def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
     # (resolved root, lexical spellings of the root, board)
     roots: list[tuple[Path, tuple[Path, ...], Optional[str]]] = []
 
-    def _add_root(anchor: Path, parts: tuple[str, ...], board: Optional[str]) -> None:
+    def _add_root(
+        anchor: Path, anchor_real: Path, parts: tuple[str, ...], board: Optional[str]
+    ) -> None:
         root = anchor.joinpath(*parts)
         with contextlib.suppress(OSError):
             roots.append((
                 root.resolve(strict=False),
-                (_lexical_path(root), _lexical_path(anchor.resolve(strict=False).joinpath(*parts))),
+                (_lexical_path(root), _lexical_path(anchor_real.joinpath(*parts))),
                 board,
             ))
 
     override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
     if override:
         override_root = Path(override).expanduser()
-        _add_root(override_root.parent, (override_root.name,), None)
+        with contextlib.suppress(OSError):
+            override_parent = override_root.parent
+            _add_root(
+                override_parent,
+                override_parent.resolve(strict=False),
+                (override_root.name,),
+                None,
+            )
     try:
         home = _kb.kanban_home()
+        # Resolve the shared anchor once, not once per board root.
+        home_real = home.resolve(strict=False)
     except OSError:
         home = None
     if home is not None:
-        _add_root(home, ("kanban", "workspaces"), _kb.DEFAULT_BOARD)
+        _add_root(home, home_real, ("kanban", "workspaces"), _kb.DEFAULT_BOARD)
         entries: list[Path] = []
         with contextlib.suppress(OSError):
             entries = list((home / "kanban" / "boards").resolve(strict=False).iterdir())
         for entry in entries:
             with contextlib.suppress(OSError):
                 if entry.is_dir():
-                    _add_root(home, ("kanban", "boards", entry.name, "workspaces"), entry.name)
+                    _add_root(
+                        home, home_real, ("kanban", "boards", entry.name, "workspaces"), entry.name
+                    )
     for root, lexical_roots, board in roots:
         if p_abs == root:
             continue

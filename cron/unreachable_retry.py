@@ -5,8 +5,9 @@ Inspired by Claude Cowork (desktop changelog v1.46388.1, 2026-09-04): "automatic
 for example right after the computer wakes behind a VPN."
 
 The class is deliberately narrow: the run must have FAILED with a transient network /
-DNS error (``cron.scheduler_preflight._is_transient_provider_resolve_error``) AND the
-agent must have completed zero API calls. Nothing was executed and nothing was spent, so
+DNS error (``cron.scheduler_preflight._is_transient_provider_resolve_error``) or a
+Murakumo ``mishima_busy`` admission refusal, AND the agent must have completed zero
+API calls. Nothing was executed and nothing was spent, so
 re-running cannot double a side effect — unlike a generic failure retry (see PR #16512),
 which has to answer for one-shot dispatch accounting and mid-run side effects. Recurring
 jobs only: finite one-shots are pre-claimed by ``claim_dispatch`` (at-most-times, #38758)
@@ -54,14 +55,37 @@ def retry_enabled(cfg: Optional[dict] = None) -> bool:
     return cron_cfg.get("retry_unreachable") is not False
 
 
+def _mishima_busy_before_admission(exc: BaseException) -> bool:
+    """The Murakumo router refused admission before starting inference."""
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        body = getattr(cur, "body", None)
+        error = body.get("error", body) if isinstance(body, dict) else None
+        if (getattr(cur, "status_code", None) == 429
+                and isinstance(error, dict) and error.get("code") == "mishima_busy"):
+            return True
+        # Cron's provider wrapper preserves the router's message but not the JSON code.
+        message = str(cur)
+        if (message.startswith("HTTP 429: Mishima cannot start this request within its ")
+                and " s budget (estimated " in message):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def is_model_unreachable_failure(exc: BaseException, agent: Any = None) -> bool:
-    """True when *exc* is a transient network/DNS failure and *agent* (may be ``None``)
-    never completed a model call — the run consumed nothing and executed nothing."""
+    """True before any completed model call for network failure or Mishima admission refusal.
+
+    The router's ``mishima_busy`` 429 starts no inference. A bounded re-run is safe only
+    while this cron run has received no model response and therefore executed no tools.
+    """
     if int(getattr(agent, "session_api_calls", 0) or 0) > 0:
         return False
     from cron.scheduler_preflight import _is_transient_provider_resolve_error
 
-    return _is_transient_provider_resolve_error(exc)
+    return _is_transient_provider_resolve_error(exc) or _mishima_busy_before_admission(exc)
 
 
 def _is_recurring(job: Dict[str, Any]) -> bool:

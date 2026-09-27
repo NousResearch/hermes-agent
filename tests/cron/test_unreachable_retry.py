@@ -7,11 +7,35 @@ ladder never fires past its last rung.
 """
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from cron import unreachable_retry as ur
 from cron.jobs import create_job, get_due_jobs, get_job, load_jobs, mark_job_run, save_jobs
+
+
+def test_mishima_admission_refusal_uses_bounded_rerun_only_before_a_model_response():
+    class RouterError(Exception):
+        status_code = 429
+        body = {"error": {"code": "mishima_busy"}}
+
+    busy = RouterError("Mishima cannot start this request")
+    assert ur.is_model_unreachable_failure(busy, SimpleNamespace(session_api_calls=0))
+    assert not ur.is_model_unreachable_failure(busy, SimpleNamespace(session_api_calls=1))
+
+    wrapped = RuntimeError(
+        "HTTP 429: Mishima cannot start this request within its 240 s budget "
+        "(estimated 315 s: queue 223 s + prefill 92 s). Retry after 76 s."
+    )
+    assert ur.is_model_unreachable_failure(wrapped, SimpleNamespace(session_api_calls=0))
+    assert not ur.is_model_unreachable_failure(
+        RuntimeError("HTTP 429: another provider is rate limited"),
+        SimpleNamespace(session_api_calls=0),
+    )
+    too_long = RouterError("Mishima cannot fit this prompt")
+    too_long.body = {"error": {"code": "mishima_too_long"}}
+    assert not ur.is_model_unreachable_failure(too_long, SimpleNamespace(session_api_calls=0))
 
 
 @pytest.fixture

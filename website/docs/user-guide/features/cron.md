@@ -426,13 +426,14 @@ cron:
 
 ### Automatic re-runs when the model was unreachable
 
-A recurring job whose run fails with a transient network or DNS error before
-a single model call was made — the classic case is a fire right after the
-computer wakes, while the VPN or Wi-Fi is still reconnecting — does not sit
+A recurring job whose run fails with a transient network or DNS error, or a
+Murakumo `mishima_busy` admission refusal, before a single model response was
+received — the classic network case is a fire right after the computer wakes,
+while the VPN or Wi-Fi is still reconnecting — does not sit
 out a whole period. The scheduler re-runs it automatically after **5, 15, and
 30 minutes** (inspired by Claude Cowork's scheduled-task re-runs), then falls
-back to the normal schedule. Because zero API calls were made, the re-run is
-spend-neutral and cannot duplicate any side effect.
+back to the normal schedule. Because no model response or tool call occurred,
+the re-run cannot duplicate any side effect.
 
 While a re-run is pending, the interim failure notice is suppressed — you get
 the real result when a re-run succeeds, or a normal failure alert once the

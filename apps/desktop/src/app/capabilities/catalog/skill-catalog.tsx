@@ -22,10 +22,10 @@ interface SkillCatalogProps {
   notice?: ReactNode
   renderInstalledDetail: (skill: SkillInfo) => ReactNode
   renderInstalledAction?: (skill: SkillInfo) => ReactNode
-  /** List-view grouping for installed rows, keyed off the skill (e.g. its
-   *  category). Rows with no skill behind them — the public feed — stay flat. */
+  /** Grouping for installed rows, keyed off the skill (e.g. its category).
+   *  Rows with no skill behind them — the public feed — stay flat. */
   groupInstalledBy?: (skill: SkillInfo) => string | null
-  /** Rendered above each group's rows in the browser's list view. */
+  /** Rendered above each group's rows in the browser's views. */
   renderGroupHeader?: (group: string) => ReactNode
 }
 

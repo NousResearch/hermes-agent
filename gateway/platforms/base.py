@@ -2584,6 +2584,11 @@ class BasePlatformAdapter(ABC):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+            if event.channel_context:
+                existing.channel_context = (
+                    f"{existing.channel_context}\n{event.channel_context}"
+                    if existing.channel_context else event.channel_context
+                )
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)

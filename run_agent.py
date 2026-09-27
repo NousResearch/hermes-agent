@@ -116,7 +116,6 @@ def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
 
 
 from agent.iteration_budget import IterationBudget
-from agent.tool_executor import is_todo_tool_call
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 
@@ -1110,6 +1109,8 @@ class AIAgent(
     @classmethod
     def _assistant_has_todo_tool_call(cls, assistant_msg: Dict[str, Any], tool_call_id: str) -> bool:
         """True when the paired call resolves to the registered Todo tool."""
+        from tools.todo_tool import is_todo_tool_call
+
         tool_calls = assistant_msg.get("tool_calls")
         return isinstance(tool_calls, list) and any(
             cls._get_tool_call_id_static(tc) == tool_call_id and is_todo_tool_call(tc) for tc in tool_calls

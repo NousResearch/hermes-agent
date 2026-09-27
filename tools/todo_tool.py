@@ -274,6 +274,49 @@ TODO_SCHEMA = {
     }
 }
 
+# Pre-rename names that replay as the Todo tool. model_tools._LEGACY_TOOL_ALIASES derives its todo
+# entries from this, so the alias map and the transcript/TUI predicates below cannot drift.
+TODO_LEGACY_ALIASES = ("todo",)
+TODO_TOOL_NAMES = frozenset((TODO_SCHEMA["name"], *TODO_LEGACY_ALIASES))
+
+
+def is_todo_tool_name(name: Any) -> bool:
+    """True for the Todo tool's current name or a legacy alias (an already-unwrapped dispatch name)."""
+    return name in TODO_TOOL_NAMES
+
+
+def is_todo_tool_call(tool_call: Any) -> bool:
+    """True when a transcript tool_call entry (dict or object) invoked the Todo tool.
+
+    Covers the current name, legacy aliases, and the ``tool_call`` bridge (``todo_list`` is deferred by
+    default, and the transcript keeps the bridge name). The bridge is peeled from the recorded arguments
+    only, never live tool-search config, and must wrap exactly one call. Lives here, not in
+    agent.tool_executor, so TUI resume and run_agent never pull model_tools / the executor in to answer it.
+    """
+    from agent.message_sanitization import _tc_field
+
+    fn = _tc_field(tool_call, "function")
+    name, raw_args = _tc_field(fn, "name") or "", _tc_field(fn, "arguments")
+    if is_todo_tool_name(name):
+        return True
+    # Cheap pre-check before the bridge modules load: no "todo" in the raw args means no todo inside.
+    if isinstance(raw_args, str) and "todo" not in raw_args:
+        return False
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+
+    if name != TOOL_CALL_NAME:
+        return False
+    try:
+        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(args, dict):
+        return False
+    from tools.tool_search_validation import normalize_tool_call_entries
+
+    entries, error = normalize_tool_call_entries(args)
+    return not error and len(entries) == 1 and is_todo_tool_name(entries[0]["name"])
+
 
 from tools.registry import registry, tool_error
 

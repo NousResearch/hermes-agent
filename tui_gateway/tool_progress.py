@@ -15,8 +15,6 @@ from .method_ctx import bind_module
 _TUI_VERBOSE_TEXT_MAX_CHARS = 1_000
 _TUI_VERBOSE_TEXT_MAX_LINES = 16
 
-_TODO_TOOL_NAMES = ("todo_list", "todo")  # legacy alias: pre-rename replays
-
 
 def _cap_tui_verbose_text(text: str) -> str:
     if len(text) <= _TUI_VERBOSE_TEXT_MAX_CHARS and text.count("\n") < _TUI_VERBOSE_TEXT_MAX_LINES:
@@ -164,7 +162,7 @@ def _todo_state_from_history(history) -> dict | None:
     if not isinstance(history, list) or not history:
         return None
     try:
-        from tools.todo_tool import MAX_TODO_RESULT_CHARS
+        from tools.todo_tool import MAX_TODO_RESULT_CHARS, is_todo_tool_call
         todo_call_ids = {
             call.get("id")
             for msg in history if isinstance(msg, dict)
@@ -333,13 +331,15 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload["summary"] = summary
     if _session_verbose(sid) and (result_text := _tool_result_text(result)):
         payload["result_text"] = result_text
-    todo_state = _normalize_todo_state(payload.get("result")) if name in _TODO_TOOL_NAMES else None
+    from tools.todo_tool import is_todo_tool_name
+
+    todo_state = _normalize_todo_state(payload.get("result")) if is_todo_tool_name(name) else None
     if todo_state is not None:
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
     if (_process_tool_chrome_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
-            or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)
+            or is_todo_tool_name(name) or _connector_tool_lifecycle(name, args)
             or _tool_result_needs_user(result)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
     # Task state is application data, not tool-progress chrome: a dedicated full-snapshot event lets

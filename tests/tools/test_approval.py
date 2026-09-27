@@ -1013,6 +1013,94 @@ class TestWebhookApprovalExclusion:
         assert "approvals.unattended_mode" in result["message"]
 
 
+class TestUnattendedPlatformExecAskLeak:
+    """A gateway process sets HERMES_EXEC_ASK=1 for EVERY session it serves, so an
+    api_server/webhook turn reads as "ask" in ``_presence()`` even though the platform was
+    already excluded from gateway approval contexts. Without a registered notify callback
+    (non-streaming /v1/chat/completions, webhook, msgraph_webhook) the ask branch parks the
+    approval as ``pending_approval`` that no client on that endpoint can ever answer, and
+    ``approvals.unattended_mode`` never runs — the unanswerable stall of #100532.
+
+    Fix: ``_presence()`` drops ``is_ask`` for unattended-platform sessions without a notify
+    callback, so the unattended branch resolves instantly from ``approvals.unattended_mode``.
+    ``/v1/runs`` and streaming chat completions register a callback and keep the ask path.
+    """
+
+    def _isolate(self, monkeypatch, *, platform="api_server"):
+        import tools.approval as approval_mod
+        from tools import approval_context
+
+        monkeypatch.setattr(approval_mod, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", platform)
+        monkeypatch.setenv("HERMES_SESSION_KEY", "test-unattended-ask-leak")
+        approval_mod._session_approved.clear()
+        approval_mod._pending.clear()
+        approval_mod._denial_tally.clear()
+        approval_mod._gateway_notify_cbs.pop("test-unattended-ask-leak", None)
+
+    def test_escalated_smart_gate_denies_not_pending(self, monkeypatch):
+        """The #100532 chain: guardian ESCALATE on a notifier-less api_server session.
+
+        Deny-by-default (approvals.unattended_mode) resolves instantly — never a
+        ``pending_approval`` nobody on that endpoint can answer — and never pays the
+        guardian LLM call the escalation came from.
+        """
+        import tools.approval as approval_mod
+        from tools.approval import check_all_command_guards
+
+        self._isolate(monkeypatch)
+        monkeypatch.setattr(approval_mod, "_smart_verdict",
+                            lambda *a, **k: pytest.fail("guardian ran after unattended resolution"))
+
+        result = check_all_command_guards("pkill -9 -f soffice", "local")
+
+        assert result["approved"] is False
+        assert result.get("status") != "pending_approval"
+        assert result.get("approval_pending") is not True
+        assert "unattended platform" in result["message"]
+        assert "approvals.unattended_mode" in result["message"]
+
+    def test_unattended_mode_approve_is_honored(self, monkeypatch):
+        """approvals.unattended_mode: approve auto-approves instead of stalling (#100532)."""
+        from tools import approval_context
+        from tools.approval import check_all_command_guards
+
+        self._isolate(monkeypatch)
+        monkeypatch.setattr(
+            approval_context, "_get_unattended_approval_mode", lambda: "approve"
+        )
+
+        result = check_all_command_guards("pkill -9 -f soffice", "local")
+        assert result["approved"] is True
+
+    def test_registered_notifier_keeps_the_ask_path(self, monkeypatch):
+        """/v1/runs and streaming chat register a notify callback: is_ask survives, so the
+        approval bridge answers the card instead of the unattended mode short-circuit."""
+        import tools.approval as approval_mod
+
+        self._isolate(monkeypatch)
+        approval_mod.register_gateway_notify("test-unattended-ask-leak", lambda data: None)
+        try:
+            _, _is_cli, _is_gateway, is_ask = approval_mod._presence()
+            assert is_ask is True
+        finally:
+            approval_mod.unregister_gateway_notify("test-unattended-ask-leak")
+
+    def test_chat_gateway_platform_keeps_ask_without_notifier(self, monkeypatch):
+        """Messaging platforms (TurnRunner registers their notifier at turn time) are not
+        unattended: is_ask survives without a callback too."""
+        import tools.approval as approval_mod
+
+        self._isolate(monkeypatch, platform="telegram")
+        _, _is_cli, _is_gateway, is_ask = approval_mod._presence()
+        assert is_ask is True
+
+
 class TestNormalizationBypass:
     """Obfuscation techniques must not bypass dangerous command detection."""
 

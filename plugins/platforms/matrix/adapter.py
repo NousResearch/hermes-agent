@@ -398,7 +398,7 @@ def _resolve_max_message_length(config) -> int:
 # identity in one crypto.db.
 # Store directory for E2EE keys and sync state. Mirrors the pairing-store fix (a6397c379). See #89168.
 from hermes_constants import get_hermes_dir as _get_hermes_dir
-from plugins.platforms.matrix.voice_mention import ParkedVoices, is_voice_event
+from plugins.platforms.matrix.voice_mention import ParkedVoices, has_voice_marker, is_voice_event
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
 
@@ -2028,17 +2028,15 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _resolve_message_context(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
-        relates_to: dict) -> Optional[tuple]:
+        relates_to: dict, mention_claimed: bool = False) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
-        display_name, source) or None when the message should be dropped."""
+        display_name, source) or None when the message should be dropped. ``mention_claimed``
+        marks a parked voice claimed by the sender's follow-up bare @mention."""
         identity = await self._resolve_room_identity(room_id)
         is_dm = await self._is_dm_room(room_id)
         chat_type = "dm" if is_dm else "group"
         thread_id = relates_to.get("event_id") if relates_to.get("rel_type") == "m.thread" else None
-        formatted_body = source_content.get("formatted_body")
-        mentions_block = source_content.get("m.mentions") or {}  # MSC3952: authoritative signal
-        mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
-        is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+        is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
             if self._allowed_rooms and room_id not in self._allowed_rooms:
@@ -2048,8 +2046,7 @@ class MatrixAdapter(BasePlatformAdapter):
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if (not is_mentioned and not body.startswith("/")
-                        and not self._parked_voices.consume_claim(event_id)):
+                if not is_mentioned and not body.startswith("/"):
                     if is_voice_event(source_content):  # a bare @mention may follow (Element X)
                         self._parked_voices.park(room_id, sender, event_id, source_content, relates_to)
                     logger.debug(
@@ -2144,15 +2141,15 @@ class MatrixAdapter(BasePlatformAdapter):
         body = source_content.get("body", "") or ""
         if not body:
             return
-        mentions = source_content.get("m.mentions") or {}
-        if (self._require_mention and not self._strip_mention(body).strip() and self._is_bot_mentioned(
-                body, source_content.get("formatted_body"),
-                mentions.get("user_ids") if isinstance(mentions, dict) else None)):
+        # Dict lookup first: the mention regexes only run when a voice is actually parked.
+        if (self._require_mention and self._parked_voices.has(room_id, sender)
+                and not self._strip_mention(body).strip() and self._content_mentions_bot(body, source_content)):
             parked = self._parked_voices.claim(room_id, sender)
             if parked:  # answer the voice this bare mention was typed for, not an empty text
                 voice_id, voice_content, voice_relates = parked
                 await self._handle_media_message(
-                    room_id, sender, voice_id, event_ts, voice_content, voice_relates, "m.audio")
+                    room_id, sender, voice_id, event_ts, voice_content, voice_relates, "m.audio",
+                    mention_claimed=True)
                 return
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
@@ -2165,7 +2162,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, msgtype: str) -> None:
+        relates_to: dict, msgtype: str, mention_claimed: bool = False) -> None:
         body = source_content.get("body", "") or ""
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
@@ -2194,7 +2191,8 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
         # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
         # non-allowlisted room must not pull media onto the host only to drop it.
-        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        ctx = await self._resolve_message_context(
+            room_id, sender, event_id, body, source_content, relates_to, mention_claimed=mention_claimed)
         if ctx is None:
             return
         # Cache locally so downstream tools get a real file path.
@@ -2222,7 +2220,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if msgtype == "m.image":
             return MessageType.PHOTO, event_mimetype or "image/png", False
         if msgtype == "m.audio":
-            is_voice = source_content.get("org.matrix.msc3245.voice") is not None
+            is_voice = has_voice_marker(source_content)
             return (MessageType.VOICE if is_voice else MessageType.AUDIO), event_mimetype or "audio/ogg", is_voice
         if msgtype == "m.video":
             return MessageType.VIDEO, event_mimetype or "video/mp4", False
@@ -2895,6 +2893,12 @@ class MatrixAdapter(BasePlatformAdapter):
         if localpart and re.search(r"\b" + re.escape(localpart) + r"\b", body, re.IGNORECASE):
             return True
         return bool(formatted_body and self._user_id and f"matrix.to/#/{self._user_id}" in formatted_body)
+
+    def _content_mentions_bot(self, body: str, content: dict) -> bool:
+        """``_is_bot_mentioned`` fed from an event's content (MSC3952 ``m.mentions`` is authoritative)."""
+        mentions = content.get("m.mentions") or {}
+        return self._is_bot_mentioned(
+            body, content.get("formatted_body"), mentions.get("user_ids") if isinstance(mentions, dict) else None)
 
     def _user_localpart(self) -> str:
         """``@bot:server`` -> ``bot``; empty when the user ID has no server part."""

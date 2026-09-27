@@ -243,10 +243,15 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mention_room, claims", [("!room1:example.org", True), ("!room2:example.org", False)])
-async def test_bare_mention_claims_parked_voice_only_in_same_room(monkeypatch, mention_room, claims):
+@pytest.mark.parametrize("mention_room, mention_body, claims", [
+    ("!room1:example.org", "@hermes:example.org", True),
+    ("!room2:example.org", "@hermes:example.org", False),
+    ("!room1:example.org", "@hermes:example.org hi", False),
+])
+async def test_bare_mention_claims_parked_voice_only_in_same_room(monkeypatch, mention_room, mention_body, claims):
     """An unmentioned MSC3245 voice (empty m.mentions) is answered by the sender's bare @mention
-    typed right after it in the SAME room; a bare mention in another room never pulls it across."""
+    typed right after it in the SAME room; a bare mention in another room never pulls it across,
+    and a mention carrying text is answered as that text."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
@@ -259,8 +264,9 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(monkeypatch, m
 
     await adapter._on_room_message(voice)
     adapter.handle_message.assert_not_awaited()
+    adapter._download_and_cache_media.assert_not_awaited()  # parked voice is never downloaded
     await adapter._on_room_message(_make_event(
-        "@hermes:example.org", event_id="$text", room_id=mention_room, mention_user_ids=["@hermes:example.org"]))
+        mention_body, event_id="$text", room_id=mention_room, mention_user_ids=["@hermes:example.org"]))
 
     dispatched = [(m.args[0].source.chat_id, m.args[0].message_id) for m in adapter.handle_message.await_args_list]
     assert dispatched == ([("!room1:example.org", "$voice")] if claims else [(mention_room, "$text")])

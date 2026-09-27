@@ -83,10 +83,7 @@ class SessionSource:
     guild_id: Optional[str] = None
     parent_chat_id: Optional[str] = None  # parent channel when chat_id is a thread
     message_id: Optional[str] = None  # triggering message (pin/reply/react)
-    # Canonical permalink to the triggering conversation, built by the platform adapter when it
-    # has enough metadata (e.g. Matrix https://matrix.to/#/<room-id>/<event-id>?via=<server>).
-    # Consumed by the session-context prompt so agents cite the origin verbatim instead of
-    # reconstructing — or improvising the absence of — a link.
+    # Permalink to the triggering conversation, provided to the model with the current turn.
     source_permalink: Optional[str] = None
     role_authorized: bool = False  # adapter granted access via role, not user ID
     # Multiplex profile this message routes to (None => active/default); namespaces the key.
@@ -418,11 +415,6 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
         ]
         if src.thread_id:
             lines.append(f"**Matrix Thread:** {_chat_label(src.thread_id)}")
-        # Canonical permalink, ready to cite verbatim (e.g. attaching a source link to filed
-        # issues/PRs). Suppressed under PII redaction: it embeds the raw room/event IDs that
-        # mode exists to hash.
-        if src.source_permalink and not redact_pii:
-            lines.append(f"**Matrix Source:** {src.source_permalink}")
         lines.append(
             "**Matrix room boundary:** Treat this turn as scoped to the current Matrix room/thread "
             "only. Do not assume unresolved references are about other Matrix rooms or projects "

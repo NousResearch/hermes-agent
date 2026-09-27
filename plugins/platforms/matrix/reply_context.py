@@ -11,6 +11,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
+from plugins.platforms.matrix.reaction_context import MatrixReaction
+
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,10 @@ class MatrixEventContext:
     media_type: str | None = None
     is_image: bool = False
     redacted: bool = False
+    reactions: tuple[MatrixReaction, ...] = ()
+    reactions_truncated: bool = False
+    reaction_keys_missing: bool = False
+    reactions_unavailable: bool = False
 
 
 @dataclass(frozen=True)

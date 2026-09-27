@@ -1499,8 +1499,12 @@ class CLITuiMixin:
         safe_text = _sanitize_surrogates(raw_text)
         if safe_text != raw_text:
             old_cursor = buf.cursor_position
-            buf.text = safe_text
-            buf.cursor_position = _surrogate_cursor_position(raw_text, old_cursor)
+            self._tui_surrogate_repair_active = True
+            try:
+                buf.text = safe_text
+                buf.cursor_position = _surrogate_cursor_position(raw_text, old_cursor)
+            finally:
+                self._tui_surrogate_repair_active = False
             raw_text = safe_text
         # Explicit `\` + Enter continuation runs first so its backslash is consumed identically
         # whether the Enter was typed or arrived inside a paste.

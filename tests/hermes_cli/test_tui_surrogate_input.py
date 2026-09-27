@@ -32,6 +32,37 @@ def test_enter_repairs_utf16_surrogate_pair_before_history_write(tmp_path):
     assert list(history.load_history_strings()) == [expected]
 
 
+def test_enter_sanitizes_lone_surrogate_without_triggering_rapid_input(tmp_path):
+    history = FileHistory(str(tmp_path / "history"))
+    buffer = Buffer(history=history)
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._attached_images = []
+    cli._agent_running = False
+    cli._pending_input = Queue()
+    cli._tui_multiline_shortcuts = False
+    cli._tui_last_text_change = 0.0
+    cli._tui_prev_text_len = 0
+    cli._tui_prev_newline_count = 0
+    cli._tui_paste_just_collapsed = False
+    cli._skip_paste_collapse = False
+    cli._tui_paste_over_threshold = lambda text, line_count, threshold_key: False
+    cli._recover_terminal_input_modes = lambda **_kwargs: None
+    cli._tui_enter_overlay = lambda event: False
+    cli._tui_enter_inline_command = lambda event, text, has_images: False
+    cli._inline_pastes = lambda buffer: None
+    buffer.on_text_changed += cli._tui_on_text_changed
+
+    buffer.text = "malformed \ud83d"
+    cli._tui_last_text_change = 0.0  # User pauses before pressing Enter.
+    app = SimpleNamespace(current_buffer=buffer, invalidate=lambda: None)
+    cli._tui_handle_enter(SimpleNamespace(app=app))
+
+    expected = "malformed �"
+    assert cli._pending_input.get_nowait() == expected
+    assert list(history.load_history_strings()) == [expected]
+
+
 def test_text_change_combines_surrogate_pair_before_the_prompt_renders():
     buffer = Buffer()
     cli = HermesCLI.__new__(HermesCLI)

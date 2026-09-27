@@ -778,6 +778,22 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
 
+    def test_413_tokens_per_day_is_rate_limit(self):
+        # Same bug class as the TPM case above, one window over: a daily token
+        # quota rejection via 413 must also refine to rate_limit so the turn
+        # falls back to the next provider instead of compressing a fresh
+        # session with nothing to compress. Flagged in review on PR #124104.
+        e = MockAPIError(
+            "Request too large for model `openai/gpt-oss-120b` on tokens per "
+            "day (TPD): Limit 500000, Requested 600000, please reduce your "
+            "message size and try again.",
+            status_code=413,
+        )
+        result = classify_api_error(e, provider="groq", model="openai/gpt-oss-120b")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_compress is False
+        assert result.should_fallback is True
+
     def test_413_without_rate_limit_phrase_stays_payload_too_large(self):
         # A genuine over-window-for-any-provider payload must still compress —
         # only a message carrying an explicit rate-limit phrase gets refined.

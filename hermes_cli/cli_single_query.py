@@ -457,6 +457,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     # full timeout. See #86878.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
     from hermes_cli.quiet_single_query import exit_single_query
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        from tools.kanban_tools import register_current_worker_from_env
+        if not register_current_worker_from_env():
+            # No exit trailer: the task log now belongs to the run that replaced this one.
+            print("kanban: this worker's run was reclaimed before it started; exiting", file=sys.stderr)
+            sys.exit(0)
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
         exit_single_query(1)
     try:

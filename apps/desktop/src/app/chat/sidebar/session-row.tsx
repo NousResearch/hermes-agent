@@ -514,12 +514,30 @@ function SidebarSessionRowImpl({
                 </Tip>
               ) : null
 
+            // A projected continuation renders as a plain top-level row, which
+            // reads as a brand-new conversation that "appeared by itself" — and
+            // the sealed predecessor it replaced once nested like a branch
+            // users deleted as accidents (#121148). Label the provenance so an
+            // automatic rotation is legible as one.
+            const continuationBadge =
+              session.continuation_kind === 'compression' ? (
+                <Tip label={r.continuationOrigin}>
+                  <Codicon
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-(--ui-text-quaternary)"
+                    name="layers"
+                    size="0.75rem"
+                  />
+                </Tip>
+              ) : null
+
             if (!card) {
               return (
                 <>
                   {leadNode}
                   <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
                   {handoffBadge}
+                  {continuationBadge}
                   <span className="min-w-0 flex-1 self-center">
                     <OverflowTip label={title} placement="row">
                       <SidebarRowLabel
@@ -578,6 +596,7 @@ function SidebarSessionRowImpl({
                     {context}
                   </span>
                   {handoffBadge}
+                  {continuationBadge}
                   <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
                   {actionsNode}
                 </div>

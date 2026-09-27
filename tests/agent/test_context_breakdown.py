@@ -47,6 +47,28 @@ def test_breakdown_includes_major_categories():
     assert data["context_max"] == 200_000
     assert data["estimated_total"] > 0
 
+def test_context_used_never_exceeds_model_window():
+    """Regression for #109760: anchor + appended-delta estimate can overshoot the window
+    (355.8k / 262.1k); one prompt can never be larger than the model's context."""
+    from agent.context_breakdown import context_usage_fields
+    from agent.usage_anchor import capture_usage_anchor
+
+    history = [{"role": "user", "content": "start"}, {"role": "assistant", "content": "ok"}]
+    agent, parts = _make_agent(context_length=262_144)
+    agent._turn_base_usage_anchor = capture_usage_anchor(250_000, 1_000, history)
+    history = history + [{"role": "user", "content": "x" * 800_000}]
+
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+        data = compute_session_context_breakdown(agent, history)
+
+    assert data["context_source"] == "provider_usage_plus_estimate"
+    assert data["context_used"] <= data["context_max"]
+    assert data["context_percent"] == 100
+
+    seeded = context_usage_fields(MagicMock(context_length=262_144, last_prompt_tokens=400_000,
+                                            last_real_prompt_tokens=150_000))
+    assert seeded["context_used"] <= seeded["context_max"]
+
 # ── /context renderers (pure functions over the payload) ────────────────────
 
 from agent.context_breakdown import (  # noqa: E402

@@ -1604,6 +1604,42 @@ def test_resolve_hermes_argv_module_actually_runs():
     )
 
 
+
+def test_resolve_hermes_argv_survives_stripped_child_env():
+    """Regression test for #125121.
+
+    On managed-runtime installs the gateway's ``sys.executable`` is the bare
+    store interpreter: ``-m hermes_cli.main`` only resolved because the
+    parent's launcher shim seeded ``sys.path``, and the worker env strip
+    (``_finalize_child_env``) removes that entry from children — so the old
+    argv crashed every spawn with ModuleNotFoundError. The resolved argv must
+    boot even when the child receives an env with every Hermes-owned
+    PYTHONPATH entry stripped, exactly like a dispatcher worker does.
+    """
+    import subprocess
+    from hermes_cli import kanban_db_dispatch as kbd
+    import shutil
+    import unittest.mock as mock
+
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HERMES_BIN", None)
+        with mock.patch.object(shutil, "which", return_value=None):
+            argv = kbd._resolve_hermes_argv()
+    # Mirror the worker env strip: no PYTHONPATH, no VIRTUAL_ENV, no
+    # PYTHONHOME — nothing ambient that could import hermes_cli for the child.
+    child_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV")
+    }
+    r = subprocess.run(argv + ["--version"], capture_output=True, text=True,
+                       timeout=30, env=child_env)
+    assert r.returncode == 0, (
+        f"`{' '.join(argv)} --version` with a stripped child env failed "
+        f"(rc={r.returncode}); stderr={r.stderr[:200]!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #

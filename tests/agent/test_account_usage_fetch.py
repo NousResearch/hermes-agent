@@ -359,6 +359,31 @@ def test_fetch_account_usage_nano_gpt_daily_images_without_percent_used(monkeypa
     assert snapshot.windows[0].used_percent == 37.0
 
 
+def test_fetch_account_usage_nano_gpt_does_not_follow_redirects(monkeypatch):
+    seen = {}
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None, **kwargs):
+            return _Response({"active": False})
+
+        def post(self, url, headers=None, json=None, **kwargs):
+            raise AssertionError("inactive subscription should not fetch balance")
+
+    def _factory(**kwargs):
+        seen.update(kwargs)
+        return _Client()
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", _factory)
+    fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+    assert seen["follow_redirects"] is False
+
+
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_runtime_provider",

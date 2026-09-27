@@ -66,8 +66,6 @@ def _fake_supervisor_registry(monkeypatch):
 
 def _fake_cli(tmp_path, body):
     """Write an executable fake browser-use CLI and return its path."""
-    if os.name == "nt":
-        pytest.skip("POSIX shell-script fixture is not executable on Windows")
     script = tmp_path / "browser-use"
     script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
@@ -239,6 +237,7 @@ class TestToolSurfaceSwap:
 
 
 class TestVaultSupervisorAttach:
+    @pytest.mark.linux_only
     def test_exec_attaches_supervisor_to_the_browser_it_drives(self, tmp_path, monkeypatch, _fake_supervisor_registry):
         """browser_vault_fill injects secrets only over the supervisor's CDP WebSocket. Without this attach the
         default (Browser Use) backend had no supervisor at all and every fill failed with supervisor_required."""
@@ -254,6 +253,7 @@ class TestVaultSupervisorAttach:
 
 
 class TestVaultEgressRedaction:
+    @pytest.mark.linux_only
     def test_exec_redacts_registered_vault_secret_from_stdout_and_stderr(self, tmp_path, monkeypatch):
         """A browser_exec page read must not return a vault-filled value to model history."""
         from agent import redact
@@ -375,6 +375,7 @@ class TestLegacyCloudMigration:
         assert bu_cli.is_browser_use_cli_mode() is True
 
 
+    @pytest.mark.linux_only
     def test_migrated_config_gets_bu_autospawn(self, tmp_path, monkeypatch):
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: self._LEGACY)
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
@@ -383,6 +384,7 @@ class TestLegacyCloudMigration:
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert "autospawn:1" in result["output"]
 
+    @pytest.mark.linux_only
     def test_explicit_backend_does_not_set_bu_autospawn(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
@@ -487,6 +489,7 @@ class TestBackendCdpResolution:
         err = bu_cli._resolve_backend_cdp(self._env(), "t1")
         assert err and "no" in err.lower() and "CDP" in err
 
+    @pytest.mark.linux_only
     def test_named_session_composes_with_provider_backend(self, tmp_path, monkeypatch):
         """session=<name> composes with a configured provider backend: the
         name keys its OWN provider browser (bu-named-<name>), so concurrent
@@ -604,6 +607,7 @@ class TestOwnTabPreamble:
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         return json.loads(bu_cli.browser_exec("print('payload')", session=session))
 
+    @pytest.mark.linux_only
     def test_named_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
         result = self._run(tmp_path, monkeypatch, session="r7k2", shared_cdp="http://127.0.0.1:9222")
         assert result["success"] is True
@@ -611,23 +615,27 @@ class TestOwnTabPreamble:
         # model code still present, after the preamble
         assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
 
+    @pytest.mark.linux_only
     def test_named_packaged_chromium_skips_preamble(self, tmp_path, monkeypatch):
         """Each named session launches its own packaged Chromium — nothing to share a tab with."""
         result = self._run(tmp_path, monkeypatch, session="r7k2")
         assert result["success"] is True
         assert "_hermes_ensure_own_tab" not in result["output"]
 
+    @pytest.mark.linux_only
     def test_unnamed_session_gets_no_preamble(self, tmp_path, monkeypatch):
         result = self._run(tmp_path, monkeypatch, session="")
         assert result["success"] is True
         assert "_hermes_ensure_own_tab" not in result["output"]
 
+    @pytest.mark.linux_only
     def test_named_provider_browser_skips_preamble(self, tmp_path, monkeypatch):
         """Per-name provider browsers are private — preamble would leak a tab."""
         result = self._run(tmp_path, monkeypatch, session="r7k2", provider=True)
         assert result["success"] is True
         assert "_hermes_ensure_own_tab" not in result["output"]
 
+    @pytest.mark.linux_only
     def test_sentinel_never_reaches_subprocess_env(self, tmp_path, monkeypatch):
 
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
@@ -817,6 +825,7 @@ class TestNativeScreenshots:
         out = f"{stale}\n/nonexistent/dir/x.png\n"
         assert bu_cli._find_screenshot(out, since=time.time()) is None
 
+    @pytest.mark.linux_only
     def test_vision_model_gets_multimodal_envelope(self, tmp_path, monkeypatch):
         shot = self._shot(tmp_path)
         cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "{shot}"\n')
@@ -835,6 +844,7 @@ class TestNativeScreenshots:
         assert result["meta"]["screenshot_path"] == shot
         assert shot in result["text_summary"]
 
+    @pytest.mark.linux_only
     def test_text_only_model_gets_plain_result_with_path(self, tmp_path, monkeypatch):
         shot = self._shot(tmp_path)
         cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "{shot}"\n')
@@ -845,6 +855,7 @@ class TestNativeScreenshots:
         result = json.loads(bu_cli.browser_exec("print(capture_screenshot())"))
         assert result["screenshot_path"] == shot
 
+    @pytest.mark.linux_only
     def test_no_screenshot_keeps_string_result(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "no images here"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -938,6 +949,7 @@ class TestBrowserExec:
         result = json.loads(bu_cli.browser_exec("   "))
         assert "error" in result
 
+    @pytest.mark.linux_only
     def test_code_piped_on_stdin(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'code=$(cat)\necho "got:$code"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -960,6 +972,7 @@ class TestBrowserExec:
         assert result["success"] is True
         assert result["output"].strip() == "café — 🐴 安全"
 
+    @pytest.mark.linux_only
     def test_session_sets_bu_name(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -967,6 +980,7 @@ class TestBrowserExec:
         assert "bu:r7k2" in result["output"]
         assert result["session"] == "r7k2"
 
+    @pytest.mark.linux_only
     def test_invalid_session_name_rejected(self, monkeypatch, tmp_path):
         cli = _fake_cli(tmp_path, "cat > /dev/null\n")
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -974,6 +988,7 @@ class TestBrowserExec:
         assert "error" in result
         assert "session" in result["error"].lower()
 
+    @pytest.mark.linux_only
     def test_nonzero_exit_reports_failure_and_stderr(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "boom" >&2\nexit 3\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -984,7 +999,7 @@ class TestBrowserExec:
 
 
 
-@pytest.mark.skipif(os.name == "nt", reason="uses extensionless POSIX executable fixtures")
+@pytest.mark.linux_only
 class TestFindCliManagedBin:
     """MANAGED-FIRST: _find_cli probes $HERMES_HOME/bin before PATH and
     ~/.local/bin, so the Hermes-installed copy always wins."""
@@ -1066,7 +1081,7 @@ class TestFindCliManagedBin:
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="uses extensionless POSIX executable fixtures")
+@pytest.mark.linux_only
 class TestInstallCli:
     def test_path_install_does_not_short_circuit(self, tmp_path, monkeypatch):
         """MANAGED-FIRST: a browser-use on PATH is a user-level side install
@@ -1270,6 +1285,7 @@ class TestLightpandaBackendResolution:
 
 
 class TestLightpandaPreamble:
+    @pytest.mark.linux_only
     def test_lightpanda_session_skips_own_tab_preamble(self, tmp_path, monkeypatch):
         """A Lightpanda process is private to its session: no sibling daemon
         to collide with, and Target.createTarget would fail anyway
@@ -1363,6 +1379,7 @@ class TestTimeoutProcessGroupKill:
     blocked forever, and the wedged call's activity heartbeat pins the session at
     "now" in the sidebar indefinitely."""
 
+    @pytest.mark.linux_only
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
     def test_timeout_kills_grandchild_and_returns_promptly(self, tmp_path, monkeypatch):
         """A grandchild that outlives the direct child and holds the inherited stdout

@@ -25,16 +25,37 @@ Status: BUILDER COMPLETE / ISOLATED CANDIDATE ONLY / READY FOR REVIEW
 | I5 | RETAIN/ADAPT | Added a focused failing spawn-environment regression; `hermes_cli/kanban_db_dispatch.py::_default_spawn` now strips `HERMES_EPHEMERAL_SYSTEM_PROMPT`, `HERMES_PREFILL_MESSAGES_FILE`, and `HERMES_TUI_SKILLS` after the gateway session-context scrub while preserving worker task/profile/board pins. | GREEN: focused regression `1 passed in 2.19s`. |
 | I6 | RETAIN/ADAPT | Extended the legacy retag regression with Windows backslash paths and prefix-lookalike protection; `hermes_state.py::SessionDB.retag_kanban_worker_sessions` now matches slash and backslash exact/descendant forms. | GREEN: focused regression `1 passed in 1.56s`. |
 | I7 | TEST-ONLY | Updated moved tests in `tests/tools/test_plugin_skills.py` and `tests/gateway/test_profile_isolation_runtime.py` to use host-relative/`Path` semantics. No runtime source change. | GREEN: focused plugin-skill set `3 passed in 3.33s`; covered again by bounded suite. |
-| I8 | UPSTREAM-ONLY + TEST | No runtime change. Added an exact Unicode round-trip regression in `tests/tools/test_browser_use_cli.py`, proving the existing explicit UTF-8 subprocess configuration. | GREEN: focused proof `1 passed in 2.06s`. |
+| I8 | UPSTREAM-ONLY + TEST | No runtime change. Added an exact Unicode round-trip regression in `tests/tools/test_browser_use_cli.py`, proving the existing explicit UTF-8 subprocess configuration. Replaced helper-level runtime `pytest.skip` with canonical `@pytest.mark.linux_only` coverage for every test that invokes the POSIX `_fake_cli` fixture; an AST audit found 16 callers and 0 missing markers. The host-honest Unicode proof remains unmarked and runs on Windows. | GREEN: focused proof `1 passed`; OS-marker audit and independent review passed. |
+
+## Canonical focused verification
+
+All intent checks were rerun through `scripts/run_tests.sh` (no bare `pytest` invocation):
+
+- I1: `scripts/run_tests.sh tests/hermes_cli/test_cli_preloaded_skills.py -q` -> `3 passed`.
+- I2: `scripts/run_tests.sh tests/plugins/test_kanban_attachments.py -k 'test_cli_attach_preserves_native_windows_paths' -q` -> `1 passed`.
+- I3: `scripts/run_tests.sh tests/hermes_cli/test_kanban_db.py -k 'test_worker_context_budget_preserves_mandatory_text_and_parent_retrieval or test_worker_context_multibyte_identity_is_bounded_and_retrievable' -q` -> `2 passed`.
+- I4: `scripts/run_tests.sh tests/hermes_cli/test_kanban_worker_exit_decode.py -q` -> `1 passed`.
+- I5: `scripts/run_tests.sh tests/hermes_cli/test_kanban_worker_session_source.py -k 'test_worker_spawn_drops_parent_prompt_and_prefill_env' -q` -> `1 passed`.
+- I6: `scripts/run_tests.sh tests/hermes_cli/test_kanban_worker_session_source.py -k 'test_retag_reclaims_legacy_worker_rows' -q` -> `1 passed`.
+- I7: `scripts/run_tests.sh tests/tools/test_plugin_skills.py -k 'test_reads_supporting_file_with_containment or test_platform_gate_applies_before_supporting_file' -q` -> `2 passed`; `scripts/run_tests.sh tests/gateway/test_profile_isolation_runtime.py -k 'TestRichSentStorePathResolution and test_store_path_follows_override' -q` -> `1 passed`.
+- I8: `scripts/run_tests.sh tests/tools/test_browser_use_cli.py -k 'test_utf8_stdout_round_trips_without_locale_decoding' -q` -> `1 passed`.
 
 ## Combined bounded regression and quality gates
 
-- Combined bounded suite across all eight intent surfaces: `137 passed, 32 skipped in 22.18s`.
+The canonical per-file runner applies one `-k` expression to every listed file, so reproducing the original mix of whole files plus two selected tests requires two bounded invocations:
+
+1. `scripts/run_tests.sh tests/hermes_cli/test_cli_preloaded_skills.py tests/plugins/test_kanban_attachments.py tests/hermes_cli/test_kanban_worker_session_source.py tests/hermes_cli/test_kanban_worker_exit_decode.py tests/tools/test_plugin_skills.py tests/gateway/test_profile_isolation_runtime.py tests/tools/test_browser_use_cli.py -q` -> `135 passed, 32 skipped`.
+2. `scripts/run_tests.sh tests/hermes_cli/test_kanban_db.py -k 'test_worker_context_budget_preserves_mandatory_text_and_parent_retrieval or test_worker_context_multibyte_identity_is_bounded_and_retrievable' -q` -> `2 passed`.
+
+Aggregate: `137 passed, 32 skipped` across all eight intent surfaces.
+
 - Ruff across all touched production and test files: `All checks passed!`.
 - Python bytecode compile check for every touched production module: passed.
+- `python scripts/ci/check_os_marker_fakes.py tests`: passed.
+- `_fake_cli` caller AST audit: `16` callers, `0` missing `linux_only` markers.
 - `git diff --check`: passed with no whitespace errors.
 - Added-line security scan: no hardcoded credential assignments, `shell=True`, `os.system`, unsafe pickle loads, or dynamic SQL construction detected.
-- Independent pre-commit diff review: `passed=true`, `security_concerns=[]`, `logic_errors=[]`.
+- Independent pre-commit diff review: runtime and marker checks passed; its sole low-severity finding was stale evidence SHA/stat, corrected below.
 - Reviewer hardening suggestion addressed: the worker-context regression now explicitly proves the private NUL structure marker never reaches generated context.
 - Reviewer performance suggestion not applied: incremental accounting would be a non-required optimization; the current correctness-first selection is bounded by the 96 KiB aggregate ceiling and changing it would expand R12 scope.
 
@@ -50,12 +71,11 @@ R12 did not modify the first two code paths or the third test's accounting logic
 
 ## Final diff and workspace audit
 
-- Code-and-tests diff SHA-256, excluding this evidence file: `4b0bc1f19f9a9b056e7b7b2bc08a97fce641bb3a3b643769f63ca70c96a1cd59`.
-- Code-and-tests diff stat: 12 files changed, 518 insertions, 34 deletions.
+- Code-and-tests diff SHA-256, excluding this evidence file: `7edcc910f3a09f78508224e20577f331bc1c9368edda71647b238358fee2dae4`.
+- Code-and-tests diff stat: 12 files changed, 535 insertions, 34 deletions.
 - Runtime files changed: `cli.py`, `hermes_cli/kanban.py`, `hermes_cli/kanban_db.py`, `hermes_cli/kanban_db_dispatch.py`, `hermes_state.py`.
 - Test files changed: `tests/gateway/test_profile_isolation_runtime.py`, `tests/hermes_cli/test_cli_preloaded_skills.py`, `tests/hermes_cli/test_kanban_db.py`, `tests/hermes_cli/test_kanban_worker_session_source.py`, `tests/plugins/test_kanban_attachments.py`, `tests/tools/test_browser_use_cli.py`, `tests/tools/test_plugin_skills.py`.
-- New tracked evidence intended: `r12-builder-evidence.md`.
-- Untracked audit before commit: only `r12-builder-evidence.md`.
+- Final pre-commit worktree audit: only `tests/tools/test_browser_use_cli.py` and this evidence file were modified beyond the committed candidate; no unrelated files were added.
 - Ignored local audit: an ignored `.venv/` was materialized by the independent review harness. It is not staged, committed, or part of the candidate diff.
 - No dependency was added and no strictness/configuration setting was weakened.
 

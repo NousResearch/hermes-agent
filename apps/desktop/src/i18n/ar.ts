@@ -1834,6 +1834,8 @@ export const ar = defineLocale({
     skillsLabel: 'المهارات',
     notSet: 'غير مضبوط',
     soulDesc: 'الموجّه (prompt) النظامي وتعليمات الشخصية المضمّنة في هذا الملف الشخصي.',
+    soulMissing:
+      'لا يوجد ملف SOUL.md لهذا الملف الشخصي بعد. أضف التعليمات أدناه واحفظ لإنشائه. تُدار إعدادات الشخصية في config.yaml بشكل منفصل.',
     soulOptional: 'اختياري',
     soulPlaceholder: mode =>
       `الموجّه (prompt) النظامي / الشخصية لهذا الملف الشخصي.\nاتركه فارغا للإبقاء على افتراضي ${mode}.`,
@@ -2442,6 +2444,7 @@ export const ar = defineLocale({
     goalWaiting: 'الهدف قيد الانتظار',
     subagents: count => `${count} ${count === 1 ? 'وكيل فرعي' : 'وكيل فرعي'}`,
     todos: (done, total) => `المهام ${done}/${total}`,
+    previousTodos: (done, total) => `المهام السابقة ${done}/${total}`,
     running: 'قيد التشغيل',
     stop: 'إيقاف',
     dismiss: 'تجاهل',
@@ -3260,6 +3263,8 @@ export const ar = defineLocale({
       preparingAudio: 'جار تجهيز الصوت',
       stopReading: 'إيقاف القراءة',
       readAloud: 'قراءة بصوت عال',
+      copyFullResponse: 'نسخ الرد الكامل',
+      readAloudFullResponseHint: 'انقر مع الضغط على Shift: قراءة الرد الكامل بصوت عال',
       editMessage: 'تحرير الرسالة',
       scrollToBottom: 'التمرير إلى الأسفل',
       stop: 'إيقاف',

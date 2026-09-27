@@ -384,9 +384,15 @@ def _gateway_ready(log: str, room_id: str) -> bool:
 
 
 @pytest.fixture
+def gateway_extra_config() -> str:
+    return ""
+
+
+@pytest.fixture
 def gateway(
     request: pytest.FixtureRequest,
     tmp_path: Path,
+    gateway_extra_config: str,
     gateway_image: str,
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
@@ -422,6 +428,7 @@ def gateway(
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"
                    if context_pause else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-resolution\n" if resolution_pause else "")
+                + gateway_extra_config
             ),
         )
         if native_images:

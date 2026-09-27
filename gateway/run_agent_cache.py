@@ -118,12 +118,15 @@ class GatewayAgentCacheMixin:
         # Fingerprint the FULL credential, not a short prefix: OAuth/JWT-style tokens often share a
         # common prefix (e.g. "eyJhbGci"), so a prefix would give false cache hits across auth switches.
         _api_key = str(runtime.get("api_key", "") or "")
+        # Manual output limits also configure compressor reservations at construction. Include
+        # removal (None), while leaving the ordinary route's identity byte-for-byte unchanged.
         blob = _j.dumps(
             [
                 model,
                 hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else "",
                 runtime.get("base_url", ""), runtime.get("provider", ""),
                 runtime.get("requested_provider", ""), runtime.get("api_mode", ""),
+                runtime.get("manual_fallback_index"), runtime.get("fallback_service_tier_override"),
                 sorted((runtime.get("capabilities") or {}).items()),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — set per-message on the cached agent; no prompt/tool effect.
@@ -133,7 +136,7 @@ class GatewayAgentCacheMixin:
                 # skip_context_files changes the agent's frozen system prompt (context files in vs out):
                 # a toggled edit must rebuild the cached agent, not silently reuse it.
                 bool(skip_context_files),
-            ],
+            ] + ([runtime.get("max_tokens")] if "manual_fallback_index" in runtime else []),
             sort_keys=True, default=str,
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
@@ -246,8 +249,15 @@ class GatewayAgentCacheMixin:
 
     def _is_intentional_model_switch(self, session_key: str, agent: Any, config_model: str) -> bool:
         """True when *agent* running a model other than *config_model* is deliberate: a /model session
-        override names that model, or the Nous gateway moved the session off the ``nous/welcome``
+        override or manual fallback selected it, or the Nous gateway moved off ``nous/welcome``
         alias that *config_model* still carries (``anon_auth.apply_model_switch``)."""
+        # Manual fallback takes precedence over a dormant /model override.
+        # Native activation marks constructor-time and in-turn automatic drift.
+        store = getattr(self, "session_store", None)
+        if store is not None and callable(getattr(type(store), "get_session_metadata", None)):
+            with suppress(Exception):
+                if store.get_session_metadata(session_key, "manual_fallback_index") is not None:
+                    return not getattr(agent, "_fallback_activated", False)
         override = self._session_model_override(session_key)
         if override is not None and override.get("model") == agent.model:
             return True

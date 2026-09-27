@@ -34,6 +34,10 @@ from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
+from agent.fallback_policy import (
+    activate_fallback_service_tier_override,
+    apply_fallback_service_tier_override,
+)
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
@@ -1560,7 +1564,10 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
         tools_for_api = agent.tools
     # The one place request_overrides are consumed: static /fast values are already pinned
     # in agent.request_overrides; auto/cold windows layer the fast override per request.
-    request_overrides = effective_request_overrides(agent)
+    request_overrides = apply_fallback_service_tier_override(
+        effective_request_overrides(agent),
+        getattr(agent, "_active_fallback_service_tier_override", None),
+    )
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
     if agent.api_mode == "bedrock_converse":
@@ -1985,9 +1992,13 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     # Skip entries that resolve to the same backend that just failed — falling back to it loops the failure.
     # See #22548, #62984, #70893.
     from agent.backend_identity import BackendIdentity, should_skip_candidate
-    current_ident = BackendIdentity.build(provider=getattr(agent, "provider", ""),
-        model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
-    fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
+    from hermes_cli.model_normalize import normalize_model_for_provider
+    current_provider = getattr(agent, "provider", "")
+    current_model = normalize_model_for_provider(getattr(agent, "model", ""), current_provider)
+    candidate_model = normalize_model_for_provider(fb_model, fb_provider)
+    current_ident = BackendIdentity.build(provider=current_provider,
+        model=current_model, base_url=str(getattr(agent, "base_url", "") or ""))
+    fb_ident = BackendIdentity.build(provider=fb_provider, model=candidate_model, base_url=(fb.get("base_url") or ""))
     if should_skip_candidate(fb_ident, current_ident):
         logger.warning(
             "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",
@@ -2187,6 +2198,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             from agent.native_compaction import resolve_native_compaction_capabilities
             agent.runtime_capabilities = resolve_native_compaction_capabilities(
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+            activate_fallback_service_tier_override(agent, fb, log=logger)
             return True
         except Exception as e:
             if fb_provider == "nous":

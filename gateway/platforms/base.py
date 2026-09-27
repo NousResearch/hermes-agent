@@ -4431,12 +4431,14 @@ class BasePlatformAdapter(ABC):
                 if inspect.isawaitable(_post_result):
                     await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 
-    def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
+    def _finish_session_task(
+        self, session_key: str, interrupt_event: asyncio.Event, *, drain_pending: bool = True,
+    ) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
         drop: re-queue it if another task already owns the session (drain handoff), else spawn the
         drain task and leave it the guard. Nothing pending: release the guard only if we still own
         it."""
-        late_pending = self._pending_messages.pop(session_key, None)
+        late_pending = self._pending_messages.pop(session_key, None) if drain_pending else None
         current_task = asyncio.current_task()
         if late_pending is not None:
             existing_task = self._session_tasks.get(session_key)
@@ -4543,7 +4545,8 @@ class BasePlatformAdapter(ABC):
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
-            if session_key in self._pending_messages:
+            if (getattr(event, "_gateway_skip_goal_continuation", False) is not True
+                    and session_key in self._pending_messages):
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
@@ -4575,7 +4578,11 @@ class BasePlatformAdapter(ABC):
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
-            self._finish_session_task(session_key, interrupt_event)
+            # Terminal compression preserves the queue for explicit recovery;
+            # release this task's guard without dispatching into the pause/reset gate.
+            self._finish_session_task(
+                session_key, interrupt_event,
+                drain_pending=getattr(event, "_gateway_skip_goal_continuation", False) is not True)
 
     def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained

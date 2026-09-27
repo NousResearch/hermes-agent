@@ -66,3 +66,25 @@ Windows. Przed publikacją sprawdź instalator w nowym koncie lub maszynie wirtu
 Podpisywanie i publikacja instalatora są osobnym etapem opisanym w
 [pipeline wydania](product/RELEASE_PIPELINE.md). Merge kodu nie aktualizuje
 automatycznie plików dostępnych w Releases.
+
+### Wynik lokalnej próby — 27 września 2026
+
+- Zbudowano renderer, Electron i instalator NSIS x64; TypeScript bez błędów.
+- Testy ikon, bootstrapa i polityki runtime: 45 zaliczonych, 1 pominięty.
+- Rzeczywiste pobranie przypiętego `install.ps1` z repozytorium Cześka: sukces.
+- W pustym katalogu wykonano etapy `repository`, `python`, `venv`, `dependencies`.
+  Pobrano własnego Pythona 3.11.16, a nowy backend odpowiedział HTTP 200
+  na `/api/health`. Nie korzystał z istniejącego środowiska Hermesa.
+- Pierwsza próba wykryła błąd długich ścieżek Windows. Po włączeniu
+  `core.longpaths` w procesie instalatora ponowna próba zakończyła się sukcesem.
+  HTTPS tego procesu korzysta z magazynu certyfikatów Windows (`schannel`).
+- Instalacja zależności użyła istniejącego fallbacku PyPI, ponieważ lokalny uv
+  odrzucił synchronizację lockfile w trybie `--locked`. Importy backendu i health
+  przeszły, ale ta próba nie potwierdza odtwarzalności wersji z lockfile.
+- Zweryfikowano w gotowym EXE nazwę, firmę i wersję produktu 0.17.5 oraz zgodność
+  dołączonej ikony ICO. PNG/ICO/ICNS mają poprawne formaty i kanał alpha.
+
+To była próba izolowanego runtime na istniejącym Windows, nie pełny przebieg
+instalatora na czystej maszynie. Utworzony lokalnie instalator jest **niepodpisany**
+i służy do testu; nie został opublikowany w Releases. Nie sprawdzano płatnego API
+ani rzeczywistego mikrofonu w tej próbie.

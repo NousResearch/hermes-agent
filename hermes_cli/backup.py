@@ -468,6 +468,7 @@ def _write_zip_file(zf: zipfile.ZipFile, path: Path, arcname: str) -> None:
         _discard_failed_zip_members(zf, filelist_len)
         raise
 
+
 def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, out_path: Path) -> Optional[int]:
     """Add a WAL-safe snapshot of *abs_path* to *zf*; return its byte size, or None on failure.
 

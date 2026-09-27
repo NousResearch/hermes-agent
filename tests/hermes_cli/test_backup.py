@@ -1778,6 +1778,87 @@ class TestQuickSnapshotProjectsKanban:
         assert rows == [("w1", "ship")]
 
 
+def _fail_zip_write_after(monkeypatch, member: str, byte_count: int = 120_000) -> None:
+    """Make ZipFile.write finalize a large partial member, then surface a source-read failure."""
+    real_write = zipfile.ZipFile.write
+
+    def flaky_write(self, filename, arcname=None, compress_type=None, compresslevel=None):
+        if str(arcname) == member:
+            with Path(filename).open("rb") as src, self.open(str(arcname), "w") as dst:
+                dst.write(src.read(byte_count))
+            raise OSError(5, "simulated source read failure")
+        return real_write(self, filename, arcname, compress_type, compresslevel)
+
+    monkeypatch.setattr(zipfile.ZipFile, "write", flaky_write)
+
+
+class TestFailedZipMemberRecovery:
+    def test_automatic_backup_omits_crc_valid_partial_member(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        (hermes_home / "flaky.bin").write_bytes(os.urandom(300_000))
+        archive = tmp_path / "automatic.zip"
+        _fail_zip_write_after(monkeypatch, "flaky.bin")
+
+        from hermes_cli.backup import _write_full_zip_backup
+
+        assert _write_full_zip_backup(archive, hermes_home) is None
+        assert archive.exists()
+        # The failed payload is deliberately left orphaned before the central directory.
+        # Keeping >64 KiB here proves the archive remains readable without rewinding start_dir.
+        assert archive.stat().st_size > 65_535
+        with zipfile.ZipFile(archive) as zf:
+            assert "flaky.bin" not in zf.namelist()
+            assert zf.read("config.yaml") == b"model: test\n"
+            assert zf.testzip() is None
+
+    def test_failed_duplicate_restores_previous_central_directory_entry(self, tmp_path, monkeypatch):
+        source = tmp_path / "source.bin"
+        source.write_bytes(os.urandom(300_000))
+        archive = tmp_path / "duplicate.zip"
+        _fail_zip_write_after(monkeypatch, "dup.bin")
+
+        import hermes_cli.backup as backup_mod
+
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("dup.bin", b"complete-before-failure")
+            with pytest.raises(OSError, match="simulated source read failure"):
+                backup_mod._write_zip_file(zf, source, "dup.bin")
+            zf.writestr("after.bin", b"after")
+
+        assert archive.stat().st_size > 65_535
+        with zipfile.ZipFile(archive) as zf:
+            assert zf.namelist().count("dup.bin") == 1
+            assert zf.read("dup.bin") == b"complete-before-failure"
+            assert zf.read("after.bin") == b"after"
+            assert zf.testzip() is None
+
+    def test_incomplete_pre_update_backup_does_not_rotate_last_complete(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+
+        from hermes_cli.backup import create_pre_update_backup
+
+        good = create_pre_update_backup(hermes_home=hermes_home, keep=1)
+        assert good is not None and good.exists()
+        _advance_backup_clock()
+
+        (hermes_home / "flaky.bin").write_bytes(os.urandom(300_000))
+        _fail_zip_write_after(monkeypatch, "flaky.bin")
+        incomplete = create_pre_update_backup(hermes_home=hermes_home, keep=1)
+
+        assert incomplete is None
+        assert good.exists(), "an incomplete generation rotated out the last complete backup"
+        backups = sorted((hermes_home / "backups").glob("pre-update-*.zip"))
+        assert len(backups) == 2
+        salvage = next(path for path in backups if path != good)
+        with zipfile.ZipFile(salvage) as zf:
+            assert "flaky.bin" not in zf.namelist()
+            assert zf.read("config.yaml") == b"model: test\n"
+            assert zf.testzip() is None
+
 class TestPreUpdateBackup:
     """Tests for create_pre_update_backup — the auto-backup ``hermes update``
     runs before touching anything."""

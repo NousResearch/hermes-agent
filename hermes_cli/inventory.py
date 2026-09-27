@@ -132,7 +132,7 @@ def build_models_payload(
 
     # A local proxy serving a model also in an aggregator's catalog would show under both, and picking
     # the aggregator row silently breaks the call — aggregators only list models no specific provider has.
-    _strip_aggregator_overlaps(rows)
+    _strip_aggregator_overlaps(rows, current_model=ctx.current_model)
 
     if include_unconfigured:
         rows = list(rows) + _without_slug(_append_unconfigured_rows(rows, ctx), "moa")
@@ -165,11 +165,12 @@ def build_models_payload(
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 
 
-def _strip_aggregator_overlaps(rows: list[dict]) -> None:
+def _strip_aggregator_overlaps(rows: list[dict], *, current_model: str = "") -> None:
     """Drop models from TRUE routing aggregators (OpenRouter, custom:* proxies) that a user-defined
-    provider also serves. The is_user_defined guard matters: is_routing_aggregator() is True for every
-    custom:* slug, so without it the dedup would empty a user's own custom row. Flat-namespace
-    resellers (opencode-go/zen) serve every model first-party and keep shared names."""
+    provider also serves. Keep the currently selected model on the active provider row: its route was
+    explicitly chosen and must remain selectable. The is_user_defined guard matters: is_routing_aggregator()
+    is True for every custom:* slug, so without it the dedup would empty a user's own custom row.
+    Flat-namespace resellers (opencode-go/zen) serve every model first-party and keep shared names."""
     try:
         from hermes_cli.providers import is_routing_aggregator
     except Exception:
@@ -213,7 +214,12 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
         # provider's own catalog (minimax-m3, glm-5, deepseek-v4-flash, ...) is silently gutted in the
         # picker. (#47077)
         original = row.get("models") or []
-        filtered = [m for m in original if m.lower() not in user_models]
+        filtered = [
+            m for m in original
+            if m.lower() not in user_models or (
+                m.lower() == str(current_model or "").lower() and row.get("is_current")
+            )
+        ]
         if len(filtered) < len(original):
             row["models"] = filtered
             row["total_models"] = len(filtered)
@@ -454,9 +460,14 @@ def _append_unconfigured_rows(
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
     from hermes_cli.models import CANONICAL_PROVIDERS, _model_requires_account_discovery
+    from hermes_cli.model_switch_providers import _picker_provider_identity
 
     seen = {r["slug"].lower() for r in rows}
-    cur = (ctx.current_provider or "").lower()
+    cur = _picker_provider_identity(
+        ctx.current_provider,
+        user_providers=ctx.user_providers,
+        custom_providers=ctx.custom_providers,
+    )
     cur_model = str(ctx.current_model or "").strip()
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
@@ -517,14 +528,19 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
     """Keep only rows backed by explicit user configuration — ``list_authenticated_providers`` also
     discovers ambient credentials (e.g. GitHub CLI -> Copilot) Desktop chat pickers must not show."""
     from hermes_cli.auth import is_provider_explicitly_configured
+    from hermes_cli.model_switch_providers import _picker_provider_identity
 
-    current_slug = str(ctx.current_provider or "").strip().lower()
+    current_identity = _picker_provider_identity(
+        ctx.current_provider,
+        user_providers=ctx.user_providers,
+        custom_providers=ctx.custom_providers,
+    )
 
     def _is_explicit(row: dict, slug: str) -> bool:
         # Managed local models are explicit configuration by existence (gigabytes downloaded into the
         # machine-scoped dir); there is deliberately no config credential, so without the source clause
         # the row would only survive on the profile where Use was last clicked.
-        if (row.get("is_user_defined") or (current_slug and slug == current_slug)
+        if (row.get("is_user_defined") or (current_identity and slug == current_identity)
                 or row.get("source") == "local-runtime"):
             return True
         if slug == "moa":

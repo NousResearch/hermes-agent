@@ -139,6 +139,98 @@ class TestListAuthenticatedProvidersBedrock:
 
 
 
+    def test_aws_alias_uses_full_credential_chain_and_marks_bedrock_current(self, monkeypatch):
+        """Accepted ``aws`` spelling must resolve the canonical Bedrock row.
+
+        The fast environment check intentionally does not probe botocore's
+        credential chain. When ``aws`` is the configured current provider,
+        that full chain belongs to Bedrock and must still be consulted.
+        """
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        for name in (
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_PROFILE",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        model = _US_MODELS[0]["id"]
+        with (
+            patch("agent.bedrock_adapter.has_aws_credentials", return_value=True) as has_creds,
+            patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover),
+            patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"),
+        ):
+            providers = list_authenticated_providers(
+                current_provider="aws",
+                current_model=model,
+            )
+
+        bedrock = next((row for row in providers if row["slug"] == "bedrock"), None)
+        assert bedrock is not None
+        assert bedrock["is_current"] is True
+        assert model in bedrock["models"]
+        assert has_creds.call_count == 1
+
+    def test_configured_raw_aws_does_not_borrow_bedrock_credential_chain(self, monkeypatch):
+        """A raw ``providers.aws`` endpoint must not become canonical Bedrock.
+
+        Identity precedence preserves explicitly configured raw provider names
+        before runtime aliases. Bedrock therefore remains non-current and must
+        not trigger the expensive boto3 chain merely because the raw spelling
+        happens to be an accepted Bedrock alias.
+        """
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        for name in (
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_PROFILE",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        direct_model = "direct-aws-model"
+        user_providers = {
+            "aws": {
+                "name": "Direct AWS-compatible endpoint",
+                "base_url": "https://aws-compatible.example/v1",
+                "model": direct_model,
+                "discover_models": False,
+            }
+        }
+        with (
+            patch("agent.models_dev.fetch_models_dev", return_value={}),
+            patch(
+                "hermes_cli.model_switch_providers._collect_authed_provider_slugs",
+                return_value=[],
+            ),
+            patch("agent.bedrock_adapter.has_aws_credentials", return_value=True) as has_creds,
+            patch("agent.bedrock_adapter.discover_bedrock_models") as discover,
+        ):
+            providers = list_authenticated_providers(
+                current_provider="aws",
+                current_model=direct_model,
+                user_providers=user_providers,
+                probe_custom_providers=False,
+                probe_current_custom_provider=False,
+            )
+
+        direct = next(row for row in providers if row["slug"] == "aws")
+        assert direct["is_current"] is True
+        assert direct_model in direct["models"]
+        bedrock = next((row for row in providers if row["slug"] == "bedrock"), None)
+        assert bedrock is None or bedrock["is_current"] is False
+        assert has_creds.call_count == 0
+        discover.assert_not_called()
+
     def test_bedrock_not_shown_without_credentials(self, monkeypatch):
         """Bedrock must not appear when no AWS credentials are present."""
         from hermes_cli.model_switch import list_authenticated_providers

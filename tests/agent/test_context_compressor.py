@@ -5,6 +5,8 @@ import re
 import sqlite3
 import pytest
 import time
+import httpx
+import openai
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (
@@ -20,6 +22,9 @@ from agent.context_compressor import (
     _truncate_tool_call_args_json,
 )
 from hermes_state import SessionDB
+from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
+
+_REQ = httpx.Request("POST", "http://x")
 
 
 class StubProviderError(Exception):
@@ -1338,16 +1343,17 @@ class TestStreamingClosedFailure:
         assert c._last_summary_network_failure is False
         assert c._consecutive_timeout_failures == 1
 
-    @pytest.mark.parametrize("kind", ["api_timeout", "connection_error_with_stall_text"])
-    def test_api_timeout_still_flags_terminal_network_failure(self, kind):
+    @pytest.mark.parametrize(
+        "err",
+        [
+            openai.APITimeoutError(request=_REQ),
+            openai.APIConnectionError(message=f"upstream {CODEX_STREAM_STALL_MARKER}", request=_REQ),
+        ],
+        ids=["api_timeout", "connection_error_with_stall_text"],
+    )
+    def test_transport_errors_stay_terminal_network_failure(self, err):
         """Real transport errors stay terminal (#29559/#94448), even when their text
         happens to contain the stall marker: only a TimeoutError stall is reclassified."""
-        import httpx
-        import openai
-        from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
-        req = httpx.Request("POST", "http://x")
-        err = (openai.APITimeoutError(request=req) if kind == "api_timeout"
-               else openai.APIConnectionError(message=f"upstream {CODEX_STREAM_STALL_MARKER}", request=req))
         assert self._fail_on_main(err)._last_summary_network_failure is True
 
 

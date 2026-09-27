@@ -232,3 +232,81 @@ def test_dashboard_and_gateway_workers_share_one_fenced_execution_owner(tmp_path
     assert len(gateway_rpc.submits) + len(dashboard_rpc.submits) == 1
     events = hosted_rooms.read_events(db, room_id="room-1", since_seq=0)["events"]
     assert sum(event["kind"] == "message.member" for event in events) == 1
+
+
+class TestHostedRoomWorkerImportSerialization:
+    """Regression for #123347.
+
+    ``_start_hosted_room_worker_sync`` runs on a worker thread and imports
+    ``tui_gateway.server``, a chain that reaches ``methods_connectors`` and then
+    ``tools.connectors``. When the rest of the gateway is importing the same chain at the
+    same time, CPython's per-module import locks deadlock-detect the overlap and raise
+    ``_frozen_importlib._DeadlockError``. That is a ``RuntimeError``, not an
+    ``ImportError``, so it is not something an import-level retry can absorb — the failure
+    was reported as the worker silently being skipped at startup, with the gateway itself
+    healthy. Serialising the import is the fix; the contract is that the import never
+    overlaps itself across threads.
+    """
+
+    def test_worker_startup_imports_are_serialised_across_threads(self, monkeypatch):
+        from gateway import run_startup
+
+        concurrent = 0
+        peak = 0
+        guard = threading.Lock()
+        started = threading.Event()
+        release = threading.Event()
+
+        def _probe_import():
+            """Stand in for `import tui_gateway.server`, tracking overlap."""
+            nonlocal concurrent, peak
+            with guard:
+                concurrent += 1
+                peak = max(peak, concurrent)
+            started.set()
+            release.wait(timeout=5.0)
+            with guard:
+                concurrent -= 1
+
+        # Hold the gateway's own lock, then run a second startup in parallel: without the
+        # lock this overlaps; with it, the second waits for the first to finish.
+        assert run_startup._hosted_room_import_lock.acquire(timeout=5.0)
+
+        errors: list[BaseException] = []
+
+        def _run():
+            try:
+                with run_startup._hosted_room_import_lock:
+                    _probe_import()
+            except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+                errors.append(exc)
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        # The waiter must NOT have entered the probe while we hold the lock.
+        assert not started.wait(timeout=0.5), "the import ran while the lock was held"
+        run_startup._hosted_room_import_lock.release()
+        assert started.wait(timeout=5.0)
+        release.set()
+        thread.join(timeout=5.0)
+
+        assert not errors, errors
+        assert peak == 1, f"{peak} imports overlapped; the lock is not excluding"
+
+    def test_lock_is_a_real_exclusion_not_a_no_op(self):
+        from gateway import run_startup
+
+        lock = run_startup._hosted_room_import_lock
+        assert lock.acquire(timeout=5.0) is True
+        acquired = threading.Event()
+
+        def _try():
+            if lock.acquire(timeout=0.3):
+                acquired.set()
+                lock.release()
+
+        thread = threading.Thread(target=_try, daemon=True)
+        thread.start()
+        thread.join(timeout=5.0)
+        assert not acquired.is_set(), "a second holder acquired the lock while it was held"
+        lock.release()

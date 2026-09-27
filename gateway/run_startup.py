@@ -31,10 +31,17 @@ from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES, DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, loop_heartbeat_forever,
 )
+import threading
 from typing import Any, Dict, Optional, Tuple
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+# Serialises the Group Chat worker's import chain across threads. CPython's per-module
+# import locks deadlock-detect two threads importing the same chain at once and raise
+# _frozen_importlib._DeadlockError, which silently skipped the worker at gateway startup
+# (#123347). Same idiom as the Feishu SDK loader's _lark_import_lock.
+_hosted_room_import_lock = threading.Lock()
 
 
 class GatewayStartupMixin:
@@ -797,9 +804,21 @@ class GatewayStartupMixin:
 
     @staticmethod
     def _start_hosted_room_worker_sync():
-        """Start the local Group Chat worker without importing the dashboard."""
-        import tui_gateway.server  # noqa: F401
-        from tui_gateway import methods_groups
+        """Start the local Group Chat worker without importing the dashboard.
+
+        The imports are serialised across threads. ``tui_gateway.server`` pulls in a long
+        chain (``methods_connectors`` -> ``tools.connectors``) and this runs on a worker
+        thread while the rest of the gateway keeps importing; CPython's per-module import
+        locks deadlock-detect that overlap and raise
+        ``_frozen_importlib._DeadlockError``, which skipped the worker at startup even
+        though the gateway itself was healthy (#123347). The lock is held only for the
+        imports — the service lookup and start stay outside it, so nothing that can block
+        is serialised.
+        """
+        with _hosted_room_import_lock:
+            import tui_gateway.server  # noqa: F401
+            from tui_gateway import methods_groups
+
         service = methods_groups.get_hosted_room_service()
         if service is None:
             service = methods_groups.start_hosted_room_service()

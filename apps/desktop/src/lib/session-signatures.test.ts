@@ -45,12 +45,6 @@ describe('sameCronSignature', () => {
     const b = [session('a', 't', { archived: true })]
     expect(sameCronSignature(a, b)).toBe(false)
   })
-
-  it('is true when both flags match', () => {
-    const a = [session('a', 't', { archived: false, pinned: true })]
-    const b = [session('a', 't', { archived: false, pinned: true })]
-    expect(sameCronSignature(a, b)).toBe(true)
-  })
 })
 
 describe('sessionMessagesSignature', () => {

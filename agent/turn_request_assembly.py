@@ -14,7 +14,7 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import _sanitize_messages_surrogates
-from agent.model_metadata import anchored_context_tokens
+from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
 
@@ -57,7 +57,7 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
             aggregator=moa_config.get("aggregator") or {},
             temperature=_preset_temperature(moa_config, "reference_temperature"),
             aggregator_temperature=_preset_temperature(moa_config, "aggregator_temperature"),
-            reference_max_tokens=moa_config.get("reference_max_tokens"),
+
             # None = no per-preset override; inherit auxiliary.moa_reference.timeout.
             reference_timeout=(
                 float(moa_config["reference_timeout"])
@@ -112,8 +112,8 @@ def assemble_api_request(
     are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
     user merge and surrogate stripping, so the same row's bytes never vary across turns."""
     from agent.conversation_loop import (
-        _apply_context_engine_selection, _canonicalize_api_tool_calls, _clone_message_for_send,
-        _midturn_request_pressure_tokens, _pressure_with_real_floor,
+        _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
+        _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
     )
     from agent.model_metadata import estimate_messages_tokens_rough
 
@@ -167,8 +167,13 @@ def assemble_api_request(
 
     # Drop thinking-only assistant turns + merge adjacent users, API copy only:
     # Anthropic-style backends 400 on a trailing `thinking` block; history keeps it.
+    # Off the Codex wire (e.g. after a reasoning-only stall fell over to a Chat Completions
+    # provider, #67321) the synthetic continuation nudge is Codex-only control text: drop it
+    # alongside the opaque replay state.
+    _cross_protocol = agent.api_mode != "codex_responses"
     api_messages = agent._drop_thinking_only_and_merge_users(
-        api_messages, drop_codex_reasoning_items=agent.api_mode != "codex_responses"
+        api_messages, drop_codex_reasoning_items=_cross_protocol,
+        drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE if _cross_protocol else None,
     )
 
     # Normalize whitespace and tool-call JSON for bit-perfect prefixes across turns
@@ -245,6 +250,7 @@ def assemble_api_request(
     # Usage-anchored override: real prompt_tokens (incl. system + tool schemas) +
     # delta estimate replaces the whole-history heuristic when the anchor is fresh.
     _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    agent._request_pressure_anchored = _anchored_pressure is not None
     if _anchored_pressure is not None:
         request_pressure_tokens = _anchored_pressure
     else:
@@ -254,11 +260,6 @@ def assemble_api_request(
         request_pressure_tokens = _pressure_with_real_floor(
             agent.context_compressor, request_pressure_tokens
         )
-    # Stash the rough estimate so update_from_response() can pair it with the real
-    # count (should_defer_preflight_to_real_usage). getattr: test doubles lack it.
-    _note_rough = getattr(agent.context_compressor, "note_request_rough_estimate", None)
-    if callable(_note_rough):
-        _note_rough(request_pressure_tokens)
     return AssembledRequest(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,

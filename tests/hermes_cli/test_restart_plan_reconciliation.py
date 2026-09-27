@@ -1,8 +1,6 @@
 """Plan-vs-execution reconciliation (#91277 Phase 2: restart via declared mechanism).
 
 Pins:
-- _restart_mechanism returns machine-readable ids; describe_restart_mechanism
-  derives display strings (policy table is data, not prose).
 - match_runtime_outcomes classifies every planned runtime against the restart
   phase's bookkeeping: restarted / stopped / failed / unaccounted.
 - report_unaccounted_runtimes escalates (returns True) ONLY on unaccounted
@@ -13,7 +11,6 @@ from hermes_cli.update_inventory import (
     RuntimeRecord,
     UpdatePlan,
     _restart_mechanism,
-    describe_restart_mechanism,
     match_runtime_outcomes,
     report_unaccounted_runtimes,
 )
@@ -35,18 +32,6 @@ def _rt(profile: str, pid: int, supervisor: str = "manual") -> RuntimeRecord:
     )
 
 
-def test_mechanism_ids_are_machine_readable_and_described():
-    assert _restart_mechanism("systemd", "default") == "systemd"
-    assert _restart_mechanism("launchd", "work") == "launchd"
-    assert _restart_mechanism("desktop", "default") == "desktop"
-    assert _restart_mechanism("manual", "work") == "manual"
-    assert _restart_mechanism("windows-service", "default") == "windows-service"
-    # display derives FROM the id
-    assert "systemctl" in describe_restart_mechanism("systemd", "default")
-    assert "kickstart" in describe_restart_mechanism("launchd", "work")
-    assert "-p work" in describe_restart_mechanism("manual", "work")
-    assert describe_restart_mechanism("manual", "default") == "hermes gateway restart"
-    assert "sc.exe" in describe_restart_mechanism("windows-service", "default")
 
 
 def test_windows_service_supervisor_classification():
@@ -131,6 +116,37 @@ def test_restarted_service_unit_matches_profile():
         externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
     )
     assert outcomes[0]["outcome"] == "restarted"
+
+
+def test_launchd_default_gateway_restarted_via_ai_hermes_label():
+    """macOS restart bookkeeping records ``ai.hermes.gateway``, which does not
+    contain the substring ``hermes-gateway``. The default-profile gateway must
+    still count as restarted — otherwise every Desktop update on launchd
+    exits 1 after a successful kickstart (receipt outcome=partial, tripwire
+    'never touched')."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 400, supervisor="launchd")),
+        restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert outcomes[0]["outcome"] == "restarted"
+    assert report_unaccounted_runtimes(outcomes) is False
+
+
+def test_launchd_named_profile_and_failed_label():
+    restarted = match_runtime_outcomes(
+        _plan(_rt("work", 401, supervisor="launchd")),
+        restarted_services=["ai.hermes.gateway-work"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert restarted[0]["outcome"] == "restarted"
+    failed = match_runtime_outcomes(
+        _plan(_rt("default", 402, supervisor="launchd")),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(),
+        failed_units=["ai.hermes.gateway"],
+    )
+    assert failed[0]["outcome"] == "failed"
 
 
 def test_untouched_runtime_is_unaccounted_and_escalates(capsys):
@@ -264,6 +280,34 @@ def test_serve_outcome_follows_incarnation_probe_when_provided():
     assert by_pid == {900: "unaccounted", 901: "stopped"}
 
 
+def test_desktop_serve_deferral_requires_a_verified_alive_incarnation():
+    """Desktop may defer only a serve the survivor probe confirmed alive."""
+    desktop_serve = _serve("default", 900)
+    desktop_serve.supervisor = "desktop"
+    desktop_serve.restart_via = _restart_mechanism("desktop", "default")
+
+    unknown = match_runtime_outcomes(
+        _plan(desktop_serve), restarted_services=["hermes-serve.service"],
+        relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
+        failed_units=[], stale_serve_pids=None,
+    )
+    assert unknown[0]["outcome"] == "unaccounted"
+
+    alive = match_runtime_outcomes(
+        _plan(desktop_serve), restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        stale_serve_pids={900},
+    )
+    assert alive[0]["outcome"] == "deferred"
+
+    gone = match_runtime_outcomes(
+        _plan(desktop_serve), restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        stale_serve_pids=set(),
+    )
+    assert gone[0]["outcome"] == "restarted"
+
+
 def test_unaccounted_serve_report_names_serve_remedy_not_gateway_restart(capsys):
     outcomes = match_runtime_outcomes(
         _plan(_serve("default", 900)),
@@ -273,7 +317,7 @@ def test_unaccounted_serve_report_names_serve_remedy_not_gateway_restart(capsys)
     assert report_unaccounted_runtimes(outcomes) is True
     out = capsys.readouterr().out
     assert "serve [default] pid 900" in out
-    assert "hermes-serve.service" in out
+    assert "relaunch `hermes serve`" in out
     assert "hermes gateway restart" not in out
 
 

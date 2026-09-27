@@ -6,6 +6,7 @@
 // add a hotkey, add a row here and a handler there — nothing else.
 
 import { registry } from '@/contrib/registry'
+import type { Contribution } from '@/contrib/types'
 
 import { IS_MAC } from './combo'
 
@@ -43,6 +44,17 @@ const PROFILE_SWITCH_ACTIONS: KeybindActionMeta[] = Array.from({ length: PROFILE
   defaults: [comboForSlot(i + 1)]
 }))
 
+// Positional tab-slot jumps — activate the Nth visible tab in the focused
+// zone's tab strip. No default chords: ⌘1…⌘9 belong to profile switching
+// (#92569), and users who want positional tabs can bind chords in the panel.
+export const TAB_SLOT_COUNT = 9
+
+const TAB_SLOT_ACTIONS: KeybindActionMeta[] = Array.from({ length: TAB_SLOT_COUNT }, (_, i) => ({
+  id: `view.tabSlot.${i + 1}`,
+  category: 'view' as const,
+  defaults: []
+}))
+
 // Positional jumps — ^1…^9, mirroring profiles' ⌘1…⌘9.
 export const SESSION_SLOT_COUNT = 9
 
@@ -60,14 +72,19 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // Open WebUI, and Cherry Studio all ship the same chord). Opens the pill's
   // live dropdown on the pane under the pointer, else the active composer.
   { id: 'composer.modelPicker', category: 'composer', defaults: ['mod+shift+m'] },
-  // Voice conversation toggle. Matches the documented `voice.record_key`
-  // (Ctrl+B). On macOS that's literally ⌃B — distinct from the ⌘B sidebar
-  // toggle. Off macOS `ctrl` folds to `mod`, which IS the ⌘B/Ctrl+B sidebar
-  // chord, so ship it unbound there (rebindable in the panel) rather than
-  // stealing the long-standing sidebar binding.
-  { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : [] },
+  // Voice conversation toggle. On macOS that's literally ⌃B — distinct from
+  // the ⌘B sidebar toggle. Off macOS `ctrl` folds to `mod`, so ⌃B IS the
+  // sidebar chord. Ship ⌃⌥V there ("v" for voice) instead of stealing mod+b
+  // or leaving the action unbound.
+  { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : ['mod+alt+v'] },
+  // Dictation is intentionally unbound: it is available for users who prefer
+  // a keyboard trigger without claiming a chord from text entry by default.
+  { id: 'composer.dictate', category: 'composer', defaults: [] },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
+  // Tab-slot actions BEFORE profile switchers so a user rebinding a chord to
+  // a tab slot wins the combo-index race (first action to claim a combo wins).
+  ...TAB_SLOT_ACTIONS,
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },
   ...PROFILE_SWITCH_ACTIONS,
   { id: 'profile.next', category: 'profiles', defaults: ['mod+shift+]'] },
@@ -90,6 +107,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
+  { id: 'conversation.scrollPageUp', category: 'session', defaults: ['pageup'] },
+  { id: 'conversation.scrollPageDown', category: 'session', defaults: ['pagedown'] },
   // Archive the active session. Ships unbound (like `session.togglePin`) so an
   // irreversible-feeling, mouse-only action doesn't silently claim a chord for
   // every user — surfaced in the panel for opt-in binding (the issue suggests
@@ -108,7 +127,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'nav.commandCenter', category: 'navigation', defaults: ['mod+.'] },
   { id: 'nav.settings', category: 'navigation', defaults: ['mod+,'] },
   { id: 'nav.profiles', category: 'navigation', defaults: [] },
-  { id: 'nav.skills', category: 'navigation', defaults: [] },
+  { id: 'nav.capabilities', category: 'navigation', defaults: [] },
   { id: 'nav.messaging', category: 'navigation', defaults: [] },
   { id: 'nav.artifacts', category: 'navigation', defaults: [] },
   { id: 'nav.cron', category: 'navigation', defaults: [] },
@@ -116,6 +135,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
 
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
+  // Expose the sidebar's mouse-only grouping control to keyboard-first users.
+  // Ships unbound so it is opt-in and cannot claim another global chord.
+  { id: 'view.cycleSidebarGrouping', category: 'view', defaults: [] },
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
   // ⌘⇧S — "s" for status bar. VS Code ships
   // `workbench.action.toggleStatusbarVisibility` unbound (it's a chord-free
@@ -128,6 +150,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // way back has to already exist. (⌥+letter emits a symbol on macOS; the
   // binding resolves through KeyT via comboFromEvent's `event.code` fallback.)
   { id: 'view.toggleTabStrip', category: 'view', defaults: ['mod+alt+t'] },
+  // Unbound: the rail is a one-time preference, not something to flip mid-chat.
+  { id: 'view.toggleProfileRail', category: 'view', defaults: [] },
+  // Unbound for the same reason: Simple ↔ Advanced is a stance, not a view
+  // toggle; ⌘K, the layout editor and Settings → Appearance are its doors.
+  { id: 'view.toggleSimpleMode', category: 'view', defaults: [] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
@@ -200,18 +227,22 @@ export interface KeybindContribution {
   run: () => void
 }
 
-export function contributedKeybinds(): KeybindContribution[] {
-  return registry
-    .getArea(KEYBINDS_AREA)
+// React consumers pass their `useContributions(KEYBINDS_AREA)` snapshot in:
+// with React Compiler enabled, an independently-called `contributedKeybinds()`
+// can stay memoized across a late registration the subscription DID deliver.
+export function contributedKeybinds(
+  contributions: readonly Contribution[] = registry.getArea(KEYBINDS_AREA)
+): KeybindContribution[] {
+  return contributions
     .map(c => c.data as KeybindContribution)
     .filter(k => Boolean(k?.id && k.label) && typeof k?.run === 'function' && !ACTION_BY_ID.has(k.id))
 }
 
 /** Built-ins + contributed, one metadata list (panel, bindings, conflicts). */
-export function allKeybindActions(): KeybindActionMeta[] {
+export function allKeybindActions(contributions?: readonly Contribution[]): KeybindActionMeta[] {
   return [
     ...KEYBIND_ACTIONS,
-    ...contributedKeybinds().map(k => ({
+    ...contributedKeybinds(contributions).map(k => ({
       id: k.id,
       category: k.category ?? ('view' as const),
       defaults: k.defaults ?? [],

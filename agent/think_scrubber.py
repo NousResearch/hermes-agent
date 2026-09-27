@@ -13,7 +13,19 @@ from __future__ import annotations
 import re
 from typing import Tuple
 
-__all__ = ["StreamingThinkScrubber"]
+__all__ = ["StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THINK_CLOSE_TAGS"]
+
+# The one list of model reasoning tag names. Every surface that hides reasoning (this scrubber,
+# the CLI stream filter, the gateway stream filter, the final-response regex stripper) binds to
+# these; a tag added here is covered everywhere. Consumers match case-insensitively, so the
+# literal tags are lowercase. The CJK names cover models (MiniMax-M3) that emit Chinese reasoning
+# tags: 思考 (think), 反思 (reflect), 推理 (reason), 推敲 (deliberate).
+THINK_TAG_NAMES: Tuple[str, ...] = (
+    "think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD",
+    "思考", "反思", "推理", "推敲",
+)
+THINK_OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
+THINK_CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
 
 
 class StreamingThinkScrubber:
@@ -24,11 +36,9 @@ class StreamingThinkScrubber:
     was emitted yet — decides whether an open tag at buffer position 0 sits at a block boundary).
     """
 
-    _OPEN_TAG_NAMES: Tuple[str, ...] = ("think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD")
-
-    # Lowercased literal tags so the hot path does string ops, not regex per feed().
-    _OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name.lower()}>" for name in _OPEN_TAG_NAMES)
-    _CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name.lower()}>" for name in _OPEN_TAG_NAMES)
+    # Literal tags so the hot path does string ops, not regex per feed().
+    _OPEN_TAGS: Tuple[str, ...] = THINK_OPEN_TAGS
+    _CLOSE_TAGS: Tuple[str, ...] = THINK_CLOSE_TAGS
     _ALL_TAGS: Tuple[str, ...] = _OPEN_TAGS + _CLOSE_TAGS
     _MAX_TAG_LEN: int = max(len(tag) for tag in _ALL_TAGS)
     # Orphan close tag plus trailing whitespace (matches _strip_think_blocks case 3).
@@ -44,6 +54,8 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
+        # Reasoning text the most recent feed() stripped from inside think blocks (tags excluded).
+        self.last_hidden: str = ""
 
     def _emit(self, out: list[str], text: str) -> None:
         """Append visible prose to *out* (orphan close tags stripped) and track the newline flag."""
@@ -54,19 +66,22 @@ class StreamingThinkScrubber:
 
     def feed(self, text: str) -> str:
         """Feed one delta; return the scrubbed visible portion ("" when it is all reasoning or held back)."""
+        self.last_hidden = ""
         if not text:
             return ""
         buf = self._buf + text
         self._buf = ""
         out: list[str] = []
+        hidden: list[str] = []
 
         while buf:
             if self._in_block:
                 close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
                 if close_idx == -1:
-                    # No close yet: hold back a possible partial close-tag prefix, drop the rest.
-                    self._hold_partial(buf, self._CLOSE_TAGS)
+                    # No close yet: hold back a possible partial close-tag prefix; the rest is reasoning.
+                    hidden.append(self._hold_partial(buf, self._CLOSE_TAGS))
                     break
+                hidden.append(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
                 continue
@@ -78,6 +93,8 @@ class StreamingThinkScrubber:
             open_idx, open_len = self._find_open_at_boundary(buf, out)
             if pair is not None and (open_idx == -1 or pair[0] <= open_idx):
                 self._emit(out, buf[:pair[0]])
+                # Pair tags are exact ``<name>``/``</name>``: inner text sits between them.
+                hidden.append(buf[buf.index(">", pair[0]) + 1:buf.rindex("<", pair[0], pair[1])])
                 buf = buf[pair[1]:]
                 continue
             if open_idx != -1:
@@ -91,6 +108,7 @@ class StreamingThinkScrubber:
             self._emit(out, self._hold_partial(buf, self._ALL_TAGS))
             break
 
+        self.last_hidden = "".join(hidden)
         return "".join(out)
 
     def _hold_partial(self, buf: str, tags: Tuple[str, ...]) -> str:

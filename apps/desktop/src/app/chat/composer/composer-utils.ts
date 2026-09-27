@@ -5,6 +5,7 @@ import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
 import type { ComposerAttachment } from '@/store/composer'
 import { setSessionPickerOpen } from '@/store/session'
 
+import { composerPlainText } from './rich-editor'
 import type { TriggerState } from './text-utils'
 
 export const COMPOSER_STACK_BREAKPOINT_PX = 320
@@ -117,14 +118,18 @@ export function implicitSlashAcceptIndex(
   activeIndex: number,
   activeExplicit: boolean
 ): number | null {
+  // A deliberately arrowed highlight ALWAYS wins — "Enter means I want this
+  // one", even on a bare `/` query where no command name has been typed yet.
+  // This must be checked before the `!typed` early-return so an explicit pick
+  // is never suppressed on a bare `/` (#98535).
+  if (activeExplicit && itemTexts[activeIndex] != null) {
+    return activeIndex
+  }
+
   const typed = slashCompletionToken(query)
 
   if (!typed) {
     return null
-  }
-
-  if (activeExplicit && itemTexts[activeIndex] != null) {
-    return activeIndex
   }
 
   const exact = itemTexts.findIndex(text => slashCompletionToken(text) === typed)
@@ -216,4 +221,16 @@ export function isPendingDraftPersistCurrent(
   expected: PendingDraftPersist | null
 ): boolean {
   return pending !== null && expected !== null && pending.scope === expected.scope && pending.text === expected.text
+}
+
+/**
+ * The composer text a keystroke should decide from.
+ *
+ * `mirror` (the composer's draftRef) is refreshed by a coalesced per-frame
+ * flush, so within a frame of a keystroke or paste it still holds the previous
+ * text. A decision that can act on the draft — the sent-message recall guard
+ * replaces the composer — has to read the live editor instead.
+ */
+export function liveComposerDraft(editor: HTMLElement | null | undefined, mirror: string): string {
+  return editor ? composerPlainText(editor) : mirror
 }

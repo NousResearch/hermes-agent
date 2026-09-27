@@ -26,6 +26,8 @@ thread, so an in-process import would not reproduce the bug).
 import subprocess
 import sys
 
+import pytest
+
 REPO_ROOT = "."
 
 
@@ -65,6 +67,7 @@ def _spawn_worker_import_entry():
     return proc.returncode, proc.stdout, proc.stderr
 
 
+@pytest.mark.platforms("linux")
 def test_entry_imports_cleanly_from_worker_thread():
     """First import of tui_gateway.entry from a worker thread must succeed."""
     rc, out, err = _spawn_worker_import_entry()

@@ -4,7 +4,7 @@ Server-side LLM fact extraction with semantic search and hybrid multi-signal ret
 
 ## Requirements
 
-- `pip install mem0ai`
+- The `mem0ai` SDK, prepared through PM by `hermes memory setup` when you select Mem0. Restart Hermes after preparation; do not install into its selected environment with pip.
 - Mem0 API key from [app.mem0.ai](https://app.mem0.ai)
 
 ## Setup
@@ -30,6 +30,7 @@ Behavioral settings live in `$HERMES_HOME/mem0.json` (set them via `hermes memor
 | `user_id` | `hermes-user` | User identifier on Mem0 |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
+| `sync_max_chars` | `450` | Per-message character cap applied before each turn is sent for fact extraction (cut at the last sentence boundary). Default fits 512-token embedders; raise it (e.g. `6000`) for 8k-token embedders such as `text-embedding-3-small`, `jina-embeddings-v3`, `bge-m3` |
 
 The plugin has three connection modes:
 

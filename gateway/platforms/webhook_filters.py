@@ -63,7 +63,7 @@ def _load_filter_file_values(path_value: Any) -> list[Any]:
     if path is None:
         return []
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         logger.warning("[webhook] filter in_file read failed for %s: %s", path, exc)
         return []
@@ -177,10 +177,16 @@ class WebhookRouteProcessor:
             logger.warning("[webhook] script ignored webhook: %s", error)
             return False, None
         is_shell = path.suffix.lower() in {".sh", ".bash"}
-        interpreter = (shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)) if is_shell else sys.executable
-        if interpreter is None:
-            logger.warning("[webhook] script ignored webhook: bash not found")
-            return False, None
+        interpreter = sys.executable
+        if is_shell:
+            # ``shutil.which("bash")`` inherits PATH order and returns System32's WSL stub on
+            # Windows hosts where System32 precedes Git (#116818); ``_find_bash`` probes Git Bash first.
+            from tools.environments.local import _find_bash
+            try:
+                interpreter = _find_bash()
+            except RuntimeError as exc:
+                logger.warning("[webhook] script ignored webhook: %s", exc)
+                return False, None
         try:
             from tools.environments.local import build_subprocess_env
             popen_kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
@@ -202,7 +208,10 @@ class WebhookRouteProcessor:
             logger.warning("[webhook] Failed to redact script output: %s", exc)
             stdout = stderr = "[REDACTED - redaction failed]"
         if result.returncode != 0:
-            logger.info("[webhook] script ignored webhook path=%s code=%s stderr=%s", path.name, result.returncode, stderr[:200])
+            # A veto normally says why; rc!=0 with NO output at all is the "interpreter never
+            # started" signature (WSL stub, missing shebang target) and must reach errors.log.
+            level = logging.WARNING if not stdout and not stderr else logging.INFO
+            logger.log(level, "[webhook] script ignored webhook path=%s code=%s stderr=%s", path.name, result.returncode, stderr[:200])
         if result.returncode != 0 or not stdout or stdout == "[SILENT]":
             return False, None
         try:

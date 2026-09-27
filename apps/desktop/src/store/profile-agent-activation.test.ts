@@ -24,6 +24,15 @@ const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({
   $gateway,
+  // Both activation doors publish the registry route; the latest call owns it.
+  activeGatewayProfileKey: () => {
+    const profileOrder = ensureGatewayForProfile.mock.invocationCallOrder.at(-1) ?? 0
+    const agentOrder = ensureGatewayForAgent.mock.invocationCallOrder.at(-1) ?? 0
+
+    return agentOrder > profileOrder
+      ? ensureGatewayForAgent.mock.lastCall?.[1]
+      : (ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get())
+  },
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForProfile

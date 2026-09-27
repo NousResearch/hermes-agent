@@ -67,6 +67,16 @@ describe('formatToolResultSummary', () => {
 })
 
 describe('extractToolErrorMessage', () => {
+  it('requires a failure envelope before interpreting returned data as an error', () => {
+    const payload = { output: { error: { message: 'Connection refused' } } }
+
+    for (const result of [payload, { meta: payload }, { success: true, result: payload }]) {
+      expect(extractToolErrorMessage(result)).toBe('')
+    }
+
+    expect(extractToolErrorMessage({ success: false, result: payload })).toBe('Connection refused')
+  })
+
   it('finds nested error messages through wrappers', () => {
     const error = extractToolErrorMessage({
       success: false,

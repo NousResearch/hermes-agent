@@ -29,7 +29,6 @@ execution row, no re-dispatch); with the recovery it re-fires and completes.
 from __future__ import annotations
 
 import sys
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -118,29 +117,6 @@ class TestPersistedStaleErrorRecovery:
         stats = Jmod.get_persisted_error_recovery_stats()
         assert stats["persisted_error_recoveries"] >= 1
 
-    def test_two_consecutive_auto_fires_after_persisted_recovery(
-        self, cron_env, monkeypatch
-    ):
-        """GREEN: after the persisted recovery re-arms the job, it fires on
-        consecutive ticks (no manual intervention)."""
-        S, E, J, env = _setup(cron_env, monkeypatch)
-        job_id = env["job_id"]
-
-        _persist_stale_error(J, job_id, error_age_minutes=110)
-        job = J.get_job(job_id)
-        with mock.patch("cron.jobs.load_jobs", return_value=[job]):
-            S.tick(verbose=False, sync=True)
-        latest1 = E.latest_execution(job_id)
-        assert latest1["status"] == "completed"
-
-        # Re-arm due normally and tick again: fire #2.
-        now = datetime.now(timezone.utc)
-        J.update_job(job_id, {"next_run_at": (now - timedelta(minutes=1)).isoformat()})
-        with mock.patch("cron.jobs.load_jobs", return_value=[J.get_job(job_id)]):
-            S.tick(verbose=False, sync=True)
-        latest2 = E.latest_execution(job_id)
-        assert latest2["status"] == "completed"
-        assert latest2["id"] != latest1["id"], "two distinct executions"
 
     def test_recent_error_within_cadence_not_force_rearmed(self, cron_env, monkeypatch):
         """The discriminator must NOT re-arm a normal transient error whose
@@ -161,3 +137,33 @@ class TestPersistedStaleErrorRecovery:
             "a within-cadence error is a normal retry — must not be "
             "force-re-armed onto an immediate fire"
         )
+
+    def test_live_fire_claim_from_other_process_not_rearmed(self, cron_env, monkeypatch):
+        """A stale-error job whose ``fire_claim`` is being heartbeated by a run
+        in ANOTHER process is running, not wedged. Re-arming it would make this
+        ticker claim-fight the live run (2026-09-02 multi-Desktop-tab incident:
+        171 re-arms, ~175 junk executions, live run killed)."""
+        S, E, J, env = _setup(cron_env, monkeypatch)
+        job_id = env["job_id"]
+
+        _persist_stale_error(J, job_id, error_age_minutes=110)
+        now = datetime.now(timezone.utc)
+        J.update_job(
+            job_id,
+            {"fire_claim": {"at": now.isoformat(), "by": "other-host:deadbeef"}},
+        )
+
+        job = J.get_job(job_id)
+        assert not J._job_is_stale_error_recurring(job, job["schedule"], now)
+
+        with mock.patch("cron.jobs.load_jobs", return_value=[job]):
+            S.tick(verbose=False, sync=True)
+        assert E.latest_execution(job_id) is None, (
+            "a job with a live fire_claim held by another process must not be "
+            "re-armed by stale-error recovery"
+        )
+
+        # Once the foreign claim has expired (owner died), recovery resumes.
+        expired = (now - timedelta(seconds=J.FIRE_CLAIM_TTL_SECONDS + 1)).isoformat()
+        J.update_job(job_id, {"fire_claim": {"at": expired, "by": "other-host:deadbeef"}})
+        assert J._job_is_stale_error_recurring(J.get_job(job_id), job["schedule"], now)

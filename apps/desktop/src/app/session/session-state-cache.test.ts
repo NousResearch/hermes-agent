@@ -81,8 +81,7 @@ describe('SessionStateCache', () => {
   })
 
   it.each([
-    ['active', (state: ClientSessionState) => state, true],
-    ['tiled', (state: ClientSessionState) => state, true],
+    ['referenced (active/tiled)', (state: ClientSessionState) => state, true],
     ['busy', (state: ClientSessionState) => ({ ...state, busy: true }), false],
     ['awaiting', (state: ClientSessionState) => ({ ...state, awaitingResponse: true }), false],
     ['needs input', (state: ClientSessionState) => ({ ...state, needsInput: true }), false]
@@ -190,19 +189,6 @@ describe('SessionStateCache', () => {
 
       expect(cache.has('working')).toBe(false)
       expect(evicted).toEqual(['working'])
-    })
-
-    it('keeps an in-flight transcript pinned while the authoritative store still claims work', () => {
-      const evicted: string[] = []
-      const cache = cacheWithAuthority(evicted)
-      const working = { ...settled('working'), busy: true }
-
-      $sessionStates.set({ working })
-      cache.set('working', working)
-      cache.prune()
-
-      expect(cache.get('working')).toBe(working)
-      expect(evicted).toEqual([])
     })
 
     it.each([

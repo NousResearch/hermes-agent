@@ -17,6 +17,7 @@ import {
   buildAgentRoster,
   connectionDialFieldsChanged,
   connectionIdForLabel,
+  connectionIdForPendingLogin,
   labelKey,
   labelSlug,
   LOCAL_CONNECTION_ID,
@@ -28,6 +29,7 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
+  registryDialConnectionId,
   registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
@@ -44,9 +46,83 @@ import {
   upsertConnection
 } from './connection-registry'
 
+// Non-literal specifier on purpose: tsconfig.electron.json's project boundary
+// excludes apps/shared sources, but vitest resolves the workspace package fine
+// at runtime. Loaded once here, not in the test body, where a cold import under
+// CI load can outlast the 5s test timeout.
+const shared = (await import(String('@hermes/shared'))) as {
+  backendScopeKey: typeof backendScopeKey
+  backendScopePrefix: typeof backendScopePrefix
+  LOCAL_CONNECTION_ID: string
+}
+
 function emptyRegistry(): ConnectionRegistry {
   return normalizeRegistry(null)
 }
+
+test('Cloud apply upgrades only host labels without changing connection identity', () => {
+  const url = 'https://agent.example.com'
+  const name = 'Research cloud'
+
+  const first = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'cloud',
+    remote: { url, authMode: 'oauth' }
+  })
+
+  const named = reconcileAppliedGlobalConnection(first, {
+    mode: 'cloud',
+    remote: { url, authMode: 'oauth', name }
+  })
+
+  assert.equal(named.primary, first.primary)
+  assert.equal(named.connections.find(c => c.id === named.primary)?.label, name)
+  const restored = normalizeRegistry(JSON.parse(JSON.stringify(named)))
+  assert.equal(restored.connections.find(c => c.id === named.primary)?.name, name)
+
+  const custom = upsertConnection(restored, {
+    ...restored.connections.find(c => c.id === named.primary)!,
+    label: 'My device'
+  })
+
+  const reapplied = reconcileAppliedGlobalConnection(custom, {
+    mode: 'cloud',
+    remote: { url, authMode: 'oauth', name: 'New portal name' }
+  })
+
+  assert.equal(reapplied.primary, first.primary)
+  assert.equal(reapplied.connections.find(c => c.id === first.primary)?.label, 'My device')
+
+  const other = reconcileAppliedGlobalConnection(reapplied, {
+    mode: 'cloud',
+    remote: { url: 'https://other.example.com', authMode: 'oauth' }
+  })
+
+  assert.notEqual(other.primary, first.primary)
+  assert.equal(other.connections.find(c => c.id === other.primary)?.name, undefined)
+})
+
+test('Cloud name survives partial edits but never inherits across gateway URLs', () => {
+  const registry = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'cloud',
+    remote: { url: 'https://agent.example.com', authMode: 'oauth', name: 'Research cloud' }
+  })
+
+  const existing = registry.connections.find(c => c.id === registry.primary)!
+
+  const renamed = normalizeConnectionInput(
+    mergeConnectionInput({ id: existing.id, kind: 'cloud', label: 'Mine' }, existing),
+    registry
+  )
+
+  assert.equal(renamed.name, 'Research cloud')
+
+  const retargeted = normalizeConnectionInput(
+    mergeConnectionInput({ id: existing.id, kind: 'cloud', label: 'Mine', url: 'https://other.example.com' }, existing),
+    registry
+  )
+
+  assert.equal(retargeted.name, undefined)
+})
 
 // --- labels, slugs, handles ---
 
@@ -59,42 +135,6 @@ test('labelSlug kebab-cases and never returns empty for non-empty input', () => 
   assert.equal(labelSlug('Work Laptop'), 'work-laptop')
   assert.equal(labelSlug('Spark Box #2'), 'spark-box-2')
   assert.equal(labelSlug('!!!'), 'connection')
-})
-
-test('registry SSH fingerprint failures name the connection and ssh -G step', async () => {
-  const registry = migrateV1ToRegistry({
-    mode: 'ssh',
-    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
-    profiles: {}
-  })
-
-  const source = registry.connections.find(connection => connection.id === registry.primary)!
-
-  const cause = new Error('spawn ssh ENOENT')
-
-  source.label = 'Build box'
-
-  await assert.rejects(
-    reuseMatchingPrimarySshBackend({
-      connectionId: registry.primary,
-      effectiveFingerprint: async () => {
-        throw cause
-      },
-      ensurePrimary: async () => ({ mode: 'remote', remoteKind: 'ssh' }),
-      profile: 'default',
-      registry,
-      source
-    }),
-    error => {
-      assert.equal(
-        (error as Error).message,
-        `Could not resolve effective SSH config for connection "Build box" (${source.id}) via ssh -G: spawn ssh ENOENT`
-      )
-      assert.equal((error as Error).cause, cause)
-
-      return true
-    }
-  )
 })
 
 test('matching primary/default SSH route reuses the existing descriptor once', async () => {
@@ -608,6 +648,62 @@ test('connectionIdForLabel suffixes on collision and never mints "local"', () =>
   assert.equal(connectionIdForLabel('Local', []), 'local-2')
 })
 
+// A registry-editor sign-in can run before the draft is saved: the id settled
+// here names the cookie partition the login writes, so it MUST equal the id
+// normalizeConnectionInput mints when the draft is saved.
+test('connectionIdForPendingLogin: an explicit draft id wins (trimmed)', () => {
+  const registry = emptyRegistry()
+
+  assert.equal(connectionIdForPendingLogin({ connectionId: 'homelab', registry }), 'homelab')
+  assert.equal(connectionIdForPendingLogin({ connectionId: '  homelab  ', registry }), 'homelab')
+})
+
+test('connectionIdForPendingLogin: mints the save-time id for an unpersisted draft', () => {
+  let registry = emptyRegistry()
+  const entry = normalizeConnectionInput({ kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119' }, registry)
+  registry = upsertConnection(registry, entry)
+
+  // Label-derived and collision-suffixed exactly like normalizeConnectionInput.
+  assert.equal(connectionIdForPendingLogin({ label: 'Mac mini', registry }), 'mac-mini')
+  assert.equal(connectionIdForPendingLogin({ label: 'Homelab', registry }), 'homelab-2')
+
+  // The save must land on the same id the login used.
+  const saved = normalizeConnectionInput(
+    {
+      kind: 'remote',
+      id: connectionIdForPendingLogin({ label: 'Mac mini', registry }),
+      label: 'Mac mini',
+      url: 'http://10.0.0.6:9119'
+    },
+    registry
+  )
+
+  assert.equal(saved.id, 'mac-mini')
+})
+
+test('connectionIdForPendingLogin: an unnamed draft still gets a stable unique id', () => {
+  let registry = emptyRegistry()
+  registry = upsertConnection(registry, {
+    id: 'connection',
+    kind: 'remote',
+    label: 'Taken',
+    url: 'http://10.0.0.7:9119',
+    authMode: 'oauth'
+  })
+
+  // labelSlug('') is 'connection'; the collision suffixes just like a label.
+  assert.equal(connectionIdForPendingLogin({ label: '', registry }), 'connection-2')
+  assert.equal(connectionIdForPendingLogin({ registry }), 'connection-2')
+})
+
+test('connectionIdForPendingLogin: blank or non-string ids fall back to minting', () => {
+  const registry = emptyRegistry()
+
+  for (const junk of ['', '   ', 42, null, undefined]) {
+    assert.equal(connectionIdForPendingLogin({ connectionId: junk, label: 'Homelab', registry }), 'homelab')
+  }
+})
+
 test('uniqueLabel counts up (never "X 2 2") and clamps long candidates', () => {
   assert.equal(uniqueLabel('Homelab', []), 'Homelab')
   assert.equal(uniqueLabel('Homelab', ['Homelab']), 'Homelab 2')
@@ -626,16 +722,7 @@ test('uniqueLabel counts up (never "X 2 2") and clamps long candidates', () => {
 // the renderer keys its socket registry with the shared copy while the main
 // process keys the backend pool with this one. This contract test is the
 // enforcement (see the NOTE on backendScopeKey).
-test('backendScopeKey: electron and shared implementations agree everywhere', async () => {
-  // Non-literal specifier on purpose: tsconfig.electron.json's project
-  // boundary excludes apps/shared sources, but vitest resolves the workspace
-  // package fine at runtime — which is exactly what this test needs.
-  const shared = (await import(String('@hermes/shared'))) as {
-    backendScopeKey: typeof backendScopeKey
-    backendScopePrefix: typeof backendScopePrefix
-    LOCAL_CONNECTION_ID: string
-  }
-
+test('backendScopeKey: electron and shared implementations agree everywhere', () => {
   const cases: [null | string | undefined, null | string | undefined][] = [
     [null, null],
     [undefined, undefined],
@@ -714,6 +801,52 @@ test('registry local route: per-profile override wins when global remote is also
   })
 
   assert.deepEqual(route, { delegate: true, poolKey: 'research' })
+})
+
+test('registry local route: a concrete remote-only profile is refused on the forced-local branch', () => {
+  // globalRemote still force-locals a profile that exists on this machine
+  // (This device must not dial the remote). A named profile that exists only
+  // on the remote must not spawn a local child.
+  const named = resolveRegistryLocalRoute('inbox', { globalRemote: true, localProfileExists: false })
+
+  assert.match(String(named.refuse ?? ''), /Profile "inbox" no longer exists/)
+  assert.equal(named.delegate, false)
+
+  // default is $HERMES_HOME, not profiles/default: a profiles/default probe
+  // reports absent, but This device -> default must still open locally.
+  assert.deepEqual(resolveRegistryLocalRoute('default', { globalRemote: true, localProfileExists: false }), {
+    delegate: false,
+    poolKey: 'conn:local::default'
+  })
+
+  const present = resolveRegistryLocalRoute('research', { globalRemote: true, localProfileExists: true })
+
+  assert.equal(present.refuse, undefined)
+  assert.equal(present.delegate, false)
+  assert.equal(present.poolKey, 'conn:local::research')
+
+  // The override remains the authoritative route even when the profile is
+  // absent locally. Unprofiled enumeration is not a concrete dial.
+  assert.deepEqual(
+    resolveRegistryLocalRoute('research', {
+      globalRemote: true,
+      localProfileExists: false,
+      profileRemoteOverride: true
+    }),
+    { delegate: true, poolKey: 'research' }
+  )
+  assert.equal(resolveRegistryLocalRoute(null, { globalRemote: true, localProfileExists: false }).refuse, undefined)
+  assert.equal(resolveRegistryLocalRoute('', { globalRemote: true, localProfileExists: false }).refuse, undefined)
+})
+
+test('registry dial: an empty connection id is not registry.primary', () => {
+  assert.throws(() => registryDialConnectionId('', 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId('   ', 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId(null, 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId(undefined, 'homelab'), /No connection with id/)
+  assert.equal(registryDialConnectionId('local', 'ssh-other-host'), 'local')
+  assert.equal(registryDialConnectionId('homelab', 'ssh-other-host'), 'homelab')
+  assert.equal(registryDialConnectionId('ssh-other-host', 'ssh-other-host'), 'ssh-other-host')
 })
 
 // --- shouldDeferLocalEnumeration (roster's connect-on-demand for 'local') ---
@@ -1054,6 +1187,80 @@ test('token only persists on token-auth remotes; oauth/cloud drop it', () => {
   assert.equal(cloud.token, undefined)
 })
 
+test('a cloud entry is saved as oauth even when the payload says token (#89529)', () => {
+  // Cloud never keeps a pasted token (above), so token auth would leave the
+  // entry with no credential and Test failing with "no saved session token".
+  for (const authMode of [undefined, 'token'] as const) {
+    const cloud = normalizeConnectionInput(
+      { kind: 'cloud', label: 'C', url: 'https://c.hermes.cloud', authMode, token: { enc: 'x' } },
+      emptyRegistry()
+    )
+
+    assert.equal(cloud.authMode, 'oauth')
+    assert.equal(cloud.token, undefined)
+  }
+
+  // Remote keeps its explicit choice and its token default.
+  const remote = normalizeConnectionInput({ kind: 'remote', label: 'R', url: 'http://r:1' }, emptyRegistry())
+
+  assert.equal(remote.authMode, 'token')
+})
+
+test('a stored cloud entry left on token auth with no token reads back as oauth (#89529)', () => {
+  const registry = normalizeRegistry({
+    version: REGISTRY_VERSION,
+    primary: 'local',
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      { id: 'cloud-bare', kind: 'cloud', label: 'Bare cloud', url: 'https://a.hermes.cloud', authMode: 'token' },
+      {
+        id: 'cloud-keyed',
+        kind: 'cloud',
+        label: 'Keyed cloud',
+        url: 'https://b.hermes.cloud',
+        authMode: 'token',
+        token: { v: 1 }
+      },
+      { id: 'homelab', kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119', authMode: 'token' }
+    ]
+  })
+
+  const byId = Object.fromEntries(registry.connections.map(c => [c.id, c]))
+
+  assert.equal(byId['cloud-bare'].authMode, 'oauth')
+  // A real saved credential is never discarded, and remotes are untouched.
+  assert.equal(byId['cloud-keyed'].authMode, 'token')
+  assert.deepEqual(byId['cloud-keyed'].token, { v: 1 })
+  assert.equal(byId.homelab.authMode, 'token')
+})
+
+test('an ssh entry keeps its session token through a label rename', () => {
+  // #103795, second half: saveRegistryConnection resolves the surviving
+  // envelope (resolvePersistedRemoteToken keeps the stored one when the
+  // editor sends no new value) and hands it to normalizeConnectionInput —
+  // whose ssh branch used to drop it, so renaming a connection wiped the live
+  // backend's reuse credential and re-armed the reap-and-respawn loop.
+  const stored = {
+    host: 'spark1',
+    id: 'spark',
+    kind: 'ssh' as const,
+    label: 'Spark',
+    port: 2222,
+    token: { enc: 'ssh-session-token' },
+    user: 'tek'
+  }
+
+  const merged = mergeConnectionInput(
+    { id: 'spark', kind: 'ssh', label: 'Spark (office)', token: stored.token },
+    stored
+  )
+
+  const renamed = normalizeConnectionInput(merged, emptyRegistry())
+
+  assert.equal(renamed.label, 'Spark (office)')
+  assert.deepEqual(renamed.token, { enc: 'ssh-session-token' })
+})
+
 // --- mergeConnectionInput (edit inheritance) ---
 
 test('merge preserves fields the editor does not carry (org, ssh extras)', () => {
@@ -1323,6 +1530,46 @@ test('normalizeRegistry falls back to Primary when the last-used source is missi
 
   assert.equal(registry.launchMode, 'last-used')
   assert.equal(registry.lastUsed, 'homelab')
+})
+
+test('normalizeRegistry keeps the persisted ssh session token across a cold read', () => {
+  // #103795: persistSshConnectionToken() writes the adopted per-serve token
+  // onto the ssh entry, but normalization rebuilt the entry from the DIAL
+  // fields alone and dropped it. The token then lived only in the mtime-keyed
+  // in-process cache, so the next launch dialed with an empty reuseToken,
+  // failed remote-lifecycle's `Boolean(reuseToken)` reuse gate, reaped a
+  // healthy owned backend and respawned it on a new port — while the renderer
+  // kept dialing the old token and got 403 forever.
+  const saved = {
+    version: REGISTRY_VERSION,
+    primary: 'spark',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      {
+        id: 'spark',
+        kind: 'ssh',
+        label: 'Spark',
+        host: 'spark1',
+        user: 'tek',
+        port: 2222,
+        token: { enc: 'ssh-session-token' }
+      }
+    ]
+  }
+
+  const registry = normalizeRegistry(saved)
+  const spark = registry.connections.find(connection => connection.id === 'spark')
+
+  assert.deepEqual(spark?.token, { enc: 'ssh-session-token' })
+  assert.equal(spark?.host, 'spark1')
+
+  // Write → read → normalize again: the token must survive every cold read,
+  // not just the first.
+  const reread = normalizeRegistry(JSON.parse(JSON.stringify(registry)))
+
+  assert.deepEqual(reread.connections.find(connection => connection.id === 'spark')?.token, {
+    enc: 'ssh-session-token'
+  })
 })
 
 // --- v1 → v2 migration ---

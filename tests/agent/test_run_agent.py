@@ -720,7 +720,7 @@ class TestInit:
 
 class TestHydrateTodoStore:
     @staticmethod
-    def _assistant_todo_call(call_id="c1"):
+    def _assistant_todo_call(call_id="c1", name="todo_list"):
         return {
             "role": "assistant",
             "content": None,
@@ -728,7 +728,7 @@ class TestHydrateTodoStore:
                 {
                     "id": call_id,
                     "type": "function",
-                    "function": {"name": "todo", "arguments": "{}"},
+                    "function": {"name": name, "arguments": "{}"},
                 }
             ],
         }
@@ -791,6 +791,29 @@ class TestHydrateTodoStore:
 
         assert agent._todo_store.snapshot()["revision"] == 2
         assert agent._todo_store.read()[0]["id"] == "new"
+
+    def test_history_recovers_legacy_todo_alias(self, agent):
+        history = [
+            self._assistant_todo_call(name="todo"),
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": json.dumps(
+                    {
+                        "todos": [
+                            {"id": "legacy", "content": "Recovered", "status": "pending"}
+                        ],
+                        "revision": 2,
+                    }
+                ),
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.snapshot()["revision"] == 2
+        assert agent._todo_store.read()[0]["id"] == "legacy"
 
 
 class TestBuildSystemPrompt:

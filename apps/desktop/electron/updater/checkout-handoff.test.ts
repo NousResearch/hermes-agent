@@ -157,3 +157,35 @@ it('a failed hand-off spawn keeps the app alive and reports the failure in plain
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+// #124971: HERMES_DESKTOP_IGNORE_EXISTING is per-launch intent (e2e/recovery
+// shells). A hand-off spawned from a flagged Desktop must not carry it: the
+// script relaunches the app with this environment, and a relaunched app that
+// keeps the flag skips its healthy installed runtime, falls into first-launch
+// bootstrap, and overlaps another bootstrap's git checkout (.git/index.lock).
+it('the posix hand-off never carries the installed-runtime skip flag, even when this Desktop was started with it', async (): Promise<void> => {
+  const { root, deps } = handoffFixture(false)
+  process.env.HERMES_DESKTOP_IGNORE_EXISTING = '1'
+  const spawnOptions: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2][] = []
+  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
+    (
+      _command: string,
+      _args: string[],
+      options: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2]
+    ): updaterProcess.UpdaterChild => {
+      spawnOptions.push(options)
+
+      return { unref: (): void => {} }
+    }
+  )
+
+  try {
+    expect(await createCheckoutStrategy(deps).apply()).toMatchObject({ ok: true, handedOff: true })
+    expect(spawnOptions).toHaveLength(1)
+    expect(spawnOptions[0]?.env?.HERMES_DESKTOP_IGNORE_EXISTING).toBeUndefined()
+    expect('HERMES_DESKTOP_IGNORE_EXISTING' in (spawnOptions[0]?.env ?? {})).toBe(false)
+  } finally {
+    delete process.env.HERMES_DESKTOP_IGNORE_EXISTING
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

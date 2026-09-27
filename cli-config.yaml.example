@@ -2187,6 +2187,12 @@ updates:
 #   hermes config unlock --minutes 5           # opens a time-boxed window (password if set)
 #   hermes config relock                       # closes it early
 #
+# Fails closed: a stanza this build cannot apply (an unrecognised `enabled`, no
+# usable `keys`, a malformed password hash), a root config.yaml that names a
+# lock but no longer parses, or a root config.yaml that exists but cannot be
+# read (permissions, I/O error) refuses every config write until it is fixed.
+# Only a root config.yaml that does not exist at all means "no lock".
+#
 # Not a security boundary against anyone who can edit this file directly: they
 # can change a locked value or delete the stanza in one line. Back it with file
 # ownership if that is the threat.

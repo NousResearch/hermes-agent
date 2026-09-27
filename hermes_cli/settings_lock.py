@@ -38,7 +38,9 @@ that instead of re-deriving "is it on?" from an ambient value:
   ``password``, if present, is a hash this build can actually verify.
 * ``unusable`` — the operator asked for a lock this build cannot apply as written: an unrecognised
   ``enabled`` value, no usable ``keys``, a ``password`` that is not a supported hash, or a stanza
-  that is not a mapping. Every guarded write is refused, **including while an unlock window is
+  that is not a mapping — or the policy cannot be established at all, because the root
+  ``config.yaml`` names a lock but no longer parses, or exists but cannot be read (permission,
+  I/O error). Only a root file that does not exist reads as ``off``. Every guarded write is refused, **including while an unlock window is
   open**: a spec that cannot be normalised cannot be reasoned about, and a window opened against
   one cannot be shown to have authorised anything. Recovery is editing the root ``config.yaml``.
 
@@ -89,12 +91,19 @@ def hermes_root(home: Path | str | None = None) -> Path:
     return base.parent.parent if base.parent.name == "profiles" else base
 
 
-def _read_root_yaml(root: Path) -> Optional[dict]:
-    """The root config as raw YAML, {} when it names no lock, or ``None`` when it names one but
-    does not parse to a mapping — read directly, never through the config loader.
+class _RootPolicyUnavailable(Exception):
+    """The root config.yaml exists (or may) but its lock policy cannot be established."""
 
-    ``None`` is not "no lock": a typo anywhere in the root file would otherwise switch the lock off
-    for every profile, whose own config.yaml still parses and writes normally.
+
+def _read_root_yaml(root: Path) -> dict:
+    """The root config as raw YAML, or {} when it provably names no lock — read directly, never
+    through the config loader.
+
+    Raises :class:`_RootPolicyUnavailable` when the policy cannot be established: the file names a
+    lock but does not parse to a mapping, or it cannot be read at all. Neither is "no lock". A typo
+    anywhere in the root file, or a root that a permission change or I/O error hides, would
+    otherwise switch the lock off for every profile, whose own config.yaml still reads and writes
+    normally. Only a root that does not exist (``FileNotFoundError``) is proven absence.
 
     Deliberately not ``load_config()``: this runs inside ``save_config``'s ``_CONFIG_LOCK``, and
     re-entering the loader (which touches the dotenv/secrets locks) is the shape of the
@@ -103,23 +112,38 @@ def _read_root_yaml(root: Path) -> Optional[dict]:
     path = root / "config.yaml"
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except FileNotFoundError:
         return {}
+    except OSError as exc:
+        raise _RootPolicyUnavailable(
+            f"the root config.yaml cannot be read ({exc.strerror or type(exc).__name__}), so whether "
+            f"it names a {LOCK_SECTION} is unknown") from exc
     if LOCK_SECTION not in raw:  # cheap precheck: the dominant install has no lock at all
         return {}
     try:
         import hermes_yaml
 
         data = hermes_yaml.safe_load(raw)
-    except Exception:
+    except Exception as exc:
         logger.warning("settings lock: root config.yaml could not be parsed", exc_info=True)
-        return None
-    return data if isinstance(data, dict) else None
+        raise _RootPolicyUnavailable(
+            f"the root config.yaml mentions {LOCK_SECTION} but does not parse as a YAML mapping") from exc
+    if not isinstance(data, dict):
+        raise _RootPolicyUnavailable(
+            f"the root config.yaml mentions {LOCK_SECTION} but does not parse as a YAML mapping")
+    return data
 
 
 def lock_spec(home: Path | str | None = None) -> dict:
-    """The ``settings_lock`` mapping from the ROOT config, or {} when absent/unusable."""
-    section = (_read_root_yaml(hermes_root(home)) or {}).get(LOCK_SECTION)
+    """The ``settings_lock`` mapping from the ROOT config, or {} when absent/unusable.
+
+    Display/edit helper only: an unreadable root reads as {} here. Policy decisions use
+    :func:`lock_state`, which reports that case as ``unusable``.
+    """
+    try:
+        section = _read_root_yaml(hermes_root(home)).get(LOCK_SECTION)
+    except _RootPolicyUnavailable:
+        return {}
     return section if isinstance(section, dict) else {}
 
 
@@ -216,10 +240,10 @@ def lock_state(home: Path | str | None = None) -> LockState:
     disable from a value it failed to recognise.
     """
     root = hermes_root(home)
-    data = _read_root_yaml(root)
-    if data is None:
-        return LockState("unusable", {},
-                         f"the root config.yaml mentions {LOCK_SECTION} but does not parse as a YAML mapping")
+    try:
+        data = _read_root_yaml(root)
+    except _RootPolicyUnavailable as exc:
+        return LockState("unusable", {}, str(exc))
     section = data.get(LOCK_SECTION)
     if section is None:
         return LockState("off", {})
@@ -435,7 +459,7 @@ def check_write(before: Any, after: Any, home: Path | str | None = None) -> None
         # which this lock never claimed to stop.
         raise SettingsLockError(
             f"settings are locked but the {LOCK_SECTION} stanza cannot be applied as written: "
-            f"{state.reason}. Fix {LOCK_SECTION} in the root config.yaml (or set "
+            f"{state.reason}. Fix the root config.yaml (or set "
             f"{LOCK_SECTION}.enabled: false there) — every config write is refused until you do.")
     spec = state.spec
     if is_unlocked(home, spec=spec):

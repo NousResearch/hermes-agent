@@ -316,6 +316,40 @@ def test_roundtrip_key_update_in_a_profile_is_refused_by_the_root_lock(home):
     assert read_user_config_raw(config_path)["approvals"]["mode"] == "smart"
 
 
+@pytest.mark.parametrize("err", ["EACCES", "EIO"])
+def test_an_unreadable_root_refuses_a_profile_write_and_only_a_missing_root_is_off(home, monkeypatch, err):
+    # The profile's own file stays readable, so its readability guard passes; only the ROOT, where
+    # the policy lives, cannot be read. Unknown policy is not "no lock".
+    import errno
+    import os
+
+    from utils import atomic_roundtrip_yaml_save
+
+    config_path = home / "profiles" / "work" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("approvals:\n  mode: manual\n", encoding="utf-8")
+    root_config = home / "config.yaml"
+    real_read_text = Path.read_text
+    code = getattr(errno, err)
+
+    def read_text(self, *args, **kwargs):
+        if self == root_config:
+            raise OSError(code, os.strerror(code), str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    with pytest.raises(sl.SettingsLockError, match="cannot be read"):
+        atomic_roundtrip_yaml_save(config_path, {"approvals": {"mode": "off"}})
+    assert _text(config_path) == "approvals:\n  mode: manual\n"
+
+    monkeypatch.setattr(Path, "read_text", real_read_text)
+    root_config.unlink()  # proven absence: no policy exists, so the same write goes through
+    atomic_roundtrip_yaml_save(config_path, {"approvals": {"mode": "off"}})
+    from hermes_cli.config import read_user_config_raw
+
+    assert read_user_config_raw(config_path)["approvals"]["mode"] == "off"
+
+
 # ── hermes agent import (command_allowlist / approvals.deny / mcp_servers → config.yaml) ─────
 
 

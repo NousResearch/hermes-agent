@@ -1,5 +1,6 @@
 import { skillInvocationText } from '@hermes/shared'
 
+import { splitLeadingAttachmentRefs } from '@/components/assistant-ui/reference-kinds'
 import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { isTodoToolName } from '@/lib/todos'
@@ -434,10 +435,13 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // thumbnail pushes any caption text below the clamp's visible area — so
     // pull image refs out into `attachmentRefs` (same shape the local
     // optimistic composer already uses) and render them via the dedicated
-    // attachments row below the bubble instead.
+    // attachments row below the bubble instead. The leading `@file:` block
+    // (attached files, large pastes) moves there too, for the same parity.
     const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? extractImageRefs(rawDisplayContent) : null
-    const displayContent = imageRefExtraction ? imageRefExtraction.cleanedText : rawDisplayContent
-    const extractedAttachmentRefs = imageRefExtraction?.refs.length ? imageRefExtraction.refs : undefined
+    const fileRefExtraction = imageRefExtraction ? splitLeadingAttachmentRefs(imageRefExtraction.cleanedText) : null
+    const displayContent = fileRefExtraction ? fileRefExtraction.text : rawDisplayContent
+    const liftedRefs = [...(fileRefExtraction?.refs ?? []), ...(imageRefExtraction?.refs ?? [])]
+    const extractedAttachmentRefs = liftedRefs.length ? liftedRefs : undefined
 
     const parts: ChatMessagePart[] = []
     const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)

@@ -118,6 +118,17 @@ class MessageEvent:
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
 
+    def absorb_reply_context(self, other: "MessageEvent") -> None:
+        if self.reply_to_text or not other.reply_to_text:
+            return
+
+        self.reply_to_message_id = other.reply_to_message_id
+        self.reply_to_text = other.reply_to_text
+        self.reply_to_author_id = other.reply_to_author_id
+        self.reply_to_author_name = other.reply_to_author_name
+        self.reply_to_is_own_message = other.reply_to_is_own_message
+        self.reply_to_author_authorized = other.reply_to_author_authorized
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")

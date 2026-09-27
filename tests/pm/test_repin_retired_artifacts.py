@@ -106,6 +106,10 @@ def test_retired_archive_is_repinned_locally_until_the_shipped_row_moves(sandbox
     assert sandbox.path.read_bytes() == shipped  # the checkout stays clean
     live = [{"url": LIVE, "sha256": _sha(PAYLOAD)}]
     assert Lockfile(sandbox.path).artifacts("rolling-tool", TARGET) == live  # the next run reuses it
+    retired = {"url": RETIRED, "sha256": "0" * 64}
+    sandbox.set_pin("rolling-tool", "9.1.0", {TARGET: retired})  # label bump, same row
+    sandbox.save()
+    assert Lockfile(sandbox.path).artifacts("rolling-tool", TARGET) == [retired]  # re-pin was for 9.0.x
     moved = {"url": "https://supplier.example/autobuild-next/tool.tar.xz", "sha256": "1" * 64}
     sandbox.set_pin("rolling-tool", "9.0.1", {TARGET: moved})
     sandbox.save()

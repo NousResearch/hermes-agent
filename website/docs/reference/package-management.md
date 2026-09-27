@@ -575,9 +575,9 @@ fallback also refuses (a mirror timeout blocks the re-pin), PM asks the
 supplier's index for the same version line on the same target, the newest
 patch of the locked major.minor for ffmpeg.
 It hashes that build, preferring the release API's digest to a download,
-records it in `cache/pm-repins.json` keyed by the retired row's sha256, and
-retries once. The re-pin applies only while the shipped row is unchanged: a
-Hermes update that moves the pin takes over again. Hash mismatches and
+records it in `cache/pm-repins.json` keyed by the locked version and the
+retired row's sha256, and retries once. The re-pin applies only while both are
+unchanged: a Hermes update that moves the pin or the version takes over again. Hash mismatches and
 transient network errors are never re-pinned.
 
 ## Diagnostics

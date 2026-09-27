@@ -26,13 +26,16 @@ def load() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def apply(table: dict, name: str, target: str, rows: list[dict]) -> list[dict]:
-    """The re-pinned rows when ``rows`` is exactly the row the re-pin replaced.
-    A malformed or non-matching entry is ignored, and a target the lock does
-    not ship is never given one: the entry may only stand in for a real row."""
+def apply(table: dict, name: str, target: str, version: str | None, rows: list[dict]) -> list[dict]:
+    """The re-pinned rows when ``rows`` is exactly the row the re-pin replaced
+    under the same locked version. A version bump that keeps the row still
+    drops the re-pin: the replacement was chosen for the old version line. A
+    malformed or non-matching entry is ignored, and a target the lock does not
+    ship is never given one: the entry may only stand in for a real row."""
     package = table.get(name)
     entry = package.get(target) if isinstance(package, dict) else None
-    if not rows or not isinstance(entry, dict) or entry.get("replaces") != [row["sha256"] for row in rows]:
+    if (not rows or not isinstance(entry, dict) or entry.get("version") != version
+            or entry.get("replaces") != [row["sha256"] for row in rows]):
         return rows
     artifacts = entry.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts or not all(
@@ -43,13 +46,13 @@ def apply(table: dict, name: str, target: str, rows: list[dict]) -> list[dict]:
     return [{"url": row["url"], "sha256": row["sha256"]} for row in artifacts]
 
 
-def record(name: str, target: str, replaces: list[str], artifacts: list[dict]) -> dict:
+def record(name: str, target: str, version: str | None, replaces: list[str], artifacts: list[dict]) -> dict:
     from pm.lock import _write
 
     table = load()
     if not isinstance(table.get(name), dict):
         table[name] = {}
-    table[name][target] = {"replaces": replaces, "artifacts": artifacts}
+    table[name][target] = {"version": version, "replaces": replaces, "artifacts": artifacts}
     _write(paths.repins_path(), table)
     return table
 

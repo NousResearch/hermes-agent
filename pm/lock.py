@@ -94,14 +94,14 @@ class Lockfile:
 
         if self._repins is None:
             self._repins = repins.load()
-        return repins.apply(self._repins, name, target, self.shipped_artifacts(name, target))
+        return repins.apply(self._repins, name, target, self.version(name), self.shipped_artifacts(name, target))
 
     def repin_locally(self, name: str, target: str, artifacts: list[dict]) -> None:
         """Replace this target's shipped row on this machine only; lock.json is untouched."""
         from pm import repins
 
         replaces = [row["sha256"] for row in self.shipped_artifacts(name, target)]
-        self._repins = repins.record(name, target, replaces, artifacts)
+        self._repins = repins.record(name, target, self.version(name), replaces, artifacts)
 
     def shipped_artifacts(self, name: str, target: str) -> list[dict]:
         """This target's rows exactly as lock.json ships them, ignoring any

@@ -16,7 +16,7 @@ CLAIM_WINDOW_SECONDS = 120.0
 # How long a bare mention waits for a voice from the same /sync batch that is still being gated.
 SETTLE_TIMEOUT_SECONDS = 5.0
 # Voices a sender can have parked per room at once (oldest by arrival dropped beyond this). Known
-# limit: if more than this many newer voices park while a bare mention is still settling, the
+# limit: if this many (or more) newer voices park while a bare mention is still settling, the
 # older voice it was owed is dropped and the mention is answered as text, as on main.
 MAX_PARKED_PER_SENDER = 4
 

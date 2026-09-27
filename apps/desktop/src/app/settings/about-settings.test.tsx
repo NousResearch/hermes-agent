@@ -46,20 +46,33 @@ afterEach(() => {
 })
 
 describe('AboutSettings', () => {
-  it('shows product identity, runtime version, attribution, and MIT license in English', async () => {
-    renderAbout('en')
+  it('shows product ownership, distinct brand and engine licenses, and version', async () => {
+    const { openExternal } = renderAbout('en')
 
     expect(await screen.findByRole('heading', { name: 'Agent Czesiek' })).not.toBeNull()
     await waitFor(() => expect(screen.getByText('Version 0.17.2')).not.toBeNull())
-    expect(screen.getByText('Powered by Hermes Agent — Nous Research')).not.toBeNull()
-    expect(screen.getByRole<HTMLAnchorElement>('link', { name: /Hermes Agent repository/i }).href).toBe(
+    expect(screen.getByText('Created and developed by AI Evolution Polska')).not.toBeNull()
+    expect(screen.getByRole<HTMLAnchorElement>('link', { name: /AI Evolution Polska website/i }).href).toBe(
+      'https://www.aievolutionpolska.pl/'
+    )
+    screen.getByRole('link', { name: /AI Evolution Polska website/i }).click()
+    expect(openExternal).toHaveBeenCalledWith('https://www.aievolutionpolska.pl')
+    expect(screen.getByRole<HTMLAnchorElement>('link', { name: /Hermes Agent source/i }).href).toBe(
       'https://github.com/NousResearch/hermes-agent'
     )
     expect(screen.getByRole<HTMLAnchorElement>('link', { name: /Nous Research/i }).href).toBe(
       'https://nousresearch.com/'
     )
-    expect(screen.getByText('Hermes Agent is distributed under the MIT License.')).not.toBeNull()
-    expect(screen.getByRole<HTMLAnchorElement>('link', { name: /MIT license/i }).href).toBe(
+    expect(screen.getByText('Agent Czesiek logo and materials')).not.toBeNull()
+    expect(screen.getByRole<HTMLAnchorElement>('link', { name: /commercial license contact/i }).href).toBe(
+      'https://github.com/aievolutionpl/AGENT_CZESIEK/blob/main/CZESIEK-ASSETS-LICENSE.md'
+    )
+    screen.getByRole('link', { name: /commercial license contact/i }).click()
+    expect(openExternal).toHaveBeenCalledWith(
+      'https://github.com/aievolutionpl/AGENT_CZESIEK/blob/main/CZESIEK-ASSETS-LICENSE.md'
+    )
+    expect(screen.getByText('Hermes Agent © 2025 Nous Research is licensed under MIT.')).not.toBeNull()
+    expect(screen.getByRole<HTMLAnchorElement>('link', { name: /Hermes MIT license/i }).href).toBe(
       'https://github.com/NousResearch/hermes-agent/blob/main/LICENSE'
     )
     expect(screen.getByText('Updates')).not.toBeNull()
@@ -105,11 +118,11 @@ describe('AboutSettings', () => {
   it('uses typed Polish and Chinese About copy for product attribution', async () => {
     renderAbout('pl')
     expect(await screen.findByRole('heading', { name: 'Agent Czesiek' })).not.toBeNull()
-    expect(screen.getByText('Hermes Agent jest rozpowszechniany na licencji MIT.')).not.toBeNull()
+    expect(screen.getByText('Silnik Hermes Agent © 2025 Nous Research ma licencję MIT.')).not.toBeNull()
 
     cleanup()
     renderAbout('zh')
     expect(await screen.findByRole('heading', { name: 'Agent Czesiek' })).not.toBeNull()
-    expect(screen.getByText('Hermes Agent 基于 MIT 许可证分发。')).not.toBeNull()
+    expect(screen.getByText('Hermes Agent © 2025 Nous Research 基于 MIT 许可证分发。')).not.toBeNull()
   })
 })

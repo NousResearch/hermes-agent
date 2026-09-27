@@ -1203,6 +1203,7 @@ export const pl = defineLocale({
       gateway: 'Bramy',
       apiKeys: 'Narzędzia i klucze',
       keybinds: 'Skróty klawiszowe',
+      moreSettings: 'Więcej ustawień',
       keysTools: 'Narzędzia',
       keysSettings: 'Ustawienia',
       mcp: 'MCP',
@@ -1435,9 +1436,10 @@ export const pl = defineLocale({
       appearance: 'Wygląd',
       workspace: 'Przestrzeń robocza',
       safety: 'Bezpieczeństwo',
+      browser: 'Przeglądarka',
       memory: 'Pamięć i kontekst',
       voice: 'Głos',
-      advanced: 'Zaawansowane'
+      advanced: 'Techniczne'
     },
     searchPlaceholder: {
       about: 'O Agent Czesiek Desktop',
@@ -1864,13 +1866,18 @@ export const pl = defineLocale({
       version: value => `Wersja ${value}`,
       versionUnavailable: 'Wersja niedostępna',
       productTitle: 'Agent Czesiek',
-      poweredBy: 'Powered by Agent Czesiek Agent — Nous Research',
+      poweredBy: 'Stworzony i rozwijany przez AI Evolution Polska',
       attributionDesc:
-        'Ten desktopowy shell produktu działa na silniku Agent Czesiek Agent i zachowuje widoczną atrybucję Agenta Cześka.',
-      hermesLink: 'Repozytorium Agent Czesiek Agent',
+        'Zbudowaliśmy Cześka jako osobistego asystenta do rozmowy, pracy z agentami i automatyzacji. Aplikacja korzysta z silnika Hermes Agent © 2025 Nous Research (MIT); interfejs, marka i autorskie materiały Agent Czesiek są rozwijane przez AI Evolution Polska.',
+      websiteLink: 'Strona AI Evolution Polska',
+      hermesLink: 'Kod Hermes Agent',
       nousLink: 'Nous Research',
-      licenseNotice: 'Agent Czesiek Agent jest rozpowszechniany na licencji MIT.',
-      licenseLink: 'Licencja MIT',
+      brandLicenseTitle: 'Logo i materiały Agent Czesiek',
+      brandLicenseDescription:
+        'Osoba prywatna może używać autorskiego logo i materiałów w celach prywatnych, edukacyjnych i niezarobkowych. Użycie tych elementów w firmie, płatnych zleceniach, produktach dla klientów lub SaaS wymaga osobnej zgody albo licencji komercyjnej. Te warunki nie ograniczają licencji kodu Hermes ani innych komponentów zewnętrznych.',
+      brandLicenseLink: 'Warunki użycia i kontakt w sprawie licencji',
+      licenseNotice: 'Silnik Hermes Agent © 2025 Nous Research ma licencję MIT.',
+      licenseLink: 'Zobacz licencję MIT Hermesa',
       bundleOutOfSync: 'Nieaktualna wersja aplikacji',
       bundleOutOfSyncDesc:
         'Środowisko Agenta Cześka zostało zaktualizowane, ale sama aplikacja desktopowa to wciąż starsza kompilacja — nowe funkcje interfejsu (np. Bot Mode) będą niedostępne, dopóki się nie zaktualizuje. Uruchom poniższą aktualizację, aby przebudować aplikację. Jeśli to nie usunie tego ostrzeżenia, zainstaluj ją ponownie z najnowszego instalatora.',

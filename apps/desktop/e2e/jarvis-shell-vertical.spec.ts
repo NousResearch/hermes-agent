@@ -335,6 +335,21 @@ test.describe('Jarvis product shell', () => {
     await expect(page.locator('[data-jarvis-nav-view="connections"]')).toHaveAttribute('aria-current', 'page')
   })
 
+  test('settings keeps common choices visible and reveals advanced choices on demand', async () => {
+    const page = fixture!.page
+    await page.locator('[data-jarvis-nav-view="settings"]').click()
+    await expect(page.locator('[data-tour="nav-config:voice"]')).toBeVisible()
+    await expect(page.locator('[data-tour="nav-config:workspace"]')).toHaveCount(0)
+
+    await page.locator('[data-tour="nav-more-settings"]').click()
+    await page.locator('[data-tour="nav-config:workspace"]').click()
+    await expect.poll(() => page.evaluate(() => window.location.hash)).toContain('config%3Aworkspace')
+
+    await page.reload()
+    await expect(page.locator('[data-tour="nav-config:workspace"]')).toBeVisible()
+    await page.locator('[data-jarvis-nav-view="jarvis"]').click()
+  })
+
   test('the language rail switches the whole shell to Polish and back', async () => {
     const page = fixture!.page
     const language = page.locator('[data-jarvis-nav-rail] [role="radiogroup"]')

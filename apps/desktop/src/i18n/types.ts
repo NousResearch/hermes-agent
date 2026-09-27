@@ -848,6 +848,7 @@ export interface Translations {
       gateway: string
       apiKeys: string
       keybinds: string
+      moreSettings: string
       keysTools: string
       keysSettings: string
       mcp: string
@@ -1166,8 +1167,12 @@ export interface Translations {
       productTitle: string
       poweredBy: string
       attributionDesc: string
+      websiteLink: string
       hermesLink: string
       nousLink: string
+      brandLicenseTitle: string
+      brandLicenseDescription: string
+      brandLicenseLink: string
       licenseNotice: string
       licenseLink: string
       bundleOutOfSync: string

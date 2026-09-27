@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { codiconIcon } from '@/components/ui/codicon'
@@ -76,6 +76,16 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
+const MAIN_SETTINGS_ORDER = [
+  'config:model',
+  'config:voice',
+  'character',
+  'config:appearance',
+  'providers',
+  'keys',
+  'config:safety'
+] as const
+
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
@@ -136,6 +146,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const openKeysView = useCallback((view: KeysView) => openSubView('keys', 'kview', view, 'tools'), [openSubView])
 
   const importInputRef = useRef<HTMLInputElement | null>(null)
+  const [advancedExpanded, setAdvancedExpanded] = useState(false)
 
   const exportConfig = async () => {
     try {
@@ -326,6 +337,38 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     [activeView, keysView, providerView, t, setActiveView, openProviderView, openKeysView]
   )
 
+  const primaryGroups = MAIN_SETTINGS_ORDER.flatMap(id => {
+    const group = navGroups.find(item => item.id === id)
+
+    return group ? [group] : []
+  })
+
+  const advancedGroups = navGroups.filter(
+    group => group.id !== 'about' && !MAIN_SETTINGS_ORDER.some(id => id === group.id)
+  )
+
+  const showAdvanced = advancedExpanded || advancedGroups.some(group => group.active)
+
+  const visibleNavGroups: OverlayNavGroup[] = [
+    ...primaryGroups,
+    {
+      active: false,
+      gapBefore: true,
+      icon: Wrench,
+      id: 'more-settings',
+      label: `${t.settings.nav.moreSettings} ${showAdvanced ? '⌃' : '⌄'}`,
+      onSelect: () => {
+        setAdvancedExpanded(!showAdvanced)
+
+        if (showAdvanced && advancedGroups.some(group => group.active)) {
+          setActiveView('config:model')
+        }
+      }
+    },
+    ...(showAdvanced ? advancedGroups : []),
+    navGroups.find(group => group.id === 'about')!
+  ]
+
   // Type-to-search: printable keystrokes on the Settings surface (outside any
   // field) open the settings-scoped palette, seeded with the character — same
   // reflex as the chat surface's type-to-focus, pointed at search instead.
@@ -372,8 +415,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       tabIndex={paletteOpen ? -1 : undefined}
       type="button"
     >
-      <Search className="size-3" />
-      <span className="text-xs">{t.settings.search.pill}</span>
+      <Search className="size-4" />
+      <span className="text-sm">{t.settings.search.pill}</span>
       {searchCombo && <KbdCombo combo={searchCombo} size="sm" variant="ghost" />}
     </button>
   )
@@ -453,7 +496,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   return (
     <OverlayView closeLabel={t.settings.closeSettings} edgeBadge={searchPill} onClose={onClose}>
       <OverlaySplitLayout className="min-[47.51rem]:grid-cols-[15rem_minmax(0,1fr)]">
-        <OverlayNav comfortable footer={navFooter} groups={navGroups} />
+        <OverlayNav comfortable footer={showAdvanced ? navFooter : undefined} groups={visibleNavGroups} />
 
         <OverlayMain className="px-0 pb-0">{activeSettingsContent}</OverlayMain>
       </OverlaySplitLayout>

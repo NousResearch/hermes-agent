@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
-import { BrandMark } from '@/components/brand-mark'
+import czesiekLogo from '@/assets/czesiek-logo.png'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
@@ -26,6 +26,8 @@ const INSTALLER_URL = 'https://github.com/aievolutionpl/AGENT_CZESIEK/releases/l
 const HERMES_REPO_URL = 'https://github.com/NousResearch/hermes-agent'
 const NOUS_RESEARCH_URL = 'https://nousresearch.com'
 const HERMES_LICENSE_URL = 'https://github.com/NousResearch/hermes-agent/blob/main/LICENSE'
+const BRAND_LICENSE_URL = 'https://github.com/aievolutionpl/AGENT_CZESIEK/blob/main/CZESIEK-ASSETS-LICENSE.md'
+const AI_EVOLUTION_URL = 'https://www.aievolutionpolska.pl'
 
 function relativeTime(ms: number | undefined, a: Translations['settings']['about']) {
   if (!ms) {
@@ -103,10 +105,10 @@ export function AboutSettings() {
   return (
     <SettingsContent>
       <div className="flex flex-col items-center gap-3 pt-6 pb-2 text-center">
-        <BrandMark className="size-16" />
+        <img alt="" className="size-20 object-contain" src={czesiekLogo} />
         <div>
           <h2 className="text-lg font-semibold tracking-tight">{a.heading}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="mt-1 text-sm text-muted-foreground">
             {version?.appVersion ? a.version(version.appVersion) : a.versionUnavailable}
           </p>
         </div>
@@ -161,11 +163,24 @@ export function AboutSettings() {
       </div>
 
       <div className="mx-auto mt-4 w-full max-w-2xl">
-        <div className="rounded-xl border border-border/70 bg-muted/20 px-4 py-3 text-left text-sm">
-          <p className="font-medium">{a.productTitle}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{a.poweredBy}</p>
-          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{a.attributionDesc}</p>
-          <div className="mt-3 flex flex-wrap gap-4 text-xs">
+        <div className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) px-5 py-4 text-left">
+          <p className="text-base font-semibold">{a.productTitle}</p>
+          <p className="mt-1 text-sm font-medium text-(--ui-text-secondary)">{a.poweredBy}</p>
+          <p className="mt-3 text-sm leading-relaxed text-(--ui-text-secondary)">{a.attributionDesc}</p>
+          <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+            <a
+              className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+              href={AI_EVOLUTION_URL}
+              onClick={event => {
+                event.preventDefault()
+                void window.hermesDesktop?.openExternal?.(AI_EVOLUTION_URL)
+              }}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {a.websiteLink}
+              <ExternalLink className="size-3" />
+            </a>
             <a
               className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
               href={HERMES_REPO_URL}
@@ -194,6 +209,29 @@ export function AboutSettings() {
             </a>
           </div>
         </div>
+
+        <ListRow
+          description={
+            <>
+              <p>{a.brandLicenseDescription}</p>
+              <a
+                className="mt-2 inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+                href={BRAND_LICENSE_URL}
+                onClick={event => {
+                  event.preventDefault()
+                  void window.hermesDesktop?.openExternal?.(BRAND_LICENSE_URL)
+                }}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {a.brandLicenseLink}
+                <ExternalLink className="size-3" />
+              </a>
+            </>
+          }
+          title={a.brandLicenseTitle}
+          wide
+        />
 
         <ListRow
           description={

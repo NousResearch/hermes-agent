@@ -829,6 +829,13 @@ def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential
         return None
 
 
+def _store_owns_pool_provider(auth_store: Dict[str, Any], provider: str) -> bool:
+    """True when an already-loaded *auth_store* has its own rows for *provider*."""
+    pool = auth_store.get("credential_pool") if isinstance(auth_store, dict) else None
+    entries = pool.get(provider) if isinstance(pool, dict) else None
+    return isinstance(entries, list) and bool(entries)
+
+
 def _profile_owns_pool_provider(provider: str) -> bool:
     """True when the ACTIVE auth.json has its own rows for *provider*.
 
@@ -840,11 +847,10 @@ def _profile_owns_pool_provider(provider: str) -> bool:
     if auth_mod._global_auth_file_path() is None:
         return True
     try:
-        pool = _load_auth_store().get("credential_pool")
+        auth_store = _load_auth_store()
     except Exception:
         return True  # unreadable store: assume ownership, keep legacy path
-    entries = pool.get(provider) if isinstance(pool, dict) else None
-    return isinstance(entries, list) and bool(entries)
+    return _store_owns_pool_provider(auth_store, provider)
 
 
 def _borrowed_single_use_pool_root() -> Optional[Path]:
@@ -2606,7 +2612,7 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     global_root = _global_auth_file_path()
     if (
         source_path is not None and global_root is not None and _same_path(source_path, global_root)
-        and _profile_owns_pool_provider("nous")
+        and _store_owns_pool_provider(auth_store, "nous")
     ):
         # A profile that owns local nous rows (e.g. an agent_key-only row surviving a
         # fork strip/heal) must not re-seed root's single-use refresh token into its
@@ -3038,7 +3044,7 @@ def load_pool(provider: str) -> CredentialPool:
         auth_mod.heal_forked_single_use_oauth_grants(provider)
     raw_entries = read_credential_pool(provider)
     disk_ids = {e.get("id") for e in raw_entries if isinstance(e, dict) and e.get("id")}
-    # Computed once (auth.json read) after the heal above; see reuse below.
+    # Ownership (auth.json read) after the heal above; re-read at the tail only if _persist() ran.
     owns_provider: Optional[bool] = None
     changed = any(
         isinstance(payload, dict) and sanitize_borrowed_credential_payload(payload, provider) != payload
@@ -3072,12 +3078,7 @@ def load_pool(provider: str) -> CredentialPool:
         # (#9331); file-backed singletons still prune when their file is gone.
         if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and disk_ids:
             owns_provider = _profile_owns_pool_provider(provider)
-        borrowing_root_grant = (
-            provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
-            and bool(disk_ids)
-            and not owns_provider
-        )
-        if borrowing_root_grant:
+        if owns_provider is False:
             # Rows read through the global-root fallback are seeded from the
             # ROOT's singleton files, which this profile cannot see; pruning
             # them would hide (and, via write-through, delete) the shared
@@ -3100,11 +3101,12 @@ def load_pool(provider: str) -> CredentialPool:
         pool._persist(removed_ids=sorted(disk_ids - {entry.id for entry in entries}))
     # Remember the root's borrowed rows so a later ``add_entry`` in this
     # profile leaves them out of the profile's own store (#100339).
-    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+    # No disk rows -> nothing borrowed; the ``set()`` default already applies.
+    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and disk_ids:
         # Reuse the pre-persist ownership answer unless _persist() just rewrote
         # the store (it can give the profile its own rows); nothing else between
         # the two checks touches auth.json.
-        if changed or owns_provider is None:
+        if changed:
             owns_provider = _profile_owns_pool_provider(provider)
         if not owns_provider:
             pool._borrowed_root_ids = set(disk_ids)

@@ -3122,6 +3122,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     try:
                         db._resolve_title_conflict(conn, session_id, clean_title)
                     except ValueError as exc:  # the DB's uniqueness rule; undo the INSERT
+                        # No ``on_session_delete`` here: this rolls back the row inserted in the
+                        # same transaction, so the session never existed — firing would double-count it.
                         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
                         return None, f"title:{exc}"
                 conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean_title, session_id))

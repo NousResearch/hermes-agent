@@ -22,7 +22,7 @@ from hermes_state_common import (
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
-    _source_match_clause,
+    _source_match_clause, emit_session_deleted,
 )
 from hermes_state_compression import _CHAIN_CAP
 
@@ -1757,6 +1757,8 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if deleted:
+            emit_session_deleted(removed_ids, sessions_dir=sessions_dir)
         return bool(deleted)
 
     def discard_unadmitted_session(self, session_id: str) -> bool:
@@ -1817,6 +1819,7 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
+            emit_session_deleted([session_id], sessions_dir=sessions_dir)
         return deleted
 
     def delete_sessions(
@@ -1904,6 +1907,8 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if count:
+            emit_session_deleted(removed_ids, sessions_dir=sessions_dir)
         return count
 
     # Shared by count_empty_sessions / delete_empty_sessions so badge and sweep agree. message_count
@@ -1946,6 +1951,8 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        if count:
+            emit_session_deleted(removed_ids, reason="empty_sweep", sessions_dir=sessions_dir)
         return count
 
     def archive_sessions(

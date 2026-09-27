@@ -266,7 +266,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
         mark = f"echo {sentinel}"
         rest = "".join(f"{mark}; {cmd}; " for cmd in more)
-        result = self._exec(f"{mark}; {body}; __hb=$?; {rest}{mark}; echo $__hb")
+        # xtrace off first: a traced ``+ echo <sentinel>`` line is an extra separator, and the
+        # traces of the transport commands would land inside the payload segments.
+        result = self._exec(f"{{ set +x; }} 2>/dev/null; {mark}; {body}; __hb=$?; {rest}{mark}; echo $__hb")
         segments = _split_segments(result.stdout or "", sentinel)
         if len(segments) != len(more) + 3:
             return None, None, result
@@ -466,7 +468,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _expand_path(self, path: str) -> str:
         """Expand ``~`` / ``~user`` via the backend's shell (its HOME, not the
-        host's). Must run BEFORE shell escaping — ~ doesn't expand in quotes."""
+        host's). A host path under the configured workspace mount is rewritten
+        to that container path first, so a Windows drive path is readable
+        inside Docker. Must run BEFORE shell escaping — ~ doesn't expand in quotes."""
+        from tools.terminal_tool_config import translate_mounted_host_path
+        host_root = getattr(self.env, "host_cwd", None)
+        container_root = getattr(self.env, "host_cwd_mount", None) or "/workspace"
+        translated = translate_mounted_host_path(path, host_root or "", container_root)
+        if translated:
+            return translated
         if not path or not path.startswith('~'):
             return path
         result = self._exec("echo $HOME")

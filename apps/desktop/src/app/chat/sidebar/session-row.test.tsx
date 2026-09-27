@@ -421,9 +421,7 @@ describe('SidebarSessionRow continuation badge', () => {
   const continuationGlyph = (container: HTMLElement) => container.querySelector('.codicon-layers')
 
   it('paints the continuation glyph for a projected compression tip', () => {
-    const { container } = renderRow(
-      makeSession({ continuation_kind: 'compression', title: 'Long-running chat' })
-    )
+    const { container } = renderRow(makeSession({ continuation_kind: 'compression', title: 'Long-running chat' }))
 
     expect(continuationGlyph(container)).not.toBeNull()
   })
@@ -433,9 +431,7 @@ describe('SidebarSessionRow continuation badge', () => {
 
     expect(continuationGlyph(plain.container)).toBeNull()
 
-    const branch = renderRow(
-      makeSession({ parent_session_id: 'parent', title: 'A real branch' })
-    )
+    const branch = renderRow(makeSession({ parent_session_id: 'parent', title: 'A real branch' }))
 
     expect(continuationGlyph(branch.container)).toBeNull()
   })

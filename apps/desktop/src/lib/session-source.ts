@@ -46,7 +46,17 @@ const SOURCE_ALIASES: Record<string, string[]> = {
 // Exported so the recents fetch can keep these in the main list while the
 // messaging fetch excludes them. `acp` runs as a local stdio process spawned
 // by an editor, and its rows must never land in the messaging slice either.
-export const LOCAL_SESSION_SOURCE_IDS = ['acp', 'cli', 'codex', 'desktop', 'gateway', 'kanban', 'local', 'oneshot', 'tui']
+export const LOCAL_SESSION_SOURCE_IDS = [
+  'acp',
+  'cli',
+  'codex',
+  'desktop',
+  'gateway',
+  'kanban',
+  'local',
+  'oneshot',
+  'tui'
+]
 const LOCAL_SOURCE_IDS = new Set(LOCAL_SESSION_SOURCE_IDS)
 
 // External messaging platforms that each get their own self-managed sidebar

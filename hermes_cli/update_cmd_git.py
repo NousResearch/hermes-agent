@@ -189,9 +189,23 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
         return False, "unverifiable"
     if status.stdout.strip():
         return False, "dirty"
+    # Count parked-only commits from the commit graph first: rev-list needs no trees,
+    # so a treeless (tree:0) partial clone answers from local objects. `git cherry`'s
+    # patch-id walk needs upstream-side trees and lazy-fetches them in many promisor
+    # batches; one failed batch failed the whole verification and skipped a clean
+    # checkout (#124767).
+    ahead = _git_run(git_cmd, ["rev-list", "--count", f"origin/{target_branch}..HEAD"], cwd)
+    if ahead.returncode != 0 or not ahead.stdout.strip().isdigit():
+        return False, "unverifiable"
+    ahead_count = int(ahead.stdout.strip())
+    if ahead_count == 0:
+        return True, ""
     cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd)
     if cherry.returncode != 0:
-        return False, "unverifiable"
+        # Patch-equivalence only refines the count for rebase/squash-merged branches;
+        # a partial clone whose lazy fetch failed must not block a clean checkout,
+        # so degrade to the conservative commit count instead of "unverifiable".
+        return True, f"unmerged:{ahead_count}"
     unmerged = [line for line in cherry.stdout.splitlines() if line.startswith("+")]
     return True, f"unmerged:{len(unmerged)}" if unmerged else ""
 

@@ -73,18 +73,19 @@ class TestHelperFunctions(unittest.TestCase):
             "john@example.com"
         )
         # Unquoted forms strict parseaddr rejects still resolve to their single bracketed address.
-        for raw in ("john@example.com <john@example.com>", "Doe, John <John@example.com>"):
+        for raw in ("john@example.com <john@example.com>", "Doe, John <John@example.com>",
+                    "Doe, John (CEO) <John@example.com>"):
             self.assertEqual(_extract_email_address(raw), "john@example.com", raw)
         # ...but never when the display part could hold another mailbox, group or comment.
         for raw in ("a@x.com, b@y.com", "Group: a@x.com, b@y.com;", "<>", "a@x.test <john@example.com>",
                     "attacker@evil.test, <victim@x>", "attacker@evil.test,\r\n <victim@x>",
                     "attacker@evil.test (c) <victim@x>", "attacker@evil.test; <victim@x>",
-                    "Grp: attacker@evil.test; <victim@x>", "undisclosed-recipients:; <victim@x>"):
+                    "Grp: attacker@evil.test; <victim@x>", "undisclosed-recipients:; <victim@x>",
+                    "John", 'a\\"b <victim@x>'):
             self.assertEqual(_extract_email_address(raw), "", raw)
-        # The fallback regex stays linear on hostile input (a backtracking one took ~20s at 32KB, GIL held).
-        from plugins.platforms.email.adapter import _SINGLE_BRACKET_FROM_RE
+        # Hostile-size From values are refused outright (stdlib parseaddr takes ~1s at 100KB with the GIL held).
         start = time.monotonic()
-        _SINGLE_BRACKET_FROM_RE.fullmatch("<" + "a@" * 50_000)
+        self.assertEqual(_extract_email_address("<" + "a@" * 50_000), "")
         self.assertLess(time.monotonic() - start, 0.5)
 
     def test_extract_email_address_ignores_angle_brackets_in_display_name(self):
@@ -1218,11 +1219,21 @@ class TestSenderAuthentication(unittest.TestCase):
         for ar in ("mx.google.com; dmarc=pass header.from=evil.test",
                    "mx.google.com; dmarc=pass header.from=evil.test; dkim=pass header.d=x.test header.from=example.com",
                    "mx.google.com; dmarc=pass (p=none; sp=none) header.from=evil.test",
-                   "mx.google.com; dmarc=fail header.from=example.com; dmarc=pass header.from=evil.test"):
+                   "mx.google.com; dmarc=fail header.from=example.com; dmarc=pass header.from=evil.test",
+                   # every header.from in the dmarc clause must align, not just one
+                   "mx.google.com; dmarc=pass header.from=evil.test header.from=example.com",
+                   # ';' inside quoted-strings / nested comments must not split or smuggle a dmarc clause
+                   'mx.google.com; spf=pass smtp.mailfrom="x;dmarc=pass header.from=example.com x"@evil.test; '
+                   "dmarc=fail header.from=example.com",
+                   "mx.google.com; dmarc=pass (a (b) ; header.from=example.com) header.from=evil.test",
+                   'mx.google.com; dmarc=pass reason="a;b" header.from=evil.test'):
             ok, reason = self._verify("Admin <admin@example.com>", [ar])
             self.assertFalse(ok, ar)
         ok, reason = self._verify("Admin <admin@example.com>", [
             "mx.google.com; arc=pass (dmarc=fail header.from=evil.test); dmarc=pass header.from=example.com"])
+        self.assertTrue(ok, reason)
+        ok, reason = self._verify("Admin <admin@example.com>", [
+            'mx.google.com; dmarc=pass reason="a;b" header.from="example.com"'])
         self.assertTrue(ok, reason)
 
 

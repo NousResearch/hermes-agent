@@ -56,6 +56,10 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
 # ``display <bracketed>`` split for the _extract_email_address fallback (linear: neither part can match the other's delimiters).
 _SINGLE_BRACKET_FROM_RE = re.compile(r'([^"<>]*)<([^<>\s]+)>\s*')
 _DMARC_CLAUSE_RE = re.compile(r"\s*dmarc\s*=\s*([a-z]+)", re.IGNORECASE)
+_COMMENT_RE = re.compile(r"\([^()]*\)")
+# Longest From: value we parse. parseaddr is pure Python and superlinear on hostile input (~1s at 100KB, GIL held);
+# a real mailbox plus display name stays far below this (RFC 5322 caps a line at 998 chars).
+_MAX_FROM_LEN = 2048
 # "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
 _AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
@@ -249,16 +253,59 @@ def _extract_email_address(raw: str) -> str:
     """Bare lowercased addr-spec from a From: value. Uses parseaddr, not a first-<...> regex (GHSA-rxqh-5572-8m77);
     RFC 5322 folding is unfolded first because parseaddr misreads a folded quoted display name. Unquoted
     ``Name <addr>`` values parseaddr rejects (``Doe, John <j@x>``) fall back to their single bracketed address,
-    but only when the display part cannot hold another mailbox, group or comment: no quotes, ``;``, ``:``,
-    ``(`` or ``)``, and no ``@`` unless it is exactly the bracketed address (``a@x <a@x>``)."""
+    but only when the display part (``(comments)`` removed) cannot hold another mailbox or group: no quotes, ``;``,
+    ``:`` or stray parens, and no ``@`` unless it is exactly the bracketed address (``a@x <a@x>``). Values over
+    ``_MAX_FROM_LEN`` and results without ``@`` return ``""`` so the caller drops the message."""
     value = re.sub(r"\r?\n[ \t]+", " ", str(raw or ""))
+    if len(value) > _MAX_FROM_LEN:
+        return ""  # hostile size: take the empty-sender drop instead of a GIL-holding parse
     _, addr = parseaddr(value)
     if not addr and (m := _SINGLE_BRACKET_FROM_RE.fullmatch(value)):
-        display, bracketed = m.group(1).strip(), m.group(2)
+        display, bracketed = _strip_comments(m.group(1)).strip(), m.group(2)
         if ("@" in bracketed[1:-1] and not any(c in display for c in ";:()")
                 and ("@" not in display or display.lower() == bracketed.lower())):
             addr = bracketed
-    return addr.strip().lower()
+    addr = addr.strip().lower()
+    return addr if "@" in addr else ""  # a bare word (``John``) is not a sender identity
+
+
+def _strip_comments(text: str) -> str:
+    """Remove (possibly nested) ``(comments)``, innermost first, until nothing changes."""
+    while (stripped := _COMMENT_RE.sub(" ", text)) != text:
+        text = stripped
+    return text
+
+
+def _ar_clauses(text: str) -> Optional[List[str]]:
+    """Split an Authentication-Results value on ``;`` outside quoted-strings and (nested) comments; comments are
+    dropped, quoted-strings kept (``header.from="x"`` stays readable). ``None`` when a quote or comment is unbalanced."""
+    clauses, cur, depth, quoted, i = [], [], 0, False, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and (quoted or depth):
+            if depth == 0:
+                cur.append(text[i:i + 2])
+            i += 2
+            continue
+        if quoted:
+            quoted = c != '"'
+            cur.append(c)
+        elif depth:
+            depth += {"(": 1, ")": -1}.get(c, 0)
+            if not depth:
+                cur.append(" ")
+        elif c == "(":
+            depth = 1
+        elif c == '"':
+            quoted = True
+            cur.append(c)
+        elif c == ";":
+            clauses.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    return None if quoted or depth else clauses + ["".join(cur)]
 
 
 def _auth_props(text: str) -> List[Tuple[str, str]]:
@@ -297,8 +344,13 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "no Authentication-Results from trusted authserv-id"
     methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
     props = dict(_auth_props(trusted))
-    # Verdict and header.from come from ONE clause: the first starting with dmarc= once (comments) are gone.
-    dmarc = next((c for c in re.sub(r"\([^()]*\)", " ", trusted).split(";") if _DMARC_CLAUSE_RE.match(c)), "")
+    # Verdict and header.from come from the ONE clause starting with dmarc= (split outside quotes/comments).
+    # A quoted smtp.mailfrom can smuggle a fake clause, so an unbalanced value or a second dmarc clause fails closed.
+    if (clauses := _ar_clauses(trusted)) is None:
+        return False, "unbalanced quote or comment in Authentication-Results"
+    if len(dmarcs := [c for c in clauses if _DMARC_CLAUSE_RE.match(c)]) > 1:
+        return False, "ambiguous dmarc result"
+    dmarc = dmarcs[0] if dmarcs else ""
     if (m := _DMARC_CLAUSE_RE.match(dmarc)) and m.group(1).lower() == "pass":
         if all(_domains_aligned(_domain_of(v), from_domain) for p, v in _auth_props(dmarc) if p == "header.from"):
             return True, "dmarc=pass"  # the verdict must be for the From domain we parsed (absent header.from: trust it)

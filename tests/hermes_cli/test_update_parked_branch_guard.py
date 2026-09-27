@@ -175,6 +175,52 @@ def test_missing_origin_ref_is_unverifiable(repo_pair):
     assert reason == "unverifiable"
 
 
+def test_cherry_timeout_is_unverifiable(repo_pair, monkeypatch):
+    """A ``git cherry`` that blows its timeout degrades to "unverifiable" — the
+    same safe refusal as a failed probe, NOT an unbounded wait.
+
+    Live incident (2026-09-27, macOS): the installer checkout is a partial clone
+    (``--filter=tree:0``), so ``git cherry origin/main`` lazy-fetched every missing
+    tree/blob over HTTPS — 151 packs / ~1 GB in 13 minutes, with no output. The
+    updater looked hung and the desktop main process stalled 43s behind the same
+    call at boot. The probe must be bounded so a slow tree degrades to a skip.
+    """
+    import hermes_cli.update_cmd_git as update_cmd_git
+
+    real_git_run = update_cmd_git._git_run
+
+    def fake_git_run(git_cmd, args, cwd=None, **kw):
+        if args and args[0] == "cherry":
+            raise subprocess.TimeoutExpired(cmd=list(args), timeout=kw.get("timeout"))
+        return real_git_run(git_cmd, args, cwd, **kw)
+
+    monkeypatch.setattr(update_cmd_git, "_git_run", fake_git_run)
+    safe, reason = update_cmd._assess_parked_branch_switch(
+        GIT, repo_pair, "old-feature", "main"
+    )
+    assert safe is False
+    assert reason == "unverifiable"
+
+
+def test_cherry_probe_is_bounded(repo_pair, monkeypatch):
+    """The cherry probe always gets a finite timeout — regression guard for the
+    hang above (an unbounded probe must never come back)."""
+    import hermes_cli.update_cmd_git as update_cmd_git
+
+    real_git_run = update_cmd_git._git_run
+    seen = {}
+
+    def spy_git_run(git_cmd, args, cwd=None, **kw):
+        if args and args[0] == "cherry":
+            seen["timeout"] = kw.get("timeout")
+        return real_git_run(git_cmd, args, cwd, **kw)
+
+    monkeypatch.setattr(update_cmd_git, "_git_run", spy_git_run)
+    update_cmd._assess_parked_branch_switch(GIT, repo_pair, "old-feature", "main")
+    assert seen["timeout"] is not None
+    assert 0 < seen["timeout"] <= 300
+
+
 # ---------------------------------------------------------------------------
 # Skip warning content
 # ---------------------------------------------------------------------------

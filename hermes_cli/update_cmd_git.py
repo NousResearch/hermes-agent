@@ -28,18 +28,28 @@ _GIT_TEXT_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="re
 _BAR = "=" * 68
 _UPSTREAM_ADD_CMD = "git remote add upstream https://github.com/NousResearch/hermes-agent.git"
 
+# ``git cherry`` computes patch-ids, which needs upstream-side trees. In a treeless partial
+# clone (``--filter=tree:0``, what the git installer creates) that walk lazy-fetches the missing
+# trees/blobs from the promisor remote in many small batches, so the probe can grind for minutes
+# with no output — in-process, stalling whichever caller shells out to it (the updater, or the
+# desktop's boot-time hand-off). Bound the probe like the other cherry calls (``worktree_gc``
+# uses the same 30s): a probe that exceeds the bound is treated as failed, and callers keep
+# their existing safe default for a failed probe.
+_CHERRY_PROBE_TIMEOUT_S = 30
+
 
 def _git_ok(git_cmd, args, cwd, **kw) -> bool:
     """True when ``_git_run`` exits 0; any exception counts as failure."""
     return _git_stdout(git_cmd, args, cwd, **kw) is not None
 
 
-def _git_run(git_cmd, args, cwd=None, *, check=False):
+def _git_run(git_cmd, args, cwd=None, *, check=False, timeout=None):
     """Run ``git_cmd + args`` and return the CompletedProcess.
 
     The updater's git runner: capture all output and decode as UTF-8 regardless of the
     Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit. The spawn
-    always hides its console window (#117781).
+    always hides its console window (#117781). ``timeout`` (seconds) bounds the call;
+    ``None`` waits indefinitely.
     """
     return subprocess.run(
         git_cmd + list(args),
@@ -48,6 +58,7 @@ def _git_run(git_cmd, args, cwd=None, *, check=False):
         text=True, encoding="utf-8", errors="replace",
         check=check,
         creationflags=windows_hide_flags(),
+        timeout=timeout,
     )
 
 
@@ -174,7 +185,8 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
       committed work) but caller must print a LOUD notice. Non-interactive callers (desktop, gateway
       /update, cron) can't resolve a skip, so a clean checkout must reach target.
     - (False, "disabled"|"dirty"|"unverifiable") — caller must NOT touch the branch. Dirty is the
-      genuinely unsafe case: uncommitted work riding an autostash across branches.
+      genuinely unsafe case: uncommitted work riding an autostash across branches; unverifiable
+      covers a failed probe and a probe that exceeded ``_CHERRY_PROBE_TIMEOUT_S``.
     A config read failure must not disable the safety checks: fall through with the default."""
     from hermes_cli.update_cmd_git import _git_run
     try:
@@ -189,8 +201,15 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
         return False, "unverifiable"
     if status.stdout.strip():
         return False, "dirty"
-    cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd)
-    if cherry.returncode != 0:
+    try:
+        cherry = _git_run(
+            git_cmd, ["cherry", f"origin/{target_branch}"], cwd, timeout=_CHERRY_PROBE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "git cherry origin/%s exceeded %ss on a partial clone; treating the probe "
+            "as failed", target_branch, _CHERRY_PROBE_TIMEOUT_S)
+        cherry = None
+    if cherry is None or cherry.returncode != 0:
         return False, "unverifiable"
     unmerged = [line for line in cherry.stdout.splitlines() if line.startswith("+")]
     return True, f"unmerged:{len(unmerged)}" if unmerged else ""

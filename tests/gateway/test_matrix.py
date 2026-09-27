@@ -1789,7 +1789,11 @@ async def test_thread_fetch_uses_mautrix_get_method():
         GET = "GET"
 
     client = MagicMock()
-    client.api.request = AsyncMock(side_effect=[{"start": "trigger-boundary"}, {"chunk": []}])
+    client.api.request = AsyncMock(side_effect=[
+        {"start": "trigger-boundary"},
+        {"start": "messages-boundary", "chunk": []},
+        {"chunk": []},
+    ])
     cache = MatrixEventContextCache()
     cache.store("!room:example.org", "$root", MatrixEventContext("@alice:example.org", "root"))
 
@@ -1801,8 +1805,10 @@ async def test_thread_fetch_uses_mautrix_get_method():
     assert entries == [MatrixEventContext("@alice:example.org", "root")]
     assert [call.args[1:] + (call.kwargs["query_params"],) for call in client.api.request.await_args_list] == [
         ("/_matrix/client/v3/rooms/%21room%3Aexample.org/context/%24current", {"limit": "0"}),
+        ("/_matrix/client/v3/rooms/%21room%3Aexample.org/messages",
+         {"from": "trigger-boundary", "dir": "b", "limit": "5"}),
         ("/_matrix/client/v1/rooms/%21room%3Aexample.org/relations/%24root/m.thread",
-         {"dir": "b", "limit": "5", "from": "trigger-boundary"}),
+         {"dir": "b", "limit": "5", "from": "messages-boundary"}),
     ]
 
 
@@ -1919,7 +1925,7 @@ async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
     ]
     decrypt.assert_awaited_once()
     assert [call.kwargs["query_params"] for call in client.api.request.await_args_list] == [
-        {"limit": "0"}, {"limit": "4"},
+        {"limit": "0"}, {"limit": "8"},
     ]
 
 
@@ -1931,16 +1937,12 @@ async def test_thread_fetch_uses_anchored_context_when_relations_rejects_cursor(
     client = MagicMock()
     client.api.request = AsyncMock(side_effect=[
         {"start": "incompatible-context-token"},
-        RuntimeError("invalid cursor"),
-        {"events_before": [
+        {"start": "messages-boundary", "chunk": [
             {"event_id": "$earlier", "sender": "@alice:example.org",
              "content": {"msgtype": "m.text", "body": "Earlier",
              "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
-        ], "events_after": [
-            {"event_id": "$later", "sender": "@bob:example.org",
-             "content": {"msgtype": "m.text", "body": "Later",
-             "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
         ]},
+        RuntimeError("invalid cursor"),
     ])
     client.get_event = AsyncMock(return_value={"event_id": "$root", "content": {}})
 
@@ -1952,9 +1954,108 @@ async def test_thread_fetch_uses_anchored_context_when_relations_rejects_cursor(
     assert entries == [MatrixEventContext("@alice:example.org", "Earlier")]
     assert [call.kwargs["query_params"] for call in client.api.request.await_args_list] == [
         {"limit": "0"},
-        {"dir": "b", "limit": "3", "from": "incompatible-context-token"},
-        {"limit": "3"},
+        {"from": "incompatible-context-token", "dir": "b", "limit": "3"},
+        {"dir": "b", "limit": "3", "from": "messages-boundary"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_catch_up_filters_by_original_relation_after_bundled_edits():
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+    from plugins.platforms.matrix.room_context import fetch_room_entries
+    from plugins.platforms.matrix.thread_context import fetch_thread_entries
+
+    room_id = "!room:example.org"
+    edited_thread = {
+        "event_id": "$child", "sender": "@alice:example.org", "type": "m.room.message",
+        "content": {"msgtype": "m.text", "body": "Original thread text",
+                    "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}},
+        "unsigned": {"m.relations": {"m.replace": {
+            "content": {"m.new_content": {"msgtype": "m.text", "body": "Edited thread text",
+                                          "m.relates_to": {}}},
+        }}},
+    }
+    replacement = {
+        "event_id": "$edit", "sender": "@alice:example.org", "type": "m.room.message",
+        "content": {"msgtype": "m.text", "body": "* Edited text",
+                    "m.relates_to": {"rel_type": "m.replace", "event_id": "$original"}},
+        "unsigned": {"m.relations": {"m.replace": {
+            "content": {"m.new_content": {"msgtype": "m.text", "body": "Edited text",
+                                          "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
+        }}},
+    }
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "trigger-boundary", "events_before": [edited_thread]}
+        if "/messages" in path:
+            return {"start": "trigger-boundary", "chunk": [edited_thread]}
+        return {"chunk": [replacement]}
+
+    client = MagicMock()
+    client.api.request = AsyncMock(side_effect=request)
+    cache = MatrixEventContextCache()
+    root = MatrixEventContext("@alice:example.org", "Root")
+    cache.store(room_id, "$root", root)
+
+    room_entries = await fetch_room_entries(client, cache, room_id, "$current", limit=2)
+    thread_entries = await fetch_thread_entries(
+        client, cache, room_id, "$root", limit=2, before_event_id="$current",
+    )
+
+    assert (room_entries, thread_entries) == ([], [root])
+
+
+@pytest.mark.asyncio
+async def test_catch_up_limit_one_reads_one_earlier_room_event():
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+    from plugins.platforms.matrix.room_context import fetch_room_entries
+
+    room_id = "!room:example.org"
+    earlier = {"event_id": "$earlier", "sender": "@alice:example.org",
+               "content": {"msgtype": "m.text", "body": "Earlier"}}
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "trigger-boundary", "events_before": []}
+        return {"start": "trigger-boundary", "chunk": [earlier]}
+
+    client = MagicMock()
+    client.api.request = AsyncMock(side_effect=request)
+
+    entries = await fetch_room_entries(client, MatrixEventContextCache(), room_id, "$current", limit=1)
+
+    assert entries == [MatrixEventContext("@alice:example.org", "Earlier")]
+
+
+@pytest.mark.asyncio
+async def test_thread_fallback_limit_one_reads_one_earlier_event():
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+    from plugins.platforms.matrix.thread_context import fetch_thread_entries
+
+    room_id = "!room:example.org"
+    earlier = {"event_id": "$earlier", "sender": "@alice:example.org",
+               "content": {"msgtype": "m.text", "body": "Earlier",
+                           "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}}
+
+    async def request(_method, _path, *, query_params):
+        if query_params["limit"] == "0":
+            return {"events_before": []}
+        if query_params["limit"] == "1":
+            return {"events_before": []}
+        return {"events_before": [earlier]}
+
+    client = MagicMock()
+    client.api.request = AsyncMock(side_effect=request)
+    cache = MatrixEventContextCache()
+    root = MatrixEventContext("@alice:example.org", "Root")
+    cache.store(room_id, "$root", root)
+
+    entries = await fetch_thread_entries(
+        client, cache, room_id, "$root", limit=1, before_event_id="$current",
+    )
+
+    assert entries == [root, MatrixEventContext("@alice:example.org", "Earlier")]
 
 
 # ---------------------------------------------------------------------------

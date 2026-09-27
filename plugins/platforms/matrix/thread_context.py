@@ -11,6 +11,7 @@ from urllib.parse import quote
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext,
     MatrixEventContextCache,
+    _content_dict,
     _effective_content,
     _label_body,
     _own_text,
@@ -51,6 +52,7 @@ async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dic
     else:
         event = raw
 
+    original_content = _content_dict(event)
     content, edited = _effective_content(event)
     body = content.get("body")
     if not isinstance(body, str):
@@ -62,7 +64,7 @@ async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dic
     if not text:
         return None
     sender = str(raw.get("sender") or "")
-    return MatrixEventContext(sender, text, is_image=content.get("msgtype") == "m.image"), content
+    return MatrixEventContext(sender, text, is_image=content.get("msgtype") == "m.image"), original_content
 
 
 async def fetch_thread_entries(
@@ -85,6 +87,7 @@ async def fetch_thread_entries(
         f"/_matrix/client/v1/rooms/{quote(room_id, safe='')}"
         f"/relations/{quote(thread_id, safe='')}/m.thread"
     )
+    messages_path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages"
     response: dict | None = None
     event_key = "events_before"
     try:
@@ -93,22 +96,35 @@ async def fetch_thread_entries(
         )
         token = boundary.get("start") if isinstance(boundary, dict) else None
         if isinstance(token, str) and token:
+            room_page = await asyncio.wait_for(
+                client.api.request(
+                    Method.GET, messages_path,
+                    query_params={"from": token, "dir": "b", "limit": str(limit)},
+                ),
+                timeout=10.0,
+            )
+            response = room_page if isinstance(room_page, dict) else None
+            event_key = "chunk"
+            relation_token = room_page.get("start") if isinstance(room_page, dict) else None
             try:
-                response = await asyncio.wait_for(
-                    client.api.request(
-                        Method.GET, path,
-                        query_params={"dir": "b", "limit": str(limit), "from": token},
-                    ),
-                    timeout=10.0,
-                )
-                event_key = "chunk"
+                if isinstance(relation_token, str) and relation_token:
+                    relations_page = await asyncio.wait_for(
+                        client.api.request(
+                            Method.GET, path,
+                            query_params={"dir": "b", "limit": str(limit), "from": relation_token},
+                        ),
+                        timeout=10.0,
+                    )
+                    if isinstance(relations_page, dict) and isinstance(relations_page.get("chunk"), list):
+                        response = relations_page
             except Exception as exc:
                 logger.debug("Matrix: thread cursor rejected for %s in %s: %s", thread_id, room_id, exc)
         if response is None:
             response = await asyncio.wait_for(
-                client.api.request(Method.GET, context_path, query_params={"limit": str(limit)}),
+                client.api.request(Method.GET, context_path, query_params={"limit": str(limit * 2)}),
                 timeout=10.0,
             )
+            event_key = "events_before"
     except Exception as exc:
         logger.debug("Matrix: could not fetch thread %s in %s: %s", thread_id, room_id, exc)
         return []

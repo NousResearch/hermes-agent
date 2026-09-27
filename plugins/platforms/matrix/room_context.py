@@ -26,15 +26,26 @@ async def fetch_room_entries(
         return []
 
     path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/context/{quote(event_id, safe='')}"
+    messages_path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages"
     try:
-        response = await asyncio.wait_for(
-            client.api.request(Method.GET, path, query_params={"limit": str(limit)}), timeout=10.0,
+        boundary = await asyncio.wait_for(
+            client.api.request(Method.GET, path, query_params={"limit": "0"}), timeout=10.0,
         )
+        token = boundary.get("start") if isinstance(boundary, dict) else None
+        if isinstance(token, str) and token:
+            response = await asyncio.wait_for(
+                client.api.request(
+                    Method.GET, messages_path,
+                    query_params={"from": token, "dir": "b", "limit": str(limit)},
+                ), timeout=10.0,
+            )
+            earlier = response.get("chunk") if isinstance(response, dict) else None
+        else:
+            earlier = boundary.get("events_before") if isinstance(boundary, dict) else None
     except Exception as exc:
         logger.debug("Matrix: could not fetch room context for %s in %s: %s", event_id, room_id, exc)
         return []
 
-    earlier = response.get("events_before") if isinstance(response, dict) else None
     if not isinstance(earlier, list):
         return []
 

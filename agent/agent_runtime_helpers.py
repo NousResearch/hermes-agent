@@ -3163,6 +3163,17 @@ _USER_HANDOFF_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 
+def _is_user_handoff_tail(text: str, intent_pattern: re.Pattern) -> bool:
+    match = _USER_HANDOFF_TAIL_RE.search(text)
+    if match is None:
+        return False
+    # A clause separator is not proof the preceding announced work happened.
+    # Preserve the existing detector when that clause itself is an action plan.
+    if text[match.start():match.start() + 1] in {":", "—", "–"}:
+        return not intent_pattern.search(text[:match.start()].rstrip())
+    return True
+
+
 # Content longer than this is a substantive reply, not a dangling ack.
 _TRAILING_CONTINUE_INTENT_MAX_CHARS = 400
 
@@ -3172,7 +3183,9 @@ def trailing_continue_intent(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > _TRAILING_CONTINUE_INTENT_MAX_CHARS:
         return False
-    return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:])) and not _USER_HANDOFF_TAIL_RE.search(t)
+    return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:])) and not _is_user_handoff_tail(
+        t, _TRAILING_CONTINUE_INTENT_RE,
+    )
 
 
 # Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered
@@ -3210,7 +3223,9 @@ def promoted_reasoning_announces_action(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
-    return bool(_PROMOTED_REASONING_PLAN_TAIL_RE.search(t[-240:])) and not _USER_HANDOFF_TAIL_RE.search(t)
+    return bool(_PROMOTED_REASONING_PLAN_TAIL_RE.search(t[-240:])) and not _is_user_handoff_tail(
+        t, _PROMOTED_REASONING_PLAN_TAIL_RE,
+    )
 
 
 _INTENT_ACK_ON = {"true", "always", "yes", "on"}

@@ -40,6 +40,7 @@ def test_real_action_tail_still_detected(detect, text):
 def test_user_handoff_after_clause_separator(detect, separator):
     assert not detect("Options ready" + separator + "Next, I will wait for your decision.")
     assert detect("Options ready" + separator + "Next, I will check the logs.")
+    assert detect("I will now check the logs" + separator + "I will wait for your decision.")
 
 
 @pytest.mark.parametrize("enabled", [True, False])

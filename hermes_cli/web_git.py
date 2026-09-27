@@ -546,6 +546,27 @@ def _sanitize_branch(name: str) -> str:
     return value
 
 
+def _materialize_tracking_ref(root: str, remote: str, branch: str) -> bool:
+    """Ensure ``refs/remotes/<remote>/<branch>`` exists and ``--track`` can wire it.
+
+    A tag-pinned narrow clone maps only the tag in ``remote.<remote>.fetch``, so the tracking
+    refs of every other branch are missing and a by-name fetch writes FETCH_HEAD without
+    creating them. An explicit refspec fetch creates the ref, but ``worktree add --track``
+    and ``branch --set-upstream-to`` still need the *configured* refspec to reverse-map the
+    ref back to a remote branch — so register the branch on the remote additively
+    (``set-branches --add`` keeps any existing refspecs) and fetch through it. The ``+``
+    matches what `hermes update` uses because on a depth-1 clone the new tip need not
+    descend from the old one. Returns whether the tracking ref is available afterwards
+    (fetch failures fall back to the last known ref, or none).
+    """
+    _git(root, ["remote", "set-branches", "--add", remote, branch])
+    _git(
+        root,
+        ["fetch", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"],
+    )
+    return _git(root, ["show-ref", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}"])[0] == 0
+
+
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().lower())
     slug = re.sub(r"^-+|-+$", "", slug)[:40].rstrip("-")
@@ -598,21 +619,42 @@ def _worktree_for_existing(root: str, raw_name: str) -> dict:
     if not requested:
         raise RuntimeError("Branch name is required.")
     # "origin/feature" is a remote-tracking ref, not a branch git can check out — `git worktree add <dir>
-    # origin/feature` detaches HEAD. Create a local branch with the same short name that tracks the remote
+    # origin/feature` detaches HEAD. Create a local branch of the same short name that tracks the remote
     # ref, like `git switch feature` does for a branch on exactly one remote. (Parity with the Electron op;
     # a remote gateway serves this mirror, so the desktop's convert-a-branch flow must behave identically.
     # #81724)
     remote = _remote_of_ref(root, requested)
+    if not remote and "/" in requested:
+        # A tag-pinned narrow clone maps only the tag in remote.<r>.fetch, so the tracking ref of
+        # every other branch is missing and the ref-based reading above misreads "origin/feature"
+        # as a local branch. Register the branch on the remote (additive — the existing refspec
+        # stays) and fetch it; when the remote does not carry the branch either, keep the
+        # local-branch reading so the error stays the familiar one.
+        maybe_remote, maybe_branch = requested.split("/", 1)
+        if _git_line(root, ["remote", "get-url", maybe_remote]):
+            if _materialize_tracking_ref(root, maybe_remote, maybe_branch):
+                remote = maybe_remote
     existing = requested.split("/", 1)[1] if remote else requested
     if not remote and existing == _default_branch(root):
         _git_ok(root, ["switch", existing])
         return {"path": root, "branch": existing, "repoRoot": root}
     target = _unique_dir(os.path.join(root, ".worktrees", _slugify(existing)))
     if remote:
-        # Best-effort freshness; on failure (offline, branch gone) the last known ref is still
-        # there to branch from.
-        _git(root, ["fetch", remote, existing])
-        _git_ok(root, ["worktree", "add", "--track", "-b", existing, target, requested])
+        ref = f"{remote}/{existing}"
+        # `worktree add --track` (and `branch --set-upstream-to`) derive upstream from the
+        # configured remote refspecs; on a tag-pinned narrow clone they map only the tag, so the
+        # wiring dies with "starting point is not a branch" even with a fresh tracking ref. Make
+        # sure the branch is registered on the remote (additive; no-op on a normal clone where the
+        # wildcard refspec already covers it), refresh the ref (best-effort: on failure the last
+        # known one is still there to branch from), then wire upstream explicitly — `--track`
+        # silently skips the wiring instead of failing when the reverse-map is impossible.
+        _materialize_tracking_ref(root, remote, existing)
+        if (
+            _git(root, ["worktree", "add", "--track", "-b", existing, target, ref])[0]
+            != 0
+        ):
+            _git_ok(root, ["worktree", "add", "-b", existing, target, ref])
+            _git(root, ["branch", f"--set-upstream-to={ref}", existing])
     else:
         _git_ok(root, ["worktree", "add", target, existing])
     return {"path": target, "branch": existing, "repoRoot": root}

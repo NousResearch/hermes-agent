@@ -30,6 +30,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
+
+# Session-stream run lifecycle helpers (detach/drain + durable active-run
+# control) extracted out of this godfile — see gateway/platforms/api_server_session_stream.py.
+from gateway.platforms.api_server_session_stream import (
+    claim_session_run_or_conflict,
+    detach_session_stream_task_on_disconnect,
+    drain_session_stream_task_on_disconnect,
+    run_already_active_error,
+    session_run_key,
+)
+
 _PROFILE_REJECTED = object()
 
 
@@ -2968,11 +2979,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _session_response(session: Dict[str, Any]) -> Dict[str, Any]:
         """Return a stable, client-safe session representation."""
         safe_keys = (
-            "id", "source", "user_id", "model", "title", "started_at", "ended_at", "end_reason",
-            "message_count", "tool_call_count", "input_tokens", "output_tokens",
-            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
-            "actual_cost_usd", "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived", "hidden")
+            "id", "source", "user_id", "model", "title", "started_at", "ended_at",
+            "end_reason", "message_count", "tool_call_count", "input_tokens",
+            "output_tokens", "cache_read_tokens", "cache_write_tokens",
+            "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
+            "api_call_count", "parent_session_id", "last_active", "preview",
+            "_lineage_root_id", "pinned", "archived", "hidden",
+            "active_run_id", "active_run_status",
+        )
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # SQLite stores the flags as 0/1.
         payload.update(
@@ -3569,6 +3583,52 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
              "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage)},
             headers=headers)
 
+    async def _claim_session_active_run_async(
+        self, session_id: str, run_id: str, run_key: str, status: str
+    ) -> Optional[str]:
+        """Off-loop claim of the session's active-run slot (see SessionDB)."""
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return None
+        return await asyncio.to_thread(
+            db.claim_session_active_run, session_id, run_id, run_key, status
+        )
+
+    async def _set_session_active_run_status_async(
+        self, session_id: str, run_id: str, status: str
+    ) -> bool:
+        """Off-loop coarse-status update, guarded by run id."""
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return False
+        return await asyncio.to_thread(
+            db.set_session_active_run_status, session_id, run_id, status
+        )
+
+    async def _clear_session_active_run_async(
+        self, session_id: str, expected_run_id: Optional[str] = None
+    ) -> bool:
+        """Off-loop clear of the session's active-run slot on terminal."""
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return False
+        return await asyncio.to_thread(
+            db.clear_session_active_run, session_id, expected_run_id
+        )
+
+    def _session_run_is_live(self, run_id: str) -> bool:
+        """Whether a run id names a still-executing server-side run.
+
+        ``_active_run_agents`` is the authoritative "the executor-backed turn
+        is still alive" signal (a detached run stays registered until the turn
+        exits). ``_run_statuses`` with a non-terminal status covers the brief
+        queued window before the agent is registered.
+        """
+        if run_id in self._active_run_agents:
+            return True
+        status = self._run_statuses.get(run_id)
+        return bool(status and status.get("status") in ("queued", "running", "stopping"))
+
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
@@ -3596,7 +3656,55 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # See #93689.
         self._run_owners[run_id] = self._run_idempotency_scope(request)
         self._set_run_status(
-            run_id, "queued", session_id=session_id, model=ctx["body"].get("model", self._model_name))
+            run_id,
+            "queued",
+            session_id=session_id,
+            model=ctx["body"].get("model", self._model_name),
+        )
+        # Durable active-run claim (PR #96507 P1): the session row carries the
+        # live run id + immutable request fingerprint, so a client that lost the
+        # SSE body can rediscover the run via GET /api/sessions/{id} and a retry
+        # of the same admitted request is met with a deterministic conflict
+        # instead of a second execution. The in-memory "queued" registration
+        # above precedes the claim, so a concurrent loser observes the winner's
+        # run as live (queued) rather than mistaking it for a stale marker.
+        run_key = session_run_key(
+            session_id=session_id,
+            user_message=user_message,
+            system_prompt=ctx["body"].get("system_message") or ctx["body"].get("instructions"),
+            idempotency_header=request.headers.get("Idempotency-Key"),
+        )
+        conflict_run_id = await claim_session_run_or_conflict(
+            self, session_id, run_id, run_key
+        )
+        if conflict_run_id:
+            return web.json_response(
+                run_already_active_error(conflict_run_id), status=409
+            )
+        seq = 0
+
+        def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+            nonlocal seq
+            seq += 1
+            payload.setdefault("session_id", session_id)
+            payload.setdefault("run_id", run_id)
+            payload.setdefault("seq", seq)
+            payload.setdefault("ts", time.time())
+            return name, payload
+
+        def _enqueue(name: str, payload: Dict[str, Any]) -> None:
+            event = _event_payload(name, payload)
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+            try:
+                if running_loop is loop:
+                    queue.put_nowait(event)
+                else:
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+            except RuntimeError:
+                pass
 
         def _delta(delta: str) -> None:
             if delta:
@@ -3628,6 +3736,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "user_message": {"role": "user", "content": user_message},
                     "runtime": runtime_meta}))
                 self._set_run_status(run_id, "running", last_event="run.started")
+                await self._set_session_active_run_status_async(session_id, run_id, "running")
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
@@ -3667,6 +3776,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
                 self._release_run_owner_if_forgotten(run_id)
+                # The run reached a terminal state (completed/failed/cancelled)
+                # — release the session's durable active-run slot so a later
+                # request can start fresh. Guarded by run id so a superseding
+                # run that already claimed the slot is never clobbered.
+                with suppress(Exception):
+                    await self._clear_session_active_run_async(
+                        session_id, expected_run_id=run_id
+                    )
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
 
@@ -3686,10 +3803,22 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 name, payload = item
                 await response.write(_sse_frame(payload, event=name, ensure_ascii=False))
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            await self._drain_session_stream_task_on_disconnect(
-                run_id, task, interrupt_message="SSE client disconnected", shield_wait=False)
-            logger.info("Session SSE client disconnected; interrupted live run %s", run_id)
+            # A dropped SSE connection is only a dead transport, not a stop
+            # signal: the session endpoint always persists to state.db, so
+            # leave the agent running server-side and drain the now-unread
+            # queue (ref issue #15026 — for persisted turns, SSE is only a
+            # transport and disconnect must not cancel execution). The Stop
+            # button interrupts explicitly via POST /v1/runs/{run_id}/stop.
+            await self._detach_session_stream_task_on_disconnect(run_id, queue)
+            logger.info(
+                "Session SSE client disconnected; detached live run %s "
+                "(stop via /v1/runs/%s/stop)",
+                run_id,
+                run_id,
+            )
         except asyncio.CancelledError:
+            # Task cancellation (server shutdown) still interrupts: the gateway
+            # is going away, so letting the turn finish is pointless.
             await self._drain_session_stream_task_on_disconnect(
                 run_id, task, interrupt_message="SSE task cancelled", shield_wait=True)
             logger.info("Session SSE task cancelled; drained live run %s", run_id)
@@ -3714,18 +3843,26 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, run_id: str, task: "asyncio.Task", *, interrupt_message: str, shield_wait: bool
     ) -> None:
         """Preserve live run control refs until the executor-backed turn actually exits."""
-        agent = self._active_run_agents.get(run_id)
-        if agent is None:
-            if not task.done():
-                task.cancel()
-                with suppress(Exception):
-                    await task
-            return
-        with suppress(Exception):
-            agent.interrupt(interrupt_message)
-        if not task.done():
-            with suppress(Exception):
-                await (asyncio.shield(task) if shield_wait else task)
+        return await drain_session_stream_task_on_disconnect(
+            self,
+            run_id,
+            task,
+            interrupt_message=interrupt_message,
+            shield_wait=shield_wait,
+        )
+
+    async def _detach_session_stream_task_on_disconnect(
+        self,
+        run_id: str,
+        queue: "asyncio.Queue",
+    ) -> None:
+        """Detach a client-disconnected session stream without interrupting it.
+
+        Thin delegate — the drain logic lives in
+        ``gateway/platforms/api_server_session_stream.py`` (godfile gate,
+        epic #78647 / precedent #83546).
+        """
+        return await detach_session_stream_task_on_disconnect(self, run_id, queue)
 
     @_require_auth
     async def _handle_session_model_lock(self, request: "web.Request") -> "web.Response":

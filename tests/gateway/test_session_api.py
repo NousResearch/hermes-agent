@@ -1,6 +1,7 @@
 """Focused tests for API server session-control endpoints."""
 
 import asyncio
+import json
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -288,7 +289,7 @@ async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypat
 async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
     adapter, session_db
 ):
-    """Disconnects must interrupt the live run without dropping its control refs early."""
+    """Disconnect DETACHES the live run (no interrupt) without dropping control refs early."""
     session_id = session_db.create_session("disconnect-stream-session", "api_server")
     run_started = threading.Event()
     interrupt_called = threading.Event()
@@ -357,21 +358,27 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
         assert run_started.is_set()
         run_id = next(iter(adapter._run_statuses))
 
+        # Detach-on-disconnect: the dead socket must NOT interrupt the agent —
+        # the run stays live server-side, still stoppable/steerable, and the
+        # SSE loop exits without cancelling the turn.
         for _ in range(40):
-            if interrupt_called.is_set():
+            if not handler_task.done():
                 break
             await asyncio.sleep(0.05)
+        await asyncio.wait_for(handler_task, timeout=5)
 
-        assert interrupt_called.is_set()
+        assert not interrupt_called.is_set()
         assert run_id in adapter._active_run_agents
         # Not in _active_run_tasks: session-stream turns are counted via
         # _inflight_agent_runs; a task entry would double-count them in the
         # shutdown drain (active_agent_work_count).
         assert run_id not in adapter._active_run_tasks
-        assert not handler_task.done()
 
         allow_finish.set()
-        await handler_task
+        for _ in range(60):
+            if run_id not in adapter._active_run_agents:
+                break
+            await asyncio.sleep(0.05)
 
     assert run_id not in adapter._active_run_agents
 
@@ -1216,7 +1223,14 @@ async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
         allow_finish.set()
         await handler_task
 
+    # With detach-on-disconnect the handler may return while the detached
+    # agent is still unwinding; wait for the run to reach a terminal status.
     record = adapter._run_statuses[run_id]
+    for _ in range(60):
+        record = adapter._run_statuses[run_id]
+        if record["status"] in ("completed", "failed", "cancelled"):
+            break
+        await asyncio.sleep(0.05)
     assert record["status"] == "completed"
     # The whole point: the text survived the dead socket.
     assert record.get("output") == "the answer worth keeping"
@@ -1294,3 +1308,421 @@ async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapt
     monkeypatch.setattr("run_agent.AIAgent", CapturingAgent)
     adapter._create_agent(session_id="gated", interim_assistant_callback=lambda *_a, **_k: None)
     assert captured["interim_assistant_callback"] is None
+
+
+# ---------------------------------------------------------------------------
+# Durable active-run control (PR #96507 P1): the session stream mints a
+# recoverable run whose identity is persisted on the session row and exposed
+# independently of the SSE body.
+# ---------------------------------------------------------------------------
+
+
+class _FailFirstWriteStreamResponse:
+    """StreamResponse double whose very first write raises ConnectionResetError."""
+
+    async def prepare(self, request):
+        del request
+
+    async def write(self, payload):
+        del payload
+        raise ConnectionResetError("simulated first-write failure")
+
+
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_disconnect_detaches_without_interrupt(
+    adapter, session_db
+):
+    """A client disconnect detaches the turn instead of interrupting it.
+
+    The session endpoint always persists to state.db, so a dropped SSE
+    connection is only a dead transport (ref #15026). The agent keeps running
+    server-side and its run stays registered for /v1/runs/{run_id}/stop until
+    the executor-backed turn actually finishes.
+    """
+    session_id = session_db.create_session("disconnect-stream-session", "api_server")
+    run_started = threading.Event()
+    interrupt_called = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            interrupt_called.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    with patch.object(
+        adapter,
+        "_get_existing_session_or_404",
+        return_value=({"id": session_id}, None),
+    ), patch.object(
+        adapter,
+        "_read_json_body",
+        return_value=({"message": "stream please"}, None),
+    ), patch.object(
+        adapter,
+        "_create_agent",
+        side_effect=_create_agent,
+    ), patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        return_value=DisconnectingStreamResponse(),
+    ):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        # The disconnect makes the handler detach and return promptly, but must
+        # NOT interrupt the agent.
+        await asyncio.wait_for(handler_task, timeout=5)
+        assert not interrupt_called.is_set()
+
+        # The run stays registered while the agent is still running, so
+        # /v1/runs/{run_id}/stop can still halt it.
+        assert run_id in adapter._active_run_agents
+        # Not in _active_run_tasks: session-stream turns are counted via
+        # _inflight_agent_runs; a task entry would double-count them in the
+        # shutdown drain (active_agent_work_count).
+        assert run_id not in adapter._active_run_tasks
+
+        # Let the detached turn finish and confirm the control ref is released.
+        allow_finish.set()
+        for _ in range(60):
+            if run_id not in adapter._active_run_agents:
+                break
+            await asyncio.sleep(0.05)
+
+    assert run_id not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_first_write_fails_rediscover_and_stop(adapter, session_db):
+    """Regression 1: a first-SSE-write failure must not stop the agent.
+
+    The agent keeps running server-side, the same authenticated client can
+    rediscover the run via ``GET /api/sessions/{id}`` (``active_run_id``), and
+    can then stop it via ``POST /v1/runs/{run_id}/stop``.
+    """
+    session_id = session_db.create_session("first-write-fail-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    interrupt_called = threading.Event()
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            interrupt_called.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    run_id = None
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "stream please"}, None)), \
+            patch.object(adapter, "_create_agent", side_effect=_create_agent), \
+            patch("gateway.platforms.api_server.web.StreamResponse", return_value=_FailFirstWriteStreamResponse()):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        # The first-write failure makes the handler detach and return promptly,
+        # but must NOT interrupt the agent.
+        await asyncio.wait_for(handler_task, timeout=5)
+        assert not interrupt_called.is_set()
+
+    # Rediscovery: the session resource exposes the live run id (real session
+    # row, unpatched, now carries the durable active_run_id).
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}")
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert payload["session"]["active_run_id"] == run_id
+    assert payload["session"]["active_run_status"] == "running"
+    assert run_id in adapter._active_run_agents
+
+    # Stop: the rediscovered run id is addressable via /v1/runs/{run_id}/stop.
+    stop_request = MagicMock()
+    stop_request.match_info = {"run_id": run_id}
+    stop_resp = await adapter._handle_stop_run(stop_request)
+    assert stop_resp.status == 200
+    assert interrupt_called.is_set()
+
+    # Let the interrupted turn unwind and release its control refs.
+    allow_finish.set()
+    for _ in range(60):
+        if run_id not in adapter._active_run_agents:
+            break
+        await asyncio.sleep(0.05)
+
+    assert run_id not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_retry_conflicts_while_active(adapter, session_db):
+    """Regression 2: disconnect + retry of the same session/message yields exactly
+    one execution — the retry gets a deterministic ``run_already_active`` conflict
+    instead of starting a second agent."""
+    session_id = session_db.create_session("retry-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    agents_created = {"count": 0}
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            pass
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    def _create_agent(**kwargs):
+        agents_created["count"] += 1
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    request1 = MagicMock()
+    request1.headers = {}
+    request1.match_info = {"session_id": session_id}
+
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "stream please"}, None)), \
+            patch.object(adapter, "_create_agent", side_effect=_create_agent), \
+            patch("gateway.platforms.api_server.web.StreamResponse", return_value=DisconnectingStreamResponse()):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request1))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        # Detach on disconnect; the run stays live.
+        await asyncio.wait_for(handler_task, timeout=5)
+        assert run_id in adapter._active_run_agents
+
+        # Retry the same session/message: deterministic conflict, no second agent.
+        request2 = MagicMock()
+        request2.headers = {}
+        request2.match_info = {"session_id": session_id}
+        with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+                patch.object(adapter, "_read_json_body", return_value=({"message": "stream please"}, None)):
+            retry_resp = await adapter._handle_session_chat_stream(request2)
+
+        assert retry_resp.status == 409
+        retry_payload = json.loads(retry_resp.text)
+        assert retry_payload["error"]["code"] == "run_already_active"
+        assert retry_payload["run_id"] == run_id
+        assert agents_created["count"] == 1
+
+        allow_finish.set()
+        for _ in range(60):
+            if run_id not in adapter._active_run_agents:
+                break
+            await asyncio.sleep(0.05)
+
+    assert run_id not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_detached_approval_stays_discoverable(adapter, session_db):
+    """Regression 3: a detached run held in approval stays discoverable via the
+    session resource and addressable via /v1/runs/{run_id} after its original
+    subscriber is gone."""
+    session_id = session_db.create_session("detached-approval-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            pass
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            # Simulate a long-lived approval wait: the agent parks here until
+            # the test releases it.
+            allow_finish.wait(timeout=5)
+            return {"final_response": "approved and done", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    run_id = None
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "needs approval"}, None)), \
+            patch.object(adapter, "_create_agent", side_effect=_create_agent), \
+            patch("gateway.platforms.api_server.web.StreamResponse", return_value=DisconnectingStreamResponse()):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        # Detach on disconnect; mark the run as parked in approval.
+        await asyncio.wait_for(handler_task, timeout=5)
+        adapter._set_run_status(run_id, "running", last_event="approval.pending")
+
+    # Discoverable after the subscriber is gone (real session row, unpatched).
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}")
+        assert resp.status == 200
+        payload = await resp.json()
+    assert payload["session"]["active_run_id"] == run_id
+
+    # Addressable via the run resource.
+    get_run_request = MagicMock()
+    get_run_request.match_info = {"run_id": run_id}
+    get_run_resp = await adapter._handle_get_run(get_run_request)
+    assert get_run_resp.status == 200
+    assert json.loads(get_run_resp.text)["run_id"] == run_id
+
+    # Still registered for stop/steer/approval until the turn exits.
+    assert run_id in adapter._active_run_agents
+
+    allow_finish.set()
+    for _ in range(60):
+        if run_id not in adapter._active_run_agents:
+            break
+        await asyncio.sleep(0.05)
+
+    assert run_id not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_completion_clears_active_run(adapter, session_db):
+    """A normally-completed stream releases the durable active-run slot, so a
+    later request on the same session starts fresh instead of conflicting."""
+    session_id = session_db.create_session("completed-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("done")
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "hi"})
+            assert resp.status == 200
+            await resp.text()
+
+            get_resp = await cli.get(f"/api/sessions/{session_id}")
+            assert get_resp.status == 200
+            payload = await get_resp.json()
+
+    assert payload["session"].get("active_run_id") is None
+    assert payload["session"].get("active_run_status") is None

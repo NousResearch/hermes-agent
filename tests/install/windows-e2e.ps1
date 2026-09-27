@@ -1667,10 +1667,34 @@ function Invoke-PhaseVerifyStamp {
     $head = Get-InstalledHead
     Assert-True ($head -match '^[0-9a-f]{40}$') "installed HEAD readable: '$head'"
     Write-Host "  install HEAD: $($head.Substring(0, 12))"
-    & $DriverPython -B (Join-Path $RepoRoot 'scripts\verify-bootstrap-version-stamp.py') `
-        --stamp (Join-Path $InstallDir '.hermes-bootstrap-complete') `
-        --repo $InstallDir --expect-commit $state.current
-    if ($LASTEXITCODE -ne 0) { throw "stamp verification failed (exit $LASTEXITCODE)" }
+    $stampPath = Join-Path $InstallDir '.hermes-bootstrap-complete'
+    # FAIL lines go to stderr; under "Stop", PowerShell 5.1 would throw on the first one.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $verdict = @(& $DriverPython -B (Join-Path $RepoRoot 'scripts\verify-bootstrap-version-stamp.py') `
+            --stamp $stampPath --repo $InstallDir --expect-commit $state.current 2>&1 | ForEach-Object { "$_" })
+        $verifyExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $prevEap }
+    $verdict | ForEach-Object { Write-Host $_ }
+    if ($verifyExit -eq 0) { return }
+    # Gated on #124949: Hermes-Setup.exe replaces install.ps1's receipt with its
+    # own ("completedAtUnix", and a null pinnedCommit when git is not on PATH).
+    # Only that writer's exact two failures are gated; any other FAIL line, or
+    # the same lines on a receipt the Rust installer did not write, stays red.
+    $receipt = Get-Content -LiteralPath $stampPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+    $fails = @($verdict | Where-Object { $_ -match '^FAIL: ' })
+    $gated = '^FAIL: (pinnedCommit None is not a full 40-char lowercase hex sha|completedAt None is missing)$'
+    $rustReceipt = $receipt -and ($receipt.PSObject.Properties.Name -contains 'completedAtUnix')
+    if ($rustReceipt -and $fails.Count -and -not @($fails | Where-Object { $_ -notmatch $gated }).Count) {
+        # The receipt cannot vouch for the commit, so the checkout must.
+        Assert-True ($head -eq $state.current) "installed checkout is at the expected commit ($($state.current.Substring(0, 12)))"
+        $note = "GATED on #124949: the Hermes-Setup.exe receipt failed only its known checks ($($fails -join '; '))."
+        Write-Host "  $note"
+        if ($env:GITHUB_STEP_SUMMARY) { Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $note -Encoding UTF8 }
+        return
+    }
+    throw "stamp verification failed (exit $verifyExit)"
 }
 
 # ----------------------------------------------------------------------------

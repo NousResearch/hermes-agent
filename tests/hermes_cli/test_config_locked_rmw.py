@@ -117,3 +117,23 @@ def test_two_processes_writing_config_concurrently_lose_no_keys(tmp_path):
     assert after.get("tui_keys") == {f"k{i}": i for i in range(40)}
     assert after.get("cli_keys") == {f"k{i}": i for i in range(40)}
     assert after["approvals"]["mode"] == "manual"
+
+
+def test_a_stale_dict_keeps_its_snapshot_while_many_newer_loaded_dicts_are_alive(home):
+    """Provenance must not depend on how many other loaded configs are alive: a registry that evicted
+    past a count cap saved the oldest caller's dict whole again, reverting a later write."""
+    from hermes_cli.config import load_config, save_config
+
+    cfg_path = home / "config.yaml"
+    cfg_path.write_text("approvals:\n  destructive_slash_confirm: true\n", encoding="utf-8")
+    stale = load_config()
+    alive = [load_config() for _ in range(200)]
+
+    _interleaved_write("save_config_value")
+    stale.setdefault("a_writer", {})["key"] = _A_SENTINEL
+    save_config(stale)
+
+    after = _disk(cfg_path)
+    assert after["approvals"]["destructive_slash_confirm"] is False, "the interleaved write was reverted"
+    assert after["a_writer"]["key"] == _A_SENTINEL
+    assert len(alive) == 200

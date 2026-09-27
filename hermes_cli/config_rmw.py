@@ -26,7 +26,6 @@ import os
 import sys
 import threading
 import time
-from collections import OrderedDict
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, Mapping, Optional, Tuple
@@ -43,12 +42,13 @@ _LOCK_TIMEOUT_SECONDS = 30.0
 _held_depth: Dict[str, int] = {}
 _UNLOCKABLE_WARNED: set = set()
 
-# id(served dict) -> (served dict, snapshot it was served from, real config path, form). Entries whose
-# dict nobody but this registry references any more are pruned on every insert, so the registry
-# keeps no config its callers dropped; the cap bounds dicts callers still hold. An evicted dict is
-# saved whole (the pre-fix behaviour), so eviction never makes a write wrong, only unprotected.
-_TRACKED_MAX = 64
-_tracked: "OrderedDict[int, Tuple[dict, Any, str, str]]" = OrderedDict()
+# id(served dict) -> (served dict, snapshot it was served from, real config path, form). An entry
+# lives exactly as long as a caller holds its dict: entries only this registry still references are
+# pruned on every insert. There is deliberately no count cap. Evicting a dict its caller still holds
+# would silently turn that caller's next save back into the whole-document write that reverts
+# concurrent updates; a plain dict cannot be weakly referenced, so the refcount prune is how the
+# registry lets go, and its size is bounded by what callers hold anyway.
+_tracked: "Dict[int, Tuple[dict, Any, str, str]]" = {}
 _tracked_lock = threading.Lock()
 
 _DELETED = object()
@@ -168,9 +168,6 @@ def track_served(served: Any, snapshot: Any, config_path: Path, form: str) -> No
         for key in [k for k, entry in _tracked.items() if sys.getrefcount(entry[0]) <= _ORPHAN_REFCOUNT]:
             del _tracked[key]
         _tracked[id(served)] = (served, snapshot, real, form)
-        _tracked.move_to_end(id(served))
-        while len(_tracked) > _TRACKED_MAX:
-            _tracked.popitem(last=False)
 
 
 def _tracked_entry(data: Any, config_path: Path) -> Optional[Tuple[dict, Any, str, str]]:

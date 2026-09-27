@@ -242,6 +242,51 @@ def test_row_deleted_during_the_wait_keeps_the_caller_history(monkeypatch):
     assert observed["history"] is seed
 
 
+def _run_with_unreadable_row(monkeypatch, *, waited):
+    """Run one turn whose session row read fails after the lease is admitted."""
+    db = _DB()
+
+    def locked_get_session(_session_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    def acquire(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        if waited:
+            kwargs["on_wait"](0.0)
+        return True
+
+    db.get_session = locked_get_session
+    db.acquire_session_turn_lease = acquire
+    db.get_messages_as_conversation = lambda *_a, **_k: []
+    agent = _agent_with_db(db, session_id="client-id", platform="api_server")
+    agent._session_db_created = False
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        observed["row_known"] = _agent._session_db_created
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    seed = [{"role": "user", "content": "caller history"}]
+    AIAgent.run_conversation(agent, "work", conversation_history=seed)
+    return observed, seed
+
+
+def test_unreadable_row_is_not_recorded_as_existing(monkeypatch):
+    """A failed read proves nothing, so the row create (an upsert) must still be attempted."""
+    observed, seed = _run_with_unreadable_row(monkeypatch, waited=False)
+
+    assert observed["row_known"] is False
+    assert observed["history"] is seed
+
+
+def test_unreadable_row_with_nothing_to_reload_keeps_the_caller_history(monkeypatch):
+    observed, seed = _run_with_unreadable_row(monkeypatch, waited=True)
+
+    assert observed["history"] is seed
+
+
 def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkeypatch):
     """A client-addressed session id has no row until its first turn writes one; a second
     turn arriving meanwhile must wait for that turn and see its rows, not interleave."""

@@ -1078,7 +1078,7 @@ try:
         create_job_with_scheduler_registration as _cron_create)
     _CRON_AVAILABLE = True
 except ImportError:
-    _cron_list = _cron_get = _cron_update = _cron_remove = None
+    _cron_list = _cron_get = _cron_create = _cron_update = _cron_remove = None
     _cron_pause = _cron_resume = _cron_trigger = _cron_read_output = None
     _cron_list_executions = None
 

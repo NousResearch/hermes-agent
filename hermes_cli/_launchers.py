@@ -74,29 +74,31 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
     if resolve_store_python(root) is None:
         return runtime_command(root, args, module=module, python=python, home=home)
     launcher = _published_launcher(root)
-    if launcher is None:
-        # A store tool alone does not make this root a published source
-        # install: PM environment workspace copies resolve the same store
-        # through their sibling manifest, but never run the publication
-        # step, so ``.hermes/bin`` does not exist there. Embedding the
-        # missing path would brick every persisted definition that quotes
-        # it (launchd plist, systemd unit) with a deferred, silent exec
-        # failure (#125043). Fall back to the interpreter form — the same
-        # shape the launcher itself wraps — which is valid everywhere.
-        return runtime_command(root, args, module=module, python=python, home=home)
-    if _recorded_venv_for_root(root) is None:
-        # Published but not activatable through this tree: the runtime facts
-        # are keyed to the install that committed the venv (the checkout),
-        # not this workspace copy, so the launcher dies with "no dependency
-        # environment is committed" (#125375). Resolve the entry point from
-        # the environment that actually owns it.
-        entry = _committed_environment_command(_facts_owner_root(root)) or _committed_environment_command(root)
+    recorded = _recorded_venv_for_root(root)
+    if launcher is not None and recorded is not None:
+        # The normal published-checkout flow: the launcher is activatable
+        # through this tree's own committed facts.
+        prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
+        return [str(launcher), *prefix, *args]
+    if recorded is None:
+        # Not activatable through this tree: the runtime facts are keyed to
+        # the install that committed the venv (the checkout), not this
+        # workspace copy, so the launcher and any root-bound form die with
+        # "no dependency environment is committed" (#125375). Resolve the
+        # entry point from the environment that actually owns it — the
+        # recorded owner first, then this root's own generation sibling.
+        entry = (_committed_environment_command(_facts_owner_root(root))
+                 or _committed_environment_command(root)
+                 or _sibling_generation_entry(root))
         if entry is not None:
             prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
             return [str(entry), *prefix, *args]
-        return runtime_command(root, args, module=module, python=python, home=home)
-    prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
-    return [str(launcher), *prefix, *args]
+    # No published launcher (#125043), or one whose tree cannot activate and
+    # no owner record resolves: the interpreter bootstrap form — the same
+    # shape the launcher itself wraps. Where the tree genuinely has no
+    # committed environment this fails at activation with the actionable
+    # ``pm repair`` message instead of a deferred, silent exec failure.
+    return runtime_command(root, args, module=module, python=python, home=home)
 
 
 def _recorded_venv_for_root(root: Path) -> Path | None:
@@ -134,6 +136,30 @@ def _committed_environment_command(root: Path) -> Path | None:
         return script
     interpreter = bin_dir / ("python.exe" if _is_windows() else "python")
     return interpreter if interpreter.is_file() else None
+
+
+def _sibling_generation_entry(root: Path) -> Path | None:
+    """The entry point living in *root*'s own PM generation layout.
+
+    Generations are materialized as ``environments/<id>/{venv,workspace}``
+    (``pm/packages.py``); a workspace copy inside one can reach the
+    sibling venv's console script even when no facts record exists for
+    the root — the exact shape of #125375's last-resort branch, where
+    binding the interpreter form to the workspace dies with "no
+    dependency environment is committed" just like the dead shim did.
+    """
+    workspace = Path(root).resolve()
+    generation = workspace.parent
+    venv = generation / "venv"
+    if workspace.name != "workspace" or not (venv / "pyvenv.cfg").is_file():
+        return None
+    bin_dir = venv / ("Scripts" if _is_windows() else "bin")
+    script = bin_dir / ("hermes.exe" if _is_windows() else "hermes")
+    # Script only: the venv interpreter cannot take the entry point's
+    # ``--run-module`` flag or positional subcommand, so a script-less venv
+    # falls through to the interpreter bootstrap (whose activation error
+    # points at ``pm repair``) rather than a command that fails differently.
+    return script if script.is_file() and os.access(script, os.X_OK) else None
 
 
 def _facts_owner_root(root: Path) -> Path:

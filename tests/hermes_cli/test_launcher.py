@@ -151,3 +151,42 @@ def test_installation_command_owner_without_record_falls_back_to_interpreter(mon
 
     command = _launchers.installation_command(workspace, ["gateway", "run"])
     assert command[0] == "/usr/bin/python3" and command[1:3] == ["-I", "-c"]
+
+
+def test_installation_command_generation_workspace_last_resort_uses_sibling_venv(monkeypatch, tmp_path):
+    """#125375 follow-up: with no facts record anywhere, a generation workspace
+    root must still resolve the sibling venv's entry point instead of the
+    interpreter form bound to the workspace (which dies at activation exactly
+    like the dead shim it replaced — the workspace is not the recorded root)."""
+    from hermes_cli import _launchers
+
+    import pm.environments as _pmenv
+    monkeypatch.setattr(_pmenv, "installs_root", lambda: tmp_path / "installs")
+    generation = tmp_path / "installs" / "ee2f073f78aff6f9" / "environments" / "525b471e"
+    workspace = generation / "workspace"
+    venv = generation / "venv"
+    for d in (workspace, venv / "bin"):
+        d.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    script = venv / "bin" / "hermes"
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: Path("/usr/bin/python3"))
+    monkeypatch.setattr(_launchers, "_facts_owner_root", lambda root: tmp_path / "nowhere")
+
+    command = _launchers.installation_command(workspace, ["gateway", "run"])
+    assert command[0] == str(script), "sibling venv console script, not a workspace-bound interpreter form"
+    assert command[-2:] == ["gateway", "run"]
+
+    # Module form keeps the --run-module flag.
+    module_cmd = _launchers.installation_command(workspace, module="gateway.cgroup_cleanup")
+    assert module_cmd[:2] == [str(script), "--run-module"]
+
+    # A plain directory named "workspace" without the generation layout (no
+    # sibling venv/pyvenv.cfg) must NOT resolve a bogus entry — the
+    # interpreter form stays the answer there.
+    plain = tmp_path / "plain" / "workspace"
+    plain.mkdir(parents=True)
+    plain_command = _launchers.installation_command(plain, ["gateway", "run"])
+    assert plain_command[0] == "/usr/bin/python3" and plain_command[1:3] == ["-I", "-c"]

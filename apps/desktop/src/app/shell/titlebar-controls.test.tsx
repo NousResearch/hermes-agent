@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
+import { $productShellNav } from '@/store/product-shell'
 
 import { ROUTES_AREA } from '../routes'
 
@@ -28,6 +29,7 @@ describe('TitlebarControls fixed clusters', () => {
   let dispose: () => void
 
   beforeEach(() => {
+    $productShellNav.set(false)
     dispose = registry.registerMany([
       {
         area: ROUTES_AREA,
@@ -44,6 +46,7 @@ describe('TitlebarControls fixed clusters', () => {
   })
 
   afterEach(() => {
+    $productShellNav.set(false)
     dispose()
     cleanup()
   })
@@ -68,6 +71,14 @@ describe('TitlebarControls fixed clusters', () => {
 
     expect(windowControls()).not.toBeNull()
     expect(appControls()).not.toBeNull()
+  })
+
+  it('lets the Agent Czesiek rail own navigation instead of duplicating titlebar tools', () => {
+    $productShellNav.set(true)
+    renderControls('/')
+
+    expect(windowControls()).toBeNull()
+    expect(appControls()).toBeNull()
   })
 
   it('hides the app clusters on an overlay', () => {

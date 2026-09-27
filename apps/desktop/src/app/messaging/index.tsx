@@ -128,8 +128,12 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   }
 }
 
+// The gateway keeps every adapter available; the Czesiek setup list starts
+// with channels people are most likely to use in Poland and Europe.
+const FEATURED_PLATFORM_IDS = new Set(['telegram', 'whatsapp', 'bluebubbles', 'signal'])
+
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const m = t.messaging
   // Shared settings "Applies to" scope, request-shaped (undefined → follow
   // the active profile; the API helpers treat null as "target primary").
@@ -150,6 +154,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [pendingRevoke, setPendingRevoke] = useState<null | PairingUser>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
+  const [showAllPlatforms, setShowAllPlatforms] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
   const scopeGenerationRef = useRef(0)
@@ -162,7 +167,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     scopeGenerationRef.current += 1
   }
 
-  const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
+  const platformIds = useMemo(() => {
+    const ordered = platforms ?? []
+
+    return [
+      ...ordered.filter(platform => FEATURED_PLATFORM_IDS.has(platform.id)),
+      ...ordered.filter(platform => !FEATURED_PLATFORM_IDS.has(platform.id))
+    ].map(platform => platform.id)
+  }, [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
   const restartGatewayNow = useCallback(async () => {
@@ -327,16 +339,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     const q = normalize(query)
 
-    if (!q) {
-      return platforms
-    }
+    const showAdvanced = showAllPlatforms || (Boolean(selectedId) && !FEATURED_PLATFORM_IDS.has(selectedId))
 
     return platforms.filter(platform =>
-      [platform.id, platform.name, platform.description, platform.state]
+      (showAdvanced || FEATURED_PLATFORM_IDS.has(platform.id)) &&
+      (!q || [platform.id, platform.name, platform.description, platform.state]
         .filter(Boolean)
-        .some(value => String(value).toLowerCase().includes(q))
+        .some(value => String(value).toLowerCase().includes(q)))
     )
-  }, [platforms, query])
+  }, [platforms, query, selectedId, showAllPlatforms])
 
   async function handleToggle(platform: MessagingPlatformInfo, enabled: boolean) {
     const generation = scopeGenerationRef.current
@@ -527,7 +538,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       {...props}
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
-      searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
+      searchHints={visiblePlatforms.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
       searchPlaceholder={m.search}
       searchValue={query}
     >
@@ -541,6 +552,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           <div className="min-h-0 flex-1">
             <MasterDetail>
               <ListColumn>
+                <p className="px-2 pb-3 text-xs leading-5 text-(--ui-text-secondary)">
+                  {locale === 'pl'
+                    ? 'Wybierz komunikator, wpisz wymagane dane i zapisz. Po zmianie uruchom bramę ponownie; status połączenia zobaczysz obok nazwy.'
+                    : 'Choose a channel, enter its credentials and save. Restart the gateway to apply changes; connection status appears beside its name.'}
+                </p>
                 <ul className="space-y-1">
                   {visiblePlatforms.map(platform => (
                     <li key={platform.id}>
@@ -553,6 +569,24 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     </li>
                   ))}
                 </ul>
+                {platforms?.some(platform => !FEATURED_PLATFORM_IDS.has(platform.id)) ? (
+                  <Button
+                    className="mt-3 w-full justify-start text-xs"
+                    onClick={() => {
+                      setShowAllPlatforms(value => !value)
+                      if (showAllPlatforms && !FEATURED_PLATFORM_IDS.has(selectedId)) {
+                        setSelectedId(platformIds[0] ?? '')
+                      }
+                    }}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    {showAllPlatforms
+                      ? (locale === 'pl' ? 'Pokaż najważniejsze' : 'Show essential channels')
+                      : (locale === 'pl' ? 'Pozostałe platformy' : 'Other platforms')}
+                  </Button>
+                ) : null}
               </ListColumn>
 
               <DetailColumn
@@ -654,7 +688,7 @@ function PlatformRow({
     >
       <PlatformAvatar platformId={platform.id} platformName={platform.name} />
       <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-        <span className="truncate text-[length:var(--conversation-text-font-size)] font-normal">{platform.name}</span>
+        <span className="truncate text-sm font-medium">{platform.id === 'bluebubbles' ? 'iMessage (BlueBubbles)' : platform.name}</span>
         <span className="flex shrink-0 items-center gap-1.5">
           {/* Someone is waiting to be let in — the only way this page tells
               you so before you open the platform. */}

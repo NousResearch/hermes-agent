@@ -63,7 +63,6 @@ const MAIN_VIEWS = [
   { view: 'memory', hash: '#/starmap?view=list' },
   { view: 'starmap', hash: '#/starmap' },
   { view: 'connections', hash: '#/connections' },
-  { view: 'messaging', hash: '#/messaging' },
   { view: 'webhooks', hash: '#/webhooks' },
   { view: 'tools', hash: '#/skills' },
   { view: 'insights', hash: '#/command-center' },
@@ -173,22 +172,23 @@ test.afterAll(async () => {
 test.describe('Jarvis product shell', () => {
   test('desktop orb stays above the desktop when the app is minimized and returns to the same window', async () => {
     const { app, page } = fixture!
-    await page.getByRole('button', { name: 'Orb na pulpicie', exact: true }).first().click()
+    await page.getByRole('button', { name: 'Zostaw kulę na pulpicie', exact: true }).first().click()
     await expect.poll(() => app.windows().some(window => window.url().includes('win=overlay'))).toBe(true)
     const overlay = app.windows().find(window => window.url().includes('win=overlay'))!
     await expect(overlay.locator('.desktop-orb')).toBeVisible()
     const before = await app.evaluate(({ BrowserWindow }) => {
       const windows = BrowserWindow.getAllWindows()
-      const main = windows.find(
-        (window: import('electron').BrowserWindow) => !window.webContents.getURL().includes('win=overlay')
-      )!
       const orb = windows.find((window: import('electron').BrowserWindow) =>
         window.webContents.getURL().includes('win=overlay')
       )!
-      main.minimize()
       return { bounds: orb.getBounds(), top: orb.isAlwaysOnTop() }
     })
     expect(before.top).toBe(true)
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().find(
+        (window: import('electron').BrowserWindow) => !window.webContents.getURL().includes('win=overlay')
+      )!.isMinimized()
+    )).toBe(true)
     expect(await overlay.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgba(0, 0, 0, 0)')
     await expect(overlay.locator('.desktop-orb')).toBeVisible()
     await overlay.locator('.desktop-orb__sphere').hover()
@@ -218,14 +218,28 @@ test.describe('Jarvis product shell', () => {
         )
       )
       .toBe(false)
+    await page.getByRole('button', { name: 'Wróć do kuli', exact: true }).first().click()
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().find(
+        (window: import('electron').BrowserWindow) => !window.webContents.getURL().includes('win=overlay')
+      )!.isMinimized()
+    )).toBe(true)
+    await overlay.getByRole('button', { name: 'Otwórz Cześka' }).click()
     await overlay.getByRole('button', { name: 'Schowaj kulę' }).click()
     await expect.poll(() => app.windows().some(window => window.url().includes('win=overlay'))).toBe(false)
-    await page.getByRole('button', { name: 'Orb na pulpicie', exact: true }).first().click()
+    await page.getByRole('button', { name: 'Zostaw kulę na pulpicie', exact: true }).first().click()
     await expect.poll(() => app.windows().some(window => window.url().includes('win=overlay'))).toBe(true)
     const reopened = app.windows().find(window => window.url().includes('win=overlay'))!
     await expect(reopened.locator('.desktop-orb')).toBeVisible()
     expect(await reopened.evaluate(() => ({ x: window.screenX, y: window.screenY }))).toEqual(remembered)
     await reopened.getByRole('button', { name: 'Schowaj kulę' }).click()
+    await app.evaluate(({ BrowserWindow }) => {
+      const main = BrowserWindow.getAllWindows().find(
+        (window: import('electron').BrowserWindow) => !window.webContents.getURL().includes('win=overlay')
+      )
+      main?.restore()
+      main?.show()
+    })
   })
 
   test('the shell wraps the runtime instead of replacing it', async () => {
@@ -289,7 +303,7 @@ test.describe('Jarvis product shell', () => {
       }
     }
 
-    await page.getByRole('button', { name: 'Rozmowy' }).click()
+    await page.getByRole('button', { name: 'Historia' }).click()
     await expect(page.getByRole('dialog')).toBeVisible()
     await page.keyboard.press('Escape')
 
@@ -304,6 +318,17 @@ test.describe('Jarvis product shell', () => {
     // Leave the shell on home so the screenshot below is comparable run to run.
     await page.locator('[data-jarvis-nav-view="jarvis"]').click()
     await expect(page.locator('[data-jarvis-view="jarvis"]')).toBeVisible()
+  })
+
+  test('integrations opens communicator setup without a separate menu destination', async () => {
+    const page = fixture!.page
+    await page.locator('[data-jarvis-nav-view="connections"]').click()
+    const card = page.locator('[data-connection-card="messaging"]')
+    await expect(card).toBeVisible()
+    await card.getByRole('button').click()
+    await expect.poll(() => page.evaluate(() => window.location.hash)).toContain('#/messaging?platform=telegram')
+    await expect(page.locator('[data-jarvis-view="messaging"]')).toBeVisible()
+    await expect(page.locator('[data-jarvis-nav-view="connections"]')).toHaveAttribute('aria-current', 'page')
   })
 
   test('the language rail switches the whole shell to Polish and back', async () => {

@@ -3254,7 +3254,14 @@ export const pl = defineLocale({
         help: 'Zalecane. Numery telefonów lub identyfikatory WhatsApp rozdzielone przecinkami.'
       }
     },
-    platformIntro: {}
+    platformIntro: {
+      telegram: 'Najprościej: wybierz szybką konfigurację przez QR. Możesz też utworzyć bota przez @BotFather, wkleić token i dodać swój identyfikator użytkownika.',
+      whatsapp: 'Uruchom mostek WhatsApp dołączony do Hermesa, zeskanuj kod QR przy pierwszym starcie i włącz kanał. Dostęp ogranicz do swoich numerów.',
+      bluebubbles: 'iMessage wymaga komputera Mac z aplikacją BlueBubbles Server. Wklej adres serwera i hasło, zapisz ustawienia, a potem uruchom bramę ponownie.',
+      signal: 'Signal wymaga dostępnego mostka signal-cli REST oraz zarejestrowanego numeru telefonu. Wpisz adres mostka i numer, następnie uruchom bramę ponownie.',
+      discord: 'Utwórz aplikację i bota w Discord Developer Portal, skopiuj token i zaproś bota na serwer z odpowiednimi uprawnieniami.',
+      matrix: 'Zaloguj konto bota na swoim serwerze Matrix. Wklej token dostępu, identyfikator użytkownika i adres serwera.'
+    }
   },
 
   webhooks: {
@@ -4824,11 +4831,11 @@ export const pl = defineLocale({
 
   zones: {
     paneNames: {
-      bots: 'Boty',
+      bots: 'Agenci',
       files: 'Pliki',
       logs: 'Logi',
       review: 'Przegląd',
-      sessions: 'Sesje',
+      sessions: 'Historia',
       terminal: 'Terminal'
     },
     showTabStrip: 'Pokaż karty',

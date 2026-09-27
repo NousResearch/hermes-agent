@@ -570,6 +570,9 @@ export function TreeGroup({
                     <PaneTab
                       active={isActive}
                       aria-selected={isActive}
+                      className={paneId === 'sessions' || paneFor(paneId)?.title === 'Bots'
+                        ? 'min-w-20 px-2 text-xs font-semibold tracking-normal'
+                        : undefined}
                       data-tree-tab={paneId}
                       key={paneId}
                       onClose={closeable ? () => closeTab(paneId) : undefined}

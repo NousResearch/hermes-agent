@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import type { MessagingPlatformInfo } from '@/types/hermes'
 
 const getMessagingPlatforms = vi.fn()
@@ -101,13 +102,32 @@ async function renderMessaging() {
   await act(async () => {
     result = render(
       <MemoryRouter>
-        <MessagingView />
+        <I18nProvider configClient={null} initialLocale="en">
+          <MessagingView />
+        </I18nProvider>
       </MemoryRouter>
     )
   })
 
   return result!
 }
+
+it('shows essential channels first and keeps other adapters available on demand', async () => {
+  getMessagingPlatforms.mockResolvedValue({
+    platforms: [
+      platform({ id: 'qqbot', name: 'QQ Bot' }),
+      platform({ id: 'telegram', name: 'Telegram' }),
+      platform({ id: 'whatsapp', name: 'WhatsApp' }),
+      platform({ id: 'bluebubbles', name: 'BlueBubbles' })
+    ]
+  })
+
+  await renderMessaging()
+  expect(await screen.findByRole('button', { name: 'iMessage (BlueBubbles)' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'QQ Bot' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Other platforms' }))
+  expect(screen.getByRole('button', { name: 'QQ Bot' })).toBeTruthy()
+})
 
 describe('MessagingView profile scope', () => {
   it('follows the active profile instead of targeting primary when there is no override', async () => {

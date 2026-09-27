@@ -228,7 +228,7 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
 
                 return (
                   <NavButton
-                    active={activeView === view}
+                    active={activeView === view || (view === 'connections' && activeView === 'messaging')}
                     buttonRef={mainRefs[index]}
                     icon={VIEW_ICONS[view]}
                     key={view}
@@ -243,7 +243,7 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
                 <NavButton
                   active={false}
                   icon={Clock}
-                  label={locale === 'pl' ? 'Rozmowy' : 'Conversations'}
+                  label={locale === 'pl' ? 'Historia' : 'History'}
                   onClick={() => setSessionPickerOpen(true)}
                 />
               ) : null}

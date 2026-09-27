@@ -37,7 +37,7 @@ const TABS = ['connections', 'keys', 'api'] as const
 type ConnectionsTab = (typeof TABS)[number]
 
 const CARD = 'jarvis-glass rounded-3xl p-4'
-const INTEGRATION_CONNECTIONS = new Set(['google', 'notion', 'github', 'smartHome', 'mcp'])
+const INTEGRATION_CONNECTIONS = new Set(['google', 'notion', 'github', 'smartHome', 'mcp', 'messaging'])
 
 function ExternalAnchor({ href, label }: { href: string; label: string }) {
   return (

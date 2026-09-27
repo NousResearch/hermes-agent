@@ -17,7 +17,7 @@ export interface DesktopOrbCopy {
 
 export const desktopOrbCopy: Record<Locale, DesktopOrbCopy> = {
   pl: {
-    show: 'Orb na pulpicie',
+    show: 'Zostaw kulę na pulpicie',
     hide: 'Schowaj kulę',
     drag: 'Przeciągnij kulę',
     open: 'Otwórz Cześka',
@@ -31,7 +31,7 @@ export const desktopOrbCopy: Record<Locale, DesktopOrbCopy> = {
     error: 'Sprawdź rozmowę w aplikacji'
   },
   en: {
-    show: 'Desktop orb',
+    show: 'Leave the orb on desktop',
     hide: 'Hide orb',
     drag: 'Drag the orb',
     open: 'Open Czesiek',

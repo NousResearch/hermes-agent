@@ -193,7 +193,7 @@ function subscribeOrbAudio(): () => void {
   }
 }
 
-export function popOutDesktopOrb(): void {
+export function popOutDesktopOrb(onOpened?: () => void): void {
   $desktopOrbMode.set(true)
 
   if ($petOverlayActive.get() && stateUnsubs.length) {
@@ -202,7 +202,10 @@ export function popOutDesktopOrb(): void {
     if (saved) {
       void window.hermesDesktop?.petOverlay?.open({ bounds: { ...saved, ...ORB_WINDOW_SIZE }, screen: true }).then(result => {
         if (result.bounds) {saveBounds(result.bounds)}
+        onOpened?.()
       })
+    } else {
+      onOpened?.()
     }
 
     pushNow()
@@ -214,7 +217,7 @@ export function popOutDesktopOrb(): void {
   openOverlay({
     bounds: { ...(saved ?? { x: Math.max(0, window.innerWidth - 360), y: 100 }), ...ORB_WINDOW_SIZE },
     screen: Boolean(saved)
-  })
+  }, onOpened)
 }
 
 /**
@@ -222,7 +225,7 @@ export function popOutDesktopOrb(): void {
  * process echoes back the actual screen bounds it used, which we persist so the
  * pet reopens exactly where the user left it.
  */
-function openOverlay(request: PetOverlayOpenRequest): void {
+function openOverlay(request: PetOverlayOpenRequest, onOpened?: () => void): void {
   const api = window.hermesDesktop?.petOverlay
 
   if (!api || stateUnsubs.length) {
@@ -238,6 +241,7 @@ function openOverlay(request: PetOverlayOpenRequest): void {
       }
 
       pushNow()
+      onOpened?.()
     })
     .catch(error => {
       popInPet()

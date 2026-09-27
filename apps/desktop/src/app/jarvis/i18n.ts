@@ -9,12 +9,12 @@ import type { Translations } from '@/i18n'
 export const JARVIS_NAV_GROUPS = [
   { id: 'work', views: ['jarvis', 'tasks', 'agents'] },
   { id: 'knowledge', views: ['prompts', 'artifacts', 'memory', 'starmap'] },
-  { id: 'connections', views: ['connections', 'messaging', 'webhooks'] },
+  { id: 'connections', views: ['connections', 'webhooks'] },
   { id: 'system', views: ['tools', 'insights', 'settings'] }
 ] as const
 
 export const JARVIS_MAIN_VIEWS = JARVIS_NAV_GROUPS.flatMap(group => group.views)
-export const JARVIS_AUXILIARY_VIEWS = ['profile'] as const
+export const JARVIS_AUXILIARY_VIEWS = ['profile', 'messaging'] as const
 
 export type JarvisNavGroup = (typeof JARVIS_NAV_GROUPS)[number]['id']
 export type JarvisMainView = (typeof JARVIS_NAV_GROUPS)[number]['views'][number]

@@ -56,14 +56,17 @@ describe('ConnectionsView', () => {
     expect(screen.getByTestId('where').textContent).toBe('/messaging?platform=homeassistant')
   })
 
-  it('keeps communication channels out of the integrations catalog', () => {
+  it('opens communicator setup from integrations without a separate rail entry', () => {
     renderPage()
 
-    expect(screen.queryByText(pl.jarvisConnections.entries.messaging.name)).toBeNull()
+    const messaging = screen.getByText(pl.jarvisConnections.entries.messaging.name).closest('article')!
+
     expect(screen.queryByText(pl.jarvisConnections.entries.email.name)).toBeNull()
     expect(screen.queryByText(pl.jarvisConnections.entries.phone.name)).toBeNull()
     expect(screen.getByText(pl.jarvisConnections.entries.google.name)).toBeTruthy()
     expect(screen.getByText(pl.jarvisConnections.entries.github.name)).toBeTruthy()
+    fireEvent.click(within(messaging as HTMLElement).getByRole('button', { name: pl.jarvisConnections.openSettings }))
+    expect(screen.getByTestId('where').textContent).toBe('/messaging?platform=telegram')
   })
 
   it('explains the Agent Czesiek API with a copyable example that uses the real address', () => {

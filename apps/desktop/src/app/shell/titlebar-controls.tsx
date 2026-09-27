@@ -23,6 +23,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { $productShellNav } from '@/store/product-shell'
 import { $unreadSessionCount } from '@/store/session-dot-state'
 
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
@@ -138,6 +139,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
+  const productShell = useStore($productShellNav)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
 
@@ -242,6 +244,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // than the overlay card, so they'd otherwise bleed over it — hide them (and
   // the nested titleBar slots) and let the overlay's own chrome take over.
   if (isOverlayView(view)) {
+    return null
+  }
+
+  // Agent Czesiek has its own navigation and settings in the left rail.
+  if (productShell) {
     return null
   }
 

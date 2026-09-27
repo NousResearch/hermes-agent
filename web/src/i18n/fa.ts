@@ -1704,5 +1704,12 @@ export const fa = defineLocale({
     telegramAllowedUsers: "کاربران مجاز",
     telegramOwnerDetected: "مالک شناسایی شد",
     telegramOpen: "باز کردن تلگرام",
+    restartGateway: "راه‌اندازی مجدد دروازه",
+    restartNow: "همین حالا راه‌اندازی مجدد کنید",
+    restarting: "در حال راه‌اندازی مجدد…",
+    enablePlatform: "فعال‌سازی {name}",
+    testButton: "آزمون",
+    configureButton: "پیکربندی",
+    telegramChooseHow: "روش اتصال بات تلگرام خود را انتخاب کنید",
   },
 });

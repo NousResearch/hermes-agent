@@ -732,7 +732,7 @@ class TestScriptTimeoutTreeKill:
 
         tree_calls = []
 
-        def _record_and_kill(proc):
+        def _record_and_kill(proc, job_pgid=None):
             # Record the routing, then really kill so _drain_script_pipes
             # reaps instantly instead of waiting out its 5s communicate().
             tree_calls.append(proc.pid)
@@ -830,3 +830,129 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+    @pytest.mark.live_system_guard_bypass
+    @pytest.mark.platforms("posix")
+    def test_timeout_surviving_child_of_exited_script_is_killed(self, cron_env, monkeypatch):
+        """#125780: the script itself exits right after forking a child that keeps the
+        pipe write ends open, so at the deadline the direct process is already reaped
+        (``poll()`` returns its code) while the child still runs in the job's own process
+        group. The cleanup must reach that surviving group instead of returning early and
+        stranding a pipe-holder the drain then has to wait out."""
+        import time
+
+        psutil = pytest.importorskip("psutil", reason="the survivor probe needs psutil")
+
+        from cron import scheduler as sched
+        from cron import scheduler_script as sched_script
+
+        def find_survivor():
+            # The survivor is located by the job's workdir, not a pid file: at cleanup
+            # time only the job's process group — not its pids — is still known.
+            for process in psutil.process_iter(["cwd", "name"]):
+                info = process.info
+                if info["cwd"] == str(cron_env) and "python" in (info["name"] or "").lower():
+                    return process
+            return None
+
+        scripts_dir = cron_env / "scripts"
+        # The forked child inherits the script's stdout/stderr pipes and its process
+        # group, then outlives the leader — exactly the pipe-holder #125780 describes.
+        # It drops a marker directory in the workdir first so the test can tell "never
+        # started" apart from "started and cleaned up".
+        (scripts_dir / "spawner.py").write_text(
+            "import os\n"
+            "child = os.fork()\n"
+            "if child == 0:\n"
+            "    os.mkdir('survivor_started_125780')\n"
+            "    import time\n"
+            "    time.sleep(30)\n"
+            "    os._exit(0)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "2")
+        monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", sched._DEFAULT_SCRIPT_TIMEOUT)
+
+        ok, out = sched_script._run_job_script(
+            str(scripts_dir / "spawner.py"), workdir=str(cron_env)
+        )
+        assert not ok and out.startswith("Script timed out after 2s:"), (
+            f"expected the timeout path, got success={ok}, output={out!r}"
+        )
+        assert (cron_env / "survivor_started_125780").exists(), (
+            "spawner never started the survivor child"
+        )
+
+        survivor = find_survivor()
+        try:
+            assert survivor is None or survivor.status() == psutil.STATUS_ZOMBIE, (
+                f"survivor pid {survivor.pid} outlived the script's timeout — the "
+                "exited-parent cleanup returned early and stranded a pipe-holding "
+                "child in the job's process group"
+            )
+        finally:
+            if survivor is not None and survivor.is_running() \
+                    and survivor.status() != psutil.STATUS_ZOMBIE:
+                with contextlib.suppress(psutil.NoSuchProcess):
+                    survivor.kill()
+
+    @pytest.mark.platforms("posix")
+    def test_exited_parent_group_fallback_signals_only_the_recorded_group(
+        self, monkeypatch):
+        """The orphaned-group fallback drives the recorded pgid through probe → TERM →
+        grace → probe, and never signals any other group."""
+        import signal as signal_mod
+
+        from cron import scheduler_script as sched_script
+
+        job_pgid = 424242
+        signalled, sleeps = [], []
+        real_sigterm = signal_mod.SIGTERM
+
+        def fake_killpg(pgid, sig):
+            if pgid != job_pgid:
+                # Any other group being touched is the assertion's business.
+                signalled.append((pgid, sig))
+                raise PermissionError("outside the job group")
+            signalled.append((pgid, sig))
+            if sig == real_sigterm:
+                # After TERM the group empties: the second probe reports ESRCH.
+                def gone(probe_pgid, probe_sig):
+                    raise ProcessLookupError()
+                monkeypatch.setattr(os, "killpg", gone)
+
+        monkeypatch.setattr(os, "killpg", fake_killpg)
+        monkeypatch.setattr(sched_script.time, "sleep", sleeps.append)
+        proc = SimpleNamespace(pid=12345, poll=lambda: 0)
+
+        sched_script._terminate_cron_script_tree(
+            cast("subprocess.Popen", proc), job_pgid=job_pgid)
+
+        assert [sig for _, sig in signalled] == [0, real_sigterm], (
+            f"expected probe-then-TERM on the recorded group only, got {signalled}")
+        assert sleeps == [0.5], "the TERM grace period must be bounded to one short sleep"
+
+    @pytest.mark.platforms("posix")
+    def test_exited_parent_group_fallback_ignores_dead_group(self, monkeypatch):
+        """A recorded pgid whose group has no members left is a no-op: the probe raises
+        ESRCH, no signal is sent and the TERM grace sleep is never entered."""
+        import signal as signal_mod
+
+        from cron import scheduler_script as sched_script
+
+        signalled, sleeps = [], []
+
+        def dead_group_killpg(pgid, sig):
+            signalled.append((pgid, sig))
+            raise ProcessLookupError()
+
+        monkeypatch.setattr(os, "killpg", dead_group_killpg)
+        monkeypatch.setattr(sched_script.time, "sleep", sleeps.append)
+        proc = SimpleNamespace(pid=12345, poll=lambda: 0)
+
+        sched_script._terminate_cron_script_tree(
+            cast("subprocess.Popen", proc), job_pgid=12345)
+
+        assert signalled == [(12345, 0)], (
+            f"a dead group must only ever be probed, got {signalled}")
+        assert sleeps == [], "an empty group must not reach the TERM grace sleep"

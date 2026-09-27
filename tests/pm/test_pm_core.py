@@ -242,6 +242,49 @@ def test_activation_trusts_a_recorded_entry_a_deliberate_install_repairs(pm_env,
     assert binary.read_text(encoding="utf-8") == "good"
 
 
+def test_transient_hold_on_entry_rename_does_not_fail_the_install(pm_env, monkeypatch):
+    """A pin change displaces the live entry with ``entry.rename(previous_entry)``.
+
+    On Windows that rename can fail with ``[WinError 5] Access is denied`` while a
+    handle on a path inside the tree is still open (a mapped DLL of a just-restarted
+    gateway, an AV scan, the updater's own tooling still resolving the entry), and the
+    hold clears in well under a second. ``_remove_entry`` already retries those holds;
+    the rename must too, or one transient hold aborts an install whose new bytes are
+    already downloaded and verified (#124807, rename arm).
+    """
+    from pathlib import Path as _Path
+
+    from pm.cli import _install_names
+
+    lockfile_path, runtime, docroot, _ = pm_env
+    _, digest = make_tar(docroot, "faketool-1.0.tar.gz", {"bin/faketool": "#!x"})
+    _pin(lockfile_path, "faketool", "1.0", digest)
+    assert _install_names(["faketool"]) == 0
+
+    fact = Facts(runtime / "facts.json").get("faketool")
+    entry = runtime / fact["entry"]
+    # Break the live entry so the next install takes the displace-and-republish path,
+    # exactly what the updater drives after a tool pin change.
+    (entry / "bin/faketool").write_bytes(b"corrupt")
+
+    real_rename = _Path.rename
+    holds = {"left": 1}
+
+    def flaky_rename(self, target):
+        # Only the entry -> .previous-<entry> displacement is held, once.
+        if holds["left"] and self.name == fact["entry"] and str(target).find(".previous-") != -1:
+            holds["left"] -= 1
+            raise OSError(5, "Access is denied")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(_Path, "rename", flaky_rename)
+    assert _install_names(["faketool"]) == 0
+    assert holds["left"] == 0  # the hold really was exercised
+    # The reinstall completed and the new entry is live.
+    fact = Facts(runtime / "facts.json").get("faketool")
+    assert (runtime / fact["entry"] / "bin/faketool").read_bytes() == b"#!x"
+
+
 def test_warm_install_verifies_shared_dependencies_once_under_lock(pm_env, monkeypatch):
     import importlib
     import os

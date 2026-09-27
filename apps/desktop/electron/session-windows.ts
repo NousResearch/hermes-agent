@@ -5,6 +5,9 @@
 
 import { pathToFileURL } from 'node:url'
 
+import type { DesktopWindowLaunch } from './desktop-profile'
+import { computeWindowOptions } from './window-state'
+
 // Secondary windows open at the minimum usable size — a compact side panel for
 // subagent watch / cmd-click session pop-out, not a second full desktop.
 const SESSION_WINDOW_MIN_WIDTH = 420
@@ -37,6 +40,12 @@ const SESSION_WINDOW_MIN_HEIGHT = 620
 // session is silent" bug. Manual voice-start worked only because the button
 // click counted as the gesture. This is a native app the user deliberately
 // launched; there is no drive-by-autoplay concern to protect against.
+//
+// `focusOnNavigation: false` keeps renderer-driven work passive. Electron's
+// default is true, so an in-page/SPA navigation can activate a blurred chat
+// window while its transcript is streaming. Explicit user actions still call
+// the main-process window focus paths (session re-open, notification/deep-link,
+// app activation), preserving intentional raises without background focus theft.
 function chatWindowWebPreferences(preloadPath: string) {
   return {
     preload: preloadPath,
@@ -45,7 +54,8 @@ function chatWindowWebPreferences(preloadPath: string) {
     sandbox: true,
     nodeIntegration: false,
     devTools: true,
-    autoplayPolicy: 'no-user-gesture-required' as const
+    autoplayPolicy: 'no-user-gesture-required' as const,
+    focusOnNavigation: false
   }
 }
 
@@ -57,8 +67,13 @@ function chatWindowWebPreferences(preloadPath: string) {
 // onboarding overlays and the global session sidebar. `watch=1` marks a
 // spectator window (e.g. a running subagent's session): the renderer resumes it
 // lazily so the gateway never builds an agent just to stream into it.
-function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath, watch }: any = {}) {
-  const query = `?win=secondary${watch ? '&watch=1' : ''}`
+// `profile` names the backend the window must boot against (same carry as the
+// HUD's buildHudWindowUrl): without it a pop-out/watch window adopts the
+// PRIMARY profile and resolves the session id against the wrong backend
+// (#82768, #61286). Absent → unchanged primary adoption.
+function buildSessionWindowUrl(sessionId: string, { devServer, profile, rendererIndexPath, watch }: any = {}) {
+  const profileKey = typeof profile === 'string' ? profile.trim() : ''
+  const query = `?win=secondary${watch ? '&watch=1' : ''}${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}`
   const route = `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
@@ -70,26 +85,63 @@ function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
 }
 
+// Full peer windows render the ordinary app shell, so they deliberately do
+// not use the `win` query parameter that selects a specialized renderer. The
+// separate marker lets the renderer distinguish a peer from the one primary
+// app window: app-launch source restoration belongs to the primary only, while
+// a peer keeps the already-running backend it joined during boot.
+interface InstanceWindowUrlOptions extends Partial<DesktopWindowLaunch> {
+  devServer?: string
+  rendererIndexPath?: string
+}
+
+function buildInstanceWindowUrl({
+  connectionId,
+  devServer,
+  profile,
+  profileWindow,
+  rendererIndexPath
+}: InstanceWindowUrlOptions = {}) {
+  const query = `?peer=1${profile ? `&profile=${encodeURIComponent(profile)}&connectionId=${encodeURIComponent(connectionId ?? '')}${profileWindow ? '&profileWindow=1' : ''}` : ''}`
+
+  if (devServer) {
+    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
+
+    return `${base}/${query}`
+  }
+
+  return `${pathToFileURL(rendererIndexPath).toString()}${query}`
+}
+
 // Full "instance" windows (⌘⇧N / the "New Window" command) open a complete app
 // peer, not a compact chat. Cascade each one off its source window's bounds so a
 // new window doesn't land exactly on top of the one it was spawned from. Pure so
 // it's unit-testable; the Electron glue (reading the focused window's bounds,
 // constructing the BrowserWindow) stays in main.ts. `base` is the source
 // window's current bounds, or null when there's no live source window — then the
-// persisted primary geometry (`fallback`) is used as-is.
+// persisted primary geometry (`fallback`) is used as-is. The cascaded rect is
+// clamped to the work area it lands on (a source docked at the bottom/right edge
+// would otherwise push the new window past the screen); with no matching
+// display it is kept as computed.
 const INSTANCE_CASCADE_OFFSET = 32
 
-function instanceWindowBounds(base: { x: number; y: number; width: number; height: number } | null, fallback: any) {
+function instanceWindowBounds(
+  base: { x: number; y: number; width: number; height: number } | null,
+  fallback: any,
+  displays: any[] = []
+) {
   if (!base) {
     return fallback
   }
 
-  return {
+  const bounds = {
     width: base.width,
     height: base.height,
     x: base.x + INSTANCE_CASCADE_OFFSET,
     y: base.y + INSTANCE_CASCADE_OFFSET
   }
+
+  return { ...bounds, ...computeWindowOptions(bounds, displays) }
 }
 
 // A small registry keyed by sessionId that guarantees one window per chat:
@@ -153,6 +205,7 @@ function createSessionWindowRegistry() {
 }
 
 export {
+  buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,

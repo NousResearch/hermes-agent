@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 """Open a URL, dev server, or file in the Hermes desktop GUI's preview pane.
 
-Gated on ``HERMES_DESKTOP`` (like ``read_terminal`` / ``close_terminal``) so it
-never appears outside the GUI. Emits ``preview.open`` through the shared
-``desktop_ui`` bridge; the renderer opens the pane beside the chat for the
-window that asked and never steals focus for a background session.
+Registration lives in the `desktop_preview` tool (``tools.preview_tool``); this module keeps
+the normalizer + open action. Emits ``preview.open`` via ``desktop_ui``: the renderer opens
+the pane for the window that asked and never steals focus for a background session.
 """
 
-import json
+import os
 import re
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from tools import desktop_ui
-from tools.registry import registry, tool_error
-from utils import env_var_enabled
+from tools.registry import tool_error
 
 
 def _normalize_target(raw: str) -> str:
     """Coax a bare host/domain into a fetchable URL; leave paths + schemes alone.
 
-    ``www.cnn.com`` → ``https://www.cnn.com``; ``localhost:3000`` →
-    ``http://localhost:3000``. File paths and explicit schemes pass through for
-    the renderer's preview normalizer to classify.
+    ``www.cnn.com`` -> ``https://www.cnn.com``; ``localhost:3000`` -> ``http://localhost:3000``.
+    File paths and explicit schemes pass through for the renderer's preview normalizer.
     """
     v = raw.strip().strip("`").strip()
     if not v or "://" in v or v.startswith(("/", "./", "../", "~", "file:")):
@@ -32,30 +31,69 @@ def _normalize_target(raw: str) -> str:
     return v
 
 
+def _local_fs_path(target: str) -> Path | None:
+    """Return a filesystem path for local targets; None for http(s) URLs."""
+    raw = (target or "").strip()
+    if not raw:
+        return None
+    if "://" in raw:
+        parsed = urlparse(raw)
+        if parsed.scheme.lower() != "file":
+            return None
+        path = unquote(parsed.path or "")
+        if parsed.netloc and parsed.netloc not in {"", "localhost"}:
+            path = f"//{parsed.netloc}{path}"
+        elif (
+            os.name == "nt"
+            and len(path) >= 3
+            and path[0] == "/"
+            and path[2] == ":"
+        ):
+            path = path[1:]
+        return Path(path) if path else None
+    return Path(raw).expanduser()
+
+
+def _is_existing_directory(target: str) -> bool:
+    path = _local_fs_path(target)
+    if path is None:
+        return False
+    try:
+        return path.is_dir()
+    except OSError:
+        # Stat failed (permissions, broken reparse, etc.). Do not treat that
+        # as "this is a directory" — reject only when we positively observe
+        # an existing directory. The renderer still sees the original target.
+        return False
+
+
 def open_preview_tool(url: str, label: str = "") -> str:
     """Ask the desktop GUI to show ``url`` in the preview pane beside the chat."""
     target = _normalize_target(url or "")
     if not target:
         return tool_error(
             "url is required — a web URL (https://…), a localhost dev server, or a "
-            "file path to show in the preview pane."
+            "file path to show in the preview pane.")
+    if _is_existing_directory(target):
+        return tool_error(
+            "directories are not previewable — pass a file path or a URL. "
+            f"{target} is a directory."
         )
 
     label = (label or "").strip()
-    try:
-        ok = desktop_ui.emit("preview.open", {"url": target, "label": label})
-    except Exception as exc:
-        return tool_error(f"Failed to open the preview pane: {exc}")
-    if not ok:
-        return tool_error("The preview pane is only available in the Hermes desktop app.")
-
-    return json.dumps({"success": True, "url": target, "label": label}, ensure_ascii=False)
+    return desktop_ui.emit_or_error(
+        "preview.open",
+        {"url": target, "label": label},
+        "Failed to open the preview pane: ",
+        "The preview pane is only available in the Hermes desktop app.",
+        {"success": True, "url": target, "label": label})
 
 
-def check_open_preview_requirements() -> bool:
-    """Desktop GUI only — HERMES_DESKTOP is set on the gateway the app spawns."""
-    return env_var_enabled("HERMES_DESKTOP")
-
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import json  # noqa: F401,E402
 
 OPEN_PREVIEW_SCHEMA = {
     "name": "open_preview",
@@ -65,7 +103,8 @@ OPEN_PREVIEW_SCHEMA = {
         "preview pane — e.g. \"open cnn.com in the preview pane\" or \"preview "
         "localhost:3000\". Accepts a web URL (a bare domain like www.cnn.com is fine), "
         "a localhost dev-server URL, or a file path (HTML renders live; other files "
-        "show their contents). The pane opens for the current window only."
+        "show their contents). The pane opens for the current window only. To close "
+        "the pane or a tab, use close_preview."
     ),
     "parameters": {
         "type": "object",
@@ -87,11 +126,17 @@ OPEN_PREVIEW_SCHEMA = {
 }
 
 
-registry.register(
-    name="open_preview",
-    toolset="terminal",
-    schema=OPEN_PREVIEW_SCHEMA,
-    handler=lambda args, **kw: open_preview_tool(url=args.get("url", ""), label=args.get("label", "")),
-    check_fn=check_open_preview_requirements,
-    emoji="🖼️",
-)
+_PLUGIN_COMPAT_LAZY = {
+    'registry': ('tools.registry', 'registry'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

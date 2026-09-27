@@ -2,8 +2,10 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
-import { $layoutTree } from '@/components/pane-shell/tree/store'
-import { openSessionTile } from '@/store/session-states'
+import { $layoutTree, closeTreePane } from '@/components/pane-shell/tree/store'
+import { requestFreshSession } from '@/store/profile'
+import { $selectedStoredSessionId } from '@/store/session'
+import { $sessionTiles, nextSessionTileForWorkspace, openSessionTile } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
 import { startSessionDrag } from './session-drag'
@@ -15,7 +17,19 @@ import { startSessionDrag } from './session-drag'
  * the drop has to land on the tab the user can actually see.
  */
 
-vi.mock('@/store/session-states', () => ({ openSessionTile: vi.fn() }))
+vi.mock('@/store/session-states', async () => {
+  const { atom } = await import('nanostores')
+
+  return { $sessionTiles: atom([]), nextSessionTileForWorkspace: vi.fn(() => null), openSessionTile: vi.fn() }
+})
+vi.mock('@/store/profile', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requestFreshSession: vi.fn()
+}))
+vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  closeTreePane: vi.fn()
+}))
 vi.mock('./composer/focus', () => ({ requestComposerInsertRefs: vi.fn() }))
 
 const ZONE = { left: 0, top: 0, right: 1000, bottom: 800 }
@@ -81,6 +95,8 @@ beforeEach(() => {
 afterEach(() => {
   document.body.innerHTML = ''
   $layoutTree.set(null)
+  $selectedStoredSessionId.set(null)
+  $sessionTiles.set([])
 })
 
 describe('session drop targeting across stacked tabs', () => {
@@ -109,5 +125,50 @@ describe('session drop targeting across stacked tabs', () => {
 
     expect(requestComposerInsertRefs).not.toHaveBeenCalled()
     expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  // Standing side chrome hosts no main tile, so a session has nowhere to land
+  // there. That refusal is load-bearing twice over: the sidebar row runs the
+  // reorder off the SAME press, so the deny is what leaves the list to it,
+  // and ZoneDropOverlay keys off the same test to stay dark over those zones
+  // instead of outlining a drop that would only be refused.
+  it('commits nothing over the sidebar, leaving the region to the reorder', () => {
+    mountStackedTabs()
+    $layoutTree.set(group(['sessions'], { id: 'g1' }))
+
+    dragTo(document.getElementById('row')!, 120, 400)
+
+    expect(requestComposerInsertRefs).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  // Dragging MAIN's own tab is a move: once the tile exists, main hands the
+  // chat over instead of keeping a second copy of the same transcript.
+  it('vacates main after its own tab is dropped as a split', () => {
+    const row = mountStackedTabs()
+    $selectedStoredSessionId.set('dragged')
+    vi.mocked(openSessionTile).mockImplementation(id => {
+      $sessionTiles.set([{ dir: 'right', storedSessionId: id, workspaceMode: 'bots' }] as never)
+    })
+    vi.mocked(nextSessionTileForWorkspace).mockReturnValue('visible')
+
+    dragTo(row, 980, 400)
+
+    expect(closeTreePane).toHaveBeenCalledWith('workspace')
+    expect(requestFreshSession).not.toHaveBeenCalled()
+  })
+
+  it('drops main to a fresh draft when nothing else can shift in', () => {
+    const row = mountStackedTabs()
+    $selectedStoredSessionId.set('dragged')
+    vi.mocked(openSessionTile).mockImplementation(id => {
+      $sessionTiles.set([{ dir: 'right', storedSessionId: id, workspaceMode: 'bots' }] as never)
+    })
+    vi.mocked(nextSessionTileForWorkspace).mockReturnValue('dragged')
+
+    dragTo(row, 980, 400)
+
+    expect(requestFreshSession).toHaveBeenCalled()
+    expect(closeTreePane).not.toHaveBeenCalled()
   })
 })

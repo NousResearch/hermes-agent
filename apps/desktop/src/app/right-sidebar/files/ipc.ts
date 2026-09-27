@@ -3,6 +3,9 @@ import ignore from 'ignore'
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
 import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { ALWAYS_EXCLUDED } from '@/lib/excluded-paths'
+import { cleanPath, comparisonPath, isUnderPath } from '@/lib/path-compare'
+
+import { showsIgnoredFiles } from './prefs'
 
 export type ProjectTreeEntry = HermesReadDirEntry
 
@@ -13,6 +16,7 @@ interface GitignoreRule {
 
 const gitRootCache = new Map<string, Promise<string | null>>()
 const gitignoreCache = new Map<string, Promise<GitignoreRule | null>>()
+const nestedRepoCache = new Map<string, Promise<boolean>>()
 
 function decodeDataUrl(dataUrl: string) {
   const match = dataUrl.match(/^data:[^,]*,(.*)$/)
@@ -28,21 +32,10 @@ function decodeDataUrl(dataUrl: string) {
   return new TextDecoder().decode(bytes)
 }
 
-function clean(path: string) {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
-}
-
-// Windows path identity is case-insensitive. Fold only comparison keys so the
-// relative path returned below keeps the filesystem's original spelling;
-// POSIX paths remain case-sensitive.
-function comparisonPath(path: string) {
-  return /^[A-Za-z]:(?:\/|$)/.test(path) || path.startsWith('//') ? path.toLowerCase() : path
-}
-
 /** Strict POSIX-style relative path; null if `child` is not inside `root`. */
 function relativeTo(root: string, child: string) {
-  const r = clean(root)
-  const c = clean(child)
+  const r = cleanPath(root)
+  const c = cleanPath(child)
   const rKey = comparisonPath(r)
   const cKey = comparisonPath(c)
 
@@ -55,7 +48,7 @@ function relativeTo(root: string, child: string) {
 
 /** Repo-root → repo-root/a → repo-root/a/b → … for every dir between root and `dir`. */
 function ancestorDirs(root: string, dir: string) {
-  const r = clean(root)
+  const r = cleanPath(root)
   const rel = relativeTo(r, dir)
 
   if (rel === null || rel === '') {
@@ -74,11 +67,11 @@ function ancestorDirs(root: string, dir: string) {
 }
 
 async function gitRootFor(start: string) {
-  const key = `${desktopFsCacheKey()}:${clean(start)}`
+  const key = `${desktopFsCacheKey()}:${cleanPath(start)}`
   let cached = gitRootCache.get(key)
 
   if (!cached) {
-    cached = desktopGitRoot(clean(start))
+    cached = desktopGitRoot(cleanPath(start))
     gitRootCache.set(key, cached)
   }
 
@@ -103,12 +96,48 @@ async function readGitignore(dir: string): Promise<GitignoreRule | null> {
 }
 
 async function gitignoreFor(dir: string) {
-  const key = `${desktopFsCacheKey()}:${clean(dir)}`
+  const key = `${desktopFsCacheKey()}:${cleanPath(dir)}`
   let cached = gitignoreCache.get(key)
 
   if (!cached) {
-    cached = readGitignore(clean(dir))
+    cached = readGitignore(cleanPath(dir))
     gitignoreCache.set(key, cached)
+  }
+
+  return cached
+}
+
+/**
+ * A directory that is the root of its OWN repository is a nested repo (or worktree) root.
+ * Never hide those behind the parent's .gitignore: ignoring them there is exactly how the
+ * common repo-inside-repo layout keeps a superproject clean, and hiding them makes real,
+ * version-controlled work vanish from the tree with no way to reveal it.
+ *
+ * Ask git, not the directory listing: the readDir bridge strips `.git` entries
+ * (FS_READDIR_HIDDEN in electron/fs-read-dir.ts), so a listing probe finds them in tests
+ * (mocked listings) but never in production. `git rev-parse --show-toplevel` answers for
+ * any directory, ignored or not: a nested repo resolves to itself, an ordinary ignored
+ * directory resolves to the parent's root.
+ */
+async function isNestedRepoRoot(entry: HermesReadDirEntry): Promise<boolean> {
+  if (!entry.isDirectory) {
+    return false
+  }
+
+  const key = `${desktopFsCacheKey()}:${cleanPath(entry.path)}`
+  let cached = nestedRepoCache.get(key)
+
+  if (!cached) {
+    cached = (async () => {
+      try {
+        const root = await desktopGitRoot(cleanPath(entry.path))
+
+        return root !== null && comparisonPath(root) === comparisonPath(entry.path)
+      } catch {
+        return false
+      }
+    })()
+    nestedRepoCache.set(key, cached)
   }
 
   return cached
@@ -127,7 +156,20 @@ function ignoredBy(rules: GitignoreRule[], entry: HermesReadDirEntry) {
 }
 
 async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, dirPath: string) {
-  const root = await gitRootFor(rootPath)
+  // Opting a project into its ignored files skips the gitignore pass entirely —
+  // no git-root probe, no .gitignore reads. ALWAYS_EXCLUDED still applies: `.git`
+  // internals and dependency/build dirs are never worth browsing, in any repo.
+  if (showsIgnoredFiles(rootPath)) {
+    return entries
+  }
+
+  // Anchor the rule lookup at the nearest repository root of the LISTED directory,
+  // not the project root. A parent repo's .gitignore stops at a nested repo's
+  // boundary (git applies ignore rules only within their own repository), so
+  // inside dev/<repo> only <repo>'s own .gitignore chain governs. Without this,
+  // the parent's `dev/*` pattern matches every entry inside the nested repo and
+  // the tree shows an empty folder one level down.
+  const root = (await gitRootFor(dirPath)) ?? (await gitRootFor(rootPath))
 
   if (!root) {
     return entries
@@ -137,7 +179,23 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
     Boolean(r)
   )
 
-  return rules.length > 0 ? entries.filter(entry => !ignoredBy(rules, entry)) : entries
+  if (rules.length === 0) {
+    return entries
+  }
+
+  // Probe only entries the rules would hide: a nested repo root stays visible,
+  // everything else the parent ignores is filtered as before.
+  const visible = await Promise.all(
+    entries.map(async entry => {
+      if (!ignoredBy(rules, entry)) {
+        return entry
+      }
+
+      return (await isNestedRepoRoot(entry)) ? entry : null
+    })
+  )
+
+  return visible.filter((entry): entry is HermesReadDirEntry => entry !== null)
 }
 
 export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<HermesReadDirResult> {
@@ -155,11 +213,37 @@ export function clearProjectDirCache(rootPath?: string) {
   if (!rootPath) {
     gitRootCache.clear()
     gitignoreCache.clear()
+    nestedRepoCache.clear()
 
     return
   }
 
-  const key = `${desktopFsCacheKey()}:${clean(rootPath)}`
-  gitRootCache.delete(key)
-  gitignoreCache.delete(key)
+  // The caches are keyed `<connection>:<path>` on every path a listing pass
+  // touched — the listed directory (gitRootFor(dirPath)), its .gitignore chain
+  // (gitignoreFor over ancestorDirs), and the entries the ignore rules probe
+  // (isNestedRepoRoot) — all strict descendants of the root, never the root's
+  // own key alone. A refresh (use-project-tree) clears so the re-read probes
+  // underneath what is on screen, so evict every key at or under the root.
+  // Match on a path boundary via isUnderPath — `/repo` must not evict `/repo2`
+  // — and only within the current connection's cache keys.
+  const cachePrefix = `${desktopFsCacheKey()}:`
+  const inScope = (key: string) => key.startsWith(cachePrefix) && isUnderPath(rootPath, key.slice(cachePrefix.length))
+
+  for (const key of gitRootCache.keys()) {
+    if (inScope(key)) {
+      gitRootCache.delete(key)
+    }
+  }
+
+  for (const key of gitignoreCache.keys()) {
+    if (inScope(key)) {
+      gitignoreCache.delete(key)
+    }
+  }
+
+  for (const key of nestedRepoCache.keys()) {
+    if (inScope(key)) {
+      nestedRepoCache.delete(key)
+    }
+  }
 }

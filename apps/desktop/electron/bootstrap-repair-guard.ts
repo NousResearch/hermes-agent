@@ -104,8 +104,7 @@ export function decideBootstrapRepair(input: RepairDecisionInput): RepairDecisio
       hardReinstall: true,
       attempt,
       reason:
-        `repair attempt ${attempt} exceeds soft-restart budget ` +
-        `(${maxSoftAttempts}); escalating to hard reinstall`
+        `repair attempt ${attempt} exceeds soft-restart budget ` + `(${maxSoftAttempts}); escalating to hard reinstall`
     }
   }
 

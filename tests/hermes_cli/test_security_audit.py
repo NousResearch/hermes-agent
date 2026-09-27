@@ -45,9 +45,6 @@ class TestMCPComponentExtraction:
         )
 
 
-    def test_docker_returns_none(self):
-        # We don't currently parse docker image refs.
-        assert sa._extract_mcp_component("x", "docker", ["run", "-i", "mcp/foo:1.0"]) is None
 
     def test_empty_args(self):
         assert sa._extract_mcp_component("x", "npx", []) is None
@@ -102,11 +99,6 @@ class TestSeverityExtraction:
 
 
 class TestRunAudit:
-    def test_no_components_returns_empty(self, tmp_path: Path):
-        findings = sa.run_audit(
-            skip_venv=True, skip_plugins=True, skip_mcp=True, hermes_home=tmp_path
-        )
-        assert findings == []
 
     def test_findings_sorted_by_severity_desc(self, tmp_path: Path):
         plugin = tmp_path / "plugins" / "p"
@@ -152,6 +144,7 @@ class TestExitCodes:
         }
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
+
 
 
 

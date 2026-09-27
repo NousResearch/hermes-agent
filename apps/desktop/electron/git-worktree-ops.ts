@@ -2,29 +2,22 @@
 // fresh worktree the lightest way (`git worktree add -b`), list real worktrees,
 // and remove them. Git is the source of truth; the renderer just drives these.
 
-import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
 import { resolveRequestedPathForIpc } from './hardening'
+import { execGit } from './no-console-git'
 
 function runGit(gitBin, args, cwd): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      gitBin,
-      args,
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) {
-          err.stderr = String(stderr || '')
-          reject(err)
+  return execGit(gitBin, args, { cwd, timeoutMs: 30_000 }).then(result => {
+    if (result.code !== 0) {
+      const error = new Error(result.stderr || `git exited ${result.code}`) as Error & { stderr?: string }
 
-          return
-        }
+      error.stderr = result.stderr
+      throw error
+    }
 
-        resolve(String(stdout || ''))
-      }
-    )
+    return result.stdout
   })
 }
 
@@ -122,6 +115,35 @@ async function gitLine(gitBin, args, cwd) {
   }
 }
 
+// True when the command exits 0. Use this function and not `gitLine` for a
+// `--quiet` probe. A `--quiet` probe prints nothing when it finds the ref, and
+// that output is the same as the output of a failure.
+async function gitOk(gitBin, args, cwd) {
+  try {
+    await runGit(gitBin, args, cwd)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+// The remote that a ref belongs to ("origin" for "origin/main"), or "" when the
+// name is not a remote-tracking ref in this repo. This function asks git. It
+// does not assume that the remote has the name "origin", because a repo can
+// give its remotes any name.
+async function remoteOfRef(gitBin, cwd, name) {
+  if (!name.includes('/')) {
+    return ''
+  }
+
+  if (!(await gitOk(gitBin, ['show-ref', '--verify', '--quiet', `refs/remotes/${name}`], cwd))) {
+    return ''
+  }
+
+  return name.slice(0, name.indexOf('/'))
+}
+
 async function defaultBranch(gitBin, cwd) {
   const remote = (
     await gitLine(gitBin, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd)
@@ -214,19 +236,43 @@ function uniqueDir(base) {
 }
 
 async function addExistingBranchWorktree(gitBin, root, name) {
-  const branch = sanitizeBranch(name)
+  const requested = sanitizeBranch(name)
 
-  if (!branch) {
+  if (!requested) {
     throw new Error('Branch name is required.')
   }
 
-  if (branch === (await defaultBranch(gitBin, root))) {
+  // "origin/feature" is a remote-tracking ref and not a branch that git can
+  // check out. `git worktree add <dir> origin/feature` detaches HEAD. Make a
+  // local branch with the same short name that tracks the remote ref. This is
+  // what `git switch feature` does for a branch on exactly one remote.
+  const remote = await remoteOfRef(gitBin, root, requested)
+  const branch = remote ? requested.slice(remote.length + 1) : requested
+
+  if (!remote && branch === (await defaultBranch(gitBin, root))) {
     await runGit(gitBin, ['switch', branch], root)
 
     return { path: root, branch, repoRoot: root }
   }
 
   const dir = uniqueDir(path.join(root, '.worktrees', slugify(branch)))
+
+  if (remote) {
+    // The remote-tracking ref is stale if the user did not fetch recently. This
+    // fetch is best effort: after a failure, the last known ref is still there
+    // to branch from.
+    try {
+      await runGit(gitBin, ['fetch', remote, branch], root)
+    } catch {
+      // The user is offline, or the branch is gone from the remote. Use the ref
+      // that the repo already has.
+    }
+
+    await runGit(gitBin, ['worktree', 'add', '--track', '-b', branch, dir, requested], root)
+
+    return { path: dir, branch, repoRoot: root }
+  }
+
   await runGit(gitBin, ['worktree', 'add', dir, branch], root)
 
   return { path: dir, branch, repoRoot: root }
@@ -310,10 +356,14 @@ async function removeWorktree(repoPath, worktreePath, options, gitBin) {
   return { removed: resolvedTree }
 }
 
-// List local branches for the "convert a branch into a worktree" picker, most
-// recently committed first. Each carries whether it's already checked out in a
-// worktree and, when checked out, that worktree's path. Empty on a non-repo /
-// remote backend where the probe can't run.
+// List the branches for the "convert a branch into a worktree" picker, most
+// recently committed first. The local heads come first. Then come the
+// remote-tracking refs that have no local branch yet. This is the same set that
+// the base-branch picker offers, so "convert" can reach a teammate's branch
+// that the user did not check out.
+// Each branch carries a flag for a checkout in a worktree, and the path of that
+// worktree. Empty on a non-repo or a remote backend, where the probe cannot
+// run.
 async function listBranches(repoPath, gitBin) {
   let resolved
 
@@ -324,26 +374,65 @@ async function listBranches(repoPath, gitBin) {
   }
 
   try {
-    const out = await runGit(
-      gitBin,
-      ['for-each-ref', '--format=%(refname:short)', '--sort=-committerdate', 'refs/heads'],
-      resolved
-    )
+    // Both children own cwd handles: a failed probe must still wait for its
+    // sibling before the caller may remove or switch the repository directory.
+    const probes = await Promise.allSettled([
+      runGit(gitBin, ['for-each-ref', '--format=%(refname:short)', '--sort=-committerdate', 'refs/heads'], resolved),
+      runGit(gitBin, ['for-each-ref', '--format=%(refname:short)', '--sort=-committerdate', 'refs/remotes'], resolved)
+    ])
+
+    const [local, remote] = probes
+
+    if (local.status === 'rejected' || remote.status === 'rejected') {
+      return []
+    }
+
+    const [localOut, remoteOut] = [local.value, remote.value]
 
     const trees = await listWorktrees(resolved, gitBin)
     const pathByBranch = new Map(trees.filter(tree => tree.branch).map(tree => [tree.branch, tree.path]))
     const trunk = await defaultBranch(gitBin, resolved)
 
-    return out
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .map(name => ({
+    const names = (out: string) =>
+      out
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+
+    const locals = names(localOut)
+    const localSet = new Set(locals)
+
+    const remotes = names(remoteOut).filter(name => {
+      // "origin/HEAD" is a symbolic alias for the default branch of the remote.
+      // It is not a branch, and it shows in the list as a duplicate.
+      if (name.endsWith('/HEAD')) {
+        return false
+      }
+
+      // The user reaches a remote branch that they track locally through its
+      // local head. To list both is noise, and a checkout of the
+      // remote-tracking ref detaches HEAD.
+      return !localSet.has(name.slice(name.indexOf('/') + 1))
+    })
+
+    return [
+      ...locals.map(name => ({
         name,
         checkedOut: pathByBranch.has(name),
         isDefault: Boolean(trunk && name === trunk),
+        isRemote: false,
         worktreePath: pathByBranch.get(name) || null
+      })),
+      ...remotes.map(name => ({
+        // A remote branch has no local checkout, and it cannot be the local
+        // trunk. It is therefore never checked out and never the default.
+        name,
+        checkedOut: false,
+        isDefault: false,
+        isRemote: true,
+        worktreePath: null
       }))
+    ]
   } catch {
     return []
   }
@@ -351,6 +440,25 @@ async function listBranches(repoPath, gitBin) {
 
 async function switchBranch(repoPath, branch, gitBin) {
   const resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Branch switch' })
+
+  // Sidebar lanes exist for plain folders too (non-repo explicit projects),
+  // and their lane label is the folder basename — not a branch. `git switch`
+  // there is meaningless, and sanitizing that label would throw a misleading
+  // "Branch name is required." — so short-circuit for non-repo roots and let
+  // callers (e.g. "+" new session on the project lane) proceed with a plain
+  // session instead of aborting.
+  let inside = 'false'
+
+  try {
+    inside = (await runGit(gitBin, ['rev-parse', '--is-inside-work-tree'], resolved)).trim()
+  } catch {
+    // Not a git repo (or git unavailable): fall through to the short-circuit.
+  }
+
+  if (inside !== 'true') {
+    return { branch: null }
+  }
+
   const target = sanitizeBranch(branch)
 
   if (!target) {

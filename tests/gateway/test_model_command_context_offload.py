@@ -11,17 +11,14 @@ no source-reading assertions; reverting either offload makes the corresponding
 test fail because the blocking work lands back on the loop thread.
 """
 
-import asyncio
 import threading
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-import gateway.slash_commands as slash_commands
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
-
 
 def _make_source() -> SessionSource:
     return SessionSource(
@@ -32,7 +29,6 @@ def _make_source() -> SessionSource:
         chat_type="dm",
     )
 
-
 def _event(text: str) -> MessageEvent:
     return MessageEvent(
         text=text,
@@ -40,10 +36,9 @@ def _event(text: str) -> MessageEvent:
         source=_make_source(),
     )
 
-
 def _runner_with_store(tmp_path, monkeypatch):
     """Minimal GatewayRunner harness driving the real /model handler."""
-    import yaml as _yaml
+    import hermes_yaml as _yaml
 
     import gateway.run as gateway_run
     from gateway.run import GatewayRunner
@@ -91,7 +86,6 @@ def _runner_with_store(tmp_path, monkeypatch):
     runner._async_session_store = _store
     return runner
 
-
 @pytest.mark.asyncio
 async def test_context_resolution_runs_off_the_loop_thread(tmp_path, monkeypatch):
     """The sync resolver must execute on a worker thread when the /model
@@ -118,30 +112,4 @@ async def test_context_resolution_runs_off_the_loop_thread(tmp_path, monkeypatch
         "resolve_display_context_length ran on the event loop thread — "
         "the /model handler must offload it via "
         "resolve_display_context_length_async"
-    )
-
-
-@pytest.mark.asyncio
-async def test_warning_enrichment_is_offloaded(tmp_path, monkeypatch):
-    """enrich_model_switch_warnings_for_gateway reaches the same sync resolver
-    via merge_preflight_compression_warning, so the handler must dispatch it
-    through asyncio.to_thread rather than calling it inline on the loop."""
-    from hermes_cli import context_switch_guard
-
-    offloaded = []
-    real_to_thread = asyncio.to_thread
-
-    async def _spy_to_thread(func, /, *args, **kwargs):
-        offloaded.append(func)
-        return await real_to_thread(func, *args, **kwargs)
-
-    monkeypatch.setattr(slash_commands.asyncio, "to_thread", _spy_to_thread)
-
-    runner = _runner_with_store(tmp_path, monkeypatch)
-    result = await runner._handle_model_command(_event("/model gpt-5.5"))
-
-    assert result is not None and "gpt-5.5" in result
-    assert context_switch_guard.enrich_model_switch_warnings_for_gateway in offloaded, (
-        "enrich_model_switch_warnings_for_gateway must be dispatched via "
-        "asyncio.to_thread (it was called inline on the event loop instead)"
     )

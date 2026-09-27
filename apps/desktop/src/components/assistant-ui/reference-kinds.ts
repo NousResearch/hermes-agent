@@ -157,3 +157,41 @@ const REFERENCE_PATTERN = /@(file|folder|url|image|tool|line|terminal|session):(
 export function referenceRe(): RegExp {
   return new RegExp(REFERENCE_PATTERN.source, 'g')
 }
+
+/** Remove reference-only lines when comparing visible message text. */
+// Anchored + non-global: no shared `lastIndex` state (the hazard referenceRe()
+// exists to avoid), and hoisting skips a RegExp construction per call — this
+// runs on both sides of every message comparison in the reconcile loops.
+const REFERENCE_LINE_RE = new RegExp(`^(?:${REFERENCE_PATTERN.source})$`)
+
+export function textWithoutReferenceLines(text: string): string {
+  return text
+    .split('\n')
+    .filter(line => !REFERENCE_LINE_RE.test(line.trimEnd()))
+    .join('\n')
+    .trim()
+}
+
+/** A composer attachment ref (`@file:`/`@folder:`), which renders as a chip, not a thumbnail. */
+export const isAttachmentRef = (ref: string): boolean => /^@(?:file|folder):/.test(ref)
+
+/**
+ * Peel the attachment block off the top of a stored user prompt.
+ *
+ * The composer sends attachments as one `@file:`/`@folder:` line each, ahead
+ * of the typed text, and keeps them out of the bubble as `attachmentRefs`. A
+ * persisted turn carries that block inline, so without this a reloaded (or
+ * reconciled) bubble opens with a raw path and a blank line where the live one
+ * showed a chip under the prompt. Only the leading run moves: a ref typed
+ * mid-prose stays where the user put it.
+ */
+export function splitLeadingAttachmentRefs(text: string): { refs: string[]; text: string } {
+  const lines = text.split('\n')
+  const refs: string[] = []
+
+  while (lines.length && isAttachmentRef(lines[0]) && REFERENCE_LINE_RE.test(lines[0].trimEnd())) {
+    refs.push(lines.shift()!.trimEnd())
+  }
+
+  return refs.length ? { refs, text: lines.join('\n').trim() } : { refs, text }
+}

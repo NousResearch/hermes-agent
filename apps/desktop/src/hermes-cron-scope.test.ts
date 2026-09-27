@@ -8,6 +8,7 @@ import {
   getCronJobs,
   pauseCronJob,
   resumeCronJob,
+  setApiRequestConnection,
   setApiRequestProfile,
   triggerCronJob,
   updateCronJob
@@ -29,6 +30,7 @@ describe('cron helpers are profile-scoped', () => {
 
   afterEach(() => {
     setApiRequestProfile(null)
+    setApiRequestConnection(null)
     delete (window as { hermesDesktop?: unknown }).hermesDesktop
   })
 
@@ -54,6 +56,37 @@ describe('cron helpers are profile-scoped', () => {
 
     for (const call of api.mock.calls) {
       expect(call[0].profile).toBe('coder')
+    }
+  })
+
+  it('omits connectionId when the local pool serves the active gateway', () => {
+    void getCronJobRuns('job-1')
+    expect(api.mock.calls.at(-1)?.[0]).not.toHaveProperty('connectionId')
+  })
+
+  // Contract: with a registered gateway connection active, cron run sessions
+  // live in THAT gateway's state.db — not in any local profile's. Every cron
+  // helper must tag the owning connection so the main process routes the REST
+  // call to the same backend the job list (and its runs) actually live on.
+  // Without it, run history read a local state.db with zero cron rows and
+  // every job showed "No runs yet" (#87882).
+  it('forwards the active registry connection to every cron helper', () => {
+    setApiRequestProfile('research')
+    setApiRequestConnection('gw-tailscale')
+
+    void getCronJobs('research')
+    void getCronJob('job-1')
+    void getCronJobRuns('job-1')
+    void createCronJob({ name: 'nightly', prompt: 'run', schedule: '0 3 * * *' } as never)
+    void updateCronJob('job-1', { enabled: false } as never)
+    void pauseCronJob('job-1')
+    void resumeCronJob('job-1')
+    void triggerCronJob('job-1')
+    void deleteCronJob('job-1')
+
+    for (const call of api.mock.calls) {
+      expect((call[0] as { connectionId?: string }).connectionId).toBe('gw-tailscale')
+      expect(call[0].profile).toBe('research')
     }
   })
 

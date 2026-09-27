@@ -160,17 +160,17 @@ class MicroCompactionMixin:
             return None
         # Self-authored directives (#120439): the rolling summary is re-injected into every later
         # micro-compact pass and into the request, so a directive the summarizer wrote for its
-        # successor compounds. No regeneration here — the failure convention on this path is None
-        # (the exchange stays unabsorbed and a later pass retries it), which is cheaper than a
-        # second aux call and loses nothing. Not ``templated``: this prompt fixes no sections, so
-        # the summary's own headings are not out-of-schema.
-        findings = _cc().summary_guard_findings(content, templated=False)
-        if findings:
-            logger.warning(
-                "micro-summarization rejected: the summary issues instructions to its successor (%s)",
-                "; ".join(findings),
-            )
-            return None
+        # successor compounds. Cut the lines that issue one and keep the rest, as the batch guard
+        # does on a second offence. Refusing instead left the exchange unabsorbed, and a summary
+        # that keeps tripping (a session that ran `cat .env`) is skipped after a few failures and
+        # lost. A scanner-only hit is kept, as on the batch path: with no directive line it is a
+        # record. No marker: this text is fed back every pass and would accumulate one.
+        cleaned, removed = _cc().sanitize_summary_directives(content)
+        if removed:
+            logger.warning("micro-summarization: removed %d directive line(s) the summarizer wrote", removed)
+            if not cleaned:
+                return None
+            return cleaned
         return content
 
     def _needs_defrag(self) -> bool:

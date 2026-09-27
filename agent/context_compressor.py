@@ -255,14 +255,13 @@ def _summary_heading_text(line: str) -> Optional[str]:
     return " ".join(text.lower().split()) or None
 
 
-def summary_guard_findings(content: str, *, templated: bool = True) -> List[str]:
+def summary_guard_findings(content: str) -> List[str]:
     """What is directive-shaped about this candidate summary; ``[]`` means clean.
 
     Three signals: the deterministic threat scanner (the prose-proof ``scope="context"`` set the
     cron-assembled prompts already run), a heading outside the template schema, and a line that
-    issues an instruction rather than recording one. The heading check needs a schema, so it runs
-    only for ``templated`` summaries: the rolling micro summary has no fixed sections and names its
-    own (``## Decisions``, ``## Open Questions``), which is not out-of-schema there.
+    issues an instruction rather than recording one. The heading check needs the batch template's
+    schema; the rolling micro summary has none and only runs ``sanitize_summary_directives``.
     """
     findings: List[str] = []
     try:
@@ -275,7 +274,7 @@ def summary_guard_findings(content: str, *, templated: bool = True) -> List[str]
     unknown = sorted({
         heading for heading in map(_summary_heading_text, content.splitlines())
         if heading and heading not in _SUMMARY_TEMPLATE_HEADINGS
-    }) if templated else []
+    })
     if unknown:
         findings.append("unknown section: " + ", ".join(unknown[:3]))
     if any(_SELF_DIRECTIVE_RE.match(line) for line in content.splitlines()):

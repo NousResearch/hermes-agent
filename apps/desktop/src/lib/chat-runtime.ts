@@ -5,10 +5,9 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { foldPersonalityName } from '@/lib/personalities'
 import type { ComposerAttachment } from '@/store/composer'
 import type { SessionInfo } from '@/types/hermes'
-
-import { foldPersonalityName } from '@/lib/personalities'
 
 export { BUILTIN_PERSONALITIES } from '@/lib/personalities'
 
@@ -296,7 +295,9 @@ export function personalityNamesFromConfig(config: unknown): string[] {
     if (block && typeof block === 'object' && !Array.isArray(block)) {
       for (const name of Object.keys(block as Record<string, unknown>)) {
         const key = foldPersonalityName(name)
-        if (key) names.add(key)
+        if (key) {
+          names.add(key)
+        }
       }
     }
   }

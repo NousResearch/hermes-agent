@@ -258,7 +258,9 @@ function personalityOptions(config: HermesConfigRecord): string[] {
     if (isPlainObject(block)) {
       for (const name of Object.keys(block)) {
         const folded = foldPersonalityName(name)
-        if (folded) customNames.push(folded)
+        if (folded) {
+          customNames.push(folded)
+        }
       }
     }
   }

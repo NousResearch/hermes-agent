@@ -62,7 +62,7 @@ def test_anthropic_correction_preserves_split_system_and_tool_cache(correction_h
     assert proc.returncode == (1 if correction_tool else 0), proc.stdout + proc.stderr
     result = json.loads(proc.stdout)
     assert result["exit_code"] == proc.returncode
-    assert artifact.read_text(encoding="utf-8") == ("old artifact" if correction_tool else '{"ok":true}')
+    assert artifact.read_text(encoding="utf-8-sig") == ("old artifact" if correction_tool else '{"ok":true}')
     assert not forbidden.exists()
     assert len(records) == 2
     assert not [r["schema_errors"] for r in records if r.get("schema_errors")]
@@ -103,7 +103,7 @@ def test_corrected_answer_is_durable_and_replays_on_resume(correction_home, prov
         assert proc.returncode == 0, proc.stdout + proc.stderr
         result = json.loads(proc.stdout)
         assert result["structured_output"] == {"ok": True}
-        assert (home.project / "answer.json").read_text(encoding="utf-8") == corrected
+        assert (home.project / "answer.json").read_text(encoding="utf-8-sig") == corrected
         db = SessionDB(home.db_path, read_only=True)
         try:
             messages = db.get_messages_as_conversation(result["session_id"])
@@ -152,7 +152,7 @@ def test_surrogate_json_uses_utf8_safe_envelope_before_publishing(correction_hom
         proc = _run(home, "--format", output_format, env={"PYTHONIOENCODING": "utf-8:strict"})
 
     if proc.returncode:
-        assert artifact.read_text(encoding="utf-8") == "old artifact", (
+        assert artifact.read_text(encoding="utf-8-sig") == "old artifact", (
             f"failed run replaced artifact: exit={proc.returncode}, stdout={proc.stdout!r}, stderr={proc.stderr!r}")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     events = [json.loads(line) for line in proc.stdout.splitlines()]
@@ -160,5 +160,5 @@ def test_surrogate_json_uses_utf8_safe_envelope_before_publishing(correction_hom
     assert len(results) == 1
     assert results[0]["exit_code"] == 0
     assert results[0]["structured_output"] == json.loads(raw)
-    assert artifact.read_text(encoding="utf-8") == raw
+    assert artifact.read_text(encoding="utf-8-sig") == raw
     assert len(server.main_requests()) == 1

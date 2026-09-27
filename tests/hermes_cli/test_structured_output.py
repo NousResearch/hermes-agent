@@ -162,18 +162,18 @@ def test_json_format_emits_one_final_envelope(chat):
 @pytest.mark.parametrize("output_format", ["text", "json", "stream-json"])
 def test_schema_validates_whole_result_with_local_refs(chat, tmp_path, value, output_format):
     schema = tmp_path / "schema.json"
-    schema.write_text(json.dumps({"$defs": {"answer": {"const": value}}, "$ref": "#/$defs/answer"}))
+    schema.write_text(json.dumps({"$defs": {"answer": {"const": value}}, "$ref": "#/$defs/answer"}), encoding="utf-8")
     query = tmp_path / "query.txt"
-    query.write_text("answer this")
+    query.write_text("answer this", encoding="utf-8")
     raw = json.dumps(value)
     target = tmp_path / "answer.json"
-    target.write_text("old artifact")
+    target.write_text("old artifact", encoding="utf-8")
     code, stdout, stderr = chat.run(
         "--query-file", str(query), "--format", output_format, "--output-schema", str(schema), "-o", str(target),
         results=[{"final_response": raw, "completed": True}],
     )
     assert code == 0, stderr
-    assert target.read_text() == raw
+    assert target.read_text(encoding="utf-8-sig") == raw
     if output_format == "text":
         assert stdout == raw + "\n"
     else:
@@ -205,7 +205,7 @@ def test_schema_validates_whole_result_with_local_refs(chat, tmp_path, value, ou
 def test_bad_schema_fails_before_agent_starts(chat, tmp_path, schema_text, diagnostic):
     schema = tmp_path / "schema.json"
     if schema_text is not None:
-        schema.write_text(schema_text)
+        schema.write_text(schema_text, encoding="utf-8")
     code, stdout, stderr = chat.run("-q", "hi", "--format", "json", "--output-schema", str(schema))
     assert code != 0
     assert chat.started == 0 and not chat.calls
@@ -219,7 +219,7 @@ def test_bad_schema_fails_before_agent_starts(chat, tmp_path, schema_text, diagn
                                   '```json\n{}\n```', 'Here: {}', '{} trailing', '{} {}', ''])
 def test_invalid_answer_is_failed_with_raw_text(chat, tmp_path, raw):
     schema = tmp_path / "schema.json"
-    schema.write_text('{}')
+    schema.write_text('{}', encoding="utf-8")
     chat.corrections = [raw]
     code, stdout, stderr = chat.run("-q", "hi", "--format", "json", "--output-schema", str(schema),
                                    results=[{"final_response": raw, "completed": True}]*2)
@@ -235,7 +235,7 @@ def test_invalid_answer_is_failed_with_raw_text(chat, tmp_path, raw):
 @pytest.mark.parametrize("corrected, expected_code", [('42', 0), ('"wrong"', 1)])
 def test_one_correction_preserves_transcript_model_and_tools(chat, tmp_path, corrected, expected_code):
     schema = tmp_path / "schema.json"
-    schema.write_text('{"type": "integer"}')
+    schema.write_text('{"type": "integer"}', encoding="utf-8")
     transcript = [{"role": "user", "content": "perform task"},
                   {"role": "assistant", "tool_calls": [{"id": "c", "type": "function", "function": {
                       "name": "write_file", "arguments": "{}"}}], "content": ""},
@@ -243,7 +243,7 @@ def test_one_correction_preserves_transcript_model_and_tools(chat, tmp_path, cor
                   {"role": "assistant", "content": '"wrong"'}]
     chat.corrections = [corrected]
     target = tmp_path / "answer.json"
-    target.write_text("old artifact")
+    target.write_text("old artifact", encoding="utf-8")
     code, stdout, stderr = chat.run("-q", "perform task", "--format", "json", "--output-schema", str(schema),
                                    "-o", str(target),
                                    results=[{"final_response": '"wrong"', "completed": True, "messages": transcript}])
@@ -261,9 +261,9 @@ def test_one_correction_preserves_transcript_model_and_tools(chat, tmp_path, cor
     assert result["text"] == corrected
     if code == 0:
         assert result["structured_output"] == 42
-        assert target.read_text() == corrected
+        assert target.read_text(encoding="utf-8-sig") == corrected
     else:
-        assert target.read_text() == "old artifact"
+        assert target.read_text(encoding="utf-8-sig") == "old artifact"
         assert result["failed"] is True and len(result["schema_errors"]) == 2
         assert "structured_output" not in result
 
@@ -274,7 +274,7 @@ def test_one_correction_preserves_transcript_model_and_tools(chat, tmp_path, cor
 ])
 def test_correction_partial_or_tool_call_cannot_publish_success(chat, tmp_path, finish_reason, tools):
     schema = tmp_path / "schema.json"
-    schema.write_text('{"type":"integer"}')
+    schema.write_text('{"type":"integer"}', encoding="utf-8")
     chat.corrections = [SimpleNamespace(choices=[SimpleNamespace(
         message=SimpleNamespace(content="42", tool_calls=tools), finish_reason=finish_reason)], usage=None)]
     code, stdout, stderr = chat.run("-q", "hi", "--format", "json", "--output-schema", str(schema),
@@ -291,14 +291,14 @@ def test_correction_partial_or_tool_call_cannot_publish_success(chat, tmp_path, 
 def test_output_file_contains_only_final_response_anchored_before_chdir(chat, tmp_path, monkeypatch, output_format):
     monkeypatch.chdir(tmp_path)
     destination = tmp_path / "answer.txt"
-    destination.write_text("old artifact")
+    destination.write_text("old artifact", encoding="utf-8")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     import cli
     monkeypatch.setattr(cli, "_start_worktree_setup", lambda *a, **k: monkeypatch.chdir(elsewhere))
     code, stdout, stderr = chat.run("-q", "hi", "--format", output_format, "-o", "answer.txt")
     assert code == 0, stderr
-    assert destination.read_text() == "hello"
+    assert destination.read_text(encoding="utf-8-sig") == "hello"
     assert not (elsewhere / "answer.txt").exists()
     if output_format == "text":
         assert stdout == "hello\n"
@@ -310,7 +310,7 @@ def test_failed_atomic_replacement_preserves_old_artifact(chat, tmp_path, monkey
     import os
     from pathlib import Path
     destination = tmp_path / "answer.txt"
-    destination.write_text("old artifact")
+    destination.write_text("old artifact", encoding="utf-8")
     attempts = []
     real_replace = os.replace
 
@@ -318,8 +318,8 @@ def test_failed_atomic_replacement_preserves_old_artifact(chat, tmp_path, monkey
         if Path(target) == destination:
             attempts.append(Path(source))
             assert Path(source).parent == destination.parent
-            assert Path(source).read_text() == "hello"
-            assert destination.read_text() == "old artifact"
+            assert Path(source).read_text(encoding="utf-8-sig") == "hello"
+            assert destination.read_text(encoding="utf-8-sig") == "old artifact"
             raise OSError("replacement denied")
         return real_replace(source, target)
 
@@ -329,7 +329,7 @@ def test_failed_atomic_replacement_preserves_old_artifact(chat, tmp_path, monkey
     result = json.loads(stdout)
     assert result["exit_code"] == code
     assert "replacement denied" in result["error"]
-    assert destination.read_text() == "old artifact"
+    assert destination.read_text(encoding="utf-8-sig") == "old artifact"
     assert len(attempts) == 1 and not attempts[0].exists()
 
 
@@ -340,7 +340,7 @@ def test_output_target_must_be_regular_before_and_after_turn(chat, tmp_path, kin
     import os
     target = tmp_path / "output"
     protected = tmp_path / "protected"
-    protected.write_text("do not replace")
+    protected.write_text("do not replace", encoding="utf-8")
 
     def make_unsafe(agent=None):
         if kind == "directory":
@@ -358,7 +358,7 @@ def test_output_target_must_be_regular_before_and_after_turn(chat, tmp_path, kin
     result = json.loads(stdout)
     assert code == result["exit_code"] == 1
     assert "regular" in result["error"]
-    assert protected.read_text() == "do not replace"
+    assert protected.read_text(encoding="utf-8-sig") == "do not replace"
     assert bool(chat.calls) is during_turn
     if kind in {"symlink", "dangling"}:
         assert target.is_symlink()
@@ -368,9 +368,9 @@ def test_output_target_must_be_regular_before_and_after_turn(chat, tmp_path, kin
                                                     (RuntimeError("provider unavailable"), 1)])
 def test_correction_failure_keeps_raw_answer_and_old_file(chat, tmp_path, failure, expected_code):
     schema = tmp_path / "schema.json"
-    schema.write_text('{"type":"integer"}')
+    schema.write_text('{"type":"integer"}', encoding="utf-8")
     target = tmp_path / "output"
-    target.write_text("old")
+    target.write_text("old", encoding="utf-8")
     chat.corrections = [failure]
     code, stdout, stderr = chat.run("-q", "hi", "--format", "json", "--output-schema", str(schema), "-o", str(target),
                                    results=[{"final_response": '"bad"', "completed": True}])
@@ -378,14 +378,14 @@ def test_correction_failure_keeps_raw_answer_and_old_file(chat, tmp_path, failur
     assert code == result["exit_code"] == expected_code
     assert result["text"] == '"bad"'
     assert "structured_output" not in result
-    assert target.read_text() == "old"
+    assert target.read_text(encoding="utf-8-sig") == "old"
     assert len(chat.correction_requests) == 1
 
 
 def test_missing_validator_fails_closed_before_agent(chat, tmp_path, monkeypatch):
     import builtins
     schema = tmp_path / "schema.json"
-    schema.write_text('{}')
+    schema.write_text('{}', encoding="utf-8")
     real_import = builtins.__import__
 
     def without_validator(name, *args, **kwargs):
@@ -409,15 +409,15 @@ def test_missing_validator_fails_closed_before_agent(chat, tmp_path, monkeypatch
 @pytest.mark.parametrize("output_format", ["text", "json", "stream-json"])
 def test_failed_turn_never_corrects_or_replaces_artifact(chat, tmp_path, failure, expected_code, output_format):
     schema = tmp_path / "schema.json"
-    schema.write_text('{}')
+    schema.write_text('{}', encoding="utf-8")
     target = tmp_path / "output"
-    target.write_text("old")
+    target.write_text("old", encoding="utf-8")
     turn = {"final_response": "42", **failure} if isinstance(failure, dict) else failure
     code, stdout, stderr = chat.run("-q", "hi", "--format", output_format, "--output-schema", str(schema),
                                    "-o", str(target), results=[turn])
     assert code == expected_code
     assert not chat.correction_requests
-    assert target.read_text() == "old"
+    assert target.read_text(encoding="utf-8-sig") == "old"
     if output_format != "text":
         result = json.loads(stdout.splitlines()[-1])
         assert result["exit_code"] == code
@@ -430,9 +430,9 @@ def test_failed_turn_never_corrects_or_replaces_artifact(chat, tmp_path, failure
 def test_no_correction_after_run_budget_or_interrupt(chat, tmp_path, budget):
     import time
     schema = tmp_path / "schema.json"
-    schema.write_text('{"type":"integer"}')
+    schema.write_text('{"type":"integer"}', encoding="utf-8")
     target = tmp_path / "output"
-    target.write_text("old")
+    target.write_text("old", encoding="utf-8")
 
     def exhausted(agent):
         if budget == "time":
@@ -449,7 +449,7 @@ def test_no_correction_after_run_budget_or_interrupt(chat, tmp_path, budget):
                                    "-o", str(target), results=[{"final_response": '"bad"', "completed": True}])
     assert code != 0
     assert not chat.correction_requests
-    assert target.read_text() == "old"
+    assert target.read_text(encoding="utf-8-sig") == "old"
     assert "structured_output" not in json.loads(stdout)
 
 
@@ -498,7 +498,7 @@ def test_no_reference_retrieval_even_through_nonkeyword_local_pointer(chat, tmp_
 
     monkeypatch.setattr(urllib.request, "urlopen", forbidden_retrieval)
     schema = tmp_path / "schema.json"
-    schema.write_text(json.dumps({"payload": {"$ref": reference}, "$ref": "#/payload"}))
+    schema.write_text(json.dumps({"payload": {"$ref": reference}, "$ref": "#/payload"}), encoding="utf-8")
     code, stdout, stderr = chat.run("-q", "hi", "--format", "json", "--output-schema", str(schema))
     assert code == 1
     assert not retrieved
@@ -509,7 +509,7 @@ def test_no_reference_retrieval_even_through_nonkeyword_local_pointer(chat, tmp_
 @pytest.mark.parametrize("corrected", ['42', '"still wrong"'])
 def test_correction_usage_included_even_when_validation_fails(chat, tmp_path, corrected):
     schema = tmp_path / "schema.json"
-    schema.write_text('{"type":"integer"}')
+    schema.write_text('{"type":"integer"}', encoding="utf-8")
     chat.corrections = [SimpleNamespace(choices=[SimpleNamespace(
         message=SimpleNamespace(content=corrected, tool_calls=None), finish_reason="stop")],
         usage=SimpleNamespace(prompt_tokens=10, completion_tokens=4, total_tokens=14))]
@@ -527,7 +527,7 @@ def test_output_options_force_one_shot_even_on_tty(chat, tmp_path, monkeypatch, 
     import sys
     import hermes_cli.main as entry
     schema = tmp_path / "schema.json"
-    schema.write_text('{}')
+    schema.write_text('{}', encoding="utf-8")
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(entry, "_resolve_use_tui", lambda args: pytest.fail("Interactive UI resolution attempted"))
@@ -541,10 +541,10 @@ def test_output_options_force_one_shot_even_on_tty(chat, tmp_path, monkeypatch, 
 def test_relative_schema_is_loaded_before_cwd_changes(chat, tmp_path, monkeypatch):
     import cli
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "schema.json").write_text('{"type":"integer"}')
+    (tmp_path / "schema.json").write_text('{"type":"integer"}', encoding="utf-8")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (elsewhere / "schema.json").write_text('false')
+    (elsewhere / "schema.json").write_text('false', encoding="utf-8")
     monkeypatch.setattr(cli, "_start_worktree_setup", lambda *a, **k: monkeypatch.chdir(elsewhere))
     code, stdout, stderr = chat.run("-q", "hi", "--format", "json", "--output-schema", "schema.json",
                                    results=[{"final_response": "42", "completed": True}])
@@ -568,7 +568,7 @@ def test_native_correction_uses_selected_transport_and_accounts_usage(tmp_path, 
     agent._cached_system_prompt = "Frozen system prompt"
     agent._current_turn_timestamp = 0  # this fixture bypasses the turn prologue
     schema_file = tmp_path / "schema.json"
-    schema_file.write_text('{"type":"integer"}')
+    schema_file.write_text('{"type":"integer"}', encoding="utf-8")
     transcript = [{"role": "user", "content": "task"}, {"role": "assistant", "content": '"wrong"'}]
     original = copy.deepcopy(transcript)
     before = agent._build_api_kwargs(_iteration_summary_api_messages(agent, transcript))
@@ -711,12 +711,12 @@ def test_moa_schema_correction_does_not_leak_prepared_request_to_replaced_client
 
 def test_unserializable_result_fails_before_replacing_output_file(chat, tmp_path):
     target = tmp_path / "answer.json"
-    target.write_text("old artifact")
+    target.write_text("old artifact", encoding="utf-8")
     code, stdout, stderr = chat.run("-q", "hi", "--format", "json", "-o", str(target),
                                    results=[{"final_response": "42", "completed": True,
                                              "structured_output": object()}])
     assert code == 1
-    assert target.read_text() == "old artifact"
+    assert target.read_text(encoding="utf-8-sig") == "old artifact"
     result = json.loads(stdout)
     assert result["exit_code"] == 1 and result["failed"] is True
     assert "serializable" in result["error"]
@@ -730,9 +730,9 @@ def test_text_output_contract_cannot_succeed_without_a_result(chat, tmp_path, mo
     from hermes_cli._parser import build_top_level_parser
 
     schema = tmp_path / "schema.json"
-    schema.write_text("{}")
+    schema.write_text("{}", encoding="utf-8")
     target = tmp_path / "answer.txt"
-    target.write_text("old artifact")
+    target.write_text("old artifact", encoding="utf-8")
     if failure == "worktree":
         monkeypatch.setattr(cli, "_start_worktree_setup", lambda *a, **k: lambda: None)
     else:
@@ -751,7 +751,7 @@ def test_text_output_contract_cannot_succeed_without_a_result(chat, tmp_path, mo
         code = 0
     stdout, stderr = capsys.readouterr()
     assert not chat.calls and not hasattr(chat, "agent")
-    assert target.read_text() == "old artifact"
+    assert target.read_text(encoding="utf-8-sig") == "old artifact"
     assert stdout == ""
     assert code != 0, f"{failure} reported success without running the agent"
     assert "final response" in stderr

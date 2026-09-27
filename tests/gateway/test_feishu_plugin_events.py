@@ -1,6 +1,8 @@
 """Native Feishu plugin handlers use the real SDK dispatcher, without network I/O."""
 
+import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -130,3 +132,31 @@ def test_empty_factory_set_keeps_core_dispatch_and_missing_sdk_fallback(plugin, 
     assert len(events) == 1
     monkeypatch.setattr(fa, "EventDispatcherHandler", None)
     assert fa.FeishuAdapter(PlatformConfig())._build_event_handler() is None
+
+
+def test_public_connect_delivers_during_transport_start_and_disconnect_clears_builder(plugin, monkeypatch):
+    _, module = plugin
+    adapter = fa.FeishuAdapter(PlatformConfig(extra={
+        "app_id": "fixture-connect", "app_secret": "fixture-secret",
+    }))
+    monkeypatch.setattr(adapter, "_hydrate_bot_identity", AsyncMock())
+    seen_clients = []
+
+    class LocalWSClient:
+        def __init__(self, **kwargs):
+            seen_clients.append(kwargs)
+            # Delivery at construction must work, not only after connect() returns.
+            dispatch(kwargs["event_handler"], "task.task.update_user_access_v2", {"ready": True})
+
+    monkeypatch.setattr(fa, "FeishuWSClient", LocalWSClient)
+    monkeypatch.setattr(fa, "_run_official_feishu_ws_client", lambda *args: None)
+
+    async def exercise():
+        assert await adapter.connect()
+        await adapter._ws_future
+        assert module.events == [{"ready": True}]
+        assert seen_clients[0]["event_handler"] is adapter._event_handler
+        await adapter.disconnect()
+        assert adapter.event_dispatcher_builder is None
+
+    asyncio.run(exercise())

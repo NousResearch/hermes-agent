@@ -158,6 +158,41 @@ def _anchor(text: str, base, container_paths: bool) -> Path | PurePosixPath:
     return p.resolve()
 
 
+def _windows_drive_path(text: str) -> bool:
+    """True for ``C:\\...`` / ``C:/...`` drive-letter paths (not POSIX-absolute)."""
+    return len(text) >= 3 and text[0].isalpha() and text[1] == ":" and text[2] in ("\\", "/")
+
+
+def _host_root_to_container(root: str | None) -> str | None:
+    """Container root for a host workspace anchor: ``/workspace`` when the anchor is a
+    Windows drive-letter host path (POSIX sees it as relative, which produced the
+    doubled ``cwd/host-path`` strings behind FORGE's activation failure)."""
+    if root and _windows_drive_path(root):
+        return "/workspace"
+    return None
+
+
+def _host_to_container_path(text: str, host_root: str, container_root: str) -> str:
+    """Translate a host drive-letter path into the container's ``/workspace`` namespace.
+
+    In-root paths map under ``container_root``; out-of-root drive-letter paths are
+    rejected (blanket acceptance would smuggle arbitrary host paths into the sandbox).
+    An already-container path (``/...``) passes through unchanged."""
+    if posixpath.isabs(text) or not _windows_drive_path(text):
+        return text
+    drive_norm = text.replace("\\", "/")
+    root_norm = host_root.replace("\\", "/").rstrip("/")
+    if drive_norm.lower() == root_norm.lower():
+        return container_root
+    if drive_norm.lower().startswith(root_norm.lower() + "/"):
+        relative = drive_norm[len(root_norm):].lstrip("/")
+        return posixpath.join(container_root, relative) if relative else container_root
+    raise ValueError(
+        f"Host path {text!r} is outside the mounted workspace {host_root!r}; "
+        f"pass a workspace-relative path or one under {container_root}."
+    )
+
+
 def _resolve_base_dir(
     task_id: str = "default", *, container_paths: bool | None = None) -> Path | PurePosixPath:
     """Return the ABSOLUTE base directory for resolving relative paths:
@@ -165,6 +200,13 @@ def _resolve_base_dir(
     root = _authoritative_workspace_root(task_id)
     if container_paths is None:
         container_paths = _uses_container_paths(task_id)
+    if container_paths:
+        # A Windows drive-letter workspace anchor belongs to the HOST namespace; inside
+        # the container it is mounted at /workspace. Anchoring on the raw host string
+        # made posixpath treat it as relative and duplicated the process cwd.
+        container_root = _host_root_to_container(root)
+        if container_root is not None:
+            return PurePosixPath(container_root)
     # A backend's relative cwd is anchored to the process cwd once, here.
     return _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
 
@@ -173,6 +215,13 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     """Resolve *filepath* against the task's absolute base directory
     (absolute inputs are returned resolved-but-unanchored)."""
     container_paths = _uses_container_paths(task_id)
+    if container_paths and _windows_drive_path(str(filepath)):
+        # Host drive-letter input naming something inside the mounted workspace is
+        # translated into the container namespace; out-of-root input is rejected.
+        root = _authoritative_workspace_root(task_id)
+        container_root = _host_root_to_container(root)
+        if container_root is not None:
+            filepath = _host_to_container_path(str(filepath), str(root), container_root)
     return _anchor(_host_text(filepath, container_paths),
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
 
@@ -189,6 +238,21 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
         if not workspace_root:
             return None
         if _uses_container_paths(task_id):
+            container_root = _host_root_to_container(workspace_root)
+            if container_root is not None:
+                # Compare inside the container namespace: translate the host anchor
+                # to /workspace and match the normalized PurePosixPath result.
+                root = PurePosixPath(container_root)
+                return (
+                    None if str(resolved) == str(root) or str(resolved).startswith(str(root) + "/")
+                    else (
+                        f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
+                        f"OUTSIDE the mounted workspace ({str(root)!r}). The edit will land in "
+                        f"a different directory than the terminal's cwd. If this is not "
+                        f"intended (e.g. a git-worktree session writing into the main "
+                        f"checkout), pass an absolute path under the workspace instead."
+                    )
+                )
             root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
         else:
             root = Path(_expand_tilde(workspace_root)).resolve()

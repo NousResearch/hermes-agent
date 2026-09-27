@@ -228,7 +228,9 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
     instructions = _tts_instructions_channel(tts_config)
     if instructions and _elevenlabs_supports_instruction_tags(str(model_id)):
-        text = f"[{instructions}] {text}"
+        audio_tag = re.sub(r"\s+", " ", re.sub(r"[<>\[\]{}]", " ", instructions)).strip()
+        if audio_tag:
+            text = f"[{audio_tag}] {text}"
     client = _origin()._import_elevenlabs()(api_key=api_key, **_elevenlabs_environment_kwargs(el_config))
     audio_generator = client.text_to_speech.convert(
         text=text, voice_id=el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID),

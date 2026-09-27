@@ -14,14 +14,13 @@ _MINIMAX_TTS_EMOTIONS = frozenset({
     "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm", "neutral",
 })
 _COMMAND_TTS_INSTRUCTIONS_PLACEHOLDER_RE = re.compile(r"(?<!\$)\{\{?instructions\}\}?")
-_BRACKETS_RE = re.compile(r"[<>\[\]{}]")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _sanitize_tts_instructions(value: Any) -> str:
     if value is None:
         return ""
-    clean = _WHITESPACE_RE.sub(" ", _BRACKETS_RE.sub(" ", str(value))).strip()
+    clean = _WHITESPACE_RE.sub(" ", str(value)).strip()
     return clean[:TTS_INSTRUCTIONS_MAX_CHARS].strip()
 
 

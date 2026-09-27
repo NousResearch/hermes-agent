@@ -614,16 +614,6 @@ def _tts_schema_overrides() -> dict:
     would name the launch profile's home for everyone else (#95685)."""
     params = copy.deepcopy(TTS_SCHEMA["parameters"])
     params["properties"]["output_path"]["description"] = _output_path_description(display_hermes_home())
-    try:
-        config = _load_tts_config()
-        default_instructions = _resolve_tts_instructions(_get_provider(config), config)
-    except Exception:
-        default_instructions = ""
-    if default_instructions:
-        params["properties"]["instructions"]["description"] += (
-            f' The configured default is "{default_instructions}". '
-            "Pass an empty string to suppress it for this call."
-        )
     return {"parameters": params}
 
 

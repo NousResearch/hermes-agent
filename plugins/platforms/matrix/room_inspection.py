@@ -380,3 +380,79 @@ async def inspect_matrix_room(
         return exc.error
     except Exception as exc:
         return {"error": f"Matrix room inspection failed: {type(exc).__name__}"}
+
+
+def _is_event_id(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("$") and len(value) > 1
+
+
+@dataclass(frozen=True)
+class _PinChange:
+    context: _InspectionContext
+    action: str
+    event_id: str
+
+
+async def change_matrix_pin(
+    adapter: Any, action: str, room_id: str, event_id: str, *, requester: str,
+    interrupt_check: Callable[[], bool], before_write: Callable[[], None],
+) -> dict[str, Any]:
+    owner = _InspectionOwner.capture(adapter)
+    try:
+        chat_type = await owner.access(room_id, requester)
+    except _InspectionRejected as exc:
+        return exc.error
+    if action not in {"pin", "unpin"}:
+        return {"error": "action must be pin or unpin"}
+
+    context = _InspectionContext(adapter, owner.client, room_id, chat_type, requester, 0, owner)
+    async with adapter._pin_state_lock:
+        return await _change_pin_state(_PinChange(context, action, event_id), interrupt_check, before_write)
+
+
+async def _change_pin_state(
+    change: _PinChange, interrupt_check: Callable[[], bool], before_write: Callable[[], None],
+) -> dict[str, Any]:
+    context, event_id = change.context, change.event_id
+    if interrupt_check():
+        return {"error": "Matrix pin update interrupted"}
+
+    try:
+        permissions = await _permissions(context)
+        actor, required = permissions["requester"], permissions["required"]["edit_pins"]
+        if not actor["creator_override"] and (actor["level"] is None or actor["level"] < required):
+            return {"error": "Matrix requester lacks permission to change pins",
+                    "required": required, "level": actor["level"]}
+
+        state = await _state(context, "m.room.pinned_events") or {}
+        pinned = state.get("pinned")
+        if pinned is None:
+            pinned = []
+        if not isinstance(pinned, list):
+            return {"error": "Matrix pinned events state is invalid"}
+        updated = list(pinned)
+        if change.action == "pin" and event_id not in updated:
+            updated.append(event_id)
+        if change.action == "unpin":
+            updated = [value for value in updated if value != event_id]
+        event_ids = [value for value in updated if _is_event_id(value)]
+        if updated == pinned:
+            return {"pinned": event_ids, "unchanged": True}
+
+        if interrupt_check():
+            return {"error": "Matrix pin update interrupted"}
+
+        before_write()
+        state_event_id = await asyncio.wait_for(
+            context.client.send_state_event(context.room_id, "m.room.pinned_events", {**state, "pinned": updated}),
+            timeout=10.0,
+        )
+    except _InspectionRejected as exc:
+        return exc.error
+    except Exception as exc:
+        if getattr(exc, "errcode", None) == "M_FORBIDDEN":
+            return {"error": "Matrix pin update was rejected", "errcode": "M_FORBIDDEN",
+                    "message": str(exc)}
+        return {"error": f"Matrix pin update failed: {type(exc).__name__}"}
+
+    return {"pinned": event_ids, "state_event_id": str(state_event_id)}

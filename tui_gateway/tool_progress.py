@@ -159,7 +159,8 @@ def _attach_todo_state(payload: dict, session: dict) -> dict:
 
 def _todo_state_from_history(history) -> dict | None:
     """Latest todo snapshot from a loaded transcript, for resume paths that answer before an AIAgent (and
-    its live TodoStore) exists: the newest tool result paired with an assistant ``todo`` call IS it."""
+    its live TodoStore) exists: the newest tool result paired with an assistant Todo-tool call (aliases and
+    the ``tool_call`` bridge included) IS it."""
     if not isinstance(history, list) or not history:
         return None
     try:
@@ -168,7 +169,7 @@ def _todo_state_from_history(history) -> dict | None:
             call.get("id")
             for msg in history if isinstance(msg, dict)
             for call in msg.get("tool_calls") or []
-            if (call.get("function") or {}).get("name") in _TODO_TOOL_NAMES and call.get("id")
+            if isinstance(call, dict) and call.get("id") and is_todo_tool_call(call)
         }
         if not todo_call_ids:
             return None

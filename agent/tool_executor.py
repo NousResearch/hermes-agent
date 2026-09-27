@@ -57,6 +57,9 @@ from tools.tool_result_storage import (
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.todo_tool import TODO_SCHEMA
+from tools.tool_search_catalog import TOOL_CALL_NAME
+from tools.tool_search_validation import normalize_tool_call_entries
 
 # A tool result this large (raw stdout, file dumps) is the biggest allocation a turn ever drops.
 # The commit only flags it: the string is still referenced by the publish frames here, so the
@@ -382,11 +385,37 @@ def _tool_search_scoped_names(agent) -> frozenset:
     return names
 
 
-def _canonical_tool_name(function_name: str) -> str:
+def canonical_tool_name(function_name: str) -> str:
     """Map legacy tool-name aliases BEFORE agent-loop dispatch."""
     from model_tools import _LEGACY_TOOL_ALIASES as _lta
 
     return _lta.get(function_name, function_name)
+
+
+def is_todo_tool_call(tool_call: Any) -> bool:
+    """True when a transcript tool_call entry (dict or object) invoked the Todo tool.
+
+    Covers the current name, legacy aliases, and the ``tool_call`` bridge (``todo_list`` is deferred by
+    default, and the transcript keeps the bridge name). The bridge is peeled from the recorded arguments
+    only, never live tool-search config, and must wrap exactly one call.
+    """
+    fn = tool_call.get("function") if isinstance(tool_call, dict) else getattr(tool_call, "function", None)
+    if isinstance(fn, dict):
+        name, raw_args = fn.get("name") or "", fn.get("arguments")
+    else:
+        name, raw_args = getattr(fn, "name", "") or "", getattr(fn, "arguments", None)
+    if name == TOOL_CALL_NAME:
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        except (json.JSONDecodeError, TypeError):
+            return False
+        if not isinstance(args, dict):
+            return False
+        entries, error = normalize_tool_call_entries(args)
+        if error or len(entries) != 1:
+            return False
+        name = entries[0]["name"]
+    return canonical_tool_name(name) == TODO_SCHEMA["name"]
 
 
 def _unwrap_tool_search_call(
@@ -451,7 +480,7 @@ class _ParsedCall:
 
 
 def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
-    name = _canonical_tool_name(tool_call.function.name)
+    name = canonical_tool_name(tool_call.function.name)
     args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
     scope_block = None
     if parse_error is None:

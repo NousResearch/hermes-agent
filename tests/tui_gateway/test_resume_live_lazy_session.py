@@ -76,3 +76,32 @@ def test_unscoped_resume_of_profile_session_fails_closed(live_lazy_session):
 def test_unknown_id_still_404s(home):
     out = _resume({"profile": "ops", "session_id": "ghost-9999", "omit_messages": True})
     assert out.get("error", {}).get("code") == 4007
+
+
+class _Agent:
+    model = "claude-opus-5-5[1m]"
+    provider = "claude-subscription-directsdk-experimental"
+
+
+@pytest.mark.parametrize("shape", ["override_only", "built_agent", "pending_switch"])
+def test_live_reattach_reports_the_sessions_own_model_not_the_profile_default(live_lazy_session, monkeypatch, shape):
+    """A reload of a still-live session must not flip the Desktop picker to the config default. The eager
+    (cold) resume already reports the chat's own model; the warm reattach reported `_resolve_model()`, so
+    the pick a user made in the composer appeared to change at random depending on whether the backend had
+    dropped the session in between."""
+    sid, record = live_lazy_session
+    monkeypatch.setattr(srv, "_resolve_model", lambda: "z-ai/glm-5.2")
+    expected = ("claude-opus-5-5[1m]", "claude-subscription-directsdk-experimental")
+    if shape == "override_only":
+        record["model_override"] = {"model": expected[0], "provider": expected[1]}
+    elif shape == "built_agent":
+        record["agent"] = _Agent()
+    else:
+        record["agent"] = _Agent()
+        record["pending_model_switch"] = {"display_model": "claude-sonnet-5[1m]", "display_provider": expected[1]}
+        expected = ("claude-sonnet-5[1m]", expected[1])
+    out = _resume({"profile": "ops", "session_id": record["session_key"], "omit_messages": True})
+    assert "error" not in out, out
+    info = out["result"]["info"]
+    assert (info["model"], info["provider"]) == expected
+    assert info["lazy"] is True

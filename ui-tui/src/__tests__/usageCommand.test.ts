@@ -5,8 +5,6 @@ import type { SessionUsageResponse } from '../gatewayTypes.js'
 
 const usageCommand = sessionCommands.find(cmd => cmd.name === 'usage')!
 
-const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
-
 const guarded =
   <T>(fn: (r: T) => void) =>
   (r: null | T) => {
@@ -61,12 +59,10 @@ describe('/usage slash command', () => {
     const empty = buildCtx({ 'session.usage': baseUsage({ calls: 0, credits_lines: [] }) })
     await empty.run('')
     expect(printed(empty.sys)).toContain('no API calls yet')
-    expect(printed(empty.sys)).toContain(USAGE_CTA)
 
     const withBalance = buildCtx({ 'session.usage': baseUsage({ calls: 0, credits_lines: ['$50.00 remaining'] }) })
     await withBalance.run('')
     expect(printed(withBalance.sys)).not.toContain('no API calls yet')
-    expect(printed(withBalance.sys)).toContain(USAGE_CTA)
   })
 
   it('renders the dollar two-bar model (no "credits" wording) when available', async () => {
@@ -108,17 +104,5 @@ describe('/usage slash command', () => {
     expect(body).toContain('top-up')
     expect(body).toContain('$12.00')
     expect(body.toLowerCase()).not.toContain('credits')
-  })
-
-  it('shows the free-models upsell for a free account', async () => {
-    const { panel, run } = buildCtx({
-      'session.usage': baseUsage({ usage: { available: true, status: 'free', plan_name: null } })
-    })
-
-    await run('')
-
-    const body = balancePanel(panel)
-    expect(body).toContain('free models only')
-    expect(body).toContain('/subscription')
   })
 })

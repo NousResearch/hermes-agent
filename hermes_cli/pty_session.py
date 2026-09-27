@@ -52,7 +52,9 @@ class PtySession:
         self.last_detached_at: Optional[float] = None
         self._read_timeout = read_timeout
         self._ws = None
+        self._attach_generation = 0
         self._drain_task: Optional[asyncio.Task] = None
+        self._write_lock = asyncio.Lock()
 
     async def start(self) -> None:
         self._drain_task = asyncio.create_task(self._drain())
@@ -69,13 +71,35 @@ class PtySession:
                 await asyncio.sleep(0)
                 continue
             self.buffer.append(chunk)
+            ws = self._ws
             try:
-                if self._ws is not None:
-                    await self._ws.send_bytes(chunk)
+                if ws is not None:
+                    await ws.send_bytes(chunk)
             except Exception:
-                pass                                 # detached mid-send; keep buffering
+                # The viewer is gone; nothing else observes this failure (the handler's finally
+                # only runs once ws.receive() sees the disconnect). detach() is a no-op when a
+                # replacement socket attached during the send, so the new viewer keeps its session.
+                self.detach(ws)
 
-    async def attach(self, ws, *, force_redraw: bool = False) -> None:
+    async def write(self, ws, data: bytes) -> bool:
+        """Serialize input and discard bytes from a superseded socket."""
+        async with self._write_lock:
+            if self._ws is not ws:
+                return True
+            generation = self._attach_generation
+            delivered = await self.bridge.write(data)
+            # A replacement socket can attach while the bridge write is
+            # suspended on backpressure. A late failure from the superseded
+            # socket must not poison the replacement's shared PTY session.
+            if (
+                not delivered
+                and self._ws is ws
+                and self._attach_generation == generation
+            ):
+                self.alive = False
+            return delivered
+
+    async def attach(self, ws, *, force_redraw: bool = False) -> bool:
         """Attach a browser terminal and replay buffered PTY output.
 
         The TUI renders differentially on an alternate screen, so a bounded ANSI tail is not a
@@ -84,12 +108,20 @@ class PtySession:
         if self._ws is not ws:
             await _close_ws(self._ws, WS_CLOSE_SUPERSEDED)
         self._ws = ws
+        self._attach_generation += 1
         self.attached = True
         self.last_detached_at = None
         if snap := self.buffer.snapshot():
-            await ws.send_bytes(snap)
+            try:
+                await ws.send_bytes(snap)
+            except Exception:
+                # Client dropped mid-replay; the caller never reaches its writer loop, so undo the
+                # attach here or reap_idle() can never reclaim this PTY (#110849).
+                self.detach(ws)
+                return False
         if force_redraw:
-            self.bridge.write(TUI_FORCE_REDRAW)
+            return await self.write(ws, TUI_FORCE_REDRAW)
+        return True
 
     def detach(self, ws) -> None:
         # Only the currently-attached socket may mark the session detached: a superseded socket's
@@ -102,6 +134,7 @@ class PtySession:
         self.last_detached_at = time.monotonic()
 
     async def close(self) -> None:
+        self.alive = False
         if self._drain_task is not None:
             self._drain_task.cancel()
             try:
@@ -117,7 +150,10 @@ class PtySession:
 
 
 class RegistryFull(Exception):
-    pass
+    """Every keep-alive slot holds a PTY that some tab is still attached to."""
+
+    def __init__(self, message: str = "Too many chat terminals are open in other tabs; close one and try again.") -> None:
+        super().__init__(message)
 
 
 async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) -> None:
@@ -137,24 +173,35 @@ class PtySessionRegistry:
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
         self._sessions: Dict[str, PtySession] = {}
+        # The get-or-spawn decision spans awaits (reap_idle, the spawn thread,
+        # session.start), so two connections racing one attach token both saw
+        # "no session" and forked a PTY each: the token then mapped to whichever
+        # registered last while the other tab's live session fell out of the
+        # registry — never reaped, and a reattach landed on the wrong terminal
+        # (#115304). Serialize the decision so a token maps to one PTY.
+        # ponytail: one registry-wide lock, not per key — argv resolution is
+        # already serialized globally for the same reason, and a spawn only
+        # delays NEW chats. Per-key locks if spawn throughput ever matters.
+        self._attach_lock = asyncio.Lock()
 
     async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]) -> Tuple[PtySession, bool]:
         await self.reap_idle()
-        existing = self._sessions.get(key)
-        if existing is not None and existing.alive:
-            return existing, False
-        if existing is not None:                       # dead remnant
-            await existing.close()
-            self._sessions.pop(key, None)
-        if len(self._sessions) >= self._max:
-            self._reap_one_idle_or_raise()
-        # PTY spawn does blocking fork/exec work — keep it off the event loop.
-        # See #53227.
-        bridge = await asyncio.to_thread(spawn)
-        session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout)
-        await session.start()
-        self._sessions[key] = session
-        return session, True
+        async with self._attach_lock:
+            existing = self._sessions.get(key)
+            if existing is not None and existing.alive:
+                return existing, False
+            if existing is not None:                       # dead remnant
+                await existing.close()
+                self._sessions.pop(key, None)
+            if len(self._sessions) >= self._max:
+                self._reap_one_idle_or_raise()
+            # PTY spawn does blocking fork/exec work — keep it off the event loop.
+            # See #53227.
+            bridge = await asyncio.to_thread(spawn)
+            session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout)
+            await session.start()
+            self._sessions[key] = session
+            return session, True
 
     def detach(self, key: str, ws) -> None:
         s = self._sessions.get(key)
@@ -168,7 +215,12 @@ class PtySessionRegistry:
             if not s.alive or (not s.attached and s.last_detached_at is not None and (now - s.last_detached_at) > self._ttl)
         ]
         for key in doomed:
-            await self._sessions.pop(key).close()
+            # Reaps overlap (attach_or_spawn and the background reaper) and close()
+            # awaits, so a concurrent reap can have popped this key already — skip
+            # it instead of raising KeyError into the websocket handler.
+            session = self._sessions.pop(key, None)
+            if session is not None:
+                await session.close()
 
     def _reap_one_idle_or_raise(self) -> None:
         idle = [s for s in self._sessions.values() if not s.attached and s.last_detached_at is not None]
@@ -180,4 +232,8 @@ class PtySessionRegistry:
 
     async def close_all(self) -> None:
         for key in list(self._sessions):
-            await self._sessions.pop(key).close()
+            # Same overlap window as reap_idle: an in-flight reap may have popped
+            # a snapshot key while we awaited an earlier close().
+            session = self._sessions.pop(key, None)
+            if session is not None:
+                await session.close()

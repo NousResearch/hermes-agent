@@ -16,10 +16,10 @@ These tests pin the typed path:
 from types import SimpleNamespace
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 

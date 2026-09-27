@@ -6,10 +6,9 @@ Selection: ``model`` kwarg → ``META_IMAGE_MODEL`` → ``image_gen.meta-ai.mode
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.secret_scope import get_secret
+from agent.secret_scope import get_secret, get_secret_str
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_b64_image, save_url_image, success_response)
 from plugins.image_gen._common import (
@@ -32,7 +31,9 @@ def _resolve_api_key() -> Optional[str]:
 
 
 def _resolve_base_url() -> str:
-    return (os.environ.get(BASE_URL_ENV) or "").strip() or DEFAULT_BASE_URL
+    # Through the secret scope like the key: under multiplexing os.environ holds the launch profile's
+    # endpoint, and a routed profile's key must never be sent to another profile's base URL.
+    return get_secret_str(BASE_URL_ENV).strip() or DEFAULT_BASE_URL
 
 
 # Model ids are sent verbatim to ``/v1/images/generations``.

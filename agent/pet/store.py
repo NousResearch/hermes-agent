@@ -73,7 +73,7 @@ def _thumb_path(slug: str) -> Path:
 def _read_pet_json(directory: Path) -> dict:
     pet_json = directory / "pet.json"
     try:
-        return json.loads(pet_json.read_text(encoding="utf-8")) if pet_json.is_file() else {}
+        return json.loads(pet_json.read_text(encoding="utf-8-sig")) if pet_json.is_file() else {}
     except (OSError, ValueError) as exc:
         logger.debug("unreadable pet.json in %s: %s", directory, exc)
         return {}
@@ -304,10 +304,14 @@ def rename_pet(slug: str, display_name: str) -> str | None:
 
 
 def _http_get(url: str, timeout: float):
-    """GET *url* with the petdex UA, following redirects; raises on HTTP errors."""
-    import httpx
+    """GET *url* with the petdex UA, following redirects; raises on HTTP errors.
+    Manifest-derived URLs are remote-party-controlled — SSRF-checked first."""
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
 
-    resp = httpx.get(url, timeout=timeout, follow_redirects=True, headers=_HTTP_HEADERS)
+    if not is_safe_url(url):
+        raise ValueError(f"Pet store URL failed the SSRF safety check: {url}")
+    with create_ssrf_safe_client(timeout=timeout, follow_redirects=True) as client:
+        resp = client.get(url, headers=_HTTP_HEADERS)
     resp.raise_for_status()
     return resp
 
@@ -317,7 +321,12 @@ def _download(url: str, dest: Path, *, timeout: float) -> None:
     import httpx
 
     try:
-        with httpx.stream("GET", url, timeout=timeout, follow_redirects=True, headers=_HTTP_HEADERS) as resp:
+        from tools.url_safety import create_ssrf_safe_client, is_safe_url
+
+        if not is_safe_url(url):
+            raise ValueError(f"Pet store URL failed the SSRF safety check: {url}")
+        with create_ssrf_safe_client(timeout=timeout, follow_redirects=True) as client, \
+                client.stream("GET", url, headers=_HTTP_HEADERS) as resp:
             resp.raise_for_status()
             tmp = dest.with_suffix(dest.suffix + ".part")
             with tmp.open("wb") as fh:

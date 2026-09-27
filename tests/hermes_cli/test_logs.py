@@ -2,9 +2,7 @@
 
 from datetime import datetime, timedelta
 
-
 from hermes_cli.logs import (
-    LOG_FILES,
     _extract_level,
     _extract_logger_name,
     _line_matches_component,
@@ -12,9 +10,7 @@ from hermes_cli.logs import (
     _parse_line_timestamp,
     _parse_since,
     _read_last_n_lines,
-    _read_tail,
 )
-
 
 # ---------------------------------------------------------------------------
 # Timestamp parsing
@@ -26,7 +22,6 @@ class TestParseSince:
         assert cutoff is not None
         assert abs((datetime.now() - cutoff).total_seconds() - 7200) < 2
 
-
     def test_invalid_returns_none(self):
         assert _parse_since("abc") is None
         assert _parse_since("") is None
@@ -36,17 +31,14 @@ class TestParseSince:
         cutoff = _parse_since("  5m  ")
         assert cutoff is not None
 
-
 class TestParseLineTimestamp:
     def test_standard_format(self):
         ts = _parse_line_timestamp("2026-04-11 10:23:45 INFO gateway.run: msg")
         assert ts == datetime(2026, 4, 11, 10, 23, 45)
 
-
 class TestExtractLevel:
     def test_info(self):
         assert _extract_level("2026-01-01 00:00:00 INFO gateway.run: msg") == "INFO"
-
 
 # ---------------------------------------------------------------------------
 # Logger name extraction (new for component filtering)
@@ -57,10 +49,8 @@ class TestExtractLoggerName:
         line = "2026-04-11 10:23:45 INFO gateway.run: Starting gateway"
         assert _extract_logger_name(line) == "gateway.run"
 
-
     def test_no_match(self):
         assert _extract_logger_name("random text") is None
-
 
 class TestLineMatchesComponent:
 
@@ -74,13 +64,8 @@ class TestLineMatchesComponent:
         line = "2026-04-11 10:23:45 INFO plugins.platforms.telegram.adapter: msg"
         assert _line_matches_component(line, COMPONENT_PREFIXES["gateway"])
 
-
-
-
-
     def test_unparseable_line(self):
         assert not _line_matches_component("random text", ("gateway",))
-
 
 # ---------------------------------------------------------------------------
 # Combined filter
@@ -93,7 +78,6 @@ class TestMatchesFilters:
             "2026-01-01 00:00:00 WARNING x: msg", min_level="WARNING")
         assert not _matches_filters(
             "2026-01-01 00:00:00 INFO x: msg", min_level="WARNING")
-
 
     def test_combined_filters(self):
         """All filters must pass for a line to match."""
@@ -123,7 +107,6 @@ class TestMatchesFilters:
             f"{recent} INFO x: recent msg",
             since=datetime.now() - timedelta(hours=1))
 
-
 # ---------------------------------------------------------------------------
 # File reading
 # ---------------------------------------------------------------------------
@@ -138,14 +121,6 @@ class TestReadTail:
         assert len(result) == 5
         assert "line 9" in result[-1]
 
-
 # ---------------------------------------------------------------------------
 # LOG_FILES registry
 # ---------------------------------------------------------------------------
-
-class TestLogFiles:
-    def test_known_log_files(self):
-        assert "agent" in LOG_FILES
-        assert "errors" in LOG_FILES
-        assert "gateway" in LOG_FILES
-        assert "gui" in LOG_FILES

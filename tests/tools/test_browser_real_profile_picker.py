@@ -6,8 +6,17 @@ resolve to exactly the identity the user chose, or fail closed with a fixable me
 It may never silently fall through to a different browser or a different profile.
 """
 import json
+import sqlite3
+from contextlib import closing
 
 import pytest
+
+
+def _auth_db(path, value):
+    """Real SQLite auth DB: the snapshot validates Cookies/Login Data before trusting a copy."""
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("create table marker(value)")
+        conn.execute("insert into marker values(?)", (value,))
 
 
 def _make_user_data_dir(root, profiles=("Default", "Profile 2"), last_used="Default",
@@ -16,8 +25,8 @@ def _make_user_data_dir(root, profiles=("Default", "Profile 2"), last_used="Defa
     names = names or {}
     for prof in profiles:
         (root / prof / "Network").mkdir(parents=True)
-        (root / prof / "Cookies").write_text(f"cookies-{prof}")
-        (root / prof / "Login Data").write_text(f"logins-{prof}")
+        _auth_db(root / prof / "Cookies", f"cookies-{prof}")
+        _auth_db(root / prof / "Login Data", f"logins-{prof}")
         (root / prof / "Preferences").write_text("{}")
     (root / "Local State").write_text(json.dumps({
         "os_crypt": {},
@@ -231,7 +240,8 @@ class TestSnapshotIdentitySwap:
         monkeypatch.setattr(bc, "_real_profile_pin", lambda: "Profile 2")
         dst2, err2 = bc.snapshot_real_profile("chrome", src=str(src))
         assert err2 is None and dst2 == dst
-        assert (copy / "Cookies").read_text() == "cookies-Profile 2"
+        with closing(sqlite3.connect(copy / "Cookies")) as conn:
+            assert conn.execute("select value from marker").fetchone()[0] == "cookies-Profile 2"
         assert not (copy / "Bookmarks").exists(), \
             "re-pinning must rebuild, not overlay onto the previous identity's tree"
 

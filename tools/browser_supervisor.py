@@ -32,6 +32,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Browserbase can transiently drop a CDP socket while a short-lived client
+# reconnects.  A locally owned browser endpoint, however, is gone for good
+# once its process exits; leave enough room for the former without leaking a
+# supervisor thread and warnings forever for the latter.
+MAX_POST_ATTACH_RECONNECT_FAILURES = 5
+
 
 def _redact_cdp_error_text(exc: object) -> str:
     """Redact CDP endpoint credentials from an exception's (or URL's) string form.
@@ -257,6 +263,55 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             value = result_obj.get("description") or result_obj.get("unserializableValue")
         return {"ok": True, "result": value, "result_type": result_type}
 
+    def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+        """Re-attach the supervisor's page session to an open page target on ``origin``
+        (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
+        that open their own tabs (browser_exec) put the login form somewhere else. With
+        ``accept`` (a JS expression) the first same-origin tab where it evaluates truthy wins,
+        so a login and a checkout tab on one site resolve to the right one. Returns
+        ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return _fail("supervisor loop is not running")
+
+        async def _attach(target_id: str) -> str:
+            attach = await self._cdp("Target.attachToTarget", {"targetId": target_id, "flatten": True}, timeout=timeout)
+            sid = attach["result"]["sessionId"]
+            await self._enable_page_domains(sid, timeout=timeout)
+            await self._install_dialog_bridge(sid)
+            return sid
+
+        async def _focus() -> Dict[str, Any]:
+            from agent.vault_store import normalize_origin
+            targets = (await self._cdp("Target.getTargets", timeout=timeout)).get("result", {}).get("targetInfos", [])
+            candidates = []
+            for t in targets:
+                url = str(t.get("url") or "")
+                try:
+                    # origin="" = any http(s) page (used to FIND the login tab before its origin is known)
+                    if t.get("type") == "page" and url.startswith(("http://", "https://")) \
+                            and (not origin or normalize_origin(url) == origin):
+                        candidates.append((t["targetId"], url))
+                except Exception:
+                    continue
+            for target_id, url in candidates:
+                sid = await _attach(target_id)
+                if accept:
+                    probe = await self._cdp("Runtime.evaluate", {"expression": accept, "returnByValue": True},
+                                            session_id=sid, timeout=timeout)
+                    if not probe.get("result", {}).get("result", {}).get("value"):
+                        await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
+                        continue
+                with self._state_lock:
+                    self._page_session_id = sid
+                return {"ok": True, "url": url}
+            return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
+
+        try:
+            return _schedule(_focus(), loop, timeout=timeout + 1)
+        except Exception as exc:
+            return _err(exc)
+
     # ── Supervisor loop internals ────────────────────────────────────────────
 
     def _thread_main(self) -> None:
@@ -297,22 +352,40 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             with contextlib.suppress(Exception):
                 await ws.close()
 
+    def _reconnect_budget_spent(self, failures: int, e: BaseException) -> bool:
+        """True once ``failures`` consecutive post-attach reconnects failed: log ONE final line
+        and drop this supervisor from the registry so a dead endpoint (its Chrome exited with
+        the task) leaves neither a retrying thread nor a stale registry entry behind. A later
+        browser call for the task starts a fresh supervisor via ``get_or_start``."""
+        if failures < MAX_POST_ATTACH_RECONNECT_FAILURES:
+            return False
+        logger.warning("CDP supervisor %s: stopped after %s failed reconnect attempts: %s",
+                       self.task_id, failures, _redact_cdp_error_text(e))
+        if SUPERVISOR_REGISTRY.get(self.task_id) is self:
+            SUPERVISOR_REGISTRY._pop(self.task_id)
+        return True
+
     async def _run(self) -> None:
         """Top-level reconnecting supervisor coroutine. Browserbase tears down the CDP
         socket whenever a short-lived client (agent-browser's per-command CDP client)
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
         A failure before the first successful attach is fatal for ``start()``."""
-        attempt, last_success_at, backoff = 0, 0.0, 0.5
+        reconnect_failures, last_success_at, backoff = 0, 0.0, 0.5
         import websockets  # deferred: only supervisors that connect pay the import
+        from agent.proxy_bypass import loopback_connect_kwargs
+        connect_kwargs = {"max_size": 50 * 1024 * 1024, **loopback_connect_kwargs(self.cdp_url)}
         while not self._stop_requested:
             try:
-                self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, max_size=50 * 1024 * 1024), timeout=10.0)
+                self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, **connect_kwargs), timeout=10.0)
             except Exception as e:
-                attempt += 1
                 if self._fail_start(e):
                     return
-                logger.warning("CDP supervisor %s: connect failed (attempt %s): %s",
-                               self.task_id, attempt, _redact_cdp_error_text(e))
+                reconnect_failures += 1
+                if self._reconnect_budget_spent(reconnect_failures, e):
+                    return
+                logger.warning("CDP supervisor %s: connect failed (attempt %s/%s): %s",
+                               self.task_id, reconnect_failures, MAX_POST_ATTACH_RECONNECT_FAILURES,
+                               _redact_cdp_error_text(e))
                 await asyncio.sleep(min(backoff, 10.0))
                 backoff = min(backoff * 2, 10.0)
                 continue
@@ -326,14 +399,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 await self._attach_initial_page()
                 self._set_active(True)
                 last_success_at = time.time()
+                reconnect_failures = 0
                 backoff = 0.5  # reset after a successful attach
                 self._ready_event.set()
                 await reader_task
             except BaseException as e:
                 if self._fail_start(e):
                     raise
-                logger.warning("CDP supervisor %s: session dropped after %.1fs: %s",
-                               self.task_id, time.time() - last_success_at, _redact_cdp_error_text(e))
+                reconnect_failures += 1
+                if self._reconnect_budget_spent(reconnect_failures, e):
+                    return
+                logger.warning("CDP supervisor %s: session dropped after %.1fs (attempt %s/%s): %s",
+                               self.task_id, time.time() - last_success_at, reconnect_failures,
+                               MAX_POST_ATTACH_RECONNECT_FAILURES, _redact_cdp_error_text(e))
             finally:
                 self._set_active(False)
                 if not reader_task.done():

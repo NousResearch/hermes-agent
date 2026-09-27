@@ -91,7 +91,7 @@ export function BrowserRealProfilePanel({ profile }: BrowserRealProfilePanelProp
   const { t } = useI18n()
   const copy = t.settings.toolsets.browserRealProfile
   const pickerCopy = copy.picker
-  const { data: config } = useHermesConfigRecord(profile)
+  const { data: config, writeScope } = useHermesConfigRecord(profile)
   const setConfig = hermesConfigCacheWriter(profile)
   const [busy, setBusy] = useState(false)
 
@@ -124,7 +124,9 @@ export function BrowserRealProfilePanel({ profile }: BrowserRealProfilePanelProp
       setConfig(next)
 
       try {
-        await saveHermesConfigRecord(next, profile)
+        // Sparse patch: PUT /api/config deep-merges, and echoing the cached
+        // snapshot would overwrite keys other surfaces changed since it loaded.
+        await saveHermesConfigRecord({ browser: patch }, writeScope ?? profile)
 
         if (toast) {
           notify({ kind: 'info', title: toast.title, message: toast.message })
@@ -140,7 +142,7 @@ export function BrowserRealProfilePanel({ profile }: BrowserRealProfilePanelProp
         setBusy(false)
       }
     },
-    [config, copy.failedSave, profile, refetchCandidates, setConfig]
+    [config, copy.failedSave, profile, refetchCandidates, setConfig, writeScope]
   )
 
   const toggle = useCallback(

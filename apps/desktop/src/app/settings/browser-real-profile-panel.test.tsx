@@ -147,16 +147,13 @@ describe('BrowserRealProfilePanel', () => {
       fireEvent.click(toggle)
     })
 
-    // Saves the WHOLE merged record with only use_real_profile added — sibling
-    // browser keys survive.
-    expect(mocks.save).toHaveBeenCalledWith(
-      {
-        browser: { allow_private_urls: false, use_real_profile: true },
-        model: { provider: 'nous' }
-      },
-      undefined
-    )
-    expect(mocks.cache).toHaveBeenCalledWith(mocks.save.mock.calls[0][0])
+    // Saves ONLY the toggled key (PUT deep-merges); the cache keeps the whole
+    // merged record so sibling browser keys survive without a refetch.
+    expect(mocks.save).toHaveBeenCalledWith({ browser: { use_real_profile: true } }, undefined)
+    expect(mocks.cache).toHaveBeenCalledWith({
+      browser: { allow_private_urls: false, use_real_profile: true },
+      model: { provider: 'nous' }
+    })
     expect(mocks.notify).toHaveBeenCalled()
   })
 
@@ -218,7 +215,7 @@ describe('BrowserRealProfilePanel', () => {
     })
 
     expect(mocks.save).toHaveBeenCalledWith(
-      { browser: { use_real_profile: true, real_profile_pin: 'Profile 2' } },
+      { browser: { real_profile_pin: 'Profile 2' } },
       undefined
     )
   })
@@ -252,7 +249,7 @@ describe('BrowserRealProfilePanel', () => {
     })
 
     expect(mocks.save).toHaveBeenCalledWith(
-      { browser: { use_real_profile: true, real_profile_browser: 'chrome', real_profile_pin: '' } },
+      { browser: { real_profile_browser: 'chrome', real_profile_pin: '' } },
       undefined
     )
   })
@@ -271,7 +268,7 @@ describe('BrowserRealProfilePanel', () => {
     // The config contract is "" = follow the OS default; the UI sentinel must
     // never reach config.yaml, where the resolver would reject it.
     expect(mocks.save).toHaveBeenCalledWith(
-      { browser: { use_real_profile: true, real_profile_browser: '', real_profile_pin: '' } },
+      { browser: { real_profile_browser: '', real_profile_pin: '' } },
       undefined
     )
   })

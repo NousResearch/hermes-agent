@@ -1,0 +1,14 @@
+name: sticky-notes
+repo: https://github.com/VGFreakXBL/hermes-sticky-notes
+sha: 54cd588fe417b9745295a916ab15dd7d2f4fee39
+description: In-window sticky notes for Hermes Desktop.
+maintainer: VGFreakXBL
+tier: community
+category: desktop
+version: "0.2.0"
+docs_url: https://github.com/VGFreakXBL/hermes-sticky-notes#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

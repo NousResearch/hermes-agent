@@ -4,6 +4,7 @@ import { test } from 'vitest'
 
 import {
   normalizeWindowConnectionRoute,
+  registrySshPoolScopeByConnectionId,
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
@@ -119,4 +120,21 @@ test('uses the canonical default profile scope when a registry SSH route has no 
     ),
     'conn:source-b::default'
   )
+})
+
+test('recovers the bootstrap pool key a registry SSH tunnel was published under', () => {
+  const pool = new Map<string, any>([['', { registryConnectionId: 'source-b', ssh: { alive: true } }]])
+
+  assert.equal(registrySshPoolScopeByConnectionId(pool, 'source-b'), '')
+})
+
+test('does not match another connection, an unlabelled entry, or a torn-down tunnel', () => {
+  const pool = new Map<string, any>([
+    ['research', { registryConnectionId: 'source-a', ssh: { alive: true } }],
+    ['', { registryConnectionId: '', ssh: { alive: true } }],
+    ['worker', { registryConnectionId: 'source-b' }]
+  ])
+
+  assert.equal(registrySshPoolScopeByConnectionId(pool, 'source-b'), null)
+  assert.equal(registrySshPoolScopeByConnectionId(pool, 'source-c'), null)
 })

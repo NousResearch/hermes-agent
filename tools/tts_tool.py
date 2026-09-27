@@ -8,6 +8,7 @@ Sibling ``tts_tool_*`` modules hold backends/delivery/lifecycle; they read the s
 here (config, provider resolution, lazy SDK importers) through ``_origin()`` at call time.
 """
 
+from pm import install_hint
 import asyncio
 import contextlib
 import datetime
@@ -15,32 +16,22 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Callable, Dict, Any, List, Optional
+
+import copy
 
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
 
-def get_env_value(name, default=None):
-    """Read env values through the live config module (resolved per call so test patches apply)."""
-    try:
-        from hermes_cli.config import get_env_value as _get_env_value
-    except ImportError:
-        return os.getenv(name, default)
-    value = _get_env_value(name)
-    return default if value is None else value
-
-
 def _resolve_provider_key(env_var: str, provider_id: str) -> str:
     """Resolve a TTS provider API key via the shared voice-key resolver (config > env/.env > pool)."""
-    try:
-        from tools.tool_backend_helpers import resolve_provider_secret
-    except ImportError:  # pragma: no cover — helpers are in-repo
-        return str(get_env_value(env_var) or "").strip()
-    return resolve_provider_secret(env_var, provider_id, env_getter=get_env_value)
+    from tools.tool_backend_helpers import resolve_provider_secret
+    return resolve_provider_secret(env_var, provider_id)
 
 
 from tools.tts_command_provider import (
@@ -60,18 +51,20 @@ from tools.tts_tool_plugins import (
 from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
 
 
+_PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral"}
+
 # --- Lazy SDK importers -- providers import only when used (headless boxes lack PortAudio etc.) ---
 def _sdk_importer(module: str, attr: Optional[str] = None, feature: Optional[str] = None) -> Callable[[], Any]:
     """Lazy SDK importer: returns ``module`` (or ``module.attr``), raising ImportError when absent.
 
-    ``feature`` names a ``tools.lazy_deps`` feature to best-effort install first (users who enabled
+    ``feature`` names a ``pm.ensure_import`` extra to best-effort install first (users who enabled
     a provider in config.yaml never ran the post-setup hook); any failure there falls through so
     the raw import still raises cleanly. sounddevice also raises OSError without PortAudio."""
     def _import():
         if feature:
             with contextlib.suppress(Exception):
-                from tools.lazy_deps import ensure
-                ensure(feature, prompt=False)
+                from pm import ensure_import as _pm_ensure
+                _pm_ensure(_PM_FEATURE_ALIASES.get(feature, feature))
         mod = importlib.import_module(module)
         return getattr(mod, attr) if attr else mod
     _import.__name__ = f"_import_{module.split('.')[0]}"
@@ -157,6 +150,15 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 
 # Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
 OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
+
+# MEDIA:<path> is a line-level gateway protocol. A filename containing an anchored media
+# directive forges a second attachment whenever the path is echoed into the tool result
+# (media_tag / file_path fields, error text): the collector scans producer output with a
+# bare MEDIA: matcher and cannot tell a filename from a directive. Mirrors the collector's
+# grammar (gateway.platforms.base.MEDIA_TAG_CLEANUP_RE): an anchored path OR a quoted payload,
+# which the collector accepts with no anchor and no extension.
+_MEDIA_DIRECTIVE_RE = re.compile(r"media:\s*[`'\"*_]*(?:[`'\"]|[a-z]:[/\\]|~?/)", re.IGNORECASE)
+
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
 _FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
@@ -167,7 +169,8 @@ _FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittent
 # Predicates/generator names resolve module globals at call time so test monkeypatches apply.
 _BUILTIN_DISPATCH: Dict[str, tuple] = {
     "elevenlabs": (lambda: _importable(_import_elevenlabs), "ElevenLabs", "_generate_elevenlabs",
-                   "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: pip install elevenlabs"),
+                   "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: "
+                   f"{install_hint('tts-premium')}"),
     "openai": (lambda: _importable(_import_openai_client), "OpenAI TTS", "_generate_openai_tts",
                "OpenAI provider selected but 'openai' package not installed."),
     "deepinfra": (lambda: _importable(_import_openai_client), "DeepInfra TTS", "_generate_deepinfra_tts",
@@ -180,15 +183,13 @@ _BUILTIN_DISPATCH: Dict[str, tuple] = {
     "gemini": (None, "Google Gemini TTS", "_generate_gemini_tts", None),
     "neutts": (lambda: _check_neutts_available(), "NeuTTS (local)", "_generate_neutts",
                "NeuTTS provider selected but neutts is not installed. "
-               "Run hermes setup and choose NeuTTS, or install espeak-ng and run python -m pip install -U neutts[all]."),
+               "Run hermes setup tts and choose NeuTTS; espeak-ng is also required."),
     "kittentts": (lambda: _importable(_import_kittentts), "KittenTTS (local, ~25MB)", "_generate_kittentts",
                   "KittenTTS provider selected but 'kittentts' package not installed. "
-                  "Run 'hermes setup tts' and choose KittenTTS, or install manually: "
-                  "pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"),
+                  "Run 'hermes setup tts' and choose KittenTTS."),
     "piper": (lambda: _importable(_import_piper), "Piper (local)", "_generate_piper_tts",
               "Piper provider selected but 'piper-tts' package not installed. "
-              "Run 'hermes tools' and select Piper under TTS, or install manually: "
-              "pip install piper-tts")}
+              "Run 'hermes tools' and select Piper under TTS.")}
 
 
 def _error_json(message: str) -> str:
@@ -219,8 +220,9 @@ def _select_builtin_engine(provider: str) -> tuple:
         logger.info("Edge TTS not available, falling back to NeuTTS (local)...")
         return "neutts", None
     return provider, _error_json(
-        "No TTS provider available. Install edge-tts (pip install edge-tts) "
-        "or set up NeuTTS for local synthesis.")
+        "No TTS provider available. Enable Edge TTS with: "
+        f"{install_hint('edge-tts')} "
+        "or run 'hermes setup tts' and choose NeuTTS for local synthesis.")
 
 
 def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: Dict[str, Any], instructions: Optional[str]) -> None:
@@ -288,7 +290,16 @@ def _resolve_output_base(
     on protected credential/system locations. Default ``<audio cache>/tts_<timestamp>.<ext>``: the
     command format, ``.ogg`` for native-Opus providers on Opus platforms, else ``.mp3``."""
     if output_path:
-        from tools.path_security import has_traversal_component
+        from tools.path_security import has_traversal_component, has_unsafe_path_chars
+        if has_unsafe_path_chars(output_path):
+            return None, _error_json(
+                "output_path contains control characters or line separators; "
+                "use a plain filesystem path")
+        # Must precede the traversal/protected checks: their error text echoes the path,
+        # and a MEDIA: substring in it would forge a delivery tag downstream.
+        if _MEDIA_DIRECTIVE_RE.search(output_path):
+            return None, _error_json(
+                "output_path must not contain a media directive (MEDIA:<path>)")
         if has_traversal_component(output_path):
             return None, _error_json(
                 f"output_path contains '..' traversal component: {output_path}. "
@@ -488,39 +499,109 @@ def _minimax_requirements() -> bool:
 def _xai_requirements() -> bool:
     try:
         from tools.xai_http import resolve_xai_http_credentials
-        return bool(resolve_xai_http_credentials().get("api_key"))
+        # Same ordering as _generate_xai_tts / XAIStreamer: an explicit key wins over the
+        # subscription OAuth bearer (which 403s on metered /v1/tts) — never touch the OAuth
+        # pool for an availability probe when a key is configured. See #87045, #113727.
+        return bool(resolve_xai_http_credentials(prefer_api_key=True).get("api_key"))
     except Exception:
         return False
 
 
 # Must mirror text_to_speech_tool dispatch: unrelated cloud credentials never make the Edge
 # default usable, and an explicit provider is checked on its own.
+#
+# PASSIVE ONLY: every entry answers from availability/credentials and never installs. The SDK
+# importers (`_import_edge_tts`/`_import_elevenlabs`/`_import_mistral_client`) call
+# ``pm.ensure_import`` on import, so reaching them from here turned ``check_tts_requirements``
+# — the ``text_to_speech`` tool's ``check_fn`` — into an installer that ran during every tool
+# listing.
 _BUILTIN_REQUIREMENTS: Dict[str, Callable[[], bool]] = {
-    "edge": lambda: _importable(_import_edge_tts) or _check_neutts_available(),
-    "elevenlabs": lambda: _importable(_import_elevenlabs) and bool(_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")),
+    "edge": lambda: _pm_extra_available("edge-tts") or _check_neutts_available(),
+    "elevenlabs": lambda: _pm_extra_available("tts-premium") and bool(_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")),
     "openai": lambda: _package_installed("openai") and _has_openai_audio_backend(),
     "deepinfra": lambda: _package_installed("openai") and bool(_resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")),
     "minimax": _minimax_requirements,
     "xai": _xai_requirements,
     "gemini": lambda: bool(_resolve_provider_key("GEMINI_API_KEY", "gemini") or _resolve_provider_key("GOOGLE_API_KEY", "gemini")),
-    "mistral": lambda: _importable(_import_mistral_client) and bool(_resolve_provider_key("MISTRAL_API_KEY", "mistral")),
+    "mistral": lambda: _pm_extra_available("mistral") and bool(_resolve_provider_key("MISTRAL_API_KEY", "mistral")),
     "neutts": lambda: _check_neutts_available(),
     "kittentts": lambda: _check_kittentts_available(),
     "piper": lambda: _check_piper_available()}
 
 
+def _pm_extra_available(extra: str) -> bool:
+    """Whether the extra's anchor is importable, by pm's own answer for it.
+
+    Not ``find_spec`` on a hand-written module name: ``pm.extras`` owns the extra→anchor table and
+    counts a module already in ``sys.modules`` as installed, which is how every other feature in
+    the tree reports availability.
+    """
+    try:
+        from pm.extras import available
+    except Exception:
+        return False
+    return bool(available(extra))
+
+# Providers whose SDK pm installs on first use: provider -> the credential it needs REGARDLESS of
+# the install (an install cannot conjure a key; None = none). Extra names come from
+# ``_PM_FEATURE_ALIASES`` (upstream's ``tts.<provider>`` ids), so that table stays their one
+# source. The install belongs to synthesis (``_select_builtin_engine`` and the command/streaming
+# paths), never to a requirement check — so a missing-but-installable SDK counts as READY here.
+_SDK_ON_DEMAND: Dict[str, Optional[str]] = {
+    "edge": None,
+    "elevenlabs": "ELEVENLABS_API_KEY",
+    "mistral": "MISTRAL_API_KEY"}
+
+
+def _ready_after_first_use_install(provider: str) -> bool:
+    """True when the SDK is absent but pm may install it at first synthesis AND this machine
+    could actually get it (platform gate open) AND the provider's own credential is present.
+    Installs nothing itself."""
+    if provider not in _SDK_ON_DEMAND:
+        return False
+    feature = _PM_FEATURE_ALIASES.get(f"tts.{provider}")
+    if feature is None:
+        return False
+    key_env = _SDK_ON_DEMAND[provider]
+    if key_env and not _resolve_provider_key(key_env, provider):
+        return False
+    try:
+        from pm.install import lazy_installs_allowed
+        from pm.extras import extra_supported
+    except Exception:
+        return False
+    return extra_supported(feature) and bool(lazy_installs_allowed())
+
+
 def check_tts_requirements() -> bool:
-    """Return whether the explicitly resolved TTS provider can run."""
+    """Return whether the explicitly resolved TTS provider can run — now, or after the
+    first-use SDK install that synthesis performs. This is the ``text_to_speech`` tool's
+    ``check_fn``, so it runs on every tool listing and must never install."""
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
     if _resolve_command_provider_config(provider, tts_config) is not None:
         return True
     check = _BUILTIN_REQUIREMENTS.get(provider)
-    return check() if check is not None else _plugin_provider_is_available(provider)
+    if check is not None:
+        return bool(check()) or _ready_after_first_use_install(provider)
+    return _plugin_provider_is_available(provider)
 
 
 # --- Registry ---
 from tools.registry import registry, tool_error
+
+def _output_path_description(home: str) -> str:
+    return f"Optional custom file path to save the audio. Defaults to {home}/audio_cache/<timestamp>.mp3"
+
+
+def _tts_schema_overrides() -> dict:
+    """Rebuild the ``output_path`` default hint from the ACTIVE profile at every get_definitions():
+    the multiplexed gateway serves every profile from one process, so a path baked in at import
+    would name the launch profile's home for everyone else (#95685)."""
+    params = copy.deepcopy(TTS_SCHEMA["parameters"])
+    params["properties"]["output_path"]["description"] = _output_path_description(display_hermes_home())
+    return {"parameters": params}
+
 
 TTS_SCHEMA = {
     "name": "text_to_speech",
@@ -534,7 +615,7 @@ TTS_SCHEMA = {
             },
             "output_path": {
                 "type": "string",
-                "description": f"Optional custom file path to save the audio. Defaults to {display_hermes_home()}/audio_cache/<timestamp>.mp3"
+                "description": _output_path_description("the profile HERMES_HOME")
             },
             "speed": {
                 "type": "number",
@@ -572,7 +653,8 @@ registry.register(
         text=args.get("text", ""),
         **{k: args.get(k) for k in ("output_path", "speed", "instructions", "provider")}),
     check_fn=check_tts_requirements,
-    emoji="🔊")
+    emoji="🔊",
+    dynamic_schema_overrides=_tts_schema_overrides)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

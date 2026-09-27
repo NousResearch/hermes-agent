@@ -280,7 +280,7 @@ def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
         )
     tmpdir = os.environ.get("TMPDIR", "")
     if tmpdir and tmpdir != os.environ.get(SCRATCH_DIR_MARKER_ENV, ""):
-        check_info(f"TMPDIR={tmpdir} is set by you or the OS, so Hermes leaves it alone")
+        check_info(f"TMPDIR={tmpdir} is set by you, so Hermes leaves it alone")
 
 
 def _session_count(state_db_path: Path):

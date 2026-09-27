@@ -29,9 +29,10 @@ def profile_lifecycle(command: str, args) -> bool:
         # verbs keep addressing its own gateway process even while a stale host record lists it.
         return False
     marker = parked_marker_path(home)
-    if command == "start":
-        if not profile_is_parked(home):
-            return False
+    if command in ("start", "restart") and profile_is_parked(home):
+        # A prior stop removed the profile from the host's served set, so `restart` finds no
+        # server to unserve/reserve through the shared path below and must unpark exactly like
+        # `start` does.
         marker.unlink()
         owner = gw._host_multiplexer_for_all_verb()
         if owner is None:
@@ -46,6 +47,8 @@ def profile_lifecycle(command: str, args) -> bool:
             print(f"Profile '{name}' unparked, but serving was not confirmed: {_failure(answer)}.")
             print("The host retries on its next rescan (within 30s). Check gateway status.")
         return True
+    if command == "start":
+        return False
 
     # A separate --force gateway still owns its normal process/service lifecycle.
     if gw.find_gateway_pids():
@@ -80,10 +83,18 @@ def profile_lifecycle(command: str, args) -> bool:
 
 
 def print_parked_status() -> bool:
-    """A parked satellite is still installed, but is not a running gateway."""
+    """A parked satellite is still installed, but is not a running gateway — unless a `--force`
+    standalone gateway bypassed parking and is live for this profile, which the marker alone
+    cannot see: the caller must still read runtime state for that case."""
     from hermes_cli import gateway as gw
     name = gw._current_profile_name()
-    if name and name != "default" and profile_is_parked(get_hermes_home()):
+    home = get_hermes_home()
+    if name and name != "default" and profile_is_parked(home):
+        from hermes_cli.web_server_gateway import _has_own_gateway
+        if _has_own_gateway(home):
+            print(f"Profile '{name}': parking marker present, but a gateway is live for this "
+                  f"profile (started with --force?).")
+            return False
         print(f"Profile '{name}': parked (hermes -p {name} gateway start)")
         return True
     if not name or name == "default":

@@ -172,6 +172,65 @@ def test_start_unparks_without_host_rendezvous(homes, monkeypatch, capsys, host_
     assert calls == (['serve'] if host_running else ['normal'])
 
 
+def test_restart_unparks_after_stop(homes, monkeypatch, capsys):
+    """A parked profile whose host no longer lists it (a prior `stop` dropped it from the served
+    set) must still be unparked and hot-served by `restart`, not fall through to a standalone
+    gateway restart."""
+    from hermes_cli import gateway as gw, gateway_multiplex_served as served
+    from gateway import control_socket
+    root, secondary = homes
+    marker = secondary / 'gateway.parked'
+    marker.touch()
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+    monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
+    owner = SimpleNamespace(home=root, profile_label='default', profiles=('default',),
+                            describe=lambda: 'test host')
+    monkeypatch.setattr(gw, '_host_multiplexer_for_all_verb', lambda: owner)
+    # After the earlier `stop`, the host no longer lists this profile as served — the pre-fix
+    # code treated that as "not handled" and fell through to a standalone restart.
+    monkeypatch.setattr(gw, '_served_by_another_host_gateway', lambda *a: None)
+    monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda *a: False)
+    monkeypatch.setattr(served, 'live_default_gateway_pid', lambda: 1)
+
+    def unexpected_unserve(home, name):
+        raise AssertionError('a parked profile has nothing to unserve')
+
+    def serve(home, name):
+        assert home == root and name == 'worker' and not marker.exists()
+        return {'served': name}
+
+    monkeypatch.setattr(control_socket, 'request_unserve_profile', unexpected_unserve, raising=False)
+    monkeypatch.setattr(control_socket, 'request_serve_profile_hot', serve, raising=False)
+
+    def fell_through(*a, **kw):
+        raise AssertionError('restart fell through to the standalone gateway path')
+
+    monkeypatch.setattr(gw, 'stop_profile_gateway', fell_through)
+    gw._cmd_restart(SimpleNamespace())
+    assert not marker.exists()
+    assert "Profile 'worker' served by the host gateway." in capsys.readouterr().out
+
+
+def test_status_reports_marker_beside_a_forced_live_gateway(homes, monkeypatch, capsys):
+    """A `--force`-started standalone gateway intentionally bypasses parking; `gateway status`
+    must still surface its live runtime state instead of only printing the stale marker."""
+    from hermes_cli import gateway as gw, web_server_gateway
+    root, secondary = homes
+    (secondary / 'gateway.parked').touch()
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+    monkeypatch.setattr(web_server_gateway, '_has_own_gateway', lambda home: True)
+    monkeypatch.setattr('hermes_cli.profiles.get_active_profile_name', lambda: 'worker')
+    snapshot = gw.GatewayRuntimeSnapshot(manager='manual process', gateway_pids=(4242,))
+    monkeypatch.setattr(gw, 'get_gateway_runtime_snapshot', lambda **kw: snapshot)
+    monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda *a: False)
+    gw._cmd_status(SimpleNamespace())
+    output = capsys.readouterr().out
+    assert 'parking marker present' in output
+    assert '4242' in output
+
+
 def test_default_status_distinguishes_served_and_parked(homes, monkeypatch, capsys):
     from hermes_cli import gateway as gw
     from hermes_cli.gateway_profile_lifecycle import print_parked_status

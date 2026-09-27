@@ -78,29 +78,29 @@ export function LayoutTreeRoot({ children, titlebar = false }: { children?: Reac
           display: none;
         }
       `}</style>
-      <KeepAlivePanes>
+        <KeepAlivePanes>
+          {tree && (
+            <TreeNode
+              leftEdge={titlebar}
+              node={tree}
+              rightEdge={titlebar}
+              root
+              rootRow={tree.type === 'split' && tree.orientation === 'row'}
+              topEdge={titlebar}
+            />
+          )}
+          {tree && <NarrowOverlays />}
+        </KeepAlivePanes>
         {tree && (
-          <TreeNode
-            leftEdge={titlebar}
-            node={tree}
-            rightEdge={titlebar}
-            root
-            rootRow={tree.type === 'split' && tree.orientation === 'row'}
-            topEdge={titlebar}
-          />
+          <>
+            {/* Non-tiling panes: fixed cards above the tree, outside every zone. */}
+            <FloatingPanes />
+            <TreeEditBar />
+            <ZoneEditor />
+            {children}
+          </>
         )}
-        {tree && <NarrowOverlays />}
-      </KeepAlivePanes>
-      {tree && (
-        <>
-          {/* Non-tiling panes: fixed cards above the tree, outside every zone. */}
-          <FloatingPanes />
-          <TreeEditBar />
-          <ZoneEditor />
-          {children}
-        </>
-      )}
-    </div>
+      </div>
     </WorkspaceWallpaperScope>
   )
 }

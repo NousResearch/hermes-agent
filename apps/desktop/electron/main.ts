@@ -16642,7 +16642,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
         teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
       })
 
-      return completeProfileAppearanceRequest(deletingProfile, result)
+      return await completeProfileAppearanceRequest(deletingProfile, result)
     }
 
     if (!mutatingProfile) {

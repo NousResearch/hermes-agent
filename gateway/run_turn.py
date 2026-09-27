@@ -23,7 +23,9 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
+from gateway.platforms.base import (
+    BasePlatformAdapter, ProcessingOutcome, append_media_dropped_notice,
+)
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
@@ -2500,10 +2502,16 @@ class GatewayTurnMixin:
             preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
             header = t("gateway.background.complete_header", preview=preview)
             images, media_files, text_content = [], [], ""
+            media_dropped: list[dict] = []
             if response:
                 media_files, response = adapter.extract_media(response)
-                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files, dropped=media_dropped)
                 images, text_content = adapter.extract_images(response)
+            if media_dropped:
+                # The background task's own agent turn is over by delivery time, so the skipped
+                # attachment cannot re-enter it: state the drop in the delivered message instead of
+                # leaving only a host-side log line the sandboxed agent cannot read (#75065).
+                text_content = append_media_dropped_notice(text_content, media_dropped)
             if text_content:
                 await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)
             elif not images and not media_files:

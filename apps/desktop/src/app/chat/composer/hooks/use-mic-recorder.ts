@@ -263,7 +263,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
           throw error
         }
 
-        console.warn('[hermes] configured microphone unavailable, using the system default', error)
+        console.warn('[hermes] configured microphone unavailable for recording, using the system default', error)
 
         stream = await navigator.mediaDevices.getUserMedia({ audio: constraints })
       }

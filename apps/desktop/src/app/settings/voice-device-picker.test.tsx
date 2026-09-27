@@ -88,4 +88,32 @@ describe('VoiceDevicePicker', () => {
 
     expect(await screen.findByText(/No devices found/)).toBeTruthy()
   })
+
+  it('drops devices with no id instead of aliasing them onto "System default"', async () => {
+    // Before microphone permission is granted, entries can come back with an empty deviceId. Those
+    // cannot be addressed by getUserMedia, and listing one would land on the same select value as
+    // "System default" — selecting it would silently mean the default.
+    stubDevices([
+      { deviceId: '', kind: 'audioinput', label: 'Default - MacBook Pro Microphone' },
+      { deviceId: 'mic-a', kind: 'audioinput', label: 'MacBook Pro Microphone' }
+    ] as MediaDeviceInfo[])
+
+    render(<VoiceDevicePicker onChange={vi.fn()} schemaKey="voice.mic_device_id" value="" />)
+
+    await waitFor(() => expect(screen.getByText('System default')).toBeTruthy())
+    fireEvent.click(screen.getByRole('combobox'))
+
+    expect(await screen.findByRole('option', { name: 'MacBook Pro Microphone' })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: /Default -/ })).toBeNull()
+    // exactly the real device plus the system-default entry
+    expect(within(screen.getByRole('listbox')).getAllByRole('option')).toHaveLength(2)
+  })
+
+  it('says why the list is empty when every enumerated device lacks an id', async () => {
+    stubDevices([{ deviceId: '', kind: 'audioinput', label: '' }] as MediaDeviceInfo[])
+
+    render(<VoiceDevicePicker onChange={vi.fn()} schemaKey="voice.mic_device_id" value="" />)
+
+    expect(await screen.findByText(/No devices found/)).toBeTruthy()
+  })
 })

@@ -2761,3 +2761,65 @@ def test_install_snapshot_is_daily_and_carries_only_bucketed_counts(
         "profile_count_bucket": snapshot["profile_count_bucket"], "skill_count_bucket": "0",
         "terminal_backend": "local",
     }
+
+
+def _stored_values(tmp_path, metric: str) -> list[tuple[dict[str, Any], int]]:
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    return [
+        (counter["dimensions"], counter["value"])
+        for counter in SharedMetricsStore(root / "metrics.sqlite3", root / "outbox").counter_snapshot()
+        if counter["metric_name"] == metric
+    ]
+
+
+def test_sessions_summarize_on_close_and_milestones_latch_once_per_install(direct_runtime, tmp_path):
+    """Each closed session yields one bucketed summary; delegated children do not; an install
+    milestone is recorded the first time only, however many sessions reach it."""
+    for session_id, turns in (("s1", 3), ("s2", 1)):
+        for turn in range(turns):
+            task = f"{session_id}-t{turn}"
+            lifecycle.invoke_hook("pre_llm_call", session_id=session_id, task_id=task, platform="cli")
+            relay_shared_metrics.finish_task_run(
+                session_id=session_id, task_id=task, platform="cli", result={"completed": True},
+            )
+        lifecycle.finalize_session(session_id=session_id)
+
+    sessions = _stored_values(tmp_path, "hermes.session.count")
+    assert sorted((d["turn_count_bucket"], d["last_outcome"], v) for d, v in sessions) == [
+        ("1", "success", 1), ("3_to_5", "success", 1),
+    ]
+    milestones = {d["milestone"]: v for d, v in _stored_values(tmp_path, "hermes.install.milestone")}
+    assert milestones["first_task_started"] == 1
+    assert milestones["first_task_success"] == 1
+
+
+def test_token_usage_is_summed_per_model_and_auxiliary_task(direct_runtime, tmp_path):
+    base = {"session_id": "s1", "task_id": "t1", "provider": "anthropic", "model": "claude-sonnet"}
+    for request_id in ("r1", "r2"):
+        lifecycle.invoke_hook("pre_api_request", **base, api_request_id=request_id)
+        lifecycle.invoke_hook(
+            "post_api_request", **base, api_request_id=request_id,
+            usage={"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 40},
+        )
+    for aux_task in ("compression", "acme-private-task"):
+        lifecycle.invoke_hook(
+            "post_auxiliary_call", aux_task=aux_task, provider="openrouter", model="small/model",
+            usage={"input_tokens": 7, "output_tokens": 3},
+        )
+    relay_shared_metrics.finish_task_run(
+        session_id="s1", task_id="t1", platform="cli", result={"completed": True},
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    sums = {
+        (d["call_role"], d["aux_task"], d["token_type"]): v
+        for d, v in _stored_values(tmp_path, "hermes.model_tokens.sum")
+    }
+    assert sums == {
+        ("primary", "none", "input"): 200, ("primary", "none", "output"): 20,
+        ("primary", "none", "cache_read"): 80,
+        ("auxiliary", "compression", "input"): 7, ("auxiliary", "compression", "output"): 3,
+        ("auxiliary", "other", "input"): 7, ("auxiliary", "other", "output"): 3,
+    }

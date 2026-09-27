@@ -87,27 +87,35 @@ _first_session_at: dict[str, float] = {}
 
 
 def _first_session_started_at() -> float | None:
-    home = str(get_hermes_home())
-    if home not in _first_session_at:
-        try:
-            with contextlib.closing(
-                sqlite3.connect(f"file:{get_hermes_home() / 'state.db'}?mode=ro", uri=True, timeout=1)
-            ) as connection:
-                row = connection.execute("SELECT MIN(started_at) FROM sessions").fetchone()
-        except sqlite3.Error:
-            return None
-        if not row or row[0] is None:
-            return None
-        _first_session_at[home] = float(row[0])
-    return _first_session_at[home]
+    """Epoch of the profile's first session; ``now`` when it has none yet (a brand-new install).
+
+    Raises ``sqlite3.Error`` when state.db exists but cannot be read.
+    """
+    home = get_hermes_home()
+    if str(home) in _first_session_at:
+        return _first_session_at[str(home)]
+    database = home / "state.db"
+    if not database.exists():
+        return time.time()
+    with contextlib.closing(
+        sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=1)
+    ) as connection:
+        row = connection.execute("SELECT MIN(started_at) FROM sessions").fetchone()
+    if not row or row[0] is None:
+        return time.time()
+    _first_session_at[str(home)] = float(row[0])
+    return _first_session_at[str(home)]
 
 
 def install_age_bucket() -> str:
-    """How long ago this profile's first-ever session started, bucketed; ``unknown`` if none yet."""
+    """How long ago this profile's first-ever session started, bucketed; ``unknown`` if unreadable."""
     from .shared_metrics_fields import install_age_bucket as bucket
 
-    first = _first_session_started_at()
-    return "unknown" if first is None else bucket(time.time() - first)
+    try:
+        first = _first_session_started_at()
+    except sqlite3.Error:
+        return "unknown"
+    return bucket(time.time() - first)
 
 
 def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:

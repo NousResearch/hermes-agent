@@ -302,8 +302,11 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         by_name.setdefault(counter["name"], []).append(counter)
     if set(by_name) != {
         "hermes.client.active",
+        "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_route.count",
+        "hermes.model_tokens.sum",
+        "hermes.session.count",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.task_run.finished",
@@ -334,6 +337,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
             "model": MODEL_CANARY,
             "outcome": "success",
             "provider": "custom",
+            "ttft_bucket": "lt_500ms",
         },
         "value": 2,
         "packaged_value": 2,
@@ -383,6 +387,17 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     [snapshot] = by_name["hermes.install.snapshot"]
     if snapshot["value"] != 1 or snapshot["dimensions"]["memory_provider"] != "builtin":
         raise AssertionError(f"Unexpected install snapshot: {snapshot}")
+    [session] = by_name["hermes.session.count"]
+    if (session["dimensions"]["turn_count_bucket"], session["dimensions"]["last_outcome"]) != (
+        "1", "success",
+    ):
+        raise AssertionError(f"Unexpected session summary: {session}")
+    tokens = {c["dimensions"]["token_type"]: c["value"] for c in by_name["hermes.model_tokens.sum"]}
+    if tokens != {"input": 20, "output": 2}:
+        raise AssertionError(f"Unexpected token sums: {by_name['hermes.model_tokens.sum']}")
+    milestones = {c["dimensions"]["milestone"] for c in by_name["hermes.install.milestone"]}
+    if not {"first_task_started", "first_task_success", "first_tool_success"} <= milestones:
+        raise AssertionError(f"Missing install milestones: {sorted(milestones)}")
     [tool] = by_name["hermes.tool_call.count"]
     expected_tool_dimensions = {
         "approval_outcome": "not_required",
@@ -486,8 +501,11 @@ def _validate_packages(
             metrics.setdefault(metric["name"], []).append(metric)
     if set(metrics) != {
         "hermes.client.active",
+        "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_route.count",
+        "hermes.model_tokens.sum",
+        "hermes.session.count",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.task_run.finished",
@@ -516,6 +534,7 @@ def _validate_packages(
         "model": MODEL_CANARY,
         "outcome": "success",
         "provider": "custom",
+        "ttft_bucket": "lt_500ms",
     } or model["value"] != 2:
         raise AssertionError(
             f"Unexpected model metric: {metrics['hermes.model_route.count']}"

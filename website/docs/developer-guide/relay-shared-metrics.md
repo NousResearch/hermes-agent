@@ -236,22 +236,52 @@ remains in the task's tool-count bucket.
 Successful skill mutations emit `hermes.skill.lifecycle` marks with only a
 bounded action and provenance. Successful loads emit `hermes.skill.load`
 marks with bounded provenance, first-use or reuse state, reuse-after-patch
-state, and a use-count bucket. Hermes derives reuse and patch-generation
-continuity transactionally in its existing `skills/.usage.json` state; skill
-names and exact counts or generations never enter Relay metrics events,
-SQLite dimensions, or packages. A use after a new patch is counted once as
+state, a use-count bucket and `skill_name`: the skill's name only when it is a
+skill Hermes ships (`skills/` or `optional-skills/`), otherwise `custom`. Hermes
+derives reuse and patch-generation continuity transactionally in its existing
+`skills/.usage.json` state; local or agent-created skill names and exact counts
+or generations never enter Relay metrics events, SQLite dimensions, or packages. A use after a new patch is counted once as
 `reused_after_patch`; later uses remain ordinary reuse until another patch.
 Task-outcome attribution after a patch remains deferred until its window and
 multi-skill semantics are defined.
 
 Once per rolling 24 hours, the first activation also emits a
 `hermes.install.snapshot` mark describing how the profile is configured: the
-memory provider (a bundled provider name, `builtin`, or `plugin`) and bucketed
-counts of MCP servers, enabled plugins, installed skills, enabled cron jobs and
-profiles. Server, plugin, skill, job and profile names are never read into the
-event. The same compare-and-set latch as `hermes.client.active` keeps it to one
+memory provider (a bundled provider name, `builtin`, or `plugin`), bucketed
+counts of MCP servers, enabled plugins, installed skills, enabled cron jobs,
+profiles and connected messaging platforms, the main provider id, the terminal
+backend (`local`, `docker`, `ssh`, ... or `other`), the display language (a
+shipped locale or `other`) and `install_age_bucket`: how long ago the profile's
+first-ever session started. Install age is what lets the backend tell a new user
+from an existing one who just opted in. Server, plugin, skill, job and profile
+names are never read into the event. The same compare-and-set latch as `hermes.client.active` keeps it to one
 row per install per day, and the producer checks the latch before walking the
 skills tree.
+
+### Decision-data metrics
+
+These answer product questions the activity counters cannot: what makes people
+stay, where new users drop off, which surfaces and models carry real usage, and
+which extensions are worth investing in. Every dimension is a closed enum, a
+bucket, a provider/model identifier (as on model routes) or a public name Nous
+itself ships.
+
+| Metric | Dimensions | Question it answers |
+|---|---|---|
+| `hermes.session.count` | entrypoint, surface, platform, turn/failed-turn buckets, active-duration bucket, last outcome | How deep is real usage per surface; do sessions end right after a failure? |
+| `hermes.install.milestone` | milestone, install age bucket | How long from install to first success, first gateway message, first cron run, first delegation, first created skill, first long session? Recorded once per install. |
+| `hermes.setup.completed` | surface (`cli`/`desktop`), provider | Which providers people choose at setup, and on which surface. |
+| `hermes.model_tokens.sum` | call role, model, provider, auxiliary task, token type | Token volume per model/provider, prompt-cache share, and what auxiliary work (compression, titles, vision, ...) costs. The value is a token sum, not an event count. |
+| `hermes.model_route.count` `ttft_bucket` | time to first token | Perceived latency per provider/model. |
+| `hermes.compression.count` | trigger, outcome, context-fill bucket | How often compaction runs, how full contexts get, and whether it fails. |
+| `hermes.model_switch.count` | from/to provider, surface | Which providers people leave and move to. |
+| `hermes.fallback.count` | from/to provider, error class | How often fallback providers rescue a turn, and from what. |
+| `hermes.slash_command.count` | command, surface | Which built-in commands are used (`/retry`, `/undo`, `/new` are friction signals). Skill and plugin commands report `skill`/`plugin`. |
+| `hermes.extension.install.count` | kind, source, name, outcome | Which catalog skills, MCP servers and plugins get installed. `name` is a bundled/optional skill, `optional-mcps/` or `plugin-catalog/` entry, otherwise `custom`. |
+
+Sessions are summarized when they close (finalize, reset or process exit);
+delegated child sessions are not counted separately. Milestones latch in the
+local database, so each fires once per install however many processes reach it.
 
 Local state is written under:
 

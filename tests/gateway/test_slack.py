@@ -2779,8 +2779,8 @@ class TestReactions:
         assert {k: adapter._reaction_emoji(k, d) for k, d in keys.items()} == unset
 
     @pytest.mark.asyncio
-    async def test_invalid_reaction_emoji_warns_once_and_fails_open(self, adapter, caplog):
-        """Slack's invalid_name for a configured emoji is a WARNING (once per name), not a
+    async def test_invalid_reaction_emoji_warns_and_fails_open(self, adapter, caplog):
+        """Slack's invalid_name for a configured emoji is a WARNING on every occurrence, not a
         silent debug line, and the lifecycle still completes."""
         from gateway.platforms.base import SessionSource
         from gateway.platforms.event import MessageType, ProcessingOutcome
@@ -2806,7 +2806,7 @@ class TestReactions:
 
         warnings = [r for r in caplog.records
                     if r.levelno == logging.WARNING and "tadaa" in r.getMessage()]
-        assert len(warnings) == 1
+        assert len(warnings) == 2
         assert adapter._app.client.reactions_remove.await_count == 2
 
 

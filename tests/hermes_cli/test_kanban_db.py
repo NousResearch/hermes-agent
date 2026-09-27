@@ -1548,6 +1548,8 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # prefers the interpreter-bound module form (exactly this install; a PATH
 # shim could be attacker-planted or belong to another install, #111569) and
 # only falls back to the PATH shim when ``hermes_cli`` is not importable.
+# Isolated store Python (``python -I``) is the exception: ``-m hermes_cli.main``
+# cannot see the package, so the published POSIX launcher wins when present.
 # ---------------------------------------------------------------------------
 
 
@@ -1562,12 +1564,42 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_isolated_store_python", lambda: False)
     assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
+def test_resolve_hermes_argv_isolated_python_uses_install_launcher(monkeypatch):
+    """Isolated store Python cannot ``-m hermes_cli.main`` (no default path).
+    A published POSIX launcher must win over a planted PATH ``hermes``."""
+    import shutil
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_isolated_store_python", lambda: True)
+    monkeypatch.setattr(
+        kbd, "_published_posix_launcher", lambda: "/opt/hermes/.hermes/bin/hermes"
+    )
+    assert kbd._resolve_hermes_argv() == ["/opt/hermes/.hermes/bin/hermes"]
+
+
+def test_resolve_hermes_argv_isolated_python_falls_back_to_module_without_launcher(
+    monkeypatch,
+):
+    """No install wrapper (CI checkout, Windows batch shim) → keep ``-m``."""
+    import shutil
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_isolated_store_python", lambda: True)
+    monkeypatch.setattr(kbd, "_published_posix_launcher", lambda: None)
+    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
 
 
 def test_resolve_hermes_argv_module_actually_runs():

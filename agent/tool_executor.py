@@ -1047,6 +1047,30 @@ def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata
         )
 
 
+_STATUS_PREVIEW_FIELDS = ("exit_code", "error")
+
+
+def _error_status_suffix(result: Any) -> str:
+    """Small status fields (``exit_code``, ``error``) extracted from a JSON-object
+    tool result, for appending to the truncated error-preview log line.
+
+    The preview keeps only the first ~200 chars of the serialized result; terminal
+    results serialize ``output`` first, so any real failure output pushes the status
+    fields past the cut and the log line can no longer be classified (#125238).
+    Non-JSON-object results contribute nothing.
+    """
+    if not isinstance(result, (str, dict)):
+        return ""
+    try:
+        payload = json.loads(result) if isinstance(result, str) else result
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    fields = [f"{key}={payload[key]!r}" for key in _STATUS_PREVIEW_FIELDS if key in payload]
+    return (" " + " ".join(fields)) if fields else ""
+
+
 def _commit_tool_result(
     agent,
     messages: list,
@@ -1078,7 +1102,10 @@ def _commit_tool_result(
                 function_name, function_args, function_result, failed=is_error, tool_call_id=tool_call_id,
             )
         if is_error:
-            logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, error_preview(function_result))
+            logger.warning(
+                "Tool %s returned error (%.2fs): %s%s",
+                function_name, tool_duration, error_preview(function_result), _error_status_suffix(function_result),
+            )
         elif success_log_chars is not None:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, success_log_chars)
         if not blocked:

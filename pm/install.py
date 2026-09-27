@@ -214,6 +214,15 @@ def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
         _remove_entry(store, f"fetch-{artifact['sha256']}")
 
 
+def _discard_previous_entry(store: Store, previous_entry) -> None:
+    # A stale previous entry is only a restore point. A locked file
+    # (mapped DLL, AV hold) must not fail the install that replaced it.
+    try:
+        _remove_entry(store, previous_entry.name)
+    except OSError as e:
+        LOG.warning("keeping %s: %s (will retry on next install; delete manually once unlocked)", previous_entry.name, e)
+
+
 def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:
     """Explicit installs re-check realized bytes; startup keeps its cheap facts check."""
     entry = store.entry(fact["entry"])
@@ -257,7 +266,7 @@ def _publish_entry(package, store, staged, entry, previous_entry, target):
             _restore_previous_entry(store, entry, previous_entry)
         raise
     if previous_entry.exists():
-        _remove_entry(store, previous_entry.name)
+        _discard_previous_entry(store, previous_entry)
 
 
 def _settle_previous_entry(package, store, entry, previous_entry, previous, target) -> None:
@@ -268,7 +277,7 @@ def _settle_previous_entry(package, store, entry, previous_entry, previous, targ
     # an interrupted stage always restores its prior usable bytes.
     if (previous and previous.get("entry") == entry.name
             and _entry_verified(package, previous, store, target)):
-        _remove_entry(store, previous_entry.name)
+        _discard_previous_entry(store, previous_entry)
     else:
         _restore_previous_entry(store, entry, previous_entry)
 

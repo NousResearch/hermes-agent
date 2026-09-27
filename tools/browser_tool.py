@@ -35,6 +35,14 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 )
 
 
+def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
+    """Frozen old-updater surface (tests/compat/old_updater_surface.json): a pre-PM ``hermes update``
+    still running mid-swap imports this from the NEW tree. Nothing is warmed — PM owns the browser
+    runtime — and the permanent definition must live here, not behind the revert-scheduled compat
+    pointer."""
+    return False
+
+
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess (deferred import: test
     harnesses stub the ``tools`` package). The passthrough keys are re-added from the active
@@ -108,12 +116,17 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# PATH fallbacks for minimal-PATH environments (systemd services): Termux,
-# macOS Homebrew, and the usual system dirs — needed for agent-browser/npx/node.
+# Standard PATH entries for environments with minimal PATH (e.g. systemd services).
+# Includes macOS Homebrew locations for externally installed browser helpers.
 _SANE_PATH_DIRS = (
-    "/data/data/com.termux/files/usr/bin", "/data/data/com.termux/files/usr/sbin",
-    "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/sbin", "/usr/local/bin",
-    "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/sbin",
+    "/usr/local/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
 )
 _SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
 
@@ -141,13 +154,6 @@ MIN_SNAPSHOT_THRESHOLD = 1000
 MAX_STORED_SNAPSHOT_CHARS = 2_000_000
 _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})  # legitimately empty stdout
 
-# Sentinel _find_agent_browser returns/caches to mean "resolve via npx" rather
-# than a concrete path (also compared in hermes_cli/tools_config.py and doctor.py).
-NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
-# Pinned to match scripts/install.sh / install.ps1's managed install so a bare-npx
-# resolution gets the same version instead of floating latest. Update together.
-AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
-
 # Process caches (``_cached_X`` + ``_X_resolved`` pairs) for config-derived lookups;
 # reset by ``cleanup_all_browsers``. Written/read by the sibling modules via ``browser_tool_origin``.
 # The config-derived ones are keyed by profile home (``hermes_home_key()``): the multiplexed
@@ -166,15 +172,12 @@ _cached_cloud_providers: Dict[tuple[str, tuple[int, int]], Optional[BrowserProvi
 _cloud_provider_cache_lock = threading.RLock()
 _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
-_cached_agent_browser: Optional[str] = None
-_agent_browser_resolved = False
 _cached_browser_engine: Optional[str] = None  # agent-browser v0.25.3+ ``--engine lightpanda``
 _browser_engine_resolved = False
 _auto_local_for_private_urls_resolved = False
 _cached_auto_local_for_private_urls: bool = True
 _cached_headed_mode: Optional[bool] = None
 _headed_mode_resolved = False
-_cached_chromium_installed: Optional[bool] = None
 _chromium_autoinstall_attempted = False  # one-shot: a failed 170MB download must not retry per call
 
 # Mask secrets in logged CDP URLs; agent.redact.redact_cdp_url is the single policy.
@@ -1385,7 +1388,6 @@ _PLUGIN_COMPAT_LAZY = {
     'normalize_browser_cloud_provider': ('tools.tool_backend_helpers', 'normalize_browser_cloud_provider'),
     'reset_hermes_home_override': ('hermes_constants', 'reset_hermes_home_override'),
     'set_hermes_home_override': ('hermes_constants', 'set_hermes_home_override'),
-    'warm_agent_browser_npx_cache': ('tools.browser_tool_install', 'warm_agent_browser_npx_cache'),
     'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
 }
 

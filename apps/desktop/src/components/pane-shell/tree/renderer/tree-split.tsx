@@ -232,8 +232,9 @@ export function TreeSplit({
         const zone = fixed ? edgeFixedZone(child, edge, axis, trackCtx) : null
         const zoneEl = zone ? container.querySelector<HTMLElement>(`[data-tree-group="${zone.id}"]`) : null
         // Clamps live on the zone's split-child WRAPPER (where we render them).
-        const el = zoneEl?.parentElement ?? wrapper
-        const cs = window.getComputedStyle(el)
+        // For a nested section this is the INNER flex item, not the seam partner.
+        const zoneItem = zoneEl?.parentElement ?? wrapper
+        const cs = window.getComputedStyle(zoneItem)
         // A tool panel (terminal / logs) may be dragged down to its collapsed
         // header — the generic 80px floor is not its floor. Below that the
         // release minimizes the zone instead of leaving a useless sliver.
@@ -251,7 +252,10 @@ export function TreeSplit({
           min: toolZone ? floor : Math.max(floor, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
           max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY),
           collapseId: toolZone ? (zone?.id ?? groupIdOf(child)) : null,
-          floor
+          floor,
+          // The flex item the release commit resizes: the seam partner itself
+          // for a direct group, the inner zone wrapper for a nested section.
+          zoneItem
         }
       }
 
@@ -276,6 +280,9 @@ export function TreeSplit({
           element,
           index,
           initial: side.fixed ? side.size : sizeOf(element),
+          // Seam-partner width at pointerdown. A nested section is wider than
+          // its edge zone, so the preview grows the wrapper from this width.
+          wrapperSize: sizeOf(element),
           // A minimized rail is its 28px strip: it neither donates nor takes,
           // and its remembered weight must survive the gesture so restoring
           // it brings back the size it had before it was folded.
@@ -373,16 +380,17 @@ export function TreeSplit({
         }
       }
 
-      const styleSnapshots = sashTracks.map(track => track.element.getAttribute('style'))
+      // Nested sections also preview their inner zone wrapper, so snapshot it too.
+      const styleSnapshots = [...new Set(sashTracks.flatMap(track => [track.element, track.zoneItem]))].map(
+        el => [el, el.getAttribute('style')] as const
+      )
 
       const restoreStyles = () => {
-        sashTracks.forEach((track, index) => {
-          const style = styleSnapshots[index]
-
+        styleSnapshots.forEach(([el, style]) => {
           if (style === null) {
-            track.element.removeAttribute('style')
+            el.removeAttribute('style')
           } else {
-            track.element.setAttribute('style', style)
+            el.setAttribute('style', style)
           }
         })
       }
@@ -414,7 +422,11 @@ export function TreeSplit({
           const px = plan.sizes[index]
 
           if (track.fixed) {
-            track.element.style.flexBasis = `${px}px`
+            // Fixed tracks plan in zone space. A nested section's wrapper moves
+            // by the zone's delta from its own width. For a direct group both
+            // are one element, and the second write leaves it at `px`.
+            track.element.style.flexBasis = `${track.wrapperSize + px - track.initial}px`
+            track.zoneItem.style.flexBasis = `${px}px`
           } else {
             track.element.style.flex = `0 1 ${px}px`
           }

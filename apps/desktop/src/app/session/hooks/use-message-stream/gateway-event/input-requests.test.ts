@@ -15,6 +15,7 @@ const deps = { updateSessionState: vi.fn(), upsertToolCall: vi.fn() } as unknown
 
 function cancel(requestId: string, routedSession: string | null): GatewayEventContext {
   const payload = { id: requestId, method: 'display.install.sudo', reason: 'timeout' }
+
   return {
     deps: deps as unknown as GatewayEventContext['deps'],
     event: { payload, type: 'request.cancel' },
@@ -42,7 +43,14 @@ describe('Bot Screen install password card', () => {
     const respond = vi.fn()
     expect(
       handleServerRequest(
-        { fail: vi.fn(), id: 'srq-1', method: 'display.install.sudo', params: { profile_key: '/home/h/.hermes', session_id: '' }, profile: 'default', respond },
+        {
+          fail: vi.fn(),
+          id: 'srq-1',
+          method: 'display.install.sudo',
+          params: { profile_key: '/home/h/.hermes', session_id: '' },
+          profile: 'default',
+          respond
+        },
         deps,
         'chat-a'
       )

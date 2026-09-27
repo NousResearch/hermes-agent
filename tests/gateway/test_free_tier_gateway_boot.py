@@ -12,7 +12,6 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 import gateway.run_startup as run_startup
 
-
 @pytest.mark.asyncio
 async def test_gateway_boot_runs_the_free_tier_bootstrap_before_any_adapter_connects(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -39,5 +38,3 @@ async def test_gateway_boot_runs_the_free_tier_bootstrap_before_any_adapter_conn
 
     assert ok is True
     assert order[:2] == ["bootstrap", "prefilter-platforms"], order
-
-

@@ -13,8 +13,11 @@ const reactUi: TestProjectConfiguration = {
     globals: true,
     // The first test in each file pays jsdom env init + full module transform,
     // which can exceed vitest's 5000ms default under CI/load. 15s gives the
-    // cold start headroom without masking genuinely hung tests.
-    testTimeout: 15_000
+    // cold start headroom without masking genuinely hung tests. Hooks pay the
+    // same cold cost when a beforeEach does `vi.resetModules()` + `await
+    // import(...)` (65 files); one timed out at 10s on CI (#120318).
+    testTimeout: 15_000,
+    hookTimeout: 30_000
   }
 }
 

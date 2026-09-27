@@ -17,6 +17,13 @@ def _profile():
 
 
 class TestMetaAIProfile:
+    def test_images_ride_user_turns_not_tool_results(self):
+        """Muse accepts images on user turns but 400s on image parts inside
+        tool-result envelopes (#101668): vision must stay on while tool-message
+        vision stays off, so tool screenshots are routed as text/user turns."""
+        p = _profile()
+        assert p.supports_vision is True
+        assert p.supports_vision_tool_messages is False
 
     def test_live_catalog_filters_non_chat_models(self, monkeypatch):
         p = _profile()

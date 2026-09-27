@@ -75,7 +75,9 @@ class TestSteerInlineDetector:
         cli = _make_cli()
         cli._agent_running = True
         assert cli._should_handle_steer_command_inline("/steer focus on error handling") is True
-
+        # /queue edits the next-turn queue mid-run instead of being queued as a raw command itself.
+        assert cli._should_handle_steer_command_inline("/queue list") is True
+        assert cli._should_handle_steer_command_inline("/q follow up later") is True
 
 
 

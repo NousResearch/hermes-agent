@@ -10,7 +10,6 @@ from hermes_cli.model_setup_flows_bedrock import (
     bedrock_region_geo_prefix,
 )
 
-
 class TestRegionGeoPrefix:
     def test_known_geographies(self):
         assert bedrock_region_geo_prefix("us-east-1") == "us."
@@ -25,13 +24,8 @@ class TestRegionGeoPrefix:
         assert bedrock_region_geo_prefix("") == ""
         assert bedrock_region_geo_prefix("moon-base-1") == ""
 
-
 class TestRoutableFromRegion:
     def test_us_profile_not_offered_in_eu(self):
         assert not bedrock_model_routable_from_region(
             "us.anthropic.claude-sonnet-4-6", "eu-central-2"
         )
-
-
-
-

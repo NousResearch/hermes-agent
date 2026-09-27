@@ -71,7 +71,7 @@ def resolve_client_socket_path(home: Path) -> Optional[Path]:
         return direct
     with contextlib.suppress(OSError):
         pointer = Path(home) / _POINTER_FILENAME
-        target = pointer.read_text(encoding="utf-8").strip() if pointer.is_file() else ""
+        target = pointer.read_text(encoding="utf-8-sig").strip() if pointer.is_file() else ""
         if target and Path(target).exists():
             return Path(target)
     return None
@@ -87,8 +87,8 @@ def _detect_supervisor() -> str:
     env = os.environ
     if env.get("INVOCATION_ID"):
         return "systemd"
-    if sys.platform == "darwin" and (env.get("XPC_SERVICE_NAME", "").startswith("ai.hermes")
-                                     or env.get("LAUNCHD_SOCKET")):
+    from gateway.restart import launchd_job_label
+    if sys.platform == "darwin" and (launchd_job_label(env) or env.get("LAUNCHD_SOCKET")):
         return "launchd"
     if env.get("HERMES_DESKTOP_MANAGED"):
         return "desktop"
@@ -358,6 +358,14 @@ def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dic
     when no gateway answers / the gateway predates the verb — callers then rely on the periodic rescan
     (or the restart reminder)."""
     return query_gateway_control(home, "rescan-profiles", timeout=timeout)
+
+
+def request_unserve_profile(home: Path, name: str) -> Optional[dict[str, Any]]:
+    return query_gateway_control(home, "unserve-profile", params={"name": name}, timeout=8.0)
+
+
+def request_serve_profile_hot(home: Path, name: str) -> Optional[dict[str, Any]]:
+    return query_gateway_control(home, "serve-profile", params={"name": name}, timeout=8.0)
 
 
 def migrate_gateway_profile_identity(home: Path, old_name: str, new_name: str, *,

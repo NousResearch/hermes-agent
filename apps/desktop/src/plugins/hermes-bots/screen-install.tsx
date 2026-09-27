@@ -118,7 +118,9 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
         <div className="text-sm font-medium">{t.screen.notInstalledTitle}</div>
         <div className="text-xs text-muted-foreground">{t.screen.notInstalledBody}</div>
         {status.install_command ? (
-          <code className="select-text break-all rounded bg-muted px-2 py-1 text-left text-xs">{status.install_command}</code>
+          <code className="select-text break-all rounded bg-muted px-2 py-1 text-left text-xs">
+            {status.install_command}
+          </code>
         ) : (
           <div className="text-xs text-muted-foreground">{t.screen.noPackageManager}</div>
         )}

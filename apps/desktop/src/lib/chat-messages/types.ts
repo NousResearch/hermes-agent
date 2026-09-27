@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import { type BillingBlock, type PersistedTurn, type ToolLabel } from '@hermes/shared'
+import { type BillingBlock, type MessageCompletePayload, type PersistedTurn, type ToolLabel } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
@@ -66,6 +66,13 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
+  /** Backend-authored transcript notice rather than a message any view sent: a
+   *  model switch, an auto-continue, a background-process completion. It renders
+   *  on the timeline like any other system row but belongs to no view, so the
+   *  stale-transcript compare must not count it (see
+   *  `messagesIfTranscriptBehind`) — counting it made one model switch report a
+   *  second window ahead and refuse every send. */
+  systemNotice?: boolean
 }
 
 export type GatewayEventPayload = {
@@ -204,6 +211,9 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // message.complete — a transform_llm_output hook rewrote the final text after streaming;
+  // it authoritatively replaces the current turn's streamed text even without a prefix match.
+  response_transformed?: MessageCompletePayload['response_transformed']
   persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string

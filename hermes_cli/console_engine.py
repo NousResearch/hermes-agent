@@ -660,8 +660,8 @@ def _guard_exports(db, session_ids: list[str]) -> None:
             db.assert_export_safe(session_id, max_messages=limit)
     except SessionExportTooLargeError as exc:
         raise ConsoleCommandError(
-            f"Session '{exc.session_id}' has more than {limit:,} active "
-            "messages; in-memory export is capped per session. "
+            f"Session '{exc.session_id}' has more than {limit:,} "
+            "exportable messages; in-memory export is capped per session. "
             "Use the Sessions page's streaming Export action, or set "
             "sessions.max_export_messages: 0 in config.yaml to disable "
             "the guard.") from exc
@@ -676,13 +676,15 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
             if not resolved_session_id:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
             _guard_exports(db, [resolved_session_id])
-            rows = [db.export_session(resolved_session_id)]
+            # Transfer projection: every row with its active/compacted flags, so an import of this
+            # JSONL restores a compacted session's whole history instead of only its live rows.
+            rows = [db.export_session(resolved_session_id, include_inactive=True)]
             if not rows[0]:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
         else:
             found = db.search_sessions(source=ns.source, limit=100000)
             _guard_exports(db, [session["id"] for session in found])
-            rows = db.export_all(source=ns.source)
+            rows = db.export_all(source=ns.source, include_inactive=True)
         text = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
         if text:
             text += "\n"

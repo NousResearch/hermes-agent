@@ -1473,6 +1473,31 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
 
 
+def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: int) -> bool:
+    """Worker-side half of ``_set_worker_pid``, run by the worker before its first model call.
+
+    A dispatcher killed between spawning the worker and ``_set_worker_pid`` leaves the run with no
+    pid: no liveness check can see the worker, so a TTL expiry reclaims the card and spawns a second
+    worker beside it. The worker fills the missing pid itself (``worker_registered``). False when
+    ``run_id`` is no longer the card's live run: the card was reclaimed before this worker got here,
+    and it must exit without working it."""
+    started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
+    with _kb.write_txn(conn):
+        row = conn.execute("SELECT status, current_run_id, worker_pid, claim_lock FROM tasks WHERE id = ?",
+                           (task_id,)).fetchone()
+        if row is None or row["status"] != "running" or row["current_run_id"] != int(run_id):
+            return False
+        # Liveness checks are host-local: a pid from another host (or pid namespace) proves nothing here.
+        if row["worker_pid"] is None and (row["claim_lock"] or "").startswith(_kb._host_prefix()):
+            conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                         (int(pid), started_at, task_id))
+            conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                         (int(pid), started_at, int(run_id)))
+            _kb._append_event(conn, task_id, "worker_registered", {"pid": int(pid), "started_at": started_at},
+                              run_id=int(run_id))
+    return True
+
+
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     """Reset the unified consecutive-failures counter.
 
@@ -2599,17 +2624,20 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
 
     home = Path(hermes_home)
     is_launch_home = str(home.resolve()) == str(Path(get_process_hermes_home()).resolve())
-    home_token = set_hermes_home_override(str(home)) if bind_home else None
-    secret_token = set_secret_scope(
-        launch_secret_scope(home) if is_launch_home else build_profile_secret_scope(home))
-    terminal_token = install_profile_terminal_scope(
-        home, env_overlay=launch_terminal_env() if is_launch_home else None) if bind_home else None
+    home_token = secret_token = terminal_token = None
     try:
+        home_token = set_hermes_home_override(str(home)) if bind_home else None
+        secret_token = set_secret_scope(
+            launch_secret_scope(home) if is_launch_home else build_profile_secret_scope(home),
+            profile_home=None if is_launch_home else str(home))
+        terminal_token = install_profile_terminal_scope(
+            home, env_overlay=launch_terminal_env() if is_launch_home else None) if bind_home else None
         yield
     finally:
         if terminal_token is not None:
             reset_terminal_scope(terminal_token)
-        reset_secret_scope(secret_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
         if home_token is not None:
             reset_hermes_home_override(home_token)
 

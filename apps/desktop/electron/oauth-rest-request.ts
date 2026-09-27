@@ -1,3 +1,4 @@
+import { readJsonErrorBody, readStatusCode } from './api-transport'
 import { isGatewayAuthRejection } from './connection-config'
 import { type NativeAccessTokenOptions, NativeAuthChangedError } from './native-access-token'
 import { shouldRotateNativeTokenAfterRejection } from './native-auth-decisions'
@@ -25,6 +26,13 @@ async function cookieFallback<T>(request: () => Promise<T>, nativeError: unknown
   }
 }
 
+/** A confirmed bearer 401 is an app-token failure, not a server OAuth session. */
+function markStaleAppToken(error: unknown): void {
+  if (error && typeof error === 'object') {
+    ;(error as { appTokenRejected?: boolean }).appTokenRejected = true
+  }
+}
+
 /**
  * Native-first OAuth selection for REST, readiness, downloads and media.
  * Cookie coexistence can recover a failed refresh, but an empty cookie jar
@@ -49,6 +57,41 @@ export interface MintGatewayWsTicketDeps {
   fetchJsonViaOauthSession: (url: string, options: any) => Promise<any>
 }
 
+/**
+ * Whether a cookie-mode 401 may be answered by ONE silent re-login and a
+ * single resubmission of the same request (#61457). The no-replay rule above
+ * stands for arbitrary mutations; a replay needs BOTH:
+ *   - pre-effect evidence: the 401 body carries the dashboard auth gate's
+ *     structured `{error: unauthenticated|session_expired, reason}` shape,
+ *     which the middleware emits before any route handler runs; and
+ *   - a replay-safe operation: an idempotent method (GET/HEAD), or the caller
+ *     vouching for the operation with `replayOn401: true` (ticket minting).
+ */
+export function shouldReplayAfterCookie401(
+  error: unknown,
+  options: { method?: unknown; replayOn401?: unknown } = {}
+): boolean {
+  if (readStatusCode(error) !== 401) {
+    return false
+  }
+
+  const body = readJsonErrorBody(error)
+
+  const gateRefusal =
+    body !== null &&
+    (body.error === 'unauthenticated' || body.error === 'session_expired') &&
+    typeof body.reason === 'string' &&
+    body.reason.length > 0
+
+  if (!gateRefusal) {
+    return false
+  }
+
+  const method = String(options.method || 'GET').toUpperCase()
+
+  return method === 'GET' || method === 'HEAD' || options.replayOn401 === true
+}
+
 /** Ticket minting is replay-safe, unlike arbitrary REST mutations. */
 export async function mintGatewayWsTicket(
   baseUrl: string,
@@ -56,7 +99,8 @@ export async function mintGatewayWsTicket(
   headers: Record<string, string> = {}
 ): Promise<string> {
   const url = `${baseUrl}/api/auth/ws-ticket`
-  const options = { method: 'POST', timeoutMs: 8_000, headers }
+  // replayOn401: a ticket that was never issued has no effect to double.
+  const options = { method: 'POST', timeoutMs: 8_000, headers, replayOn401: true }
 
   const ticketFrom = async (request: Promise<any>): Promise<string> => {
     const body = await request
@@ -97,6 +141,10 @@ export async function mintGatewayWsTicket(
           return await mintWithBearer(rotatedAt)
         }
       } catch (error) {
+        if (readStatusCode(error) === 401) {
+          markStaleAppToken(error)
+        }
+
         return cookieFallback(requestWithCookie, error)
       }
     }

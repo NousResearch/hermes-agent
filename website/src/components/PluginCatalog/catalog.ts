@@ -2,6 +2,9 @@
 // author pages (plugins/plugin-catalog-pages generates their routes). One definition of the entry
 // shape, the tier/category taxonomy and the link builders keeps the three surfaces from drifting.
 
+import { pluginCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
+import { PLUGIN_CATEGORIES } from "../../../../apps/shared/src/catalog-browse";
+
 export interface PluginCapabilities {
   providesTools?: string[];
   providesHooks?: string[];
@@ -59,7 +62,7 @@ export const SUBMIT_PLUGIN_URL = "/user-guide/features/plugin-catalog#submitting
 /** Deep link into the Desktop app's Install Plugin dialog, catalog mode: the app
  *  resolves the reviewed pin itself, so the page never hands it a repo URL. */
 export function desktopInstallLink(name: string): string {
-  return `hermes://plugin/install?catalog=${encodeURIComponent(name)}`;
+  return pluginCatalogInstallUrl({ name });
 }
 
 /** Site route of an entry's page (Docusaurus prefixes baseUrl/locale via <Link>). */
@@ -89,34 +92,22 @@ export const TIER_CONFIG: Record<
 > = {
   official: {
     label: "Official",
-    color: "#ffd700",
-    bg: "rgba(255, 215, 0, 0.08)",
-    border: "rgba(255, 215, 0, 0.25)",
+    color: "var(--plugin-catalog-official)",
+    bg: "var(--plugin-catalog-official-bg)",
+    border: "var(--plugin-catalog-official-border)",
     icon: "\u{2713}",
   },
   community: {
     label: "Community",
-    color: "#94a3b8",
-    bg: "rgba(148, 163, 184, 0.08)",
-    border: "rgba(148, 163, 184, 0.2)",
+    color: "var(--plugin-catalog-community)",
+    bg: "var(--plugin-catalog-community-bg)",
+    border: "var(--plugin-catalog-community-border)",
     icon: "\u{2756}",
   },
 };
 
-// Browse taxonomy. Order here is the order of the filter pills and of the
-// grouped sections; keep it in sync with CATALOG_CATEGORIES in
-// hermes_cli/plugin_catalog.py and website/scripts/extract-plugins.py.
-export const CATEGORY_CONFIG: Record<string, { label: string; icon: string; blurb: string }> = {
-  desktop: { label: "Desktop", icon: "\u{1F5A5}\u{FE0F}", blurb: "Panes, tabs and views for Hermes Desktop" },
-  memory: { label: "Memory", icon: "\u{1F9E0}", blurb: "Memory providers and context engines" },
-  platform: { label: "Platforms", icon: "\u{1F4AC}", blurb: "Messaging and channel adapters" },
-  web: { label: "Web & Browser", icon: "\u{1F310}", blurb: "Search backends, extraction and browser control" },
-  tools: { label: "Tools", icon: "\u{1F6E0}\u{FE0F}", blurb: "New tools the agent can call" },
-  voice: { label: "Voice", icon: "\u{1F399}\u{FE0F}", blurb: "Speech, TTS and realtime audio" },
-  automation: { label: "Automation", icon: "\u{23F1}\u{FE0F}", blurb: "Hooks, wake triggers and session automation" },
-  models: { label: "Models", icon: "\u{2728}", blurb: "Model and inference providers" },
-  general: { label: "General", icon: "\u{1F4E6}", blurb: "Plugins that span several areas" },
-};
+// Browse taxonomy, shared with Desktop. Its order is the order of the filter pills and grouped sections.
+export const CATEGORY_CONFIG = PLUGIN_CATEGORIES;
 export const CATEGORY_ORDER = Object.keys(CATEGORY_CONFIG);
 
 export function categoryOf(plugin: Pick<CatalogPlugin, "category">) {

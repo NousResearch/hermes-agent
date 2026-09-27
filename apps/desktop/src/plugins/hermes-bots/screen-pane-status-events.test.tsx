@@ -18,7 +18,9 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { onGatewayEvent } = await import('../../contrib/events')
 
   return {
-    Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button>,
+    Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+      <button {...props}>{children}</button>
+    ),
     Codicon: () => null,
     GlyphSpinner: () => null,
     Tip: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -91,7 +93,9 @@ beforeEach(() => {
   $screenState.set({})
   vi.mocked(displayRequest)
     .mockReset()
-    .mockImplementation(async (_bot, method) => (method === 'display.observe' ? { ...running, ticket: 't', viewer_id: 'v1' } : stopped))
+    .mockImplementation(async (_bot, method) =>
+      method === 'display.observe' ? { ...running, ticket: 't', viewer_id: 'v1' } : stopped
+    )
   vi.stubGlobal(
     'WebSocket',
     class {

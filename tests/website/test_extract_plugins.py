@@ -35,7 +35,7 @@ def mod():
 
 
 def _write_entry(catalog_dir: Path, name: str, **overrides) -> Path:
-    import yaml
+    import hermes_yaml as yaml
 
     entry = {
         "name": name,

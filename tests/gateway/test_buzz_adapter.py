@@ -16,7 +16,7 @@ from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
 # (plugin_adapter_buzz) so it cannot collide with other plugin adapters
-# loaded by sibling tests in the same xdist worker.
+# loaded by sibling tests in the same process.
 _buzz_mod = load_plugin_adapter("buzz")
 
 BuzzAdapter = _buzz_mod.BuzzAdapter
@@ -60,7 +60,6 @@ _ENV_VARS = (
     "BUZZ_AUTH_TAG",
 )
 
-
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch, tmp_path):
     """Keep tests hermetic: no ambient Buzz env vars or real credentials."""
@@ -68,7 +67,6 @@ def _clean_env(monkeypatch, tmp_path):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(_buzz_mod, "_DEFAULT_CREDENTIALS_DIR", tmp_path / "no-creds")
     yield
-
 
 def _event(event_id, pubkey=OTHER_PUBKEY, content="hello", created_at=1000, kind=9):
     return {
@@ -79,7 +77,6 @@ def _event(event_id, pubkey=OTHER_PUBKEY, content="hello", created_at=1000, kind
         "kind": kind,
         "tags": [["h", CHANNEL]],
     }
-
 
 def _make_adapter(extra=None):
     from gateway.config import PlatformConfig
@@ -94,7 +91,6 @@ def _make_adapter(extra=None):
     # tests are authorized by default and override the callback at the boundary.
     adapter.set_authorization_check(lambda *_args: True)
     return adapter
-
 
 class _ScriptedCli:
     """Fake ``_run_cli`` that routes on the buzz subcommand and records calls."""
@@ -116,9 +112,7 @@ class _ScriptedCli:
             return queue[0]
         return 0, "[]", ""
 
-
 # ── bech32 / identity helpers ─────────────────────────────────────────────
-
 
 class TestBech32Helpers:
 
@@ -128,13 +122,9 @@ class TestBech32Helpers:
     def test_npub_to_hex_known_pair(self):
         assert npub_to_hex(SELF_NPUB) == SELF_PUBKEY
 
-
 # ── Adapter init / config precedence ──────────────────────────────────────
 
-
 class TestBuzzAdapterInit:
-
-
 
     def test_env_overrides_config(self, monkeypatch):
         monkeypatch.setenv("BUZZ_RELAY_URL", "https://env.relay")
@@ -142,9 +132,7 @@ class TestBuzzAdapterInit:
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
 
-
 # ── Multiplex secondary-profile scope (#98738) ─────────────────────────────
-
 
 @pytest.fixture
 def multiplex_scope():
@@ -167,7 +155,6 @@ def multiplex_scope():
         reset_secret_scope(token)
     set_multiplex_active(False)
 
-
 @pytest.fixture
 def default_profile_env(monkeypatch):
     """The default profile's YAML-to-env bridge output in os.environ."""
@@ -181,7 +168,6 @@ def default_profile_env(monkeypatch):
     monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", "/default/creds.json")
     monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1default")
     monkeypatch.setenv("BUZZ_AUTH_TAG", '["auth","default-profile-tag","","x"]')
-
 
 class TestMultiplexProfileScope:
 
@@ -269,7 +255,7 @@ class TestMultiplexProfileScope:
     ):
         """The gate must consult the profile's own config.yaml + secret scope,
         not the default profile's env values."""
-        import yaml
+        import hermes_yaml as yaml
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
@@ -585,9 +571,7 @@ class TestMultiplexProfileScope:
         assert result.get("error")
         assert "success" not in result
 
-
 # ── CLI error contract ────────────────────────────────────────────────────
-
 
 class TestCliErrorContract:
 
@@ -600,16 +584,14 @@ class TestCliErrorContract:
         [
             "x" * 100_000,
             json.dumps({"error": "relay_error", "message": "x" * 100_000}),
-        ],
+        ], ids=["plain-large", "json-large"],
     )
     def test_bounds_untrusted_cli_error_output(self, stderr):
         msg = _cli_error_message(stderr, 2)
         assert len(msg) <= 900
         assert msg.endswith("...")
 
-
 # ── Seeding / high-water mark / de-dupe ───────────────────────────────────
-
 
 class TestPollingDedupe:
 
@@ -687,8 +669,6 @@ class TestPollingDedupe:
         await adapter._poll_channel(CHANNEL)
 
         assert [item["message_id"] for item in adapter._dispatched] == ["following-valid"]
-
-
 
 class TestInboundAttachments:
 
@@ -878,7 +858,6 @@ class TestInboundAttachments:
 
         assert "could not be downloaded" in dispatched[-1]["text"]
         assert dispatched[-1]["media_urls"] == []
-
 
     def test_imeta_sanitizes_filename_and_rejects_incomplete_metadata(self):
         event = _event("metadata", content="@Chip files")
@@ -1451,9 +1430,7 @@ class TestInboundAttachments:
 
         assert dispatched[-1]["message_type"] is expected_type
 
-
 # ── Mention gating / DMs / authorization ──────────────────────────────────
-
 
 class TestMentionGating:
 
@@ -1547,7 +1524,6 @@ class TestMentionGating:
         assert adapter._strip_mention("Chip: please review") == "Chip: please review"
         assert adapter._strip_mention("@Chip-bot: please review") == "@Chip-bot: please review"
 
-
     @pytest.mark.asyncio
     async def test_allowlist_blocks_unauthorized(self, adapter):
         adapter._allowed_pubkeys = {"b" * 64}
@@ -1607,13 +1583,11 @@ class TestMentionGating:
         adapter.send_reaction.assert_not_awaited()
         assert adapter._dispatched == []
 
-
 # ── NIP-10 thread replies as addressed (issue #75826) ────────────────────
 #
 # With require_mention (default), channel replies whose direct parent is the
 # agent's own message must dispatch even when the text has no @name — Buzz
 # Desktop's natural reply affordance for /approve never types a mention.
-
 
 def _tagged_event(event_id, channel, *, content, pubkey=OTHER_PUBKEY,
                   created_at=1000, kind=9, p=None, reply_to=None, root=None):
@@ -1634,7 +1608,6 @@ def _tagged_event(event_id, channel, *, content, pubkey=OTHER_PUBKEY,
         "kind": kind,
         "tags": tags,
     }
-
 
 class TestNip10ThreadReplyMentionGate:
     """require_mention + NIP-10 reply-to-own-message (#75826)."""
@@ -1693,7 +1666,6 @@ class TestNip10ThreadReplyMentionGate:
         assert adapter._dispatched[0]["reply_to_message_id"] == "agent-prompt"
         assert adapter._dispatched[0]["reply_to_is_own_message"] is True
         assert "approval" in (adapter._dispatched[0]["reply_to_text"] or "")
-
 
     @pytest.mark.asyncio
     async def test_reply_to_other_user_stays_gated(self, adapter):
@@ -1842,7 +1814,6 @@ class TestNip10ThreadReplyMentionGate:
         assert d["reply_to_is_own_message"] is True
         assert d["reply_to_text"] == "previous answer"
 
-
 # ── DM classification via p-tags (issue #68871) ──────────────────────────
 #
 # `buzz dms list` returns [] on some hosted relays, so DM conversations leak
@@ -1850,7 +1821,6 @@ class TestNip10ThreadReplyMentionGate:
 # reclassify them from the Nostr tags of real traffic: DM messages are
 # p-tagged to our own pubkey WITHOUT the text mentioning us, while channel
 # messages only ever p-tag us when the text visibly @mentions us.
-
 
 class TestDmClassification:
 
@@ -1896,7 +1866,6 @@ class TestDmClassification:
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
         assert adapter._dispatched[0]["chat_type"] == "dm"
 
-
     @pytest.mark.asyncio
     async def test_general_reply_ptagging_self_stays_channel(self, adapter):
         """A #general reply to us p-tags our pubkey (observed live) — that
@@ -1917,7 +1886,6 @@ class TestDmClassification:
             _tagged_event("e2", CHANNEL, content="thanks everyone", created_at=1001),
         )
         assert len(adapter._dispatched) == 1
-
 
     @pytest.mark.asyncio
     async def test_channel_ptag_dispatches_without_latching(self, adapter):
@@ -1949,7 +1917,6 @@ class TestDmClassification:
         assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
         assert adapter._may_reclassify_as_dm(CHANNEL) is False
-
 
     @pytest.mark.asyncio
     async def test_dm_shaped_channel_discovered_when_dms_list_empty(self):
@@ -2009,7 +1976,6 @@ class TestDmClassification:
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
         assert adapter._dispatched[0]["chat_type"] == "dm"
 
-
 class TestThreadRoots:
 
     @pytest.mark.asyncio
@@ -2039,9 +2005,7 @@ class TestThreadRoots:
 
         assert dispatched[0].source.thread_id == "stable-root"
 
-
 # ── Sending ───────────────────────────────────────────────────────────────
-
 
 class TestBuzzAdapterSend:
 
@@ -2065,7 +2029,6 @@ class TestBuzzAdapterSend:
         assert stdin_text == "hello **markdown**"
         # Our own event id is marked seen for echo suppression
         assert "evt123" in adapter._channel_state[CHANNEL]["seen"]
-
 
     @pytest.mark.asyncio
     async def test_send_uses_metadata_reply_to_message_id(self):
@@ -2182,7 +2145,6 @@ class TestBuzzAdapterSend:
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
 
-
     @pytest.mark.asyncio
     async def test_send_retries_unresolved_presentation_mention_without_notifying(self):
         adapter = _make_adapter()
@@ -2278,8 +2240,6 @@ class TestBuzzAdapterSend:
         assert cli.calls[0][1] == "See @session:default/example."
         assert cli.calls[1][1] == "See @\u200bsession:default/example."
 
-
-
     @pytest.mark.asyncio
     async def test_send_image_file_missing_local_path_uses_base_fallback_notice(self, tmp_path):
         missing = tmp_path / "missing.png"
@@ -2297,7 +2257,6 @@ class TestBuzzAdapterSend:
         assert str(missing) not in args
         assert stdin_text.startswith("screenshot\n")
         assert str(missing) not in stdin_text
-
 
     @pytest.mark.asyncio
     async def test_send_multiple_images_file_url_uses_native_file_send(self, tmp_path):
@@ -2319,11 +2278,7 @@ class TestBuzzAdapterSend:
         assert stdin_text == "screenshot"
         assert "Couldn't deliver the image attachment." not in stdin_text
 
-
-
-
 # ── Thread anchoring ──────────────────────────────────────────────────────
-
 
 class TestThreadAnchoring:
     """A reply must JOIN the thread it was triggered from, not nest a new one.
@@ -2396,9 +2351,7 @@ class TestThreadAnchoring:
         args, _stdin = cli.calls[0]
         assert args[args.index("--reply-to") + 1] == "root1"
 
-
 # ── Inbound media localisation ─────────────────────────────────────────────────
-
 
 class TestInboundMediaLocalisation:
 
@@ -2471,8 +2424,6 @@ class TestInboundMediaLocalisation:
         assert media_url not in event.text
         assert cli_calls[0][-1] == media_url
 
-
-
     @pytest.mark.asyncio
     async def test_multiple_images_are_localised_in_content_order(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -2520,7 +2471,7 @@ class TestInboundMediaLocalisation:
         assert event.message_type == MessageType.DOCUMENT
         assert event.media_types == ["application/pdf"]
         assert len(event.media_urls) == 1
-        assert "/cache/documents/" in event.media_urls[0]
+        assert "/cache/documents/" in Path(event.media_urls[0]).as_posix()
 
     @pytest.mark.asyncio
     async def test_download_failure_preserves_caption_and_alt_text(
@@ -2650,7 +2601,6 @@ class TestInboundMediaLocalisation:
         assert event.media_urls == []
         assert calls == []
 
-
 class TestInboundMediaAuthorizationGate:
     """Authenticated retrieval must never run for an unauthorized sender.
 
@@ -2757,8 +2707,6 @@ class TestInboundMediaAuthorizationGate:
         assert captured[0].message_type == MessageType.PHOTO
         assert len(captured[0].media_urls) == 1
 
-
-
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("method_name", "suffix"),
@@ -2794,7 +2742,6 @@ class TestInboundMediaAuthorizationGate:
         # Threading contract (#99429): stable thread root beats latest-child.
         assert args[args.index("--reply-to") + 1] == "stable-root"
         assert stdin_text == "caption"
-
 
     @pytest.mark.asyncio
     async def test_live_media_redacts_long_path_before_bounding(self, tmp_path):
@@ -2877,12 +2824,9 @@ class TestInboundMediaAuthorizationGate:
             for call in cli.calls
         )
 
-
 # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-
 class TestBuzzAdapterLifecycle:
-
 
     @pytest.mark.asyncio
     async def test_disconnect_releases_scoped_lock(self, monkeypatch):
@@ -2929,9 +2873,7 @@ class TestBuzzAdapterLifecycle:
         # channels list must never run: the conflict branch short-circuits connect()
         assert not any(call[0][:2] == ["channels", "list"] for call in cli.calls)
 
-
 # ── Credentials / requirements ────────────────────────────────────────────
-
 
 class TestCredentialResolution:
 
@@ -3004,15 +2946,12 @@ class TestCredentialResolution:
             ss.reset_secret_scope(token)
             ss.set_multiplex_active(False)
 
-
 # ── Env enablement / registration / standalone send ──────────────────────
-
 
 class TestEnvEnablement:
 
     def test_returns_none_when_unconfigured(self):
         assert _env_enablement() is None
-
 
 class TestBuzzPluginRegistration:
 
@@ -3031,7 +2970,6 @@ class TestBuzzPluginRegistration:
         assert callable(kwargs["standalone_sender_fn"])
         assert callable(kwargs["env_enablement_fn"])
         assert set(kwargs["required_env"]) == {"BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"}
-
 
 class TestStandaloneSend:
 
@@ -3239,11 +3177,7 @@ class TestStandaloneSend:
         file_index = captured["args"].index("--file")
         assert captured["args"][file_index + 1] == str(document)
 
-
-
-
 # ── Editing and deleting (streaming) ──────────────────────────────────
-
 
 class TestBuzzAdapterEdit:
 
@@ -3266,7 +3200,6 @@ class TestBuzzAdapterEdit:
         # form keeps hyphen-leading replacement text from being parsed as a flag.
         assert args[2:] == ["--event", "orig1", f"--content={content}"]
         assert stdin_text is None
-
 
     @pytest.mark.asyncio
     async def test_edit_marks_its_own_event_seen(self):
@@ -3427,7 +3360,6 @@ class TestBuzzAdapterEdit:
         assert "media_delivered" not in result
 # ── Durable channel cursors across restart (#90464) ───────────────────────
 
-
 class TestChannelCursorPersistence:
     """A restart must resume from the saved cursor, not reseed from history.
 
@@ -3461,7 +3393,6 @@ class TestChannelCursorPersistence:
         await adapter._seed_channel(CHANNEL, chat_type="group")
         adapter._save_cursors()
         return cli
-
 
     @pytest.mark.asyncio
     async def test_restart_resumes_instead_of_reseeding(self, adapter, tmp_path, monkeypatch):
@@ -3555,3 +3486,27 @@ class TestChannelCursorPersistence:
         assert f"e{cap * 2 - 1}" in seen
         assert "e0" not in seen
 
+    @pytest.mark.asyncio
+    async def test_cursor_write_runs_off_the_event_loop(self, adapter, tmp_path, monkeypatch):
+        """The write fsyncs + renames once per inbound event on the WebSocket transport."""
+        import threading
+
+        import utils
+
+        cli = await self._seed(adapter, _event("e1", created_at=100))
+        real_write = utils.atomic_json_write
+        threads = []
+
+        def _record(*args, **kwargs):
+            threads.append(threading.get_ident())
+            return real_write(*args, **kwargs)
+
+        monkeypatch.setattr(utils, "atomic_json_write", _record)
+        cli.responses.clear()
+        cli.script("messages", "get", [_event("e1", created_at=100), _event("e2", created_at=200)])
+        await adapter._poll_channel(CHANNEL)
+
+        assert threads and threading.get_ident() not in threads
+        saved = json.loads(self._cursor_file(tmp_path).read_text(encoding="utf-8"))
+        assert saved["channels"][CHANNEL]["last_ts"] == 200
+        assert saved["channels"][CHANNEL]["seen"] == ["e1", "e2"]

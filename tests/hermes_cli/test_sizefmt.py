@@ -11,7 +11,6 @@ import pytest
 
 from hermes_cli.sizefmt import format_bytes
 
-
 @pytest.mark.parametrize(
     "n,expected",
     [
@@ -31,13 +30,11 @@ from hermes_cli.sizefmt import format_bytes
 def test_format_bytes_tiers(n, expected):
     assert format_bytes(n) == expected
 
-
 def test_format_bytes_tb_tier_not_gb_overflow():
     """The old doctor/context_references/curator_backup copies topped out at
     GB and rendered 1 TiB as '1024.0 GB' — the shared helper must not."""
     assert "TB" in format_bytes(1024**4)
     assert "1024" not in format_bytes(1024**4)
-
 
 def test_format_bytes_never_raises():
     """Doctor's stats dict tolerates None in every field; the formatter must
@@ -45,5 +42,3 @@ def test_format_bytes_never_raises():
     assert format_bytes(None) == "?"
     assert format_bytes("garbage") == "?"
     assert format_bytes("2048") == "2.0 KB"  # numeric strings accepted
-
-

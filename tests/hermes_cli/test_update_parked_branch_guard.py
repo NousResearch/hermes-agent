@@ -231,8 +231,6 @@ def _patch_update_flow(monkeypatch, repo, run_real_git=True):
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
-    monkeypatch.setattr(hermes_main, "_capture_active_lazy_features", lambda: [])
-    monkeypatch.setattr(hermes_main, "_capture_active_tool_dependencies", lambda: [])
 
 
 def test_update_skips_and_warns_on_dirty_parked_branch(
@@ -279,8 +277,8 @@ def test_update_switches_unmerged_parked_branch_with_kept_notice(
         pass
 
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_complete_source_update",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
@@ -330,8 +328,8 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
         pass
 
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_complete_source_update",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
@@ -384,8 +382,8 @@ def test_switch_branch_flag_overrides_in_place_strategy(
         pass
 
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_complete_source_update",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(
@@ -424,8 +422,8 @@ def test_update_auto_switches_clean_merged_parked_branch(
         pass
 
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_complete_source_update",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
@@ -472,11 +470,9 @@ def test_update_up_to_date_path_does_not_repark_merged_branch(tmp_path, monkeypa
     class _StopFlow(Exception):
         pass
 
-    import hermes_cli.managed_uv as managed_uv
-
     monkeypatch.setattr(
-        managed_uv,
-        "update_managed_uv",
+        update_cmd,
+        "_complete_source_update",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
@@ -500,8 +496,8 @@ def test_update_on_main_fast_path_unchanged(repo_pair, monkeypatch, capsys):
         pass
 
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_complete_source_update",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)

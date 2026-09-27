@@ -170,17 +170,27 @@ def _go_live(name: str) -> Optional[Dict[str, Any]]:
     return activation
 
 
+def _serve_backend_record():
+    """The host-owner record, else the Desktop child's (a Desktop-only box has no host owner)."""
+    from gateway import host_rendezvous as hr
+    for role in (hr.ROLE_SERVE, hr.ROLE_DESKTOP_SERVE):
+        record = hr.read_record(role)
+        if record is not None and record.port and hr.record_token_is_consistent(record):
+            return record
+    return None
+
+
 def notify_serve_backend(name: str, home: Path) -> Optional[Dict[str, Any]]:
-    """Ask the running Desktop / dashboard backend (``hermes serve``, found through its host record) to
+    """Ask the running dashboard / Desktop backend (``hermes serve``, found through its host record) to
     run :func:`load_and_go_live` for ``name`` in ``home``. None when no backend answers. Never raises."""
     try:
         import json
         import urllib.request
         from gateway import host_rendezvous as hr
-        record = hr.read_record(hr.ROLE_SERVE)
-        if record is None or not record.port or not hr.record_token_is_consistent(record):
+        record = _serve_backend_record()
+        if record is None:
             return None
-        token = hr.read_token(hr.ROLE_SERVE)
+        token = hr.read_token(record.role)
         request = urllib.request.Request(
             f"http://{hr.dial_host(record)}:{record.port}/api/dashboard/agent-plugins/activate",
             data=json.dumps({"name": name, "home": str(home)}).encode("utf-8"), method="POST",

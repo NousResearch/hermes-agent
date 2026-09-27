@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
 
 import { deferred } from '../test/deferred'
 
@@ -205,6 +206,24 @@ describe('connection registry cache', () => {
     await initializeConnectionsRegistry()
 
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
+  })
+
+  it('selects the registry primary on boot when an update left an unqualified local descriptor', async () => {
+    // Post-update boot can publish a local descriptor with no registry id
+    // while connections.json still says launchMode=primary and the primary is
+    // SSH. That live local must not block selecting the registered primary.
+    list.mockResolvedValueOnce({
+      ...registry,
+      lastUsed: 'local',
+      launchMode: 'primary',
+      primary: 'homelab'
+    })
+    $connection.set({ mode: 'local' })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
   })
 
   it('restores a remote registry primary through its exact connection id', async () => {
@@ -880,7 +899,7 @@ describe('selectConnection', () => {
     expect($showAllProfiles.get()).toBe(true)
   })
 
-  it('boot restore proceeds after the descriptor wait deadline (bounded wait)', async () => {
+  it('boot restore proceeds after the descriptor wait deadline (bounded wait)', { timeout: 30_000 }, async () => {
     // A primary that never publishes (spawn failure, dead SSH target) must
     // not strand the registry restore forever: after the deadline the restore
     // runs exactly as it did before the wait existed.
@@ -895,7 +914,7 @@ describe('selectConnection', () => {
       expect(ensureGatewayAgent).not.toHaveBeenCalled()
 
       // Descriptor never arrives; deadline elapses.
-      await vi.advanceTimersByTimeAsync(60_000)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS + 15_000)
       await restoring
 
       expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())

@@ -44,7 +44,7 @@
 }
 
 [data-theme="light"] .heroEyebrow {
-  color: #a8860a;
+  color: var(--ifm-color-primary-darker);
 }
 
 .heroTitle {
@@ -1145,4 +1145,171 @@ a.pickBtn {
   color: var(--ifm-color-primary);
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+/* Dark-theme gold (#ffd700, 1.4:1 on white) and sky blue (#7dd3fc / #60a5fa)
+   are unreadable on the light page. Text uses the theme's darker amber and a
+   blue that clears WCAG AA; tints stay translucent versions of the same hues. */
+[data-theme="light"] .heroLink,
+[data-theme="light"] .heroLink:hover,
+[data-theme="light"] .crossNavActive,
+[data-theme="light"] .crossNavLink:hover,
+[data-theme="light"] .emptyCta,
+[data-theme="light"] .emptyCta:hover,
+[data-theme="light"] .emptyReset,
+[data-theme="light"] .emptyReset:hover,
+[data-theme="light"] .installHint code {
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="light"] .searchIcon {
+  color: var(--ifm-color-primary);
+}
+
+[data-theme="light"] .searchInput {
+  border-color: rgba(28, 30, 33, 0.18);
+}
+
+[data-theme="light"] .searchInput::placeholder {
+  color: #525860;
+  opacity: 1;
+}
+
+[data-theme="light"] .controlsBar {
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom-color: rgba(28, 30, 33, 0.08);
+}
+
+[data-theme="light"] .tierBtn,
+[data-theme="light"] .categoryBtn {
+  color: #3c4043;
+  border-color: rgba(28, 30, 33, 0.16);
+}
+
+/* Active rules below must stay after these: same specificity as :hover. */
+[data-theme="light"] .tierBtn:hover,
+[data-theme="light"] .categoryBtn:hover {
+  border-color: rgba(28, 30, 33, 0.32);
+  color: #1c1e21;
+}
+
+[data-theme="light"] .tierBtnActive,
+[data-theme="light"] .tierBtnActive:hover {
+  color: var(--pill-color, var(--ifm-color-primary-darker));
+  border-color: var(--pill-border, rgba(110, 79, 0, 0.45));
+  background: var(--pill-bg, rgba(110, 79, 0, 0.08));
+}
+
+[data-theme="light"] .sortBtnActive,
+[data-theme="light"] .sortBtnActive:hover {
+  color: var(--ifm-color-primary-darker);
+  border-color: rgba(110, 79, 0, 0.45);
+  background: rgba(110, 79, 0, 0.08);
+}
+
+[data-theme="light"] .categoryViewAll,
+[data-theme="light"] .categoryViewAll:hover {
+  color: #075985;
+}
+
+[data-theme="light"] .categoryBtnActive,
+[data-theme="light"] .categoryBtnActive:hover {
+  border-color: rgba(7, 89, 133, 0.55);
+  background: rgba(7, 89, 133, 0.1);
+  box-shadow: none;
+  color: #075985;
+}
+
+[data-theme="light"] .categoryBtnActive .tierCount {
+  background: rgba(7, 89, 133, 0.14);
+  color: #075985;
+}
+
+[data-theme="light"] .categoryChip {
+  border-color: rgba(7, 89, 133, 0.35);
+  background: rgba(7, 89, 133, 0.08);
+  color: #075985;
+}
+
+[data-theme="light"] .card {
+  background: #fff;
+  border-color: rgba(28, 30, 33, 0.12);
+}
+
+[data-theme="light"] .card:hover {
+  border-color: rgba(110, 79, 0, 0.45);
+  box-shadow: 0 4px 16px rgba(28, 30, 33, 0.06);
+}
+
+[data-theme="light"] .starPill,
+[data-theme="light"] .starPill:hover {
+  border-color: rgba(110, 79, 0, 0.35);
+  background: rgba(110, 79, 0, 0.08);
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="light"] .capChip,
+[data-theme="light"] .envChip {
+  border-color: rgba(110, 79, 0, 0.28);
+  background: rgba(110, 79, 0, 0.06);
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="light"] .cardDates,
+[data-theme="light"] .sortLabel,
+[data-theme="light"] .categoryBlurb,
+[data-theme="light"] .metaLabel {
+  color: #525860;
+  opacity: 1;
+}
+
+[data-theme="light"] .shaLink,
+[data-theme="light"] .shaLink:hover {
+  color: var(--plugin-catalog-link);
+}
+
+[data-theme="light"] .docsLink,
+[data-theme="light"] .emptyCtaSecondary {
+  border-color: rgba(29, 78, 216, 0.35);
+  background: rgba(29, 78, 216, 0.06);
+  color: var(--plugin-catalog-link);
+}
+
+[data-theme="light"] .docsLink:hover,
+[data-theme="light"] .emptyCtaSecondary:hover {
+  color: #1e3a8a;
+  border-color: rgba(30, 58, 138, 0.45);
+  background: rgba(29, 78, 216, 0.1);
+}
+
+[data-theme="light"] .versionPill,
+[data-theme="light"] .platformPill {
+  border-color: rgba(29, 78, 216, 0.4);
+  background: rgba(29, 78, 216, 0.08);
+  color: var(--plugin-catalog-link);
+}
+
+[data-theme="light"] .installHint {
+  background: rgba(110, 79, 0, 0.06);
+  border-color: rgba(110, 79, 0, 0.22);
+}
+
+[data-theme="light"] .copyBtn,
+[data-theme="light"] .copyBtn:hover {
+  border-color: rgba(110, 79, 0, 0.35);
+  background: rgba(110, 79, 0, 0.08);
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="light"] .copyBtn:hover {
+  background: rgba(110, 79, 0, 0.16);
+}
+
+[data-theme="light"] .highlight {
+  background: rgba(110, 79, 0, 0.15);
+  color: var(--ifm-color-primary-darker);
+}
+
+[data-theme="light"] .filterPanelOpen {
+  border-color: rgba(28, 30, 33, 0.12);
 }

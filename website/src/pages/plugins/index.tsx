@@ -24,6 +24,7 @@ import {
   tierOf,
 } from "../../components/PluginCatalog/catalog";
 import CopyButton from "../../components/PluginCatalog/CopyButton";
+import { groupCatalogPlugins, sortCatalogPlugins } from "../../../../apps/shared/src/catalog-browse";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
@@ -44,17 +45,8 @@ const SORT_OPTIONS: { key: SortKey; label: string; title: string }[] = [
   { key: "updated", label: "Recently updated", title: "Most recently re-pinned or edited first" },
 ];
 
-function dateMs(iso?: string | null): number {
-  const t = iso ? new Date(iso).getTime() : NaN;
-  return Number.isFinite(t) ? t : -Infinity;
-}
-
 function sortPlugins(list: CatalogPlugin[], sort: SortKey): CatalogPlugin[] {
-  if (sort === "stars") return list;
-  const field = sort === "newest" ? "addedAt" : "updatedAt";
-  return [...list].sort(
-    (a, b) => dateMs(b[field]) - dateMs(a[field]) || a.name.localeCompare(b.name),
-  );
+  return sortCatalogPlugins(list, sort);
 }
 
 function highlightMatch(text: string, query: string): React.ReactNode {
@@ -477,12 +469,7 @@ export default function PluginCatalogPage() {
   // than one undifferentiated wall. Filtering or searching flattens to a grid.
   const grouped = useMemo(() => {
     if (search.trim() || categoryFilter !== "all") return null;
-    const buckets = new Map<string, CatalogPlugin[]>();
-    for (const p of filtered) {
-      const key = CATEGORY_CONFIG[p.category] ? p.category : "general";
-      (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(p);
-    }
-    return CATEGORY_ORDER.filter((c) => buckets.has(c)).map((c) => [c, buckets.get(c)!] as const);
+    return groupCatalogPlugins(filtered);
   }, [filtered, search, categoryFilter]);
 
   const categoryCounts = useMemo(() => {

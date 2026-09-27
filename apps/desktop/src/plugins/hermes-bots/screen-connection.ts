@@ -17,7 +17,12 @@ import { resolveBotConnectionRoute } from './routing'
 import type { RosterRow } from './types'
 
 // Wire shapes come from the generated contract (Python is the source: `tui_gateway/contracts/display.py`).
-export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnailResult as DisplayThumbnail } from '@hermes/plugin-sdk'
+export type {
+  DisplayLease,
+  DisplayObserveResult,
+  DisplayStatus,
+  DisplayThumbnailResult as DisplayThumbnail
+} from '@hermes/plugin-sdk'
 
 /** This window's identity for one attach: the minted id plus its lease-payload hash. */
 export interface ScreenViewer {
@@ -154,9 +159,13 @@ export async function resolveScreenWsUrl(bot: RosterRow, ticket: string): Promis
   // the bridge authenticates on the ticket alone, so the gateway credential is
   // dropped rather than spending a second one-shot ticket.
   const url = new URL(
-    await resolveSiblingWsUrl({ connectionId: route?.connectionId ?? null, profile: route?.profile ?? bot.name }, '/api/display/ws', {
-      stripGatewayCredential: true
-    })
+    await resolveSiblingWsUrl(
+      { connectionId: route?.connectionId ?? null, profile: route?.profile ?? bot.name },
+      '/api/display/ws',
+      {
+        stripGatewayCredential: true
+      }
+    )
   )
 
   url.searchParams.set('display_ticket', ticket)

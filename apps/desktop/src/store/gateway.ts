@@ -411,6 +411,24 @@ export function setPrimaryGatewayConnectionId(
   }
 }
 
+/**
+ * Mode of the socket this window already dialed for `(connectionId, profile)`,
+ * following gatewayForProfile's precedence: the primary socket when it serves
+ * that profile, else a secondary's own descriptor. Null until one is dialed.
+ */
+export function dialedGatewayModeFor(connectionId: null | string, profile: string): 'local' | 'remote' | null {
+  const id = String(connectionId ?? '').trim() || null
+  const key = normKey(profile)
+
+  if (key === g.primaryProfile && (!id || id === g.primaryConnectionId) && g.primaryConnectionMode) {
+    return g.primaryConnectionMode
+  }
+
+  const mode = g.secondaries.get(registryBackendScopeKey(id, key))?.connection?.mode
+
+  return mode === 'local' || mode === 'remote' ? mode : null
+}
+
 /** Publish the registry source owned by the window primary socket. */
 export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, 'connectionId' | 'mode'> | null): void {
   setPrimaryGatewayConnectionId(connection?.connectionId, connection?.mode)
@@ -531,6 +549,34 @@ export function activeGateway(): HermesGateway | null {
   // teardown sites keep the invariant "activeKey always resolves" by
   // re-pointing the active key at the primary when they evict it.
   return g.secondaries.get(g.activeKey)?.gateway ?? null
+}
+
+/** Passive ordering barrier for a runtime's transcript reads. Inspect only
+ * existing sockets: waiting must never dial, activate, or retain a backend.
+ * Each client names its own replaying runtime IDs; no ambient route is used
+ * to decide which session's events are safe to paint over. A pruned or
+ * pool-retired secondary keeps its closed socket's watermarks but will never
+ * reopen to replay them, so it must not veto reads forever. */
+export function pendingSessionReplay(runtimeId: string): Promise<boolean> | undefined {
+  const reconnectable = [...g.secondaries.values()].filter(entry => entry.wantOpen && !entry.retiredByPool)
+  const clients = new Set([g.primaryGateway, ...reconnectable.map(entry => entry.gateway)])
+
+  // A closed socket's false means only that IT cannot replay yet. When another
+  // open socket already serves this runtime, that socket orders the read.
+  const servedOpen = [...clients].some(client => isOpen(client) && client?.getSeqWatermarks?.()[runtimeId] != null)
+
+  const pending = [...clients].flatMap(client => {
+    if (servedOpen && !isOpen(client)) {
+      return []
+    }
+
+    // A dev-HMR survivor can predate the barrier method.
+    const barrier = client?.sessionReplayBarrier?.(runtimeId)
+
+    return barrier ? [barrier] : []
+  })
+
+  return pending.length ? Promise.all(pending).then(results => results.every(Boolean)) : undefined
 }
 
 /**
@@ -696,12 +742,21 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 
     if (reopening) {
       try {
-        const { reconcileBusyStatesOnReconnect, resetTileRuntimeBindings } = await import('@/store/session-states')
+        const { reconcileBusyStatesOnReconnect, resetRouteOwnedTileRuntimeBindings, resetTileRuntimeBindings } =
+          await import('@/store/session-states')
 
-        resetTileRuntimeBindings({
-          connectionId: entry.connectionId || 'local',
-          profile: entry.profile
-        })
+        const scope = { connectionId: entry.connectionId || 'local', profile: entry.profile }
+
+        // Only the window's ambient gateway carries un-owned tiles and the main
+        // thread. A background route (e.g. a relay request lease that disposed
+        // its socket after the last tick) can only have minted runtimes for
+        // tiles that name it as their owner route.
+        if (g.activeKey === entry.scope) {
+          resetTileRuntimeBindings(scope)
+        } else {
+          resetRouteOwnedTileRuntimeBindings(scope)
+        }
+
         reconcileBusyAfterOpen = () => reconcileBusyStatesOnReconnect(entry.scope)
       } catch {
         // Best effort for partial test/HMR graphs. Production always loads the

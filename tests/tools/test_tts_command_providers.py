@@ -355,7 +355,7 @@ class TestGenerateCommandTts:
         assert out.read_text(encoding="utf-8") == "hello world"
 
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX-only timeout semantics")
+    @pytest.mark.platforms("posix")  # POSIX-only timeout semantics
     def test_timeout_raises_runtime(self, tmp_path):
         config = {
             "command": f'"{sys.executable}" -c "import time; time.sleep(10)"',

@@ -382,6 +382,7 @@ def test_reply_roundtrip_and_id_validation(home):
     assert "error" in err
 
 
+@pytest.mark.platforms("any")
 def test_deliver_write_failure_still_removes_tempfile(home, monkeypatch, tmp_path):
     """A failed payload write must not leak the relay DM tempfile."""
     import glob
@@ -398,17 +399,21 @@ def test_deliver_write_failure_still_removes_tempfile(home, monkeypatch, tmp_pat
         return fd, path
 
     class _BrokenWriter:
+        def __init__(self, fd):
+            self.fd = fd
+
         def __enter__(self):
             return self
 
         def __exit__(self, *exc_info):
+            os.close(self.fd)
             return False
 
         def write(self, content):
             raise OSError("disk full")
 
     monkeypatch.setattr("tempfile.mkstemp", _tracking_mkstemp)
-    monkeypatch.setattr("os.fdopen", lambda *a, **k: _BrokenWriter())
+    monkeypatch.setattr("os.fdopen", lambda fd, *a, **k: _BrokenWriter(fd))
     err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "x"})
     assert "error" in err
     assert made, "mkstemp was never reached"

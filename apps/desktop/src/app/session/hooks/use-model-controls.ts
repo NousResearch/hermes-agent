@@ -7,7 +7,12 @@ import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
 import { surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
-import { modelOptionsQueryKey } from '@/lib/model-options'
+import {
+  customDefaultSupersedesPick,
+  moaPickRemoved,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from '@/lib/model-options'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -110,60 +115,122 @@ export function useModelControls({
   // only fills an EMPTY selection so a user's pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
-  const refreshCurrentModel = useCallback(async (force = false) => {
-    // A forced profile swap opens a new intent epoch; an older in-flight
-    // response for a previous profile must stand down when it resolves.
-    if (force) {
-      profileRefreshEpochRef.current += 1
-    }
-
-    const profileRefreshEpoch = profileRefreshEpochRef.current
-    const profile = $activeGatewayProfile.get()
-
-    try {
-      if ($activeSessionId.get()) {
-        return
+  // Two provably-stale manual picks are the exception and reseed from the
+  // profile default: the virtual `moa` provider (#90244) and a bare provider
+  // slug the default has migrated to its `custom:<key>` form (#81922).
+  const refreshCurrentModel = useCallback(
+    async (force = false) => {
+      // A forced profile swap opens a new intent epoch; an older in-flight
+      // response for a previous profile must stand down when it resolves.
+      if (force) {
+        profileRefreshEpochRef.current += 1
       }
 
-      // A manual pick is sticky. It is never diffed against the catalog: rows
-      // are hints, and a custom slug the row lacks is still the user's choice
-      // (the gateway validates it on switch).
-      const keepManualPick = () => !force && Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
+      const profileRefreshEpoch = profileRefreshEpochRef.current
+      const profile = $activeGatewayProfile.get()
 
-      if (keepManualPick()) {
-        return
+      try {
+        if ($activeSessionId.get()) {
+          return
+        }
+
+        // A manual pick is sticky. It is never diffed against the catalog: rows
+        // are hints, and a custom slug the row lacks is still the user's choice
+        // (the gateway validates it on switch). ONE exception, narrower than a
+        // catalog diff: a pick pointing at the virtual `moa` provider, whose row
+        // the catalog omits entirely once no preset is enabled — that absence is
+        // authoritative, and without the exception the pill reads
+        // `Model · moa: default` forever (#90244).
+        const manualPick = () => Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
+
+        const pickProvider = () => ($currentProvider.get() || '').trim()
+
+        const staleMoaPick = () => !force && manualPick() && pickProvider().toLowerCase() === 'moa'
+
+        // A SECOND exception: a bare provider slug can be a stale spelling of a
+        // `custom:<key>` profile default (#87035 aliases the two spellings for
+        // one endpoint). Shipping the bare form resolves the NATIVE provider and
+        // silently drops the entry's `extra_body` (#81922), so the pick must
+        // reseed. Only a bare slug qualifies — a pick that already names a
+        // provider class is a distinct choice and stays sticky — and the profile
+        // default is a backend fact, so this needs the same `getGlobalModelInfo`
+        // fetch the empty / default-sourced path already makes.
+        const maybeSupersededPick = () =>
+          !force && manualPick() && pickProvider() !== '' && !pickProvider().includes(':')
+
+        if (manualPick() && !force && !staleMoaPick() && !maybeSupersededPick()) {
+          return
+        }
+
+        // Snapshot the selection generation before awaiting so a picker click
+        // that lands while getGlobalModelInfo is in flight wins over this older
+        // default — value comparisons alone miss re-selecting the same row.
+        const selectionGeneration = getComposerSelectionGeneration()
+
+        // Judge the moa pick against the catalog: peek the picker's own cache
+        // first and only fetch (deduped with the in-flight UI query) when it is
+        // empty, so the pill reseeds even before the chat view mounts its query.
+        // A catalog that fails to load keeps the pick — absence of data is not
+        // absence of the preset.
+        let reseedStaleMoa = false
+
+        if (staleMoaPick()) {
+          const catalogProfile = cacheProfile || profile
+          const catalogKey = modelOptionsQueryKey(catalogProfile, null, cacheOwnerConnectionId)
+
+          const catalog =
+            queryClient.getQueryData<ModelOptionsResult>(catalogKey) ??
+            (await queryClient.fetchQuery({
+              queryKey: catalogKey,
+              queryFn: (): Promise<ModelOptionsResult> =>
+                requestModelOptions({ profile: catalogProfile, request: requestGateway })
+            }))
+
+          reseedStaleMoa = moaPickRemoved(catalog, 'moa', $currentModel.get())
+
+          if (!reseedStaleMoa) {
+            return
+          }
+        }
+
+        const result = await getGlobalModelInfo(profile)
+
+        if (
+          profileRefreshEpochRef.current !== profileRefreshEpoch ||
+          $activeSessionId.get() ||
+          getComposerSelectionGeneration() !== selectionGeneration ||
+          (manualPick() &&
+            !force &&
+            !reseedStaleMoa &&
+            !customDefaultSupersedesPick($currentProvider.get(), result.provider ?? ''))
+        ) {
+          return
+        }
+
+        if (typeof result.model === 'string') {
+          setCurrentModel(result.model)
+        }
+
+        if (typeof result.provider === 'string') {
+          setCurrentProvider(result.provider)
+        }
+
+        if (typeof result.model === 'string' || typeof result.provider === 'string') {
+          setCurrentModelSource('default')
+        }
+      } catch {
+        // The delayed session.info event still updates this once the agent is ready.
       }
+    },
+    [cacheOwnerConnectionId, cacheProfile, queryClient, requestGateway]
+  )
 
-      // Snapshot the selection generation before awaiting so a picker click
-      // that lands while getGlobalModelInfo is in flight wins over this older
-      // default — value comparisons alone miss re-selecting the same row.
-      const selectionGeneration = getComposerSelectionGeneration()
-      const result = await getGlobalModelInfo(profile)
-
-      if (
-        profileRefreshEpochRef.current !== profileRefreshEpoch ||
-        $activeSessionId.get() ||
-        getComposerSelectionGeneration() !== selectionGeneration ||
-        keepManualPick()
-      ) {
-        return
-      }
-
-      if (typeof result.model === 'string') {
-        setCurrentModel(result.model)
-      }
-
-      if (typeof result.provider === 'string') {
-        setCurrentProvider(result.provider)
-      }
-
-      if (typeof result.model === 'string' || typeof result.provider === 'string') {
-        setCurrentModelSource('default')
-      }
-    } catch {
-      // The delayed session.info event still updates this once the agent is ready.
-    }
-  }, [])
+  // Drop a sticky composer pick so new chats follow Settings → Model again,
+  // without making the user re-apply the default they already have (#107410).
+  const followDefaultModel = useCallback(() => {
+    setCurrentModelSource('default')
+    void refreshCurrentModel()
+  }, [refreshCurrentModel])
 
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued
@@ -338,5 +405,5 @@ export function useModelControls({
     [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
-  return { applySavedMainModel, refreshCurrentModel, selectModel }
+  return { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel }
 }

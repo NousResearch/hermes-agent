@@ -12,13 +12,11 @@ these pins keep the synthesis paths from re-freezing the launch profile.
 import importlib
 from pathlib import Path
 
-
 def _reload_tts_tool(import_home: Path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(import_home))
     import tools.tts_tool as tts_tool
 
     return importlib.reload(tts_tool)
-
 
 def test_default_output_dir_follows_contextvar_profile_override(tmp_path, monkeypatch):
     """The web server scopes profiles via set_hermes_home_override() rather
@@ -45,5 +43,3 @@ def test_default_output_dir_follows_contextvar_profile_override(tmp_path, monkey
 
     # Outside the override scope the launch home applies again.
     assert tts_tool._default_output_dir() == str(default_home / "cache" / "audio")
-
-

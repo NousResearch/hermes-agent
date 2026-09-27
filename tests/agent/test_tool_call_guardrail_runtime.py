@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -318,7 +319,7 @@ def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispat
     assert observed["start"] == expected
     assert observed["dispatch"] == expected
     assert observed["checkpoint"] == [
-        ("/approved/path", "before write_file")
+        (str(Path("/approved/path")), "before write_file")
     ]
 
 
@@ -367,6 +368,57 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     mock_hfc.assert_not_called()
     assert "plugin policy" in messages[0]["content"]
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
+
+
+def _compressed_args(field: str) -> dict:
+    """Generate the current model-visible prune marker through the real compressor."""
+    from agent.context_compressor import _COMPRESSION_MARKER_PREFIX, _truncate_tool_call_args_json
+
+    raw = json.dumps({field: "z" * 2000})
+    parsed = json.loads(_truncate_tool_call_args_json(raw))
+    assert _COMPRESSION_MARKER_PREFIX in parsed[field]
+    return parsed
+
+
+def test_context_pruned_effectful_call_blocks_before_dispatch():
+    agent = _make_agent("test_effectful_write")
+    pruned = _compressed_args("body")
+    tc = _mock_tool_call("test_effectful_write", json.dumps(pruned, ensure_ascii=False), "c-pruned-current")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    # The hook may rewrite args; the boundary is enforced on what it returns.
+    with (
+        patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks", return_value=(None, pruned)) as plugin,
+        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    plugin.assert_called_once()
+    dispatch.assert_not_called()
+    payload = json.loads(messages[0]["content"])
+    assert payload["error"] == "suspected_pruned_tool_arguments"
+    assert payload["argument_paths"] == ["$.body"]
+    assert "Recover the exact content from its durable source" in payload["message"]
+    # Only the compressor's current marker is an artifact; a legacy "...[truncated]" tail is ordinary content.
+    from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+    from agent.tool_dispatch_helpers import _context_pruned_argument_paths
+
+    assert _context_pruned_argument_paths("write_file", {"content": "x" * 201 + "...[truncated]"}) == []
+    assert _context_pruned_argument_paths("write_file", {"content": f"see {_COMPRESSION_MARKER_PREFIX} docs"}) == []
+
+
+def test_read_only_tool_may_quote_current_context_prune_marker():
+    agent = _make_agent("web_search")
+    args = _compressed_args("query")
+    tc = _mock_tool_call("web_search", json.dumps(args, ensure_ascii=False), "c-pruned-read")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("model_tools.handle_function_call", return_value=json.dumps({"ok": True})) as dispatch:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    dispatch.assert_called_once()
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():

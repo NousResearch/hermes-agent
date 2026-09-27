@@ -75,6 +75,7 @@ export function PluginInstallModal() {
   const [pinRef, setPinRef] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
+  const [installUncertain, setInstallUncertain] = useState(false)
   const probeToken = useRef(0)
 
   const resetState = useCallback(() => {
@@ -88,6 +89,7 @@ export function PluginInstallModal() {
     setPinRef('')
     setInstalling(false)
     setInstallError(null)
+    setInstallUncertain(false)
   }, [])
 
   const applyLegacyHint = useCallback((payload: PluginInstallRequest, detected: ProbeResult) => {
@@ -109,6 +111,7 @@ export function PluginInstallModal() {
       setPhase('probing')
       setProbe(null)
       setInstallError(null)
+      setInstallUncertain(false)
       // Reviewed catalog picks streamline the ceremony: enable defaults ON
       // (installing a reviewed entry to not use it is the rare case).
       setEnableAgent(payload.enable ?? true)
@@ -203,7 +206,7 @@ export function PluginInstallModal() {
   }
 
   const handleInstall = async () => {
-    if (!request || !probe?.ok || installing) {
+    if (!request || !probe?.ok || installing || installUncertain) {
       return
     }
 
@@ -215,6 +218,7 @@ export function PluginInstallModal() {
 
     setInstalling(true)
     setInstallError(null)
+    setInstallUncertain(false)
 
     const errors: string[] = []
     const successes: string[] = []
@@ -260,20 +264,36 @@ export function PluginInstallModal() {
           for (const warning of result.warnings ?? []) {
             notify({ kind: 'warning', message: warning })
           }
+        } else if (result.timedOut) {
+          // A client timeout does not cancel the backend install. Do not clone
+          // the desktop half or offer a retry while the package may still be
+          // installing. A read-only list refresh can show an already landed
+          // package; the user can rescan later if the backend is still busy.
+          setInstallUncertain(true)
+          void loadAgentPlugins(requestGateway, targetProfile)
+
+          return
         } else {
           errors.push(result.error || m.agentFailed)
         }
       }
 
       if (installDesktop && probe.desktop) {
-        if (agentInstalled && desktopHalfFromPackage) {
+        if (desktopHalfFromPackage) {
           // Unified package into a LOCAL backend: the desktop half ships inside
-          // the package folder Electron just watched land. Materialise it from
-          // there (one source of truth, follows updates/uninstall) instead of
-          // cloning a second, standalone copy under another folder name.
+          // the package folder. Materialise it from there (one source of truth,
+          // follows updates/uninstall) instead of cloning a second, standalone
+          // copy under another folder name. This holds whether or not the agent
+          // install above succeeded: a package already on disk answers "already
+          // exists" without Force, and falling through to the clone would land
+          // desktop-plugins/<git-name>/ beside the package copy (#100412). When
+          // there is nothing to materialise, nothing was installed. The agent
+          // error already says so.
           const touched = (await window.hermesDesktop?.reconcileDesktopPlugins?.()) ?? []
 
-          successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
+          if (agentInstalled || touched.length > 0) {
+            successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
+          }
 
           if (touched.length > 0) {
             await discoverRuntimePlugins()
@@ -559,6 +579,14 @@ export function PluginInstallModal() {
                 {installError}
               </p>
             )}
+            {installUncertain && (
+              <p
+                className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)"
+                role="status"
+              >
+                {m.installUncertain}
+              </p>
+            )}
           </div>
         )}
 
@@ -572,7 +600,7 @@ export function PluginInstallModal() {
             </Button>
           ) : (
             <Button
-              disabled={busy || phase !== 'ready' || !probe?.ok || pinRefInvalid}
+              disabled={busy || installUncertain || phase !== 'ready' || !probe?.ok || pinRefInvalid}
               onClick={() => void handleInstall()}
             >
               {installing ? m.installing : m.install}

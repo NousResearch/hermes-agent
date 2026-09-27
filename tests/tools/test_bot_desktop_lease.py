@@ -176,7 +176,7 @@ def test_lease_works_without_fcntl(tmp_path):
     assert out.stdout.strip() == "OK", out.stderr
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_lease_files_are_private_even_when_the_lease_is_written_before_the_screen_exists(tmp_path, monkeypatch):
     """A takeover can be recorded before start() ever created bot-desktop/ 0700. The lease path then created
     the directory and files with the umask (0755 / 0644): who holds the screen, and the lock the RFB bridge

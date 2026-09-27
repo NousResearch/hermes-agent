@@ -11,6 +11,7 @@ import path from 'node:path'
 import simpleGit from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
+import { execGit, noConsoleGitEnv, simpleGitBinary, windowsGitHost } from './no-console-git'
 
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
@@ -51,13 +52,27 @@ function gitFor(cwd, gitBin) {
   // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
   // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
   // could resolve a repo-local git.exe).
-  return simpleGit({
+  // On Windows the binary tuple is [python.exe, host script]. simple-git has no
+  // creationFlags slot; the script spawns the real git with CREATE_NO_WINDOW and
+  // forwards argv unchanged.
+  const host = windowsGitHost()
+  const binary = simpleGitBinary(gitBin, host)
+  const binaryParts = Array.isArray(binary) ? binary : [binary]
+  const unsafe = binaryParts.some(part => /\s/.test(part)) || Boolean(gitBin && /\s/.test(gitBin))
+
+  const git = simpleGit({
     baseDir: cwd,
-    binary: gitBin || 'git',
+    binary,
     maxConcurrentProcesses: 4,
     trimmed: false,
-    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+    ...(unsafe ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
   })
+
+  if (Array.isArray(binary)) {
+    return git.env(noConsoleGitEnv(process.env, gitBin || 'git'))
+  }
+
+  return git
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -360,14 +375,13 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   // Untracked file: no worktree diff exists, so synthesize an all-add diff via
   // --no-index (exits non-zero by design when files differ, so go around
   // simple-git's reject-on-nonzero with a raw execFile).
-  return new Promise(resolve => {
-    execFile(
-      gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-      (_err, stdout) => resolve(String(stdout || ''))
-    )
-  })
+  return execGit(gitBin || 'git', ['diff', '--no-index', '--', '/dev/null', filePath], {
+    cwd,
+    timeoutMs: 30_000
+  }).then(
+    result => result.stdout,
+    () => ''
+  )
 }
 
 // Working-tree-vs-HEAD diff for ONE file — the "what changed since the last
@@ -398,14 +412,13 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
     return ''
   }
 
-  return new Promise(resolve => {
-    execFile(
-      gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-      (_err, stdout) => resolve(String(stdout || ''))
-    )
-  })
+  return execGit(gitBin || 'git', ['diff', '--no-index', '--', '/dev/null', filePath], {
+    cwd,
+    timeoutMs: 30_000
+  }).then(
+    result => result.stdout,
+    () => ''
+  )
 }
 
 async function reviewStage(repoPath, filePath, gitBin) {

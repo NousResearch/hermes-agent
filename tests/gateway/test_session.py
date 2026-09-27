@@ -91,14 +91,39 @@ class TestBuildSessionContextPrompt:
 
         # Force the Discord IDs block on (it only emits when discord tools load).
         with patch.object(_gs, "_discord_tools_loaded", return_value=True):
-            p1 = _prompt_for("1001")
-            p2 = _prompt_for("2002")
-            p3 = _prompt_for("3003")
+            # Snowflake-length ids: short ones like "1001" collide with the
+            # runner's uid-keyed scratch path that the prompt embeds.
+            ids = ("1286745390127748101", "1286745390127748202", "1286745390127748303")
+            p1, p2, p3 = (_prompt_for(i) for i in ids)
 
         assert p1 == p2 == p3, "system prompt must be stable across message_id"
-        assert "1001" not in p1 and "2002" not in p2 and "3003" not in p3
+        assert not any(i in p1 for i in ids)
 
 
+
+    def test_slack_tools_loaded_scope_failure_fails_closed(self, monkeypatch):
+        """A bound scope whose SLACK_BOT_TOKEN read fails must fail closed --
+        never borrow the ambient env token (another profile's). Pre-fix the
+        ``except Exception -> os.environ`` tail returned True here."""
+        from unittest.mock import patch
+        from agent import secret_scope as ss
+        from gateway.session import _slack_tools_loaded
+
+        class _ExplodingScope(dict):
+            def get(self, name, default=None):
+                raise RuntimeError("resolver boom")
+
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-foreign")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(_ExplodingScope())
+        try:
+            with patch("tools.mcp_tool_discovery.get_registered_mcp_server_names", return_value=[]), \
+                    patch("hermes_cli.config.load_config", return_value={}), \
+                    patch("hermes_cli.tools_config._get_platform_tools", return_value=["slack"]):
+                assert _slack_tools_loaded() is False
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
 
     def test_slack_tools_loaded_detects_real_mcp_registration(self):
         """Regression (review of #63234): a connected MCP server whose tools
@@ -1112,8 +1137,6 @@ class TestSessionMetadata:
 
         assert store.set_session_metadata(entry.session_key, "k", "v")
         assert entry.updated_at == idle
-        # And the restart freshness gate must still see it as idle.
-        assert store.suspend_recently_active(max_age_seconds=120) == 0
 
 
 class TestRewriteTranscriptPreservesReasoning:

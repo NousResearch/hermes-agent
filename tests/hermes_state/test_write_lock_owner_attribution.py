@@ -33,7 +33,7 @@ def test_parse_proc_locks_keeps_only_write_locks_on_our_inodes_and_decodes_the_w
     ]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_live_writer_in_another_process_is_named_by_pid(tmp_path):
     db = tmp_path / "state.db"
     conn = sqlite3.connect(db)

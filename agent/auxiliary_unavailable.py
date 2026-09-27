@@ -11,7 +11,10 @@ import contextlib
 import logging
 import threading
 import time
+from datetime import datetime
 from typing import Optional
+
+from hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +81,7 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
               if until is not None and until > now]
     if len(resets) != len(live):
         return None
-    when = time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(min(resets)))
+    when = safe_strftime(datetime.fromtimestamp(min(resets)).astimezone(), "%Y-%m-%d %H:%M %Z")
     which = ("its only credential is" if len(live) == 1
              else f"all {len(live)} credentials are")
     return (f"Provider '{provider_id}' is set in config.yaml but {which} cooling down after a "

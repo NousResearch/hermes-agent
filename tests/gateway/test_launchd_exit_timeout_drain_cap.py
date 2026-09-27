@@ -18,44 +18,75 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.restart import (
+    LAUNCHD_LABEL_ENV,
     LAUNCHD_STOP_CLEANUP_RESERVE_S,
     effective_stop_drain_timeout,
     effective_stop_watchdog_delay,
+    is_gateway_supervisor_process,
+    launchd_service_label,
     read_launchd_exit_timeout_s,
     resolve_launchd_capped_drain,
 )
 from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
 
+_CAPPED = 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S
+
 
 def test_capped_drain_fits_inside_launchd_budget_minus_reserve():
     # The incident shape: configured 180s, launchd clamps to 60s.
-    assert resolve_launchd_capped_drain(180.0, 60.0) == 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S
+    assert resolve_launchd_capped_drain(180.0, 60.0) == _CAPPED
     # Never extends a short drain; no launchd budget leaves the configured drain alone.
     assert resolve_launchd_capped_drain(20.0, 60.0) == 20.0
     assert resolve_launchd_capped_drain(180.0, None) == 180.0
 
 
-def _read_budget(label):
-    fake_run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="exit timeout = 60\n")  # noqa: E731
-    return read_launchd_exit_timeout_s(environ={"XPC_SERVICE_NAME": label}, uid=501, run=fake_run)
+def _direct(label):
+    """launchd's own job process: the label sits in XPC_SERVICE_NAME."""
+    return {"XPC_SERVICE_NAME": label}
 
 
-@pytest.mark.macos_only
+def _grandchild(label):
+    """Under the generated plist the gateway is a grandchild of the stderr-timestamp wrapper: launchd
+    stamps XPC_SERVICE_NAME only on the wrapper, the grandchild reads "0" and finds the job label only
+    in the wrapper's HERMES_LAUNCHD_LABEL re-export."""
+    return {"XPC_SERVICE_NAME": "0", LAUNCHD_LABEL_ENV: label}
+
+
 @pytest.mark.parametrize(
-    "label, expected",
+    "platform, environ, expected",
     [
-        ("ai.hermes.gateway", 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S),
-        # App-coalition label (IDE integrated terminal) is not our job: no budget, drain unchanged.
-        ("application.com.example.ide.123", 180.0),
+        ("darwin", _direct("ai.hermes.gateway"), _CAPPED),
+        ("darwin", _grandchild("ai.hermes.gateway"), _CAPPED),
+        # App-coalition label (IDE integrated terminal) is not our job: no budget, drain unchanged —
+        # whichever variable carries it.
+        ("darwin", _direct("application.com.example.ide.123"), 180.0),
+        ("darwin", _grandchild("application.com.example.ide.123"), 180.0),
+        # No label at all (foreground start, or a wrapper older than the forward) is not launchd-owned.
+        ("darwin", {"XPC_SERVICE_NAME": "0"}, 180.0),
+        # launchd is darwin-only (same predicate as control_socket): a leaked label elsewhere is ignored.
+        ("linux", _direct("ai.hermes.gateway"), 180.0),
+        ("linux", _grandchild("ai.hermes.gateway"), 180.0),
     ],
+    ids=["darwin-direct", "darwin-grandchild", "darwin-direct-app", "darwin-grandchild-app",
+         "darwin-unlabelled", "linux-direct", "linux-grandchild"],
 )
-def test_launchd_reader_yields_a_budget_only_for_hermes_jobs(label, expected):
-    assert resolve_launchd_capped_drain(180.0, _read_budget(label)) == expected
+def test_launchd_reader_yields_a_budget_only_for_hermes_jobs(platform, environ, expected):
+    """End to end from the process environment to the stop drain: the reader sizes the drain to the
+    live ExitTimeOut only for an ``ai.hermes`` job on darwin, seen directly or through the wrapper's
+    re-export. Platform is data, not the host (the launchctl call is faked)."""
+    fake_run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="exit timeout = 60\n")  # noqa: E731
+    budget = read_launchd_exit_timeout_s(environ=environ, uid=501, run=fake_run, platform=platform)
+    assert resolve_launchd_capped_drain(180.0, budget) == expected
 
 
-@pytest.mark.linux_only
-def test_launchd_label_leaked_onto_linux_is_ignored():
-    assert _read_budget("ai.hermes.gateway") is None
+def test_forwarded_label_marks_grandchild_supervised_for_every_reader():
+    """One seam: the restart route and the control-socket declaration see the same launchd identity
+    the drain cap does, so a grandchild is not 'manual' to one reader and 'launchd' to another."""
+    grandchild_env = _grandchild("ai.hermes.gateway")
+    assert launchd_service_label(grandchild_env, platform="darwin") == "ai.hermes.gateway"
+    assert is_gateway_supervisor_process(grandchild_env) is True
+    assert is_gateway_supervisor_process({"XPC_SERVICE_NAME": "0"}) is False
+    assert is_gateway_supervisor_process(_grandchild("application.com.x.1")) is False
 
 
 def _runner(*, drain: float, launchd: float | None, by_signal: bool):

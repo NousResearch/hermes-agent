@@ -17,9 +17,28 @@ import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
+import {
+  type DisplayLease,
+  type DisplayObserveResult,
+  displayRequest,
+  type DisplayStatus,
+  isDisplayUnavailable,
+  isEventForBotScreen,
+  leaseHeldBy,
+  resolveScreenWsUrl,
+  retainBotScreen,
+  viewerHash
+} from './screen-connection'
 import { ScreenInstallCard } from './screen-install'
-import { $screenState, beginScreenStatusRequest, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable, setScreenViewer } from './screen-state'
+import {
+  $screenState,
+  beginScreenStatusRequest,
+  screenStateFor,
+  setScreenLease,
+  setScreenStatus,
+  setScreenUnavailable,
+  setScreenViewer
+} from './screen-state'
 import type { RosterRow } from './types'
 
 type RfbLike = {
@@ -42,10 +61,16 @@ const CLOSE_CONTROL_TAKEN = 4000
 const EVICTION_LOOP_WINDOW_MS = 10_000
 const MAX_RAPID_EVICTIONS = 3
 
-async function loadRfb(): Promise<new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike> {
+async function loadRfb(): Promise<
+  new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike
+> {
   const mod = (await import('@novnc/novnc')) as unknown as { default: new (...args: never[]) => RfbLike }
 
-  return mod.default as unknown as new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike
+  return mod.default as unknown as new (
+    target: HTMLElement,
+    socket: WebSocket,
+    options?: Record<string, unknown>
+  ) => RfbLike
 }
 
 export function BotScreenPane({ bot }: { bot: RosterRow }) {
@@ -137,118 +162,126 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     retention.current = null
   }, [])
 
-  const attach = useCallback(async (auto = false) => {
-    if (!canvasHost.current) {
-      return
-    }
-
-    if (!auto) {
-      rapidEvictions.current = 0
-    }
-
-    detach()
-    const generation = attachGeneration.current
-    setConn('attaching')
-    setError(null)
-
-    try {
-      // Load the client BEFORE dialing: noVNC's Websock installs its own `onopen`, so a socket that
-      // opened while the dynamic import was still in flight never hands it the open event.
-      const Rfb = await loadRfb()
-      const retain = await retainBotScreen(bot)
-
-      if (generation !== attachGeneration.current) {
-        retain()
-
+  const attach = useCallback(
+    async (auto = false) => {
+      if (!canvasHost.current) {
         return
       }
 
-      retention.current = retain
-      // Re-present the id this window already minted: a reconnect (network blip, 4000 eviction, Reconnect
-      // button) must keep the human's lease bound to THIS pane, or the new stream is watch-only and the
-      // old lease can only be cleared by force. The server honours a minted id only on the connection
-      // that minted it; a foreign or stale id is silently replaced.
-      const priorViewer = screenStateFor($screenState.get(), bot)?.viewer?.id
-      const observe = await displayRequest<DisplayObserveResult>(
-        bot, 'display.observe', priorViewer ? { viewer_id: priorViewer } : {},
-      )
-      const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
-      setScreenStatus(bot, observe)
-      const url = await resolveScreenWsUrl(bot, observe.ticket)
-
-      if (generation !== attachGeneration.current || !canvasHost.current) {
-        return
+      if (!auto) {
+        rapidEvictions.current = 0
       }
 
-      setScreenViewer(bot, minted)
-      dialedAt.current = Date.now()
-      const ws = new WebSocket(url)
-      ws.binaryType = 'arraybuffer'
-      socket.current = ws
-      // noVNC 1.7's `disconnect` detail carries only {clean}; the bridge's verdict lives in
-      // the raw close frame (4000 = control-taken). Listen here, before RFB installs its
-      // own `onclose`, so the code is known by the time the disconnect event fires.
-      let closeCode = 0
-      ws.addEventListener('close', event => {
-        closeCode = event.code
-      })
-      const client = new Rfb(canvasHost.current, ws, { shared: true })
-      client.scaleViewport = true
-      client.resizeSession = false
-      client.focusOnClick = true
-      client.background = 'transparent'
-      client.qualityLevel = 7
-      client.viewOnly = !leaseHeldBy(observe.lease, minted)
-      client.addEventListener('connect', () => {
-        if (generation === attachGeneration.current) {
-          setConn('live')
-          setEvicted(false)
-        }
-      })
-      client.addEventListener('disconnect', event => {
-        // noVNC logs "Tried changing state of a disconnected RFB object" if we later call
-        // disconnect() on a client that already closed itself (eviction, stream loss).
-        if (rfb.current === client) {
-          rfb.current = null
-        }
+      detach()
+      const generation = attachGeneration.current
+      setConn('attaching')
+      setError(null)
+
+      try {
+        // Load the client BEFORE dialing: noVNC's Websock installs its own `onopen`, so a socket that
+        // opened while the dynamic import was still in flight never hands it the open event.
+        const Rfb = await loadRfb()
+        const retain = await retainBotScreen(bot)
 
         if (generation !== attachGeneration.current) {
+          retain()
+
           return
         }
 
-        const reason = event.detail?.reason ?? ''
+        retention.current = retain
+        // Re-present the id this window already minted: a reconnect (network blip, 4000 eviction, Reconnect
+        // button) must keep the human's lease bound to THIS pane, or the new stream is watch-only and the
+        // old lease can only be cleared by force. The server honours a minted id only on the connection
+        // that minted it; a foreign or stale id is silently replaced.
+        const priorViewer = screenStateFor($screenState.get(), bot)?.viewer?.id
 
-        if (closeCode === CLOSE_CONTROL_TAKEN || reason.includes('control-taken')) {
-          // Evicted: the socket is dead, so the frozen frame must not stay up. Going idle
-          // re-attaches in watch mode on a fresh ticket; a bridge that evicts every fresh
-          // attach within the window is bounded, then lands in the error state + Reconnect.
-          rapidEvictions.current = Date.now() - dialedAt.current < EVICTION_LOOP_WINDOW_MS ? rapidEvictions.current + 1 : 1
+        const observe = await displayRequest<DisplayObserveResult>(
+          bot,
+          'display.observe',
+          priorViewer ? { viewer_id: priorViewer } : {}
+        )
 
-          if (rapidEvictions.current > MAX_RAPID_EVICTIONS) {
-            setEvicted(false)
-            setConn('error')
-            setError(t.screen.controlTaken)
-          } else {
-            setEvicted(true)
-            setConn('idle')
-          }
-        } else if (event.detail?.clean) {
-          setConn('idle')
-        } else {
-          setConn('error')
-          setError(reason || t.screen.streamLost)
+        const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
+        setScreenStatus(bot, observe)
+        const url = await resolveScreenWsUrl(bot, observe.ticket)
+
+        if (generation !== attachGeneration.current || !canvasHost.current) {
+          return
         }
 
-        void refresh()
-      })
-      rfb.current = client
-    } catch (err) {
-      if (generation === attachGeneration.current) {
-        setConn('error')
-        setError(err instanceof Error ? err.message : String(err))
+        setScreenViewer(bot, minted)
+        dialedAt.current = Date.now()
+        const ws = new WebSocket(url)
+        ws.binaryType = 'arraybuffer'
+        socket.current = ws
+        // noVNC 1.7's `disconnect` detail carries only {clean}; the bridge's verdict lives in
+        // the raw close frame (4000 = control-taken). Listen here, before RFB installs its
+        // own `onclose`, so the code is known by the time the disconnect event fires.
+        let closeCode = 0
+        ws.addEventListener('close', event => {
+          closeCode = event.code
+        })
+        const client = new Rfb(canvasHost.current, ws, { shared: true })
+        client.scaleViewport = true
+        client.resizeSession = false
+        client.focusOnClick = true
+        client.background = 'transparent'
+        client.qualityLevel = 7
+        client.viewOnly = !leaseHeldBy(observe.lease, minted)
+        client.addEventListener('connect', () => {
+          if (generation === attachGeneration.current) {
+            setConn('live')
+            setEvicted(false)
+          }
+        })
+        client.addEventListener('disconnect', event => {
+          // noVNC logs "Tried changing state of a disconnected RFB object" if we later call
+          // disconnect() on a client that already closed itself (eviction, stream loss).
+          if (rfb.current === client) {
+            rfb.current = null
+          }
+
+          if (generation !== attachGeneration.current) {
+            return
+          }
+
+          const reason = event.detail?.reason ?? ''
+
+          if (closeCode === CLOSE_CONTROL_TAKEN || reason.includes('control-taken')) {
+            // Evicted: the socket is dead, so the frozen frame must not stay up. Going idle
+            // re-attaches in watch mode on a fresh ticket; a bridge that evicts every fresh
+            // attach within the window is bounded, then lands in the error state + Reconnect.
+            rapidEvictions.current =
+              Date.now() - dialedAt.current < EVICTION_LOOP_WINDOW_MS ? rapidEvictions.current + 1 : 1
+
+            if (rapidEvictions.current > MAX_RAPID_EVICTIONS) {
+              setEvicted(false)
+              setConn('error')
+              setError(t.screen.controlTaken)
+            } else {
+              setEvicted(true)
+              setConn('idle')
+            }
+          } else if (event.detail?.clean) {
+            setConn('idle')
+          } else {
+            setConn('error')
+            setError(reason || t.screen.streamLost)
+          }
+
+          void refresh()
+        })
+        rfb.current = client
+      } catch (err) {
+        if (generation === attachGeneration.current) {
+          setConn('error')
+          setError(err instanceof Error ? err.message : String(err))
+        }
       }
-    }
-  }, [bot, detach, refresh, t.screen.controlTaken, t.screen.streamLost])
+    },
+    [bot, detach, refresh, t.screen.controlTaken, t.screen.streamLost]
+  )
 
   // Visibility is not lifecycle: the stream stays attached while the pane is
   // hidden; only unmount tears it down (and hands control back server-side).
@@ -294,7 +327,10 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     setBusy(true)
 
     try {
-      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: viewer.id })
+      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', {
+        viewer_id: viewer.id
+      })
+
       setScreenLease(bot, result.lease)
 
       if (conn !== 'live') {
@@ -362,16 +398,25 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs">
         <Codicon name="device-desktop" />
         <span className="font-medium">{t.screen.title}</span>
-        {status?.display ? <span className="text-muted-foreground">{status.display} · {status.geometry}</span> : null}
+        {status?.display ? (
+          <span className="text-muted-foreground">
+            {status.display} · {status.geometry}
+          </span>
+        ) : null}
         <span className="grow" />
         {lease?.holder === 'human' && lease.reason ? (
           // Why control was taken stays readable while the human acts.
-          <span className="max-w-[40%] truncate rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400" title={lease.reason}>
+          <span
+            className="max-w-[40%] truncate rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400"
+            title={lease.reason}
+          >
             <Codicon name="bell" /> {lease.reason}
           </span>
         ) : null}
         {iHold ? (
-          <span className="rounded bg-red-500/15 px-2 py-0.5 font-medium text-red-600 dark:text-red-400">{t.screen.youControl}</span>
+          <span className="rounded bg-red-500/15 px-2 py-0.5 font-medium text-red-600 dark:text-red-400">
+            {t.screen.youControl}
+          </span>
         ) : humanOther ? (
           <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">{t.screen.otherControls}</span>
         ) : (
@@ -399,12 +444,22 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
           </>
         )}
         <Tip label={t.screen.reconnect}>
-          <Button aria-label={t.screen.reconnect} disabled={conn === 'attaching'} onClick={() => void attach()} size="sm" variant="ghost">
+          <Button
+            aria-label={t.screen.reconnect}
+            disabled={conn === 'attaching'}
+            onClick={() => void attach()}
+            size="sm"
+            variant="ghost"
+          >
             <Codicon name="refresh" />
           </Button>
         </Tip>
       </div>
-      <div className={iHold ? 'relative min-h-0 grow bg-black ring-2 ring-inset ring-red-500/70' : 'relative min-h-0 grow bg-black'}>
+      <div
+        className={
+          iHold ? 'relative min-h-0 grow bg-black ring-2 ring-inset ring-red-500/70' : 'relative min-h-0 grow bg-black'
+        }
+      >
         {/* data-terminal: the same keyboard-ownership marker the terminal pane uses, so the app's
             type-to-focus / bare-key shortcuts never steal keystrokes meant for the remote screen.
             data-remote-screen: tells the ⌘W close-tab router this is NOT a local terminal tab —
@@ -416,7 +471,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
           </div>
         ) : null}
         {evicted ? (
-          <div className="pointer-events-none absolute inset-x-0 top-0 bg-amber-950/80 px-3 py-1.5 text-center text-xs text-amber-100">{t.screen.controlTaken}</div>
+          <div className="pointer-events-none absolute inset-x-0 top-0 bg-amber-950/80 px-3 py-1.5 text-center text-xs text-amber-100">
+            {t.screen.controlTaken}
+          </div>
         ) : null}
         {conn === 'error' && error ? (
           <div className="absolute inset-x-0 bottom-0 bg-red-950/80 px-3 py-1.5 text-xs text-red-200">{error}</div>

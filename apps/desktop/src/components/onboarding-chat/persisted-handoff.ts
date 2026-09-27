@@ -28,7 +28,7 @@ export async function readPersistedHandoff(
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
 
-    if (message?.role !== 'assistant' || typeof message.text !== 'string') {
+    if (message?.role !== 'assistant' || message.text == null) {
       continue
     }
 

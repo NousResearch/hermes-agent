@@ -31,12 +31,11 @@ requires_posix_handoff = pytest.mark.skipif(
 # Stands in for `hermes`: answers the `update --help` probe (so --keep-stash
 # is kept), and appends every non-help invocation's argv as one JSON line so
 # the tests can inspect exactly what the update was invoked with.
-FAKE_HERMES = """#!/bin/bash
+FAKE_HERMES = """#!/usr/bin/env bash
 case "$*" in *--help*) echo "--keep-stash"; exit 0 ;; esac
 printf '%s\\n' "$*" >> "$HERMES_TEST_ARGV"
 exit 0
 """
-
 
 def _run_handoff(tmp_path: Path, extra_args: list[str]) -> list[str]:
     """Run the real hand-off end to end; return the argv of each hermes call."""
@@ -47,7 +46,8 @@ def _run_handoff(tmp_path: Path, extra_args: list[str]) -> list[str]:
     hermes.chmod(0o755)
 
     argv_log = tmp_path / "argv.jsonl"
-    env = {**os.environ, "TMPDIR": str(tmp_path), "HERMES_TEST_ARGV": str(argv_log)}
+    # posix.sh honours an ambient HERMES_HOME; the result file must land where this test looks.
+    env = {**os.environ, "TMPDIR": str(tmp_path), "HERMES_TEST_ARGV": str(argv_log), "HERMES_HOME": str(tmp_path)}
     subprocess.run(
         ["/bin/bash", str(SHIM_DIR / "posix.sh"), "--install-root", str(install_root), "--no-ui", *extra_args],
         env=env,
@@ -63,7 +63,6 @@ def _run_handoff(tmp_path: Path, extra_args: list[str]) -> list[str]:
 
     return argv_log.read_text().splitlines()
 
-
 @requires_posix_handoff
 def test_default_handoff_asks_for_the_local_gateway(tmp_path):
     """A locally-served Desktop owns its gateway: the update must restart it."""
@@ -72,7 +71,6 @@ def test_default_handoff_asks_for_the_local_gateway(tmp_path):
     update_calls = [c for c in calls if " update " in f" {c} "]
     assert update_calls, "hand-off never ran hermes update"
     assert "--gateway" in update_calls[0].split()
-
 
 @requires_posix_handoff
 def test_no_gateway_flag_omits_gateway_from_update(tmp_path):
@@ -91,5 +89,3 @@ def test_no_gateway_flag_omits_gateway_from_update(tmp_path):
         assert "--gateway" not in argv, f"--gateway reappeared in update argv: {call}"
         assert "--keep-stash" in argv, "--no-gateway must not disturb --keep-stash"
         assert "--yes" in argv
-
-

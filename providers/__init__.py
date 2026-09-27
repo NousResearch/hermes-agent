@@ -41,6 +41,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +60,7 @@ _current_source: str | None = None
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
 _discovering = False
+_PLUGIN_DIR_STAMP_TTL_SECONDS = 1.0
 
 
 @dataclass
@@ -75,6 +77,7 @@ class _HomeLayer:
     registry: dict[str, ProviderProfile] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     stamps: tuple = ()
+    stamp_checked_at: float | None = None
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -92,7 +95,7 @@ _BUNDLED_PLUGINS_DIR = (
 
 
 def _sync_auth_registry() -> None:
-    """Mirror profiles into ``hermes_cli.auth.PROVIDER_REGISTRY`` if that module is loaded.
+    """Mirror profiles into the ``hermes_cli`` snapshots (auth registry, picker catalog) that are loaded.
 
     ``hermes_cli.auth`` takes its own snapshot of ``list_providers()`` when it is imported. If a
     plugin's imports pull that module in while :func:`_discover_providers` is still running, the
@@ -102,13 +105,17 @@ def _sync_auth_registry() -> None:
     top-level code mid-scan and risk a circular import). Never raises: registration must not fail
     because of the auth mirror.
     """
-    sync = getattr(sys.modules.get("hermes_cli.auth"), "sync_plugin_provider_registry", None)
-    if sync is None:
-        return
-    try:
-        sync()
-    except Exception as exc:  # pragma: no cover — never break discovery
-        logger.debug("auth registry sync skipped: %s", exc)
+    for module, attr in (
+        ("hermes_cli.auth", "sync_plugin_provider_registry"),
+        ("hermes_cli.models_catalog_static", "sync_plugin_provider_catalog"),
+    ):
+        sync = getattr(sys.modules.get(module), attr, None)
+        if sync is None:
+            continue
+        try:
+            sync()
+        except Exception as exc:  # pragma: no cover — never break discovery
+            logger.debug("%s sync skipped: %s", module, exc)
 
 
 def register_provider(profile: ProviderProfile) -> None:
@@ -155,13 +162,26 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     """
     if not _discovered:
         _discover_providers()
-    layer = _home_layer()
-    canonical = layer.aliases.get(name) or _ALIASES.get(name, name)
-    profile = layer.registry.get(canonical) or _REGISTRY.get(canonical)
+    layer, home, key = _bound_home_layer()
+    checked = _refresh_home_layer(layer, home, key)
+
+    def lookup(n: str) -> ProviderProfile | None:
+        canonical = layer.aliases.get(n) or _ALIASES.get(n, n)
+        return layer.registry.get(canonical) or _REGISTRY.get(canonical)
+
+    profile = lookup(name)
+    # A newly installed provider is normally first requested by its new name, so a miss
+    # re-checks the plugin dirs now (unless this call just did) instead of waiting for the
+    # periodic check. ``custom:<route>`` misses resolve to the generic profile below and the
+    # picker asks for them once per model, so they wait for the periodic check.
+    is_custom_route = isinstance(name, str) and name.lower().startswith("custom:")
+    if profile is None and not is_custom_route and not checked:
+        if _refresh_home_layer(layer, home, key, force=True):
+            profile = lookup(name)
     # Named custom routes share the generic wire policy unless a plugin
     # explicitly registered that route. Other names retain exact lookup.
-    if profile is None and isinstance(name, str) and name.lower().startswith("custom:"):
-        profile = layer.registry.get("custom") or _REGISTRY.get("custom")
+    if profile is None and is_custom_route:
+        profile = lookup("custom")
     return profile
 
 
@@ -213,8 +233,14 @@ def list_providers() -> list[ProviderProfile]:
     return result
 
 
-def _home_layer() -> _HomeLayer:
+def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
     """The layer for the home bound right now, importing plugin dirs it has not seen yet."""
+    layer, home, key = _bound_home_layer()
+    _refresh_home_layer(layer, home, key, force=force_stamp_check)
+    return layer
+
+
+def _bound_home_layer() -> tuple[_HomeLayer, Path | None, str]:
     try:
         from hermes_constants import get_hermes_home, hermes_home_key
 
@@ -226,12 +252,36 @@ def _home_layer() -> _HomeLayer:
         layer = _HOME_LAYERS.get(key)
         if layer is None:
             layer = _HOME_LAYERS[key] = _HomeLayer()
-    # Stamps are read before the scan: a plugin that lands mid-scan changes them and the next lookup
-    # picks it up. Two threads scanning the same home at once only re-import idempotently.
-    if home is not None and (stamps := _plugin_dir_stamps(home)) != layer.stamps:
+    return layer, home, key
+
+
+def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force: bool = False) -> bool:
+    """Re-stat the layer's plugin dirs when due (or *force*d); True when it stat'ed this call.
+
+    Stamps are read before the scan: a plugin that lands mid-scan changes them and the next
+    check picks it up. Checking on a short cadence keeps a newly installed plugin discoverable
+    without making every model lookup perform two filesystem stats.
+    """
+    now = time.monotonic()
+    if home is None or not (
+        force
+        or layer.stamp_checked_at is None
+        or now - layer.stamp_checked_at >= _PLUGIN_DIR_STAMP_TTL_SECONDS
+    ):
+        return False
+    stamps = _plugin_dir_stamps(home)
+    if stamps != layer.stamps:
         _scan_home_layer(layer, key)
         layer.stamps = stamps
-    return layer
+        # Publish the completed layer -- stamps AND check time -- before auth
+        # sync: it calls list_providers(), which re-enters this function. An
+        # unpublished stamp rescanned forever; an unpublished check time
+        # re-stats the plugin dirs inside the TTL.
+        layer.stamp_checked_at = now
+        if _discovered and not _discovering:
+            _sync_auth_registry()
+    layer.stamp_checked_at = now
+    return True
 
 
 def _plugin_dir_stamps(home: Path) -> tuple:
@@ -276,7 +326,7 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
 
     Only that kind is imported from the flat install directory — every other
     plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with PyYAML when available, falling back to a line
+    consent flow. Parsed with ruamel.yaml when available, falling back to a line
     scan so provider discovery never hard-depends on it.
     """
     for filename in ("plugin.yaml", "plugin.yml"):
@@ -288,9 +338,9 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
         except Exception:
             return False
         try:
-            import yaml
+            from utils import fast_safe_load
 
-            data = yaml.safe_load(text)
+            data = fast_safe_load(text)
             if isinstance(data, dict):
                 return str(data.get("kind", "")).strip() == "model-provider"
         except Exception:
@@ -333,8 +383,6 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering
-    if _discovered and not _discovering:
-        _sync_auth_registry()
 
 
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:

@@ -33,6 +33,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/bot-mode',
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',
+        'user-guide/switching-to-source',
         'user-guide/configuration',
         'user-guide/managed-scope',
         'user-guide/configuring-models',
@@ -369,6 +370,8 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-auteur',
                     'user-guide/skills/optional/creative/creative-baoyu-article-illustrator',
                     'user-guide/skills/optional/creative/creative-baoyu-comic',
+                    'user-guide/skills/optional/creative/creative-brag',
+                    'user-guide/skills/optional/creative/creative-brag-slim',
                     'user-guide/skills/optional/creative/creative-comfyui',
                     'user-guide/skills/optional/creative/creative-concept-diagrams',
                     'user-guide/skills/optional/creative/creative-creative-ideation',
@@ -855,6 +858,17 @@ const sidebars: SidebarsConfig = {
             'developer-guide/trajectory-format',
           ],
         },
+        {
+          type: 'category',
+          label: 'Packaging & Releases',
+          items: [
+            'developer-guide/source-update-completion',
+            'developer-guide/shared-bundle-builds',
+            'developer-guide/stable-releases',
+            'developer-guide/macos-bundle-updates',
+            'developer-guide/pm-audit-status',
+          ],
+        },
       ],
     },
     {
@@ -866,6 +880,7 @@ const sidebars: SidebarsConfig = {
           label: 'Command Reference',
           items: [
             'reference/cli-commands',
+            'reference/package-management',
             'reference/slash-commands',
             'reference/profile-commands',
           ],

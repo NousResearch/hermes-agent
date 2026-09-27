@@ -30,7 +30,8 @@ vi.mock('@/i18n', () => ({
           toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
           showAllCount: (count: number) => `Show all ${count} sessions`,
           autoDiscovered: 'Auto-discovered'
-        }
+        },
+        showMoreIn: (count: number, label: string) => `Show ${count} more in ${label}`
       }
     }
   })
@@ -101,6 +102,38 @@ describe('ProjectOverviewRow', () => {
     await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3,s4,s5'))
     expect(projectsStore.fetchProjectSessions).toHaveBeenCalledWith('p1', { supersedable: false })
     expect(screen.queryByRole('button', { name: 'Show all 5 sessions' })).toBeNull()
+  })
+
+  // A project with hundreds of chats hydrates them all, but the overview must
+  // not mount every row at once: it reveals them a page at a time, with a
+  // labeled row to the next page, until every session is on screen (#70421).
+  it('pages a large hydrated project instead of mounting every session at once', async () => {
+    workspaceOpen.value = true
+    const all = Array.from({ length: 120 }, (_, index) => session(`s${index + 1}`, 1000 - index))
+    const busy = { ...project, sessionCount: 120 } as SidebarProjectTree
+    projectsStore.fetchProjectSessions.mockResolvedValue({
+      ...busy,
+      repos: [{ groups: [{ sessions: all }] }]
+    } as unknown as SidebarProjectTree)
+
+    render(
+      <ProjectOverviewRow
+        previewSessions={all.slice(0, 3)}
+        project={busy}
+        renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+      />
+    )
+
+    const shown = () => screen.getByTestId('rows').textContent?.split(',').length
+
+    fireEvent.click(screen.getByText('Show all 120 sessions'))
+
+    await waitFor(() => expect(shown()).toBe(50))
+    fireEvent.click(screen.getByText('Show 50 more in Test D'))
+    expect(shown()).toBe(100)
+    fireEvent.click(screen.getByText('Show 20 more in Test D'))
+    expect(shown()).toBe(120)
+    expect(screen.queryByText(/Show .* more in Test D/)).toBeNull()
   })
 
   // The hydrated lanes are the raw backend payload: pinned, filtered-out and

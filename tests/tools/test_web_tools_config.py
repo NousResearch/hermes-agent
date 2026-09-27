@@ -5,6 +5,7 @@ Coverage:
   constructor failure recovery, return value verification, edge cases.
   _get_backend() — backend selection logic with env var combinations.
   plugins.web.parallel.provider._get_sync_client() — Parallel client configuration, singleton caching.
+  plugins.web._common.cached_sdk_client() — Parallel/Exa clients follow the currently resolved key.
   check_web_api_key() — unified availability check across all web backends.
 """
 
@@ -439,6 +440,91 @@ class TestParallelClientConfig:
             client1 = _get_parallel_client()
             client2 = _get_parallel_client()
             assert client1 is client2
+
+    def test_client_follows_the_key_reload_applies(self):
+        """/reload (reload_env) fixing or removing the key reaches the next call: the client built
+        with the old key is never handed out again."""
+        from hermes_cli.config import get_env_path, reload_env
+        from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
+        with patch.dict(os.environ):
+            get_env_path().write_text("PARALLEL_API_KEY=typo-key\n")
+            reload_env()
+            assert _get_parallel_client().api_key == "typo-key"
+            get_env_path().write_text("PARALLEL_API_KEY=fixed-key\n")
+            reload_env()
+            assert _get_parallel_client().api_key == "fixed-key"
+            get_env_path().write_text("")
+            reload_env()
+            with pytest.raises(ValueError, match="PARALLEL_API_KEY"):
+                _get_parallel_client()
+
+
+class TestExaClientConfig:
+    """Exa shares the key-checked client cache with Parallel."""
+
+    def setup_method(self):
+        import tools.web_tools
+        tools.web_tools._exa_client = None
+        os.environ.pop("EXA_API_KEY", None)
+        fake_exa = types.ModuleType("exa_py")
+
+        class Exa:
+            def __init__(self, api_key):
+                self.api_key = api_key
+                self.headers = {}
+
+            def search(self, query, num_results, contents):
+                hit = types.SimpleNamespace(url="https://example.com", title="t", highlights=[self.api_key])
+                return types.SimpleNamespace(results=[hit])
+
+        fake_exa.Exa = Exa
+        sys.modules["exa_py"] = fake_exa
+        self._lazy_gate_patch = patch("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+        self._lazy_gate_patch.start()
+
+    def teardown_method(self):
+        import tools.web_tools
+        tools.web_tools._exa_client = None
+        os.environ.pop("EXA_API_KEY", None)
+        sys.modules.pop("exa_py", None)
+        self._lazy_gate_patch.stop()
+
+    def test_multiplexed_profiles_search_with_their_own_key(self, tmp_path, monkeypatch):
+        """One process serving two profiles: each turn's search goes out with its own profile's key, and a
+        profile WITHOUT a key is refused — never served on the launch profile's ``os.environ`` key."""
+        from agent import secret_scope
+        from plugins.web.exa.provider import ExaWebSearchProvider
+        homes = {}
+        for name, line in (("a", "EXA_API_KEY=key-a\n"), ("b", "EXA_API_KEY=key-b\n"), ("nokey", "")):
+            homes[name] = tmp_path / name
+            homes[name].mkdir()
+            (homes[name] / ".env").write_text(line)
+        monkeypatch.setenv("EXA_API_KEY", "key-launch")
+        monkeypatch.setattr("plugins.web.keyless_mcp.keyless_enabled", lambda: False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+
+        def sent_with(name):
+            token = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(homes[name]))
+            try:
+                result = ExaWebSearchProvider().search("q")
+            finally:
+                secret_scope.reset_secret_scope(token)
+            if not result["success"]:
+                return result["error"]
+            return result["data"]["web"][0]["description"]
+
+        assert [sent_with("a"), sent_with("b"), sent_with("a")] == ["key-a", "key-b", "key-a"]
+        assert "EXA_API_KEY" in sent_with("nokey") and "key-launch" not in sent_with("nokey")
+        assert sent_with("a") == "key-a"
+
+    def test_single_profile_process_env_still_serves_the_key(self, monkeypatch):
+        """Control: no profile scope bound (plain CLI / systemd-injected env) keeps reading os.environ."""
+        from plugins.web.exa.provider import ExaWebSearchProvider
+        monkeypatch.setenv("EXA_API_KEY", "key-env")
+        monkeypatch.setattr("plugins.web.keyless_mcp.keyless_enabled", lambda: False)
+        result = ExaWebSearchProvider().search("q")
+        assert result["success"], result
+        assert result["data"]["web"][0]["description"] == "key-env"
 
 
 class TestWebSearchSchema:

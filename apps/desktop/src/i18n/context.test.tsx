@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/hermes'
 
+import { TRANSLATIONS } from './catalog'
 import { type I18nConfigClient, I18nProvider, useI18n } from './context'
 import type { Locale } from './types'
 
@@ -76,6 +77,31 @@ describe('I18nProvider', () => {
     expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['fr', 'fr'],
+    ['de-DE', 'de'],
+    ['es', 'es']
+  ] as const)('loads display.language=%s and renders the %s catalog', async (configured, locale) => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: configured } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe(locale)
+    expect(screen.getByTestId('label').textContent).toBe(TRANSLATIONS[locale].language.label)
+    expect(screen.getByTestId('label').textContent).not.toBe(TRANSLATIONS.en.language.label)
+    expect(screen.getByTestId('save').textContent).not.toBe(TRANSLATIONS.en.common.save)
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
   it('keeps English usable when config loading fails', async () => {
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockRejectedValue(new Error('config unavailable')),
@@ -97,7 +123,7 @@ describe('I18nProvider', () => {
 
   it('does not overwrite unsupported configured languages', async () => {
     const configClient: I18nConfigClient = {
-      getConfig: vi.fn().mockResolvedValue({ display: { language: 'de' } }),
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'it' } }),
       saveConfig: vi.fn()
     }
 
@@ -253,6 +279,31 @@ describe('I18nProvider', () => {
       vi.advanceTimersByTime(30_000)
     })
     expect(getConfig).toHaveBeenCalledTimes(11)
+
+    vi.useRealTimers()
+  })
+
+  it('stops retrying once the provider unmounts mid-retry', async () => {
+    vi.useFakeTimers()
+    const getConfig = vi.fn().mockRejectedValue(new Error('backend not ready yet'))
+
+    const view = render(
+      <I18nProvider configClient={{ getConfig, saveConfig: vi.fn() }}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await act(async () => {})
+    expect(getConfig).toHaveBeenCalledTimes(1)
+
+    // A retry is now scheduled; unmounting must cancel it, not keep polling a
+    // backend nobody is listening for.
+    view.unmount()
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+    expect(getConfig).toHaveBeenCalledTimes(1)
 
     vi.useRealTimers()
   })

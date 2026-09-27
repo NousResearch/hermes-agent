@@ -72,7 +72,7 @@ def test_store_and_load_photon_token(tmp_hermes_home: Path) -> None:
     assert auth_json["credential_pool"]["photon"][0]["access_token"] == "abc123def456"
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits only")
+@pytest.mark.platforms("posix")  # POSIX mode bits only
 def test_save_auth_never_world_readable(tmp_hermes_home: Path) -> None:
     """auth.json must be created 0o600 — no window at process umask."""
     photon_auth.store_photon_token("secret-token")

@@ -306,7 +306,7 @@ class TestGenerate:
             result = _openrouter().generate(prompt="a pet")
 
         assert result["success"] is True
-        assert result["image"] == "/tmp/openrouter_gen.png"
+        assert result["image"] == str(Path("/tmp/openrouter_gen.png"))
         assert result["provider"] == "openrouter"
         mock_save.assert_called_once()
 
@@ -682,7 +682,7 @@ class TestImageApiSurface:
         assert result["cost_usd"] == 0.0336
         assert result["total_tokens"] == 1128
         assert result["exact_aspect_ratio"] == "9:16"
-        assert result["image"] == "/tmp/i.png"
+        assert result["image"] == str(Path("/tmp/i.png"))
 
     _USAGE = {"prompt_tokens": 1000, "completion_tokens": 128, "total_tokens": 1128}
 
@@ -743,8 +743,8 @@ class TestImageApiSurface:
                    side_effect=[Path("/tmp/a.png"), Path("/tmp/b.png")]):
             result = _openrouter_image_api().generate(prompt="p", model="openai/gpt-image-2")
 
-        assert result["image"] == "/tmp/a.png"
-        assert result["additional_images"] == ["/tmp/b.png"]
+        assert result["image"] == str(Path("/tmp/a.png"))
+        assert result["additional_images"] == [str(Path("/tmp/b.png"))]
 
     def test_empty_data_is_typed(self):
         with patch(_RUNTIME, return_value=_runtime_ok()), \

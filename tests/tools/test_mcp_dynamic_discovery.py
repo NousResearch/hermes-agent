@@ -11,10 +11,8 @@ from tools.mcp_tool import MCPServerTask
 from tools.mcp_tool_registration import _register_server_tools
 from tools.registry import ToolRegistry
 
-
 def _make_mcp_tool(name: str, desc: str = ""):
     return SimpleNamespace(name=name, description=desc, inputSchema=None)
-
 
 class TestRegisterServerTools:
     """Tests for the extracted _register_server_tools helper."""
@@ -64,7 +62,6 @@ class TestRegisterServerTools:
             # ...and the MCP server's tools are no longer shadowed.
             assert "mcp__homeassistant__get_entities" in ts["tools"]
             assert "mcp__homeassistant__get_entities" in resolve_toolset("homeassistant")
-
 
 class TestRefreshTools:
     """Tests for MCPServerTask._refresh_tools nuke-and-repave cycle."""
@@ -184,7 +181,6 @@ class TestRefreshTools:
             assert "mcp__restored_srv__live_tool" in resolve_toolset("restored_srv")
             assert server._registered_tool_names == ["mcp__restored_srv__live_tool"]
 
-
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""
 
@@ -225,5 +221,3 @@ class TestMessageHandler:
             # Unknown message types should not trigger refresh
             await handler({"jsonrpc": "2.0", "result": "ok"})
             mock_schedule.assert_not_called()
-
-

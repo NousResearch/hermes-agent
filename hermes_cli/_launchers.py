@@ -417,21 +417,21 @@ def _launcher_python(target: Path) -> Path | None:
     suffix = Path(target).suffix.lower()
     if suffix == ".exe":
         # distlib native launcher: loader stub, "#!<python> -I" shebang, zip.
-        # Anchor on the archive start: the shebang is the last #! line before
-        # it. (The stub itself can carry an earlier #! inside a UTF-16 message,
-        # and even a stray PK signature, so neither a prefix split nor the
-        # first match is reliable.)
-        idx = data.find(b"PK\x03\x04")
-        if idx == -1:
+        # The shebang follows the loader's last NUL byte. distlib leaves
+        # ScriptMaker.executable unquoted, and a Windows path may hold a space
+        # or "#!", so take the whole line up to " -I".
+        from zipfile import BadZipFile, ZipFile
+        try:
+            with ZipFile(target) as archive:
+                prefix = data[:archive.infolist()[0].header_offset]
+        except (BadZipFile, IndexError, OSError):
             return None
-        start = data.rfind(b"#!", 0, idx)
-        if start == -1:
-            return None
-        end = data.find(b"\n", start, idx)
-        if end == -1:
+        start = prefix.find(b"#!", prefix.rfind(b"\0") + 1)
+        shebang = prefix[start + 2:].rstrip(b"\r\n") if start != -1 else b""
+        if not shebang.endswith(b" -I") or b"\n" in shebang:
             return None
         try:
-            line = data[start + 2:end].decode("utf-8").strip()
+            return Path(shebang[:-3].decode("utf-8").strip('"'))
         except UnicodeDecodeError:
             return None
     else:
@@ -459,7 +459,7 @@ def _launcher_python(target: Path) -> Path | None:
         return None
 
 
-def _kept_shared_launcher(name: str, local: Path, store: Path) -> Path | None:
+def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None) -> Path | None:
     """Existing checkout launcher already bound outside this root's store.
 
     Checkout launchers are shared by every HERMES_HOME; a launch under one
@@ -476,10 +476,13 @@ def _kept_shared_launcher(name: str, local: Path, store: Path) -> Path | None:
         if not present:
             continue
         python = _launcher_python(target)
-        if python is None or not python.is_file():
+        if python is None or python == own or not python.is_file():
             continue
         try:
-            foreign = not python.resolve().is_relative_to(store.resolve())
+            # Resolve the store's directories, not the interpreter: a store
+            # Python may link to one shared outside it.
+            store_dir = store.resolve()
+            foreign = not any(parent.resolve() == store_dir for parent in python.parents)
         except (OSError, RuntimeError, ValueError):
             continue
         if foreign:
@@ -493,12 +496,19 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     local = root / ".hermes" / "bin"
     local.mkdir(parents=True, exist_ok=True)
     store = store_root(root)
+    own = resolve_store_python(root)
+    from hermes_constants import get_default_hermes_root
+    home = get_default_hermes_root().resolve()
+    # The data root this checkout was installed into (<home>/hermes-agent with
+    # <home>/tools) always republishes, which also heals an install that an
+    # earlier foreign launch already rebound.
+    owner = root.parent == home and store.resolve() == (home / "tools").resolve()
     written = []
     for name in WINDOWS_BIN_LAUNCHERS:
         # ponytail: one guard here covers every caller (launch, sync, repair,
         # install); per-home outputs below stay unguarded. Upgrade to a stamped
         # owning store if shared checkouts ever need cross-home repins.
-        kept = _kept_shared_launcher(name, local, store)
+        kept = None if owner else _kept_shared_launcher(name, local, store, own)
         if kept is not None:
             written.append(str(kept))
             continue

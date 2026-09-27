@@ -1299,17 +1299,13 @@ def test_stop_desktop_processes_locking_build_posix_swap_bypasses_early_return(t
     assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [100]
 
 
-@pytest.mark.parametrize("host, also_posix", [("linux", True), ("win32", False), ("win32", True)])
-def test_the_stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, host, also_posix):
-    """A historical Desktop runs `hermes update` as a piped child and relaunches
-    itself afterwards; stopping it breaks the update's stdout (EPIPE). On Windows
-    a Desktop's own backend runs the launch-time update tail, and stopping that
-    Desktop killed the tail with it before it could clear its markers, so every
-    launch repeated it (#123499). Its renderer/GPU/zygote helpers run the same
+def _stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, *, also_posix):
+    """A Desktop's own process tree runs this update (a historical Desktop's piped
+    `hermes update` child, or the launch-time tail its backend runs). Stopping that
+    Desktop kills the update with it. Its renderer/GPU/zygote helpers run the same
     exe but are not our ancestors; stopping them leaves a main process that can
-    neither draw nor quit. Only an unrelated Desktop from the same release tree
-    is stopped, at the pack-time call and the swap alike."""
-    monkeypatch.setattr(main_desktop.sys, "platform", host)
+    neither draw nor quit. Only an unrelated Desktop from the same release tree is
+    stopped."""
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
@@ -1358,11 +1354,27 @@ def test_the_stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, 
     assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=also_posix) == [300]
 
 
+@pytest.mark.platforms("posix")
+def test_posix_swap_spares_the_desktop_driving_this_update(tmp_path, monkeypatch):
+    """A historical Desktop runs `hermes update` as a piped child and relaunches
+    itself afterwards; stopping it breaks the update's stdout (EPIPE)."""
+    _stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, also_posix=True)
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("also_posix", [False, True])
+def test_windows_stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, also_posix):
+    """A Desktop's own backend runs the launch-time update tail; stopping that Desktop
+    killed the tail before it could clear its markers, so every launch repeated it
+    (#123499). The pack-time call and the swap alike spare it."""
+    _stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, also_posix=also_posix)
+
+
+@pytest.mark.platforms("windows")
 def test_windows_build_under_its_own_desktop_skips_instead_of_killing_it(tmp_path, monkeypatch, capsys):
     """#123499: a Desktop's backend runs the interrupted-update tail at launch. Packing there
     can only end in a promotion the Desktop's exe lock refuses, and stopping that Desktop
     kills the tail first. The build is skipped, so the tail finishes and clears its markers."""
-    monkeypatch.setattr(main_desktop.sys, "platform", "win32")
     desktop_dir = _make_desktop_tree(tmp_path) / "apps" / "desktop"
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
     live_exe.parent.mkdir(parents=True)

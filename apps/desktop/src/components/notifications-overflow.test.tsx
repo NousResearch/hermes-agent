@@ -1,9 +1,17 @@
-import { renderToStaticMarkup } from 'react-dom/server'
+// @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-import { describe, expect, it } from 'vitest'
+import { cleanup, render } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { AppNotification } from '@/store/notifications'
+import { stubResizeObserver } from '@/test/jsdom'
 
 import { NotificationDeck } from './notifications'
-import type { AppNotification } from '@/store/notifications'
+
+const SRC = dirname(fileURLToPath(import.meta.url))
 
 const notification = (over: Partial<AppNotification>): AppNotification =>
   ({
@@ -17,45 +25,52 @@ const notification = (over: Partial<AppNotification>): AppNotification =>
   }) as AppNotification
 
 describe('NotificationDeck overflow guard', () => {
-  it('collapses an oversized collapsed-card message so controls stay reachable', () => {
-    // The model-switch confirmation (~800 chars) previously blew the collapsed
-    // card past the viewport bottom: its Confirm/Dismiss buttons rendered off
-    // screen with no way to scroll the toast itself.
-    const huge = 'x'.repeat(4_000)
+  beforeEach(() => {
+    stubResizeObserver()
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(96)
+  })
 
-    const html = renderToStaticMarkup(
-      <NotificationDeck
-        expanded={false}
-        notifications={[notification({ id: 'huge', message: huge })]}
-      />
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  // The clamp is real CSS in styles.css, not just a class-name string. Parse
+  // the actual rule so emptying the rule body or swapping it for a no-op
+  // (e.g. `max-height: 100%`) fails here instead of shipping the off-screen
+  // defect again — renderToStaticMarkup can never observe any of this.
+  it('clamps the collapsed card via a real max-height + scroll rule in styles.css', () => {
+    const css = readFileSync(join(SRC, '../styles.css'), 'utf8')
+    const rule = css.match(/\.notification-collapsed-clamp\s*\{([^}]*)\}/)
+
+    expect(rule).not.toBeNull()
+    expect(rule![1]).toMatch(/max-height\s*:\s*\d/)
+    expect(rule![1]).toMatch(/overflow-y\s*:\s*auto/)
+    expect(rule![1]).not.toMatch(/max-height\s*:\s*100%/)
+  })
+
+  // The class must land on the CardStack surface — the element the clamp
+  // constrains, and the element whose height CardStack reserves — not on some
+  // wrapper above or below it.
+  it('applies the clamp class to the collapsed card surface', () => {
+    const { container } = render(
+      <NotificationDeck expanded={false} notifications={[notification({ id: 'huge', message: 'x'.repeat(4_000) })]} />
     )
 
-    expect(html).toContain('notification-collapsed-clamp')
+    const surface = container.querySelector('[data-slot="card-stack-surface"]')
+
+    expect(surface).not.toBeNull()
+    expect(surface!.className).toContain('notification-collapsed-clamp')
   })
 
   it('does not clamp when expanded (the stack scrolls instead)', () => {
-    const huge = 'x'.repeat(4_000)
-
-    const html = renderToStaticMarkup(
-      <NotificationDeck
-        expanded
-        notifications={[notification({ id: 'huge', message: huge })]}
-      />
+    const { container } = render(
+      <NotificationDeck expanded notifications={[notification({ id: 'huge', message: 'x'.repeat(4_000) })]} />
     )
 
-    expect(html).not.toContain('notification-collapsed-clamp')
-  })
+    const surface = container.querySelector('[data-slot="card-stack-surface"]')
 
-  it('keeps the clamp on every collapsed card (harmless for short messages)', () => {
-    // The clamp lives on the collapsed card surface itself, so short messages
-    // carry it too — it only takes effect past 48dvh.
-    const html = renderToStaticMarkup(
-      <NotificationDeck
-        expanded={false}
-        notifications={[notification({ id: 'small', message: 'short' })]}
-      />
-    )
-
-    expect(html).toContain('notification-collapsed-clamp')
+    expect(surface).not.toBeNull()
+    expect(surface!.className).not.toContain('notification-collapsed-clamp')
   })
 })

@@ -711,6 +711,15 @@ export const deOverrides = {
       'view.findInPage': 'Auf Seite suchen',
       'view.findNext': 'Nächsten Treffer suchen',
       'view.findPrevious': 'Vorherigen Treffer suchen',
+      'view.tabSlot.1': 'Zu Tab 1 wechseln',
+      'view.tabSlot.2': 'Zu Tab 2 wechseln',
+      'view.tabSlot.3': 'Zu Tab 3 wechseln',
+      'view.tabSlot.4': 'Zu Tab 4 wechseln',
+      'view.tabSlot.5': 'Zu Tab 5 wechseln',
+      'view.tabSlot.6': 'Zu Tab 6 wechseln',
+      'view.tabSlot.7': 'Zu Tab 7 wechseln',
+      'view.tabSlot.8': 'Zu Tab 8 wechseln',
+      'view.tabSlot.9': 'Zu Tab 9 wechseln',
       'appearance.toggleMode': 'Hell / dunkel umschalten',
       'profile.default': 'Zu Standardprofil wechseln',
       'profile.switch.1': 'Zu Profil 1 wechseln',
@@ -1175,7 +1184,10 @@ export const deOverrides = {
         'Lassen Sie sich von Hermes durch die App führen – der Bildschirm wird abgedunkelt und jeder Schritt hervorgehoben.',
       composerPopoutTitle: 'Schwebender Composer',
       composerPopoutDesc:
-        'Erlaubt, den Composer aus seiner Ablage herauszuziehen. Schalten Sie das aus, um ihn unten fixiert zu halten.',
+        'Erlaubt, den Composer aus seiner Ablage herauszuziehen. Wenn aus, bleibt er unten angedockt.',
+      fileBrowserTitle: 'Dateibrowser',
+      fileBrowserDesc:
+        'Zeigt den Dateibrowser neben dem Chat, wenn ein Arbeitsbereich geöffnet ist. Der Schalter in der Titelleiste ändert diese Einstellung ebenfalls.',
       vibeHeartsTitle: 'Vibe-Herzen',
       vibeHeartsDesc:
         'Schwebende Herzen, wenn Sie danke, ilu, guter Bot sagen oder ein Herz senden. Unabhängig von den Nachrichten-Reaktionen oben.',
@@ -2788,6 +2800,10 @@ export const deOverrides = {
       emptyHint: 'Durchsuchen Sie unten den Katalog und installieren Sie ein geprüftes Plugin mit einem Klick.',
       loadFailed: 'Agent-Plugins konnten nicht geladen werden',
       toggleFailed: name => `${name} konnte nicht umgeschaltet werden`,
+      toolsetOn: (name: string, profile: string) => `${name}-Agent-Tools für ${profile} aktiviert`,
+      toolsetOff: (name: string, profile: string) => `${name}-Agent-Tools für ${profile} deaktiviert`,
+      toolsetToggleFailed: (name: string) =>
+        `Die ${name}-Agent-Tools konnten nicht umgeschaltet werden; das Desktop-Panel bleibt unverändert`,
       legacyBackend:
         'Dieses Backend ist älter als schlüsseladressierte Plugin-Schalter — aktualisieren Sie Hermes, um es hier zu verwalten.',
       portableBadge: 'tragbar',
@@ -3774,6 +3790,8 @@ export const deOverrides = {
     nameLabel: 'Name',
     namePlaceholder: 'Morgenübersicht',
     promptLabel: 'Prompt',
+    scriptLabel: 'Skript',
+    scriptBadge: 'Skript',
     promptPlaceholder: 'Fass meine ungelesenen Slack-Kanäle zusammen und schick mir die Top 5 per E-Mail...',
     frequencyLabel: 'Häufigkeit',
     deliverLabel: 'Zustellen an',
@@ -4061,6 +4079,7 @@ export const deOverrides = {
       backgroundRunning: 'Hintergrundaufgabe läuft',
       draftSession: 'Entwurf – noch nichts gesendet',
       handoffOrigin: platform => `Übergeben von ${platform}`,
+      continuationOrigin: 'Automatische Fortsetzung — dieser Chat wurde komprimiert und fortgesetzt',
       ownedByProfile: profile => `Profil: ${profile}`,
       renamed: 'Umbenannt',
       renameFailed: 'Umbenennen fehlgeschlagen',
@@ -4269,6 +4288,9 @@ export const deOverrides = {
     queueStuckTitle: 'Eingereihte Nachricht nicht gesendet',
     queueStuckBody:
       'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuchen Sie, ihn erneut zu senden.',
+    queueDroppedTitle: 'Eingereihte Eingabe verworfen',
+    queueDroppedBody:
+      'Dieser Hintergrund-Eintrag wurde verworfen, da seine Sitzung nach wiederholten Versuchen nicht fortgesetzt werden konnte. Die übrige Warteschlange ist unverändert.',
     previewUnavailable: 'Vorschau nicht verfügbar',
     previewLabel: label => `Vorschau ${label}`,
     couldNotPreview: label => `Vorschau von ${label} fehlgeschlagen`,
@@ -5631,7 +5653,10 @@ export const deOverrides = {
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
       lateAnswer: (question, choice) => `Re: „${question}“ — meine Antwort: ${choice}`,
       lateAnswerTip: 'Diese Antwort als Folgenachricht entwerfen',
-      lateAnswerHint: 'Dieser Prompt wartet nicht mehr. Wählen Sie eine Option, um sie als Folgenachricht zu entwerfen.'
+      lateAnswerHint:
+        'Dieser Prompt wartet nicht mehr. Wählen Sie eine Option, um sie als Folgenachricht zu entwerfen.',
+      notDelivered:
+        'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
     },
     catalogInstall: {
       preparing: 'Installation wird vorbereitet…',

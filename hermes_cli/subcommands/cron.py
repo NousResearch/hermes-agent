@@ -87,6 +87,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     _flag(cron_create, "--paused", default=False,
         help="Create disabled in one write; resume to schedule, or explicitly run now.")
     cron_create.add_argument("--paused-reason", help="Auditable reason; requires --paused.")
+    cron_create.add_argument(
+        "--max-turns", "--max-iterations", dest="max_turns",
+        help="Maximum tool-calling iterations per run for this job (positive integer). Overrides agent.max_turns.",
+    )
 
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
     cron_edit.add_argument("job_id", help="Job ID to edit")
@@ -144,6 +148,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Pass empty string to clear "
             "the pin and follow config resolution.")
+    cron_edit.add_argument(
+        "--max-turns", "--max-iterations", dest="max_turns",
+        help="Maximum tool-calling iterations per run for this job (positive integer, or '' to clear override).",
+    )
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

@@ -169,6 +169,23 @@ def _normcase_task_path(value: str) -> str:
     return value.strip().strip('"').replace("\\", "/").casefold()
 
 
+def _decode_task_xml(raw: "bytes | str") -> str:
+    """Decode a ``schtasks /XML`` export to text before parsing. A UTF-16 BOM is decisive:
+    on many fleets schtasks genuinely emits UTF-16-LE-with-BOM, and feeding those bytes to the
+    gateway codec (strict UTF-8, then single-byte console pages) yields NUL-laden mojibake that
+    ``ElementTree`` then rejects — reporting a healthy autostart as unregistered (#123774). When
+    there is no BOM the payload is the console-code-page-over-ASCII shape the gateway codec is
+    tested for (#116193), so delegate. ``ElementTree`` ignores an encoding declaration on a ``str``."""
+    if isinstance(raw, str):
+        return raw
+    data = bytes(raw)
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16", "replace")
+    from hermes_cli.gateway_windows import _decode_schtasks_output
+
+    return _decode_schtasks_output(data)
+
+
 def _task_xml_targets_cua_binary(xml_text: str, binary: str) -> bool:
     """True when a ``schtasks /XML`` export drives ``binary`` — directly, or via a shell launcher.
 
@@ -210,13 +227,11 @@ def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bo
         return False
     if result.returncode:
         return False
-    # schtasks declares ``encoding="UTF-16"`` but writes the console code page over ASCII/UTF-8
-    # bytes here, so parsing the raw bytes raises ParseError (#123774). Decode to text first with
-    # the gateway's tested codec (strict UTF-8, then the native code pages, then a lossy fallback —
-    # #116193); ElementTree ignores an encoding declaration on a ``str``.
-    from hermes_cli.gateway_windows import _decode_schtasks_output
-
-    return _task_xml_targets_cua_binary(_decode_schtasks_output(result.stdout), binary)
+    # schtasks declares ``encoding="UTF-16"`` regardless of what it actually writes — a UTF-16-LE
+    # BOM payload on one fleet, the console code page over ASCII/UTF-8 bytes on another — so decode
+    # to text first (a BOM is decisive, else the gateway's tested codec, #116193/#123774) and parse
+    # the ``str``; ElementTree ignores an encoding declaration on a ``str``.
+    return _task_xml_targets_cua_binary(_decode_task_xml(result.stdout), binary)
 
 
 def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> bool:

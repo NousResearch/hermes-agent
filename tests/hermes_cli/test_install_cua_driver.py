@@ -1,5 +1,6 @@
 """CUA runtime validation, explicit PM setup, and native host integration."""
 
+import codecs
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -182,8 +183,10 @@ def test_version_summary(raw, expected):
 
 # --- Windows autostart readiness check (#123774) ---------------------------------
 # The registered task is a powershell launcher; the driver path lives in Exec/Arguments,
-# not Exec/Command. schtasks also declares encoding="UTF-16" while writing the console
-# code page, so the readiness check must decode before parsing and match both leaves.
+# not Exec/Command. schtasks also declares encoding="UTF-16" regardless of what it writes —
+# ASCII/console-code-page bytes on one fleet, genuine UTF-16-with-BOM on another — so the
+# readiness check must decode (BOM decisive, else the gateway codec) before parsing, and
+# match both leaves.
 
 _CUA_BINARY = r"C:\Users\me\AppData\Local\hermes\tools\cua-driver-0.21.0-win32-x64\cua-driver.exe"
 
@@ -235,6 +238,34 @@ def test_autostart_match_survives_utf16_declaration_over_ascii_bytes():
 
     raw = _wrapped_task_xml().encode("utf-8")  # no UTF-16 BOM, UTF-16 declaration
     assert _task_xml_targets_cua_binary(_decode_schtasks_output(raw), _CUA_BINARY) is True
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _wrapped_task_xml().encode("utf-16"),  # bare "utf-16": LE payload + BOM, what schtasks emits
+        codecs.BOM_UTF16_LE + _wrapped_task_xml().encode("utf-16-le"),
+        codecs.BOM_UTF16_BE + _wrapped_task_xml().encode("utf-16-be"),
+    ],
+    ids=["utf16-native", "utf16-le-bom", "utf16-be-bom"],
+)
+def test_autostart_match_survives_genuine_utf16_bom_payload(raw):
+    # The other field shape (#123774): schtasks emits real UTF-16-with-BOM bytes. Feeding those to
+    # the single-byte console codec yields NUL-laden mojibake that ParseErrors; the BOM must be
+    # decisive so the readiness check decodes and matches instead of reporting "not registered".
+    from hermes_cli.tools_config_cua import _decode_task_xml, _task_xml_targets_cua_binary
+
+    assert raw[:2] in (b"\xff\xfe", b"\xfe\xff")  # a real BOM, unlike the ASCII-bytes repro above
+    assert _task_xml_targets_cua_binary(_decode_task_xml(raw), _CUA_BINARY) is True
+
+
+def test_decode_task_xml_delegates_when_there_is_no_bom():
+    # No BOM -> the console-code-page-over-ASCII shape: delegate to the gateway codec, don't
+    # mis-read it as UTF-16. A str passes through untouched (ElementTree ignores its declaration).
+    from hermes_cli.tools_config_cua import _decode_task_xml
+
+    assert _decode_task_xml(_wrapped_task_xml().encode("utf-8")).lstrip().startswith("<?xml")
+    assert _decode_task_xml("<Task/>") == "<Task/>"
 
 
 def test_autostart_match_returns_false_on_malformed_xml():

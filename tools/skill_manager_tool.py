@@ -346,17 +346,18 @@ def _resolve_supporting_file(skill_dir: Path, file_path: str):
         return None, _err(err)
     parts = Path(file_path).parts
     # The main file's two accepted spellings (#40568: "so callers can target the main
-    # file") resolve to the skill ROOT: 'SKILL.md' and '<skill-name>/SKILL.md'. A
-    # '<other>/SKILL.md' would nest a second SKILL.md that skill discovery (rglob)
-    # reads as a duplicate skill — reject it instead of writing it.
+    # file") resolve to the skill ROOT: 'SKILL.md' and '<skill-name>/SKILL.md'. A deeper
+    # 'references/sub/SKILL.md' would nest a second SKILL.md that skill discovery (rglob)
+    # reads as a duplicate skill — reject it, whatever the depth, so the accepted set is
+    # exactly {'SKILL.md', '<skill>/SKILL.md'}.
     if parts[-1] == "SKILL.md":
-        if len(parts) == 2 and parts[0] != skill_dir.name:
-            return None, _err(
-                f"file_path '{file_path}' would create a nested SKILL.md inside skill "
-                f"'{skill_dir.name}', which skill discovery reads as a duplicate skill. "
-                f"Use 'SKILL.md' to target the main file, or put supporting files under "
-                f"references/, templates/, scripts/, or assets/.")
-        return _main_skill_md(skill_dir), None
+        if len(parts) == 1 or (len(parts) == 2 and parts[0] == skill_dir.name):
+            return _main_skill_md(skill_dir), None
+        return None, _err(
+            f"file_path '{file_path}' would create a nested SKILL.md inside skill "
+            f"'{skill_dir.name}', which skill discovery reads as a duplicate skill. "
+            f"Use 'SKILL.md' to target the main file, or put supporting files under "
+            f"references/, templates/, scripts/, or assets/.")
     target = skill_dir / file_path
     err = validate_within_dir(target, skill_dir)
     return (None, _err(err)) if err else (target, None)
@@ -621,7 +622,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
         # SKILL.md IS the skill: removing it would delete the skill while bypassing the
         # delete path's guards (curator consolidation, recoverable archive, usage ledger).
         return _err(
-            f"file_path 'SKILL.md' is the skill itself — removing it would delete skill "
+            f"file_path '{file_path}' is the skill's main file — removing it would delete skill "
             f"'{name}' while bypassing the delete guards (curator consolidation, recoverable "
             f"archive). Use skill_manage(action='delete', ...) instead.")
     if not target.exists():  # list what IS there so the model can pick the right path

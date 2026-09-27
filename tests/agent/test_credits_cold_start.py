@@ -78,18 +78,21 @@ class _FakeAgent:
     the real policy against the latch (mirroring run_agent._emit_credits_notices,
     including the free-model suppression flag)."""
 
-    def __init__(self, provider="nous", model="", base_url=""):
+    def __init__(self, provider="nous", model="", base_url="", session_id="session-1"):  # session_id may be None
         from agent.credits_tracker import evaluate_credits_notices, is_free_tier_model
 
         self.provider = provider
         self.model = model
         self.base_url = base_url
+        self.session_id = session_id
         self._credits_state = None
         self._credits_session_start_micros = None
         self._credits_latch = {"active": set(), "seen_below_90": False, "usage_band": None}
         self.emitted: list = []
         self._eval = evaluate_credits_notices
         self._is_free = is_free_tier_model
+        from agent.credits_tracker import _remember_shown_band
+        self._remember_band = _remember_shown_band
 
     def _emit_credits_notices(self):
         if self._credits_state is None:
@@ -100,6 +103,9 @@ class _FakeAgent:
             model_is_free=self._is_free(self.model, self.base_url),
         )
         self.emitted.append(([n.key for n in show], clear))
+        # Mirrors the post-fix rate_limit_credits chokepoint: the band this session
+        # last showed is remembered so a rebuild restores it (#101578).
+        self._remember_band(self.session_id, self._credits_latch.get("usage_band"))
 
 
 def _seed(agent, fixture):
@@ -158,6 +164,92 @@ def test_seed_skips_non_nous():
     a = _FakeAgent(provider="openrouter")
     assert seed_credits_at_session_start(a) is False
     assert a._credits_state is None
+
+
+# ── #101578: desktop reap/resume rebuilds must not re-announce the same band ──
+#
+# Desktop rebuilds the AIAgent (and its _credits_latch) on idle-reap/resume, but
+# agent.session_id is stable across those rebuilds. A fresh latch that blindly
+# re-primes seen_below_90 re-announces the CURRENT band on every rebuild even
+# though the user already saw it moments ago on the previous incarnation.
+
+
+def _band_state(used_fraction_of_cap: float) -> CreditsState:
+    """A subscription-cap CreditsState at the given used fraction."""
+    cap = 20_000_000
+    return _state(
+        remaining_micros=int(cap * (1 - used_fraction_of_cap)),
+        subscription_micros=int(cap * (1 - used_fraction_of_cap)),
+        subscription_limit_micros=cap, subscription_limit_usd="20.00",
+        denominator_kind="subscription_cap", paid_access=True,
+    )
+
+
+def test_rebuild_with_same_band_does_not_refire(monkeypatch):
+    import agent.credits_tracker as ct
+
+    monkeypatch.setattr(ct, "_seen_usage_bands", {})
+    _hydrate = ct._hydrate_seed_state
+
+    # First incarnation: session opens already at 50% — fires once (cold-start seed behavior).
+    a1 = _FakeAgent(session_id="desktop-session-1")
+    a1._credits_state = _band_state(0.5)
+    a1._credits_latch["seen_below_90"] = True
+    a1._emit_credits_notices()
+    assert a1.emitted == [(["credits.usage"], [])]
+
+    # Desktop idle-reap/resume: a BRAND-NEW agent, fresh empty latch, SAME session_id,
+    # usage unchanged (still 50%). Must NOT re-announce the band.
+    a2 = _FakeAgent(session_id="desktop-session-1")
+    _hydrate(a2, _band_state(0.5))
+    assert a2.emitted == [([], [])]
+
+
+def test_rebuild_still_fires_on_genuine_band_change(monkeypatch):
+    import agent.credits_tracker as ct
+
+    monkeypatch.setattr(ct, "_seen_usage_bands", {})
+    _hydrate = ct._hydrate_seed_state
+
+    a1 = _FakeAgent(session_id="desktop-session-2")
+    a1._credits_state = _band_state(0.5)
+    a1._credits_latch["seen_below_90"] = True
+    a1._emit_credits_notices()
+    assert a1.emitted == [(["credits.usage"], [])]
+
+    # Usage genuinely climbed to 75% before the next rebuild — must still warn.
+    a2 = _FakeAgent(session_id="desktop-session-2")
+    _hydrate(a2, _band_state(0.75))
+    assert a2.emitted == [(["credits.usage"], ["credits.usage"])]
+
+
+def test_unrelated_session_id_not_suppressed(monkeypatch):
+    import agent.credits_tracker as ct
+
+    monkeypatch.setattr(ct, "_seen_usage_bands", {})
+    _hydrate = ct._hydrate_seed_state
+
+    a1 = _FakeAgent(session_id="desktop-session-a")
+    a1._credits_state = _band_state(0.5)
+    a1._credits_latch["seen_below_90"] = True
+    a1._emit_credits_notices()
+    assert a1.emitted == [(["credits.usage"], [])]
+
+    # A different session at the same band has never been shown anything.
+    a2 = _FakeAgent(session_id="desktop-session-b")
+    _hydrate(a2, _band_state(0.5))
+    assert a2.emitted == [(["credits.usage"], [])]
+
+
+def test_agent_without_session_id_falls_back_to_prior_behavior(monkeypatch):
+    """CLI/plain agents may have no session_id — degrade to the pre-fix behavior
+    (cold-start seed warns at open), never raise."""
+    import agent.credits_tracker as ct
+
+    monkeypatch.setattr(ct, "_seen_usage_bands", {})
+    a = _FakeAgent(session_id=None)
+    ct._hydrate_seed_state(a, _band_state(0.5))
+    assert a.emitted == [(["credits.usage"], [])]
 
 
 # ── background seed: the pricing warm the free-model gate depends on ─────────

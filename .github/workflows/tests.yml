@@ -143,7 +143,9 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          # `messaging`: tests/e2e/core/platforms runs the real Telegram/Discord/Slack
+          # adapters (their SDKs) against local stand-ins.
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "messaging"]'
           test-environment: 'true'
           prune-python-cache: true
 
@@ -180,7 +182,8 @@ jobs:
         # and must not share interpreter state.
         # tests/e2e/core/upgrade runs in its own job (e2e-upgrade) below.
         run: |
-          scripts/run_tests.sh --include-integration tests/e2e
+          mapfile -t files < <(find tests/e2e -name 'test_*.py' -not -path 'tests/e2e/core/upgrade/*' | sort)
+          scripts/run_tests.sh --include-integration "${files[@]}"
         env:
           # An e2e file is a process tree, not one CPU-bound pytest worker. With
           # 32 files at once the hosted run starved live children before their
@@ -202,13 +205,51 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
+  e2e-upgrade-plan:
+    # One e2e-upgrade shard per suite directory: the files directly under
+    # tests/e2e/core/upgrade ("core") plus every subdirectory that holds
+    # test_*.py (pm, git, handoff, network, hosts, ...). A new suite
+    # directory gets its own shard without editing this file, and no shard
+    # carries the whole tree's wall time against the 60-minute timeout.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: tests/e2e/core/upgrade
+      - name: List suite directories
+        id: plan
+        run: |
+          set -euo pipefail
+          shards=$(python3 - <<'PY'
+          import json, pathlib
+          root = pathlib.Path("tests/e2e/core/upgrade")
+          shards = ["core"] if any(root.glob("test_*.py")) else []
+          shards += sorted(d.name for d in root.iterdir()
+                           if d.is_dir() and not d.name.startswith(("_", ".")) and any(d.rglob("test_*.py")))
+          print(json.dumps(shards))
+          PY
+          )
+          echo "shards=$shards" | tee -a "$GITHUB_OUTPUT"
+
   e2e-upgrade:
     # tests/e2e/core/upgrade: a real N-1 -> HEAD `hermes update` (clean,
     # autostash, killed mid-pull / mid-deps, offline), fresh-process import and
-    # entrypoint smoke, and the config round-trip property matrix. Its own job:
-    # it needs full history + tags, bubblewrap, and one file runs ~5-15 min.
+    # entrypoint smoke, the config round-trip property matrix, and the lane
+    # suites below it (pm: PM environment lifecycle across updates, ...).
+    # Its own job: it needs full history + tags, bubblewrap, and one file
+    # runs ~5-15 min. Sharded by suite directory (see e2e-upgrade-plan).
+    name: e2e-upgrade (${{ matrix.shard }})
+    needs: e2e-upgrade-plan
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.e2e-upgrade-plan.outputs.shards) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -295,14 +336,25 @@ jobs:
           source .venv/bin/activate
           python -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
 
-      - name: Run upgrade e2e tests
+      - name: Run upgrade e2e tests (${{ matrix.shard }})
         run: |
+          set -euo pipefail
           source .venv/bin/activate
-          scripts/run_tests.sh --include-integration tests/e2e/core/upgrade
+          if [ "$SHARD" = core ]; then
+            mapfile -t files < <(find tests/e2e/core/upgrade -maxdepth 1 -name 'test_*.py' | sort)
+          else
+            mapfile -t files < <(find "tests/e2e/core/upgrade/$SHARD" -name 'test_*.py' | sort)
+          fi
+          # A shard that collects nothing is a wiring bug, not a pass.
+          [ "${#files[@]}" -gt 0 ] || { echo "no test files for shard $SHARD" >&2; exit 1; }
+          printf 'shard %s: %s\n' "$SHARD" "${files[*]}"
+          scripts/run_tests.sh --include-integration "${files[@]}"
         env:
+          SHARD: ${{ matrix.shard }}
           # Each file drives real installs/updaters (process trees plus uv and
-          # git I/O); cpu_count of them at once starves their deadlines.
-          HERMES_TEST_WORKERS: "4"
+          # git I/O); cpu_count of them at once starves their deadlines. A
+          # shard holds at most ~7 files, so this runs each shard in one wave.
+          HERMES_TEST_WORKERS: "6"
           HERMES_TEST_FILE_TIMEOUT: "3000"
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

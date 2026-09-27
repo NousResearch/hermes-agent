@@ -16,7 +16,7 @@ import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
-import { isSessionRemovalPending } from './session-removal'
+import { $removedSessionIds, isSessionRemovalPending } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
@@ -683,14 +683,52 @@ export function mergeSessionPage(
   // another profile is a DIFFERENT session and must survive the dedupe.
   const incomingLineageKeys = new Set(merged.map(lineageIdentity))
 
+  // Absorption filter: a survivor whose id appears ANYWHERE inside an
+  // incoming row's compression lineage is not a separate session anymore —
+  // the backend now serves that conversation as the chain's projected row.
+  // `mergeSessionPage`'s own survivors come from the tip-rotation dedup
+  // (#43483), but that only catches a lineage match through the root key.
+  // When a reorganized chain mints a FRESH root id (manual compression-chain
+  // repair, #85331), an old segment row in the keep set (it was the
+  // working/selected session at refresh time) produced the exact signal of a
+  // legitimately-kept row: absent from the incoming page, unmatched by
+  // lineage key. It survived as a title-less ghost. The incoming rows carry
+  // `_lineage_ids` — every id the chain has answered to — so matching a
+  // survivor id against that list identifies absorption WITHOUT evicting a
+  // genuinely-pinned row aged off the page: a pinned row's id never appears
+  // inside another session's lineage. Like the identity and lineage keys
+  // above, members are qualified by the owning row's profile — stored ids
+  // are only unique per-profile (#92454), so a bare-id match would evict a
+  // kept twin in another profile whose id merely coincides with a lineage.
+  const incomingLineageIdMembers = new Set(
+    merged.flatMap(session => (session._lineage_ids ?? []).map(id => `${profileKeyOf(session)}::${id}`))
+  )
+
+  // The tombstone set is re-read here, not at the caller: optimistic removal
+  // can land between `previous` being captured and this merge committing (a
+  // messaging "Load more" holds its slice for a long time), and a row the
+  // user archived or deleted must not survive through the keep set — the
+  // settle grace keeps a just-archived chat "recently settled" for 30s, which
+  // is exactly the window the survivor path used to resurrect it (#118156).
+  // Same bare-id + lineage-root match as dropTombstoned applies to incoming
+  // rows; a failed RPC untombstones immediately, so the filter is only ever
+  // as sticky as the removal itself.
+  const tombstones = $removedSessionIds.get()
+
+  const tombstoned = (session: SessionInfo): boolean =>
+    tombstones.size > 0 &&
+    (tombstones.has(session.id) || (session._lineage_root_id != null && tombstones.has(session._lineage_root_id)))
+
   const survivors = previous.filter(
     session =>
       // The keep-list answers "live, not listed yet" — a hidden row (canonical
       // Bot Chat, room plumbing) is LISTED-NEVER by design, so a live turn or
       // open tab must not resurrect it into the sidebar (#113273).
       !session.hidden &&
+      !tombstoned(session) &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
+      !incomingLineageIdMembers.has(identity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 
@@ -1557,6 +1595,19 @@ export const setCurrentProvider = (next: Updater<string>) => {
   }
 }
 
+/** Move the visible model/provider without claiming it as the composer's sticky
+ *  selection.
+ *
+ *  For values that come from the RUNTIME rather than the user: the periodic
+ *  `session.info` heartbeat's resolved model/provider (e.g. the generic `custom`
+ *  billing class a named provider resolves to). Persisting those through
+ *  `setCurrentModel`/`setCurrentProvider` overwrote the user's actual composer
+ *  pick in localStorage on every heartbeat, so a later new chat followed the
+ *  last-seen runtime class instead of the selection or the Settings default.
+ */
+export const setCurrentModelTransient = (next: Updater<string>) => updateAtom($currentModel, next)
+export const setCurrentProviderTransient = (next: Updater<string>) => updateAtom($currentProvider, next)
+
 export const getCurrentModelSource = (): ComposerModelSource => {
   const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)
 
@@ -1698,6 +1749,15 @@ export const setNewChatWorkspaceTarget = (next: NewChatWorkspaceTarget): number 
 
   return generation
 }
+
+// True only when the next new chat's cwd is a deliberate workspace choice (#52589).
+// The desktop otherwise seeds a chat's cwd from its app-global workspace (the launch
+// profile's configured directory / project scope); the gateway must treat that as an
+// inherited default — NOT an explicit pick — so a named profile's own terminal.cwd
+// wins. Path equality cannot distinguish the two, so the flag ships with the create.
+export const $currentCwdExplicit = atom(false)
+
+export const setCurrentCwdExplicit = (next: Updater<boolean>) => updateAtom($currentCwdExplicit, next)
 
 export const workspaceCwdForNewSession = (): string => {
   // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding

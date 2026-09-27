@@ -21,6 +21,7 @@ interface ConfirmDialogProps {
   onConfirm: () => Promise<void> | void
   title: ReactNode
   description?: ReactNode
+  children?: ReactNode
   confirmLabel?: string
   busyLabel?: string
   doneLabel?: string
@@ -48,6 +49,7 @@ export function ConfirmDialog({
   onConfirm,
   title,
   description,
+  children,
   confirmLabel,
   busyLabel,
   doneLabel,
@@ -153,6 +155,7 @@ export function ConfirmDialog({
           {description ? <DialogDescription className="whitespace-pre-line">{description}</DialogDescription> : null}
         </DialogHeader>
 
+        {children}
         {error && (
           <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />

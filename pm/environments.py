@@ -291,6 +291,121 @@ def _require_own_dependencies(project_root: Path) -> None:
         raise RuntimeError("no dependency environment is committed for this install")
 
 
+def _bootstrap_names_root(launcher: Path, root: Path) -> bool:
+    """Read the bootstrap out of a *generated* launcher and check that it names *root*.
+
+    Neither generated Windows command is a script ``_owns_launcher`` can read: ``distlib`` writes a
+    ``.exe`` that is a ZIP whose ``__main__.py`` *is* the bootstrap, and its fallback writes a
+    ``.cmd`` carrying the same bootstrap base64-encoded inside ``exec(base64.b64decode('…'))``.
+    Both embed ``sys.path.insert(0, '<root>')`` verbatim — the generated line, quoted exactly as
+    ``_launcher_script`` writes it, is what decides here. A path mentioned in a comment, or any
+    other coincidence, cannot satisfy that.
+    """
+    import base64
+    import re
+    from zipfile import BadZipFile, ZipFile
+
+    names = {f"sys.path.insert(0, {form!r})" for form in (str(root), str(Path(root).resolve()))}
+    scripts: list[str] = []
+    try:
+        with ZipFile(launcher) as archive:
+            scripts.append(archive.read("__main__.py").decode("utf-8", "replace"))
+    except (OSError, BadZipFile, KeyError, ValueError):
+        pass
+    try:
+        body = launcher.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        body = ""
+    for encoded in re.findall(r"base64\.b64decode\(\s*'([A-Za-z0-9+/=]{16,})'\s*\)", body):
+        try:
+            scripts.append(base64.b64decode(encoded).decode("utf-8", "replace"))
+        except ValueError:
+            continue
+    return any(name in script for script in scripts for name in names)
+
+
+def serves_install(directory: Path, root: Path, payload_bin: Path | None = None) -> bool:
+    """Does the ``hermes`` launcher that resolution *would* pick in *directory* serve this install?
+
+    A shared directory (``$HERMES_HOME/bin``, ``~/.local/bin``, ``/usr/local/bin``) serves whoever
+    wrote last, so it counts as ours only when the command *resolution selects there* actually
+    leads here — not merely when some file in it does. ``hermes_cli._launchers._owns_launcher``
+    decides shell launchers, symlinks and the ACP forwarder; a sealed bundle's shim is a link into
+    the payload bin, outside the checkout; the generated Windows commands are read as the formats
+    they are (see ``_bootstrap_names_root``). Anything else is refused, which is safe: the
+    directory is simply not hoisted, and this install's own launcher stage still wins.
+    """
+    from hermes_cli._launchers import _owns_launcher
+    import shutil
+
+    selected = shutil.which("hermes", path=str(directory))
+    if selected is None:
+        return False
+    launcher = Path(selected)
+    if _owns_launcher(launcher, root):
+        return True
+    if launcher.is_symlink():
+        return payload_bin is not None and launcher.resolve().is_relative_to(payload_bin.resolve())
+    return _bootstrap_names_root(launcher, root)
+
+
+def launcher_dirs(project_root: Path) -> tuple[Path, ...]:
+    """The directories holding this install's OWN commands, matched against ``PATH``.
+
+    ``<checkout>/.hermes/bin`` is the launcher stage ``hermes_cli._launchers`` owns on every
+    platform, and a sealed bundle's payload bin (``root.parent/bin``) is where its signed shims
+    live. ``$HERMES_HOME/bin`` and, on POSIX, ``~/.local/bin`` (scripts/install.sh) and
+    ``/usr/local/bin`` are *shared*: they count as ours only while the ``hermes`` launcher inside
+    them serves this install (see ``serves_install``), so a directory held by another install
+    cannot be hoisted ahead of ours.
+
+    The dependency venv ships ``hermes``/``hermes-acp`` console scripts as well, but those resolve
+    the project through the venv's own ``__editable__`` pointer — the snapshot the venv was built
+    from, which only a dependency-graph change refreshes. PATH order therefore decides whether an
+    activated shell runs this install or a stale copy of it.
+    """
+    from hermes_cli._launchers import _is_bundled_payload
+    from hermes_constants import get_default_hermes_root
+
+    root = Path(project_root)
+    # Only a sealed bundle's payload bin is taken on trust: a checkout's parent directory is
+    # usually the shared $HERMES_HOME, whose bin has to pass the ownership check like any other.
+    payload_bin = root.parent / "bin" if _is_bundled_payload(root) else None
+    directories = [root / ".hermes" / "bin", *([payload_bin] if payload_bin is not None else [])]
+    home_bin = get_default_hermes_root() / "bin"
+    if serves_install(home_bin, root, payload_bin):
+        directories.append(home_bin)
+    if os.name != "nt":
+        directories += [directory for directory in (Path.home() / ".local" / "bin", Path("/usr/local/bin"))
+                        if serves_install(directory, root, payload_bin)]
+    return tuple(directories)
+
+
+def activated_path(project_root: Path, executable_dir: Path, path: str) -> str:
+    """*path* reordered as: this install's launchers, the dependency bin dir, then the rest.
+
+    Both guarantees must hold for every input. A launcher of this install may not lose to the
+    venv's snapshot-bound console script of the same name, and the dependency environment's
+    console scripts must keep outranking the ambient ``PATH`` — that is what its committed
+    generation was verified for. Computing an insertion index inside the unordered input cannot
+    hold both (``[venv, launcher, system]`` would place the venv dir behind ``system``), so the
+    launchers are hoisted in front of *executable_dir* and *executable_dir* in front of
+    everything else instead. Entries keep their relative order, an existing *executable_dir*
+    entry is replaced rather than duplicated, and no directory appears that the caller did not
+    already have on *path*.
+    """
+
+    def key(entry: str) -> str:
+        return os.path.normcase(os.path.normpath(entry))
+
+    entries = [entry for entry in path.split(os.pathsep) if entry]
+    own = {key(str(directory)) for directory in launcher_dirs(project_root)}
+    executable = key(str(executable_dir))
+    launchers = list(dict.fromkeys(entry for entry in entries if key(entry) in own))
+    rest = [entry for entry in entries if key(entry) not in own and key(entry) != executable]
+    return os.pathsep.join([*launchers, str(executable_dir), *rest])
+
+
 def activate_dependencies(project_root: Path) -> None:
     """Select the committed tree at process boot, before third-party imports.
 
@@ -344,7 +459,7 @@ def activate_dependencies(project_root: Path) -> None:
     os.environ.pop("VIRTUAL_ENV", None)
     executable_dir = venv_bin_dir(environment)
     if executable_dir.is_dir():
-        os.environ["PATH"] = os.pathsep.join([str(executable_dir), os.environ.get("PATH", "")])
+        os.environ["PATH"] = activated_path(project_root, executable_dir, os.environ.get("PATH", ""))
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:

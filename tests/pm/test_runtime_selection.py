@@ -182,3 +182,177 @@ def test_invalid_selected_environment_never_silently_falls_back(tmp_path, monkey
     }))
     with pytest.raises(RuntimeError, match="environment"):
         runtime_paths.selected_venv(root)
+
+
+@pytest.mark.parametrize("published", ["checkout", "home", "none"])
+@pytest.mark.parametrize("preactivated", [False, True])
+@pytest.mark.parametrize("launcher_last", [False, True])
+def test_activated_path_keeps_own_launchers_ahead_of_snapshot_scripts(
+        tmp_path, monkeypatch, published, preactivated, launcher_last):
+    """The dependency venv ships ``hermes`` console scripts bound to its build snapshot.
+
+    Activation prepends the venv's bin directory to PATH, and the snapshot the venv was built
+    from is only refreshed when the dependency graph changes — so a launcher this install
+    publishes must keep its position ahead of that entry. Otherwise an activated shell answers
+    ``hermes`` with a stale copy of the checkout (observed as ``Not a git repository`` out of
+    ``hermes update``), which is the convergence the installer's user-PATH registration owns.
+    """
+    import os
+    import shutil
+    import subprocess
+    import sys
+    from pm import environments as runtime_paths
+
+    root = tmp_path / "repo"
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state = runtime_paths.install_state_dir(root)
+    venv = state / "environments" / "gen" / "venv"
+    runtime_paths.site_packages(venv).mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = test\n", encoding="utf-8")
+    scripts = runtime_paths.venv_bin_dir(venv)
+    scripts.mkdir(parents=True)
+    (state / "facts.json").write_text(json.dumps({"schema": 1, "packages": {
+        "venv": {"environment": str(venv)}}}), encoding="utf-8")
+    entry = "hermes.cmd" if os.name == "nt" else "hermes"
+    (scripts / entry).write_text("snapshot\n", encoding="utf-8")
+    launcher = {"checkout": root / ".hermes" / "bin", "home": home / "bin"}.get(published)
+    # ``preactivated`` reproduces the shape that actually broke: the venv's bin dir already on
+    # PATH ahead of our launcher, as every process spawned by an activated backend sees it.
+    ambient = [str(scripts)] if preactivated else []
+    if launcher is not None:
+        launcher.mkdir(parents=True)
+        (launcher / entry).write_text(
+            f"exec '{root / '.hermes' / 'bin' / 'hermes'}' \"$@\"  # checkout\n", encoding="utf-8")
+        os.chmod(launcher / entry, 0o755)
+    ambient.append(str(tmp_path / "system"))
+    if launcher is not None and not launcher_last:
+        ambient.insert(0, str(launcher))
+    elif launcher is not None:
+        # The breaking shape: the launcher sits behind ambient entries, so an order that only
+        # looks at the venv's bin dir leaves it where it was.
+        ambient.append(str(launcher))
+    code = (
+        "import os, shutil, sys; from pathlib import Path; sys.path.insert(0, sys.argv[2]); "
+        "from pm.environments import activate_dependencies; activate_dependencies(Path(sys.argv[1])); "
+        "first = os.environ['PATH']; activate_dependencies(Path(sys.argv[1])); "
+        "found = shutil.which('hermes'); print(os.environ['PATH']); "
+        "print(os.environ['PATH'] == first); "
+        "print(Path(found).read_text(encoding='utf-8').strip() if found else 'missing')"
+    )
+    process = subprocess.run(
+        [sys.executable, "-c", code, str(root), str(Path(__file__).resolve().parents[2])],
+        env={**os.environ, "PATH": os.pathsep.join(ambient)},
+        text=True, capture_output=True, timeout=30,
+    )
+    assert process.returncode == 0, process.stderr
+    ordered, stable, resolved = process.stdout.splitlines()
+    entries = ordered.split(os.pathsep)
+    # Activation prepends the venv's bin dir, so the input here is exactly [venv, <ambient>…]
+    # — the shape in which a position computed from the unordered input pushes the venv dir
+    # behind the ambient entries. Both invariants are asserted rather than the raw order.
+    assert stable == "True", "a second activation must not grow or reorder PATH"
+    assert entries.count(str(scripts)) == 1, entries
+    system = str(tmp_path / "system")
+    assert entries.index(str(scripts)) < entries.index(system), entries
+    if published == "none":
+        # Nothing of ours is on PATH: the venv's bin dir still goes first, unchanged.
+        assert entries[0] == str(scripts)
+        assert resolved == "snapshot"
+    else:
+        assert entries[0] == str(launcher)
+        assert "checkout" in resolved
+
+
+@pytest.mark.platforms("posix")
+def test_posix_shared_bin_counts_only_while_it_owns_this_checkout(tmp_path, monkeypatch):
+    """``~/.local/bin`` and ``/usr/local/bin`` are shared: a launcher for another install there
+    must not be hoisted ahead of the dependency environment. POSIX-gated — the candidate list
+    only exists there, and faking ``os.name`` cannot work because ``pathlib`` binds its concrete
+    path class from it at instantiation."""
+    import os
+    from pm import environments as runtime_paths
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "userhome")
+    shared = Path.home() / ".local" / "bin"
+    shared.mkdir(parents=True)
+    assert shared not in runtime_paths.launcher_dirs(root)
+    launcher = root / ".hermes" / "bin" / "hermes"
+    (shared / "hermes").write_text(f"#!/bin/sh\nexec '{launcher}' \"$@\"\n", encoding="utf-8")
+    os.chmod(shared / "hermes", 0o755)
+    assert shared in runtime_paths.launcher_dirs(root)
+    # A launcher that merely mentions the checkout in a comment is not ownership.
+    (shared / "hermes").write_text(f"#!/bin/sh\n# for {root / 'other'}\nexec /bin/false\n", encoding="utf-8")
+    assert shared not in runtime_paths.launcher_dirs(root)
+    # A sealed bundle links its shim into the payload bin, which lives *outside* the checkout, so
+    # ownership is judged against the payload — the root never contains that target.
+    payload_bin = root.parent / "bin"
+    payload_bin.mkdir()
+    (payload_bin / "hermes").write_text("shim\n", encoding="utf-8")
+    (shared / "hermes").unlink()
+    (shared / "hermes").symlink_to(payload_bin / "hermes")
+    monkeypatch.setattr("hermes_cli._launchers._is_bundled_payload", lambda *_: True)
+    assert payload_bin in runtime_paths.launcher_dirs(root)
+    assert shared in runtime_paths.launcher_dirs(root)
+
+
+def test_shared_home_bin_counts_only_while_its_launcher_serves_this_install(tmp_path, monkeypatch):
+    """``$HERMES_HOME/bin`` is shared the same way: a second checkout installed into one home must
+    not have its launcher hoisted ahead of this install's dependency environment, while this
+    install's own launcher keeps its place — including the Windows executable, whose embedded
+    bootstrap names the checkout instead of being readable as a script."""
+    import os
+    from pm import environments as runtime_paths
+
+    root = tmp_path / "repo"
+    (root / ".hermes" / "bin").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    shared = tmp_path / "home" / "bin"
+    shared.mkdir(parents=True)
+    entry = "hermes.cmd" if os.name == "nt" else "hermes"
+    assert shared not in runtime_paths.launcher_dirs(root)
+    # Another install's launcher, and a wrapper whose only mention of this checkout is a comment:
+    # neither can certify the directory — what resolution picks there has to *lead* here.
+    (shared / entry).write_text(
+        f"#!/bin/sh\n# {root}\nexec '{tmp_path / 'other' / 'hermes'}' \"$@\"\n", encoding="utf-8")
+    assert shared not in runtime_paths.launcher_dirs(root)
+    (shared / entry).write_text(
+        f"#!/bin/sh\nexec '{root / '.hermes' / 'bin' / 'hermes'}' \"$@\"\n", encoding="utf-8")
+    assert shared in runtime_paths.launcher_dirs(root)
+
+
+def test_shared_home_bin_recognizes_generated_windows_commands(tmp_path, monkeypatch):
+    """The generated Windows commands keep the bootstrap where no text scan reaches it: the
+    ``distlib`` ``.exe`` is a ZIP whose ``__main__.py`` *is* the bootstrap, and the fallback
+    ``.cmd`` carries the same bootstrap base64-encoded. Both must certify the directory — and the
+    same files for another install must not."""
+    import base64
+    import os
+    import zipfile
+    from pm import environments as runtime_paths
+
+    if os.name != "nt":
+        pytest.skip("the generated command formats only exist on Windows")
+
+    root = tmp_path / "repo"
+    (root / ".hermes" / "bin").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    shared = tmp_path / "home" / "bin"
+    shared.mkdir(parents=True)
+    script = f"sys.path.insert(0, {str(root)!r})\n"
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    (shared / "hermes.cmd").write_text(
+        f'@echo off\n"python.exe" -I -c "import base64; exec(base64.b64decode(\'{encoded}\'))"\n',
+        encoding="utf-8")
+    assert shared in runtime_paths.launcher_dirs(root)
+    (shared / "hermes.cmd").unlink()
+    with zipfile.ZipFile(shared / "hermes.exe", "w") as archive:
+        archive.writestr("__main__.py", script)
+    assert shared in runtime_paths.launcher_dirs(root)
+    (shared / "hermes.exe").unlink()
+    with zipfile.ZipFile(shared / "hermes.exe", "w") as archive:
+        archive.writestr("__main__.py", f"sys.path.insert(0, {str(tmp_path / 'other')!r})\n")
+    assert shared not in runtime_paths.launcher_dirs(root)

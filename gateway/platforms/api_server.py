@@ -3198,15 +3198,33 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session = await asyncio.to_thread(db.get_session, session_id) or session
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
+    def _session_files_dir(self, request: "web.Request") -> Path:
+        """Transcript dir a session delete sweeps (``request_dump_<id>_*.json``, ``<id>.json[l]``), mirroring
+        ``gateway.run._profile_sessions_dir``: the runner's configured ``sessions_dir`` applies to the LAUNCH
+        profile only; a ``/p/<profile>/`` request keeps ``<its home>/sessions`` (the configured dir would
+        sweep another profile's tree). Called on the loop thread — the profile scope is invisible inside
+        ``to_thread``."""
+        from hermes_constants import get_hermes_home
+
+        if not _api_request_profile.get():
+            runner = self.gateway_runner or request.app.get("gateway_runner")
+            configured = getattr(getattr(runner, "config", None), "sessions_dir", None)
+            if configured:
+                return Path(configured)
+        return get_hermes_home() / "sessions"
+
     @_require_auth
     async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
-        """DELETE /api/sessions/{session_id}."""
+        """DELETE /api/sessions/{session_id}. Removes the row AND its on-disk artifacts: a row-only delete
+        left the (secret-bearing) request dumps readable after the user removed the session (#55088)."""
         session_id = request.match_info["session_id"]
         session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
         db = await self._ensure_session_db_async()
-        deleted = await asyncio.to_thread(db.delete_session, session_id)
+        deleted = await asyncio.to_thread(
+            db.delete_session, session_id, sessions_dir=self._session_files_dir(request)
+        )
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth

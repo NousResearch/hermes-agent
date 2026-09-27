@@ -3830,10 +3830,7 @@ class GatewayTurnMixin:
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
-        next_message_id = next_message_type = None
-        # Plain-text interrupt/steer follow-ups have no MessageEvent of their own,
-        # so they continue with the effective channel prompt of the turn they follow.
-        next_channel_prompt = turn_ctx.channel_prompt
+        next_message_id = next_channel_prompt = next_message_type = None
         # The raw inbound id keys the delivery-ledger obligation for the follow-up's own final send,
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
@@ -3873,6 +3870,10 @@ class GatewayTurnMixin:
                 next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
             )
             next_message_type = getattr(pending_event, "message_type", None)
+        else:
+            # Event-less interrupt/steer follow-ups continue the effective prompt
+            # of the turn they are recursively following.
+            next_channel_prompt = turn_ctx.channel_prompt
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.

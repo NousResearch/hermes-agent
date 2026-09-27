@@ -97,9 +97,12 @@ const MARKDOWN_LINK_SPLIT_RE = new RegExp(
   'gm'
 )
 
-// Only strip bare localhost root URLs in prose. URLs with actual path segments
-// (e.g. http://localhost:8080/piwo) are user-facing content and must survive.
-const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?(?=\s|$)/gi
+// A fenced block whose entire body is a loopback URL is the preview-pane
+// hand-off: the widget already paints that address, so the whole block is
+// dropped instead of painting the raw text twice. Bare loopback URLs in
+// PROSE are user-facing content and must survive (#121683) — "dev server at
+// http://localhost:3000" is the address the reader needs, wherever it sits
+// in the sentence.
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 // Autolink-shaped spans (bare or angle-bracketed http(s) URLs) that must be
@@ -445,7 +448,6 @@ function rewriteProseSegment(segment: string): string {
           escapeUnknownHtmlLikeTags(
             segment
               .replace(/`{3,}/g, '')
-              .replace(LOCAL_PREVIEW_URL_RE, '$1')
               .replace(CITATION_TRANSPORT_MARKER_RE, '')
               .replace(CITATION_MARKER_RE, '')
           )

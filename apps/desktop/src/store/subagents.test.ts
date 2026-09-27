@@ -61,6 +61,45 @@ describe('subagent store', () => {
     expect(activeSubagentCount(listFor('owner'))).toBe(1)
   })
 
+  it('lands durable failed delegations as failed rows once, and never over a live row or a retired one (#97202)', () => {
+    const failure = {
+      completed_at: 1_700_000_000,
+      delegation_id: 'd1',
+      dispatched_at: 1_699_999_700,
+      error: 'interrupted: waiting for model response',
+      goal: 'Audit billing',
+      status: 'error',
+      task_index: 0
+    }
+
+    // A renderer reload emptied the store; the roster has no live children left.
+    reconcileSubagentSnapshot('owner', [], [failure])
+    const [row] = listFor('owner')
+    expect(row).toMatchObject({ goal: 'Audit billing', status: 'failed', summary: failure.error, delegationId: 'd1' })
+    expect(row).toMatchObject({ durationSeconds: 300, startedAt: 1_699_999_700_000, updatedAt: 1_700_000_000_000 })
+    expect(failedSubagentCount(listFor('owner'))).toBe(1)
+
+    // Repeated polls keep the same frame.
+    const first = listFor('owner')
+    reconcileSubagentSnapshot('owner', [], [failure])
+    expect(listFor('owner')).toBe(first)
+
+    // A turn that pruned the row retires it for good.
+    pruneFinishedSessionSubagents('owner')
+    reconcileSubagentSnapshot('owner', [], [failure])
+    expect(listFor('owner')).toEqual([])
+
+    // An event-fed row for the same task wins over the durable copy.
+    upsertSubagent(
+      'live',
+      { delegation_id: 'd1', goal: 'Audit billing', status: 'failed', subagent_id: 'sa-1', task_index: 0 },
+      true,
+      'subagent.complete'
+    )
+    reconcileSubagentSnapshot('live', [], [failure])
+    expect(listFor('live').map(item => item.id)).toEqual(['sa-1'])
+  })
+
   it('builds parent/child trees', () => {
     upsertSubagent('s1', { goal: 'parent', status: 'running', subagent_id: 'p', task_index: 0 })
     upsertSubagent('s1', { goal: 'child', parent_id: 'p', status: 'queued', subagent_id: 'c', task_index: 1 })

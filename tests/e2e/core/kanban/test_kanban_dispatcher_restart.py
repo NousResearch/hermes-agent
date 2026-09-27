@@ -10,7 +10,8 @@ Invariants, read from kanban.db and the provider's request log:
 * the ``tasks`` table holds exactly the created ids with their titles and bodies — no row
   destroyed, replaced or invented (no status-word placeholder id);
 * every card ends ``done`` with exactly one ``completed`` run and one ``completed`` event;
-* each card's ``kanban_complete`` was billed exactly once (no duplicate worker ran a card);
+* each card's ``kanban_complete`` was billed exactly once (no duplicate worker ran a card) — also
+  when the kill lands after the spawn but before the dispatcher recorded the worker's pid;
 * no card ever had two runs open at the same time.
 
 A second scenario gives a live worker a claim TTL shorter than its provider call: the dispatcher
@@ -119,7 +120,8 @@ def test_dispatcher_sigkill_mid_tick_never_destroys_or_duplicates_cards(tmp_path
                 assert len(done) == 1 and done[0]["summary"] == f"done {tid}", board.diag(tid)
                 assert len(board.events(tid, "completed")) == 1, board.diag(tid)
                 assert not _overlapping_runs(runs), board.diag(tid)
-            assert dict(completer.completes) == {t: 1 for t in created}, completer.completes
+            assert dict(completer.completes) == {t: 1 for t in created}, (
+                completer.completes, [board.diag(t) for t, n in completer.completes.items() if n != 1])
             # Vacuity guard: the claim-then-kill round really stranded a claim that the restarted
             # dispatcher had to recover (a kill that always landed between ticks proves nothing).
             outcomes = Counter(r["outcome"] for t in created for r in board.runs(t))

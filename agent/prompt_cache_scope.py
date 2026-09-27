@@ -13,6 +13,8 @@ import hashlib
 import logging
 from typing import Any, Optional
 
+from utils import base_url_hostname
+
 logger = logging.getLogger(__name__)
 
 _MEMO_ATTR = "_prompt_cache_scope_memo"
@@ -146,7 +148,7 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
     (the physical id without ancestry/DB). Memoized on the agent."""
     inherited = getattr(agent, "_inherited_cache_scope", None)
     if isinstance(inherited, str) and inherited:
-        return inherited
+        return _apply_fork_tag(agent, inherited)
     sid = str(getattr(agent, "session_id", None) or "")
     if not sid:
         return ""
@@ -155,7 +157,7 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
     key = (sid, db is not None)
     memo = getattr(agent, _MEMO_ATTR, None)
     if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == key:
-        return memo[1]
+        return _apply_fork_tag(agent, memo[1])
     root = declared_conversation_scope(agent) or _lineage_root(sid, db)
     scope = root or sid
     # Memoize on success, with no DB, or when the agent never persists a row. A failed/empty
@@ -166,7 +168,53 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
             setattr(agent, _MEMO_ATTR, (key, scope))
         except Exception:
             pass  # frozen/slotted doubles: resolution works, just unmemoized
-    return scope
+    return _apply_fork_tag(agent, scope)
+
+
+# ``<scope>::<tag>`` — double colon so gateway session keys that already contain single
+# colons are never mistaken for a fork scope.
+FORK_SCOPE_SEPARATOR = "::"
+
+# Aggregator slugs that front xAI Grok (OpenRouter and friends).
+GROK_AGGREGATOR_MODEL_PREFIXES = ("x-ai/grok-", "xai/grok-")
+
+
+def is_slot_keyed_cache_route(provider: Any, model: Any, base_url: Any = "") -> bool:
+    """True when the cache key selects ONE server-side slot per conversation.
+
+    xAI (``xai``/``xai-oauth``, ``api.x.ai``, or Grok via OpenRouter ``x-ai/grok-*``) pins its
+    prompt cache to the server picked by ``x-grok-conv-id`` / ``prompt_cache_key``: two divergent
+    request streams under one key evict each other. Anthropic, DeepSeek and Gemini caches are
+    content-addressed and OpenAI's ``prompt_cache_key`` only routes over a prefix match, so the
+    shared scope (#109964) stays a win there. Only the OpenRouter profile reads ``cache_scope_id``
+    for the sticky header; other aggregators fronting Grok change only the body key.
+    """
+    if str(provider or "").strip().lower() in {"xai", "xai-oauth"}:
+        return True
+    if base_url_hostname(str(base_url or "")) == "api.x.ai":
+        return True
+    return str(model or "").strip().lower().startswith(GROK_AGGREGATOR_MODEL_PREFIXES)
+
+
+def is_fork_cache_scope(scope: Any) -> bool:
+    """True when *scope* is a fork-derived scope (``<scope>::<tag>``)."""
+    return isinstance(scope, str) and FORK_SCOPE_SEPARATOR in scope
+
+
+def _apply_fork_tag(agent: Any, scope: str) -> str:
+    """``<scope>::<tag>`` for a tagged fork on a slot-keyed route, once the fork's OWN compaction
+    committed: before it the fork extends the parent's prefix (warm read, #109964); after it the
+    rewritten stream would evict the parent's xAI slot. Read per call, so fallbacks re-evaluate."""
+    tag = getattr(agent, "_prompt_cache_fork_tag", None)
+    if not scope or not isinstance(tag, str) or not tag:
+        return scope
+    if getattr(getattr(agent, "context_compressor", None), "compression_count", 0) < 1:
+        return scope
+    if not is_slot_keyed_cache_route(
+        getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", ""),
+    ):
+        return scope
+    return f"{scope}{FORK_SCOPE_SEPARATOR}{tag}"
 
 
 def declared_conversation_scope_safe(agent: Any) -> Optional[str]:

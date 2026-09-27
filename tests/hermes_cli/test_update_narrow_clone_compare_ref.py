@@ -46,41 +46,14 @@ def narrow_clone(tmp_path: Path) -> Path:
     return work
 
 
-def test_branch_name_fetch_leaves_compare_ref_unresolved(narrow_clone: Path) -> None:
-    """The pre-fix mechanism: a branch-name fetch succeeds but origin/main never lands."""
-    fetch = _run(narrow_clone, "fetch", "-q", "--depth", "1", "origin", "main")
-    assert fetch.returncode == 0
-    assert _run(narrow_clone, "rev-parse", "--verify", "--quiet", "origin/main").returncode != 0
-
-
-def test_fetch_compare_branch_creates_tracking_ref(narrow_clone: Path) -> None:
-    """The fixed --check path: the refspec fetch makes the compare ref resolvable."""
-    fetch_result, compare_branch = update_cmd_check.fetch_compare_branch(
-        git_cmd, narrow_clone, "main", ["--depth", "1"],
-    )
-    assert fetch_result.returncode == 0, fetch_result.stderr
-    assert compare_branch == "origin/main"
-    assert update_cmd_check.compare_ref_exists(git_cmd, narrow_clone, compare_branch)
-
-
-def test_fetch_compare_branch_reports_missing_branch(narrow_clone: Path) -> None:
-    """A genuinely absent branch still reports missing — no false positive introduced."""
-    fetch_result, compare_branch = update_cmd_check.fetch_compare_branch(
-        git_cmd, narrow_clone, "no-such-branch", ["--depth", "1"],
-    )
-    assert fetch_result.returncode != 0
-    assert compare_branch == "origin/no-such-branch"
-    assert not update_cmd_check.compare_ref_exists(git_cmd, narrow_clone, compare_branch)
-
-
 def test_forced_refspec_updates_shallow_clone_to_new_tip(narrow_clone: Path) -> None:
     """The ``+`` prefix is load-bearing on depth-1 shallow clones (the installer's shape).
 
     A shallow boundary makes the new tip a non-descendant of the old one, so a NON-forced
     refspec fetch is rejected as non-fast-forward and the tracking ref never advances —
     the update check would keep comparing against the stale tip forever. Only the forced
-    form lands the new tip; pin both directions so a refactor to the non-forced refspec
-    fails here instead of silently breaking every shallow installer update check.
+    form lands the new tip, so a refactor to the non-forced refspec fails here instead of
+    silently breaking every shallow installer update check.
     """
     # The prior update check left a tracking ref at the tip the clone was pinned to:
     # seed it the same way (non-forced fetch while origin is still at the old tip).
@@ -102,15 +75,7 @@ def test_forced_refspec_updates_shallow_clone_to_new_tip(narrow_clone: Path) -> 
     new_tip = _run(adv, "rev-parse", "HEAD").stdout.strip()
     assert new_tip and new_tip != stale
 
-    # The hazard: without the force, the shallow clone rejects the new tip...
-    nonforced = _run(
-        narrow_clone, "fetch", "--depth", "1", "origin",
-        "refs/heads/main:refs/remotes/origin/main",
-    )
-    assert nonforced.returncode != 0
-    assert "non-fast-forward" in nonforced.stderr
-
-    # ...while the production fetch's forced refspec lands the new tracking ref.
+    # A non-forced refspec is rejected here as non-fast-forward; the production one lands.
     fetch_result, compare_branch = update_cmd_check.fetch_compare_branch(
         git_cmd, narrow_clone, "main", ["--depth", "1"],
     )

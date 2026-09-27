@@ -593,16 +593,21 @@ def _macos_signing_downgrade_error(installed: dict, rebuilt: Optional[dict]) -> 
         return None
     if rebuilt is None or not rebuilt["team"]:
         return (f"publisher-signed app (Team ID {installed['team']}) would be replaced by a "
-                "locally signed or unreadable build; kept the existing app")
+                "locally signed or unreadable build; kept the existing app. To update it, "
+                "sign the rebuild with the publisher identity (CSC_LINK / "
+                "APPLE_SIGNING_IDENTITY) and update again.")
     if rebuilt["team"] != installed["team"]:
         return (f"publisher Team ID {installed['team']} does not match rebuilt "
-                f"{rebuilt['team']}; kept the existing app")
+                f"{rebuilt['team']}; kept the existing app. Check the signing identity "
+                f"in desktop.macos_signing_identity and update again.")
     if (installed["identifier"] and rebuilt["identifier"]
             and installed["identifier"] != rebuilt["identifier"]):
         return (f"bundle identifier {installed['identifier']!r} does not match rebuilt "
-                f"{rebuilt['identifier']!r}; kept the existing app")
+                f"{rebuilt['identifier']!r}; kept the existing app. Align the build's "
+                f"bundle identifier and update again.")
     if not rebuilt["verified"]:
-        return "rebuilt bundle failed strict signature verification; kept the existing app"
+        return ("rebuilt bundle failed strict signature verification; kept the existing "
+                "app. Re-run the build; if it persists, inspect with `codesign -vvv`.")
     return None
 
 
@@ -750,9 +755,13 @@ def _desktop_macos_relaunchable_fixup(
         return False
     if _desktop_macos_has_valid_real_signature(app):
         return True
-    subprocess.run(["xattr", "-cr", str(app)], check=False)
     configured = _desktop_macos_local_signing_identity()
     identity = configured or "-"
+    # Read the identity decision BEFORE touching xattrs: #123748's no-ad-hoc-fallback
+    # path keeps the existing signature, and a failed attempt must not have already
+    # stripped quarantine attributes off a bundle we then decline to modify.
+    if not configured:
+        subprocess.run(["xattr", "-cr", str(app)], check=False)
     try:
         if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity=identity):
             label = "keychain identity" if configured else "stable ad-hoc identity"
@@ -766,7 +775,9 @@ def _desktop_macos_relaunchable_fixup(
         # against, orphaning safeStorage credentials and resetting TCC grants.
         print(
             f"  ✗ macOS signing identity {configured!r} did not produce a verified "
-            "signature; keeping the existing signature (no ad-hoc fallback)"
+            "signature; keeping the existing signature (no ad-hoc fallback). "
+            f"Fix the identity (e.g. `hermes desktop --setup-tcc-identity` or edit "
+            f"desktop.macos_signing_identity in config.yaml) and update again."
         )
         return False
     return _macos_legacy_adhoc_resign(codesign, app)
@@ -1278,7 +1289,15 @@ def _promote_staged_desktop_app(
     # Locally-built apps are ad-hoc signed; make them relaunchable after an
     # in-place self-update. Signs the STAGED bundle so the live app is never
     # half-signed. No-op on non-macOS and on real-identity builds.
-    _desktop_macos_relaunchable_fixup(desktop_dir, release_dir=staging_dir)
+    if not _desktop_macos_relaunchable_fixup(desktop_dir, release_dir=staging_dir):
+        # #123748: the fixup refused to sign (configured identity failed, codesign
+        # missing). Promoting would replace the live app with a bundle whose
+        # signature was never established — fold the refusal into the same
+        # previous-app-kept error path the integrity check uses.
+        _discard_desktop_staging(staging_dir)
+        print("✗ The rebuilt desktop app could not be signed with a stable identity; "
+              "not promoting it.")
+        raise RuntimeError(f"Desktop signing refused the staged build. {_PREVIOUS_APP_KEPT}")
 
     # Validate only staging. The swap owns live-app rollback; raw in-place
     # pack backups are not part of this transaction.

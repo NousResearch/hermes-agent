@@ -55,3 +55,10 @@ def test_listing_total_matches_the_rows_its_pages_serve(client, path):
     assert len(served) == len(set(served))
     assert total == len(served)
 
+
+def test_store_stats_still_count_the_hidden_rows(client):
+    # Listings drop hidden rows; the storage-wide stats describe what is stored.
+    _, served = _page_through(client, "/api/sessions")
+    stats = client.get("/api/sessions/stats").json()
+
+    assert stats["total"] == stats["active_store"] == len(served) + 2

@@ -692,8 +692,16 @@ class GatewaySlashCommandsMixin(
             return await self._handle_voice_channel_join(event)
         if args == "leave":
             return await self._handle_voice_channel_leave(event)
+
+        mode = self._voice_mode.get(voice_key)
+        if mode is None:
+            mode = "off"
+            should_auto_tts = getattr(adapter, "_should_auto_tts_for_chat", None)
+            with contextlib.suppress(Exception):
+                if callable(should_auto_tts) and should_auto_tts(chat_id):
+                    mode = "all"
+
         if args == "status":
-            mode = self._voice_mode.get(voice_key, "off")
             label = t(f"gateway.voice.label_{mode}") if mode in ("off", "voice_only", "all") else mode
             lines = [t("gateway.voice.status_mode", label=label)]
             guild_id = self._get_guild_id(event)  # append voice channel info if connected
@@ -707,7 +715,7 @@ class GatewaySlashCommandsMixin(
             return "\n".join(lines)
 
         # Toggle: off → on, on/all → off
-        turning_on = self._voice_mode.get(voice_key, "off") == "off"
+        turning_on = mode == "off"
         _set_mode("voice_only" if turning_on else "off")
         toggle_line = t("gateway.voice.enabled_short" if turning_on else "gateway.voice.disabled_short")
         # Bare /voice still toggles, but append an explainer so users discover the on/off/tts/status

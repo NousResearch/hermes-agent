@@ -111,6 +111,53 @@ class TestHandleVoiceCommand:
         await runner._handle_voice_command(event)
         assert runner._voice_mode["telegram:123"] == "off"
 
+    @pytest.mark.parametrize(("explicit_mode", "expected"), [
+        (None, "Voice mode: TTS (voice reply to all messages)"),
+        ("off", "Voice mode: Off (text only)"),
+    ])
+    @pytest.mark.asyncio
+    async def test_status_reports_inherited_auto_tts(self, runner, explicit_mode, expected):
+        event = _make_event("/voice status")
+        if explicit_mode is not None:
+            runner._voice_mode["telegram:123"] = explicit_mode
+        runner.adapters[event.source.platform] = SimpleNamespace(
+            _should_auto_tts_for_chat=lambda chat_id: chat_id == "123",
+        )
+
+        result = await runner._handle_voice_command(event)
+
+        assert result == expected
+
+    @pytest.mark.asyncio
+    async def test_toggle_disables_inherited_auto_tts_on_owning_bot(self, runner):
+        from gateway.config import Platform
+
+        default_adapter = SimpleNamespace(
+            _auto_tts_disabled_chats=set(),
+            _auto_tts_enabled_chats=set(),
+            _should_auto_tts_for_chat=lambda _chat_id: False,
+        )
+        owning_adapter = SimpleNamespace(
+            _auto_tts_disabled_chats=set(),
+            _auto_tts_enabled_chats=set(),
+            _should_auto_tts_for_chat=lambda _chat_id: True,
+        )
+        runner.adapters[Platform.DISCORD] = default_adapter
+        runner._profile_adapters = {"bot2": {Platform.DISCORD: owning_adapter}}
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        source = SessionSource(platform=Platform.DISCORD, chat_id="123", user_id="user1",
+                               profile="bot2")
+        event = MessageEvent(text="/voice", message_type=MessageType.TEXT, source=source)
+
+        result = await runner._handle_voice_command(event)
+
+        assert result.startswith("Voice mode disabled.")
+        assert (
+            runner._voice_mode,
+            owning_adapter._auto_tts_disabled_chats,
+            default_adapter._auto_tts_disabled_chats,
+        ) == ({"bot2:discord:123": "off"}, {"123"}, set())
+
     @pytest.mark.asyncio
     async def test_persistence_saved(self, runner):
         event = _make_event("/voice on")

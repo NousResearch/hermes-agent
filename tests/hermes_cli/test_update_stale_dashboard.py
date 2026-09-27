@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -455,7 +456,11 @@ class TestManualBackendRespawn:
             def __init__(self, cmd, **kwargs):
                 spawned.append(list(cmd))
 
-        with patch.object(live.subprocess, "Popen", _FakePopen):
+            def poll(self):
+                return None
+
+        with patch.object(live.subprocess, "Popen", _FakePopen), \
+             patch.object(live.time, "sleep"):
             failed = live._respawn_dashboard_processes([
                 ["hermes", "dashboard", "--port", "8300"],
                 ["hermes", "serve", "--host", "0.0.0.0"],
@@ -469,10 +474,85 @@ class TestManualBackendRespawn:
         live = self._live()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-        with patch.object(live.subprocess, "Popen", side_effect=OSError("no such file")):
+        with patch.object(live.subprocess, "Popen", side_effect=OSError("no such file")), \
+             patch.object(live.time, "sleep"):
             failed = live._respawn_dashboard_processes([["hermes", "serve"]])
 
         assert failed == [["hermes", "serve"]]
+
+    def test_pre_takeover_interpreter_launcher_argv_is_rebuilt(self, tmp_path, monkeypatch):
+        """A kernel-captured ``[old venv python, launcher, ...]`` argv is respawned through
+        the running install's interpreter + ``hermes`` entry instead of being replayed
+        verbatim after the PM takeover rewrote the launcher into a shell shim (#124778)."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        spawned: list[list[str]] = []
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                spawned.append(list(cmd))
+
+            def poll(self):
+                return None
+
+        captured = [
+            "/old/venv/bin/python", "/home/u/.local/bin/hermes",
+            "dashboard", "--no-open", "--host", "127.0.0.1", "--port", "34553",
+        ]
+        with patch.object(live.subprocess, "Popen", _FakePopen), \
+             patch.object(live.time, "sleep"):
+            failed = live._respawn_dashboard_processes([captured])
+
+        assert failed == []
+        entry = Path(live.__file__).resolve().parents[1] / "hermes"
+        assert spawned == [[sys.executable, str(entry),
+                            "dashboard", "--no-open", "--host", "127.0.0.1", "--port", "34553"]]
+
+    def test_child_exiting_within_the_grace_window_is_a_reported_failure(
+            self, tmp_path, monkeypatch, capsys):
+        """A respawn that dies at once (parse error on a stale argv, port already bound)
+        must surface as a failure, never as ``✓ restarted`` (#124778)."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        class _DyingPopen:
+            returncode = 1
+
+            def __init__(self, cmd, **kwargs):
+                pass
+
+            def poll(self):
+                return 1
+
+        with patch.object(live.subprocess, "Popen", _DyingPopen), \
+             patch.object(live.time, "sleep"):
+            failed = live._respawn_dashboard_processes([["hermes", "dashboard", "--port", "8300"]])
+
+        out = capsys.readouterr().out
+        assert failed == [["hermes", "dashboard", "--port", "8300", "--no-open"]]
+        assert "✓ restarted" not in out
+        assert "✗ failed to restart" in out
+
+    def test_python_dash_m_argv_shape_replays_unchanged(self, tmp_path, monkeypatch):
+        """``[python, -m, hermes_cli.main, ...]`` is not an interpreter+launcher pair;
+        only that pair is rebuilt, so module-shaped argvs keep replaying verbatim."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        spawned: list[list[str]] = []
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                spawned.append(list(cmd))
+
+            def poll(self):
+                return None
+
+        captured = ["python", "-m", "hermes_cli.main", "serve", "--port", "8400"]
+        with patch.object(live.subprocess, "Popen", _FakePopen), \
+             patch.object(live.time, "sleep"):
+            live._respawn_dashboard_processes([captured])
+
+        assert spawned == [captured]
 
 
 class TestFilterDashboardRespawnCandidates:

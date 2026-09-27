@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 from pathlib import Path
 from typing import NoReturn
@@ -356,6 +357,32 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
         return None
 
 
+_RESPAWN_LIVENESS_GRACE_SECONDS = 1.0
+
+
+def _respawnable_command_for_current_install(argv: list[str]) -> list[str]:
+    """Collapse a captured ``[interpreter, launcher, ...]`` argv onto the running install.
+
+    A pre-PM-takeover install left ``~/.local/bin/hermes`` as a symlink to a Python console
+    script, so the kernel recorded a manual backend as
+    ``[<old venv python>, <launcher path>, dashboard, ...]``. The takeover then rewrote that
+    launcher into a POSIX shell shim, and replaying the captured argv verbatim asks the old
+    interpreter to parse a shell script — the child dies at parse time while the updater
+    prints ``✓ restarted`` (#124778). Any ``python <entry>`` pair is rebuilt against the
+    ``hermes`` entry of the code that is running now; other shapes replay unchanged.
+    """
+    interpreter_name = os.path.basename(argv[0]) if argv else ""
+    if len(argv) <= 2 or not interpreter_name.startswith("python") or argv[1].startswith("-"):
+        return list(argv)
+    entry = Path(__file__).resolve().parents[1] / "hermes"
+    if not entry.is_file():
+        return list(argv)
+    current_interpreter = sys.executable or argv[0]
+    rebuilt = [current_interpreter, str(entry)]
+    rebuilt.extend(argv[2:])
+    return rebuilt
+
+
 def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     """Respawn manually-started dashboards after ``hermes update``, detached, logging to
     ``logs/dashboard-restart.log``; returns the argvs that failed to spawn. Callers pre-filter via
@@ -365,6 +392,7 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     """
     from hermes_constants import get_hermes_home
     respawned: list[list[str]] = []
+    spawned: list[tuple[list[str], "subprocess.Popen"]] = []
     failed: list[tuple[list[str], str]] = []
     log_path = get_hermes_home() / "logs" / "dashboard-restart.log"
     with contextlib.suppress(OSError):
@@ -372,17 +400,29 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
 
     for command in commands:
         try:
+            command = _respawnable_command_for_current_install(command)
             # Keep restarted dashboards headless; reopening a browser after a
             # background update is noisy and fails in SSH/headless sessions.
             if "dashboard" in command and "--no-open" not in command:
                 command = [*command, "--no-open"]
             with open(log_path, "ab") as log_f:
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
                     start_new_session=True, close_fds=True)
-            respawned.append(command)
+            spawned.append((command, proc))
         except (OSError, ValueError) as exc:
             failed.append((command, str(exc)))
+
+    # A respawned backend is a resident server: one that exits within the grace
+    # window died at startup (SyntaxError on a stale argv, port already bound,
+    # ...) and must surface as a failure, not as ``✓ restarted`` (#124778).
+    time.sleep(_RESPAWN_LIVENESS_GRACE_SECONDS)
+    for command, proc in spawned:
+        if proc.poll() is None:
+            respawned.append(command)
+        else:
+            failed.append((command, f"child exited during the first "
+                                    f"{_RESPAWN_LIVENESS_GRACE_SECONDS:.0f}s (code {proc.returncode})"))
 
     for command in respawned:
         print(f"    ✓ restarted: {shlex.join(command)}")

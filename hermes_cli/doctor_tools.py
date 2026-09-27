@@ -115,12 +115,16 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
 
     Uses the same active-provider resolvers as the tools but reports ``is_available()``
     readiness, so an explicitly selected but unconfigured backend does not look healthy.
+    The warn detail names the real gate instead of assuming a missing credential: a keyless
+    backend whose only gate is its optional package (ddgs) says the package is not importable,
+    and a configured backend that never registered (plugin import failed, e.g. its dependency
+    is absent from the runtime python) is told apart from "nothing selected".
 
-    See #78412.
+    See #78412, #125556.
     """
     rows: list[tuple[str, str, str]] = []
     try:
-        from agent.web_search_registry import get_active_extract_provider, get_active_search_provider
+        from agent.web_search_registry import _configured_backend, get_active_extract_provider, get_active_search_provider
         from tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
         # Fresh process: bundled web providers only register during plugin discovery (idempotent, cheap).
         _ensure_web_plugins_loaded()
@@ -132,11 +136,29 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
         except Exception:
             provider = None
         if provider is None:
-            rows.append(("warn", capability, "(no provider selected or registered)"))
+            configured = None
+            try:
+                configured = _configured_backend(capability)
+            except Exception:
+                configured = None
+            rows.append(("warn", capability,
+                         f"({configured} selected; not registered — plugin import failed or a runtime dependency is missing)"
+                         if configured else "(no provider selected or registered)"))
             continue
         name = getattr(provider, "name", None) or type(provider).__name__
-        rows.append(("ok", capability, f"({name})") if _provider_is_ready(provider)
-                    else ("warn", capability, f"({name} selected; provider not configured)"))
+        if _provider_is_ready(provider):
+            rows.append(("ok", capability, f"({name})"))
+            continue
+        if name == "ddgs":
+            # ddgs is keyless — there is no credential to configure; its only gate is the optional
+            # ddgs package itself, and without it search silently falls back to the keyless ring.
+            from tools.web_tools import _ddgs_package_importable
+            if not _ddgs_package_importable():
+                rows.append(("warn", capability,
+                             "(ddgs selected; ddgs package not importable in the runtime python — "
+                             "search falls back to the keyless ring; install with `uv pip install ddgs`)"))
+                continue
+        rows.append(("warn", capability, f"({name} selected; provider not configured)"))
     return rows
 
 

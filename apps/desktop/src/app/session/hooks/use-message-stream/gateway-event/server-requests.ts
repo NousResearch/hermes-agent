@@ -13,6 +13,7 @@ import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import {
   receiveApprovalRequest,
   setSecretRequest,
@@ -22,7 +23,8 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
-import { $sessionTiles } from '@/store/session-states'
+import { $focusedTreePaneId } from '@/store/session-focus'
+import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -60,6 +62,21 @@ export interface ServerRequestContext {
 }
 
 type Handler = (ctx: ServerRequestContext) => void
+
+// Looking at the browser must not transfer control back to a hidden primary
+// chat. Remember only the last actual chat focus; another chat immediately
+// replaces it, and windowHostsSession still rejects closed/foreign sessions.
+const previewHasFocus = () => $focusedTreePaneId.get()?.startsWith(`${PREVIEW_TILE_PREFIX}:`) === true
+let previewCallerSessionId: null | string = null
+
+const rememberPreviewCaller = () => {
+  if (!previewHasFocus()) {
+    previewCallerSessionId = $focusedRuntimeId.get()
+  }
+}
+
+$focusedRuntimeId.subscribe(rememberPreviewCaller)
+$focusedTreePaneId.subscribe(rememberPreviewCaller)
 
 type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
 
@@ -502,7 +519,7 @@ export function handleServerRequest(
           previewSessionRoute({ activeSessionId: deps.activeSessionIdRef.current, replayed: false, sessionId }) ===
           'run'
         ) {
-          handler({ deps, request, sessionId, isActiveSession: true })
+          handleServerRequest({ ...request, replayed: false }, deps, deps.activeSessionIdRef.current)
         }
       }, 0)
 
@@ -510,7 +527,15 @@ export function handleServerRequest(
     }
   }
 
-  handler({ deps, request, sessionId, isActiveSession: Boolean(sessionId) && sessionId === activeSessionId })
+  // The route-driven primary can be hidden behind a focused session tile.
+  // Keep the foreground-only guard, but resolve the chat the user is actually
+  // working in rather than granting the hidden primary control of the browser.
+  const foregroundSessionId =
+    request.method === 'preview.act' && previewHasFocus()
+      ? previewCallerSessionId
+      : ($focusedRuntimeId.get() ?? activeSessionId)
+
+  handler({ deps, request, sessionId, isActiveSession: Boolean(sessionId) && sessionId === foregroundSessionId })
 
   return true
 }

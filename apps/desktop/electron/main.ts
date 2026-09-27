@@ -3695,7 +3695,7 @@ function isShimLocked(shimPath) {
 // held installation. Selection lives in the pure
 // venv-holder-select module (ordinal path-prefix, no PowerShell -like
 // wildcard hazards) so it's testable without Electron.
-function scanWindowsProcesses(): Array<{ ProcessId?: unknown; ExecutablePath?: unknown; CommandLine?: unknown }> {
+function scanWindowsProcesses(): Array<{ ProcessId?: unknown; ExecutablePath?: string; CommandLine?: string }> {
   const out = execFileSync(
     'powershell',
     [
@@ -3768,7 +3768,7 @@ function killExternalVenvHolders(updateRoot) {
 
   try {
     holders = scanWindowsProcesses().filter(p =>
-      isExternalVenvHolder(p?.ExecutablePath as string | undefined, p?.CommandLine as string | undefined, scriptsDir)
+      isExternalVenvHolder(p?.ExecutablePath, p?.CommandLine, scriptsDir)
     )
   } catch {
     // Best-effort: the shim-lock probe remains the backstop.

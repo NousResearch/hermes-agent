@@ -470,6 +470,33 @@ def _vanished_since_scan(abs_path: Path, exc: BaseException) -> bool:
             and not os.path.lexists(abs_path))
 
 
+def _in_kanban_scratch_workspace(rel_path: Path) -> bool:
+    """True when *rel_path* lies inside one task's kanban scratch workspace.
+
+    ``kanban/workspaces/<task>/...`` (default board) or ``kanban/boards/<slug>/workspaces/<task>/...``.
+    The dispatcher deletes a finished task's workspace wholesale, so anything inside (a worker's
+    throwaway browser profile and its SQLite files) can disappear mid-backup. Hermes-owned
+    databases never live there.
+    """
+    parts = rel_path.parts
+    if parts[:2] == ("kanban", "workspaces"):
+        return len(parts) >= 4
+    return len(parts) >= 6 and parts[:2] == ("kanban", "boards") and parts[3] == "workspaces"
+
+
+def _db_vanished_since_scan(abs_path: Path, rel_path: Path) -> bool:
+    """True when a failed ``*.db`` snapshot is a deleted kanban scratch-workspace file.
+
+    Only a database inside a task scratch workspace whose path is really gone qualifies: the
+    workspace is ephemeral scratch that was cleaned up between scan and write. Every other
+    database (state.db, kanban.db, cron/executions.db, provider stores) and any database that
+    still exists (locked, unreadable, corrupt) stays an ``on_db_failure``. The parent is not
+    required to be gone: ``rmtree`` deletes files before their directory, so a mid-cleanup
+    snapshot legitimately sees the file gone and the directory still present.
+    """
+    return _in_kanban_scratch_workspace(rel_path) and not os.path.lexists(abs_path)
+
+
 def _write_zip_entries(
     zf: zipfile.ZipFile, files_to_add: List[Tuple[Path, Path]], out_path: Path,
     *, on_db_failure, on_error, on_progress, track_bytes: bool, on_vanished=None) -> int:
@@ -478,8 +505,9 @@ def _write_zip_entries(
     ``on_db_failure(rel_path)`` runs when a SQLite snapshot fails (may raise to abort);
     ``on_error(rel_path, exc)`` records a read failure; ``on_vanished(rel_path)`` records a
     plain file deleted after the scan (defaults to ``on_error``); ``on_progress(i)`` fires every
-    500 files; ``track_bytes`` totals the archived sizes. SQLite databases never take the
-    vanished path: a missing ``*.db`` stays an ``on_db_failure``.
+    500 files; ``track_bytes`` totals the archived sizes. A missing ``*.db`` stays an
+    ``on_db_failure`` unless it sat in a since-deleted kanban scratch workspace
+    (:func:`_db_vanished_since_scan`).
     """
     total_bytes = 0
     for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
@@ -487,7 +515,10 @@ def _write_zip_entries(
             if abs_path.suffix == ".db":
                 size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
                 if size is None:
-                    on_db_failure(rel_path)
+                    if on_vanished is not None and _db_vanished_since_scan(abs_path, rel_path):
+                        on_vanished(rel_path)
+                    else:
+                        on_db_failure(rel_path)
                     continue
                 total_bytes += size
             else:

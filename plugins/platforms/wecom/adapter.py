@@ -119,7 +119,21 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                 return default
 
         def _setting(*keys: str, env: str = "", default: str = "") -> str:
-            return str(next((extra[k] for k in keys if extra.get(k)), None) or (_get_scoped_secret(env, default) if env else "")).strip()
+            """One setting, resolved the same way ``_is_connected`` reads credentials: the
+            profile's env first (blank counts as unset), then the first truthy non-blank
+            ``extra`` key, then ``default``. Config-first here would contradict the verdict the
+            checker reports off the env rung (#120870)."""
+            if env:
+                env_value = _get_scoped_secret(env, None)
+                if env_value is not None and str(env_value).strip():
+                    return str(env_value).strip()
+            for key in keys:
+                value = extra.get(key)
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    continue
+                if value:
+                    return str(value).strip()
+            return str(default or "").strip()
 
         self._bot_id = _setting("bot_id", env="WECOM_BOT_ID")
         self._secret = _setting("secret", env="WECOM_SECRET")

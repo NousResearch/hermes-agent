@@ -28,6 +28,7 @@ from pm.update import (
     github_release_tags,
     llama_app_bucket_versions,
     llama_app_latest,
+    legacy_macos_node_version,
     martin_riedl_index,
     martin_riedl_versions,
     node_latest_versions,
@@ -468,7 +469,10 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         return f"https://nodejs.org/dist/v{version}/node-v{version}-{plat}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        return node_latest_versions(target, host_target=current_target())
+        return node_latest_versions()
+
+    def preferred_version(self, target: str, versions: list[str], *, locked=None) -> str | None:
+        return legacy_macos_node_version(versions, target, host_target=current_target())
 
 
 @register

@@ -2193,12 +2193,13 @@ class MatrixAdapter(BasePlatformAdapter):
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
-            channel_context=(
-                self._pending_room_notes.take(room_id)
-                if extra.get("message_type") == MessageType.TEXT else None
-            ),
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
+
+    def take_turn_channel_context(self, event: MessageEvent) -> str | None:
+        if event.internal or event.message_type != MessageType.TEXT:
+            return None
+        return self._pending_room_notes.take(event.source.chat_id)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
@@ -2828,7 +2829,9 @@ class MatrixAdapter(BasePlatformAdapter):
         state_store = getattr(self._client, "state_store", None) if self._client else None
         if state_store:
             with suppress(Exception):
-                profiles = await state_store.get_member_profiles(RoomID(room_id))
+                profiles = await state_store.get_member_profiles(
+                    RoomID(room_id), memberships=(Membership.JOIN,)
+                )
                 if profiles:
                     return dict(profiles)
 

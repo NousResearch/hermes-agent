@@ -103,6 +103,11 @@ class MessageEvent:
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
 
+    def append_channel_context(self, context: Optional[str]) -> None:
+        if not context:
+            return
+        self.channel_context = f"{self.channel_context}\n{context}" if self.channel_context else context
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")

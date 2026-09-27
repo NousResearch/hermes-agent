@@ -385,7 +385,7 @@ def in_tree_catalog_time() -> Optional[float]:
         try:
             import subprocess
             out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
-                                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, stdin=subprocess.DEVNULL)
             resolved = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
         except Exception as exc:
             logger.debug("Plugin catalog: could not date the in-tree catalog: %s", exc)

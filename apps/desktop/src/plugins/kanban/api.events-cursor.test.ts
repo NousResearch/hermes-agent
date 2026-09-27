@@ -62,9 +62,13 @@ describe('kanban event cursor', () => {
 
     const socket = vi.fn(() => vi.fn())
 
-    const dispose = bindApi(async () => {
-      throw new Error('cached snapshot must not refetch')
-    }, storage('ops'), socket)
+    const dispose = bindApi(
+      async () => {
+        throw new Error('cached snapshot must not refetch')
+      },
+      storage('ops'),
+      socket
+    )
 
     expect(socket).toHaveBeenCalledWith('/events?board=ops&since=14386', expect.any(Function))
     dispose()

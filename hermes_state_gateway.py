@@ -264,11 +264,11 @@ class SessionGatewayMixin:
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 conn.execute(
                     """INSERT INTO sessions (
-                               id, source, user_id, session_key, chat_id,
+                               id, source, created_source, user_id, session_key, chat_id,
                                chat_type, thread_id, display_name, origin_json,
                                profile_name, transport_profile, started_at
                            )
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                            ON CONFLICT(id) DO UPDATE SET
                                session_key = COALESCE(sessions.session_key, excluded.session_key),
                                chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
@@ -276,10 +276,11 @@ class SessionGatewayMixin:
                                thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
                                display_name = COALESCE(sessions.display_name, excluded.display_name),
                                origin_json = COALESCE(sessions.origin_json, excluded.origin_json),
-                               transport_profile = COALESCE(sessions.transport_profile, excluded.transport_profile)""",
+                               transport_profile = COALESCE(sessions.transport_profile, excluded.transport_profile),
+                               created_source = COALESCE(sessions.created_source, excluded.created_source)""",
                     # Same ownership stamp as _insert_session_row: an unowned (NULL) row
                     # vanishes from profile-keyed consumers.
-                    (session_id, source, user_id, session_key, chat_id, chat_type, thread_id, display_name,
+                    (session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, display_name,
                      origin_json, self._own_profile_name(), transport_profile, time.time()),
                 )
         self._execute_write(_do)

@@ -243,7 +243,10 @@ declare global {
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
-      oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
+      oauthLoginConnectionConfig: (
+        remoteUrl: string,
+        options?: DesktopOauthLoginOptions
+      ) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
@@ -1155,6 +1158,7 @@ export interface DesktopAgentRoster {
     kind: DesktopConnectionKind
     reachable: boolean
     error?: string
+    needsSignIn?: boolean
     // Stable backend identity (/api/status install_id) when known.
     installId?: string
   }[]
@@ -1238,11 +1242,37 @@ export interface ExternalOpenFailedPayload {
   message?: string
 }
 
+export interface DesktopOauthLoginOptions {
+  /**
+   * Registry-draft identity for a sign-in that runs before the draft is
+   * saved. The main process derives the login window's cookie partition from
+   * the settled connection id; without it an unsaved draft's session lands in
+   * the legacy shared jar the saved connection never reads.
+   */
+  connectionId?: null | string
+  /** Draft label — used to mint the id when `connectionId` is absent. */
+  label?: string
+  /**
+   * Draft entry kind — the kind the save will persist. Together with
+   * `authMode` it gates the pre-save cookie jar: only a cookie-auth remote
+   * draft gets its own jar; cloud and token drafts sign in on the legacy
+   * shared jar, which is what they read after the save.
+   */
+  kind?: DesktopConnectionKind
+  /** Draft auth mode ('oauth' | 'token') the save will persist. */
+  authMode?: 'oauth' | 'token'
+}
+
 export interface DesktopOauthLoginResult {
   ok: boolean
   baseUrl: string
   connected: boolean
   error?: string
+  /**
+   * The connection id the session was written for. A pre-save sign-in should
+   * pin this into the draft so the later save reuses the same id (and jar).
+   */
+  connectionId?: string
 }
 
 export interface DesktopOauthLogoutResult {

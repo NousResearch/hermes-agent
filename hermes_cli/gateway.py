@@ -264,8 +264,8 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress
     """SIGUSR1 (drain-aware restart) a gateway PID and wait for exit; False if unsent or it outlived the timeout.
 
     gateway/run.py maps SIGUSR1 to ``request_restart(via_service=True)``: refuse new turns, drain,
-    ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + drain
-    — pass ``resolve_restart_exit_wait_budget(...)``. ``on_progress`` (zero-arg) runs on every poll so
+    ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + the full stop
+    envelope — pass ``resolve_restart_exit_wait_budget(...)``. ``on_progress`` (zero-arg) runs on every poll so
     a long wait can report what the gateway is still holding for (``update_cmd_drain_report``).
     """
     if not hasattr(signal, "SIGUSR1") or pid <= 0:
@@ -977,6 +977,15 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     )
 
 
+GATEWAY_RESTART_WATCHER_TIMEOUT_S = 120
+"""How long the detached restart watcher waits for the old PID to exit before giving up.
+
+``hermes update``'s post-relaunch liveness check budgets against this: the watcher spawns the new
+gateway only AFTER the old PID is gone, so a verification window shorter than this can expire
+before the relaunch it is verifying has even started (#107002).
+"""
+
+
 def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
     """True when *argv* relaunches the host multiplexer, not a named profile's own gateway.
 
@@ -1072,7 +1081,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         cmd = sys.argv[2:]
         _respawn_cwd = {respawn_cwd_literal}
         _respawn_env_overlay = {respawn_env_literal}
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + {watcher_timeout_literal}
         while time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
             from gateway.status import _pid_exists
@@ -1132,7 +1141,8 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
                 except OSError:
                     pass
         """
-    ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay))
+    ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay),
+                     watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S))
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
@@ -3551,14 +3561,11 @@ def _get_cron_drain_timeout() -> float:
 def _get_restart_exit_wait_budget() -> float:
     """CLI wait for gateway exit after SIGUSR1 / self-restart (#77184)."""
     return resolve_restart_exit_wait_budget(
-        # TimeoutStopSec must cover the full stop budget, not just restart_drain_timeout. Cron work can
-        # legally wait cron_drain_timeout plus cleanup reserve before interrupt/teardown, and systemd
-        # SIGKILLs if the unit's deadline is shorter (#94759). 30s of post-drain headroom is preserved on
-        # top, with a 60s floor.
         _get_restart_drain_timeout(),
         _agent_timeout_setting(
             "HERMES_RESTART_AFTER_TURN_TIMEOUT", "restart_after_turn_timeout", parse_restart_after_turn_timeout
         ),
+        _get_cron_drain_timeout(),
     )
 
 

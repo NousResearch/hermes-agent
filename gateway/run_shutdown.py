@@ -1737,7 +1737,11 @@ class GatewayShutdownMixin:
 
         def _kill_processes() -> None:
             from tools.process_registry import process_registry
-            _count_step("Shutdown (%s): killed %d tool subprocess(es)", process_registry.kill_all)
+            # Host shutdown: kill even persist_on_release jobs or they become
+            # PPID=1 orphans (#41225/#46778); an explicit source reaches them.
+            _count_step(
+                "Shutdown (%s): killed %d tool subprocess(es)",
+                lambda: process_registry.kill_all(source="gateway_shutdown"))
 
         def _mark_cron_interrupted() -> list:
             # kill_all() is global: a cron job mid-dispatch lost its tool subprocess and its agent thread may

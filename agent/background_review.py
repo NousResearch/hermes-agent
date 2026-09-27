@@ -1023,6 +1023,11 @@ def build_cache_parity_fork(
         inherited_scope = resolve_prompt_cache_scope_safe(agent)
         if inherited_scope:
             review_agent._inherited_cache_scope = inherited_scope
+        # Slot-keyed caches (xAI): once the review's OWN compaction rewrites its transcript, its
+        # divergent stream would evict the parent's server slot, so the resolver then derives
+        # ``<scope>::review``. /btw never tags: one prefix-extension call cannot diverge.
+        if write_origin == "background_review":
+            review_agent._prompt_cache_fork_tag = "review"
         # Same reason for the Portal ``conversation=`` tag: with no DB the fork's own
         # _conversation_root_id() falls back to the parent's PHYSICAL id, so after a compression
         # rotation the review's usage was attributed to a different conversation than its parent.

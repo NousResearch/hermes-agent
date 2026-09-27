@@ -2648,6 +2648,30 @@ class TestListSessionsRich:
             for row in db.find_orphaned_gateway_sessions()
         )
 
+    def test_created_source_preserved_across_cross_platform_resume(self, db):
+        """``created_source`` is immutable provenance (#56439): stamped at creation and never
+        rewritten by gateway peer recording, which must keep ``source`` as live routing state."""
+        db.create_session("tui-sess", "tui")
+        db.append_message("tui-sess", "user", "created on desktop")
+
+        # /resume from Telegram: routing state moves, provenance does not.
+        db.record_gateway_session_peer(
+            "tui-sess", source="telegram", session_key="agent:main:telegram:dm:1", chat_id="1"
+        )
+        row = db.get_session("tui-sess")
+        assert row["source"] == "telegram"
+        assert row["created_source"] == "tui"
+
+        # Later upserts (any surface) never clobber the stamped provenance.
+        db.ensure_session("tui-sess", "discord")
+        assert db.get_session("tui-sess")["created_source"] == "tui"
+
+        # Self-healing insert stamps provenance from the first writer.
+        db.record_gateway_session_peer(
+            "slack-sess", source="slack", session_key="agent:main:slack:ch:2", chat_id="2"
+        )
+        assert db.get_session("slack-sess")["created_source"] == "slack"
+
 
 
 
@@ -3056,6 +3080,32 @@ class TestListSessionsRich:
         ids = [s["id"] for s in sessions]
         assert "delegate" not in ids, "Delegate sub-agent should not appear in default list"
         assert "root" in ids
+
+    def test_rich_list_promotes_reset_and_branch_markers(self, db):
+        """List rows expose _reset_from / _branched_from so UIs can tell a
+        /new reset from a genuine /branch without reading model_config."""
+        db.create_session("parent", "cli")
+        db.create_session(
+            "reset_child",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_reset_from": "parent"},
+        )
+        db.create_session(
+            "branch_child",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+
+        by_id = {row["id"]: row for row in db.list_sessions_rich()}
+        assert by_id["reset_child"]["_reset_from"] == "parent"
+        assert not by_id["reset_child"].get("_branched_from")
+        assert by_id["branch_child"]["_branched_from"] == "parent"
+        assert not by_id["branch_child"].get("_reset_from")
+        compact = {row["id"]: row for row in db.list_sessions_rich(compact_rows=True)}
+        assert compact["reset_child"]["_reset_from"] == "parent"
+        assert compact["branch_child"]["_branched_from"] == "parent"
 
 
 

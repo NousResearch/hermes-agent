@@ -174,8 +174,13 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
         get_or_create_session=MagicMock(side_effect=RuntimeError("skip transcript")),
     )
 
-    live_server = SimpleNamespace(session=object(), _config={}, _tools=[], tool_timeout=30,
-                                  initialize_result=None, _registered_tool_names=[])
+    from tools import mcp_tool_registration as _mcp_registration
+    # Premise: both profiles resolve the connection's inputs identically (the reload runs under
+    # the worker's runtime scope, which this fake's owner never had).
+    monkeypatch.setattr(_mcp_registration, "_adopter_identity_digest", lambda *_args: "same-identity")
+    live_server = SimpleNamespace(name="shared", session=object(), _config={}, _tools=[], tool_timeout=30,
+                                  initialize_result=None, _registered_tool_names=[],
+                                  _resolved_identity="same-identity")
     monkeypatch.setattr(mcp_tool, "_servers", {"shared": live_server})
     monkeypatch.setattr(mcp_tool, "_server_scope_keys", {"shared": launch_scope})
     monkeypatch.setattr(mcp_tool, "_server_tool_scopes", {"shared": {launch_scope}}, raising=False)
@@ -244,6 +249,7 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
     from tools import mcp_tool
     from tools import mcp_tool_config as _mcp_config
     from tools import mcp_tool_discovery as _mcp_discovery
+    from tools import mcp_tool_registration as _mcp_registration
     from tools.registry import registry
 
     worker_home = tmp_path / "profiles" / "worker"
@@ -260,14 +266,16 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
         inputSchema={"type": "object", "properties": {}},
         annotations=None,
     )
+    shared_cfg = {"url": "https://default.example/mcp"}  # connectable: the adopter resolves its identity
     server = SimpleNamespace(
         name="shared",
         session=object(),
         _tools=[tool],
         tool_timeout=30,
         _registered_tool_names=[],
-        _config={},
+        _config=dict(shared_cfg),
         initialize_result=None,
+        _resolved_identity=_mcp_registration._adopter_identity_digest("shared", shared_cfg),
     )
     owner_tool_name = "mcp__shared__echo"
     registry.register(
@@ -297,7 +305,7 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
     try:
         monkeypatch.setattr(mcp_tool, "_ensure_mcp_sdk", lambda: True)
         monkeypatch.setattr(_mcp_config, "_filter_suspicious_mcp_servers", lambda servers: servers)
-        assert _mcp_discovery.register_mcp_servers({"shared": {}})
+        assert _mcp_discovery.register_mcp_servers({"shared": dict(shared_cfg)})
         tool_names = registry.get_tool_names_for_toolset("mcp-shared")
         assert tool_names
         assert callable(registry.get_entry(tool_names[0]).handler)

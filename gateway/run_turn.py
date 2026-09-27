@@ -4258,6 +4258,19 @@ class GatewayTurnMixin:
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
             )
 
+        # A queued follow-up is prepared across awaits and inherits its parent's generation. If /stop
+        # invalidated it meanwhile, a worker started now is never tracked (so no later /stop can reach
+        # it) yet holds the session turn lease.
+        if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
+            logger.info(
+                "Discarding stale turn for %s — generation %d is no longer current",
+                session_key or "?", run_generation,
+            )
+            return {
+                "final_response": "", "messages": [], "api_calls": 0, "tools": [],
+                "history_offset": len(history), "session_id": session_id, "response_previewed": False,
+            }
+
         from run_agent import AIAgent
 
         disp = self._run_agent_display_settings(source)
@@ -4324,6 +4337,10 @@ class GatewayTurnMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
+            # A /stop that landed while the worker or streaming TTS was finishing handed the session to a
+            # successor; its queued messages are no longer this run's to drain.
+            if not turn_ctx._run_still_current():
+                return response
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
                 return await self._run_agent_queued_followup(

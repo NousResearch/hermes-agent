@@ -344,7 +344,10 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     if not (headers := msg.get_all("Authentication-Results")):
         return False, "no Authentication-Results header"
     values = (" ".join(str(raw).split()) for raw in headers)  # authserv-id precedes the first ';'
-    trusted = next((v for v in values if not authserv_id or (serv := v.split(";", 1)[0].strip().lower()) == authserv_id.lower()
+    # RFC 8601 allows CFWS (comments) between the authserv-id and ';' (``mx.a.b (Postfix) ;``): strip
+    # comments before comparing, so a pinned server stamping them is still trusted — but a comment
+    # alone can never forge the id (its content is removed, not the id).
+    trusted = next((v for v in values if not authserv_id or (serv := _strip_comments(v.split(";", 1)[0]).strip().lower()) == authserv_id.lower()
                     or _domains_aligned(serv, authserv_id)), None)
     if trusted is None:
         return False, "no Authentication-Results from trusted authserv-id"

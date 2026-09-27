@@ -1266,6 +1266,24 @@ class TestSenderAuthentication(unittest.TestCase):
             self.assertTrue(ok, (ar, reason))
 
 
+    def test_authserv_id_with_comment_is_recognized(self):
+        """RFC 8601 allows CFWS (comments) between the authserv-id and ';'.
+        A pinned receiving server that stamps comments there must still be
+        recognized as trusted instead of dropping every message."""
+        for ar in ("mx.ourserver.com (Postfix) ; dmarc=pass header.from=example.com",
+                   "mx.ourserver.com\t(mail.example.com)\n ; dmarc=pass header.from=example.com",
+                   "mx.ourserver.com ; spf=pass smtp.mailfrom=example.com"):
+            ok, reason = self._verify("admin@example.com", [ar], authserv_id="mx.ourserver.com")
+            self.assertTrue(ok, (ar, reason))
+        # a comment cannot FORGE a trusted authserv-id
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["(mx.ourserver.com) evil.com; dmarc=pass header.from=example.com"],
+            authserv_id="mx.ourserver.com",
+        )
+        self.assertFalse(ok, reason)
+
+
     def test_dkim_pass_aligned_authenticates(self):
         ok, reason = self._verify(
             "admin@example.com",

@@ -29,6 +29,7 @@ from pm.update import (
     github_release_tags,
     llama_app_bucket_versions,
     llama_app_latest,
+    legacy_macos_node_version,
     martin_riedl_index,
     martin_riedl_versions,
     node_latest_versions,
@@ -500,6 +501,9 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         if "libatomic.so.1" in retried:
             return retried, "the libatomic package installed, but Node still cannot load libatomic.so.1; check the loader path"
         return retried, ""
+
+    def preferred_version(self, target: str, versions: list[str], *, locked=None) -> str | None:
+        return legacy_macos_node_version(versions, target, host_target=current_target())
 
 
 @register

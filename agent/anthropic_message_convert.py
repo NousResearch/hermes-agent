@@ -388,9 +388,21 @@ def _interleaved_signature_layout_dead(message: Dict[str, Any]) -> bool:
     dropped the column), so a turn restored from state.db replays through the parallel-fields
     fallback — which always hoists ALL thinking blocks ahead of the tool_use blocks they may
     have been signed after. Anthropic signs each block against the content preceding it, so an
-    interleaved turn (>=2 signed thinking blocks + tool_calls — a single-thinking-block turn
-    hoists onto an identical prefix and stays valid) replays with a dead second signature and
-    400s "thinking blocks cannot be modified" on every resume of a heartbeat-spawned session.
+    interleaved turn (>=2 signed thinking blocks + tool_calls) replays with a dead second
+    signature and 400s "thinking blocks cannot be modified" on every resume of a
+    heartbeat-spawned session.
+
+    The ``>= 2`` threshold is the single-block boundary, and it is a trade-off, not an
+    exact fingerprint: with exactly ONE signed block the parallel-fields signature order is
+    only provably dead when the block did NOT sit first on the original wire
+    (``tool_use -> thinking -> tool_use`` restores hoisted yet still signed).
+    ``reasoning_details`` carries no position, so the two single-block shapes are
+    indistinguishable after restore — treating both as dead would strip valid signatures
+    from the ordinary ``thinking -> tool_use`` turn. And with interleaved thinking Anthropic
+    does NOT guarantee the first thinking block precedes every tool_use (thinking is
+    permitted between tool calls), so that residual single-block case stays live here. The
+    stronger provenance-based policy (demote ANY restored signed thinking when the ordered
+    channel is absent) is #124570.
     """
     if not (isinstance(message.get("tool_calls"), list) and message["tool_calls"]):
         return False

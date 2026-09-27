@@ -116,7 +116,10 @@ describe("ProfilesPage create modal", () => {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
     });
-    await waitFor(() => Boolean(document.querySelector('[role="status"][aria-live="polite"]')));
-    expect(document.querySelector('[role="status"][aria-live="polite"]')!.textContent).toContain(reason);
+    await waitFor(() => Boolean(document.querySelector('[role="status"]')));
+    const receipt = document.querySelector('[role="status"]')!;
+    expect(receipt.textContent).toContain(reason);
+    // The creation receipt carries its severity only as styling.
+    expect(receipt.className).toContain("text-destructive");
   });
 });

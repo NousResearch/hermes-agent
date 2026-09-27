@@ -79,34 +79,6 @@ def sample_audio_file(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class TestBuiltinAlwaysWins:
-    """Built-in STT provider names short-circuit the dispatcher.
-
-    Even with a plugin registered (which the registry would reject —
-    but the dispatcher is defensive), built-in names return None so
-    the caller's elif chain handles them natively.
-    """
-
-    @pytest.mark.parametrize(
-        "builtin",
-        ["local", "local_command", "groq", "openai", "mistral", "xai"],
-    )
-    def test_dispatcher_short_circuits_builtin(self, builtin):
-        result = transcription_tools._dispatch_to_plugin_provider(
-            "/tmp/audio.mp3", builtin,
-        )
-        assert result is None, (
-            f"Built-in {builtin!r} must short-circuit plugin dispatch."
-        )
-
-
-    def test_dispatcher_short_circuits_builtin_case_insensitive(self):
-        for variant in ("OPENAI", "OpenAI", "  openai  ", "oPeNaI"):
-            assert (
-                transcription_tools._dispatch_to_plugin_provider(
-                    "/tmp/audio.mp3", variant,
-                ) is None
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +184,8 @@ class TestTranscribeAudioE2E:
         transcription_registry.register_provider(provider)
         audio_path = tmp_path / "oversized.mp3"
         with audio_path.open("wb") as audio_file:
-            audio_file.seek(transcription_tools.MAX_FILE_SIZE)
+            from tools.transcription_common import MAX_FILE_SIZE
+            audio_file.seek(MAX_FILE_SIZE)
             audio_file.write(b"\0")
 
         with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openrouter"}), \

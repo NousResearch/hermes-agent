@@ -1,17 +1,10 @@
-"""Token-free detection of user *reactions* to the agent.
+"""Token-free (regex) detection of user *reactions* to the agent.
 
-Currently the only reaction is ``vibe`` — an expression of affection or
-gratitude toward the agent (``ily``, ``<3``, ``love you``, ``good bot``, a heart
-emoji, …). Detection is a curated regex/lexicon: **no model call, no tokens**.
-
-This is the single source of truth shared by every surface — the CLI pet, the
-TUI heart, and the desktop floating hearts all react off the same signal,
-delivered via ``AIAgent.reaction_callback`` (wired per interactive host).
-
-Generalized on purpose: :func:`detect_reaction` returns a reaction *kind*
-string, so new kinds (other emoji reactions, etc.) can be added here without
-touching any caller. We match affection specifically — not general positive
-sentiment — so "this is great" does NOT fire, but "good bot" / "❤️" do.
+The only kind today is ``vibe`` — affection/gratitude aimed at the agent (``ily``, ``<3``,
+``good bot``, a heart emoji), NOT general positive sentiment ("this is great" does not fire).
+Single source of truth for the CLI pet, TUI heart and desktop hearts via
+``AIAgent.reaction_callback``; :func:`detect_reaction` returns a *kind* string so new kinds
+can be added without touching callers.
 """
 
 from __future__ import annotations
@@ -21,8 +14,7 @@ import re
 #: The affection/gratitude reaction — the only kind today.
 VIBE = "vibe"
 
-# Curated affection lexicon. Kept deliberately narrow: gratitude + love aimed at
-# the agent, heart emoji, and ``<3`` (but not the broken heart ``</3``).
+# Narrow lexicon: gratitude + love aimed at the agent, hearts, ``<3`` (not ``</3``).
 _VIBE_RE = re.compile(
     "|".join(
         (
@@ -46,11 +38,5 @@ _VIBE_RE = re.compile(
 
 
 def detect_reaction(text: str | None) -> str | None:
-    """Return the reaction kind for *text* (currently :data:`VIBE`), or ``None``.
-
-    Pure, token-free, and safe to call on every user turn.
-    """
-    if not text:
-        return None
-
-    return VIBE if _VIBE_RE.search(text) else None
+    """Return the reaction kind for *text* (currently :data:`VIBE`), or ``None``."""
+    return VIBE if text and _VIBE_RE.search(text) else None

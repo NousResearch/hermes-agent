@@ -47,23 +47,23 @@ def client(monkeypatch, isolated_profiles):
 
 @pytest.fixture(autouse=True)
 def _clean_leases():
-    from tools import tts_tool
+    from tools import tts_tool_lifecycle, tts_tool_local
 
-    tts_tool._reset_tts_leases_for_tests()
-    for cache in tts_tool._LOCAL_TTS_MODEL_CACHES.values():
+    tts_tool_lifecycle._reset_tts_leases_for_tests()
+    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
         cache.clear()
     yield
-    tts_tool._reset_tts_leases_for_tests()
-    for cache in tts_tool._LOCAL_TTS_MODEL_CACHES.values():
+    tts_tool_lifecycle._reset_tts_leases_for_tests()
+    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
         cache.clear()
 
 
 def test_active_acquires_and_warms(client, monkeypatch):
-    from tools import tts_tool
+    from tools import tts_tool_lifecycle
 
     warmed = []
     monkeypatch.setattr(
-        tts_tool,
+        tts_tool_lifecycle,
         "warm_tts_provider",
         lambda cfg=None, provider=None: warmed.append(1) or {"provider": "piper", "warmed": True, "action": "loaded"},
     )
@@ -77,35 +77,99 @@ def test_active_acquires_and_warms(client, monkeypatch):
     assert body["leases"] == 1
     assert body["action"] == "loaded"
     assert warmed == [1]
-    assert tts_tool.tts_lease_holders() == ["desktop:read-aloud"]
+    assert tts_tool_lifecycle.tts_lease_holders() == ["desktop:read-aloud"]
 
 
-def test_inactive_releases_and_unloads_when_last(client, monkeypatch):
-    from tools import tts_tool
+def _write_tts_config(home, tts):
+    from hermes_cli.config import atomic_config_write
 
-    monkeypatch.setattr(tts_tool, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "noop", "warmed": False, "provider": "piper"})
+    atomic_config_write(home / "config.yaml", {"tts": tts})
+
+
+def test_inactive_releases_and_unloads_when_last(client, monkeypatch, isolated_profiles):
+    from tools import tts_tool_lifecycle, tts_tool_local
+
+    _write_tts_config(isolated_profiles["default"], {"keep_warm_seconds": 0})
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "noop", "warmed": False, "provider": "piper"})
     client.post("/api/audio/tts-lease", json={"lease": "desktop:read-aloud", "active": True})
     client.post("/api/audio/tts-lease", json={"lease": "desktop:conversation:abc", "active": True})
-    tts_tool._piper_voice_cache["voice"] = object()
+    tts_tool_local._piper_voice_cache["voice"] = object()
 
     first = client.post("/api/audio/tts-lease", json={"lease": "desktop:read-aloud", "active": False}).json()
     assert first["leases"] == 1
     assert first["released"] == 0
-    assert len(tts_tool._piper_voice_cache) == 1
+    assert len(tts_tool_local._piper_voice_cache) == 1
 
     last = client.post("/api/audio/tts-lease", json={"lease": "desktop:conversation:abc", "active": False}).json()
     assert last["leases"] == 0
     assert last["released"] == 1
-    assert tts_tool._piper_voice_cache == {}
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+def test_last_release_keeps_model_warm_by_default(client, monkeypatch):
+    """#118037: with the shipped config the last release parks the unload instead of evicting now."""
+    from tools import tts_tool_lifecycle, tts_tool_local
+
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "loaded", "warmed": True, "provider": "piper"})
+    client.post("/api/audio/tts-lease", json={"lease": "desktop:conversation:abc", "active": True})
+    tts_tool_local._piper_voice_cache["voice"] = object()
+
+    last = client.post("/api/audio/tts-lease", json={"lease": "desktop:conversation:abc", "active": False}).json()
+    assert last["leases"] == 0
+    assert last["released"] == 0
+    assert len(tts_tool_local._piper_voice_cache) == 1
+
+
+def test_release_reads_keep_warm_from_the_requesting_profile(client, monkeypatch, isolated_profiles):
+    from tools import tts_tool_lifecycle, tts_tool_local
+
+    _write_tts_config(isolated_profiles["worker_beta"], {"keep_warm_seconds": 0})
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "loaded", "warmed": True, "provider": "piper"})
+    url = "/api/audio/tts-lease?profile=worker_beta"
+    client.post(url, json={"lease": "desktop:conversation:abc", "active": True})
+    tts_tool_local._piper_voice_cache["voice"] = object()
+
+    last = client.post(url, json={"lease": "desktop:conversation:abc", "active": False}).json()
+
+    assert last["released"] == 1
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+def test_release_for_a_deleted_profile_still_drops_the_lease(client, monkeypatch):
+    from tools import tts_tool_lifecycle
+
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "noop", "warmed": False, "provider": "piper"})
+    client.post("/api/audio/tts-lease", json={"lease": "desktop:read-aloud", "active": True})
+
+    resp = client.post("/api/audio/tts-lease?profile=ghost", json={"lease": "desktop:read-aloud", "active": False})
+
+    assert resp.status_code == 200
+    assert resp.json()["leases"] == 0
+
+
+def test_keep_warm_window_from_config_unloads_after_it_elapses(client, monkeypatch, isolated_profiles):
+    import time
+    from tools import tts_tool_lifecycle, tts_tool_local
+
+    _write_tts_config(isolated_profiles["default"], {"keep_warm_seconds": 0.1})
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "loaded", "warmed": True, "provider": "piper"})
+    client.post("/api/audio/tts-lease", json={"lease": "desktop:conversation:abc", "active": True})
+    tts_tool_local._piper_voice_cache["voice"] = object()
+    client.post("/api/audio/tts-lease", json={"lease": "desktop:conversation:abc", "active": False})
+
+    deadline = time.monotonic() + 5
+    while tts_tool_local._piper_voice_cache and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert tts_tool_local._piper_voice_cache == {}
 
 
 def test_warm_failure_is_reported_not_an_http_error(client, monkeypatch):
-    from tools import tts_tool
+    from tools import tts_tool_lifecycle
 
     def _boom(cfg=None, provider=None):
         raise RuntimeError("engine exploded")
 
-    monkeypatch.setattr(tts_tool, "warm_tts_provider", _boom)
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", _boom)
     resp = client.post("/api/audio/tts-lease", json={"lease": "desktop:read-aloud", "active": True})
     assert resp.status_code == 200
     body = resp.json()
@@ -120,18 +184,18 @@ def test_blank_lease_rejected(client):
 
 
 def test_active_default_true(client, monkeypatch):
-    from tools import tts_tool
+    from tools import tts_tool_lifecycle
 
-    monkeypatch.setattr(tts_tool, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "noop", "warmed": False, "provider": "x"})
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "noop", "warmed": False, "provider": "x"})
     resp = client.post("/api/audio/tts-lease", json={"lease": "tui:x"})
     assert resp.json()["active"] is True
-    assert tts_tool.tts_lease_holders() == ["tui:x"]
+    assert tts_tool_lifecycle.tts_lease_holders() == ["tui:x"]
 
 
 def test_acquire_resolves_provider_inside_target_profile(client, isolated_profiles, monkeypatch):
     """Warm-up must read the REQUESTING profile's tts config, like /api/audio/speak."""
-    import yaml
-    from tools import tts_tool
+    import hermes_yaml as yaml
+    from tools import tts_tool, tts_tool_lifecycle
 
     (isolated_profiles["worker_beta"] / "config.yaml").write_text(
         yaml.safe_dump({"tts": {"provider": "kittentts"}}), encoding="utf-8"
@@ -145,7 +209,7 @@ def test_acquire_resolves_provider_inside_target_profile(client, isolated_profil
         seen["provider"] = tts_tool._get_provider(tts_tool._load_tts_config())
         return {"action": "noop", "warmed": False, "provider": seen["provider"]}
 
-    monkeypatch.setattr(tts_tool, "warm_tts_provider", _fake_warm)
+    monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", _fake_warm)
     resp = client.post("/api/audio/tts-lease?profile=worker_beta", json={"lease": "desktop:read-aloud", "active": True})
     assert resp.status_code == 200
     assert seen["home"] == str(isolated_profiles["worker_beta"])

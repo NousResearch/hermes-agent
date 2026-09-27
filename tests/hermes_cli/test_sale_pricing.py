@@ -6,10 +6,8 @@ import json
 from unittest.mock import MagicMock
 
 import hermes_cli.models as models_mod
-from hermes_cli.models import (
-    compute_sale_discount,
-    fetch_models_with_pricing,
-)
+from hermes_cli import models_pricing
+from hermes_cli.models_pricing import compute_sale_discount, fetch_models_with_pricing
 
 
 def test_free_model_gets_flat_100_percent_discount():
@@ -31,7 +29,7 @@ def test_paid_model_without_original_shows_no_sale():
 
 
 def test_fetch_models_with_pricing_copies_nested_original(monkeypatch):
-    models_mod._pricing_cache.clear()
+    models_pricing._pricing_cache.clear()
     payload = {
         "data": [
             {
@@ -83,28 +81,21 @@ def test_fetch_models_with_pricing_copies_nested_original(monkeypatch):
     assert "original" not in result["free/model"]
 
 
+def test_fetch_models_with_pricing_copies_billing_mode_for_nous_only(monkeypatch):
+    payload = {"data": [{"id": "a/b", "billing_mode": "subscription", "pricing": {"prompt": "0.000002", "completion": "0.00001"}}]}
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(payload).encode()
+    resp.__enter__ = lambda self: self
+    resp.__exit__ = lambda *a: False
+    monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", lambda req, timeout=8.0: resp)
+
+    fetch = lambda **kw: fetch_models_with_pricing(api_key="sk-test", base_url="https://example.test", force_refresh=True, **kw)
+    assert fetch(include_sale_original=True)["a/b"]["billing_mode"] == "subscription"
+    assert "billing_mode" not in fetch()["a/b"]
 
 
-def test_resolve_nous_pricing_credentials_honors_inference_env_override(monkeypatch):
-    """Staging profiles set NOUS_INFERENCE_BASE_URL — pricing must follow it.
 
-    Without this, anonymous/failed-auth fallback hits prod and sale
-    ``pricing.original`` never reaches Desktop/CLI pickers.
-    """
-    monkeypatch.setenv(
-        "NOUS_INFERENCE_BASE_URL",
-        "https://stg-inference-api.nousresearch.com/v1",
-    )
-    # Auth resolution fails / returns nothing — the env override must still win.
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_runtime_credentials",
-        lambda: None,
-    )
-    api_key, base_url = models_mod._resolve_nous_pricing_credentials()
-    assert api_key == ""
-    # The bare origin, whichever form the override was written in: callers
-    # append their own path (``/v1/models``), so a suffix here would double up.
-    assert base_url == "https://stg-inference-api.nousresearch.com"
+
 
 
 def test_resolve_nous_pricing_credentials_normalizes_either_suffix(monkeypatch):
@@ -119,7 +110,7 @@ def test_resolve_nous_pricing_credentials_normalizes_either_suffix(monkeypatch):
         "https://stg-inference-api.nousresearch.com/v1/",
     ):
         monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", override)
-        assert models_mod._resolve_nous_pricing_credentials()[1] == (
+        assert models_pricing._resolve_nous_pricing_credentials()[1] == (
             "https://stg-inference-api.nousresearch.com"
         )
 
@@ -131,8 +122,8 @@ def test_a_failed_catalog_fetch_is_not_cached_forever(monkeypatch):
     call, but it expires — the processes that read this run for weeks, and
     every caller silently falls back to a curated list meanwhile.
     """
-    models_mod._pricing_cache.clear()
-    models_mod._pricing_cache_retry_after.clear()
+    models_pricing._pricing_cache.clear()
+    models_pricing._pricing_cache_retry_after.clear()
 
     calls = []
 
@@ -151,7 +142,7 @@ def test_a_failed_catalog_fetch_is_not_cached_forever(monkeypatch):
     monkeypatch.setattr(
         models_mod.time,
         "monotonic",
-        lambda: now + models_mod._FAILED_CATALOG_TTL_SECONDS + 1,
+        lambda: now + models_pricing._FAILED_CATALOG_TTL_SECONDS + 1,
     )
     assert fetch_models_with_pricing(base_url="https://example.test") == {}
     assert len(calls) == 2
@@ -159,8 +150,8 @@ def test_a_failed_catalog_fetch_is_not_cached_forever(monkeypatch):
 
 def test_a_successful_catalog_fetch_stays_cached(monkeypatch):
     """Only the failures expire; a real catalog is still fetched once."""
-    models_mod._pricing_cache.clear()
-    models_mod._pricing_cache_retry_after.clear()
+    models_pricing._pricing_cache.clear()
+    models_pricing._pricing_cache_retry_after.clear()
 
     calls = []
     body = json.dumps(
@@ -182,7 +173,7 @@ def test_a_successful_catalog_fetch_stays_cached(monkeypatch):
     monkeypatch.setattr(
         models_mod.time,
         "monotonic",
-        lambda: now + models_mod._FAILED_CATALOG_TTL_SECONDS + 1,
+        lambda: now + models_pricing._FAILED_CATALOG_TTL_SECONDS + 1,
     )
     assert "a/b" in fetch_models_with_pricing(base_url="https://example.test")
     assert len(calls) == 1

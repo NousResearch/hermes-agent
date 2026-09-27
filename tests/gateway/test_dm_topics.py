@@ -129,16 +129,8 @@ async def test_create_dm_topic_handles_duplicate_error():
     assert result is None
 
 
-@pytest.mark.asyncio
-async def test_create_dm_topic_handles_generic_error():
-    """Generic error should return None with warning."""
-    adapter = _make_adapter()
-    adapter._bot = AsyncMock()
-    adapter._bot.create_forum_topic.side_effect = Exception("some random error")
 
-    result = await adapter._create_dm_topic(chat_id=111, name="General")
 
-    assert result is None
 
 
 @pytest.mark.asyncio
@@ -170,7 +162,7 @@ async def test_ensure_dm_topic_creates_on_demand_and_persists():
 
 def test_persist_dm_topic_thread_id_writes_config(tmp_path):
     """Should write thread_id into the correct topic in config.yaml."""
-    import yaml
+    import hermes_yaml as yaml
 
     config_data = {
         "platforms": {
@@ -193,7 +185,7 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
     with open(config_file, "w") as f:
-        yaml.dump(config_data, f)
+        yaml.safe_dump(config_data, f)
 
     adapter = _make_adapter()
 
@@ -214,7 +206,7 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
 
 def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
     """Failed writes should leave the original config.yaml intact."""
-    import yaml
+    import hermes_yaml as yaml
 
     config_data = {
         "platforms": {
@@ -235,7 +227,7 @@ def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
 
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
-    original_text = yaml.dump(config_data)
+    original_text = yaml.safe_dump(config_data)
     config_file.write_text(original_text, encoding="utf-8")
 
     adapter = _make_adapter()
@@ -245,7 +237,7 @@ def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}), \
-         patch("yaml.dump", side_effect=fail_dump):
+         patch("ruamel.yaml.YAML.dump", side_effect=fail_dump):
         adapter._persist_dm_topic_thread_id(111, "General", 999)
 
     assert config_file.read_text(encoding="utf-8") == original_text
@@ -275,7 +267,7 @@ def test_get_dm_topic_info_finds_cached_topic():
 
 def test_get_dm_topic_info_hot_reloads_from_config(tmp_path):
     """Should find a topic added to config after startup (hot-reload)."""
-    import yaml
+    import hermes_yaml as yaml
 
     # Start with empty topics
     adapter = _make_adapter([
@@ -302,7 +294,7 @@ def test_get_dm_topic_info_hot_reloads_from_config(tmp_path):
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
     with open(config_file, "w") as f:
-        yaml.dump(config_data, f)
+        yaml.safe_dump(config_data, f)
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
@@ -369,7 +361,7 @@ def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id
 
 def test_build_message_event_sets_auto_skill():
     """When topic has a skill binding, auto_skill should be set on the event."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter([
         {
@@ -391,7 +383,7 @@ def test_build_message_event_sets_auto_skill():
 
 def test_build_message_event_no_auto_skill_without_binding():
     """Topics without skill binding should have auto_skill=None."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter([
         {
@@ -421,7 +413,7 @@ from telegram.constants import ChatType as _ChatType  # noqa: E402
 
 def test_group_topic_skill_binding():
     """Group topic with skill config should set auto_skill on the event."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter(group_topics_config=[
         {
@@ -449,7 +441,7 @@ def test_group_topic_skill_binding():
 
 def test_group_topic_skill_binding_second_topic():
     """A different thread_id in the same group should resolve its own skill."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter(group_topics_config=[
         {

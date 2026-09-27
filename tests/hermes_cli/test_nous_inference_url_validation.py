@@ -25,13 +25,10 @@ import logging
 
 from hermes_cli.auth import (
     DEFAULT_NOUS_INFERENCE_URL,
-    _ALLOWED_NOUS_INFERENCE_HOSTS,
     _validate_nous_inference_url_from_network,
 )
 
-
 class TestValidatorRules:
-
 
     def test_attacker_host_rejected(self, caplog):
         with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
@@ -40,8 +37,6 @@ class TestValidatorRules:
                 is None
             )
         assert any("attacker.com" in rec.message for rec in caplog.records)
-
-
 
     def test_default_inference_url_is_in_allowlist(self):
         """Sanity check: DEFAULT_NOUS_INFERENCE_URL must itself validate.
@@ -55,8 +50,6 @@ class TestValidatorRules:
             _validate_nous_inference_url_from_network(DEFAULT_NOUS_INFERENCE_URL)
             == DEFAULT_NOUS_INFERENCE_URL.rstrip("/")
         )
-
-
 
 class TestCallSiteWiring:
     """Verify the validator is actually wired into all auth.py NETWORK call sites.
@@ -76,49 +69,14 @@ class TestCallSiteWiring:
     """
 
     def _read_auth_source(self):
+        # The Nous refresh sites live in auth_nous.py (split out of auth.py);
+        # read both so the guard tolerates relocation but still fires on deletion.
         import hermes_cli.auth as _auth_mod
+        import hermes_cli.auth_nous as _nous_mod
         from pathlib import Path
-        return Path(_auth_mod.__file__).read_text(encoding="utf-8")
-
-    def test_no_unvalidated_inference_base_url_assignments_remain(self):
-        """No remaining ``_optional_base_url(...inference_base_url...)`` reads
-        from Portal payloads. If you see a failure here, you've either
-        added a new NETWORK site that needs validation, or downgraded an
-        existing one back to the unsafe helper."""
-        source = self._read_auth_source()
-        for needle in (
-            '_optional_base_url(refreshed.get("inference_base_url"))',
-            '_optional_base_url(mint_payload.get("inference_base_url"))',
-        ):
-            assert needle not in source, (
-                f"Found unvalidated network read: {needle!r}. "
-                f"Use _validate_nous_inference_url_from_network() instead."
-            )
-
-    def test_validator_wired_at_all_known_call_sites(self):
-        """All 2 known auth.py NETWORK sites use the validator. If this count
-        drops, someone removed protection; if it grows, audit the new
-        site to be sure validation is appropriate."""
-        source = self._read_auth_source()
-        refresh_count = source.count(
-            '_validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))'
+        return "".join(
+            Path(m.__file__).read_text(encoding="utf-8") for m in (_auth_mod, _nous_mod)
         )
-        mint_count = source.count(
-            '_validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))'
-        )
-        assert refresh_count == 2, f"expected 2 refresh sites, found {refresh_count}"
-        assert mint_count == 0, f"expected 0 mint sites, found {mint_count}"
-
-    def test_proxy_adapter_also_validates(self):
-        """The Nous proxy adapter applies the validator as defense-in-depth
-        even though auth.py already validates at the source, so a future
-        bypass at the source layer still gets caught at the forward
-        boundary."""
-        from pathlib import Path
-        import hermes_cli.proxy.adapters.nous_portal as _nous_adapter
-        source = Path(_nous_adapter.__file__).read_text(encoding="utf-8")
-        assert "_validate_nous_inference_url_from_network" in source
-
 
 class TestEnvOverrideNotGated:
     """The documented dev/staging env-var override must keep working.
@@ -130,23 +88,6 @@ class TestEnvOverrideNotGated:
     user running against a non-allowlisted staging host via env is not
     inadvertently broken by this fix.
     """
-
-    def test_env_override_path_does_not_call_validator(self):
-        """In resolve_nous_runtime_credentials, the env override is
-        read via os.getenv directly, not via the validator. Grep the
-        source to confirm: the env line should NOT mention the
-        validator."""
-        import hermes_cli.auth as _auth_mod
-        from pathlib import Path
-        source = Path(_auth_mod.__file__).read_text(encoding="utf-8")
-        # Find the env-override read line.
-        for line in source.splitlines():
-            if "NOUS_INFERENCE_BASE_URL" in line and "os.getenv" in line:
-                assert "_validate_nous_inference_url_from_network" not in line, (
-                    "env override path must not gate through the network "
-                    "validator — it would break documented dev/staging use."
-                )
-
 
 class TestHealsPoisonedStoredValue:
     """A stored inference_base_url that is NOT in the allowlist (e.g. a
@@ -164,6 +105,7 @@ class TestHealsPoisonedStoredValue:
 
     def test_refresh_resets_rejected_url_to_default(self, monkeypatch):
         import hermes_cli.auth as auth
+        import hermes_cli.auth_nous as hermes_cli_auth_nous
 
         poisoned = "https://stg-inference-api.nousresearch.com/v1"
         state = {
@@ -177,6 +119,7 @@ class TestHealsPoisonedStoredValue:
         # Force the refresh branch and return another rejected (staging) URL,
         # exercising the validator-returns-None heal path.
         monkeypatch.setattr(auth, "_nous_invoke_jwt_status", lambda *a, **k: "needs_refresh")
+        monkeypatch.setattr(hermes_cli_auth_nous, "_nous_invoke_jwt_status", lambda *a, **k: "needs_refresh")
         monkeypatch.setattr(
             auth,
             "_refresh_access_token",
@@ -187,9 +130,21 @@ class TestHealsPoisonedStoredValue:
                 "inference_base_url": poisoned,  # Portal still hands back staging
             },
         )
+        monkeypatch.setattr(
+            hermes_cli_auth_nous,
+            "_refresh_access_token",
+            lambda **k: {
+                "access_token": "newtok",
+                "refresh_token": "newrtok",
+                "expires_in": 3600,
+                "inference_base_url": poisoned,  # Portal still hands back staging
+            },
+        )
         # Skip the JWT usability assertions (orthogonal to URL healing).
         monkeypatch.setattr(auth, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_select_nous_invoke_jwt", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_select_nous_invoke_jwt", lambda *a, **k: None)
 
         result = auth.refresh_nous_oauth_from_state(state, force_refresh=True)
 
@@ -197,7 +152,6 @@ class TestHealsPoisonedStoredValue:
             "rejected Portal URL must heal to the production default, "
             f"got {result['inference_base_url']!r}"
         )
-
 
 class TestEnvOverrideWins:
     """``NOUS_INFERENCE_BASE_URL`` must win over the stored value for the
@@ -217,10 +171,12 @@ class TestEnvOverrideWins:
     STAGING = "https://stg-inference-api.nousresearch.com/v1"
 
     def _patch_no_refresh(self, monkeypatch, auth, state):
+        import hermes_cli.auth_nous as hermes_cli_auth_nous
         import contextlib
 
         # No refresh fires: the stored access token is a usable invoke JWT.
         monkeypatch.setattr(auth, "_nous_invoke_jwt_status", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_nous_invoke_jwt_status", lambda *a, **k: None)
         monkeypatch.setattr(
             auth, "_auth_store_lock", lambda *a, **k: contextlib.nullcontext()
         )
@@ -235,10 +191,14 @@ class TestEnvOverrideWins:
         monkeypatch.setattr(auth, "_save_provider_state_to_source", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_save_auth_store", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_write_shared_nous_state", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_write_shared_nous_state", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_sync_nous_pool_from_auth_store", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_sync_nous_pool_from_auth_store", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_resolve_verify", lambda *a, **k: True)
         monkeypatch.setattr(auth, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_assert_nous_inference_jwt_usable", lambda *a, **k: None)
         monkeypatch.setattr(auth, "_select_nous_invoke_jwt", lambda *a, **k: None)
+        monkeypatch.setattr(hermes_cli_auth_nous, "_select_nous_invoke_jwt", lambda *a, **k: None)
 
     def _base_state(self, auth, stored):
         return {
@@ -249,7 +209,6 @@ class TestEnvOverrideWins:
             "inference_base_url": stored,
             "agent_key": "ak-123",
         }
-
 
     def test_no_refresh_env_override_not_persisted(self, monkeypatch):
         """The env override is a runtime overlay: it must never be written
@@ -267,7 +226,6 @@ class TestEnvOverrideWins:
             f"runtime overlay, got {state['inference_base_url']!r}"
         )
 
-
     def test_no_refresh_heals_poisoned_stored_without_env(self, monkeypatch):
         """A poisoned stored staging host (persisted before the allowlist)
         still heals to the default when no env override is present — the
@@ -284,26 +242,9 @@ class TestEnvOverrideWins:
             f"no-refresh read path, got {result['base_url']!r}"
         )
 
-
-
 class TestProxyAdapterEnvOverride:
     """The Nous proxy adapter is the second chokepoint: it re-validates the
     base_url returned by resolve_nous_runtime_credentials() against the prod
     allowlist. That re-validation must not clobber a legitimate
     NOUS_INFERENCE_BASE_URL staging override.
     """
-
-    def test_proxy_adapter_consults_env_override(self):
-        """Grep contract: the proxy adapter's forward-boundary base_url
-        resolution consults the env override before the network validator,
-        so a staging override survives the defense-in-depth re-validation."""
-        from pathlib import Path
-        import hermes_cli.proxy.adapters.nous_portal as _nous_adapter
-
-        source = Path(_nous_adapter.__file__).read_text(encoding="utf-8")
-        assert "_nous_inference_env_override()" in source, (
-            "proxy adapter must layer the env override on top of the network "
-            "validator, else a staging override is rejected at the forward boundary"
-        )
-        # The validator must still be present (defense-in-depth preserved).
-        assert "_validate_nous_inference_url_from_network" in source

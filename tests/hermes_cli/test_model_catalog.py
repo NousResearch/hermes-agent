@@ -354,7 +354,7 @@ class TestIntegrationWithModelsModule:
         from hermes_cli.models import get_curated_nous_model_ids
         importlib.reload(model_catalog)
         try:
-            from hermes_cli.model_switch import list_picker_providers
+            from hermes_cli.model_switch_providers import list_picker_providers
 
             active_home = Path(os.environ["HERMES_HOME"])
             (active_home / "auth.json").write_text(
@@ -403,10 +403,8 @@ class TestIntegrationWithModelsModule:
         from hermes_cli.models import get_curated_nous_model_ids
         importlib.reload(model_catalog)
         try:
-            from hermes_cli.model_switch import (
-                list_authenticated_providers,
-                list_picker_providers,
-            )
+            from hermes_cli.model_switch import list_authenticated_providers
+            from hermes_cli.model_switch_providers import list_picker_providers
 
             active_home = Path(os.environ["HERMES_HOME"])
             (active_home / "auth.json").write_text(

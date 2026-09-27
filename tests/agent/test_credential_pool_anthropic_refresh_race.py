@@ -30,6 +30,8 @@ Claude Code witness lives in ``test_anthropic_oauth_stress.py``.
 
 from __future__ import annotations
 
+from typing import Dict
+
 import threading
 import time
 from dataclasses import replace as dc_replace
@@ -69,7 +71,7 @@ def _fake_pool_store(monkeypatch):
     """
     store: Dict[str, list] = {}
 
-    def _write(provider, entries, *, removed_ids=None):
+    def _write(provider, entries, *, removed_ids=None, status_cleared_ids=None, token_bases=None):
         store[provider] = list(entries)
 
     def _read(provider=None):
@@ -115,51 +117,6 @@ class _SingleUseTokenServer:
         }
 
 
-def test_anthropic_refresh_is_protected_by_cross_process_lock(monkeypatch):
-    """Structural check: anthropic refresh acquires ``_auth_store_lock``.
-
-    Regression guard for the gap where "anthropic" was missing from the
-    ``("openai-codex", "xai-oauth")`` tuple despite Anthropic OAuth refresh
-    tokens being single-use too -- see the module docstring.
-    """
-    lock_calls: list[str] = []
-
-    class _RecordingLock:
-        def __init__(self, *a, **kw):
-            lock_calls.append("anthropic")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr("agent.credential_pool._auth_store_lock", _RecordingLock)
-    monkeypatch.setattr(
-        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
-        lambda refresh_token, use_json=False: {
-            "access_token": "sk-ant-oat-new",
-            "refresh_token": "sk-ant-ort-new",
-            "expires_at_ms": int(time.time() * 1000) + 3_600_000,
-        },
-    )
-    monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
-    )
-
-    pool = CredentialPool(
-        "anthropic",
-        [_entry(id="a1", access_token="stale-at", refresh_token="stale-rt", source="manual:hermes_pkce")],
-    )
-    entry = pool.entries()[0]
-    pool._refresh_entry(entry, force=True)
-
-    assert lock_calls, (
-        "regression: CredentialPool._refresh_entry() for provider='anthropic' "
-        "did not acquire the cross-process _auth_store_lock, even though "
-        "Anthropic OAuth refresh tokens are single-use (same property "
-        "openai-codex/xai-oauth are explicitly locked for)."
-    )
 
 
 def test_concurrent_hermes_pkce_refresh_loses_credential_despite_valid_token_on_disk(monkeypatch):

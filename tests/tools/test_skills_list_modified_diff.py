@@ -16,8 +16,8 @@ clears the modified state so the two stay consistent.
 from contextlib import ExitStack
 from unittest.mock import patch
 
-from tools.skills_sync import (
-    sync_skills,
+from tools.skills_sync import sync_skills
+from tools.skills_sync_bundled_ops import (
     reset_bundled_skill,
     list_user_modified_bundled_skills,
     diff_bundled_skill,

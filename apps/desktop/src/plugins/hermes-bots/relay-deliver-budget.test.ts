@@ -13,13 +13,20 @@ import { describe, expect, it } from 'vitest'
 const relaySource = readFileSync(join(process.cwd(), 'src/plugins/hermes-bots/relay.ts'), 'utf8')
 const repoRoot = join(process.cwd(), '..', '..')
 const configDefaults = readFileSync(join(repoRoot, 'hermes_cli/config_defaults.py'), 'utf8')
-const relayHandler = readFileSync(join(repoRoot, 'tui_gateway/methods_bot_relay.py'), 'utf8')
+const relayPlumbing = readFileSync(join(repoRoot, 'tools/bot_relay.py'), 'utf8')
 
 function tsConstant(name: string): number {
   const match = relaySource.match(new RegExp(`const ${name} = ([0-9_]+)`))
   expect(match, `${name} must stay a literal so this test can read it`).toBeTruthy()
 
   return Number(match![1].replaceAll('_', ''))
+}
+
+function pyConstant(name: string): number {
+  const match = relayPlumbing.match(new RegExp(`^${name}\\s*=\\s*(\\d+)`, 'm'))
+  expect(match, `${name} must exist as a literal in tools/bot_relay.py`).toBeTruthy()
+
+  return Number(match![1])
 }
 
 describe('bot_relay.deliver budget mirrors', () => {
@@ -31,14 +38,17 @@ describe('bot_relay.deliver budget mirrors', () => {
   })
 
   it('mirrors the backend per-attempt turn timeout', () => {
-    const attemptTimeouts = [...relayHandler.matchAll(/timeout=(\d+)/g)].map(m => Number(m[1]))
+    // The backend names both numbers explicitly (tools/bot_relay.py) so the mirror is a
+    // constant-to-constant check, not a count of textual subprocess.run(...) call sites.
+    expect(tsConstant('RELAY_TURN_ATTEMPT_MS')).toBe(pyConstant('TURN_ATTEMPT_TIMEOUT_SECONDS') * 1000)
+    expect(tsConstant('RELAY_TURN_MAX_ATTEMPTS')).toBe(pyConstant('TURN_MAX_ATTEMPTS'))
+  })
 
-    expect(attemptTimeouts.length, 'expected the attempt and its policy-gated retry').toBeGreaterThanOrEqual(2)
-    // Every attempt shares one bound; if they ever diverge, the mirror below is
-    // no longer a faithful ceiling and this must be revisited deliberately.
-    expect(new Set(attemptTimeouts).size, `attempt timeouts diverged: ${attemptTimeouts}`).toBe(1)
-    expect(tsConstant('RELAY_TURN_ATTEMPT_MS')).toBe(attemptTimeouts[0] * 1000)
-    expect(tsConstant('RELAY_TURN_MAX_ATTEMPTS')).toBe(attemptTimeouts.length)
+  it('shares its settlement margin with the sender-side waiter budget', () => {
+    // tests/tools/test_bot_relay.py checks that REPLY_WAIT_SECONDS exceeds the rebuilt sum.
+    expect(tsConstant('RELAY_DELIVER_SETTLEMENT_MARGIN_MS')).toBe(
+      pyConstant('DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS') * 1000
+    )
   })
 
   it('keeps the client deadline strictly greater than the backend ceiling', () => {

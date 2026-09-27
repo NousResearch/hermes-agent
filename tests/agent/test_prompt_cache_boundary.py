@@ -17,8 +17,8 @@ from unittest.mock import patch
 import agent.skill_bundles as skill_bundles
 import agent.skill_commands as skill_commands
 import tools.skills_tool as skills_tool
+import agent.prompt_cache_boundary as prompt_cache_boundary
 from agent.prompt_cache_boundary import (
-    clear_stable_prefixes,
     find_stable_prefix,
     register_stable_prefix,
 )
@@ -36,9 +36,11 @@ SKILL_BODY = "Inspect the report carefully and preserve the stable instructions.
 
 @pytest.fixture(autouse=True)
 def _isolated_registry():
-    clear_stable_prefixes()
+    with prompt_cache_boundary._lock:
+        prompt_cache_boundary._prefixes.clear()
     yield
-    clear_stable_prefixes()
+    with prompt_cache_boundary._lock:
+        prompt_cache_boundary._prefixes.clear()
 
 
 def _write_skill(skills_dir, name, body=SKILL_BODY):

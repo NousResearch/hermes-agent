@@ -20,6 +20,8 @@ from typing import Any, Dict, Optional
 _SB = "class:status-bar"
 _DIM = "class:status-bar-dim"
 _STRONG = "class:status-bar-strong"
+_GAUGE_DIM = "class:status-gauge-dim"
+_GAUGE_STRONG = "class:status-gauge-strong"
 _AGENT_COUNTERS = (
     "session_input_tokens", "session_output_tokens", "session_cache_read_tokens",
     "session_cache_write_tokens", "session_prompt_tokens", "session_completion_tokens",
@@ -230,6 +232,8 @@ class CLIStatusBarMixin:
             "battery_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
             "git_branch": "",
+            "git_status_label": "",
+            "workspace_label": "",
             "goal_active": False,
             "goal_turns_used": 0,
             "goal_max_turns": 0}
@@ -242,14 +246,17 @@ class CLIStatusBarMixin:
         except Exception:
             pass
 
-        # Git branch (⎇) — opt-in via display.status_bar.fields, so the filesystem probe
-        # (TTL-cached in status_bar_git) only runs when the user asked for the segment.
+        # Claude/Starship-style workspace + Git state. One cached porcelain-v2
+        # probe supplies branch and dirty/ahead counters; path formatting is pure.
         try:
             _fields = self._get_status_bar_field_set()
-            if _fields is not None and "git_branch" in _fields:
-                from hermes_cli.status_bar_git import current_git_branch
+            if _fields is None or {"path", "git_status", "git_branch"} & set(_fields):
+                from hermes_cli.status_bar_git import current_git_status, format_git_status, format_status_path
 
-                snapshot["git_branch"] = current_git_branch()
+                git_status = current_git_status()
+                snapshot["git_branch"] = git_status.get("branch") or ""
+                snapshot["git_status_label"] = format_git_status(git_status)
+                snapshot["workspace_label"] = format_status_path()
         except Exception:
             pass
 
@@ -994,7 +1001,8 @@ class CLIStatusBarMixin:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
-        Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
+        Fields: path, git_status (git_branch is a compatibility alias), model,
+        context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
         prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
         (opt-in only). Order is fixed; the config controls visibility only.
@@ -1084,9 +1092,12 @@ class CLIStatusBarMixin:
             add_count("bg_subagents", "active_background_subagents", "⛓")
         if goal_segment:
             add("goal", _STRONG, goal_segment)
-        git_branch = snapshot.get("git_branch") or ""
-        if git_branch:
-            add("git_branch", _DIM, f"⎇ {git_branch}")
+        workspace = snapshot.get("workspace_label") or ""
+        git_status = snapshot.get("git_status_label") or ""
+        if workspace and _ok("path"):
+            segs.insert(0, [(_DIM, f"[{workspace}]")])
+        if git_status and (_ok("git_status") or (field_set is not None and "git_branch" in field_set)):
+            segs.insert(1 if workspace and _ok("path") else 0, [(_DIM, git_status)])
         if not narrow:
             add("duration", _DIM, duration_label)
         if wide:
@@ -1146,8 +1157,112 @@ class CLIStatusBarMixin:
             width = self._get_tui_terminal_width()
             field_set = self._get_status_bar_field_set()
 
+            # OMP-style band: model / path / git are intrinsic groups and the
+            # remaining width becomes an embedded context gauge. This keeps the
+            # primary session identity readable without pipe-heavy chrome.
             def _ok(name: str) -> bool:
                 return field_set is None or name in field_set
+
+            if width >= 52 and field_set is None:
+                from cli import format_token_count_compact
+
+                model = snapshot.get("model_short") or "Hermes"
+                workspace = snapshot.get("workspace_label") or ""
+                git = (snapshot.get("git_status_label") or "").strip()
+                title = snapshot.get("session_title") or ""
+
+                def _left(path_label: str, git_label: str) -> list:
+                    value: list = [(_DIM, " ☤ "), (_STRONG, " ◉ "), (_STRONG, model), (_SB, "  ")]
+                    if path_label:
+                        value.extend([(_STRONG, path_label), (_SB, "  ")])
+                    if git_label:
+                        value.extend([("class:status-bar-good", "⑂ "), ("class:status-bar-good", git_label), (_SB, " ")])
+                    return value
+
+                # OMP-style semantic degradation: collapse path parents, then
+                # dirty details, then the optional repo groups; never clip a
+                # glyph or counter in half.
+                path_options = [workspace]
+                if workspace:
+                    short = "/".join(workspace.rstrip("/").split("/")[-2:])
+                    path_options.extend([short, ""])
+                else:
+                    path_options.append("")
+                git_options = [git]
+                if git:
+                    git_options.extend([git.split()[0], ""])
+                else:
+                    git_options.append("")
+                title_text = f" {title} " if title else ""
+                title_width = self._status_bar_display_width(title_text)
+                left = _left("", "")
+                for path_option in path_options:
+                    for git_option in git_options:
+                        candidate = _left(path_option, git_option)
+                        candidate_width = sum(self._status_bar_display_width(text) for _, text in candidate)
+                        if candidate_width + title_width + 12 <= width:
+                            left = candidate
+                            break
+                    else:
+                        continue
+                    break
+
+                left_width = sum(self._status_bar_display_width(text) for _, text in left)
+                rail_width = max(1, width - left_width - title_width)
+                # Compute the label from the same used/max pair rendered by the
+                # context detail segment; provider percentages can lag a turn.
+                context_length = snapshot.get("context_length") or 0
+                context_tokens = snapshot.get("context_tokens") or 0
+                percent = (
+                    max(0, min(100, round(context_tokens / context_length * 100)))
+                    if context_length else snapshot.get("context_percent"))
+                percent_value = max(0, min(100, int(percent or 0)))
+                pct_label = f"{percent_value}%" if percent is not None else "--"
+                max_label = (
+                    format_token_count_compact(snapshot["context_length"])
+                    if snapshot.get("context_length") else "--")
+                cells = ["─"] * rail_width
+                max_start = max(0, rail_width - len(max_label) - 1)
+                usable = max(1, max_start)
+                used = max(0, min(usable - 1, round(percent_value / 100 * usable)))
+                pct_start = max(0, min(max(0, max_start - len(pct_label) - 1), used - len(pct_label) // 2))
+                for i, ch in enumerate(pct_label):
+                    if pct_start + i < rail_width:
+                        cells[pct_start + i] = ch
+                if rail_width >= 16:
+                    boundary = min(max(pct_start + len(pct_label) + 1, round(usable * 0.8)), max_start - 1)
+                    if 0 <= boundary < rail_width:
+                        cells[boundary] = "┃"
+                for i, ch in enumerate(max_label):
+                    if max_start + i < rail_width:
+                        cells[max_start + i] = ch
+                rail = "".join(cells)
+                active_end = max(0, rail.find(pct_label) + len(pct_label))
+                boundary_at = rail.find("┃", active_end)
+                capacity_at = rail.rfind(max_label)
+                if boundary_at < 0:
+                    boundary_at = capacity_at
+                active_style = self._status_bar_context_style(percent).replace("status-bar-", "status-gauge-")
+                fragments = left + [
+                    (active_style, rail[:active_end]),
+                    (_GAUGE_DIM, rail[active_end:boundary_at]),
+                    (_GAUGE_STRONG, rail[boundary_at:boundary_at + 1]),
+                    (_GAUGE_DIM, rail[boundary_at + 1:capacity_at]),
+                    (_GAUGE_STRONG, rail[capacity_at:capacity_at + len(max_label)]),
+                    (_GAUGE_DIM, rail[capacity_at + len(max_label):]),
+                ]
+                if title_text:
+                    fragments.append((_GAUGE_STRONG, title_text))
+                # wcwidth can differ from Python len() for the Hermes mark.
+                # Remove any excess from a dim rail run, never from a label.
+                overflow = sum(self._status_bar_display_width(text) for _, text in fragments) - width
+                if overflow > 0:
+                    for index in range(len(left), len(fragments) - (1 if title_text else 0)):
+                        style, text = fragments[index]
+                        if style == _GAUGE_DIM and self._status_bar_display_width(text) >= overflow:
+                            fragments[index] = (style, text[overflow:])
+                            break
+                return fragments
 
             session_title = (snapshot.get("session_title") or "") if _ok("title") else ""
             segs = self._status_bar_segments(

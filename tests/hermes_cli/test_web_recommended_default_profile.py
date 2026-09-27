@@ -46,9 +46,10 @@ def test_nous_recommendation_reads_the_requested_profile(client):
     assert named.json()["free_tier"] is True
 
 
-def test_nous_recommendation_unknown_profile_is_404(client):
+@pytest.mark.parametrize("provider", ["nous", "openrouter"])
+def test_recommendation_unknown_profile_is_404(client, provider):
     resp = client.get("/api/model/recommended-default",
-                      params={"provider": "nous", "profile": "no-such-profile"})
+                      params={"provider": provider, "profile": "no-such-profile"})
 
     assert resp.status_code == 404, resp.text
     assert "no-such-profile" in resp.json()["detail"]

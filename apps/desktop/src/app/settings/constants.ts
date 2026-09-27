@@ -401,11 +401,15 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.kittentts.voice',
   'tts.piper.voice',
   'tts.deepinfra.model',
-  'tts.deepinfra.voice'
+  'tts.deepinfra.voice',
+  'voice.mic_device_id',
+  'voice.speaker_device_id'
 ])
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   model: 'Default Model',
+  'voice.mic_device_id': 'Microphone',
+  'voice.speaker_device_id': 'Speaker',
   modelContextLength: 'Main model context window (override)',
   fallbackProviders: 'Fallback Models',
   toolsets: 'Enabled Toolsets',
@@ -585,6 +589,10 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
 
 export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   model: 'Used for new chats unless you pick a different model in the composer.',
+  'voice.mic_device_id':
+    'Which microphone to record from. "System default" follows whatever macOS is currently set to — picking a device here pins it, so a headset connecting later cannot take over mid-session.',
+  'voice.speaker_device_id':
+    'Which speaker to play replies through. Separate from the wake-word input_device, which is a PortAudio device used by the Python side.',
   modelContextLength:
     "Overrides the detected context window of the MAIN chat model only (tokens). Leave at 0 to use the selected model's detected value. Does not affect auxiliary/MoA models.",
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
@@ -804,6 +812,10 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
+      // Device rows (browser device ids; empty = system default). Grouped with the other voice
+      // capture keys, and rendered by voice-device-picker.tsx rather than the generic text box.
+      'voice.mic_device_id',
+      'voice.speaker_device_id',
       'voice.max_recording_seconds',
       'voice.client_direct'
     ]

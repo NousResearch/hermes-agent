@@ -3,6 +3,7 @@ import { resolveGatewayWsUrl } from '@hermes/shared'
 import type { OwnerScope } from '@/api/client'
 import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/hermes'
 import { directTtsConfig, type DirectTtsConfig, synthesizeSpeechClientDirect } from '@/lib/voice-client-direct'
+import { applyAudioOutputDevice } from '@/lib/voice-devices'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $voicePlayback,
@@ -282,6 +283,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         try {
           await new Promise<void>((resolve, reject) => {
             const audio = new Audio(url)
+            void applyAudioOutputDevice(audio)
             playing = audio
             audio.addEventListener('ended', () => resolve(), { once: true })
             audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
@@ -595,6 +597,7 @@ async function playSpeechDataUrl(
   }
 
   const audio = new Audio(response.data_url)
+  void applyAudioOutputDevice(audio)
   currentAudio = audio
   setVoicePlaybackState(currentState('speaking', options, audio))
 

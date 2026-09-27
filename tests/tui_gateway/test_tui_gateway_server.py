@@ -13931,7 +13931,12 @@ def test_interrupt_drops_queued_prompt_for_session():
 
 
 def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
-    """Stop during lazy agent startup must not start the turn after init finishes."""
+    """Stop during lazy agent startup must not start the turn after init finishes.
+
+    ``agent_ready`` is a real, never-set Event, as ``session.create`` seeds it while the deferred
+    build is in flight, and ``_wait_agent`` is NOT stubbed: either one hides a Stop that waits on
+    the very build it is cancelling.
+    """
     threads = []
     calls = {"run_prompt": 0}
 
@@ -13948,6 +13953,7 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
 
     session = _session()
     session["agent"] = None
+    session["agent_ready"] = threading.Event()
     server._sessions["sid"] = session
 
     try:
@@ -13956,7 +13962,6 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
-        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
         monkeypatch.setattr(
             server,
             "_run_prompt_submit",
@@ -13981,6 +13986,8 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
         )
         assert stop.get("result"), f"got error: {stop.get('error')}"
 
+        # The build now completes: the "after init finishes" the docstring names.
+        session["agent_ready"].set()
         threads[0].target()
 
         assert calls["run_prompt"] == 0
@@ -14018,6 +14025,7 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
 
     session = _session()
     session["agent"] = None
+    session["agent_ready"] = threading.Event()
     server._sessions["sid"] = session
 
     try:
@@ -14026,7 +14034,6 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
-        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
         monkeypatch.setattr(
             server,
             "_run_prompt_submit",
@@ -14052,8 +14059,9 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
         assert stop.get("result"), f"got error: {stop.get('error')}"
         assert session.get("_turn_cancel_requested") is True
 
-        # The deferred run thread now wakes up; without the emit it would bail
-        # silently and the Desktop would never learn the turn was dropped.
+        # The build completes and the deferred run thread wakes up; without the emit it would
+        # bail silently and the Desktop would never learn the turn was dropped.
+        session["agent_ready"].set()
         threads[0].target()
 
         assert calls["run_prompt"] == 0

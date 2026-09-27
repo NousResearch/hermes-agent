@@ -21,6 +21,14 @@
 
 ## Install
 
+### Agent Czesiek installer (recommended)
+
+No existing Hermes installation is required. The Windows NSIS installer creates
+an **Agent Czesiek** desktop and Start Menu shortcut with the Czesiek icon.
+On first launch, the app downloads its pinned runtime from this repository and
+installs the required dependencies. Internet access is required; this is not an
+offline installer. See the [installation guide](../../docs/CZESIEK_INSTALLATION.md).
+
 ### Install with the Hermes CLI (development)
 
 Already have the Hermes CLI? Just run:
@@ -49,7 +57,9 @@ hermes update
 
 ## Requirements
 
-The installer handles everything for you (Python 3.11+, a portable Git, ripgrep).
+The first-launch bootstrap provisions the runtime dependencies, including Python
+3.11+, Git and ripgrep when needed. Installing the desktop shell and completing
+runtime setup are separate steps.
 
 ---
 
@@ -87,9 +97,10 @@ Installers are built and uploaded to [Agent Czesiek GitHub Releases](https://git
 ### How it works
 
 The packaged app ships the Electron shell and a native React chat surface. On
-first launch it can install the Hermes Agent runtime into `HERMES_HOME`
-(`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows), using the same layout as a
-CLI install.
+first launch it installs its own Hermes Agent runtime into the Czesiek data
+directory (`~/.ai-evolution-jarvis/hermes-home`, or
+`%LOCALAPPDATA%\AI Evolution Jarvis\hermes-home` on Windows). The historical
+directory name is retained for upgrade compatibility.
 
 The app has three boundaries:
 
@@ -106,8 +117,9 @@ Backend resolution is an ordered ladder:
 1. `HERMES_DESKTOP_HERMES_ROOT`
 2. the current source checkout during development
 3. a completed managed install
-4. `HERMES_DESKTOP_HERMES`, or `hermes` on `PATH`
-5. a system Python that can import the Hermes runtime
+4. `HERMES_DESKTOP_HERMES` (explicit deployment override); automatic `PATH`
+   discovery only in development
+5. a system Python that can import the Hermes runtime (development only)
 6. the first-launch bootstrap installer
 
 Candidates are probed before use; an existing shim or interpreter is not enough.

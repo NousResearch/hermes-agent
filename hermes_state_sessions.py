@@ -1576,7 +1576,9 @@ class SessionSessionsMixin:
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
-            if exclude_active_write_guards and self._write_guards_reject(conn, session_id):
+            if exclude_active_write_guards and self._write_guards_reject(
+                conn, session_id, allow_closed_compression_parent=True,
+            ):
                 raise SessionActiveWriteGuardError(
                     f"session '{session_id}' has an active turn lease or compression lock"
                 )
@@ -1649,7 +1651,10 @@ class SessionSessionsMixin:
             if not existing:
                 return 0
             if exclude_active_write_guards:
-                active_ids = {sid for sid in existing if self._write_guards_reject(conn, sid)}
+                active_ids = {
+                    sid for sid in existing
+                    if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)
+                }
                 existing = [sid for sid in existing if sid not in active_ids]
                 if skipped_ids is not None:
                     skipped_ids.extend(sorted(active_ids))

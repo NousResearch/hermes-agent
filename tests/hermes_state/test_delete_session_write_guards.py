@@ -39,6 +39,13 @@ def test_delete_session_refuses_when_write_guard_active(tmp_path):
 
     assert db.delete_session("sess-cmp", exclude_active_write_guards=True) is True
     assert db.get_session("sess-cmp") is None
+
+    # 4. An idle compression-ended row is a closed parent, not a live write: delete must succeed
+    #    (no CompressionSessionClosedError leaking out of the guard check).
+    db.create_session("sess-compressed", source="test")
+    db.end_session("sess-compressed", "compression")
+    assert db.delete_session("sess-compressed", exclude_active_write_guards=True) is True
+    assert db.get_session("sess-compressed") is None
     db.close()
 
 

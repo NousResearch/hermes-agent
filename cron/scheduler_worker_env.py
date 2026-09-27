@@ -40,3 +40,38 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     existing = [e for e in worker_env.get("PYTHONPATH", "").split(os.pathsep) if e]
     worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([root, *existing]))
     return worker_env
+
+
+def managed_runtime_python(repo_root: Path, *, windows: bool | None = None) -> Path | None:
+    """The committed dependency environment's own interpreter, or ``None``.
+
+    Under the PM runtime the gateway process runs the bare store Python with the
+    environment's site-packages activated in-process — so a child spawned with
+    ``sys.executable`` sees NEITHER: the subprocess sanitizer strips PYTHONPATH and
+    ``pin_hermes_tree_on_pythonpath`` re-adds only the checkout root, and the worker
+    dies importing ``ruamel`` before its ownership ack (#123400, #123440). The venv
+    interpreter carries its own site-packages (``pyvenv.cfg``), so it imports Hermes
+    modules and managed dependencies directly, and its children resolve their own
+    dependencies and stay clean.
+
+    ``None`` on Windows (its cron invocation overlays venv paths instead), when no
+    environment is committed, or when the interpreter is missing. *windows* lets a
+    POSIX process answer the POSIX layout (pure data, never ``sys.platform``).
+    """
+    import sys
+
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        return None
+    try:
+        from pm.environments import committed_venv, venv_python
+
+        python = venv_python(committed_venv(repo_root), windows=windows)
+    except Exception:
+        return None
+    if python == Path(sys.executable):
+        return None  # already the running interpreter — keep the launch contract
+    if not python.is_file():
+        return None
+    return python

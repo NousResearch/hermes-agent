@@ -17,8 +17,17 @@ This module is the standing detector for that state. After a publish (an update,
 a ``hermes pm install``, a launcher repair) it spawns one throwaway child as
 ``<runtime> -m hermes_cli.main --version`` plus the import probe for the modules
 that path needs, both under a clean environment and from a cwd that is not the
-checkout. A failure RAISES (``verify_published_runtime``) instead of being
-logged: an install whose dispatcher cannot spawn children is a failed install.
+checkout. The interpreter it spawns is the one the published launcher really
+embeds, in every case -- including the store-interpreter row a missing or
+unusable generation publishes, which is the state the fault appeared in and
+which the check therefore cannot skip.
+
+What a failure means depends on whether a dependency generation is committed:
+with one, the launcher promised a runtime that carries the dependencies, so a
+child that cannot spawn is a failed install and ``verify_published_runtime``
+RAISES. With none, the store interpreter is what a first install legitimately
+publishes (its own launcher body completes the parent in-process), so the same
+failure is a logged health warning -- measured, not raised.
 
 It deliberately does NOT assert on ``hermes --version``. That runs the launcher
 body, which ``hermes_bootstrap`` completes in-process -- the parent passing is
@@ -28,8 +37,10 @@ Standalone use (same code path the publish uses)::
 
     python -m hermes_cli.child_spawn_smoke [ROOT] [--launcher PATH] [--json]
 
-Exit 0 when the runtime spawns children, 1 when it does not (with the failure
-message on stdout/stderr), 2 when there is nothing to check yet.
+Exit 0 when the runtime spawns children, 1 when it does not (the failure message
+on stdout/stderr, and ``committed_generation`` in the JSON verdict telling a
+failed install from a first install's expected store-interpreter row), 2 when no
+interpreter could be read from the launcher at all.
 """
 
 from __future__ import annotations
@@ -53,11 +64,14 @@ if __name__ == "__main__":
     # hermes_cli/_launchers.py): the probe itself is stdlib-only.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-#: Modules a bare ``sys.executable -m hermes_cli.main`` child must import.
-#: ``cron.jobs`` and ``hermes_cli.main`` are the two entry paths the supervisor
-#: spawns; ``ruamel.yaml`` is the config reader the cron worker died on in the
-#: incident, and stands in for the dependency closure in general.
-PROBE_MODULES = ("cron.jobs", "hermes_cli.main", "ruamel.yaml")
+#: Modules a bare ``sys.executable -m <module>`` child must import. Those children
+#: are what a supervisor re-spawns: ``hermes_cli.main`` for kanban workers
+#: (``hermes_cli/kanban_db_dispatch.py::_module_hermes_argv``) and
+#: ``cron.scheduler`` for external cron workers (``cron/scheduler.py:3473``), on
+#: top of ``cron.jobs``, the store that worker opens first. ``ruamel.yaml`` is the
+#: config reader the cron worker died on in the incident and stands in for the
+#: dependency closure in general.
+PROBE_MODULES = ("cron.jobs", "cron.scheduler", "hermes_cli.main", "ruamel.yaml")
 
 #: A child that has not answered in this long is broken, not slow: the same
 #: spawn happens on every cron tick.
@@ -196,13 +210,34 @@ def committed_generation_python(root: Path) -> Path | None:
     return None
 
 
-def published_runtime(root: Path, *, launcher: Path | None = None) -> Path | None:
-    """The interpreter children will inherit, read from the published launcher."""
-    from hermes_cli._launchers import published_runtime_python, resolve_launcher_python
+def launcher_target(root: Path, launcher: Path | None = None) -> Path:
+    """The published launcher file this platform's publish wrote.
 
-    root = Path(root)
-    target = Path(launcher) if launcher is not None else root / ".hermes" / "bin" / "hermes"
-    return published_runtime_python(target) or resolve_launcher_python(root)
+    ``_launchers.mint_launcher`` writes ``hermes.exe`` (distlib) or ``hermes.cmd``
+    (fallback) on Windows -- never a suffix-less ``hermes`` -- and a suffix-less
+    shell launcher on POSIX, so a reader that assumes the POSIX name reads nothing
+    on Windows.
+    """
+    if launcher is not None:
+        return Path(launcher)
+    from hermes_cli._launchers import published_launcher
+
+    return published_launcher(Path(root))
+
+
+def published_runtime(root: Path, *, launcher: Path | None = None) -> Path | None:
+    """The interpreter children will inherit, read from the published launcher.
+
+    Read from the file, never answered from the selection record: the record says
+    what a publish *meant* to embed, and the two differ exactly when a publish
+    embedded a stale runtime -- the state this module exists to catch. Nothing
+    readable (no launcher file, bytes that name no interpreter) answers ``None``,
+    and the caller reports that it could not check instead of inferring a verdict
+    from the record.
+    """
+    from hermes_cli._launchers import published_runtime_python
+
+    return published_runtime_python(launcher_target(Path(root), launcher))
 
 
 def render_failure(result: ProbeResult, *, launcher: Path) -> tuple[str, str]:
@@ -231,20 +266,29 @@ def verify_published_runtime(root: Path, *, launcher: Path | None = None,
                             ) -> ProbeResult | None:
     """Prove the published runtime can spawn children; raise when it cannot.
 
-    Returns ``None`` when there is nothing to prove yet (no committed generation
-    to be consistent with) or nothing to read the runtime from. Raises
-    ``pm.package.InstallError`` when the interpreter the launcher embeds cannot
-    run a bare child -- the state that leaves kanban and cron silent.
+    The probe runs on the interpreter the launcher really embeds, in every case --
+    including the store-interpreter row, where no committed generation makes the
+    store Python the published runtime and a failed probe is the 2026-09-25 fault
+    itself rather than a reason to skip.
+
+    A committed generation raises the promise this checks, so a child that cannot
+    spawn is ``pm.package.InstallError``. With no generation committed, the store
+    interpreter is what a first install publishes and its launcher body completes
+    the parent in-process, so the same failure is a logged health warning: raising
+    there would fail installs that are behaving correctly.
+
+    Returns ``None`` only when no runtime could be read from the launcher (no
+    published file yet, or bytes that name no interpreter) -- "could not check",
+    never "checked and fine".
     """
     root = Path(root)
-    target = Path(launcher) if launcher is not None else root / ".hermes" / "bin" / "hermes"
-    if committed_generation_python(root) is None:
-        log.info("child-spawn smoke check skipped: %s has no usable committed "
-                 "dependency generation yet", root)
-        return None
+    target = launcher_target(root, launcher)
+    generation = committed_generation_python(root)
     python = published_runtime(root, launcher=target)
     if python is None:
-        log.info("child-spawn smoke check skipped: no runtime could be read from %s", target)
+        log.warning("child-spawn smoke check could not read an interpreter from %s; "
+                    "nothing was proven about this install's ability to spawn a child "
+                    "(kanban/cron workers)", target)
         return None
     result = probe(python, timeout=timeout)
     if result.ok:
@@ -252,9 +296,19 @@ def verify_published_runtime(root: Path, *, launcher: Path | None = None,
                  "clean environment", python)
         return result
 
+    cause, remedy = render_failure(result, launcher=target)
+    if generation is None:
+        log.warning(
+            "child-spawn smoke check: %s. This install has no usable committed "
+            "dependency generation, so the store interpreter is the runtime its "
+            "launcher publishes and the launcher body completes it in-process; the "
+            "probe is reported as a health signal, not a failed install. %s",
+            cause, remedy,
+        )
+        return result
+
     from pm.package import InstallError
 
-    cause, remedy = render_failure(result, launcher=target)
     raise InstallError("child-spawn", cause, remedy)
 
 
@@ -275,36 +329,39 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     root = (args.root or Path(__file__).resolve().parents[1]).resolve()
-    launcher = args.launcher or root / ".hermes" / "bin" / "hermes"
-    if committed_generation_python(root) is None:
-        verdict = {"ok": None, "skipped": "no-usable-committed-generation", "root": str(root)}
-        print(json.dumps(verdict) if args.json else
-              f"child-spawn smoke check: skipped (no usable committed dependency generation under {root})")
-        return 2
-    python = published_runtime(root, launcher=launcher)
+    target = launcher_target(root, args.launcher)
+    generation = committed_generation_python(root)
+    python = published_runtime(root, launcher=target)
     if python is None:
-        verdict = {"ok": None, "skipped": "no-runtime-in-launcher", "launcher": str(launcher)}
+        verdict = {"ok": None, "skipped": "no-runtime-readable", "launcher": str(target)}
         print(json.dumps(verdict) if args.json else
-              f"child-spawn smoke check: skipped (no runtime readable from {launcher})")
+              f"child-spawn smoke check: skipped (no interpreter readable from {target})")
         return 2
 
     result = probe_child_spawn(python, timeout=args.timeout)
     if result.ok:
-        print(json.dumps({"ok": True, "python": str(python), "launcher": str(launcher),
+        print(json.dumps({"ok": True, "python": str(python), "launcher": str(target),
+                          "committed_generation": generation is not None,
                           "checks": [{"argv": list(check.argv), "returncode": check.returncode}
                                      for check in result.checks]}) if args.json else
               f"child-spawn smoke check: OK ({python} spawns `-m hermes_cli.main` from a bare cwd)")
         return 0
 
-    cause, remedy = render_failure(result, launcher=launcher)
-    verdict = {"ok": False, "python": str(python), "launcher": str(launcher),
+    cause, remedy = render_failure(result, launcher=target)
+    verdict = {"ok": False, "python": str(python), "launcher": str(target),
+               "committed_generation": generation is not None,
                "missing_module": result.missing_module,
                "checks": [{"argv": list(check.argv), "returncode": check.returncode,
                            "output": check.output} for check in result.checks]}
     if args.json:
         print(json.dumps(verdict))
     else:
-        print(f"child-spawn smoke check FAILED\n\n  {cause}\n\n  {remedy}", file=sys.stderr)
+        note = ("" if generation is not None else
+                "\n\n  No committed dependency generation: this install publishes the store "
+                "interpreter\n  until one exists, so the probe above is a health signal, not a "
+                "failed install.")
+        print(f"child-spawn smoke check FAILED\n\n  {cause}\n\n  {remedy}{note}",
+              file=sys.stderr)
     return 1
 
 

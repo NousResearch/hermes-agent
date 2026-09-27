@@ -10,6 +10,8 @@ read the cron error stream.
 from __future__ import annotations
 
 import json
+import logging
+import sys
 from pathlib import Path
 
 import pytest
@@ -41,7 +43,10 @@ def test_probe_reports_the_missing_module(tmp_path):
     # Both children the supervisor spawns are exercised: the module entry point
     # and the import probe.
     assert result.checks[0].argv[-3:] == ("-m", "hermes_cli.main", "--version")
-    assert "import cron.jobs, hermes_cli.main, ruamel.yaml" in result.checks[1].argv[-1]
+    assert ", ".join(child_spawn_smoke.PROBE_MODULES) in result.checks[1].argv[-1]
+    # The two entry paths a supervisor re-spawns as `sys.executable -m <module>`:
+    # kanban workers, and external cron workers (cron/scheduler.py).
+    assert {"hermes_cli.main", "cron.scheduler"} <= set(child_spawn_smoke.PROBE_MODULES)
 
 
 @pytest.mark.platforms("posix")
@@ -111,15 +116,97 @@ def test_verify_raises_when_the_published_runtime_cannot_spawn_a_child(tmp_path,
 
 
 @pytest.mark.platforms("posix")
-def test_verify_skips_an_install_with_no_committed_generation(tmp_path, monkeypatch):
-    """A first install legitimately publishes the store interpreter."""
-    monkeypatch.setattr(child_spawn_smoke, "committed_generation_python", lambda root: None)
-    called = []
-    monkeypatch.setattr(child_spawn_smoke, "probe_child_spawn",
-                        lambda *a, **kw: called.append(a) or None)
+def test_verify_probes_the_store_interpreter_row_that_used_to_be_skipped(tmp_path, monkeypatch, caplog):
+    """No committed generation IS the state that publishes the store interpreter.
 
-    assert child_spawn_smoke.verify_published_runtime(tmp_path) is None
-    assert called == []
+    The probe is the standing detector for 2026-09-25, so it has to run on the row
+    that fault lived in: an install with no usable generation embeds the
+    dependency-less store Python. Raising there would fail installs that are
+    behaving correctly, so the failure is a logged health signal -- measured, not
+    skipped.
+    """
+    from tests.hermes_cli.test_source_launcher_publication import fixture_tree
+
+    repo, _, _ = fixture_tree(tmp_path, monkeypatch)
+    # No select_generation(): the fixture tree's own state, and the gate that used
+    # to bail out of the check before the probe could run.
+    assert child_spawn_smoke.committed_generation_python(repo) is None
+    dep_less = _stub_interpreter(
+        tmp_path,
+        body="echo \"ModuleNotFoundError: No module named 'hermes_cli'\" >&2\nexit 1",
+    )
+    out = repo / ".hermes" / "bin"
+    out.mkdir(parents=True, exist_ok=True)
+    launcher = _launchers.mint_launcher("hermes", repo, out, dep_less, None)
+    assert launcher is not None
+
+    with caplog.at_level(logging.WARNING):
+        result = child_spawn_smoke.verify_published_runtime(repo)  # must not raise
+
+    assert result is not None, "the check skipped the row it exists for"
+    assert not result.ok
+    assert result.missing_module == "hermes_cli"
+    # The runtime under test was read from the published launcher file, not guessed.
+    assert result.python == dep_less
+    assert "health signal, not a failed install" in caplog.text
+
+
+@pytest.mark.platforms("posix")
+def test_verify_raises_when_a_committed_generations_runtime_cannot_spawn(tmp_path, monkeypatch):
+    """A generation IS committed: its interpreter owning the dependencies is the promise."""
+    from tests.hermes_cli.test_source_launcher_publication import fixture_tree
+
+    repo, _, _ = fixture_tree(tmp_path, monkeypatch)
+    dep_less = _stub_interpreter(
+        tmp_path,
+        body="echo \"ModuleNotFoundError: No module named 'hermes_cli'\" >&2\nexit 1",
+    )
+    monkeypatch.setattr(child_spawn_smoke, "committed_generation_python", lambda root: dep_less)
+    out = repo / ".hermes" / "bin"
+    out.mkdir(parents=True, exist_ok=True)
+    launcher = _launchers.mint_launcher("hermes", repo, out, dep_less, None)
+    assert launcher is not None
+
+    with pytest.raises(InstallError) as raised:
+        child_spawn_smoke.verify_published_runtime(repo)
+
+    message = str(raised.value)
+    assert str(dep_less) in message
+    assert "hermes_cli" in message
+    assert str(launcher) in message
+
+
+@pytest.mark.platforms("posix")
+def test_verify_passes_a_launcher_whose_runtime_spawns_a_child(tmp_path, monkeypatch):
+    """The passing verdict has to survive the read-back: a good runtime stays good."""
+    from tests.hermes_cli.test_source_launcher_publication import fixture_tree
+
+    repo, _, _ = fixture_tree(tmp_path, monkeypatch)
+    working = _stub_interpreter(tmp_path, body="echo hermes 0.0.0-fixture\nexit 0")
+    monkeypatch.setattr(child_spawn_smoke, "committed_generation_python", lambda root: working)
+    out = repo / ".hermes" / "bin"
+    out.mkdir(parents=True, exist_ok=True)
+    assert _launchers.mint_launcher("hermes", repo, out, working, None) is not None
+
+    result = child_spawn_smoke.verify_published_runtime(repo)
+
+    assert result is not None and result.ok
+    assert result.python == working
+    assert not result.timed_out
+
+
+@pytest.mark.platforms("posix")
+def test_verify_never_answers_from_the_selection_record(tmp_path, monkeypatch, caplog):
+    """A readable record is not a read-back: with no launcher file, report that."""
+    monkeypatch.setattr(child_spawn_smoke, "committed_generation_python",
+                        lambda root: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_launcher_python", lambda root: Path(sys.executable))
+
+    with caplog.at_level(logging.WARNING):
+        result = child_spawn_smoke.verify_published_runtime(tmp_path)
+
+    assert result is None
+    assert "could not read an interpreter" in caplog.text
 
 
 @pytest.mark.platforms("posix")
@@ -157,6 +244,54 @@ def test_published_runtime_python_reads_the_launcher_body(tmp_path):
     assert _launchers.published_runtime_python(tmp_path / "missing") is None
 
 
+def test_published_launcher_resolves_the_name_each_platform_writes(tmp_path):
+    """Windows publishes `hermes.exe` or `hermes.cmd`; there is no suffix-less one."""
+    out = tmp_path / ".hermes" / "bin"
+    out.mkdir(parents=True)
+
+    assert _launchers.published_launcher(tmp_path, windows=False) == out / "hermes"
+    assert _launchers.published_launcher(tmp_path, windows=True) == out / "hermes.exe"
+
+    (out / "hermes.cmd").write_text("@echo off\r\n", encoding="utf-8")
+    assert _launchers.published_launcher(tmp_path, windows=True) == out / "hermes.cmd"
+
+    (out / "hermes.exe").write_bytes(b"MZ")
+    assert _launchers.published_launcher(tmp_path, windows=True) == out / "hermes.exe"
+    assert _launchers.published_launcher(tmp_path, windows=False) == out / "hermes"
+
+
+def test_published_runtime_python_reads_a_windows_trampoline(tmp_path):
+    """distlib writes ``launcher + shebang + zip payload``; the shebang is the runtime."""
+    interpreter = tmp_path / "gen" / "Scripts" / "python.exe"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"MZ")
+
+    launcher = tmp_path / "hermes.exe"
+    launcher.write_bytes(
+        b"MZ\x90\x00" + b"\x00" * 64
+        + f'#!"{interpreter}" -I'.encode("utf-8")
+        # A payload is compressed bytes that could match anything: it is never read.
+        + b"PK\x03\x04" + b"not the loader: #!C:\\wrong\\python.exe -I"
+    )
+
+    assert _launchers.published_runtime_python(launcher) == interpreter
+
+
+def test_published_runtime_python_reads_a_windows_cmd_launcher(tmp_path):
+    """The no-distlib fallback quotes its interpreter on the first command line."""
+    interpreter = tmp_path / "gen" / "Scripts" / "python.exe"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"MZ")
+
+    launcher = tmp_path / "hermes.cmd"
+    launcher.write_text(
+        f'@echo off\r\n"{interpreter}" -I -c "import base64" %*\r\n', encoding="utf-8",
+    )
+
+    assert _launchers.published_runtime_python(launcher) == interpreter
+    assert _launchers.published_runtime_python(tmp_path / "absent.cmd") is None
+
+
 @pytest.mark.platforms("posix")
 def test_publish_launchers_runs_the_child_probe(tmp_path, monkeypatch):
     from tests.hermes_cli.test_source_launcher_publication import fixture_tree
@@ -174,7 +309,11 @@ def test_publish_launchers_runs_the_child_probe(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("posix")
 def test_publish_launchers_passes_an_install_that_never_committed_a_generation(tmp_path, monkeypatch):
-    """The real gate, unpatched: a fixture tree has no usable generation."""
+    """The real verdict path, unpatched: a fixture tree has no usable generation.
+
+    The probe now runs here (it used to bail before it) and its failure is a health
+    warning, so a publish that is behaving correctly still must not raise.
+    """
     from tests.hermes_cli.test_source_launcher_publication import fixture_tree
 
     repo, _, _ = fixture_tree(tmp_path, monkeypatch)

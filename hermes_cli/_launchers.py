@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -165,6 +166,91 @@ def resolve_launcher_python(repo_root: Path) -> Path | None:
     return store_python
 
 
+#: Names ``mint_launcher`` writes, in the order a reader should prefer them:
+#: distlib's PE trampoline, the command-file fallback, and the POSIX shell script.
+#: Keep in lockstep with the writer.
+LAUNCHER_SUFFIXES = (".exe", ".cmd", "")
+
+
+def published_launcher(repo_root: Path, name: str = "hermes", *,
+                       windows: bool | None = None) -> Path:
+    """The file a publish wrote (or would write) for *name* on this platform.
+
+    ``mint_launcher`` writes ``hermes.exe`` when distlib is available and
+    ``hermes.cmd`` when it is not on Windows -- there is no suffix-less ``hermes``
+    there -- and one suffix-less shell launcher on POSIX. A caller that reads a
+    launcher back has to resolve the name the platform really uses, or it reads
+    nothing on Windows. When no candidate exists the first one is returned, so the
+    path in a message still names the file a publish would have written.
+    """
+    out_dir = Path(repo_root) / ".hermes" / "bin"
+    suffixes = LAUNCHER_SUFFIXES if (_is_windows() if windows is None else windows) else ("",)
+    for suffix in suffixes:
+        candidate = out_dir / f"{name}{suffix}"
+        if candidate.is_file():
+            return candidate
+    return out_dir / f"{name}{suffixes[0]}"
+
+
+#: ``#!<interpreter> -I`` as distlib writes it: the shebang is appended to the PE
+#: loader (``launcher + shebang + zip payload``), quoted when the path has spaces.
+_EXE_SHEBANG = re.compile(r"#![\"']?(?P<path>[^\r\n\"']+?)[\"']?\s+-I")
+
+#: ``"<interpreter>" -I -c ...`` -- the first command line of a ``.cmd`` launcher.
+_CMD_INTERPRETER = re.compile(r"^[\"']?(?P<path>[^\"'\r\n]+?)[\"']?\s+-I\s")
+
+
+def _without_interpreter_args(value: str) -> str:
+    """``C:\\py\\python.exe -I`` -> the path. A quoted path needs no help."""
+    parts = value.strip().split(" ")
+    while len(parts) > 1 and parts[-1].startswith("-"):
+        parts.pop()
+    return " ".join(parts)
+
+
+def _exe_published_python(exe: Path) -> Path | None:
+    """The interpreter a distlib trampoline embeds, read from its bytes.
+
+    distlib writes ``launcher + shebang + zip payload``, so the shebang is in the
+    loader prefix; a payload is compressed and could match anything, so the prefix
+    is asked first and the rest of the file only when it answers nothing. There is
+    no structure to parse -- the shebang is a comment line the trampoline reads.
+    """
+    try:
+        data = exe.read_bytes()
+    except OSError:
+        return None
+    payload = data.find(b"PK\x03\x04")
+    regions = [data[:payload]] if payload > 0 else []
+    regions.append(data)
+    candidates: list[Path] = []
+    for region in regions:
+        for encoding in ("utf-8", "utf-16-le"):
+            for match in _EXE_SHEBANG.finditer(region.decode(encoding, errors="ignore")):
+                candidates.append(Path(match.group("path").strip()))
+        if candidates:
+            break
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _cmd_published_python(cmd: Path) -> Path | None:
+    """The interpreter a ``.cmd`` launcher runs, from its first command line."""
+    try:
+        text = cmd.read_text(encoding="utf-8-sig", errors="replace")
+    except (OSError, UnicodeError):
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.lower().startswith("@echo"):
+            continue
+        match = _CMD_INTERPRETER.match(stripped)
+        return Path(match.group("path").strip()) if match else None
+    return None
+
+
 def published_runtime_python(launcher: Path) -> Path | None:
     """The interpreter a launcher FILE embeds, or ``None`` when it cannot say.
 
@@ -172,16 +258,22 @@ def published_runtime_python(launcher: Path) -> Path | None:
     selection record; this answers what the bytes on disk actually hold, which is
     what a supervisor's ``sys.executable`` descends from. The two differ exactly
     when a publish embedded a stale runtime, so a post-publish probe must read the
-    file, not ask the record again.
+    file, not ask the record again -- and it must read the file this platform
+    publishes (``published_launcher``).
 
-    POSIX shell launchers only: the guarded body assigns ``hermes_python`` once
-    for the runtime and once for the fallback, and the plain body leads with
-    ``exec``. A Windows trampoline's shebang lives inside a zip payload, so there
-    is nothing to read back there — callers fall back to the record.
+    Every launcher form is readable. A POSIX shell body assigns ``hermes_python``
+    once for the runtime and once for the fallback (the guarded body) or leads
+    with ``exec``; a Windows ``.exe`` trampoline carries its runtime as a shebang
+    line in the loader prefix, and the ``.cmd`` fallback quotes it on its first
+    command line. ``None`` means the file named no interpreter, never that the
+    record should be consulted instead.
     """
     target = Path(launcher)
-    if target.suffix.lower() in (".exe", ".cmd"):
-        return None
+    suffix = target.suffix.lower()
+    if suffix == ".exe":
+        return _exe_published_python(target)
+    if suffix == ".cmd":
+        return _cmd_published_python(target)
     try:
         text = target.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError):

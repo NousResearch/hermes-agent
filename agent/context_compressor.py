@@ -5299,11 +5299,16 @@ Write only the summary body. Do not include any preamble or prefix."""
         telemetry["failure_class"] = "summary_overload_degraded" if self._last_summary_overload_degraded else (
             telemetry.get("failure_class") or ("feasibility_skip" if feasibility_skip else "summary_generation_failed")
         )
-        return self._build_static_fallback_summary(
+        summary = self._build_static_fallback_summary(
             turns_to_summarize,
             # A stale error from an earlier failure must not be embedded in a feasibility-skip fallback.
             reason=None if feasibility_skip else self._last_summary_error,
         )
+        # The fallback row replaces the older handoff in the transcript, and the next compaction drops
+        # handoff rows from its window as "already folded into _previous_summary". Publish it like a
+        # real summary so its anchors reach the next summarizer instead of the stale in-memory one.
+        self._previous_summary = self._strip_summary_prefix(summary)
+        return summary
 
     def _assemble_tail(
         self, messages: List[Dict[str, Any]], compress_end: int, tail_start: int, summary_indices: set,

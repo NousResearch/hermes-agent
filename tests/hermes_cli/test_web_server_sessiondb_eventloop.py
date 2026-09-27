@@ -43,7 +43,7 @@ def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):
         )
     )
 
-    assert result == {"ok": True, "deleted": 2}
+    assert result == {"ok": True, "deleted": 2, "skipped_active": []}
     assert db_modes == [False]
     assert db_threads
     assert all(thread_id != loop_thread for thread_id in db_threads)

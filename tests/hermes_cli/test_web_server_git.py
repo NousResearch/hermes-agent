@@ -313,3 +313,82 @@ def test_worktree_add_from_origin_base_on_tag_pinned_clone(tmp_path):
         cwd=clone, capture_output=True, text=True,
     )
     assert upstream.returncode != 0
+
+
+def _narrow_clone(tmp_path, *, seed_tracking_ref=False):
+    """A tag-pinned narrow clone (bare origin + --single-branch --branch <tag>) whose
+    remote.origin.fetch maps only the tag — the shape older installers made."""
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+
+    def og(*args):
+        subprocess.run(["git", *args], cwd=origin, check=True, capture_output=True, text=True)
+
+    og("init", "-q", "-b", "main", "--bare")
+    work = tmp_path / "worktree-src"
+    work.mkdir()
+
+    def wg(*args):
+        subprocess.run(["git", *args], cwd=work, check=True, capture_output=True, text=True)
+
+    wg("init", "-q", "-b", "main")
+    wg("-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "--allow-empty", "-m", "c1")
+    wg("tag", "v0")
+    wg("branch", "feature")
+    wg("-c", "user.email=t@example.com", "-c", "user.name=Test", "commit", "-q", "--allow-empty", "-m", "c2")
+    tip = subprocess.run(["git", "rev-parse", "feature"], cwd=work, check=True,
+                         capture_output=True, text=True).stdout.strip()
+    wg("push", "-q", str(origin), "main", "feature", "v0")
+
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--single-branch", "--branch", "v0", str(origin), str(clone)],
+                   check=True, capture_output=True, text=True)
+    if seed_tracking_ref:
+        subprocess.run(["git", "fetch", "-q", "origin",
+                        "+refs/heads/feature:refs/remotes/origin/feature"],
+                       cwd=clone, check=True, capture_output=True, text=True)
+    return clone, tip
+
+
+def test_worktree_add_existing_branch_materializes_missing_tracking_ref(client, tmp_path):
+    """On a tag-pinned narrow clone the tracking ref never exists, so `origin/feature` used to
+    be read as a local branch name and worktree creation died with `invalid reference`."""
+    clone, tip = _narrow_clone(tmp_path)
+
+    added = client.post(
+        "/api/git/worktree/add",
+        json={"path": str(clone), "existingBranch": "origin/feature"},
+    ).json()
+
+    assert added["branch"] == "feature"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=added["path"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert head == tip  # branched from the remote feature, not the tag
+    upstream = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "feature@{upstream}"],
+        cwd=added["path"], capture_output=True, text=True,
+    ).stdout.strip()
+    assert upstream == "origin/feature"
+
+
+def test_worktree_add_existing_branch_tracks_when_refspec_cannot_reverse_map(client, tmp_path):
+    """With the tracking ref present, `worktree add --track` still cannot wire upstream on a
+    narrow clone (remote.origin.fetch maps only the tag); the mirror must set it explicitly."""
+    clone, tip = _narrow_clone(tmp_path, seed_tracking_ref=True)
+
+    added = client.post(
+        "/api/git/worktree/add",
+        json={"path": str(clone), "existingBranch": "origin/feature"},
+    ).json()
+
+    assert added["branch"] == "feature"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=added["path"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert head == tip
+    upstream = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "feature@{upstream}"],
+        cwd=added["path"], capture_output=True, text=True,
+    ).stdout.strip()
+    assert upstream == "origin/feature"

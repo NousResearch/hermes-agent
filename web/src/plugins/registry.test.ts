@@ -1,7 +1,7 @@
 /**
  * Smoke test for the plugin SDK surface additions.
  *
- * Verifies that `exposePluginSDK()` writes the new dialog/toast primitives to
+ * Verifies that `exposePluginSDK()` writes shared UI primitives to
  * `window.__HERMES_PLUGIN_SDK__`. Each new key is checked individually so a
  * regression in one helper doesn't mask the others.
  *
@@ -11,7 +11,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { exposePluginSDK } from "./registry";
 
-describe("plugin SDK dialog/toast surface", () => {
+describe("plugin SDK component surface", () => {
   beforeEach(() => {
     // Reset window between tests so exposePluginSDK() writes fresh.
     (globalThis as unknown as { window: Record<string, unknown> }).window = {
@@ -32,6 +32,12 @@ describe("plugin SDK dialog/toast surface", () => {
     expect(sdk.components.DialogClose).toBeDefined();
     expect(sdk.components.ConfirmDialog).toBeDefined();
     expect(sdk.components.Toast).toBeDefined();
+  });
+
+  it("exposes the design-system Switch on components", () => {
+    exposePluginSDK();
+    const sdk = (globalThis as unknown as { window: { __HERMES_PLUGIN_SDK__: { components: Record<string, unknown> } } }).window.__HERMES_PLUGIN_SDK__;
+    expect(sdk.components.Switch).toBeDefined();
   });
 
   it("exposes useToast and useConfirmDelete on hooks", () => {

@@ -114,6 +114,7 @@ def adapter(monkeypatch):
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_FREE_RESPONSE_AUTO_THREAD",
         "DISCORD_AUTO_THREAD",
+        "DISCORD_AUTO_THREAD_BACKFILL",
         "DISCORD_NO_THREAD_CHANNELS",
         "DISCORD_ALLOWED_CHANNELS",
         "DISCORD_IGNORED_CHANNELS",
@@ -1059,3 +1060,67 @@ class TestNonConversationalTrackerOffload:
         assert sorted(writes[-1]) == ["1", "2"]
 
 
+
+
+def _auto_thread_mention(adapter, channel):
+    bot_user = adapter._client.user
+    return make_message(
+        channel=channel,
+        content=f"<@{bot_user.id}> sum up the discussion above",
+        mentions=[bot_user],
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_skips_parent_backfill_by_default(adapter, monkeypatch):
+    """Default behavior is unchanged: a fresh auto-thread gets no channel context."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+    adapter.config.extra["history_backfill"] = True
+    parent = FakeTextChannel(channel_id=555)
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=777, parent=parent))
+    adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] context")
+
+    await adapter._handle_message(_auto_thread_mention(adapter, parent))
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter._fetch_channel_context.assert_not_awaited()
+    event = adapter.handle_message.await_args.args[0]
+    assert not event.channel_context
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_backfill_reads_parent_channel(adapter, monkeypatch):
+    """With auto_thread_backfill, the new thread starts with the parent channel's recent talk."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_BACKFILL", "true")
+    adapter.config.extra["history_backfill"] = True
+    parent = FakeTextChannel(channel_id=555)
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=777, parent=parent))
+    adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] context")
+
+    message = _auto_thread_mention(adapter, parent)
+    await adapter._handle_message(message)
+
+    adapter._fetch_channel_context.assert_awaited_once()
+    call = adapter._fetch_channel_context.await_args
+    assert call.args[0] is parent
+    assert call.kwargs["before"] is message
+    event = adapter.handle_message.await_args.args[0]
+    assert event.channel_context == "[Recent channel messages]\n[Alice] context"
+    assert event.text == "sum up the discussion above"
+
+
+def test_auto_thread_backfill_yaml_bridge(adapter, monkeypatch):
+    """``config.yaml`` ``discord.auto_thread_backfill`` reaches ``extra`` and the env bridge."""
+    assert not (discord_platform._apply_yaml_config({}, {}) or {}).get("auto_thread_backfill")
+    adapter.config.extra.pop("auto_thread_backfill", None)
+    assert adapter._discord_auto_thread_backfill() is False
+
+    seeded = discord_platform._apply_yaml_config({}, {"auto_thread_backfill": True})
+
+    assert seeded is not None and seeded["auto_thread_backfill"] is True
+    assert os.environ["DISCORD_AUTO_THREAD_BACKFILL"] == "true"
+    adapter.config.extra["auto_thread_backfill"] = True
+    assert adapter._discord_auto_thread_backfill() is True

@@ -361,6 +361,7 @@ class _MatrixFollowupChoice:
     requester: str
     thread_id: str
     profile: str
+    session_id: str
 
 
 @dataclass
@@ -1503,13 +1504,13 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     async def configure_reaction_followups(
         self, session_key: str, enabled: bool, emoji_filter: tuple[str, ...],
-        *, room_id: str, requester: str, thread_id: str, profile: str,
+        *, room_id: str, requester: str, thread_id: str, profile: str, session_id: str,
     ) -> bool:
-        if session_key not in self._active_sessions:
+        if session_key not in self._active_sessions or not session_id:
             return False
         if enabled:
             self._reaction_followup_actions[session_key] = _MatrixFollowupChoice(
-                uuid.uuid4().hex, emoji_filter, room_id, requester, thread_id, profile,
+                uuid.uuid4().hex, emoji_filter, room_id, requester, thread_id, profile, session_id,
             )
         else:
             self._reaction_followup_actions.pop(session_key, None)
@@ -1545,7 +1546,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             saved_source.pop("profile", None)
         self._followup_store().arm(
             action.turn_id, ids, profile=action.profile, room_id=action.room_id,
-            thread_id=action.thread_id, session_key=session_key,
+            thread_id=action.thread_id, session_key=session_key, session_id=action.session_id,
             requester=action.requester, source=saved_source,
             emoji_filter=action.emoji_filter,
         )
@@ -2904,6 +2905,12 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             return
         if (source.profile or "") != candidate["profile"]:
             return
+        session_store = getattr(self, "_session_store", None)
+        if (not candidate["session_id"] or session_store is None
+                or await asyncio.to_thread(
+                    session_store.peek_session_id, candidate["session_key"]
+                ) != candidate["session_id"]):
+            return
         claimed = store.claim(
             source.profile or "", room_id, target_event_id, sender, emoji,
             reaction_time=reaction_time)
@@ -2921,6 +2928,11 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             reply_to_text=target.text[:500] if target and target.text else None,
             reply_to_is_own_message=True,
             user_id=sender, allow_gateway_control=False, defer_until_idle=True,
+            metadata={
+                "gateway_session_key": claimed["session_key"],
+                "gateway_session_id": claimed["session_id"],
+                "gateway_session_strict": True,
+            },
         )
         await self.handle_message(followup)
 

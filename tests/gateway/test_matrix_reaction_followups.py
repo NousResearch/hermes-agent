@@ -29,7 +29,7 @@ def test_queued_nonstreamed_final_arms_after_processing_hook(tmp_path, monkeypat
         event = SimpleNamespace(source=source, message_id=None)
         assert await adapter.configure_reaction_followups(
             "session", True, ("👍",), room_id="!room:test",
-            requester="@alice:test", thread_id="", profile="work",
+            requester="@alice:test", thread_id="", profile="work", session_id="sid",
         )
 
         await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
@@ -79,7 +79,7 @@ def test_queued_final_watches_terminal_turn_requester_and_thread(tmp_path, monke
         tokens = set_session_vars(
             platform="matrix", chat_id="!room:test", chat_type="group",
             user_id="@bob:test", thread_id="$inner", profile="work",
-            session_key="session", transport_adapter=adapter,
+            session_key="session", session_id="sid", transport_adapter=adapter,
         )
         try:
             configured = json.loads(await asyncio.to_thread(
@@ -103,6 +103,7 @@ def test_queued_final_watches_terminal_turn_requester_and_thread(tmp_path, monke
             "profile": "work",
             "thread_id": "$inner",
             "session_key": "session",
+            "session_id": "sid",
             "requester": "@bob:test",
             "source": {
                 **outer_source.to_dict(),
@@ -139,7 +140,7 @@ def test_split_final_delivery_arms_only_successful_replies(tmp_path, monkeypatch
         event = SimpleNamespace(source=source)
         choice_context = {
             "room_id": "!room:test", "requester": "@alice:test",
-            "thread_id": "$thread", "profile": "work",
+            "thread_id": "$thread", "profile": "work", "session_id": "sid",
         }
         await adapter.configure_reaction_followups("session", True, ("👍",), **choice_context)
         await adapter.configure_reaction_followups("session", False, (), **choice_context)
@@ -223,6 +224,7 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
         room_id="!room:test",
         thread_id="$thread",
         session_key="agent:work:matrix:thread:$thread",
+        session_id="sid",
         requester="@alice:test",
         source=source,
         emoji_filter=("👍",),
@@ -245,6 +247,7 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
         "room_id": "!room:test",
         "thread_id": "$thread",
         "session_key": "agent:work:matrix:thread:$thread",
+        "session_id": "sid",
         "requester": "@alice:test",
         "source": source,
         "emoji": "👍",
@@ -259,6 +262,7 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
         room_id="!room:test",
         thread_id="$thread",
         session_key="agent:work:matrix:thread:$thread",
+        session_id="sid",
         requester="@alice:test",
         source=source,
         emoji_filter=(),
@@ -267,8 +271,52 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
     assert restarted.claim("work", "!room:test", "$later", "@alice:test", "✅") is None
 
 
+def test_existing_watch_database_discards_unbound_rows(tmp_path):
+    import json
+    import sqlite3
+
+    path = tmp_path / "watches.sqlite"
+    with sqlite3.connect(path) as db:
+        db.execute("""
+            CREATE TABLE watches (
+                event_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL,
+                profile TEXT NOT NULL, room_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL, session_key TEXT NOT NULL,
+                requester TEXT NOT NULL, source_json TEXT NOT NULL,
+                emoji_json TEXT NOT NULL, expires_at REAL NOT NULL
+            )
+        """)
+        db.execute(
+            "INSERT INTO watches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("$old", "turn-old", "work", "!room:test", "", "session",
+             "@alice:test", json.dumps({"chat_id": "!room:test"}), "[]", 1600.0),
+        )
+
+    store = ReactionWatchStore(path, clock=lambda: 1000.0)
+    assert store.claim("work", "!room:test", "$old", "@alice:test", "👍") is None
+
+    store.arm(
+        "turn-new", ("$new",), profile="work", room_id="!room:test",
+        thread_id="", session_key="session", session_id="sid",
+        requester="@alice:test", source={"chat_id": "!room:test"}, emoji_filter=(),
+    )
+    claimed = store.claim("work", "!room:test", "$new", "@alice:test", "👍")
+    assert claimed == {
+        "profile": "work",
+        "room_id": "!room:test",
+        "thread_id": "",
+        "session_key": "session",
+        "session_id": "sid",
+        "requester": "@alice:test",
+        "source": {"chat_id": "!room:test"},
+        "emoji": "👍",
+        "target_event_id": "$new",
+    }
+
+
 def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
     import asyncio
+    from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
     from gateway.config import Platform
@@ -291,6 +339,7 @@ def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
             platform=Platform.MATRIX, profile="work", **kwargs
         )
         adapter._source_session_key = lambda _: "session"
+        adapter._session_store = SimpleNamespace(peek_session_id=lambda _key: "sid")
         adapter.handle_message = AsyncMock()
         adapter._event_context_cache = MatrixEventContextCache()
         adapter._event_context_cache.store(
@@ -313,6 +362,7 @@ def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
             room_id="!room:test",
             thread_id="$thread",
             session_key="session",
+            session_id="sid",
             requester="@alice:test",
             source=source.to_dict(),
             emoji_filter=("👍",),
@@ -357,6 +407,73 @@ def test_reaction_intake_starts_one_turn_with_actor_target_and_emoji(tmp_path):
     asyncio.run(exercise())
 
 
+def test_reaction_watch_requires_its_original_conversation_at_claim_and_admission(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+
+    async def exercise():
+        current_session = ["old-session"]
+        adapter = object.__new__(MatrixAdapter)
+        adapter._store_dir = tmp_path / "store"
+        adapter._reaction_followup_actions = {
+            "session": _MatrixFollowupChoice(
+                "turn", (), "!room:test", "@alice:test", "", "work", "old-session",
+            )
+        }
+        adapter._session_store = SimpleNamespace(
+            peek_session_id=lambda _key: current_session[0],
+        )
+        adapter._ignored_user_patterns = []
+        adapter._is_authorized_user = lambda _user: True
+        adapter._is_system_or_bridge_sender = lambda _user: False
+        adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        adapter.build_source = lambda **kwargs: SessionSource(
+            platform=Platform.MATRIX, profile="work", **kwargs,
+        )
+        adapter._source_session_key = lambda _source: "session"
+        adapter.handle_message = AsyncMock()
+        adapter._event_context_cache = SimpleNamespace(resolve=AsyncMock(return_value=None))
+        adapter._client = None
+        source = SessionSource(
+            platform=Platform.MATRIX, chat_id="!room:test",
+            user_id="@alice:test", profile="work",
+        )
+        adapter.on_streamed_final_delivery(source, "session", ("$reply",), "Answer")
+
+        current_session[0] = "new-session"
+        await adapter._handle_followup_reaction(
+            "!room:test", "$reply", "👍", "@alice:test", "$stale",
+        )
+        adapter.handle_message.assert_not_awaited()
+
+        current_session[0] = "old-session"
+        await adapter._handle_followup_reaction(
+            "!room:test", "$reply", "👍", "@alice:test", "$queued",
+        )
+        event = adapter.handle_message.await_args.args[0]
+        assert event.metadata == {
+            "gateway_session_key": "session",
+            "gateway_session_id": "old-session",
+            "gateway_session_strict": True,
+        }
+
+        current_session[0] = "new-session"
+        runner = object.__new__(GatewayRunner)
+        runner._session_key_for_source = lambda _source: "session"
+        runner.session_store = SimpleNamespace(
+            lookup_by_session_key=lambda _key: SimpleNamespace(session_id=current_session[0]),
+        )
+        assert await runner._hmwa_resolve_session(event, event.source) is None
+
+    asyncio.run(exercise())
+
+
 def test_streamed_final_arms_visible_original_and_split_events(tmp_path):
     import asyncio
     from types import SimpleNamespace
@@ -371,7 +488,7 @@ def test_streamed_final_arms_visible_original_and_split_events(tmp_path):
         adapter._store_dir = tmp_path / "store"
         adapter._reaction_followup_actions = {
             "session": _MatrixFollowupChoice(
-                "turn", ("👍",), "!room:test", "@alice:test", "", "work",
+                "turn", ("👍",), "!room:test", "@alice:test", "", "work", "sid",
             )
         }
         source = SessionSource(
@@ -421,7 +538,7 @@ def test_transformed_streamed_final_watches_edited_original_event(tmp_path):
         adapter._store_dir = tmp_path / "store"
         adapter._reaction_followup_actions = {
             "session": _MatrixFollowupChoice(
-                "turn", (), "!room:test", "@alice:test", "", "work",
+                "turn", (), "!room:test", "@alice:test", "", "work", "sid",
             )
         }
         adapter.edit_message = AsyncMock(
@@ -506,7 +623,7 @@ def test_queued_first_response_arms_streamed_final_before_next_turn(tmp_path):
         adapter._store_dir = tmp_path / "store"
         adapter._reaction_followup_actions = {
             "session": _MatrixFollowupChoice(
-                "turn", (), "!room:test", "@alice:test", "", "work",
+                "turn", (), "!room:test", "@alice:test", "", "work", "sid",
             )
         }
         source = SessionSource(
@@ -548,6 +665,89 @@ def test_queued_first_response_arms_streamed_final_before_next_turn(tmp_path):
                 "!room:test", "$first"
             )
             is not None
+        )
+
+    asyncio.run(exercise())
+
+
+def test_queued_reconciled_final_arms_edited_reply(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from gateway.config import Platform
+    from gateway.platforms.base import SendResult
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixFollowupChoice
+
+    async def exercise():
+        adapter = object.__new__(MatrixAdapter)
+        adapter._store_dir = tmp_path / "store"
+        adapter._reaction_followup_actions = {
+            "session": _MatrixFollowupChoice(
+                "turn", (), "!room:test", "@alice:test", "", "work", "sid",
+            )
+        }
+        adapter.edit_message = AsyncMock(return_value=SendResult(success=True))
+        source = SessionSource(
+            platform=Platform.MATRIX, chat_id="!room:test",
+            user_id="@alice:test", profile="work",
+        )
+        consumer = SimpleNamespace(message_id="$preview", final_message_ids=("$preview",))
+        runner = object.__new__(GatewayRunner)
+        runner._run_agent_stream_confirmed_final_delivery = lambda *_args, **_kwargs: False
+        runner._is_intentional_silence = lambda *_args: False
+        runner._pop_post_delivery_callback = lambda *_args: None
+        runner._deliver_media_from_response = AsyncMock()
+        result = {"final_response": "Corrected answer"}
+        turn_ctx = SimpleNamespace(
+            mute_notification_reply=False, session_key="session",
+            stream_consumer_holder=[consumer], source=source,
+            _status_thread_metadata={}, event_message_id="$inbound",
+            inbound_message_id="$inbound", persist_user_display_kind=None,
+            reply_expected=True, run_generation=1,
+        )
+
+        await runner._run_agent_deliver_first_response(
+            turn_ctx, adapter, result, result, None,
+        )
+
+        adapter.edit_message.assert_awaited_once()
+        assert result["already_sent"] is True
+        assert ReactionWatchStore(tmp_path / "reaction-followups.sqlite").candidate(
+            "!room:test", "$preview",
+        ) is not None
+
+    asyncio.run(exercise())
+
+
+def test_split_fallback_final_keeps_every_successful_event_id():
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from gateway.platforms.base import SendResult
+    from gateway.stream_consumer import GatewayStreamConsumer
+
+    async def exercise():
+        consumer = GatewayStreamConsumer(object(), "!room:test")
+        consumer._message_id = "$head"
+        consumer._preview_message_ids.add("$head")
+        consumer._segment_preview_message_ids.add("$head")
+        consumer._last_sent_text = "Head "
+        consumer._fallback_len_budget = lambda: (len, 700)
+        consumer._split_text_chunks = lambda *_args, **_kwargs: ["one ", "two ", "three"]
+        consumer._send_with_flood_retry = AsyncMock(side_effect=[
+            SendResult(success=True, message_id="$tail1"),
+            SendResult(success=True, message_id="$tail2b",
+                       continuation_message_ids=("$tail2a",)),
+            SendResult(success=True, message_id="$tail3"),
+        ])
+
+        await consumer._send_fallback_final("Head one two three")
+
+        assert consumer.final_message_ids == (
+            "$head", "$tail1", "$tail2a", "$tail2b", "$tail3",
         )
 
     asyncio.run(exercise())

@@ -141,15 +141,6 @@ export function ConfirmDialog({
             void run()
           }
         }}
-        onOpenAutoFocus={event => {
-          // Focus must land inside the dialog or the handler above never sees
-          // the key: it stays on whatever opened the dialog (a menu item, a
-          // sidebar row) and Enter re-triggers that instead. Radix's default
-          // would take the X — confirm is the button Enter maps to.
-          restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-          event.preventDefault()
-          confirmRef.current?.focus()
-        }}
         onCloseAutoFocus={event => {
           // Radix's own restore needs a DialogTrigger, which a controlled
           // dialog has none of; restore the opener explicitly instead of
@@ -160,6 +151,15 @@ export function ConfirmDialog({
           if (target?.isConnected) {
             target.focus()
           }
+        }}
+        onOpenAutoFocus={event => {
+          // Focus must land inside the dialog or the handler above never sees
+          // the key: it stays on whatever opened the dialog (a menu item, a
+          // sidebar row) and Enter re-triggers that instead. Radix's default
+          // would take the X — confirm is the button Enter maps to.
+          restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+          event.preventDefault()
+          confirmRef.current?.focus()
         }}
       >
         <DialogHeader>

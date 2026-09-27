@@ -18,6 +18,7 @@
   },
   "include": [
     "electron",
+    "e2e/managed-rollout-fixtures.ts",
     "../shared/src/ansi.ts",
     "../shared/src/data-url-read-max.ts",
     "../shared/src/translucency.ts",

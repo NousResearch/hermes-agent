@@ -75,7 +75,6 @@ describe('ConfirmDialog focus return', () => {
     await screen.findByRole('dialog')
 
     fireEvent.keyDown(
-      // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
       document.activeElement!,
       { key: 'Escape' }
     )

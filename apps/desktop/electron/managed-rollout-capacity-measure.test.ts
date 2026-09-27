@@ -20,8 +20,9 @@ import { writeFile } from 'node:fs/promises'
 import { describe, expect, it, vi } from 'vitest'
 
 import { selectManagedRolloutSshFixtures } from '../e2e/managed-rollout-fixtures'
-import { validateHealthEvidence, type HealthEvidence } from '../src/lib/managed-rollout-contract'
+import { type HealthEvidence, validateHealthEvidence } from '../src/lib/managed-rollout-contract'
 import { MAX_EFFECTIVE_WAVE_SIZE, MAX_SWEEP_PROBES } from '../src/lib/managed-rollout-waves'
+
 import { MAX_PROBE_CONCURRENCY, runEvidenceSweep, type SweepTarget } from './managed-rollout-evidence'
 import { createManagedRolloutProvider, type ManagedRolloutProviderDependencies } from './managed-rollout-provider'
 

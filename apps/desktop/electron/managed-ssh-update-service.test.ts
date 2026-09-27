@@ -830,7 +830,7 @@ test('managed service cleanup closes transport before restoring every drained sc
   const result = await runManagedSshUpdate({
     connectionId: 'homelab',
     correlationId: CORRELATION,
-    scopes: [{ key: 'primary', profile: 'default' }, { profile: 'research' }],
+    scopes: [{ key: 'primary', profile: 'default' }, { key: 'research', profile: 'research' }],
     preflightRemote: async () => { events.push('preflight') },
     drainScope: async scope => { events.push(`drain:${scope.profile}`) },
     updateRemote: async () => {
@@ -864,7 +864,7 @@ test('managed service cleanup retains the fence when remote clearance is unavail
   const result = await runManagedSshUpdate({
     connectionId: 'homelab',
     correlationId: CORRELATION,
-    scopes: [{ profile: 'default' }],
+    scopes: [{ key: 'primary', profile: 'default' }],
     preflightRemote: async () => { events.push('preflight') },
     drainScope: async () => { events.push('drain') },
     updateRemote: async () => ({

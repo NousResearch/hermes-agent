@@ -157,3 +157,68 @@ def test_turn_start_runs_the_return_after_the_config_sync():
     source = inspect.getsource(prompt_turn._prepare_turn_input)
     assert 0 < source.index("_sync_agent_model_with_config(sid, session)") < source.index(
         "_return_to_configured_primary(sid, session)")
+
+
+# A resumed chat restores the model it last ran on as ``model_override``, so a chat that ran on the
+# fallback came back pinned to it. The placement saved with the row says that override is only the
+# fallback; a model the user picked carries no placement and stays.
+_PLACEMENT = {"model": FALLBACK["model"], "provider": FALLBACK["provider"]}
+
+
+def _resumed_session(model_config):
+    """Session state as resume builds it from a stored row, through the real row readers."""
+    import json
+
+    row = {"model": FALLBACK["model"], "model_config": json.dumps(model_config)}
+    overrides = server._stored_session_runtime_overrides(row)
+    session = {"agent": types.SimpleNamespace(model=FALLBACK["model"], provider=FALLBACK["provider"]),
+               "session_key": "session-key", "config_model_seen": server._config_model_target(),
+               "model_override": overrides.get("model_override")}
+    if placement := server._stored_pre_agent_fallback(row, overrides):
+        session["pre_agent_fallback"] = placement
+    return session
+
+
+def test_resumed_chat_on_its_fallback_returns_to_the_primary(desktop):
+    session = _resumed_session({"provider": "openrouter", "pre_agent_fallback": _PLACEMENT})
+    assert session["model_override"]["model"] == FALLBACK["model"]
+
+    _turn_start(session)
+    assert desktop["switches"] == []
+
+    desktop["primary_down"] = False
+    _turn_start(session)
+    assert [raw for raw, _kw in desktop["switches"]] == ["claude-opus-5 --provider anthropic"]
+    assert "model_override" not in session and session["pre_agent_fallback"] is None
+
+
+@pytest.mark.parametrize("model_config", [
+    {"provider": "openrouter"},  # no placement: a pick, or a row saved before placements existed
+    {"provider": "openrouter", "pre_agent_fallback": {"model": "other/model", "provider": "openrouter"}},
+])
+def test_resumed_chat_the_user_pinned_stays(desktop, model_config):
+    session = _resumed_session(model_config)
+    desktop["primary_down"] = False
+    _turn_start(session)
+    assert desktop["switches"] == []
+    assert session["model_override"]["model"] == FALLBACK["model"]
+
+
+def test_a_model_pick_replaces_the_fallback_placement(monkeypatch):
+    result = types.SimpleNamespace(
+        success=True, new_model=FALLBACK["model"], target_provider="openrouter", base_url="", api_key="key",
+        api_mode="chat_completions", warning_message="", model_info=None, error_message="",
+        runtime_capabilities=None)
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kw: result)
+    monkeypatch.setattr("hermes_cli.model_cost_guard.expensive_model_warning", lambda *a, **k: None)
+    for name in ("_restart_slash_worker", "_persist_live_session_runtime", "_persist_live_session_system_prompt",
+                 "_append_model_switch_marker", "_emit_session_info"):
+        monkeypatch.setattr(server, name, lambda *a, **k: None)
+    agent = types.SimpleNamespace(model=FALLBACK["model"], provider="openrouter", base_url="", api_key="",
+                                  api_mode="", switch_model=lambda **_kw: None)
+    session = {"agent": agent, "pre_agent_fallback": dict(_PLACEMENT)}
+
+    server._apply_model_switch("sid", session, f"{FALLBACK['model']} --provider openrouter")
+
+    assert session["pre_agent_fallback"] is None
+    assert session["model_override"]["model"] == FALLBACK["model"]

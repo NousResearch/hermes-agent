@@ -47,7 +47,8 @@ def _is_forkable_pool_row(provider_id: str, entry: Any) -> bool:
     # write that block over root's shared row. Same refresh_token gate the block strip uses.
     if not _is_oauth_pool_payload(entry):
         return False
-    return provider_id != "nous" or bool(_block_tokens(entry).get("refresh_token"))
+    # Pool rows are flat (no ``tokens`` nesting), so read refresh_token directly.
+    return provider_id != "nous" or bool(str(entry.get("refresh_token") or "").strip())
 
 
 def _is_oauth_pool_payload(entry: Any) -> bool:

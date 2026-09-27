@@ -3038,6 +3038,8 @@ def load_pool(provider: str) -> CredentialPool:
         auth_mod.heal_forked_single_use_oauth_grants(provider)
     raw_entries = read_credential_pool(provider)
     disk_ids = {e.get("id") for e in raw_entries if isinstance(e, dict) and e.get("id")}
+    # Computed once (auth.json read) after the heal above; see reuse below.
+    owns_provider: Optional[bool] = None
     changed = any(
         isinstance(payload, dict) and sanitize_borrowed_credential_payload(payload, provider) != payload
         for payload in raw_entries
@@ -3068,10 +3070,12 @@ def load_pool(provider: str) -> CredentialPool:
         changed |= singleton_changed or env_changed
         # ``load_pool()`` is a non-destructive read for env-seeded entries
         # (#9331); file-backed singletons still prune when their file is gone.
+        if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and disk_ids:
+            owns_provider = _profile_owns_pool_provider(provider)
         borrowing_root_grant = (
             provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
             and bool(disk_ids)
-            and not _profile_owns_pool_provider(provider)
+            and not owns_provider
         )
         if borrowing_root_grant:
             # Rows read through the global-root fallback are seeded from the
@@ -3096,6 +3100,12 @@ def load_pool(provider: str) -> CredentialPool:
         pool._persist(removed_ids=sorted(disk_ids - {entry.id for entry in entries}))
     # Remember the root's borrowed rows so a later ``add_entry`` in this
     # profile leaves them out of the profile's own store (#100339).
-    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and not _profile_owns_pool_provider(provider):
-        pool._borrowed_root_ids = set(disk_ids)
+    if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+        # Reuse the pre-persist ownership answer unless _persist() just rewrote
+        # the store (it can give the profile its own rows); nothing else between
+        # the two checks touches auth.json.
+        if changed or owns_provider is None:
+            owns_provider = _profile_owns_pool_provider(provider)
+        if not owns_provider:
+            pool._borrowed_root_ids = set(disk_ids)
     return pool

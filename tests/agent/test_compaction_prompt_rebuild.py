@@ -279,7 +279,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
             with patch("agent.prompt_builder.load_soul_md", return_value=""), env(other), \
                  patch("agent.system_prompt.resolve_context_cwd", return_value=other):
                 moved = self._pin_agent(_cached_system_prompt=None, _session_db=db)
-                self.assertIn(f"- Root: {other}", build_system_prompt(moved))
+                self.assertIn(f"- Root: {other.resolve()}", build_system_prompt(moved))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -300,7 +300,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                        return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}"), \
                  patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
                 resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
-                self.assertIn(f"- Root: {repo}", build_system_prompt(resumed))
+                self.assertIn(f"- Root: {repo.resolve()}", build_system_prompt(resumed))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

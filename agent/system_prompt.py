@@ -595,9 +595,16 @@ def _alibaba_identity_part(agent: Any) -> List[str]:
 def _workspace_pin_key() -> str:
     """The directory the workspace probe inspects, which is also the prompt's ``Current working
     directory``: a build with no cwd bound (launch dir) and a later one binding that same dir
-    (TUI ``/compress``) are one workspace, not two."""
+    (TUI ``/compress``) are one workspace, not two.
+
+    Normalized to the resolved real path: a launch-dir key comes from ``os.getcwd()`` (which
+    reports the physical path — ``/private/var/...`` on macOS) while a bound cwd arrives as the
+    session spelled it (``/var/...`` through the symlink). Comparing those spellings misses the
+    pin, the rebuild re-probes git live, and the session-start snapshot is rewritten mid-session
+    — invalidating the cached prompt prefix for a workspace that never changed."""
     try:
-        return str(resolve_context_cwd() or resolve_agent_cwd())
+        raw = str(resolve_context_cwd() or resolve_agent_cwd())
+        return str(Path(raw).resolve()) if raw else ""
     except OSError:  # deleted cwd
         return ""
 
@@ -647,8 +654,12 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
     if not prompt:
         return
     stored_cwd = runtime_host_value(prompt, "Current working directory")
-    if stored_cwd and stored_cwd != key:
-        return
+    if stored_cwd:
+        # Same spelling normalization as _workspace_pin_key: the persisted hints carry the
+        # cwd as that surface spelled it, which can be a symlink spelling of the same
+        # resolved workspace.
+        if not key or Path(stored_cwd).resolve() != Path(key).resolve():
+            return
     block = _persisted_workspace_block(prompt, key)
     # Only a real snapshot is adopted: a prompt without one (built on a surface without the
     # coding posture, or with tools off) leaves the pin open so this build captures one.

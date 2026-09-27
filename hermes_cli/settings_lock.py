@@ -269,34 +269,56 @@ def path_matches(path: str, pattern: str) -> bool:
     return path == pattern
 
 
-def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
-    """Config as dotted leaf paths. Lists are leaves: order and length are part of the value."""
+def _flatten(value: Any, prefix: tuple = ()) -> dict[tuple, Any]:
+    """Config as leaf paths keyed by their segment TUPLE. Lists are leaves: order and length are
+    part of the value.
+
+    Tuples, not dot-joined strings: ``{"approvals": {"mode": x}}`` and a literal key
+    ``{"approvals.mode": y}`` are two YAML nodes, and a joined key let whichever came last hide the
+    other's change from the diff (``hermes config set 'approvals\\.mode' …`` then
+    ``config set --force approvals '{mode: off}'`` changed the locked nested value unseen).
+    """
     if isinstance(value, dict):
-        out: dict[str, Any] = {}
+        out: dict[tuple, Any] = {}
         for key, sub in value.items():
-            out.update(_flatten(sub, f"{prefix}.{key}" if prefix else str(key)))
+            out.update(_flatten(sub, prefix + (key,)))
         return out
     return {prefix: value} if prefix else {}
 
 
+def _spelling(path: tuple) -> str:
+    """The dotted spelling a lock pattern is written in. Ambiguous on purpose — see ``violations``."""
+    return ".".join(str(segment) for segment in path)
+
+
+def _changed(before: Any, after: Any) -> list[tuple]:
+    flat_before, flat_after = _flatten(before or {}), _flatten(after or {})
+    sentinel = object()
+    return [path for path in set(flat_before) | set(flat_after)
+            if flat_before.get(path, sentinel) != flat_after.get(path, sentinel)]
+
+
 def changed_paths(before: Any, after: Any) -> tuple[str, ...]:
     """Dotted paths whose value differs, in either direction (added, removed, or altered)."""
-    flat_before, flat_after = _flatten(before or {}), _flatten(after or {})
-    keys = set(flat_before) | set(flat_after)
-    sentinel = object()
-    return tuple(sorted(k for k in keys
-                        if flat_before.get(k, sentinel) != flat_after.get(k, sentinel)))
+    return tuple(sorted({_spelling(path) for path in _changed(before, after)}))
 
 
 def violations(before: Any, after: Any, spec: dict) -> tuple[str, ...]:
-    """Locked paths this write would change. Empty when the lock is off or nothing locked moved."""
+    """Locked paths this write would change. Empty when the lock is off or nothing locked moved.
+
+    The diff is per node (lossless tuples); the match is on the dotted SPELLING. So a literal key
+    ``approvals.mode`` counts as touching a lock on ``approvals.mode`` exactly like the nested
+    node does — whichever node a reader resolves, neither can change unseen. Refusing literal
+    dotted keys outright instead would break the model/provider IDs (``grok-4.6``) config is full
+    of; matching by spelling refuses only writes whose spelling reaches a locked path.
+    """
     if not is_enabled(spec):
         return ()
     patterns = locked_patterns(spec)
     if not patterns:
         return ()
-    return tuple(path for path in changed_paths(before, after)
-                 if any(path_matches(path, pattern) for pattern in patterns))
+    return tuple(sorted({_spelling(path) for path in _changed(before, after)
+                         if any(path_matches(_spelling(path), pattern) for pattern in patterns)}))
 
 
 # ── password ─────────────────────────────────────────────────────────────────
@@ -508,5 +530,5 @@ def locked_leaf_paths(config: Any, home: Path | str | None = None) -> tuple[str,
     if state.status != "valid":
         return ()
     patterns = locked_patterns(state.spec)
-    return tuple(sorted(path for path in _flatten(config or {})
-                        if any(path_matches(path, pattern) for pattern in patterns)))
+    return tuple(sorted({_spelling(path) for path in _flatten(config or {})
+                         if any(path_matches(_spelling(path), pattern) for pattern in patterns)}))

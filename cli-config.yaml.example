@@ -2199,7 +2199,9 @@ updates:
 #
 # settings_lock:
 #   enabled: true
-#   keys: [approvals.mode, yolo, providers.*]     # exact dotted paths, or `prefix.*`
+#   keys: [approvals.mode, yolo, providers.*]     # exact dotted paths, or `prefix.*`; matched by
+#                                                 # spelling, so a literal `approvals.mode:` key is
+#                                                 # locked like the nested approvals: {mode: ...}
 #   password: "scrypt$16384$8$1$<salt>$<hash>"    # written by `hermes config lock`; optional (--no-password)
 
 

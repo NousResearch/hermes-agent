@@ -84,6 +84,29 @@ def test_hermes_config_set_cannot_disable_the_lock(home, key, value):
     assert sl.is_enabled(sl.lock_spec(home))
 
 
+def test_a_literal_dotted_key_cannot_mask_a_change_to_the_locked_nested_path(home):
+    # The reviewer's sequence: a literal `approvals.mode` sibling, then a --force section rewrite.
+    # With a dot-joined diff the literal key shadowed the nested one and both writes passed.
+    from hermes_cli.config import set_config_value
+
+    before = _text(home / "config.yaml")
+    with pytest.raises(sl.SettingsLockError, match="approvals.mode"):
+        set_config_value("approvals\\.mode", "manual", force=True)
+    assert _text(home / "config.yaml") == before
+
+    # Even if the literal sibling is already there (hand-written), the nested node stays locked.
+    (home / "config.yaml").write_text(CONFIG + "approvals.mode: manual\n" + LOCK, encoding="utf-8")
+    before = _text(home / "config.yaml")
+    with pytest.raises(sl.SettingsLockError, match="approvals.mode"):
+        set_config_value("approvals", '{"mode": "off"}', force=True)
+    assert _text(home / "config.yaml") == before
+    assert _raw(home)["approvals"] == {"mode": "manual"}
+
+    # Control: an unlocked path through a legitimately dotted model ID still writes.
+    set_config_value("models.grok-4\\.6.supports_vision", "true")
+    assert _raw(home)["models"]["grok-4.6"]["supports_vision"] is True
+
+
 # ── the desktop (tui_gateway config.set → _write_config_key → _save_cfg) ─────
 
 

@@ -94,6 +94,7 @@ from plugins.platforms.matrix.reply_context import (
     _MATRIX_REPLY_FALLBACK_PILL_RE, _has_reply_fallback, _split_reply_fallback,
 )
 from plugins.platforms.matrix.thread_context import fetch_thread_entries
+from plugins.platforms.matrix.read_context import read_matrix_context
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -2008,9 +2009,16 @@ class MatrixAdapter(BasePlatformAdapter):
         localpart = (sender or "").strip().lstrip("@").partition(":")[0]
         return not localpart or localpart.startswith("_")
 
+    def _is_allowed_matrix_room(self, room_id: str, chat_type: str = "group") -> bool:
+        return (
+            not self._allowed_room_ids
+            or room_id in self._allowed_room_ids
+            or chat_type == "dm"
+        )
+
     async def _is_allowed_matrix_room_event(self, room_id: str) -> bool:
         """MATRIX_ALLOWED_ROOMS gate; DMs are exempt so personal chats survive a project allowlist."""
-        if not self._allowed_room_ids or room_id in self._allowed_room_ids:
+        if self._is_allowed_matrix_room(room_id):
             return True
         try:
             return await self._is_dm_room(room_id)
@@ -3104,6 +3112,15 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _is_dm_room(self, room_id: str) -> bool:
         return (await self._resolve_room_identity(room_id)).chat_type == "dm"
+
+    async def read_matrix_context(
+        self, kind: str, room_id: str, event_id: str | None, limit: int,
+        *, requester: str,
+    ) -> dict:
+        return await read_matrix_context(
+            self, kind, room_id, event_id, limit,
+            requester=requester,
+        )
 
     async def fetch_thread_context(
         self, chat_id: str, thread_id: str, *, exclude_event_ids: Collection[str] = ()

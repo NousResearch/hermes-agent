@@ -39,8 +39,15 @@ LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
 _MAX_LIVE_BYTES = 2 * 1024 * 1024
 
-_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
+# \Z, not $: $ also matches just before a trailing newline, which would let a
+# value carrying a newline reach the clone/install paths the admission CI
+# already rejects. Keep in sync with scripts/validate_plugin_catalog.py.
+_SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
+_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}\Z")
+_REPO_RE = re.compile(r"^https://\S+\Z")
+# The admission CI joins subdir onto a pinned clone before validating: it must be
+# a plain relative path or the gate can be pointed at files outside the pin.
+_SUBDIR_RE = re.compile(r"^[A-Za-z0-9._/-]+\Z")
 # Catalog images may only come from GitHub: the Desktop catalog browser never fans out to
 # third-party hosts, and a raw URL pinned to the entry's commit is as immutable as the sha.
 IMAGE_HOSTS = ("raw.githubusercontent.com", "github.com")
@@ -52,7 +59,7 @@ def is_allowed_image_url(url: str) -> bool:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
-_NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
+_NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}\Z")
 
 
 @dataclass
@@ -136,10 +143,17 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
     sha = str(data.get("sha") or "").strip().lower()
     tier = str(data.get("tier") or "community")
     category = str(data.get("category") or "desktop")
+    subdir_raw = data.get("subdir")
     problem = (
         f"invalid name {name!r} (must match [a-z0-9_-]{{1,64}})" if not _NAME_RE.match(name)
-        else f"repo must be an https:// URL (got {repo!r})" if not repo.startswith("https://")
+        else f"repo must be an https:// URL (got {repo!r})" if not _REPO_RE.match(repo)
         else f"sha must be a full 40-character hex commit SHA (got {data.get('sha')!r})" if not _SHA_RE.match(sha)
+        else "subdir must be a string" if "subdir" in data and not isinstance(subdir_raw, str)
+        else f"subdir {subdir_raw!r} must be a relative path without '.' or '..' segments"
+        if isinstance(subdir_raw, str) and subdir_raw and (
+            not _SUBDIR_RE.match(subdir_raw)
+            or any(seg in ("", ".", "..") for seg in subdir_raw.split("/"))
+        )
         else f"tier must be one of {'/'.join(CATALOG_TIERS)} (got {tier!r})" if tier not in CATALOG_TIERS
         else f"category must be one of {'/'.join(CATALOG_CATEGORIES)} (got {category!r})"
         if category not in CATALOG_CATEGORIES
@@ -165,7 +179,8 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         description=str(data.get("description") or "").strip(),
         maintainer=str(data.get("maintainer") or "").strip(), tier=tier, category=category,
         requires_hermes=str(data.get("requires_hermes") or "").strip(),
-        subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
+        subdir=subdir_raw if isinstance(subdir_raw, str) else "",
+        docs_url=str(data.get("docs_url") or "").strip(),
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
         title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True,

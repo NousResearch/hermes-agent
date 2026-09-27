@@ -386,6 +386,14 @@ telemetry:
 - Like `enabled`, `send` is profile-owned and is not overridden by
   managed-scope configuration.
 
+Both keys are asked once per profile: by the Shared Metrics section of
+`hermes setup`, or in Hermes Desktop by an offer strip above the composer
+(Send to Nous / Local only / No thanks, with a Details view). The Desktop offer
+never blocks the composer or takes focus, appears only after first-run
+onboarding, and stays until answered. A profile whose `config.yaml` already
+carries either key is never asked again on any surface. Settings › Safety ›
+Privacy & network toggles both keys later.
+
 **A package is only sent when its whole period falls inside a recorded
 consent window.** Consent is stored as explicit intervals in the shared-
 metrics SQLite store (`send_consent_windows`): a window opens when `send:

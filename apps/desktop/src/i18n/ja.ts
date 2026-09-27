@@ -36,7 +36,10 @@ export const ja = defineLocale({
     sendLabel: '利用統計を Nous に送信する',
     sendDesc:
       '日次パッケージを Nous のテレメトリサービスにアップロードします。同意期間内のデータだけが送信されます。収集がオンである必要があります。',
-    unavailable: 'この設定を変更するには Hermes バックエンドを更新してください。'
+    unavailable: 'この設定を変更するには Hermes バックエンドを更新してください。',
+    stripBody: '上限付きのカウンターのみ。プロンプトやファイルは含みません。',
+    stripChoices: { share: 'Nous に送信', local: 'ローカルのみ', off: '今はしない' },
+    stripDetails: '詳細'
   },
   intro: introJa,
   catalog: {

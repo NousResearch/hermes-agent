@@ -34,7 +34,10 @@ export const zhHant = defineLocale({
     collectDesc: '在此裝置上保存有上限的計數。絕不包含提示詞、檔案、路徑或錯誤文字。',
     sendLabel: '向 Nous 傳送使用統計',
     sendDesc: '將每日資料包上傳到 Nous 遙測服務。只傳送同意時段內的資料。需要先開啟收集。',
-    unavailable: '請更新 Hermes 後端以變更此設定。'
+    unavailable: '請更新 Hermes 後端以變更此設定。',
+    stripBody: '僅限有界計數器，絕不包含提示詞或檔案。',
+    stripChoices: { share: '傳送給 Nous', local: '僅限本機', off: '不用了' },
+    stripDetails: '詳細資訊'
   },
   intro: introZhHant,
   catalog: {

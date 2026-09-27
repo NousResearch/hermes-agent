@@ -1,4 +1,5 @@
 import type { SharedMetricsConsentResult } from '@hermes/shared'
+import { atom } from 'nanostores'
 
 /** Public page describing exactly what shared metrics contain and how consent windows work. */
 export const SHARED_METRICS_DOCS_URL = 'https://hermes-agent.nousresearch.com/docs/developer-guide/relay-shared-metrics'
@@ -50,4 +51,28 @@ export async function saveSharedMetricsConsent(
   }
 
   return consent
+}
+
+/**
+ * The focused profile's answer, as last read from the backend by the consent
+ * host. `null` = not asked yet or the backend could not say (never offer then).
+ * A cache of backend truth: the host re-reads it on every profile switch.
+ */
+export const $sharedMetricsConsent = atom<SharedMetricsConsent | null>(null)
+
+/** The "What is collected" details dialog, opened only by the user from the strip. */
+export const $sharedMetricsDetailsOpen = atom(false)
+
+/** The first-run offer is still unanswered for the focused profile. */
+export function sharedMetricsOfferPending(consent: SharedMetricsConsent | null): boolean {
+  return consent?.decided === false
+}
+
+/** Record a first-run answer; the strip and the dialog retire as soon as the backend reports it decided. */
+export async function answerSharedMetricsOffer(
+  request: SharedMetricsRequester,
+  choice: SharedMetricsChoice
+): Promise<void> {
+  $sharedMetricsConsent.set(await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true }))
+  $sharedMetricsDetailsOpen.set(false)
 }

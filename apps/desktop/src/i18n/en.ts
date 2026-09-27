@@ -38,7 +38,10 @@ export const en: Translations = {
     sendLabel: 'Send usage stats to Nous',
     sendDesc:
       'Upload each daily package to the Nous telemetry service. Only data from inside a consent window is sent. Needs collection on.',
-    unavailable: 'Update the Hermes backend to change this setting.'
+    unavailable: 'Update the Hermes backend to change this setting.',
+    stripBody: 'Bounded counters only, never prompts or files.',
+    stripChoices: { share: 'Send to Nous', local: 'Local only', off: 'No thanks' },
+    stripDetails: 'Details'
   },
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },

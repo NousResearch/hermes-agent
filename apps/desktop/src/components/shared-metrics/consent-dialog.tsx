@@ -19,12 +19,13 @@ import { notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $onboardingSurfaces } from '@/store/onboarding-presence'
 import {
+  $sharedMetricsConsent,
+  $sharedMetricsDetailsOpen,
+  answerSharedMetricsOffer,
   readSharedMetricsConsent,
-  saveSharedMetricsConsent,
-  SHARED_METRICS_CHOICES,
   SHARED_METRICS_DOCS_URL,
   type SharedMetricsChoice,
-  type SharedMetricsConsent,
+  sharedMetricsOfferPending,
   type SharedMetricsRequester
 } from '@/store/shared-metrics'
 
@@ -39,12 +40,15 @@ interface SharedMetricsConsentDialogProps {
 const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'local', 'off']
 
 /**
- * The one-time shared-metrics question, the Desktop twin of `hermes setup`'s
- * Shared Metrics section. It waits until first-run onboarding is out of the way
- * and asks only when the profile's config.yaml carries no answer yet — an
- * answer given in the CLI (or here, or in Settings) is the same config keys,
- * so nobody is asked twice. Three equal choices, none preselected or focused;
- * Esc is the refusal and is recorded like "No thanks".
+ * Owner of the one-time shared-metrics question, the Desktop twin of `hermes
+ * setup`'s Shared Metrics section. It reads the focused profile's answer once
+ * first-run onboarding is out of the way; an unanswered profile gets an OFFER in
+ * the composer status stack (`SharedMetricsConsentStrip`), never a modal — a
+ * healthy install opens straight to chat. An answer given in the CLI (or here,
+ * or in Settings) is the same config keys, so nobody is asked twice. This host
+ * also paints the "What is collected" details the strip opens on request:
+ * three equal choices, none preselected or focused, and closing it decides
+ * nothing (the strip stays until answered).
  */
 export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }: SharedMetricsConsentDialogProps) {
   const { t } = useI18n()
@@ -53,8 +57,9 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const intro = useStore($introReveal)
   const surfaces = useStore($onboardingSurfaces)
   const detailsId = useId()
-  const [consent, setConsent] = useState<SharedMetricsConsent | null>(null)
-  const [expanded, setExpanded] = useState(false)
+  const consent = useStore($sharedMetricsConsent)
+  const detailsOpen = useStore($sharedMetricsDetailsOpen)
+  const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
 
   // Never over the provider picker, the free-tier welcome, the intro film or
@@ -69,23 +74,24 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const ready = enabled && onboardingSettled
 
   useEffect(() => {
+    $sharedMetricsConsent.set(null)
+
     if (!ready) {
       return
     }
 
     let cancelled = false
 
-    setConsent(null)
     void readSharedMetricsConsent(requestGateway).then(next => {
       if (!cancelled) {
-        setConsent(next)
+        $sharedMetricsConsent.set(next)
       }
     })
 
     return () => void (cancelled = true)
   }, [ready, profile, requestGateway])
 
-  if (!ready || !consent || consent.decided) {
+  if (!ready || !detailsOpen || !sharedMetricsOfferPending(consent)) {
     return null
   }
 
@@ -97,7 +103,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
     setSaving(true)
 
     try {
-      setConsent(await saveSharedMetricsConsent(requestGateway, SHARED_METRICS_CHOICES[choice], { firstRun: true }))
+      await answerSharedMetricsOffer(requestGateway, choice)
     } catch (err) {
       notifyError(err, copy.saveFailed)
     } finally {
@@ -106,7 +112,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   }
 
   return (
-    <Dialog onOpenChange={open => !open && void choose('off')} open>
+    <Dialog onOpenChange={open => $sharedMetricsDetailsOpen.set(open)} open>
       <DialogContent className="max-w-md" onOpenAutoFocus={preventCloseButtonAutoFocus}>
         <DialogHeader>
           <DialogTitle>{copy.consentTitle}</DialogTitle>

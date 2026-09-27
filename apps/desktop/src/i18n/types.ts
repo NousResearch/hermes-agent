@@ -82,6 +82,9 @@ export interface Translations {
     sendLabel: string
     sendDesc: string
     unavailable: string
+    stripBody: string
+    stripChoices: { share: string; local: string; off: string }
+    stripDetails: string
   }
   externalOpenFailed: {
     title: string

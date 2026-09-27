@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { $desktopOnboarding } from '@/store/onboarding'
-import type { SharedMetricsConsent } from '@/store/shared-metrics'
+import {
+  $sharedMetricsConsent,
+  $sharedMetricsDetailsOpen,
+  type SharedMetricsConsent,
+  sharedMetricsOfferPending
+} from '@/store/shared-metrics'
 
 import { SharedMetricsConsentDialog } from './consent-dialog'
 
@@ -36,30 +41,50 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   $desktopOnboarding.set(initialOnboarding)
+  $sharedMetricsConsent.set(null)
+  $sharedMetricsDetailsOpen.set(false)
 })
 
 describe('SharedMetricsConsentDialog', () => {
-  it('stays hidden when the profile already answered (e.g. in hermes setup)', async () => {
-    const { calls, requestGateway } = backend({ enabled: false, send: false, decided: true })
+  it('never blocks launch: an undecided profile becomes a composer offer, not a modal', async () => {
+    const undecided = backend({ enabled: false, send: false, decided: false })
 
-    render(<SharedMetricsConsentDialog enabled profile="default" requestGateway={requestGateway} />)
+    const { unmount } = render(
+      <SharedMetricsConsentDialog enabled profile="default" requestGateway={undecided.requestGateway} />
+    )
 
-    await waitFor(() => expect(calls.map(c => c.method)).toContain('shared_metrics.status'))
-    expect(screen.queryByText(copy.consentTitle)).toBeNull()
+    await waitFor(() => expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(true))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    unmount()
+
+    // An answer given in `hermes setup` is the same config keys: no offer at all.
+    const answered = backend({ enabled: false, send: false, decided: true })
+    render(<SharedMetricsConsentDialog enabled profile="work" requestGateway={answered.requestGateway} />)
+    await waitFor(() => expect($sharedMetricsConsent.get()?.decided).toBe(true))
+    expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(false)
   })
 
-  it('asks an undecided profile once and records the answer as both opt-ins', async () => {
+  it('details decide nothing when closed and record a chosen answer as both opt-ins', async () => {
     const { calls, requestGateway } = backend({ enabled: false, send: false, decided: false })
 
     render(<SharedMetricsConsentDialog enabled profile="default" requestGateway={requestGateway} />)
+    await waitFor(() => expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(true))
 
+    $sharedMetricsDetailsOpen.set(true)
+    await screen.findByRole('dialog')
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(calls.some(c => c.method === 'shared_metrics.set')).toBe(false)
+    expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(true)
+
+    $sharedMetricsDetailsOpen.set(true)
     const keepLocal = await screen.findByRole('button', { name: copy.local })
-    // Nothing is preselected: no choice holds focus when the dialog opens.
+    // Nothing is preselected: no choice holds focus when the details open.
     expect(keepLocal.ownerDocument.activeElement).not.toBe(keepLocal)
-
     fireEvent.click(keepLocal)
 
-    await waitFor(() => expect(screen.queryByText(copy.consentTitle)).toBeNull())
+    await waitFor(() => expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(false))
+    expect(screen.queryByRole('dialog')).toBeNull()
     expect(calls.find(c => c.method === 'shared_metrics.set')?.params).toEqual({
       enabled: true,
       send: false,

@@ -26,7 +26,10 @@ export const ar = defineLocale({
     sendLabel: 'إرسال إحصاءات الاستخدام إلى Nous',
     sendDesc:
       'رفع كل حزمة يومية إلى خدمة القياس عن بُعد لدى Nous. لا تُرسل إلا بيانات نافذة الموافقة. يتطلب تفعيل الجمع.',
-    unavailable: 'حدّث واجهة Hermes الخلفية لتغيير هذا الإعداد.'
+    unavailable: 'حدّث واجهة Hermes الخلفية لتغيير هذا الإعداد.',
+    stripBody: 'عدّادات محدودة فقط، دون أي مطالبات أو ملفات.',
+    stripChoices: { share: 'إرسال إلى Nous', local: 'محليًا فقط', off: 'لا، شكرًا' },
+    stripDetails: 'التفاصيل'
   },
   externalOpenFailed: {
     title: 'تعذّر فتح هذا الرابط',

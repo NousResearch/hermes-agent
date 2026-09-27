@@ -34,7 +34,10 @@ export const zh = defineLocale({
     collectDesc: '在此设备上保存有上限的计数。绝不包含提示词、文件、路径或错误文本。',
     sendLabel: '向 Nous 发送使用统计',
     sendDesc: '将每日数据包上传到 Nous 遥测服务。只发送同意时段内的数据。需要先开启收集。',
-    unavailable: '请更新 Hermes 后端以更改此设置。'
+    unavailable: '请更新 Hermes 后端以更改此设置。',
+    stripBody: '仅限有界计数器，绝不包含提示词或文件。',
+    stripChoices: { share: '发送给 Nous', local: '仅本地', off: '不用了' },
+    stripDetails: '详情'
   },
   intro: introZh,
   catalog: {

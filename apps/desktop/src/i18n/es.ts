@@ -30,7 +30,10 @@ export const esOverrides = {
     sendLabel: 'Enviar estadísticas de uso a Nous',
     sendDesc:
       'Sube cada paquete diario al servicio de telemetría de Nous. Solo se envían datos de una ventana de consentimiento. Requiere la recopilación activada.',
-    unavailable: 'Actualiza el backend de Hermes para cambiar este ajuste.'
+    unavailable: 'Actualiza el backend de Hermes para cambiar este ajuste.',
+    stripBody: 'Solo contadores acotados, nunca prompts ni archivos.',
+    stripChoices: { share: 'Enviar a Nous', local: 'Solo local', off: 'No, gracias' },
+    stripDetails: 'Detalles'
   },
   intro: introEs,
   connectors: {

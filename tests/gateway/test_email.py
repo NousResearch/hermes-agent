@@ -1208,7 +1208,7 @@ class TestSenderAuthentication(unittest.TestCase):
         addr = _extract_email_address(from_addr)
         return _verify_sender_authentication(msg, addr, authserv_id=authserv_id)
 
-    def test_dmarc_pass_authenticates(self):
+    def test_auth_results_verdicts(self):
         ok, reason = self._verify(
             "Admin <admin@example.com>",
             ["mx.google.com; dmarc=pass header.from=example.com; spf=pass"],
@@ -1240,6 +1240,7 @@ class TestSenderAuthentication(unittest.TestCase):
                    "mx.google.com; spf=fail smtp.mailfrom=a.spf=pass@example.com; dmarc=fail header.from=example.com",
                    'mx.google.com; dkim=pass header.d=evil.test header.i="x header.d=example.com y"@evil.test',
                    "mx.google.com; spf=pass smtp.mailfrom=example.com; spf=fail smtp.mailfrom=evil.test",
+                   "mx.google.com; spf=fail smtp.mailfrom=evil.test; spf=pass smtp.mailfrom=example.com",
                    "mx.google.com; dkim=pass header.d=evil.test; dkim=fail header.d=example.com",
                    'mx.google.com; dkim=pass header.i="x header.d=example.com"@evil.test',
                    # an escaped quote keeps the quoted-string open, so no dmarc clause is smuggled out of it

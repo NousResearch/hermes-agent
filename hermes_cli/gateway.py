@@ -1073,8 +1073,13 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         import subprocess
         import sys
         import time
+        # Stdlib-only imports: the watcher runs on the updater's interpreter, which after the
+        # package-manager handoff is the bare store Python without the dependency environment.
+        # ``-c`` only puts the cwd on sys.path, so name the checkout explicitly.
+        sys.path.insert(0, {project_root_literal})
         from hermes_cli._subprocess_compat import (
-            _WINDOWS_GATEWAY_BREAKAWAY_ENV, windows_detach_flags, windows_detach_flags_without_breakaway,
+            _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, windows_detach_flags,
+            windows_detach_flags_without_breakaway,
         )
 
         pid = int(sys.argv[1])
@@ -1084,8 +1089,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         deadline = time.monotonic() + {watcher_timeout_literal}
         while time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
-            from gateway.status import _pid_exists
-            if not _pid_exists(pid):
+            if not pid_exists_stdlib(pid):
                 break
             time.sleep(0.2)
 
@@ -1095,7 +1099,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
         _stdio_target = subprocess.DEVNULL
         _stdio_fh = None
         try:
-            from hermes_cli.config import get_hermes_home
+            from hermes_constants import get_hermes_home
             from pathlib import Path
             _log_dir = Path(get_hermes_home()) / "logs"
             _log_dir.mkdir(parents=True, exist_ok=True)
@@ -1142,7 +1146,8 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
                     pass
         """
     ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay),
-                     watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S))
+                     watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S),
+                     project_root_literal=json.dumps(str(PROJECT_ROOT)))
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
@@ -1760,11 +1765,22 @@ def _reaper_candidate_is_supervisor_owned(pid: int) -> bool:
     return False
 
 
-def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool:
+def _reap_unsupervised_gateway_orphans(
+    extra_exclude: set | None = None, *, min_age_s: float = 0.0,
+) -> bool:
     """Kill no-supervisor gateway orphans the pidfile/runtime record can't see. On WSL/no-systemd hosts
     the restart fallback runs the gateway in-process under a ``gateway restart`` argv; a stale pidfile
     then lets a live orphan keep the webhook port while a restart stacks a duplicate. No-op where a
-    supervisor exists (there ``gateway restart`` is a transient command). ``extra_exclude``: already killed."""
+    supervisor exists (there ``gateway restart`` is a transient command). ``extra_exclude``: already killed.
+
+    ``min_age_s`` spares a candidate younger than the grace: a gateway claims
+    ``gateway.pid``/``gateway.lock`` only after imports + runner setup, so a process
+    that a previous Desktop generation (or a concurrent ``gateway start``) just launched
+    is scan-visible but not yet record-visible, and the argv sweep cannot tell it from
+    a corpse. Reaping it writes a planned-stop marker it consumes seconds later — a clean
+    exit 0 with no supervisor to revive it (#122533). The Desktop boot sweep passes a
+    grace; stop/restart keep reaping at once.
+    """
     try:
         supervised_host = supports_systemd_services()
     except Exception:
@@ -1796,6 +1812,16 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
         ]
     except Exception:
         return False
+    if min_age_s > 0:
+        from hermes_cli.dashboard_procs import _process_age_seconds
+
+        def _old_enough(pid: int) -> bool:
+            try:  # an undeterminable age must never widen the reap
+                return _process_age_seconds(pid) >= min_age_s
+            except Exception:
+                return False
+
+        orphans = [p for p in orphans if _old_enough(p)]
     if not orphans:
         return False
 

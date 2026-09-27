@@ -3,13 +3,14 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { registry } from '@/contrib/registry'
+import { $paneStates, setPaneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { group, split } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport, declareDefaultTree } from '../store'
 
-import { NarrowOverlays } from './narrow-overlays'
+import { NarrowOverlays, narrowOverlayWidth } from './narrow-overlays'
 
 // Ground truth for "the Bots tab is still visible when the sessions sidebar
 // collapses on a narrow window". A collapsible pane DOCKED into the sessions
@@ -127,5 +128,47 @@ describe('narrow overlay of a stacked zone', () => {
     const dragSpacer = overlay?.querySelector<HTMLElement>('[aria-hidden="true"]')
     expect(dragSpacer).not.toBeNull()
     expect(dragSpacer?.style.height).toBe('34px')
+  })
+
+  it('honors the user drag width, not the declared width, when the zone collapsed', () => {
+    // The sash writes a widthOverride per shown pane of the zone; the overlay
+    // must size from the same resolution the docked zone uses (fixedTrackSize
+    // = declared max() refined by overrides), not from data.width alone.
+    // jsdom's CSSOM drops the min() wrapper from style.width, so the rendered
+    // width is unobservable here — assert the overlay's own resolution
+    // (narrowOverlayWidth, the pure helper the component styles from) against
+    // the live tree + store the mounted overlay saw.
+    setPaneWidthOverride('sessions', 170)
+    setPaneWidthOverride('bots', 170)
+
+    const { container } = render(<NarrowOverlays />)
+
+    revealPane('bots')
+
+    const overlay = container.querySelector<HTMLElement>('[data-narrow-overlay]')
+    expect(overlay).toBeTruthy()
+
+    const tree = $layoutTree.get()!
+    const bots = registry.getArea('panes').find(p => p.id === 'bots')!
+
+    const width = narrowOverlayWidth(
+      {
+        paneFor: id => registry.getArea('panes').find(p => p.id === id),
+        paneGone: () => false,
+        overrides: $paneStates.get()
+      },
+      tree,
+      bots
+    )
+
+    // The user dragged the zone to 170px; the declared 260px must lose.
+    expect(width).toBe('170px')
+    expect(width).not.toBe('260px')
+
+    // And the seamless fallback: without a tree the declared width still
+    // sizes the overlay.
+    expect(narrowOverlayWidth({ paneFor: () => undefined, paneGone: () => false, overrides: {} }, null, bots)).toBe(
+      '260px'
+    )
   })
 })

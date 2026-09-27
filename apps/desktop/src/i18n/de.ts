@@ -2810,6 +2810,7 @@ export const deOverrides = {
       serverStates: {
         connected: 'verbunden',
         app_not_running: 'App läuft nicht',
+        hermes_not_connected: 'MCP-Verbindung fehlt',
         endpoint_unavailable: 'Endpunkt nicht verfügbar',
         no_interactive_session: 'keine interaktive Session',
         version_too_old: 'Version zu alt',
@@ -4383,6 +4384,7 @@ export const deOverrides = {
     goalWaiting: 'Ziel wartet',
     subagents: count => `${count} Subagent${count === 1 ? '' : 'en'}`,
     todos: (done, total) => `Aufgaben ${done}/${total}`,
+    previousTodos: (done, total) => `Frühere Aufgaben ${done}/${total}`,
     running: 'Läuft',
     stop: 'Stopp',
     dismiss: 'Verwerfen',

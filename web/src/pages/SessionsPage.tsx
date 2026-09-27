@@ -1396,19 +1396,31 @@ export default function SessionsPage() {
         ids,
         owners.size === 1 ? [...owners][0] : undefined,
       );
-      showToast(
-        t.sessions.selectedSessionsDeleted.replace(
-          "{count}",
-          String(resp.deleted),
-        ),
-        "success",
-      );
+      const skippedCount = resp.skipped_active?.length ?? 0;
+      if (skippedCount) {
+        showToast(
+          t.sessions.selectedSessionsSkippedActive
+            .replace("{deleted}", String(resp.deleted))
+            .replace("{count}", String(skippedCount)),
+          "error",
+        );
+      } else {
+        showToast(
+          t.sessions.selectedSessionsDeleted.replace(
+            "{count}",
+            String(resp.deleted),
+          ),
+          "success",
+        );
+      }
       setDeleteSelectedOpen(false);
       // Drop deleted rows out of the visible list immediately rather
       // than waiting for the reload. The reload still runs so total /
       // pagination stays correct, and so any rows the reload pulls in
       // from later pages render in place.
-      const deletedSet = new Set(ids);
+      // Rows a live turn still owns were refused server-side; keep them listed.
+      const skipped = new Set(resp.skipped_active ?? []);
+      const deletedSet = new Set(ids.filter((id) => !skipped.has(id)));
       setSessions((prev) => prev.filter((s) => !deletedSet.has(s.id)));
       setTotal((prev) => Math.max(0, prev - resp.deleted));
       if (expandedId && deletedSet.has(expandedId)) setExpandedId(null);

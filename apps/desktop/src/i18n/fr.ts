@@ -2819,6 +2819,7 @@ export const frOverrides = {
       serverStates: {
         connected: 'connecté',
         app_not_running: 'application non lancée',
+        hermes_not_connected: 'connexion MCP manquante',
         endpoint_unavailable: 'point de terminaison indisponible',
         no_interactive_session: 'aucune session interactive',
         version_too_old: 'version trop ancienne',
@@ -4395,6 +4396,7 @@ export const frOverrides = {
     goalWaiting: 'Objectif en attente',
     subagents: count => `${count} sous-agent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tâches ${done}/${total}`,
+    previousTodos: (done, total) => `Tâches précédentes ${done}/${total}`,
     running: 'En cours',
     stop: 'Arrêter',
     dismiss: 'Rejeter',

@@ -7,7 +7,11 @@ export const csOverrides = {
     title: 'Tento odkaz se nepodařilo otevřít',
     message: 'K otevření této adresy není zaregistrován žádný prohlížeč. Zkopírujte odkaz a otevřete jej ručně.',
     copyUrl: 'Kopírovat odkaz',
-    close: 'Zavřít'
+    close: 'Zavřít',
+    missing: {
+      title: 'Soubor nenalezen',
+      message: 'Tento soubor neexistuje — mohl být smazán nebo přesunut, případně je na jiném počítači.'
+    }
   },
   intro: {
     custom: () => []
@@ -778,6 +782,15 @@ export const csOverrides = {
       'view.findInPage': 'Najít na stránce',
       'view.findNext': 'Najít další shodu',
       'view.findPrevious': 'Najít předchozí shodu',
+      'view.tabSlot.1': 'Přepnout na kartu 1',
+      'view.tabSlot.2': 'Přepnout na kartu 2',
+      'view.tabSlot.3': 'Přepnout na kartu 3',
+      'view.tabSlot.4': 'Přepnout na kartu 4',
+      'view.tabSlot.5': 'Přepnout na kartu 5',
+      'view.tabSlot.6': 'Přepnout na kartu 6',
+      'view.tabSlot.7': 'Přepnout na kartu 7',
+      'view.tabSlot.8': 'Přepnout na kartu 8',
+      'view.tabSlot.9': 'Přepnout na kartu 9',
       'appearance.toggleMode': 'Přepnout světlý nebo tmavý režim',
       'profile.default': 'Přepnout na výchozí profil',
       'profile.switch.1': 'Přepnout na profil 1',
@@ -1242,6 +1255,9 @@ export const csOverrides = {
         'Hermes při provázení aplikací zvýrazní jednotlivé kroky. Po prvních 30 dnech se funkce automaticky vypne; můžete ji znovu zapnout.',
       composerPopoutTitle: 'Plovoucí editor zprávy',
       composerPopoutDesc: 'Povolit vytažení editoru zprávy z doku. Vypnutím jej ponecháte uzamčený u spodního okraje.',
+      fileBrowserTitle: 'Prohlížeč souborů',
+      fileBrowserDesc:
+        'Zobrazit prohlížeč souborů vedle chatu, když je otevřený pracovní prostor. Přepínač v záhlaví okna to také mění.',
       vibeHeartsTitle: 'Plovoucí srdce',
       vibeHeartsDesc:
         'Plovoucí srdce se zobrazí, když poděkujete, napíšete „ily“, „good bot“ nebo odešlete srdce. Tato funkce je oddělená od reakcí na zprávy.',
@@ -2722,12 +2738,17 @@ export const csOverrides = {
       emptyHint: 'Projděte katalog níže a nainstalujte prověřený plugin jedním kliknutím.',
       loadFailed: 'Pluginy agenta se nepodařilo načíst',
       toggleFailed: name => `Plugin ${name} se nepodařilo přepnout`,
+      toolsetOn: (name, profile) => `Nástroje agenta ${name} zapnuty pro ${profile}`,
+      toolsetOff: (name, profile) => `Nástroje agenta ${name} vypnuty pro ${profile}`,
+      toolsetToggleFailed: name =>
+        `Nástroje agenta ${name} se nepodařilo přepnout; panel aplikace Desktop zůstal beze změny`,
       legacyBackend:
         'Tento backend je starší než přepínače pluginů podle klíče — aktualizujte Hermes, abyste je zde mohli spravovat.',
       portableBadge: 'přenosný',
       serverStates: {
         connected: 'připojeno',
         app_not_running: 'aplikace neběží',
+        hermes_not_connected: 'Chybí připojení MCP',
         endpoint_unavailable: 'koncový bod není dostupný',
         no_interactive_session: 'žádná interaktivní relace',
         version_too_old: 'příliš stará verze',
@@ -3547,6 +3568,8 @@ export const csOverrides = {
     skillsLabel: 'Dovednosti',
     notSet: 'Není nastaveno',
     soulDesc: 'Systém je rychlý a osobní návody zapečený do tohoto profilu.',
+    soulMissing:
+      'Pro tento profil zatím neexistuje soubor SOUL.md. Přidejte níže instrukce a uložením jej vytvoříte. Předvolby osobnosti v souboru config.yaml se spravují zvlášť.',
     soulOptional: 'volitelné',
     soulPlaceholder: mode => `Systém prosazení / osoba pro tento profil. Nechte prázdné, aby se ${mode} výchozí.`,
     soulPlaceholderCloned: 'klonovaný',
@@ -3703,6 +3726,8 @@ export const csOverrides = {
     nameLabel: 'Název',
     namePlaceholder: 'Ranní porada',
     promptLabel: 'Zadání',
+    scriptLabel: 'Skript',
+    scriptBadge: 'skript',
     promptPlaceholder: 'Shrň moje nepřečtené závity a pošli mi top 5...',
     frequencyLabel: 'Frekvence',
     deliverLabel: 'Doručit',
@@ -3989,6 +4014,7 @@ export const csOverrides = {
       backgroundRunning: 'Spuštění úkolu pozadí',
       draftSession: 'Koncept — zatím nebylo nic odesláno',
       handoffOrigin: platform => `Odevzdáno ${platform}`,
+      continuationOrigin: 'Automatické pokračování — tato konverzace byla zkomprimována a pokračuje',
       ownedByProfile: profile => `Profil: ${profile}`,
       renamed: 'Přejmenováno',
       renameFailed: 'Přejmenovat selhalo',
@@ -4192,6 +4218,9 @@ export const csOverrides = {
     queueResumeTip: 'Pozastaveno tlačítkem Zastavit — pokračujte odesláním tahů ve frontě',
     queueStuckTitle: 'Zpráva ve frontě nebyla odeslána',
     queueStuckBody: 'Odesílání tahu ve frontě opakovaně selhává. Tah zůstává ve frontě; zkuste jej odeslat znovu.',
+    queueDroppedTitle: 'Zadání ve frontě bylo zahozeno',
+    queueDroppedBody:
+      'Tato položka fronty na pozadí byla zahozena, protože její relaci nešlo po opakovaných pokusech obnovit. Ostatní položky ve frontě zůstaly nedotčeny.',
     previewUnavailable: 'Náhled nedostupný',
     previewLabel: label => `Náhled ${label}`,
     couldNotPreview: label => `Náhled ${label} se nepodařilo zobrazit`,
@@ -4284,6 +4313,7 @@ export const csOverrides = {
     goalWaiting: 'Čeká se na cíl',
     subagents: count => `Počet subagentů: ${count}`,
     todos: (done, total) => `Úkoly ${done}/${total}`,
+    previousTodos: (done, total) => `Předchozí úkoly ${done}/${total}`,
     running: 'Spuštěno',
     stop: 'Zastavte!',
     dismiss: 'Rozchod.',
@@ -5494,6 +5524,8 @@ export const csOverrides = {
       preparingAudio: 'Příprava zvuku…',
       stopReading: 'Ukončit předčítání',
       readAloud: 'Přečíst nahlas',
+      copyFullResponse: 'Kopírovat celou odpověď',
+      readAloudFullResponseHint: 'Shift+klik: přečíst celou odpověď',
       editMessage: 'Upravit zprávu',
       expandMessage: 'Rozbalit zprávu',
       scrollToBottom: 'Přejít dolů',
@@ -5545,7 +5577,9 @@ export const csOverrides = {
       questionProgress: (answered, total) => `Zodpovězeno ${answered} z ${total}`,
       lateAnswer: (question, choice) => `K otázce „${question}“ — moje odpověď: ${choice}`,
       lateAnswerTip: 'Navrhněte tuto odpověď jako následnou zprávu',
-      lateAnswerHint: 'Tento požadavek již nečeká na odpověď. Můžete ji zařadit jako následnou zprávu.'
+      lateAnswerHint: 'Tento požadavek již nečeká na odpověď. Můžete ji zařadit jako následnou zprávu.',
+      notDelivered:
+        'Tato otázka se do aplikace nedostala, takže na ni zde nelze odpovědět. Stiskněte Zastavit pro ukončení tahu a odpovězte v chatu.'
     },
     catalogInstall: {
       preparing: 'Příprava instalace…',

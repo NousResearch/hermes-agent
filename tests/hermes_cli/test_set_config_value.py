@@ -460,6 +460,32 @@ class TestSecretRedactionInDisplay:
         assert secret not in captured.out
         assert "Set model.api_key" in captured.out
 
+    def test_redact_config_value_masks_all_digit_secret(self):
+        from hermes_cli.config import redact_config_value
+        # YAML loads an unquoted all-digit password as an int, not a str.
+        cfg = yaml.safe_load("env:\n  DB_PASSWORD: 48213977261\n  PORT: 5432\n")
+
+        out = redact_config_value(cfg)
+
+        assert "48213977261" not in str(out)
+        assert out["env"]["PORT"] == 5432
+
+    def test_set_and_get_mask_all_digit_secret(self, _isolated_hermes_home, capsys):
+        secret = "48213977261"
+        set_config_value("mcp_servers.db.env.DB_PASSWORD", secret)
+        set_output = capsys.readouterr().out
+
+        config_command(argparse.Namespace(
+            config_command="get", key="mcp_servers.db.env.DB_PASSWORD", json=False))
+        leaf_output = capsys.readouterr().out
+        config_command(argparse.Namespace(
+            config_command="get", key="mcp_servers.db", json=False))
+        section_output = capsys.readouterr().out
+
+        assert "Set mcp_servers.db.env.DB_PASSWORD" in set_output
+        for out in (set_output, leaf_output, section_output):
+            assert secret not in out
+
 
 
 # ---------------------------------------------------------------------------

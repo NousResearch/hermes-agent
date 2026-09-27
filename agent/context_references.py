@@ -302,22 +302,25 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         # between a check and a later open otherwise), but release it before token
         # counting/formatting: the registry lock blocks every tracked connect/close.
         with offline_file_access(path, what="preview context reference"):
-            raw = _read_file_reference(ref, path, max_inline_tokens)
+            early, text = _read_file_reference(ref, path, max_inline_tokens)
     except LiveConnectionError:
         return None, _on_disk_reference_block(
             ref, path, descriptor="live SQLite database file",
             reason="not previewed: raw access would cancel SQLite's POSIX locks.",
             guidance="Do not open this file directly while its database connection is live.",
         )
-    return raw if isinstance(raw, tuple) else _format_file_reference(ref, path, raw, max_inline_tokens)
+    return early or _format_file_reference(ref, path, text, max_inline_tokens)
 
 
-def _read_file_reference(ref: ContextReference, path: Path, max_inline_tokens: int | None) -> str | Expansion:
-    """Raw file I/O for an @file ref: the text to inline, or an early refusal block."""
+def _read_file_reference(
+    ref: ContextReference, path: Path, max_inline_tokens: int | None,
+) -> tuple[Expansion | None, str]:
+    """Raw file I/O for an @file ref: ``(early, text)`` where ``early`` is a refusal block
+    (then ``text`` is empty) or ``None`` with the text to inline."""
     if _is_binary_file(path):
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
-        return None, _binary_reference_block(ref, path)
+        return (None, _binary_reference_block(ref, path)), ""
     if ref.line_start is not None:
         # A ranged ref wants a slice, not the file: stream to the window so a GB-scale
         # file serves :1-5 without being materialized. Lines are read in bounded pieces
@@ -356,7 +359,7 @@ def _read_file_reference(ref: ContextReference, path: Path, max_inline_tokens: i
                     break
                 total_chars += len(line)
                 if char_budget is not None and total_chars > char_budget:
-                    return None, _oversized_text_reference_block(ref, path, total_chars // CHARS_PER_TOKEN)
+                    return (None, _oversized_text_reference_block(ref, path, total_chars // CHARS_PER_TOKEN)), ""
                 parts.append(line)
         text = "".join(parts)
     else:
@@ -364,9 +367,9 @@ def _read_file_reference(ref: ContextReference, path: Path, max_inline_tokens: i
         # file past that byte ceiling is certainly oversized; refuse without reading it.
         size = path.stat().st_size
         if max_inline_tokens is not None and size > max_inline_tokens * CHARS_PER_TOKEN:
-            return None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)
+            return (None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)), ""
         text = path.read_text(encoding="utf-8-sig")
-    return text
+    return None, text
 
 
 def _format_file_reference(ref: ContextReference, path: Path, text: str, max_inline_tokens: int | None) -> Expansion:

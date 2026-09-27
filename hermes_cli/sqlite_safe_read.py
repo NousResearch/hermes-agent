@@ -90,17 +90,12 @@ def _live_main_key(key: str) -> Optional[str]:
 
 
 def has_live_connection(path: Path | str) -> bool:
-    """Whether this process holds a connection to *path* (or to the database it is a sidecar of)."""
+    """Whether this process holds a connection to *path* (or to the database it is a sidecar of).
+
+    Point-in-time answer: a raw open/close right after it returns ``False`` can still race a
+    new connection. Hold :func:`offline_file_access` across the I/O whenever possible."""
     with _live_lock:
         return _live_main_key(_key(path)) is not None
-
-
-def is_live_database_file(path: Path | str) -> bool:
-    """Whether a raw open/close of *path* would cancel a live connection's POSIX locks.
-
-    Point-in-time answer for callers that cannot hold ``_live_lock`` across their I/O
-    (e.g. a streamed download: the lock must never be held across an await/yield)."""
-    return has_live_connection(path)
 
 
 class _TrackingMixin:

@@ -61,15 +61,14 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
         assert rival_locked(), "second process must be excluded before the preview"
 
         if route == "desktop":
-            with pytest.raises(HTTPException) as refused:
-                asyncio.run(fs_read_text(str(target)))
-            assert refused.value.status_code == 409
-            if target_kind == "shm":
-                assert "main database" in refused.value.detail
-            # FileResponse opens/closes in-process too, so a download must be refused as well.
-            with pytest.raises(HTTPException) as refused:
-                asyncio.run(fs_download(str(target)))
-            assert refused.value.status_code == 409
+            # FileResponse opens/closes in-process too, so a download must be refused as well,
+            # with the same (sidecar-aware) refusal text as the read.
+            for route_fn in (fs_read_text, fs_download):
+                with pytest.raises(HTTPException) as refused:
+                    asyncio.run(route_fn(str(target)))
+                assert refused.value.status_code == 409
+                if target_kind == "shm":
+                    assert "main database" in refused.value.detail
             assert asyncio.run(fs_read_text(str(text)))["text"] == "ordinary readable text"
         else:
             ref = parse_context_references(f"@{route}:{target}")[0]

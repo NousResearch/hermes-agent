@@ -638,9 +638,9 @@ def _is_shallow_checkout(git_cmd) -> bool:
     return _git_run(git_cmd, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
 
 
-def _tip_shas(git_cmd, target_ref: str) -> tuple[str, str]:
-    """``(HEAD sha, <target_ref> sha)`` as printed by rev-parse ("" when unresolvable)."""
-    return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in ("HEAD", target_ref))
+def _tip_shas(git_cmd, target_ref: str, base: str = "HEAD") -> tuple[str, str]:
+    """``(<base> sha, <target_ref> sha)`` as printed by rev-parse ("" when unresolvable)."""
+    return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in (base, target_ref))
 
 
 def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
@@ -948,9 +948,13 @@ def _prepare_checkout_for_update(
         # Before the stash: its refs/stash would contain HEAD until it is dropped.
         _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
     auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
+    moved_from_sha = None
     if (
         not release_tag and not in_place_update and current_branch != branch
         and _git_run(git_cmd, ["checkout", branch]).returncode != 0):
+        # `checkout -B` lands ON the target, so HEAD..target would count 0 and the update would
+        # finish as "Already up to date!" with nothing synced (#125112): count from here instead.
+        moved_from_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         track_result = _git_run(git_cmd, ["checkout", "-B", branch, f"origin/{branch}"])
         if track_result.returncode != 0:
             # Restore the stash before bailing so the user isn't stranded.
@@ -978,13 +982,14 @@ def _prepare_checkout_for_update(
     # On shallow checkouts `rev-list --count` can report the entire remote ancestry. The
     # zero/nonzero gate is still sound; treat the shallow NUMBER as unknown and recover it
     # via the GitHub compare API when possible.
-    result = _git_run(git_cmd, ["rev-list", f"HEAD..{target_ref}", "--count"], check=True)
+    base = moved_from_sha or "HEAD"
+    result = _git_run(git_cmd, ["rev-list", f"{base}..{target_ref}", "--count"], check=True)
     commit_count = int(result.stdout.strip())
 
     apply_is_shallow = _is_shallow_checkout(git_cmd)
     if commit_count > 0 and apply_is_shallow:
         from hermes_cli.source_check import _github_compare_behind
-        counted = _github_compare_behind(*_tip_shas(git_cmd, target_ref))
+        counted = _github_compare_behind(*_tip_shas(git_cmd, target_ref, base))
         # counted == 0 means local-ahead: falls through to the up-to-date path.
         commit_count = counted if counted is not None else -1
 
@@ -998,7 +1003,6 @@ def _prepare_checkout_for_update(
     # "Already up to date!" and verified nothing). Non-fork checkouts have no upstream question: origin IS
     # the official repo, so "Already up to date!" is fully verified there.
     upstream_checked = True
-    moved_from_sha = None
     if commit_count == 0 and is_fork and branch == "main" and not release_tag:
         pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         upstream_checked = _m()._sync_with_upstream_if_needed(
@@ -1340,6 +1344,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             target_ref = release_sha
             completion_request["expected_sha"] = release_sha
         else:
+            assert target.branch is not None  # a SourceTarget without a commit names its branch
             branch = target.branch
             completion_request["branch"] = branch
             target_ref = f"origin/{branch}"
@@ -1384,7 +1389,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if release_sha:
             fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
         else:
-            fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+            fetch_result = _git_run(
+                git_cmd, ["fetch", "origin", _check.tracking_refspec("origin", branch)], network=True)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

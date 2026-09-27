@@ -939,6 +939,13 @@ if (!isPrimaryInstance) {
   app.exit(0)
 }
 
+// `hermes desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
+// backend and every other child get the real one (the profile scratch dir) back.
+if (process.env.HERMES_DESKTOP_TMPDIR) {
+  process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
+  delete process.env.HERMES_DESKTOP_TMPDIR
+}
+
 const HERMES_HOME: string = resolveDesktopHermesHome({
   home: app.getPath('home'),
   directoryExists,

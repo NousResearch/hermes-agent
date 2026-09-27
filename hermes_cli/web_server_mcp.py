@@ -142,7 +142,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                     tools = _probe_single_server(
                         flow.server_name, cfg, connect_timeout=login_connect_timeout(cfg)
                     )
-                    if not _oauth_tokens_present(flow.server_name):
+                    if not _oauth_tokens_present(flow.server_name, cfg.get("url")):
                         raise RuntimeError(
                             "The server responded, but no OAuth token was obtained — "
                             "this provider may require a manually-registered OAuth client."

@@ -118,7 +118,10 @@ async function createFromBuilder({ pickModel }: { pickModel: boolean }) {
   await waitFor(() => !document.querySelector("#pb-name") && apiMocks.getProfiles.mock.calls.length > 0);
 }
 
-const toastText = () => document.querySelector('[role="status"][aria-live="polite"]')?.textContent ?? "";
+const toastEl = () => document.querySelector('[role="status"][aria-live="polite"]');
+const toastText = () => toastEl()?.textContent ?? "";
+// The toast carries its severity only as styling.
+const toastIsError = () => toastEl()?.className.includes("text-destructive") ?? false;
 
 beforeEach(() => {
   for (const fn of Object.values(apiMocks)) fn.mockReset();
@@ -163,6 +166,23 @@ describe("ProfileBuilderPage create result", () => {
     await waitFor(() => toastText() !== "");
     expect(toastText()).toContain('Profile "coder" created');
     expect(toastText()).toContain(MODEL_ERROR);
+    expect(toastIsError()).toBe(true);
+  });
+
+  it("reports a plain success when the picked model was set", async () => {
+    apiMocks.createProfile.mockResolvedValue({
+      ok: true,
+      name: "coder",
+      path: "/x/profiles/coder",
+      model_set: true,
+      hub_installs: [],
+    });
+
+    await createFromBuilder({ pickModel: true });
+
+    await waitFor(() => toastText() !== "");
+    expect(toastText()).toBe('Profile "coder" created');
+    expect(toastIsError()).toBe(false);
   });
 
   it("shows the success toast on the Profiles page it lands on, once", async () => {

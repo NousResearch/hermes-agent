@@ -117,6 +117,9 @@ describe("ProfilesPage create modal", () => {
       model: "claude-sonnet-4-5",
     });
     await waitFor(() => Boolean(document.querySelector('[role="status"][aria-live="polite"]')));
-    expect(document.querySelector('[role="status"][aria-live="polite"]')!.textContent).toContain(reason);
+    const toast = document.querySelector('[role="status"][aria-live="polite"]')!;
+    expect(toast.textContent).toContain(reason);
+    // The toast carries its severity only as styling.
+    expect(toast.className).toContain("text-destructive");
   });
 });

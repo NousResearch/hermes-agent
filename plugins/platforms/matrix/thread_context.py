@@ -171,10 +171,14 @@ async def fetch_thread_entries(
 
     snapshots = await fetch_reactions_for_events(client, room_id, reaction_ids)
     by_id = dict(zip(reaction_ids, snapshots))
+    entries = [
+        cache.history_entry(room_id, event_id) or entry
+        for event_id, entry in zip(entry_ids, entries)
+    ]
     return [
         replace(entry, reactions=by_id[event_id].reactions, reactions_truncated=by_id[event_id].truncated,
                 reaction_keys_missing=bool(by_id[event_id].missing_keys),
                 reactions_unavailable=bool(by_id[event_id].error))
-        if event_id in by_id else entry
+        if event_id in by_id and not entry.redacted else entry
         for event_id, entry in zip(entry_ids, entries)
     ]

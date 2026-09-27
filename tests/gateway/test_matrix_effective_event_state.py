@@ -431,6 +431,63 @@ async def test_room_catch_up_keeps_redaction_even_when_original_body_is_stale():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scope, target", [
+    ("room", "$room"), ("thread", "$root"), ("thread", "$child"),
+])
+async def test_catch_up_keeps_redaction_received_during_reaction_lookup(scope: str, target: str):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    cache = MatrixEventContextCache()
+    event_ids = ["$room"] if scope == "room" else ["$root", "$child"]
+    events = {
+        event_id: _original(
+            event_id, "withdrawn secret" if event_id == target else "retained text",
+            root="$root" if event_id == "$child" else None,
+        )
+        for event_id in event_ids
+    }
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "boundary"}
+        if "/messages" in path or "/m.thread" in path:
+            return {"start": "boundary", "chunk": [events[event_ids[-1]]]}
+        if "/event/" in path:
+            return events["$root"]
+        if path.endswith(f"/relations/{quote(target, safe='')}/m.annotation"):
+            started.set()
+            await release.wait()
+            return {"chunk": [{
+                "type": "m.reaction", "event_id": "$reaction", "sender": SENDER,
+                "content": {"m.relates_to": {
+                    "rel_type": "m.annotation", "event_id": target, "key": "👍",
+                }},
+            }], "next_batch": "more-reactions"}
+        if "/m.annotation" in path:
+            return {"chunk": []}
+        raise AssertionError(path)
+
+    client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)), crypto=None)
+    catch_up = (
+        fetch_room_entries(client, cache, ROOM, "$current", limit=2) if scope == "room"
+        else fetch_thread_entries(client, cache, ROOM, "$root", limit=2, before_event_id="$current")
+    )
+    pending = asyncio.create_task(catch_up)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        cache.redact(ROOM, target)
+    finally:
+        release.set()
+        entries = await pending
+
+    assert entries == [
+        MatrixEventContext(SENDER, "", redacted=True) if event_id == target
+        else MatrixEventContext(SENDER, "retained text")
+        for event_id in event_ids
+    ]
+
+
+@pytest.mark.asyncio
 async def test_reply_target_uses_raw_aggregated_state_and_blocks_redacted_original():
     original = _edited(_original("$child", "before"), "after")
     client = SimpleNamespace(

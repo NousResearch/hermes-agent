@@ -134,8 +134,10 @@ def _build_probe_line() -> str:
     pip_bound_to = _pip_python_version()
     py3_pep668 = _detect_pep668("python3") if py3_ver else False
     # Bare which() is correct here (unlike Hermes's own uv call sites): this reports
-    # the environment *the model will see* in the terminal tool, whose PATH includes
-    # the Hermes-managed $HERMES_HOME/bin via local.py.
+    # the environment *the model will see* in the terminal tool, whose PATH local.py
+    # extends with the managed runtime dirs. PM deliberately keeps its own uv out of
+    # that PATH, so a hit here means the USER's uv (or a pre-PM copy the update
+    # self-heal has not removed yet) — exactly the uv that subshell could run.
     has_uv = shutil.which("uv") is not None
 
     mismatch = bool(pip_bound_to and py3_ver and not py3_ver.startswith(pip_bound_to))

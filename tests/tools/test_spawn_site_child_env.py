@@ -85,12 +85,12 @@ def test_credentialed_children_keep_provider_keys_but_never_tier1_secrets(child_
 
 
 @pytest.mark.platforms("posix")  # the stand-in binaries are shebang scripts
-@pytest.mark.parametrize("site", ["lsp_server", "lsp_go_install", "raft_bridge", "buzz_cli"])
+@pytest.mark.parametrize("site", ["lsp_server", "lsp_go_install", "lsp_npm_install", "raft_bridge", "buzz_cli"])
 def test_third_party_children_never_see_hermes_credentials(child_env, monkeypatch, site):
     _plant(monkeypatch)
     out = child_env / "seen.json"
-    own = {"lsp_server": "LSP_OWN_SETTING", "lsp_go_install": "GOBIN", "raft_bridge": "RAFT_CHANNEL_TOKEN",
-           "buzz_cli": "BUZZ_PRIVATE_KEY"}[site]
+    own = {"lsp_server": "LSP_OWN_SETTING", "lsp_go_install": "GOBIN", "lsp_npm_install": "PATH",
+           "raft_bridge": "RAFT_CHANNEL_TOKEN", "buzz_cli": "BUZZ_PRIVATE_KEY"}[site]
     probe = _probe_script(child_env / "probe", out, [*_TIER1, _PROVIDER, own])
 
     if site == "lsp_server":
@@ -109,6 +109,11 @@ def test_third_party_children_never_see_hermes_credentials(child_env, monkeypatc
 
         with patch.object(install.shutil, "which", return_value=str(probe)):
             install._install_go("example.com/probe@latest", "probe")
+    elif site == "lsp_npm_install":
+        from agent.lsp import install
+
+        with patch.object(install, "find_node_executable", return_value=str(probe)):
+            install._install_npm("probe-language-server", "probe")
     elif site == "buzz_cli":
         from plugins.platforms.buzz.adapter import _exec_buzz
 

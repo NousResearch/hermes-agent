@@ -264,8 +264,9 @@ class TestGitWorktreeFilesNeverCleaned:
 
     def test_scratch_outside_git_trees_still_cleaned(self, _isolate_env):
         """Control: root-level test_* scratch is still auto-deleted — even when HERMES_HOME
-        itself lives inside a git checkout (dotfiles repo); only .git entries strictly below
-        HERMES_HOME mark a file as git-owned."""
+        itself lives inside a git checkout (dotfiles repo); a bare .git at or above HERMES_HOME
+        does not make untracked scratch git-owned — only a .git strictly below HERMES_HOME, or
+        git actually tracking the file, does."""
         dg = _load_lib()
         (_isolate_env.parent / ".git").mkdir()
         scratch = _isolate_env / "test_scratch.py"
@@ -276,6 +277,63 @@ class TestGitWorktreeFilesNeverCleaned:
         result = dg.quick()
         assert not scratch.exists()
         assert result["deleted"] == 1
+
+    def test_tracked_file_in_hermes_home_checkout_is_never_disposable(self, _isolate_env, monkeypatch):
+        """HERMES_HOME itself is a git checkout: a file git TRACKS is Git-owned, so a
+        ``test_*``/``tmp_*`` name must not classify it as disposable.
+
+        Observed live: ``~/.hermes`` is the userfiles repo, so ``~/.hermes/scripts/`` sits
+        inside a worktree but is not *below* HERMES_HOME — the parent-chain probe found no
+        ``.git`` and the bundled disk-cleanup plugin deleted two committed regression tests
+        (``scripts/test_analyze_upstream_opportunities.py``,
+        ``scripts/test_customization_protocol_v2.py``), committing the deletion."""
+        import subprocess
+
+        dg = _load_lib()
+        subprocess.run(["git", "init", "-q", str(_isolate_env)], check=True)
+        (dg.get_hermes_home() / "scripts").mkdir()
+        tracked = _isolate_env / "scripts" / "test_committed.py"
+        tracked.write_text("x")
+        scratch = _isolate_env / "test_untracked.py"
+        scratch.write_text("x")
+        subprocess.run(["git", "-C", str(_isolate_env), "add", "scripts/test_committed.py"],
+                       check=True)
+
+        assert dg._inside_git_worktree(tracked) is True
+        assert dg._inside_git_worktree(scratch) is False
+        assert dg.guess_category(tracked) is None
+        assert dg.guess_category(scratch) == "test"
+        # An inherited pathspec mode must not make the tracked-file probe miss.
+        for mode in ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
+            monkeypatch.setenv(mode, "1")
+            assert dg._inside_git_worktree(tracked) is True, mode
+            monkeypatch.delenv(mode)
+
+        # A stale pre-fix entry is dropped by quick()'s re-validation, not deleted, while
+        # untracked scratch beside it in the same repo is still cleaned.
+        now = datetime.now(timezone.utc).isoformat()
+        dg.save_tracked([{"path": str(p), "category": "test", "timestamp": now, "size": 1}
+                         for p in (tracked, scratch)])
+        result = dg.quick()
+        assert tracked.exists(), "a git-tracked test file must never be auto-deleted"
+        assert not scratch.exists()
+        assert result["deleted"] == 1
+
+        # Committed AFTER first classification in the same process: seen immediately.
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+        subprocess.run(["git", "-C", str(_isolate_env), "add", "test_untracked.py"], check=True)
+        assert dg.guess_category(scratch) is None
+
+        # HERMES_HOME nested in an enclosing repo (a ~/.git dotfiles repo) that tracks it.
+        outer = _isolate_env.parent / "outer"
+        (outer / ".hermes" / "scripts").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(outer)], check=True)
+        nested = outer / ".hermes" / "scripts" / "test_x.py"
+        nested.write_text("x")
+        subprocess.run(["git", "-C", str(outer), "add", "."], check=True)
+        monkeypatch.setenv("HERMES_HOME", str(outer / ".hermes"))
+        assert dg.guess_category(nested) is None
 
 
 class TestStaleCronEntryMigration:

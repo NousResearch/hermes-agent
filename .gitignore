@@ -166,7 +166,9 @@ opencode.json
 config/mcporter.json
 
 hermes_cli/tui_dist/
-# TUI staging dir (scripts/build/tui.mjs); same Windows-locked-file hazard
+# withProduct() staging dir IF a future --out targets hermes_cli/tui_dist
+# (frontend-common.mjs). No main caller does today (scripts/build/tui.mjs
+# builds the default product); same locked-file residue hazard as web_dist.
 hermes_cli/.tui_dist-build-*/
 hermes_cli/scripts/
 docs/superpowers/*

@@ -94,7 +94,15 @@ def test_bionic_deb_stages_real_packages_without_host_execution(tmp_path, monkey
     (cached / "tool.deb").write_bytes(deb.read_bytes())
     paths.facts_path().write_bytes(b'{"schema":1,"packages":{}}')
     before = paths.facts_path().read_bytes()
-    monkeypatch.setattr("pm.packages.subprocess.run", lambda *a, **kw: pytest.fail("bionic executed on host"))
+    real_run = __import__("subprocess").run
+    def no_host_exec(*a, **kw):
+        # darwin legitimately ad-hoc codesigns the staged python (macos_signing);
+        # the guard patches the shared subprocess module, so let those through.
+        argv = a[0] if a else kw.get("args") or []
+        if argv and "codesign" in str(argv[0]):
+            return real_run(*a, **kw)
+        pytest.fail("bionic executed on host")
+    monkeypatch.setattr("pm.packages.subprocess.run", no_host_exec)
     entry = ensure_mod.stage_only(name, TARGET)
     assert get_package(name).binary(entry, TARGET) == entry / main
     assert (entry / main).read_bytes() == b"bionic fixture"

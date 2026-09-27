@@ -3571,7 +3571,6 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
     ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
-    ("reply_to_mode", "MATRIX_REPLY_TO_MODE", "lower"),
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
@@ -3581,8 +3580,6 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
     multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
-    if isinstance(matrix_cfg.get("reply_to_mode"), bool):
-        matrix_cfg = {**matrix_cfg, "reply_to_mode": "all" if matrix_cfg["reply_to_mode"] else "off"}
     seeded = _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE) or {}
     if "thread_backfill_limit" in matrix_cfg:
         seeded["thread_backfill_limit"] = matrix_cfg["thread_backfill_limit"]

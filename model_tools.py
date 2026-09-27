@@ -705,12 +705,19 @@ def _emit_post_tool_call_hook(
 
 
 def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
-                          enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]]):
+                          enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]],
+                          session_tool_names: Optional[List[str]] = None):
     """Handle a Tool Search bridge call (tool_search / tool_describe / tool_call).
 
     None when *function_name* is not a bridge tool; ``(result, None)`` for a
     finished catalog read or error; ``(None, (name, args))`` when a validated
     tool_call should be re-dispatched as the real tool.
+
+    *session_tool_names* is the model's actual tool surface (``enabled_tools`` —
+    agent callers pass ``agent.valid_tool_names``). The pre-assembly catalog
+    rebuilt above cannot see one-shot pruning or side-agent drops, so only this
+    list decides whether a known non-deferred name was a wrong-door call or is
+    simply not offered to the session.
     """
     try:
         from tools import tool_search as ts
@@ -729,9 +736,10 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
     if function_name == ts.TOOL_SEARCH_NAME:
         return ts.dispatch_tool_search(args, current_tool_defs=current_defs), None
     if function_name == ts.TOOL_DESCRIBE_NAME:
-        return ts.dispatch_tool_describe(args, current_tool_defs=current_defs), None
+        return ts.dispatch_tool_describe(args, current_tool_defs=current_defs,
+                                         session_tool_names=session_tool_names), None
     underlying_name, underlying_args, err = ts.resolve_underlying_call(
-        args, current_tool_defs=current_defs or None)
+        args, session_tool_names=session_tool_names or None)
     if err or not underlying_name:
         return tool_error(err or "tool_call could not be resolved"), None
     if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:
@@ -886,9 +894,11 @@ def handle_function_call(
 
     task_id isolates terminal/browser sessions; user_task feeds browser_snapshot.
     enabled_tools picks execute_code's sandbox tools (default: the process-global
-    ``_last_resolved_tool_names``). skip_pre_tool_call_hook: caller already fired
-    it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
-    bridge catalog to this session's grant (None = unrestricted).
+    ``_last_resolved_tool_names``) and doubles as the session's real tool surface
+    (``agent.valid_tool_names``) for the Tool Search bridge's not-deferrable
+    diagnosis. skip_pre_tool_call_hook: caller already fired it (single-fire
+    contract). enabled/disabled_toolsets scope the Tool Search bridge catalog to
+    this session's grant (None = unrestricted).
     """
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -907,7 +917,8 @@ def handle_function_call(
     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
     # inline; tool_call is unwrapped so every downstream hook (pre/post, edit
     # approval, guardrails) sees the real tool name, never the bridge.
-    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets)
+    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets,
+                                     session_tool_names=enabled_tools)
     if bridged is not None:
         result, underlying = bridged
         if underlying is None:

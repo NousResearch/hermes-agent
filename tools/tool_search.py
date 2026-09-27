@@ -14,7 +14,7 @@ import logging
 import math
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Collection, Dict, Iterable, List, Optional, Tuple
 
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools.registry import tool_error
@@ -487,6 +487,7 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
 
 
 def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
+                           session_tool_names: Optional[Collection[str]] = None,
                            config: Optional[ToolSearchConfig] = None,
                            connector_describe: Optional[Any] = None) -> str:
     config = config or load_config_readonly()
@@ -517,10 +518,10 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
             name, load_config_readonly().effective_defer_tools):
             # Registered but bridge/core/GUI-surface: a real name, wrong door —
-            # unless the session never listed it (its toolset is disabled here),
-            # in which case the correction is "don't retry", not "call it directly".
+            # unless the session's actual tool surface never offered it, in
+            # which case the correction is "don't retry", not "call it directly".
             errors[name] = not_deferrable_error(
-                name, frozenset(_tool_def_names(current_tool_defs)) if current_tool_defs else None)
+                name, frozenset(session_tool_names) if session_tool_names else None)
         else:
             not_found.append(name)
     result: Dict[str, Any] = {"tools": tools}
@@ -559,7 +560,7 @@ def out_of_scope_reason(name: str) -> Optional[str]:
 
 
 def resolve_underlying_call(args: Dict[str, Any], *,
-                            current_tool_defs: Optional[List[Dict[str, Any]]] = None,
+                            session_tool_names: Optional[Collection[str]] = None,
                             ) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
@@ -574,10 +575,12 @@ def resolve_underlying_call(args: Dict[str, Any], *,
     sentinel is what planners/display layers see. A single local entry keeps
     the historical single-tool contract unchanged.
 
-    ``current_tool_defs`` (the session-scoped, pre-assembly tool list) lets the
-    not-deferrable rejection tell a directly-listed tool apart from one whose
-    toolset is disabled in this session; callers without a session list (display
-    and trajectory layers) omit it and get the legacy message.
+    ``session_tool_names`` (the model's actual tool surface — e.g.
+    ``agent.valid_tool_names``; the pre-assembly catalog cannot see one-shot
+    pruning or side-agent drops) lets the not-deferrable rejection tell a
+    directly-listed tool apart from one this session never offered; callers
+    without a session list (display and trajectory layers) omit it and get
+    the legacy message.
 
     On parse error, returns ``(None, {}, error_message)``.
     """
@@ -594,7 +597,7 @@ def resolve_underlying_call(args: Dict[str, Any], *,
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
         return None, {}, not_deferrable_error(
-            name, frozenset(_tool_def_names(current_tool_defs)) if current_tool_defs else None)
+            name, frozenset(session_tool_names) if session_tool_names else None)
     return name, raw_args, None
 
 

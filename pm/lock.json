@@ -148,7 +148,7 @@
           "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-27-13-04/ffmpeg-n9.0.2-12-gc867e13549-win64-gpl-9.0.zip"
         }
       },
-      "version": "9.0.2"
+      "version": "9.0.1"
     },
     "gh": {
       "artifacts": {

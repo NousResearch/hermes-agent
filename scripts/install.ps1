@@ -4,6 +4,7 @@
 #   -Manifest             print the stage list as JSON
 #   -Stage NAME [-Json]   run one stage
 #   -NonInteractive       skip stages that need input
+#   -SkipSetup            deprecated alias for -NonInteractive
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
 #   -SkipBrowser          do not install the browser tools (agent-browser +

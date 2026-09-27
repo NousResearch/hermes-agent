@@ -766,7 +766,9 @@ function Stage-Repository {
             Invoke-Native { git -C $InstallDir remote set-url origin $RepoUrl }
             if ($LASTEXITCODE) { Fail "cannot point origin at $RepoUrl" }
         }
-        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin $Branch }
+        # Explicit refspec: a tag-pinned --single-branch checkout from an older installer maps only
+        # the tag, so a by-name fetch never writes the origin/$Branch used below (#125112).
+        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
         if ($LASTEXITCODE) { Fail "git fetch failed" }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -786,7 +788,14 @@ function Stage-Repository {
             if ($LASTEXITCODE) { Fail "could not stash local changes in $InstallDir; commit or move them aside, then rerun" }
             Write-Warn "local changes stashed as hermes-install-autostash-$stamp"
         }
-        Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout $Branch }
+        # checkout's branch guess only sees remote refs the refspec maps, so a narrow checkout
+        # (detached at its tag, no local branch) gets the branch created at the fetched tip.
+        Invoke-Native { git -C $InstallDir show-ref --verify --quiet "refs/heads/$Branch" }
+        if ($LASTEXITCODE) {
+            Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout -b $Branch "origin/$Branch" }
+        } else {
+            Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout $Branch }
+        }
         if ($LASTEXITCODE) { Fail "git checkout failed" }
         # --no-stat: across a large gap (v2026.7.1 -> today is ~27k lines) the
         # diffstat arrives as one burst. Hermes-Setup.exe forwards every line

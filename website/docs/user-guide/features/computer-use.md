@@ -41,10 +41,15 @@ no-foreground invariant, click-dispatch internals — see
 
 ## Enabling
 
-**The driver is a PM-managed tool.** `cua-driver` is pinned in
-`pm/lock.json`; the installer does not fetch it up front (there is no
-`--skip-computer-use` / `-SkipComputerUse` flag), and it is prepared the
-first time something enables Computer Use:
+**The driver ships with Hermes.** `cua-driver` is pinned in `pm/lock.json`
+and is a default PM package: the installers, a bare `hermes pm install`, and
+`hermes update` install it on every macOS, Windows, and glibc Linux target
+(cua-driver publishes no musl or Android build). The desktop app's bundle
+carries it too. To leave it out, pass `--skip-computer-use` on POSIX or
+`-SkipComputerUse` on Windows (or run `hermes pm install --without cua-driver`);
+Hermes remembers the choice, and `hermes pm install cua-driver` undoes it.
+
+If the download failed or you opted out earlier, any of these installs it:
 
 - **`hermes tools`** → pick `🖱️  Computer Use` — installs the driver
   automatically if it's still missing.

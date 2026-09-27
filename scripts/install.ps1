@@ -8,9 +8,12 @@
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
 #   -SkipBrowser          do not install the browser tools (agent-browser +
-#                         Chromium); remembered by later installs and
-#                         `hermes update`, undone by
+#                         Chromium, Browser Use CLI); remembered by later
+#                         installs and `hermes update`, undone by
 #                         `hermes pm install agent-browser`
+#   -SkipComputerUse      do not install the computer-use driver (cua-driver);
+#                         remembered the same way, undone by
+#                         `hermes pm install cua-driver`
 #   -Verbose              stream every child command's output (the default
 #                         with redirected output and in CI)
 [CmdletBinding(PositionalBinding=$false)]
@@ -32,6 +35,7 @@ param(
     # installs and `hermes update` keep the browser tools off until
     # `hermes pm install agent-browser` opts back in.
     [switch]$SkipBrowser,
+    [switch]$SkipComputerUse,
     # Print the paths this install would use, as JSON on stdout, and exit
     # without touching anything. The first question on any "installer says a
     # path doesn't exist" report is which paths it actually resolved --
@@ -935,6 +939,7 @@ function Invoke-BootstrapPm {
         # param() binding is not in $script: scope (see Initialize-ResolvedPaths).
         $pmArgs = @('install')
         if ($SkipBrowser) { $pmArgs += @('--without', 'agent-browser') }
+        if ($SkipComputerUse) { $pmArgs += @('--without', 'cua-driver') }
         Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli @pmArgs }
         if ($LASTEXITCODE) { Fail "dependency install failed" }
     } finally {

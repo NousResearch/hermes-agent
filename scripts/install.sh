@@ -32,6 +32,7 @@ NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
 VERBOSE=false
 SKIP_BROWSER=false
+SKIP_COMPUTER_USE=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
         --non-interactive|-NonInteractive) NON_INTERACTIVE=true; shift ;;
         --skip-setup) NON_INTERACTIVE=true; shift ;;
         --skip-browser|--no-playwright|-SkipBrowser) SKIP_BROWSER=true; shift ;;
+        --skip-computer-use|-SkipComputerUse) SKIP_COMPUTER_USE=true; shift ;;
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
         --verbose|-Verbose) VERBOSE=true; shift ;;
         -h|--help)
@@ -61,11 +63,14 @@ while [ $# -gt 0 ]; do
             echo "                  [--hermes-home PATH]"
             echo "                  [--manifest] [--stage NAME] [--json]"
             echo "                  [--non-interactive] [--include-desktop] [--verbose]"
-            echo "                  [--skip-browser]"
+            echo "                  [--skip-browser] [--skip-computer-use]"
             echo
-            echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium)."
-            echo "                  Alias: --no-playwright. Remembered by later installs and"
-            echo "                  'hermes update'; undo with 'hermes pm install agent-browser'."
+            echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium,"
+            echo "                  Browser Use CLI). Alias: --no-playwright. Remembered by later"
+            echo "                  installs and 'hermes update'; undo with 'hermes pm install agent-browser'."
+            echo "  --skip-computer-use"
+            echo "                  Do not install the computer-use driver (cua-driver). Remembered"
+            echo "                  the same way; undo with 'hermes pm install cua-driver'."
             exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -650,9 +655,10 @@ bootstrap_python() {
 bootstrap_pm() {
     local boot_py
     local pm_args=(install)
-    # PM records the opt-out, so later installs and `hermes update` keep the
-    # browser tools off until `hermes pm install agent-browser` opts back in.
+    # PM records the opt-outs, so later installs and `hermes update` keep the
+    # tools off until `hermes pm install <name>` opts back in.
     [ "$SKIP_BROWSER" = true ] && pm_args+=(--without agent-browser)
+    [ "$SKIP_COMPUTER_USE" = true ] && pm_args+=(--without cua-driver)
     bootstrap_python
     (cd "$INSTALL_DIR" && run_logged "Installing dependencies (hash-verified via uv.lock)" \
         "$boot_py" -m pm.cli "${pm_args[@]}") \

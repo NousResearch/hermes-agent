@@ -848,7 +848,10 @@ class Ripgrep(BinaryPackage):
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
-    gaps = {target: "cua-driver does not publish a musl build" for target in MUSL_TARGETS}
+    # Computer use's only OS path, so the default install carries it.
+    default = True
+    gaps = {**{target: "cua-driver does not publish a musl build" for target in MUSL_TARGETS},
+            "linux-arm64-bionic": "cua-driver does not publish an Android build"}
     binary_rel = {
         "darwin-arm64": "CuaDriver.app/Contents/MacOS/cua-driver",
         "darwin-x64": "CuaDriver.app/Contents/MacOS/cua-driver",

@@ -2748,6 +2748,52 @@ class MatrixAdapter(BasePlatformAdapter):
                 return {str(member) for member in members}
         return None
 
+    async def _get_room_member_profiles(self, room_id: str) -> Optional[Dict[Any, Any]]:
+        state_store = getattr(self._client, "state_store", None) if self._client else None
+        if state_store:
+            with suppress(Exception):
+                profiles = await state_store.get_member_profiles(RoomID(room_id))
+                if profiles:
+                    return dict(profiles)
+
+        client = getattr(self, "_client", None)
+        if client is not None and hasattr(client, "get_joined_members"):
+            with suppress(Exception):
+                profiles = await client.get_joined_members(RoomID(room_id))
+                if profiles:
+                    return dict(profiles)
+        return None
+
+    async def _compute_room_display_name(self, room_id: str) -> Optional[str]:
+        profiles = await self._get_room_member_profiles(room_id)
+        if not profiles:
+            return None
+
+        own_user_id = (self._user_id or "").strip().lower()
+        names = []
+        for user_id, member in profiles.items():
+            if str(user_id).strip().lower() == own_user_id:
+                continue
+            display_name = getattr(member, "displayname", None)
+            if display_name and display_name.strip():
+                names.append(display_name.strip())
+            elif str(user_id).startswith("@") and ":" in str(user_id):
+                names.append(str(user_id)[1:].split(":", 1)[0])
+            else:
+                names.append(str(user_id))
+
+        if not names:
+            return None
+
+        names.sort()
+        if len(names) == 1:
+            return names[0]
+        if len(names) <= 3:
+            return f"{', '.join(names[:-1])} and {names[-1]}"
+        remaining = len(names) - 3
+        noun = "other" if remaining == 1 else "others"
+        return f"{', '.join(names[:3])} and {remaining} {noun}"
+
     async def _get_room_state_value(self, room_id: str, event_type: str, key: str) -> Optional[str]:
         """Fetch a stripped string field from a room state event, or None."""
         if not self._client or not hasattr(self._client, "get_state_event"):
@@ -2783,11 +2829,14 @@ class MatrixAdapter(BasePlatformAdapter):
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
         is_likely_dm = bool(members is not None and len(members) == 2 and self._user_id in members)
+        computed_name = None
+        if not room_name and not canonical_alias:
+            computed_name = await self._compute_room_display_name(room_id)
         identity = MatrixRoomIdentity(
             room_id=room_id, room_name=room_name, room_topic=room_topic, canonical_alias=canonical_alias,
             server_name=(room_id.rsplit(":", 1)[-1].strip() or None) if ":" in room_id else None,
             joined_member_count=member_count,
-            is_direct_account_data=is_direct, display_name=room_name or canonical_alias or room_id,
+            is_direct_account_data=is_direct, display_name=room_name or canonical_alias or computed_name or room_id,
             has_explicit_name=has_explicit_name, chat_type="dm" if is_likely_dm else "room",
             conflict=bool(is_direct and not is_likely_dm))
         if len(self._room_identities) >= self._room_identity_cache_max:

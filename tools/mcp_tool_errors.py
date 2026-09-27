@@ -417,7 +417,11 @@ def _make_empty_meta_stripping_transport(httpx_mod, inner_transport):
                     repaired = ([_repair_item(item) for item in parsed]
                                 if isinstance(parsed, list) else _repair_item(parsed))
                     if repaired != parsed:
-                        body = json.dumps(repaired, separators=(",", ":")).encode("utf-8")
+                        # ensure_ascii=False keeps non-ASCII tool arguments as UTF-8 bytes instead
+                        # of \uXXXX escapes, matching what the SDK already put on the wire.
+                        # ensure_ascii=False keeps non-ASCII tool arguments as UTF-8 bytes instead
+                        # of \uXXXX escapes, matching what the SDK already put on the wire.
+                        body = json.dumps(repaired, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
                         headers = httpx_mod.Headers(request.headers)
                         for framing in ("content-length", "transfer-encoding"):
                             headers.pop(framing, None)  # rebuilt by httpx.Request from the new body

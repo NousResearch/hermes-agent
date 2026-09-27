@@ -68,6 +68,24 @@ async def test_populated_meta_passes_through_unchanged():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("falsy_meta", [{"progressToken": 0}, {"x": False}, {"a": None}])
+async def test_populated_but_falsy_meta_survives(falsy_meta):
+    # A non-empty _meta dict stays even when every value is falsy: the strip predicate
+    # matches the container forms ({}, None), never truthiness of the dict's contents.
+    seen = {}
+    payload = {"jsonrpc": "2.0", "id": 12, "method": "tools/call",
+               "params": {"name": "run_ads_report", "_meta": falsy_meta}}
+
+    async def handler(request):
+        seen["body"] = request.content
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 12, "result": {}})
+
+    async with _client_for(handler) as client:
+        await _post(client, payload)
+    assert json.loads(seen["body"]) == payload  # populated-but-falsy metadata is not stripped
+
+
+@pytest.mark.asyncio
 async def test_request_without_meta_key_is_untouched():
     seen = {}
     payload = {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {"cursor": None}}
@@ -93,6 +111,44 @@ async def test_json_rpc_result_shape_is_untouched():
     async with _client_for(handler) as client:
         await _post(client, payload)
     assert json.loads(seen["body"]) == payload  # no "method": repair only targets requests
+
+
+@pytest.mark.asyncio
+async def test_result_shape_with_params_key_is_untouched():
+    # A result-shaped object that also carries a params dict: the "method" guard keeps the
+    # repair off response echoes entirely, so even their params._meta is forwarded verbatim.
+    seen = {}
+    payload = {"jsonrpc": "2.0", "id": 13, "result": {"_meta": {}}, "params": {"_meta": {}}}
+
+    async def handler(request):
+        seen["body"] = request.content
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 13, "result": {}})
+
+    async with _client_for(handler) as client:
+        await _post(client, payload)
+    assert json.loads(seen["body"]) == payload  # no "method" key: never a request, never repaired
+
+
+@pytest.mark.asyncio
+async def test_non_ascii_arguments_stay_utf8_after_repair():
+    # The re-serialized body keeps non-ASCII tool arguments as raw UTF-8 instead of
+    # \uXXXX escapes, so the repaired wire form matches how the SDK serialized it.
+    seen = {}
+    payload = {"jsonrpc": "2.0", "id": 14, "method": "tools/call",
+               "params": {"name": "查询广告", "_meta": {}}}
+
+    async def handler(request):
+        seen["body"] = request.content
+        seen["content_length"] = request.headers.get("content-length")
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 14, "result": {}})
+
+    async with _client_for(handler) as client:
+        await _post(client, payload)
+    sent = json.loads(seen["body"])
+    assert "_meta" not in sent["params"]
+    assert sent["params"]["name"] == "查询广告"
+    assert "查询广告".encode("utf-8") in seen["body"]  # raw bytes, not \uXXXX escapes
+    assert int(seen["content_length"]) == len(seen["body"])  # framing recomputed for the new body
 
 
 @pytest.mark.asyncio

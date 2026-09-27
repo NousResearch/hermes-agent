@@ -21,8 +21,8 @@ therefore bypasses MATRIX_ALLOWED_ROOMS, MATRIX_FREE_RESPONSE_ROOMS, and MATRIX_
 and follows MATRIX_DM_AUTO_THREAD / MATRIX_DM_MENTION_THREADS instead of MATRIX_AUTO_THREAD /
 MATRIX_SESSION_SCOPE.
 
-Thread backfill depth is configured by ``matrix.thread_backfill_limit`` in config.yaml
-(default 20; 0 disables backfill).
+Room and thread catch-up depth is configured by ``matrix.room_backfill_limit`` and
+``matrix.thread_backfill_limit`` in config.yaml (default 20; 0 disables each).
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
     _MATRIX_REPLY_FALLBACK_PILL_RE, _has_reply_fallback, _split_reply_fallback,
 )
-from plugins.platforms.matrix.thread_context import fetch_thread_entries
+from plugins.platforms.matrix.thread_context import PreviousTurnCheck, fetch_thread_entries
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -102,7 +102,7 @@ from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.platforms.helpers import ThreadParticipationTracker
 from gateway.session import SessionSource
-from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
+from plugins.platforms.matrix.room_context import MatrixRoomState, fetch_room_entries, format_room_notes
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -889,6 +889,10 @@ class MatrixAdapter(BasePlatformAdapter):
             self._thread_backfill_limit = max(0, min(100, int(config.extra.get("thread_backfill_limit", 20))))
         except (TypeError, ValueError):
             self._thread_backfill_limit = 20
+        try:
+            self._room_backfill_limit = max(0, min(100, int(config.extra.get("room_backfill_limit", 20))))
+        except (TypeError, ValueError):
+            self._room_backfill_limit = 20
         self._joined_rooms: Set[str] = set()
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
@@ -2087,7 +2091,9 @@ class MatrixAdapter(BasePlatformAdapter):
         relates_to: dict, mention_claimed: bool = False,
         voice_gate: Optional[VoiceGate] = None) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
-        display_name, source) or None when the message should be dropped. ``mention_claimed``
+        display_name, requires_mention, source) or None when the message should be dropped.
+        ``requires_mention`` is true when this room or thread drops messages that do not
+        mention the bot. ``mention_claimed``
         marks a parked voice claimed by the sender's follow-up bare @mention; ``voice_gate`` is
         the in-flight mark of a parkable voice, released once the park decision is made."""
         identity = await self._resolve_room_identity(room_id)
@@ -2100,6 +2106,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 body = _strip_reply_fallback(body)
             body = _normalize_matrix_bang_command(body)
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
+        requires_mention = False
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
             if self._allowed_rooms and room_id not in self._allowed_rooms:
@@ -2108,6 +2115,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 return None
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
+            requires_mention = not is_free_room and (
+                self._thread_require_mention if in_bot_thread else self._require_mention
+            )
             if self._require_mention and not is_free_room and not in_bot_thread:
                 if not is_mentioned and not body.startswith("/"):
                     if voice_gate is not None:  # parkable voice: a bare @mention may follow (Element X)
@@ -2155,7 +2165,7 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
             self._thread_fallbacks.remember(room_id, thread_id, event_id)
         self._background_read_receipt(room_id, event_id)
-        return body, is_dm, chat_type, thread_id, display_name, source
+        return body, is_dm, chat_type, thread_id, display_name, requires_mention, source
 
     async def _extract_reply_context(
         self, room_id: str, body: str, source_content: dict, relates_to: dict, *, sender: str,
@@ -2237,7 +2247,9 @@ class MatrixAdapter(BasePlatformAdapter):
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
             return None
-        body, _is_dm, chat_type, _thread_id, display_name, source = ctx
+        body, _is_dm, chat_type, _thread_id, display_name, requires_mention, source = ctx
+        if requires_mention:
+            extra["metadata"] = {**(extra.get("metadata") or {}), "matrix_requires_mention": True}
         reply = await self._extract_reply_context(
             room_id, body, source_content, relates_to, sender=sender, chat_type=chat_type,
         )
@@ -2278,11 +2290,16 @@ class MatrixAdapter(BasePlatformAdapter):
         if first_turn and thread_id and thread_id != event.message_id:
             try:
                 blocks.append(await self.fetch_thread_context(
-                    event.source.chat_id, thread_id,
-                    exclude_event_ids=[event.message_id, *event.merged_message_ids],
+                    event.source.chat_id, thread_id, before_event_id=event.message_id,
+                    exclude_event_ids=event.merged_message_ids,
                 ))
             except Exception as exc:
                 logger.debug("Matrix thread context fetch failed: %s", exc)
+        else:
+            try:
+                blocks.append(await self.fetch_mention_context(event))
+            except Exception as exc:
+                logger.debug("Matrix mention context fetch failed: %s", exc)
         note = "\n\n".join(block for block in blocks if block)
         if current is None and not note:
             return None
@@ -2375,7 +2392,8 @@ class MatrixAdapter(BasePlatformAdapter):
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
-            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
+            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype,
+            metadata={"matrix_mention_claimed": True} if mention_claimed else {})
         if msg_event is not None:
             await self.handle_message(msg_event)
 
@@ -3086,19 +3104,71 @@ class MatrixAdapter(BasePlatformAdapter):
         return (await self._resolve_room_identity(room_id)).chat_type == "dm"
 
     async def fetch_thread_context(
-        self, chat_id: str, thread_id: str, *, exclude_event_ids: Collection[str] = ()
+        self, chat_id: str, thread_id: str, *, before_event_id: str | None = None,
+        exclude_event_ids: Collection[str] = (), is_previous_turn: PreviousTurnCheck | None = None,
     ) -> str | None:
         entries = await fetch_thread_entries(
             self._client, self._event_context_cache, chat_id, thread_id,
-            limit=self._thread_backfill_limit, exclude_event_ids=exclude_event_ids,
+            limit=self._thread_backfill_limit, before_event_id=before_event_id,
+            exclude_event_ids=exclude_event_ids, is_previous_turn=is_previous_turn,
         )
+        return await self._format_history_context(chat_id, entries, "Earlier messages in this thread")
+
+    async def fetch_room_context(
+        self, chat_id: str, event_id: str, *, is_previous_turn: PreviousTurnCheck | None = None,
+    ) -> str | None:
+        entries = await fetch_room_entries(
+            self._client, self._event_context_cache, chat_id, event_id,
+            limit=self._room_backfill_limit, is_previous_turn=is_previous_turn,
+        )
+        return await self._format_history_context(chat_id, entries, "Recent room messages")
+
+    async def fetch_mention_context(self, event: MessageEvent) -> str | None:
+        """Format the messages that the mention gate dropped in this room or thread since the
+        previous turn. Returns None when the room or thread does not require a mention,
+        because every message there has already started a turn.
+
+        The scan stops at the bot's own last message or the last mention that the gate
+        admitted, whichever is later. The transcript already contains that event, and an
+        earlier catch-up covered the messages before it."""
+        source = event.source
+        content = event.raw_message
+        if event.internal or source.chat_type == "dm" or not isinstance(content, dict):
+            return None
+        if not event.metadata.get("matrix_requires_mention") or not event.message_id:
+            return None
+        if not event.metadata.get("matrix_mention_claimed") and not self._content_mentions_bot(
+            str(content.get("body") or ""), content,
+        ):
+            return None
+
+        room_id = source.chat_id
+
+        def is_previous_turn(sender: str, original_content: dict) -> bool:
+            if sender == self._user_id:
+                return True
+            return self._content_mentions_bot(
+                str(original_content.get("body") or ""), original_content,
+            ) and self._is_sender_authorized(sender, chat_type="group", chat_id=room_id) is not False
+
+        relation = MatrixRelation.from_content(content.get("m.relates_to"))
+        if relation.thread_root:
+            return await self.fetch_thread_context(
+                room_id, relation.thread_root, before_event_id=event.message_id,
+                is_previous_turn=is_previous_turn,
+            )
+        return await self.fetch_room_context(room_id, event.message_id, is_previous_turn=is_previous_turn)
+
+    async def _format_history_context(
+        self, chat_id: str, entries: list[MatrixEventContext], heading: str,
+    ) -> str | None:
         if not entries:
             return None
 
         from gateway.session import neutralize_untrusted_inline_text
 
         chat_type = "dm" if await self._is_dm_room(chat_id) else "group"
-        lines = ["[Earlier messages in this thread]"]
+        lines = [f"[{heading}]"]
         has_unverified = False
         for entry in entries:
             authorized = self._is_sender_authorized(
@@ -3520,6 +3590,8 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     seeded = _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE) or {}
     if "thread_backfill_limit" in matrix_cfg:
         seeded["thread_backfill_limit"] = matrix_cfg["thread_backfill_limit"]
+    if "room_backfill_limit" in matrix_cfg:
+        seeded["room_backfill_limit"] = matrix_cfg["room_backfill_limit"]
     return seeded or None
 
 

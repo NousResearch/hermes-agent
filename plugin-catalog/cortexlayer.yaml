@@ -15,12 +15,7 @@ category: memory
 docs_url: https://docs.cortexlayer.net/docs/agents/hermes
 version: "0.1.1"
 capabilities:
-  provides_tools:
-    - memory_add
-    - memory_retrieve
-    - memory_update
-    - memory_delete
-    - memory_relink
+  provides_tools: []
   provides_hooks:
     - on_session_end
     - on_pre_compress

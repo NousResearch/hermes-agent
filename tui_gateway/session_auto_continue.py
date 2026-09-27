@@ -363,6 +363,11 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
     rewrites the already-written row (and the staged dict) to the merged text in place, so cold readers
     see the merged text and the drained turn's ``_adopt_submit_user_row`` content match keeps working.
     A failed write stages nothing on the envelope; the drained turn then writes its own row as before.
+    A source-identified envelope (``submitted_at``/``message_id``) never pre-writes: its turn persists
+    the canonical user row stamped with the source identity (``persist_user_timestamp``/
+    ``persist_user_platform_id`` -> ``_stage_turn_user_message`` -> flush), and an accept-time row would
+    pre-empt that write (``_adopt_submit_user_row`` marks it ``_db_persisted`` so the flush can no longer
+    stamp the identity) — the queued prompt would lose its source attribution and retry-dedup id.
     Caller holds ``history_lock`` (the durable row, the envelope text and the queue must move together —
     a drain cannot claim between the merge and the write)."""
     # The queue path bypasses prompt.submit's lazy row creation: the first message of a draft session can
@@ -372,6 +377,8 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
     # persistence, and a local accept-time row would double it on drain.
     if _session_uses_compute_host(session):
         return
+    if envelope.get("submitted_at") is not None or envelope.get("message_id") is not None:
+        return  # source-identified: the drained turn's persist owns the row (see docstring)
     _ensure_session_db_row(session)
     staged = envelope.get("_submit_user_row")
     if isinstance(staged, dict) and isinstance(staged.get("_row_id"), int):

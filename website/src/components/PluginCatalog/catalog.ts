@@ -118,6 +118,19 @@ export function tierOf(plugin: Pick<CatalogPlugin, "tier">) {
   return TIER_CONFIG[plugin.tier] || TIER_CONFIG.community;
 }
 
+/** Tool chips a catalog card shows: the first `max` names plus how many were folded into a `+N`. */
+export const CARD_TOOL_CHIP_LIMIT = 3;
+
+export interface CappedToolChips {
+  shown: string[];
+  hidden: number;
+}
+
+export function capToolChips(tools: string[] | undefined, max = CARD_TOOL_CHIP_LIMIT): CappedToolChips {
+  const all = tools ?? [];
+  return { shown: all.slice(0, max), hidden: Math.max(0, all.length - max) };
+}
+
 export function formatStars(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n);
 }

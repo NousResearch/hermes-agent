@@ -244,6 +244,10 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # Structured interactive-prompt reply, verbatim off the wire; the adapter
         # consumes it to resolve pending approvals/confirms/clarifies.
         prompt_response=dict(prompt_response) if isinstance(prompt_response, dict) else None,
+        # Authenticated connector disposition for the completion gate. The gateway
+        # validates and bounds its keys again before exposing it to a turn hook.
+        metadata={"completion_gate_source_state": raw["completion_gate_source_state"]}
+        if isinstance(raw.get("completion_gate_source_state"), dict) else {},
     )
 
 

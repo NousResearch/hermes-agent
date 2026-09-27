@@ -2057,6 +2057,8 @@ export const frOverrides = {
       provider: 'Fournisseur',
       model: 'Modèle',
       applying: 'Application...',
+      mainAppliedTitle: 'Modèle principal mis à jour',
+      mainAppliedMessage: model => `Les nouvelles sessions utiliseront ${model}.`,
       defaultsLabel: 'Par défaut',
       reasoning: 'Raisonnement',
       reasoningOff: 'Désactivé',
@@ -5478,8 +5480,9 @@ export const frOverrides = {
             `${provider} a renvoyé une erreur serveur. Réessayez dans un instant ou changez de fournisseur.`
         },
         timeout: {
-          title: 'Délai de réponse dépassé',
-          body: provider => `${provider} n'a pas répondu à temps. Réessayez pour renvoyer le message.`
+          title: 'Service d’IA injoignable',
+          body: provider =>
+            `${provider} est injoignable ou n'a pas répondu à temps. Vérifiez votre connexion internet, puis réessayez.`
         },
         stream_drop: {
           title: 'La réponse a été interrompue',

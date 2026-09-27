@@ -594,7 +594,8 @@ information across multiple compactions — items move from "In Progress" to "Do
 new progress is added, and obsolete information is removed.
 
 The `_previous_summary` field on the compressor instance stores the last summary
-text for this purpose.
+text for this purpose. A deterministic fallback summary is stored there too, since
+it is the handoff the transcript now carries.
 
 
 ## Before/After Example

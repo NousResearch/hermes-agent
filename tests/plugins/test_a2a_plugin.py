@@ -611,6 +611,38 @@ class TestClientTools:
         out = tools.a2a_list({})
         assert "No peers configured" in out
 
+class TestAuthHeaderTokenEnv:
+    """auth.token_env keeps the literal secret out of config.yaml (t_baa64d73 / atlas finding on
+    tools.py:49-50): the token is resolved at call time via security._startup_env instead of being
+    read from the peer entry directly."""
+
+    def test_literal_token_still_works(self):
+        assert tools._auth_header({"type": "bearer", "token": "tok-a"}) == {"Authorization": "Bearer tok-a"}
+
+    def test_token_env_resolves_via_startup_env(self, monkeypatch):
+        monkeypatch.setenv("ATLAS_PEER_TOKEN", "tok-from-env")
+        header = tools._auth_header({"type": "bearer", "token_env": "ATLAS_PEER_TOKEN"})
+        assert header == {"Authorization": "Bearer tok-from-env"}
+
+    def test_literal_token_wins_over_token_env(self, monkeypatch):
+        monkeypatch.setenv("ATLAS_PEER_TOKEN", "tok-from-env")
+        header = tools._auth_header({"type": "bearer", "token": "tok-literal", "token_env": "ATLAS_PEER_TOKEN"})
+        assert header == {"Authorization": "Bearer tok-literal"}
+
+    def test_missing_token_env_value_yields_no_header(self, monkeypatch):
+        monkeypatch.delenv("ATLAS_PEER_TOKEN", raising=False)
+        assert tools._auth_header({"type": "bearer", "token_env": "ATLAS_PEER_TOKEN"}) == {}
+
+    def test_no_token_or_token_env_yields_no_header(self):
+        assert tools._auth_header({"type": "bearer"}) == {}
+
+    def test_non_bearer_type_yields_no_header(self):
+        assert tools._auth_header({"type": "basic", "token": "x"}) == {}
+
+    def test_empty_auth_yields_no_header(self):
+        assert tools._auth_header({}) == {}
+        assert tools._auth_header(None) == {}
+
 
 class TestRegistryDispatchConvention:
     """Tools must accept the args-as-dict positional that registry.dispatch

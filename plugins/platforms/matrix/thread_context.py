@@ -134,7 +134,7 @@ async def fetch_thread_entries(
             if parsed_root is not None:
                 root = cache.store(room_id, thread_id, parsed_root[0])
     except Exception as exc:
-        logger.debug("Matrix: could not fetch thread root %s in %s: %s: %s", thread_id, room_id, exc)
+        logger.debug("Matrix: could not fetch thread root %s in %s: %s", thread_id, room_id, exc)
         root = cache.history_entry(room_id, thread_id)
     if root is not None:
         entries.append(root)

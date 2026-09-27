@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,6 +39,24 @@ def _replacement(raw: dict[str, Any]) -> dict[str, Any] | None:
     relations = unsigned.get("m.relations") if isinstance(unsigned, dict) else None
     replacement = relations.get("m.replace") if isinstance(relations, dict) else None
     return replacement if isinstance(replacement, dict) else None
+
+
+async def _encrypted_replacement_content(client: Any, replacement: dict[str, Any]) -> dict[str, Any] | None:
+    encrypted = replacement.get("content")
+    if not isinstance(encrypted, dict):
+        return None
+    store = client.crypto.crypto_store
+    session = await store.get_group_session(replacement["room_id"], encrypted["session_id"])
+    plaintext, _ = session.decrypt(encrypted["ciphertext"])
+    payload = json.loads(plaintext)
+    if (not isinstance(payload, dict) or payload.get("room_id") != replacement["room_id"]
+            or payload.get("type") != "m.room.message"):
+        return None
+    content = payload.get("content")
+    if not isinstance(content, dict):
+        return None
+    revised = content.get("m.new_content")
+    return revised if isinstance(revised, dict) else None
 
 
 async def _decrypt(client: Any, raw: dict[str, Any]) -> tuple[Any | None, dict[str, str] | None]:
@@ -90,10 +109,17 @@ async def effective_event(client: Any, raw: dict[str, Any]) -> MatrixEffectiveEv
         return MatrixEffectiveEvent(content, original_content)
 
     if replacement.get("type") == "m.room.encrypted":
-        revised, error = await _decrypt(client, replacement)
+        _, error = await _decrypt(client, replacement)
         if error is not None:
             return MatrixEffectiveEvent(content, original_content, error=error)
-        revised_content = event_content(revised).get("m.new_content")
+        try:
+            # Mautrix's typed edit serializer synthesises m.new_content even when the payload omitted it.
+            revised_content = await _encrypted_replacement_content(client, replacement)
+        except Exception:
+            return MatrixEffectiveEvent(content, original_content, error={
+                "event_id": replacement.get("event_id"),
+                "error": "encrypted replacement could not be inspected",
+            })
     else:
         revised_content = event_content(replacement).get("m.new_content")
     if not isinstance(revised_content, dict):

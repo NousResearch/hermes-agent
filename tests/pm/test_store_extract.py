@@ -42,6 +42,44 @@ def test_symlinks_escaping_the_destination_are_rejected(tmp_path, linkname):
         extract(archive, tmp_path / "out")
     assert not (tmp_path / "out" / "python/bin/evil").is_symlink()
 
+def test_extract_tar_works_without_pep706_tarfile_apis(monkeypatch, tmp_path):
+    archive = _tar(tmp_path, [("python/bin/hermes", None)])
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    monkeypatch.delattr(tarfile, "FilterError", raising=False)
+    monkeypatch.delattr(tarfile.TarInfo, "replace", raising=False)
+
+    extract(archive, tmp_path / "out")
+
+    assert (tmp_path / "out/python/bin/hermes").read_bytes() == b"x"
+
+
+def test_extract_tar_rejects_escape_without_pep706_tarfile_apis(monkeypatch, tmp_path):
+    archive = _tar(tmp_path, [("../../escape", None)])
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    monkeypatch.delattr(tarfile, "FilterError", raising=False)
+    monkeypatch.delattr(tarfile.TarInfo, "replace", raising=False)
+
+    with pytest.raises(tarfile.TarError):
+        extract(archive, tmp_path / "out")
+    assert not (tmp_path / "escape").exists()
+
+
+def test_extract_tar_rejects_hardlink_escape_without_pep706_tarfile_apis(monkeypatch, tmp_path):
+    archive = tmp_path / "pkg.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        info = tarfile.TarInfo("python/bin/hermes")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "../escape"
+        tf.addfile(info)
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    monkeypatch.delattr(tarfile, "FilterError", raising=False)
+    monkeypatch.delattr(tarfile.TarInfo, "replace", raising=False)
+
+    with pytest.raises(tarfile.TarError):
+        extract(archive, tmp_path / "out")
+    assert not (tmp_path / "out/python/bin/hermes").exists()
+
+
 def test_git_tar_ignores_msys_mount_table_link(tmp_path):
     from pm.packages import Git
 

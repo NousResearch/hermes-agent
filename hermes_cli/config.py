@@ -1968,7 +1968,12 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         try:
             cache_key = file_signature(config_path.stat())
         except FileNotFoundError:
-            return {}
+            # An absent file is a read like any other: the empty dict a caller fills and saves is
+            # tracked, so the save lands on top of a config another writer created meanwhile.
+            empty: Dict[str, Any] = {}
+            if want_deepcopy:
+                track_served(empty, {}, config_path, "raw")
+            return empty
         except OSError as e:
             return FailedConfigRead(error=e)
 

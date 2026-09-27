@@ -137,3 +137,21 @@ def test_a_stale_dict_keeps_its_snapshot_while_many_newer_loaded_dicts_are_alive
     assert after["approvals"]["destructive_slash_confirm"] is False, "the interleaved write was reverted"
     assert after["a_writer"]["key"] == _A_SENTINEL
     assert len(alive) == 200
+
+
+def test_a_save_based_on_a_missing_config_keeps_a_first_write_made_after_the_read(home):
+    """Reading an absent config.yaml served an untracked {}, so saving it back deleted a config
+    another writer had created after that read."""
+    from hermes_cli.config import read_raw_config, save_config
+
+    cfg_path = home / "config.yaml"
+    assert not cfg_path.exists()
+    stale = read_raw_config()
+
+    _interleaved_write("save_config_value")
+    stale.setdefault("a_writer", {})["key"] = _A_SENTINEL
+    save_config(stale)
+
+    after = _disk(cfg_path)
+    assert after["approvals"]["destructive_slash_confirm"] is False, "the first write was deleted"
+    assert after["a_writer"]["key"] == _A_SENTINEL

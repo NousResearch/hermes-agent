@@ -588,3 +588,83 @@ def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
         assert "exited early: fatal: agent segfaulted" in str(exc)
     else:
         raise AssertionError("session on a dead CLI must raise")
+
+
+# --- native-descendant reaping (#124835) ------------------------------------
+#
+# The npm `copilot` launcher spawns a platform-specific native child. Terminating
+# only the tracked launcher leaks that descendant (in a PID-1 container it reparents
+# to init and accumulates). The client must lead a new session so the whole tree is
+# killable, and teardown must signal the group, not just the launcher.
+
+
+class _FakePopenProc:
+    def __init__(self, pid=4242):
+        self.pid = pid
+        self.stdin = io.StringIO()
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+        self._dead = False
+
+    def poll(self):
+        return 0 if self._dead else None
+
+    def terminate(self):
+        self._dead = True
+
+    def kill(self):
+        self._dead = True
+
+    def wait(self, timeout=None):
+        self._dead = True
+        return 0
+
+
+def _acp_client(tmp_path):
+    return CopilotACPClient(
+        api_key="copilot-acp", base_url="acp://copilot",
+        acp_command="copilot", acp_args=["--acp", "--stdio"], acp_cwd=str(tmp_path),
+    )
+
+
+def test_spawn_starts_new_session_for_group_reaping(tmp_path):
+    captured = {}
+
+    def _fake_popen(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return _FakePopenProc()
+
+    client = _acp_client(tmp_path)
+    with _patch("agent.copilot_acp_client._acp_supported", return_value=True):
+        with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen):
+            client._spawn()
+
+    assert captured["kwargs"].get("start_new_session") is True
+
+
+def test_terminate_process_reaps_the_whole_tree():
+    proc = _FakePopenProc(pid=9191)
+    killed = []
+    with _patch("agent.deadline.kill_process_tree", side_effect=lambda pid, **kw: killed.append(pid)):
+        CopilotACPClient._terminate_process(proc)
+    # The launcher's whole tree (by pid) is signalled, not just proc.terminate().
+    assert killed == [9191]
+
+
+def test_release_process_reaps_the_whole_tree(tmp_path):
+    proc = _FakePopenProc(pid=7777)
+
+    def _fake_popen(cmd, **kwargs):
+        return proc
+
+    client = _acp_client(tmp_path)
+    with _patch("agent.copilot_acp_client._acp_supported", return_value=True):
+        with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen):
+            client._spawn()
+
+    killed = []
+    with _patch("agent.deadline.kill_process_tree", side_effect=lambda pid, **kw: killed.append(pid)):
+        client._release_process(proc)
+
+    assert killed == [7777]
+    assert client.is_closed is True

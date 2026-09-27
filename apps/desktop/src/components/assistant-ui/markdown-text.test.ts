@@ -584,4 +584,23 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('$$E = mc^2$$')
   })
+
+  it('shields inline math closed after an escaped backslash', () => {
+    // #92371: in `$x[2]\\$` the `\\` is an escaped backslash (a literal
+    // backslash, valid TeX), so the final `$` really closes the span. A
+    // one-character lookbehind on the closer saw the backslash and refused
+    // to shield, letting the prose citation-marker rewrite eat `[2]`.
+    const output = preprocessMarkdown(String.raw`Per the paper, $x[2]\\$ is the value.`)
+
+    expect(output).toBe(String.raw`Per the paper, $x[2]\\$ is the value.`)
+
+    // Minimal shape: the span containing only a+escaped-backslash.
+    expect(preprocessMarkdown(String.raw`$a\\$ plain`)).toBe(String.raw`$a\\$ plain`)
+  })
+
+  it('still escapes bare currency dollars next to an escaped-backslash span', () => {
+    // The fix must not widen the math branch into currency: an escaped `\$`
+    // stays a price opener, an escaped `\\` stays a literal backslash.
+    expect(preprocessMarkdown(String.raw`costs \$5 and $a\\$ ok`)).toBe(String.raw`costs \$5 and $a\\$ ok`)
+  })
 })

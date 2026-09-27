@@ -459,6 +459,27 @@ def _composer_paste_roots() -> list[Path]:
     return [hermes_dir / COMPOSER_PASTES_DIRNAME for hermes_dir in _hermes_dirs()]
 
 
+def _agent_staged_path(path: Path) -> bool:
+    """True when *path* sits in a Hermes dir the gateway stages for the agent.
+
+    Those are the ``_CACHE_DIRS`` roots — ``attachments/`` (file drops),
+    ``images/`` (image uploads), ``cache/*`` (platform downloads) and now
+    ``composer-pastes/`` (large text pastes) — the gateway's OWN payload, never
+    a workspace escape, and they live outside the workspace by construction: on
+    a remote execution backend (ssh and friends) the workspace root is a path
+    on THAT host (#110174), so the workspace check below rejected every staged
+    attachment there. The bytes are staged to (or already live on) the gateway
+    either way, so the ref still expands — text inlines; binaries point at the
+    backend-visible path via ``to_agent_visible_cache_path``.
+    """
+    try:
+        from tools.credential_files import get_cache_directory_mounts
+        return any(_is_under(path, Path(entry["host_path"]).expanduser().resolve())
+                   for entry in get_cache_directory_mounts())
+    except Exception:
+        return False
+
+
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
     from agent.file_safety import is_nt_namespace_path
     if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
@@ -468,6 +489,7 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
         allowed_root is not None
         and not _is_under(resolved, allowed_root)
         and not any(_is_under(resolved, root) for root in _composer_paste_roots())
+        and not _agent_staged_path(resolved)
     ):
         raise ValueError("path is outside the allowed workspace")
     return resolved

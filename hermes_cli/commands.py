@@ -464,6 +464,15 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return cmd.name in overrides
 
 
+def localized_command_description(name: str, description: str) -> str:
+    """Localize a canonical built-in for gateway help/menus, or use its live registry copy."""
+    from agent.i18n import t
+
+    key = f"command_descriptions.{name}"
+    translated = t(key)
+    return description if translated == key or not translated.strip() else translated
+
+
 def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
     """Generate gateway help text lines from the registry.
 
@@ -483,8 +492,8 @@ def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
         # Skip internal aliases like reload_mcp (underscore variant of the name).
         alias_parts = [f"`/{a}`" for a in cmd.aliases
                        if not (a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name)]
-        alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        alias_note = f" ({localized_command_description('alias_label', 'alias')}: {', '.join(alias_parts)})" if alias_parts else ""
+        lines.append(f"`/{cmd.name}{args}` -- {localized_command_description(cmd.name, cmd.description)}{alias_note}")
     return lines
 
 

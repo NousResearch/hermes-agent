@@ -60,7 +60,7 @@ import {
 } from "@nous-research/ui/ui/components/dialog";
 import { cn } from "@/lib/utils";
 import { Input } from "@nous-research/ui/ui/components/input";
-import { useI18n } from "@/i18n";
+import { countLabel, useI18n } from "@/i18n";
 import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -493,12 +493,7 @@ export default function SkillsPage() {
                     {t.skills.title}
                   </CardTitle>
                   <Badge tone="secondary" className="text-xs">
-                    {t.skills.resultCount
-                      .replace("{count}", String(searchMatchedSkills.length))
-                      .replace(
-                        "{s}",
-                        searchMatchedSkills.length !== 1 ? "s" : "",
-                      )}
+                    {countLabel(t.skills.resultCount, searchMatchedSkills.length)}
                   </Badge>
                 </div>
               </CardHeader>
@@ -539,9 +534,7 @@ export default function SkillsPage() {
                   </CardTitle>
                   <div className="flex items-center gap-2">
                     <Badge tone="secondary" className="text-xs">
-                      {t.skills.skillCount
-                        .replace("{count}", String(activeSkills.length))
-                        .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                      {countLabel(t.skills.skillCount, activeSkills.length)}
                     </Badge>
                     <Button
                       size="sm"

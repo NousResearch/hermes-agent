@@ -45,7 +45,7 @@ Po skonfigurowaniu odpowiednich połączeń możesz poprosić Cześka na przykł
 - **Porządkowanie danych:** przygotować plan uporządkowania folderu lub zestawienia faktur i wykonać zmiany po Twoim potwierdzeniu.
 - **Raport z rozmowy:** zebrać ustalenia, otwarte pytania i następne kroki po sesji.
 
-Zadanie cykliczne ustawisz w **Zadaniach** albo **Automatyzacjach**. Dostęp do e-maila, kalendarza, GitHuba i innych usług włączasz oddzielnie w **Integracjach** lub **Komunikatorach**. Wyniki znajdziesz w **Plikach i wynikach**; wcześniejsze ustalenia w **Rozmowach** i **Pamięci**.
+Zadanie cykliczne ustawisz w **Zadaniach** albo **Automatyzacjach**. Dostęp do e-maila, kalendarza, GitHuba i komunikatorów włączasz oddzielnie w **Integracjach**. Wyniki znajdziesz w **Plikach i wynikach**; wcześniejsze ustalenia w **Rozmowach** i **Pamięci**.
 
 ## Jak jest zbudowany?
 
@@ -61,4 +61,4 @@ Aplikacja desktopowa (Electron i React) wyświetla interfejs. Hermes Agent obsł
 
 ## Rozwój i zgłaszanie problemów
 
-Zasady pracy nad kodem: [AGENTS.md](AGENTS.md). Błędy i propozycje: [GitHub Issues](https://github.com/aievolutionpl/AGENT_CZESIEK/issues). Źródła i instalator mogą mieć różne wersje; przy zgłoszeniu podaj wersję aplikacji, system i kroki odtworzenia, bez kluczy API.
+Zasady pracy nad kodem: [AGENTS.md](AGENTS.md), szybka [mapa repozytorium](docs/REPO_MAP.md). Błędy i propozycje: [GitHub Issues](https://github.com/aievolutionpl/AGENT_CZESIEK/issues). Źródła i instalator mogą mieć różne wersje; przy zgłoszeniu podaj wersję aplikacji, system i kroki odtworzenia, bez kluczy API.

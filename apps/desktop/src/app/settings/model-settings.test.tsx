@@ -274,7 +274,7 @@ describe('ModelSettings', () => {
     fireEvent.click(modelSelect)
     fireEvent.click(await screen.findByRole('option', { name: 'qwen3:latest' }))
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Zastosuj' }))
 
     await waitFor(() =>
       expect(setModelAssignment).toHaveBeenCalledWith({
@@ -322,15 +322,15 @@ describe('ModelSettings', () => {
   it('renders the auxiliary task rows', async () => {
     await renderModelSettings()
 
-    expect(await screen.findByText('Vision')).toBeTruthy()
-    expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
+    expect(await screen.findByText('Wzrok')).toBeTruthy()
+    expect(screen.getAllByText('auto · użyj modelu głównego').length).toBeGreaterThan(0)
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {
     await renderModelSettings()
 
     // One "Set to main" button per task slot; the first is Vision.
-    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
+    const setToMainButtons = await screen.findAllByRole('button', { name: 'Ustaw na główny' })
     fireEvent.click(setToMainButtons[0])
 
     await waitFor(() =>
@@ -364,7 +364,7 @@ describe('ModelSettings', () => {
 
     await renderModelSettings()
 
-    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
+    const setToMainButtons = await screen.findAllByRole('button', { name: 'Ustaw na główny' })
     fireEvent.click(setToMainButtons[0])
 
     await waitFor(() =>
@@ -390,7 +390,7 @@ describe('ModelSettings', () => {
     await renderModelSettings()
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
 
-    const applyButton = await screen.findByRole('button', { name: 'Apply' })
+    const applyButton = await screen.findByRole('button', { name: 'Zastosuj' })
     fireEvent.click(applyButton)
 
     // The switch-time notice names the pinned provider and offers a reset.
@@ -639,9 +639,9 @@ describe('ModelSettings code-skew 503', () => {
     await renderModelSettings()
 
     await waitFor(() => {
-      expect(screen.getByText(/running old code after an update/i)).toBeTruthy()
+      expect(screen.getByText(/po aktualizacji nadal działa na starym kodzie/i)).toBeTruthy()
     })
-    expect(screen.getByRole('button', { name: 'Restart backend' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Zrestartuj backend' })).toBeTruthy()
     expect(screen.queryByText(/hermes:api/)).toBeNull()
     expect(screen.queryByText(/systemctl/)).toBeNull()
   })
@@ -656,9 +656,9 @@ describe('ModelSettings code-skew 503', () => {
     getGlobalModelOptions.mockRejectedValueOnce(skewError)
 
     await renderModelSettings()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Restart backend' })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Zrestartuj backend' })).toBeTruthy())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Restart backend' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Zrestartuj backend' }))
 
     await waitFor(() => expect(recycleBackend).toHaveBeenCalledWith(undefined))
     await waitFor(() => expect(getGlobalModelOptions.mock.calls.length).toBeGreaterThan(1))

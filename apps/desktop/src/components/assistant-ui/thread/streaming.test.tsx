@@ -481,13 +481,13 @@ describe('assistant-ui streaming renderer', () => {
 
     const { container } = render(<StreamingHarness onControls={registerControls} />)
 
-    expect(screen.getByRole('status', { name: 'Hermes is loading a response' })).toBeTruthy()
+    expect(screen.getByRole('status', { name: 'Agent Czesiek wczytuje odpowiedź' })).toBeTruthy()
 
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk')
     })
     expect(container.textContent).not.toContain('second chunk')
-    expect(screen.queryByRole('status', { name: 'Hermes is loading a response' })).toBeNull()
+    expect(screen.queryByRole('status', { name: 'Agent Czesiek wczytuje odpowiedź' })).toBeNull()
 
     // Producer-gated, not wall-clock-gated: the old test slept 80ms and
     // assumed a 500ms timer could not fire before the assertion. On a loaded
@@ -571,14 +571,14 @@ describe('assistant-ui streaming renderer', () => {
   it('omits the dismiss control when no onDismissError handler is supplied', () => {
     render(<MessageHarness message={assistantErrorMessage('OpenRouter rejected the request (403).')} />)
 
-    expect(screen.queryByRole('button', { name: 'Dismiss error' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Zamknij błąd' })).toBeNull()
   })
 
   it('invokes onDismissError with the errored message id when the dismiss control is clicked', () => {
     const onDismissError = vi.fn()
     render(<DismissibleErrorHarness onDismissError={onDismissError} />)
 
-    const dismiss = screen.getByRole('button', { name: 'Dismiss error' })
+    const dismiss = screen.getByRole('button', { name: 'Zamknij błąd' })
     fireEvent.click(dismiss)
 
     expect(onDismissError).toHaveBeenCalledTimes(1)
@@ -605,7 +605,7 @@ describe('assistant-ui streaming renderer', () => {
   it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
     const { container } = render(<RunningReasoningHarness />)
     const ui = within(container)
-    const thinkingToggle = ui.getByRole('button', { name: /thinking/i })
+    const thinkingToggle = ui.getByRole('button', { name: /Myśli/i })
 
     if (thinkingToggle.getAttribute('aria-expanded') !== 'true') {
       fireEvent.click(thinkingToggle)
@@ -633,7 +633,7 @@ describe('assistant-ui streaming renderer', () => {
     settle()
 
     await waitFor(() => {
-      expect(within(container).getByRole('button', { name: /thought/i })).toBeTruthy()
+      expect(within(container).getByRole('button', { name: /Przemyślał/i })).toBeTruthy()
     })
 
     const settled = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
@@ -645,7 +645,7 @@ describe('assistant-ui streaming renderer', () => {
 
   it('does not collapse a live thinking preview when the turn settles', async () => {
     const { container, settle } = renderSettlingReasoning()
-    const toggle = within(container).getByRole('button', { name: /thinking/i })
+    const toggle = within(container).getByRole('button', { name: /Myśli/i })
 
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
@@ -655,7 +655,7 @@ describe('assistant-ui streaming renderer', () => {
     await waitFor(() => {
       expect(
         within(container)
-          .getByRole('button', { name: /thought/i })
+          .getByRole('button', { name: /Przemyślał/i })
           .getAttribute('aria-expanded')
       ).toBe('true')
     })
@@ -669,7 +669,7 @@ describe('assistant-ui streaming renderer', () => {
 
     expect(
       within(container)
-        .getByRole('button', { name: /thinking/i })
+        .getByRole('button', { name: /Myśli/i })
         .getAttribute('aria-expanded')
     ).toBe('false')
 
@@ -678,7 +678,7 @@ describe('assistant-ui streaming renderer', () => {
     await waitFor(() => {
       expect(
         within(container)
-          .getByRole('button', { name: /thought/i })
+          .getByRole('button', { name: /Przemyślał/i })
           .getAttribute('aria-expanded')
       ).toBe('false')
     })
@@ -689,7 +689,7 @@ describe('assistant-ui streaming renderer', () => {
     $reasoningCollapsedByDefault.set(true)
 
     const { container } = render(<RunningReasoningHarness />)
-    const thinkingToggle = within(container).getByRole('button', { name: /thinking/i })
+    const thinkingToggle = within(container).getByRole('button', { name: /Myśli/i })
 
     expect(thinkingToggle.getAttribute('aria-expanded')).toBe('false')
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
@@ -705,7 +705,7 @@ describe('assistant-ui streaming renderer', () => {
     const ui = within(container)
 
     // Settled, so the header is past tense — a running block says "Thinking".
-    fireEvent.click(ui.getByRole('button', { name: /thought/i }))
+    fireEvent.click(ui.getByRole('button', { name: /Przemyślał/i }))
 
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toBe(
       'The user is asking what this file is.'

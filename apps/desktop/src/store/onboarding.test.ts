@@ -831,7 +831,7 @@ describe('device-code poll expiry', () => {
     expect(flow.status).toBe('error')
 
     if (flow.status === 'error') {
-      expect(flow.message).toContain('Sign-in expired waiting for authorization')
+      expect(flow.message).toContain('Logowanie wygasło w oczekiwaniu na autoryzację')
     }
   })
 

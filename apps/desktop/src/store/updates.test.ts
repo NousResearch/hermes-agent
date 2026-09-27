@@ -180,7 +180,7 @@ describe('maybeNotifyUpdateAvailable', () => {
   it('still notifies with generic copy when the exact behind count is unknown', () => {
     maybeNotifyUpdateAvailable(status({ behind: null, updateAvailable: true }))
     expect(notifySpy).toHaveBeenCalledTimes(1)
-    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ message: 'A new update is available.' })
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ message: 'Dostępna jest nowa aktualizacja.' })
   })
 })
 

@@ -1,5 +1,11 @@
 # Hermes Agent - Development Guide
 
+**Start here for Agent Czesiek:** [docs/REPO_MAP.md](docs/REPO_MAP.md) is the short
+route map. Read that map, then only the `AGENTS.md` for the area you will edit.
+This file contains the cross-repository invariants; do not scan the whole tree to
+locate a feature. The product and commercial asset terms are linked from
+[README.md](README.md).
+
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 This root file holds only what applies everywhere. Each area has its own `AGENTS.md` (aim for
 ~8k chars; `agent/subdirectory_hints.py` delivers up to 32k and truncates head/tail with a warning

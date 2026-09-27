@@ -1,6 +1,6 @@
 # Instrukcja dla agenta AI — jak uruchomić ten projekt
 
-Ten plik jest dla **agenta** (Claude Code, Codex, Cursor, Hermes), który dostaje to repo i ma je uruchomić, sprawdzić i wypuścić bez pytania człowieka o każdy krok. Człowiek ma własną, krótką instrukcję: [README → Szybki start](../README.md#szybki-start).
+Ten plik jest dla **agenta** (Claude Code, Codex, Cursor, Hermes), który dostaje to repo i ma je uruchomić oraz sprawdzić. Przed publikacją wydania obowiązuje osobna [bramka wydania](product/RELEASE_PIPELINE.md). Człowiek ma własną, krótką instrukcję: [README → Pierwsze uruchomienie](../README.md#pierwsze-uruchomienie). Szybką mapę kodu znajdziesz w [REPO_MAP.md](REPO_MAP.md).
 
 Zasady, które obowiązują zawsze: [AGENTS.md](../AGENTS.md) (root), [apps/desktop/AGENTS.md](../apps/desktop/AGENTS.md), [skills/AGENTS.md](../skills/AGENTS.md).
 
@@ -25,7 +25,7 @@ node -v && npm -v && python3 -V
 
 ```bash
 git clone https://github.com/aievolutionpl/AGENT_CZESIEK.git
-cd ai-evolution-jarvis
+cd AGENT_CZESIEK
 npm install                     # całe monorepo (workspaces)
 
 cd apps/desktop
@@ -48,7 +48,7 @@ npx playwright test e2e/jarvis-shell-vertical.spec.ts   # E2E w prawdziwym Elect
 
 cd ../..
 scripts/run_tests.sh tests/hermes_cli/    # testy backendu — zawsze tym skryptem
-python3 -m pytest tests/skills/test_authoring_standards.py -q   # standardy umiejętności
+scripts/run_tests.sh tests/skills/test_authoring_standards.py   # standardy umiejętności
 ```
 
 Na Linuksie bez ekranu: `xvfb-run -a npx playwright test …`.

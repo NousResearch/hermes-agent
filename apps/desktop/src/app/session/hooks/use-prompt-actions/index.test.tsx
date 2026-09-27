@@ -1924,7 +1924,7 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(calls).toContainEqual({
       method: 'handoff.fail',
       params: {
-        error: expect.stringContaining('Timed out'),
+        error: expect.stringContaining('Przekroczono czas'),
         session_id: RUNTIME_SESSION_ID
       }
     })
@@ -5755,7 +5755,7 @@ describe('usePromptActions editMessage stale-target recovery (#82462)', () => {
 
     await waitFor(() => {
       const titles = $notifications.get().map(n => n.title)
-      expect(titles.some(t => /no longer in server history|compressed/i.test(t || ''))).toBe(true)
+      expect(titles.some(t => /nie ma już w historii serwera|kompresj/i.test(t || ''))).toBe(true)
     })
 
     const submitCalls = (requestGateway as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter(

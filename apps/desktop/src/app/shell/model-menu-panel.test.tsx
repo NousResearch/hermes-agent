@@ -181,7 +181,7 @@ describe('ModelMenuPanel search', () => {
 
     await content.findByText(/Deepseek V4 Pro/i)
 
-    const input = screen.getByRole('textbox', { name: 'Search models' })
+    const input = screen.getByRole('textbox', { name: 'Szukaj modeli' })
     fireEvent.change(input, { target: { value: 'gemini' } })
 
     await vi.waitFor(() => {
@@ -195,7 +195,7 @@ describe('ModelMenuPanel search', () => {
 
     await content.findByText('DeepSeek')
 
-    const input = screen.getByRole('textbox', { name: 'Search models' })
+    const input = screen.getByRole('textbox', { name: 'Szukaj modeli' })
     fireEvent.change(input, { target: { value: 'gemini' } })
 
     await vi.waitFor(() => {
@@ -219,7 +219,7 @@ describe('ModelMenuPanel search', () => {
 
     await content.findByText('DeepSeek')
 
-    const input = screen.getByRole('textbox', { name: 'Search models' })
+    const input = screen.getByRole('textbox', { name: 'Szukaj modeli' })
     fireEvent.change(input, { target: { value: 'zzz-no-such-model' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
@@ -231,7 +231,7 @@ describe('ModelMenuPanel search', () => {
 
     await content.findByText('DeepSeek')
 
-    const input = screen.getByRole('textbox', { name: 'Search models' })
+    const input = screen.getByRole('textbox', { name: 'Szukaj modeli' })
     fireEvent.change(input, { target: { value: 'gemini' } })
 
     await vi.waitFor(() => {
@@ -258,7 +258,7 @@ describe('ModelMenuPanel search', () => {
 
     await content.findByText('DeepSeek')
 
-    const input = screen.getByRole('textbox', { name: 'Search models' })
+    const input = screen.getByRole('textbox', { name: 'Szukaj modeli' })
     fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(onSelectModel).not.toHaveBeenCalled()
@@ -269,7 +269,7 @@ describe('ModelMenuPanel search', () => {
 
     await content.findByText('MoA: BeastMode')
 
-    const input = screen.getByRole('textbox', { name: 'Search models' })
+    const input = screen.getByRole('textbox', { name: 'Szukaj modeli' })
     fireEvent.change(input, { target: { value: 'beast' } })
 
     await vi.waitFor(() => {
@@ -343,7 +343,7 @@ describe('ModelMenuPanel provider collapse', () => {
     expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
 
     // Type in the search bar (auto-focused by DropdownMenuSearch)
-    const input = screen.getByRole('textbox', { name: 'Search models' })
+    const input = screen.getByRole('textbox', { name: 'Szukaj modeli' })
     expect(input).not.toBeNull()
     fireEvent.change(input, { target: { value: 'deepseek' } })
 
@@ -439,7 +439,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     await content.findByText(/Glm 4\.5 Air/i)
 
-    fireEvent.click(await content.findByText('Refresh models'))
+    fireEvent.click(await content.findByText('Odśwież modele'))
 
     await vi.waitFor(() => {
       expect(onSelectModel).toHaveBeenCalledWith({
@@ -458,7 +458,7 @@ describe('ModelMenuPanel provider collapse', () => {
     const { content, onSelectModel } = renderPanel()
 
     await content.findByText(/Deepseek V4 Pro/i)
-    fireEvent.click(await content.findByText('Refresh models'))
+    fireEvent.click(await content.findByText('Odśwież modele'))
 
     await vi.waitFor(() => {
       expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
@@ -485,7 +485,7 @@ describe('ModelMenuPanel provider collapse', () => {
     const { content, onSelectModel } = renderPanel()
 
     await content.findAllByText(/Glm 4\.5 Air/i)
-    fireEvent.click(await content.findByText('Refresh models'))
+    fireEvent.click(await content.findByText('Odśwież modele'))
 
     await vi.waitFor(() => {
       expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
@@ -520,7 +520,7 @@ describe('ModelMenuPanel provider collapse', () => {
       items.find(item => !item?.querySelector('.codicon-check'))?.closest('[role="group"]')?.textContent
     ).toContain('OpenRouter')
 
-    const input = screen.getByRole('textbox', { name: 'Search models' })
+    const input = screen.getByRole('textbox', { name: 'Szukaj modeli' })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSelectModel).not.toHaveBeenCalled()
   })
@@ -595,7 +595,7 @@ describe('ModelMenuPanel refresh reconcile × guarded-switch confirm handshake',
     const content = render(<ConfirmHarness requestGateway={requestGateway as never} />)
 
     await content.findByText(/Glm 4\.5 Air/i)
-    fireEvent.click(await content.findByText('Refresh models'))
+    fireEvent.click(await content.findByText('Odśwież modele'))
 
     // The reconcile fired exactly ONE switch attempt and it came back
     // confirm_required → the confirm toast is up, nothing retried silently.

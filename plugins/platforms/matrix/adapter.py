@@ -28,6 +28,7 @@ import asyncio
 import array
 import inspect
 from contextlib import suppress
+from datetime import datetime
 import logging
 import mimetypes
 import os
@@ -2159,10 +2160,13 @@ class MatrixAdapter(BasePlatformAdapter):
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
 
-    def take_turn_channel_context(self, event: MessageEvent) -> str | None:
+    def take_turn_channel_context(
+        self, event: MessageEvent, session_key: str | None = None,
+        created_at: datetime | None = None,
+    ) -> str | None:
         if event.internal or event.message_type != MessageType.TEXT:
             return None
-        return self._pending_room_notes.take(event.source.chat_id)
+        return self._pending_room_notes.take(event.source.chat_id, session_key, created_at)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,

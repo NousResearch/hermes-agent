@@ -17,6 +17,7 @@ import os
 import re
 import time
 from contextlib import suppress
+from datetime import datetime
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -1728,7 +1729,12 @@ class GatewayInboundMixin:
         adapter = self._intake_adapter_for(source)
         take_channel_context = getattr(type(adapter), "take_turn_channel_context", None)
         if callable(take_channel_context):
-            context = take_channel_context(adapter, event)
+            entry = getattr(getattr(self, "session_store", None), "_entries", {}).get(session_key)
+            created_at = getattr(entry, "created_at", None)
+            context = take_channel_context(
+                adapter, event, session_key,
+                created_at if isinstance(created_at, datetime) else None,
+            )
             if context:
                 message_text = f"{context}\n\n[New message]\n{message_text}"
         return message_text

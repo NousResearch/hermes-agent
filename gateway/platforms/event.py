@@ -122,6 +122,11 @@ class MessageEvent:
         """
         return _ATTACHMENT_REF_RE.sub("", (self.text or "").lstrip()).lstrip()
 
+    def append_channel_context(self, context: Optional[str]) -> None:
+        if not context:
+            return
+        self.channel_context = f"{self.channel_context}\n{context}" if self.channel_context else context
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.allow_gateway_control and self._command_text().startswith("/")

@@ -1316,6 +1316,63 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     # through the pipe; anything else can't be encoded at all).
     _LONE_SURROGATE_RE = re.compile(r"[\ud800-\udc7f\udd00-\udfff]")
 
+    def _encoding_for_write(self, path: str) -> str:
+        """The codec this file declares via a PEP 263 cookie, else ``"utf-8"``.
+
+        Only the first two lines can carry it, and only a real cookie counts.
+        """
+        if os.path.splitext(path)[1].lower() not in (".py", ".pyw"):
+            return "utf-8"
+        try:
+            with open(path, "rb") as fh:
+                # PEP 263: the cookie is a regex match on the first two lines, so a shebang or
+                # a leading comment on line 1 still leaves line 2 legal.
+                head = fh.readline()
+                second = fh.readline()
+        except OSError:
+            return "utf-8"
+        for raw in (head, second):
+            if not raw:
+                continue
+            line = raw.decode("ascii", "replace")
+            match = re.search(r"coding[:=]\s*([-_.a-zA-Z0-9]+)", line)
+            if match and "coding" in line:
+                declared = match.group(1).lower().replace("_", "-")
+                if declared in ("utf-8", "utf8", "utf-8-sig", "utf8-sig"):
+                    return "utf-8"
+                try:
+                    "".encode(declared)
+                except LookupError:
+                    return "utf-8"  # a cookie naming a codec this build lacks is not a licence to guess
+                return declared
+        return "utf-8"
+
+    def _reject_foreign_encoding(self, path: str, content: str) -> Optional[WriteResult]:
+        """Refuse an edit that would leave a non-UTF-8 file holding mixed encodings.
+
+        Content is piped to the write as text, so it always lands as UTF-8. A file that
+        declares another encoding would then keep its old bytes for the untouched lines and
+        gain UTF-8 for everything this edit inserted — a file that is valid in neither
+        encoding, with the edit reported as a success (#121982). Refusing is the honest
+        outcome: the alternative is a silently corrupted source file.
+        """
+        encoding = self._encoding_for_write(path)
+        if encoding == "utf-8":
+            return None
+        try:
+            content.encode(encoding, "surrogateescape")
+        except UnicodeEncodeError as exc:
+            return WriteResult(error=(
+                f"Refusing to write '{path}': the text cannot be represented in the "
+                f"file's declared encoding ({encoding}) — {exc.reason} at position "
+                f"{exc.start}. The file was NOT modified."))
+        return WriteResult(error=(
+            f"Refusing to write '{path}': this file declares encoding '{encoding}', "
+            "but writes are piped as UTF-8, so the edit would leave the file holding two "
+            "encodings at once. The file was NOT modified. Either keep the edit ASCII-only, "
+            "convert the file to UTF-8 first, or write the file with a tool that honours "
+            "its declared encoding."))
+
     def _reject_unencodable(self, path: str, content: str) -> Optional[WriteResult]:
         """Refuse content with a lone surrogate BEFORE any subprocess: letting it
         reach the pipe spawns a child that hangs or truncates the target via
@@ -1475,6 +1532,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         refused = self._reject_unencodable(path, content)
         if refused is not None:
             return refused
+        refused = self._reject_foreign_encoding(path, content)
+        if refused is not None:
+            return refused
         ext = os.path.splitext(path)[1].lower()
         refused = self._fail_closed_syntax_error(path, ext, content)
         if refused is not None:
@@ -1495,9 +1555,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # ``dirs_created`` means "parent dirs ensured" (mkdir -p is folded into
         # _atomic_write; its failure surfaces as the atomic-write error below).
         dirs_created = bool(os.path.dirname(path))
-        # surrogateescape is the exact inverse of the decode that may have produced
-        # this content, so these are the bytes on disk; the early rejection above
-        # guarantees this cannot raise.
+        # surrogateescape is the exact inverse of the decode that may have produced this
+        # content, so untouched legacy bytes round-trip; a non-UTF-8 file was already
+        # refused by _reject_foreign_encoding above, because the pipe cannot honour its
+        # declared encoding.
         content_bytes = content.encode("utf-8", "surrogateescape")
         write_result = self._atomic_write(path, content)
         if write_result.exit_code != 0:

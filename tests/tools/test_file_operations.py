@@ -803,3 +803,72 @@ class TestEscapeNativeToolArg:
         assert node_cmds, f"no node command captured in: {commands}"
         assert "'C:/Users/alice/app/main.js'" in node_cmds[0]
         assert "/c/Users" not in node_cmds[0]
+
+
+# =========================================================================
+# Declared-encoding writes (#121982)
+# =========================================================================
+
+class TestDeclaredEncodingWrites:
+    """An edit must not leave a file holding two encodings at once.
+
+    Content is piped to the write as text, so it always lands as UTF-8. A file declaring
+    another encoding (a PEP 263 cookie) would keep its old bytes for untouched lines and
+    gain UTF-8 for everything the edit inserted — invalid in either encoding, while the
+    edit was reported as a success. The refusal has to happen before any bytes move.
+    """
+
+    def test_latin1_cookie_is_read_from_the_first_line(self, file_ops, tmp_path):
+        target = tmp_path / "legacy.py"
+        target.write_bytes(b"# -*- coding: latin-1 -*-\nlabel = 'x'\n")
+        assert file_ops._encoding_for_write(str(target)) == "latin-1"
+
+    def test_cookie_is_honoured_in_the_second_line(self, file_ops, tmp_path):
+        """PEP 263 allows a shebang on line 1 and the cookie on line 2."""
+        target = tmp_path / "shebang.py"
+        target.write_bytes(b"#!/usr/bin/env python\n# -*- coding: latin-1 -*-\n")
+        assert file_ops._encoding_for_write(str(target)) == "latin-1"
+
+    def test_utf8_cookie_is_not_treated_as_foreign(self, file_ops, tmp_path):
+        target = tmp_path / "u.py"
+        target.write_bytes(b"# -*- coding: utf-8 -*-\nlabel = 'x'\n")
+        assert file_ops._encoding_for_write(str(target)) == "utf-8"
+        assert file_ops._reject_foreign_encoding(str(target), "label = 'olé'") is None
+
+    def test_no_cookie_is_utf8(self, file_ops, tmp_path):
+        target = tmp_path / "plain.py"
+        target.write_text("label = 'x'\n", encoding="utf-8")
+        assert file_ops._encoding_for_write(str(target)) == "utf-8"
+        assert file_ops._reject_foreign_encoding(str(target), "label = 'olé'") is None
+
+    def test_non_python_file_is_never_gated(self, file_ops, tmp_path):
+        """The cookie is a Python-source convention; a .txt declaring one is still UTF-8."""
+        target = tmp_path / "notes.txt"
+        target.write_bytes(b"# -*- coding: latin-1 -*-\nhello\n")
+        assert file_ops._encoding_for_write(str(target)) == "utf-8"
+        assert file_ops._reject_foreign_encoding(str(target), "hello") is None
+
+    def test_unknown_cookie_codec_does_not_block_the_write(self, file_ops, tmp_path):
+        """A cookie naming a codec this build lacks is not a licence to refuse everything."""
+        target = tmp_path / "weird.py"
+        target.write_bytes(b"# -*- coding: not-a-real-codec -*-\n")
+        assert file_ops._encoding_for_write(str(target)) == "utf-8"
+
+    def test_foreign_encoding_edit_is_refused_before_writing(self, file_ops, tmp_path):
+        target = tmp_path / "legacy.py"
+        before = b"# -*- coding: latin-1 -*-\nname = 'caf\xe9'\nlabel = 'x'\n"
+        target.write_bytes(before)
+        result = file_ops._reject_foreign_encoding(str(target), "label = 'olé'")
+        assert result is not None, "a latin-1 file accepted a non-ASCII edit"
+        assert "latin-1" in result.error
+        # The refusal must name a way forward, not just complain.
+        assert "UTF-8" in result.error
+        assert target.read_bytes() == before, "a refused write must not touch the file"
+
+    def test_unrepresentable_text_names_the_reason(self, file_ops, tmp_path):
+        """A character the declared codec cannot hold gets a specific diagnostic."""
+        target = tmp_path / "ascii_only.py"
+        target.write_bytes(b"# -*- coding: ascii -*-\nlabel = 'x'\n")
+        result = file_ops._reject_foreign_encoding(str(target), "label = '→'")
+        assert result is not None
+        assert "ascii" in result.error

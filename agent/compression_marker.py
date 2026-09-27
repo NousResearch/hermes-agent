@@ -15,7 +15,7 @@ import re
 # something the model would write itself: the bare "...[truncated]" it replaced was imitated into
 # new calls and written to disk. Non-prose delimiters, an explicit "not original content"
 # disclaimer, and per-instance counts keep a copied marker visibly wrong; the counts also make a
-# verbatim copy stale, which is why the marker must never be re-applied (see ``_shrink``).
+# verbatim copy stale, which is why the marker must never be re-applied.
 _COMPRESSION_MARKER_PREFIX = "⟪HERMES-CONTEXT-COMPRESSION:"
 _COMPRESSION_MARKER_TEMPLATE = (
     _COMPRESSION_MARKER_PREFIX

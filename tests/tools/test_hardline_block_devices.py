@@ -12,6 +12,8 @@ no recovery path must hit the unconditional floor, and the tool invocations that
 only PRINT (or that target a file rather than a device) must stay runnable.
 """
 
+import json
+
 import pytest
 
 from tools.approval import (
@@ -410,6 +412,86 @@ def test_force_replay_cannot_bypass_resolved_device_floor():
             env=env,
             cwd="/workspace",
         )
+
+
+@pytest.mark.parametrize("command", [
+    *[f"cat x {op}{space}{target}" for op in ("1>", "2>", "2>>", ">|", ">&", "&>")
+      for space in ("", " ") for target in ("/tmp/alias", "../dev/sda", "'/tmp/raw disk'")],
+    "echo x >", "echo x 2>>", "echo x >|",
+    "cat x >| /dev/sda", "cat x >& /dev/sda",
+    "cat x > /tmp/alias 2>> /tmp/alias",
+    "cp src >/tmp/alias", "shred >/tmp/alias",
+    "pushd /tmp && wipefs -a ../dev/sda",
+    "popd && wipefs -a ../dev/sda",
+    "env -C /tmp wipefs -a ../dev/sda",
+    "env --chdir=/tmp wipefs -a ../dev/sda",
+    "sudo -D /tmp wipefs -a ../dev/sda",
+    "sudo --chdir=/tmp wipefs -a ../dev/sda",
+    "env -C/tmp wipefs -a ../dev/sda",
+    "sudo -D/tmp wipefs -a ../dev/sda",
+    "sh -c 'wipefs -a /tmp/alias'",
+    "bash -c 'cd /tmp; wipefs -a ../dev/sda'",
+    "eval 'wipefs -a /tmp/alias'",
+    "eval 'cd /tmp'; wipefs -a ../dev/sda",
+    "sh -c \"bash -c 'wipefs -a /tmp/alias'\"",
+    "env -C /tmp sh -c 'wipefs -a ../dev/sda'",
+    "cd /tmp; sh -c 'wipefs -a ../dev/sda'",
+    "ln -sfn /dev/sda /dev/shm/x; wipefs -a /dev/shm/x",
+    "busybox ln -sfn /dev/sda /tmp/new; wipefs -a /tmp/new",
+    "toybox ln -sfn /dev/sda /tmp/new; wipefs -a /tmp/new",
+])
+def test_projected_writes_cannot_escape_floor_through_shell_syntax(command):
+    env = _FakeDeviceEnv({"/tmp/alias": "/dev/sda", "/dev/sda": "/dev/sda",
+                          "/tmp/raw disk": "/dev/sda"})
+    # A cwd wrapper must refuse even when probing from the original cwd would miss
+    # the actual device. Ordinary relative redirects are resolved from /tmp.
+    cwd = "/tmp" if command.startswith(("cat ", "echo ")) else "/home/user"
+    with pytest.raises(_Rejected):
+        _run_approval_guards(command, "local", {"docker_volumes": []},
+                             force=True, env=env, cwd=cwd)
+
+
+@pytest.mark.parametrize("command", [
+    "echo msg >&2", "cmd >&1", "cat x 2>&1", "cat x 2>&-", "cat x 2>&1-",
+    "echo x >| file", "echo x >|file", "echo x >& file",
+    *[f"cat x {op}{space}../dev/sda-notes" for op in ("1>", "2>", "2>>", ">|")
+      for space in ("", " ")],
+    "pushd /tmp", "env -C /tmp ls", "busybox ln -sfn a b",
+    "sh -c 'echo ok'", "wipefs -a /dev/shm/notes",
+    "sh -c 'echo ok > notes'", "eval 'echo ok > notes'",
+    "echo x >| /dev/null", "echo x >& /dev/null",
+    "printf '%s' '2> /tmp/alias'", "echo 2\\> /tmp/alias",
+])
+def test_benign_shell_redirections_and_wrappers_keep_running(command):
+    env = _FakeDeviceEnv({"/dev/null": "/dev/null"})
+    assert _resolved_guard_variants(command, env, "/tmp") == []
+    _run_approval_guards(command, "local", {"docker_volumes": []},
+                         force=True, env=env, cwd="/tmp")
+    assert not any(path.endswith(("/1", "/2", "/>")) for path in env.queries)
+
+
+@pytest.mark.parametrize("command,filename", [
+    ("echo msg >&2", None),
+    ("echo x >| notes", "notes"),
+    ("echo x >& notes", "notes"),
+    ("echo x >| /dev/null", None),
+    ("sh -c 'echo x > notes'", "notes"),
+    ("eval 'echo x > notes'", "notes"),
+])
+def test_benign_redirections_reach_real_local_backend(command, filename, tmp_path, monkeypatch):
+    from tools.terminal_tool import cleanup_vm, terminal_tool
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    task_id = "redirection-review-regression"
+    try:
+        result = json.loads(terminal_tool(
+            command, task_id=task_id, workdir=str(tmp_path), force=True, _host_local=True,
+        ))
+        assert result["exit_code"] == 0, result
+        if filename:
+            assert (tmp_path / filename).read_text(encoding="utf-8") == "x\n"
+    finally:
+        cleanup_vm(task_id)
 
 
 @pytest.mark.parametrize("command", _BLOCK_DEVICE_HARDLINE_BLOCK)

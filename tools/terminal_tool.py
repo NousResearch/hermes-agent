@@ -927,8 +927,47 @@ _DEVICE_TARGET_OPTION_VALUES = {
 _RESOLUTION_CONTEXT_MUTATORS = {
     "bash", "cd", "cp", "dash", "fish", "install", "ln", "mkdir", "mount", "mv",
     "node", "perl", "python", "python2", "python3", "rm", "rmdir", "ruby", "sh",
-    "unlink", "umount", "zsh",
+    "unlink", "umount", "zsh", "ksh", "eval", "pushd", "popd",
 }
+
+
+def _device_projection_commands(segment: str):
+    """Share command-position and multicall peeling for targets and context changes."""
+    from tools.approval_detection import (
+        _deobfuscate_shell_word_for_detection,
+        _iter_shell_command_word_spans,
+        _shell_tokens_with_spans,
+    )
+    for start, _end, word in _iter_shell_command_word_spans(segment):
+        executable = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+        tokens = _shell_tokens_with_spans(segment, start)
+        if tokens is None:
+            raise _GuardTargetIndeterminate("malformed mutation command")
+        if executable in {"busybox", "toybox"}:
+            tokens = tokens[1:]
+            if tokens and tokens[0][0] == "--":
+                tokens = tokens[1:]
+            if not tokens or tokens[0][0].startswith("-"):
+                continue
+            executable = os.path.basename(tokens[0][0]).lower()
+        yield executable, tokens
+
+
+def _wrapper_changes_cwd(segment: str) -> bool:
+    from tools.approval_detection import _COMMAND_WRAPPER_OPTIONS_WITH_ARG
+    for executable, tokens in _device_projection_commands(segment):
+        if executable not in {"env", "sudo"}:
+            continue
+        args, index = [token[0] for token in tokens[1:]], 0
+        short = "-C" if executable == "env" else "-D"
+        while index < len(args) and args[index].startswith("-"):
+            value = args[index]
+            if value == "--":
+                break
+            if value == "--chdir" or value.startswith("--chdir=") or value.startswith(short):
+                return True
+            index += 2 if value in _COMMAND_WRAPPER_OPTIONS_WITH_ARG[executable] else 1
+    return False
 
 
 def _literal_operands(tokens, options_with_values=frozenset()):
@@ -959,8 +998,8 @@ def _mutation_target_spans(segment: str):
     spans. ``prefix`` is empty for an argv operand, ``of=`` for dd, or a redirection operator.
     """
     from tools.approval_detection import (
-        _deobfuscate_shell_word_for_detection,
-        _iter_shell_command_word_spans,
+        _read_shell_word,
+        _scan_shell,
         _shell_tokens_with_spans,
     )
 
@@ -972,50 +1011,43 @@ def _mutation_target_spans(segment: str):
 
     def add(token, prefix=""):
         value, start, end, _quoted = token
+        if any(start < stop and end > begin and operator == "> "
+               for begin, stop, _path, operator in targets):
+            return  # redirection syntax is not a positional argv operand
         path = value[len(prefix):] if prefix else value
-        if path and not path.startswith("&"):
+        if path:
             targets.append((start, end, path, prefix))
 
     # Redirection destinations are mutation targets regardless of the executable.
-    index = 0
-    while index < len(all_tokens):
-        token = all_tokens[index]
-        value = token[0]
-        if value in {">", ">>"}:
-            if index + 1 >= len(all_tokens):
-                raise _GuardTargetIndeterminate("redirection target is missing")
-            add(all_tokens[index + 1])
-            index += 2
+    consumed = -1
+    for kind, index, _, quote in _scan_shell(segment, comments=True):
+        if kind != "char" or quote is not None or segment[index] != ">" or index < consumed:
             continue
-        redirection = re.fullmatch(r"(?P<prefix>(?:[0-9]+)?>>?)(?P<path>.+)", value)
-        if redirection:
-            add(token, redirection.group("prefix"))
-        index += 1
+        end_operator = index + 1
+        suffix = segment[end_operator:end_operator + 1]
+        if suffix in {">", "|", "&"}:
+            end_operator += 1
+        start = end_operator
+        while start < len(segment) and segment[start].isspace():
+            start += 1
+        _, end, word = _read_shell_word(segment, start)
+        tokens = _shell_tokens_with_spans(word, 0)
+        if not tokens or len(tokens) != 1:
+            raise _GuardTargetIndeterminate("redirection target is missing or malformed")
+        path = tokens[0][0]
+        consumed = end
+        if suffix == "&" and (path.isdigit() or path == "-" or
+                              (path.endswith("-") and path[:-1].isdigit())):
+            continue  # descriptor duplication/move/close does not name a filesystem target
+        # Canonicalize the operator only in the detection projection; the command passed
+        # to the backend is unchanged. This exposes >| and >& to the raw-device floor.
+        targets.append((index, end, path, "> "))
 
     mutation_executables = {
         "wipefs", "blkdiscard", "sgdisk", "shred", "dd", "diskutil",
         "cp", "mv", "install", "tee",
     }
-    for start, _end, raw_word in _iter_shell_command_word_spans(segment):
-        executable = os.path.basename(
-            _deobfuscate_shell_word_for_detection(raw_word)
-        ).lower()
-        command_tokens = _shell_tokens_with_spans(segment, start)
-        if command_tokens is None:
-            raise _GuardTargetIndeterminate("malformed mutation command")
-
-        # The command-position scanner deliberately yields a multicall carrier such as
-        # busybox/toybox rather than guessing which applet follows it. For device-target
-        # projection, peel the direct applet so its mutation operand is resolved through
-        # the same backend identity floor as the standalone executable.
-        if executable in {"busybox", "toybox"}:
-            if len(command_tokens) < 2 or command_tokens[1][0].startswith("-"):
-                continue
-            command_tokens = command_tokens[1:]
-            executable = os.path.basename(
-                _deobfuscate_shell_word_for_detection(command_tokens[0][0])
-            ).lower()
-
+    for executable, command_tokens in _device_projection_commands(segment):
         is_mkfs = executable in {"mke2fs", "mkswap", "mkfs"} or (
             executable.startswith("mkfs.") or executable.startswith("newfs_")
         )
@@ -1075,24 +1107,19 @@ def _mutation_target_spans(segment: str):
 
 def _segment_can_change_resolution(segment: str) -> bool:
     """Whether an earlier shell stage can change cwd or filesystem path identity."""
-    from tools.approval_detection import (
-        _deobfuscate_shell_word_for_detection,
-        _iter_shell_command_word_spans,
-    )
-
-    return any(
-        os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
-        in _RESOLUTION_CONTEXT_MUTATORS
-        for _start, _end, word in _iter_shell_command_word_spans(segment)
+    return _wrapper_changes_cwd(segment) or any(
+        executable in _RESOLUTION_CONTEXT_MUTATORS
+        for executable, _tokens in _device_projection_commands(segment)
     )
 
 
-def _resolved_guard_variants(command: str, env: Any, cwd: str) -> List[str]:
+def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
+                             _depth: int = 0, _prior_context_change: bool = False) -> List[str]:
     """Project exact mutation targets through the backend before approval matching.
 
     Resolution is typed: device, proven non-device/missing, or indeterminate. The latter fails
-    closed. Commands with an earlier shell stage and a non-``/dev`` spelling are refused because
-    that stage can change cwd or retarget/create the alias after a preflight probe.
+    closed. An earlier stage that can change cwd or retarget/create an alias invalidates
+    preflight identity, including for names below /dev.
     """
     if not _DISK_MUTATION_HINT_RE.search(command):
         return []
@@ -1100,26 +1127,43 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str) -> List[str]:
     from tools.approval_detection import (
         _command_parser_limit_exceeded,
         _iter_top_level_shell_segments,
+        _bash_exec_payload,
+        _SHELL_NAMES,
     )
-    if _command_parser_limit_exceeded(command):
+    if _depth >= 16 or _command_parser_limit_exceeded(command):
         raise _GuardTargetIndeterminate("device-target parser limit exceeded")
 
     edits = []
-    seen_inputs = set()
+    identities = {}
+    payload_variants = []
     search_from = 0
     resolver = getattr(env, "fetch_device_identity", None)
     if not callable(resolver):
         raise _GuardTargetIndeterminate("execution backend has no device-identity resolver")
 
-    prior_can_change_resolution = False
+    prior_can_change_resolution = _prior_context_change
     for segment in _iter_top_level_shell_segments(command):
         segment_at = command.find(segment, search_from)
         if segment_at < 0:
             raise _GuardTargetIndeterminate("could not bind parsed shell segment to source")
         search_from = segment_at + len(segment)
 
+        for executable, tokens in _device_projection_commands(segment):
+            args = [token[0] for token in tokens[1:]]
+            payload = None
+            if executable in _SHELL_NAMES:
+                _found, payload = _bash_exec_payload(args)
+            elif executable == "eval":
+                payload = " ".join(args)
+            if payload:
+                payload_variants.extend(_resolved_guard_variants(
+                    payload, env, cwd, _depth=_depth + 1,
+                    _prior_context_change=(prior_can_change_resolution or
+                                           _wrapper_changes_cwd(segment)),
+                ))
+
         for start, end, raw_path, prefix in _mutation_target_spans(segment):
-            if raw_path in {"", "-"} or raw_path.startswith("&"):
+            if not raw_path or (raw_path == "-" and prefix != "> "):
                 continue
             if any(char in raw_path for char in "$`*?[]{}"):
                 raise _GuardTargetIndeterminate(
@@ -1130,19 +1174,16 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str) -> List[str]:
                 if raw_path.startswith("/")
                 else posixpath.normpath(posixpath.join(cwd or "/", raw_path))
             )
-            if candidate in seen_inputs:
-                continue
-            seen_inputs.add(candidate)
-
-            # Direct /dev spellings are already covered by the lexical floor. For aliases and
-            # relative paths, an earlier shell stage can invalidate any pre-exec identity probe.
-            if prior_can_change_resolution and not raw_path.startswith("/dev/"):
+            # Even /dev/shm can contain aliases created after this probe. Check context
+            # before deduplication: a later use of the same path may resolve differently.
+            if prior_can_change_resolution or _wrapper_changes_cwd(segment):
                 raise _GuardTargetIndeterminate(
                     "compound command can change device-target resolution before mutation"
                 )
-
             try:
-                outcome = resolver(candidate)
+                if candidate not in identities:
+                    identities[candidate] = resolver(candidate)
+                outcome = identities[candidate]
             except Exception as exc:
                 raise _GuardTargetIndeterminate(
                     f"device-target resolution failed for {candidate!r}"
@@ -1167,7 +1208,12 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str) -> List[str]:
                     f"device-target resolver returned an invalid path for {candidate!r}"
                 )
             resolved = resolved.strip()
-            if resolved == raw_path:
+            # These standard character-device sinks/streams are deliberately runnable;
+            # normalizing a >| / >& operator must not turn them into raw-disk refusals.
+            if resolved in {"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom",
+                            "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/tty"}:
+                continue
+            if resolved == raw_path and prefix != "> ":
                 continue
             replacement = prefix + shlex.quote(resolved)
             edits.append((segment_at + start, segment_at + end, replacement))
@@ -1177,14 +1223,14 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str) -> List[str]:
         )
 
     if not edits:
-        return []
+        return payload_variants
     parts, cursor = [], 0
     for start, end, replacement in sorted(edits):
         parts.extend((command[cursor:start], replacement))
         cursor = end
     parts.append(command[cursor:])
     variant = "".join(parts)
-    return [variant] if variant != command else []
+    return payload_variants + ([variant] if variant != command else [])
 
 
 def _raise_rejected_approval(approval: dict, command: str) -> None:

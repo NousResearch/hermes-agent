@@ -79,7 +79,7 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
         result = {"ok": False, "error": str(exc)}
     if result.get("ok"):
         say(f"  ✓ Memory provider '{name}' moved out of core — installed its plugin from the catalog "
-            f"(your memory.{name} settings and data are unchanged).")
+            f"(nothing was removed or modified; the plugin reads its own config — see `hermes memory status`).")
         return name
     say(f"  ⚠ Memory provider '{name}' moved out of core and could not be installed automatically: "
         f"{result.get('error') or 'unknown error'}. Run `hermes plugins install {name}`.")

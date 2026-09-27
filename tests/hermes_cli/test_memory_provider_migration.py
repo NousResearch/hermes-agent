@@ -28,7 +28,10 @@ def test_missing_provider_installs_its_catalog_plugin_and_keeps_config(home, mon
 
     assert mig.migrate_home(home, install=fake_install, say=said.append) == "honcho"
     assert calls == ["honcho"]
-    assert "settings and data are unchanged" in said[0]
+    # The message must not imply config.yaml's memory.<name> keys still apply: the
+    # plugin reads its own config, so "unchanged settings" reads as "they work" (#124038).
+    assert "nothing was removed or modified" in said[0]
+    assert "memory.honcho settings" not in said[0]
     assert "workspace: keep-me" in (home / "config.yaml").read_text()
     # present now → nothing to do, nothing said
     assert mig.migrate_home(home, install=fake_install, say=said.append) is None

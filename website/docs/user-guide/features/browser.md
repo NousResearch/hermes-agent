@@ -217,23 +217,33 @@ When you turn the toggle back off, Hermes deletes the snapshot store
 (`~/.hermes/browser-profile/`) on the next browser use, so the copied
 credentials don't linger after you revoke consent.
 
-:::note Windows: the browser must be fully closed
+:::note A running browser can block the login/autofill databases
 On Windows a running Chrome/Edge/Brave holds its cookie and login databases with
 an exclusive (deny-all) lock, so Hermes cannot copy them while the browser is
 open — it fails fast with a "fully quit the browser and retry" message rather
 than hang or produce a signed-out session. Real-profile browsing on Windows
 therefore requires the browser **fully quit**, including any background/tray
 instance (Chrome's "continue running background apps when closed" keeps a
-`chrome.exe` alive after you close the window). macOS and Linux can usually copy
-the profile while the browser is running. On every platform, each authentication
-database backup has a five-second retry budget. If the source or snapshot database
-stays locked, Hermes stops the launch and asks you to close the browser and retry.
-It preserves committed WAL data through SQLite rather than falling back to a raw
-file copy, which could silently lose recent logins. Unreadable or corrupt databases
-also stop the launch.
+`chrome.exe` alive after you close the window).
+
+On macOS and Linux the profile is not file-locked, but each authentication
+database is snapshotted through SQLite's online backup with a five-second
+budget, and a running Chrome typically holds `Login Data`, `Login Data For
+Account` and `Web Data` with a hot write lock that never yields within that
+budget (`Cookies` usually snapshots fine). When that happens Hermes stops the
+launch and names the databases it could not read — for example "chrome is
+running and holds the profile's Login Data, Login Data For Account, Web Data
+with a write lock" — so in practice **quit the browser before launching a
+real-profile session on macOS/Linux too**. You can reopen it once the session is
+up (the snapshot is a separate directory), but the auth files are re-synced on
+every fresh session launch, so a browser left running then hits the same lock.
+Hermes preserves committed
+WAL data through SQLite rather than falling back to a raw file copy, which could
+silently lose recent logins. Unreadable or corrupt databases also stop the
+launch, with the SQLite error named in the message.
 
 Set `browser.real_profile_autoclose: true` to let Hermes **offer to close the
-browser for you** when it's holding the profile. Even with this on, Hermes never
+browser for you** when it's holding the profile lock (the Windows case). Even with this on, Hermes never
 closes it automatically — when the profile is locked it always stops and the
 agent asks you first; only on your approval does it run `hermes browser
 close-profile` (terminates the browser process tree bound to that profile,
@@ -256,6 +266,39 @@ to fully quit the browser — it won't loop or kill again on its own.
 - **Desktop:** toggle it in **Capabilities → Tools → Browser → Use My Real
   Browser Profile** (the switch sits above the backend options), or in
   Settings → Config under the `browser` section.
+
+#### Scheduled and unattended runs
+
+A real-profile session lets a `cronjob` drive a site you're already signed into.
+The snapshot runs headless by default, and the auth files (`Cookies`,
+`Login Data`, …) are re-synced from your real profile on every fresh session —
+an already-open session is reused as-is, so the sync happens when a new one is
+launched. Without saved vault credentials, an expired session on that site
+surfaces as a login page that the unattended tick reports rather than hanging on.
+
+Three things to set up before scheduling one:
+
+- **Turn the toggle on.** `browser.use_real_profile` defaults to `false`, and
+  without it the job gets a clean, unauthenticated profile — see above.
+- **Give the job the browser toolset:**
+  `cronjob(action="create", enabled_toolsets=["browser", ...], ...)` — a per-job
+  list wins over the cron-platform config
+  ([details](./cron.md#toolsets-available-to-cron-jobs)).
+- **Assume nothing can be prompted for.** A cron, webhook, API or
+  `hermes chat -q` session has nobody to answer a prompt, so a site that is not
+  usable on the synced cookies alone — a login form, a fresh 2FA challenge —
+  needs its credentials saved ahead of time, authenticator key included. That is
+  the [credential vault's](./credential-vault.md#headless-sessions) job, and it
+  is what carries a run after your own session has expired.
+
+**Windows prerequisite:** the browser has to be fully quit before a snapshot can
+be taken at all, so a scheduled tick needs it closed beforehand — Hermes never
+closes it without asking you first (see the note above).
+
+The bundled `product-price-monitor` skill is a worked example of the recurring
+shape — a JSON watch contract written during setup, then one scheduled tick that
+re-reads it, compares, and alerts on change — though it covers the scheduling
+half, not logins.
 
 ### Camofox local mode
 
@@ -587,13 +630,19 @@ AGENT_BROWSER_ARGS=--no-sandbox
 
 ### Install agent-browser CLI
 
-You don't need to install anything — `agent-browser` resolves automatically via
-`npx agent-browser` on first browser-tool use. To avoid the one-time npx fetch,
-you can install it globally ahead of time (optional):
+The installers and `hermes update` install `agent-browser` and its pinned
+Chromium through Hermes's package manager by default. If you installed with
+`--skip-browser` / `-SkipBrowser`, or the download failed, install them with:
 
 ```bash
-npm install -g agent-browser
+hermes pm install agent-browser
 ```
+
+This also undoes an earlier `--skip-browser` choice, so updates keep the
+browser tools current. An `agent-browser` already on your `PATH` also works.
+On Linux, Chromium may also need system libraries
+(`npx playwright install-deps chromium`). On Android/Termux, run
+`npm install -g agent-browser && agent-browser install` instead.
 
 :::info
 The `browser` toolset must be included in your config's `toolsets` list or enabled via `hermes config set toolsets '["hermes-cli", "browser"]'`.

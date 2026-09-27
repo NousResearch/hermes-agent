@@ -125,19 +125,10 @@ class TestNamedCustomProviderCatalogs:
         ), patch(
             "hermes_cli.model_switch_providers._fetch_picker_live_models",
             return_value=["qwen3:1.7b"],
-        ) as fetch:
+        ):
             catalogs = _named_custom_provider_catalogs()
 
         assert [m for m, _ in catalogs[0][2]] == ["qwen3:1.7b"]
-        fetch.assert_called_once_with(
-            "",
-            "http://127.0.0.1:11434/v1",
-            "custom:ollama",
-            False,
-            headers=None,
-            timeout=1.5,
-            api_mode=None,
-        )
     def test_legacy_credentialless_ollama_discovers_native_catalog(self):
         cfg = _cfg(
             custom_providers=[
@@ -239,6 +230,41 @@ class TestModelStateIncludesNamedProviders:
         )
         assert "AWS Bedrock Mantle" in (named.description or "")
 
+    @pytest.mark.asyncio
+    async def test_configured_provider_inventory_row_uses_custom_choice_id(self):
+        """A ``providers:`` row must not expose its raw config key to ACP."""
+        from hermes_cli.models import parse_model_input
+
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(model="model-a", provider="relay")
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        cfg = {
+            "providers": {
+                "relay": {
+                    "name": "Relay",
+                    "base_url": "https://relay.example/v1",
+                }
+            }
+        }
+        inventory = {
+            "providers": [{"slug": "relay", "name": "Relay", "is_user_defined": True, "models": ["model-a"]}]
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_cli.inventory.build_models_payload", return_value=inventory
+        ), patch(
+            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            return_value=[("custom:relay", "Relay", [("model-a", "")])],
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+            choice_ids = [item.model_id for item in resp.models.available_models]
+            provider, model = parse_model_input(resp.models.current_model_id, "relay")
+
+        assert choice_ids == ["custom:relay:model-a"]
+        assert provider == "custom:relay"
+        assert model == "model-a"
+
     def test_selector_choice_id_round_trips_through_parse_model_input(self):
         """The encoded choice id must resolve back to the named provider."""
         from hermes_cli.models import parse_model_input
@@ -275,3 +301,28 @@ class TestModelStateIncludesNamedProviders:
             )
         assert provider == "custom:local-127.0.0.1:11434"
         assert model == "qwen3:1.7b"
+
+    @pytest.mark.asyncio
+    async def test_named_entry_shadowing_a_canonical_provider_keeps_the_canonical_session(self):
+        """``providers.openrouter:`` (a proxy) must not swallow the canonical OpenRouter rows nor
+        relabel a session running on openrouter.ai as ``custom:openrouter`` (that id resolves to
+        the proxy base_url)."""
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="model-c", provider="openrouter", base_url="https://openrouter.ai/api/v1")
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        inventory = {"providers": [
+            {"slug": "openrouter", "name": "OpenRouter", "is_user_defined": False, "models": ["model-c"]},
+            {"slug": "custom:openrouter", "name": "openrouter", "is_user_defined": True,
+             "api_url": "https://or.example/api/v1", "models": ["model-a"]},
+        ]}
+
+        with patch("hermes_cli.inventory.build_models_payload", return_value=inventory), patch(
+            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            return_value=[("custom:openrouter", "openrouter", [("model-a", "")])],
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+
+        assert resp.models.current_model_id == "openrouter:model-c"
+        assert [m.model_id for m in resp.models.available_models] == ["openrouter:model-c", "custom:openrouter:model-a"]

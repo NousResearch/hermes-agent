@@ -15,11 +15,13 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  useI18n,
   useQuery
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
 import { labeled } from './dialog-parts'
+import { useBots } from './i18n'
 import { botRouteKey, requestForBot, resolveBotConnectionRoute } from './routing'
 import { ID } from './shared'
 import type { RosterRow } from './types'
@@ -65,7 +67,7 @@ interface ModelProviderOption {
   name?: string
   slug: string
 }
-interface ModelOptionsResponse {
+interface ModelOptionsResult {
   providers?: ModelProviderOption[]
 }
 
@@ -76,7 +78,7 @@ function useModelOptions(bot: null | RosterRow = null) {
   const route = resolved?.status === 'resolved' ? resolved.route : null
   const orphaned = resolved?.status === 'owner_removed'
 
-  return useQuery<ModelOptionsResponse>({
+  return useQuery<ModelOptionsResult>({
     queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
     // No forced `refresh`: forcing a network read on EVERY mount bypassed the
     // staleTime cache, so each Bots view remount (tab re-front, dialog reopen,
@@ -88,7 +90,7 @@ function useModelOptions(bot: null | RosterRow = null) {
         requestForBot(bot, 'model.options', {
           include_unconfigured: true,
           explicit_only: false
-        }) as Promise<ModelOptionsResponse>
+        }) as Promise<ModelOptionsResult>
       ),
     enabled: !orphaned,
     staleTime: 120000,
@@ -116,7 +118,9 @@ interface ModelPickerProps {
   value: ModelSelection
 }
 
-export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'gateway default' }: ModelPickerProps) {
+export function ModelPicker({ bot = null, value, onChange, placeholderModel }: ModelPickerProps) {
+  const b = useBots()
+  const { t } = useI18n()
   const { data, isLoading, error } = useModelOptions(bot)
 
   // Hooks are ALWAYS declared up front, before any conditional return.
@@ -125,7 +129,16 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
   const CUSTOM = '__custom__'
   const providers = (data?.providers || []).filter(p => p && p.slug)
   const isKnown = !value.provider || value.provider === NONE || providers.some(p => p.slug === value.provider)
-  const [useFreeText, setUseFreeText] = useState(!isKnown)
+  // The manual-entry latch is the USER's choice only. Seeding it from
+  // `isKnown` froze whatever the catalog state was at first paint: on the
+  // first open the async read had not resolved yet, so a configured provider
+  // read as unknown and the picker latched into free text — the dropdown
+  // only appeared on the second open, from the cached catalog. `null` means
+  // "no user choice yet": derive from the LIVE catalog, so a provider the
+  // loaded inventory knows flips to the dropdowns when data arrives, while
+  // one it does not know still gets the free-text form.
+  const [manualEntry, setManualEntry] = useState<boolean | null>(null)
+  const useFreeText = manualEntry ?? !isKnown
 
   if (isLoading) {
     return (
@@ -140,7 +153,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
     return (
       <div className="grid grid-cols-2 gap-2.5">
         {labeled(
-          'Provider',
+          t.settings.model.provider,
           <Input
             onChange={event =>
               onChange({
@@ -152,7 +165,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
           />
         )}
         {labeled(
-          'Model',
+          t.settings.model.model,
           <Input
             onChange={event =>
               onChange({
@@ -172,37 +185,37 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
       <div className="flex flex-col gap-2">
         <div className="grid grid-cols-2 gap-2.5">
           {labeled(
-            'Provider (Custom)',
+            b.editor.providerCustom,
             <Input
               onChange={event =>
                 onChange({
                   provider: event.target.value
                 })
               }
-              placeholder="e.g. omnirouter, inferx, 9router"
+              placeholder="omnirouter / inferx / 9router"
               value={value.provider}
             />
           )}
           {labeled(
-            'Model (Custom)',
+            b.editor.modelCustom,
             <Input
               onChange={event =>
                 onChange({
                   model: event.target.value
                 })
               }
-              placeholder="e.g. antigravity/gemini-3.6-flash-high"
+              placeholder="antigravity/gemini-3.6-flash-high"
               value={value.model}
             />
           )}
         </div>
         <Button
           className="h-6 self-start text-xs text-(--ui-text-tertiary)"
-          onClick={() => setUseFreeText(false)}
+          onClick={() => setManualEntry(false)}
           size="sm"
           variant="ghost"
         >
-          ← Back to dropdowns
+          {b.editor.backToDropdowns}
         </Button>
       </div>
     )
@@ -217,7 +230,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
   return (
     <div className="grid grid-cols-[1fr_1.4fr] gap-2.5">
       {labeled(
-        'Provider',
+        t.settings.model.provider,
         <Select
           onValueChange={v => {
             if (v === NONE) {
@@ -226,7 +239,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
                 model: ''
               })
             } else if (v === CUSTOM) {
-              setUseFreeText(true)
+              setManualEntry(true)
             } else {
               const prov = providers.find(p => p.slug === v)
               const provModels = (prov?.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
@@ -243,18 +256,18 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={NONE}>Inherit (launch profile)</SelectItem>
+            <SelectItem value={NONE}>{b.editor.inheritLaunch}</SelectItem>
             {providers.map(p => (
               <SelectItem key={p.slug} value={p.slug}>
                 {p.name ? `${p.name} (${p.slug})` : p.slug}
               </SelectItem>
             ))}
-            <SelectItem value={CUSTOM}>✏️ Enter manually…</SelectItem>
+            <SelectItem value={CUSTOM}>{b.editor.enterManually}</SelectItem>
           </SelectContent>
         </Select>
       )}
       {labeled(
-        'Model',
+        t.settings.model.model,
         activeProvider && models.length > 0 ? (
           <Select
             onValueChange={v =>
@@ -282,7 +295,9 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
                 model: event.target.value
               })
             }
-            placeholder={placeholderModel || 'e.g. model name'}
+            placeholder={
+              placeholderModel === undefined ? b.editor.gatewayDefault : placeholderModel || b.editor.modelNameExample
+            }
             value={value.model}
           />
         )

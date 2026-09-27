@@ -16,7 +16,22 @@ _LIST_PATH = "/api/agent-cron/list"
 
 
 class NasCronClientError(RuntimeError):
-    """Raised when a NAS agent-cron call fails (non-2xx or transport error)."""
+    """Raised when a NAS agent-cron call fails (non-2xx or transport error).
+
+    ``status`` is the HTTP status (None on transport error) and ``error_code`` the OAuth-style
+    ``error`` field of a JSON error body (``invalid_client`` marks a deterministic identity
+    rejection the provider can act on, unlike a transient 5xx).
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, error_code: str = "") -> None:
+        super().__init__(message)
+        self.status = status
+        self.error_code = error_code
+
+    @property
+    def identity_rejected(self) -> bool:
+        """NAS refused the bearer as not belonging to a provisioned agent (never transient)."""
+        return self.status == 403 and self.error_code == "invalid_client"
 
 
 class NasCronClient:
@@ -41,7 +56,12 @@ class NasCronClient:
         except Exception as e:
             raise NasCronClientError(f"{method} {path} failed: {e}") from e
         if resp.status_code // 100 != 2:
-            raise NasCronClientError(f"{method} {path} returned {resp.status_code}: {resp.text[:200]}")
+            error_code = ""
+            with contextlib.suppress(Exception):
+                error_code = str((resp.json() or {}).get("error") or "")
+            raise NasCronClientError(
+                f"{method} {path} returned {resp.status_code}: {resp.text[:200]}",
+                status=resp.status_code, error_code=error_code)
         with contextlib.suppress(Exception):
             return resp.json() if resp.content else {}
         return {}

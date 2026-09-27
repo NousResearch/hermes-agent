@@ -257,3 +257,26 @@ model:
         import tools.browser_tool
         with patch.object(bt_install, "check_browser_requirements", return_value=True):
             assert tools.browser_tool_install.check_browser_vision_requirements() is True
+
+    def test_native_vision_main_advertises_image_tools_but_not_video(self, isolated_home, monkeypatch):
+        """A vision-capable main model on a provider the aux resolver cannot serve (OAuth, local vLLM)
+        still gets vision_analyze and browser_vision — both handlers attach pixels natively — while
+        video_analyze, whose handler has no native path, stays hidden (#47149)."""
+        from unittest.mock import patch
+
+        _write_config(isolated_home, """
+model:
+  provider: minimax-oauth
+  default: MiniMax-M3
+  supports_vision: true
+""")
+        _fresh_modules()
+
+        import tools.browser_tool_install as bt_install
+        from tools import vision_tools
+
+        with patch.object(vision_tools, "_should_use_native_vision_fast_path", return_value=True), \
+             patch.object(bt_install, "check_browser_requirements", return_value=True):
+            assert vision_tools.check_video_requirements() is False  # no aux client resolves
+            assert vision_tools.check_vision_requirements() is True
+            assert bt_install.check_browser_vision_requirements() is True

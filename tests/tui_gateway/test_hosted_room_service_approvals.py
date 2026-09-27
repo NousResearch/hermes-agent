@@ -78,7 +78,7 @@ def _start_approval_task(service, *, task_id, member_id, profile, generation=1):
 def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),

@@ -27,15 +27,31 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "--deliver-chat-id", default="", help="Target chat ID for cross-platform delivery")
     wh_sub.add_argument("--secret", default="", help="HMAC secret (auto-generated if omitted)")
     wh_sub.add_argument(
+        "--route-profile", dest="route_profile", default=None, metavar="PROFILE",
+        help="Bind the route to a multiplexed profile: only POSTs to /p/PROFILE/webhooks/<name> "
+        "are accepted and the agent runs as that profile (default: default; kept on update). "
+        "Distinct from the global -p/--profile, which picks the gateway whose subscriptions "
+        "file is written.")
+    wh_sub.add_argument(
         "--deliver-only", action="store_true",
         help="Skip the agent — deliver the rendered prompt directly as the "
         "message. Zero LLM cost. Requires --deliver to be a real target "
         "(not 'log').")
     wh_sub.add_argument(
+        "--mirror-to-session", action="store_true",
+        help="Also write each delivered message into the target chat's session, so replying to it "
+        "in that chat has context. Only for sources whose content you trust in your conversation.")
+    wh_sub.add_argument(
         "--script", default="",
         help="Filter/transform script under ~/.hermes/scripts/. The route "
         "payload is passed as JSON on stdin; empty stdout, [SILENT], or a "
         "nonzero exit code ignores the webhook.")
+    wh_sub.add_argument(
+        "--cron-job", default="",
+        help="Fire an existing cron job (by ID or name) when this route receives an event, instead of "
+        "starting a fresh agent run. The rendered --prompt template is passed to the job as transient "
+        "per-run context; the job's own prompt, skills, and delivery settings apply. Mutually exclusive "
+        "with --deliver-only.")
 
     webhook_subparsers.add_parser("list", aliases=["ls"], help="List all dynamic subscriptions")
 

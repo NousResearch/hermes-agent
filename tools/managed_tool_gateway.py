@@ -79,15 +79,14 @@ def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
 
 def _read_user_token_override() -> Optional[str]:
     """Read the TOOL_GATEWAY_USER_TOKEN override through the secret scope. Scope verdict is authoritative
-    when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only when unscoped."""
-    try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
+    when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only
+    when unscoped. Any non-UnscopedSecretError failure propagates -- a failed scoped read must never
+    silently borrow the ambient env."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
 
-        try:
-            explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")
-        except UnscopedSecretError:
-            explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
-    except Exception:
+    try:
+        explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")
+    except UnscopedSecretError:
         explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
     return _clean(explicit)
 
@@ -125,16 +124,19 @@ def read_nous_access_token() -> Optional[str]:
         from hermes_cli.anon_auth import AnonCredentialDead
 
         if isinstance(exc, AnonCredentialDead):
-            return _replace_dead_guest_token(nous_provider)
+            return _replace_dead_guest_token(nous_provider, str(exc.code or "anon_credential_dead"))
         logger.debug("Nous access token refresh failed: %s", exc)
     return cached_token
 
 
-def _replace_dead_guest_token(dead_state: dict) -> Optional[str]:
-    from hermes_cli.anon_auth import clear_dead_guest, ensure_portal_identity
+def _replace_dead_guest_token(dead_state: dict, code: str = "anon_credential_dead") -> Optional[str]:
+    from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED, clear_dead_guest, ensure_portal_identity
     from hermes_cli.auth import resolve_nous_access_token
 
-    clear_dead_guest("anon_credential_dead", dead_token=dead_state.get("anon_token"))
+    clear_dead_guest(code, dead_token=dead_state.get("anon_token"))
+    # Same rule as inference: a locked account is retired but never silently replaced.
+    if code == ANON_ACCOUNT_LOCKED:
+        return None
     try:
         if ensure_portal_identity(explicit=True) is None:
             return None

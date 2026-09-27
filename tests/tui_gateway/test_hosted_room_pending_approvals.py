@@ -13,7 +13,9 @@ from tui_gateway.hosted_room_service import HostedRoomService
 @pytest.fixture
 def service(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
-    (home / "profiles" / "reviewer").mkdir(parents=True)
+    reviewer = home / "profiles" / "reviewer"
+    reviewer.mkdir(parents=True)
+    (reviewer / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())

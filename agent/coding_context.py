@@ -281,11 +281,11 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
     """Names of MCP servers the user has enabled — kept in the coding posture."""
     try:
         from hermes_cli.config import read_raw_config
-        from hermes_cli.tools_config import _parse_enabled_flag
+        from tools.mcp_tool_common import mcp_server_enabled
         servers = read_raw_config().get("mcp_servers") or {}
         return [
             str(name) for name, cfg in servers.items()
-            if isinstance(cfg, dict) and _parse_enabled_flag(cfg.get("enabled", True), default=True)
+            if isinstance(cfg, dict) and mcp_server_enabled(cfg)
         ]
     except Exception:
         return []
@@ -448,7 +448,7 @@ def _read_small(path: Path) -> str:
     try:
         if not path.is_file() or path.stat().st_size > _MAX_FACT_FILE_BYTES:
             return ""
-        return path.read_text(encoding="utf-8", errors="replace")
+        return path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return ""
 
@@ -514,6 +514,9 @@ def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, An
     }
 
 
+WORKSPACE_BLOCK_HEADER = "Workspace (snapshot at session start — re-check with `git` before acting on it):"
+
+
 def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     """Workspace snapshot for the system prompt (empty outside a workspace): git state when
     in a repo, plus project facts — so marker-only (non-git) projects still get one."""
@@ -521,7 +524,7 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     if root is None:
         return ""
     lines = [
-        "Workspace (snapshot at session start — re-check with `git` before acting on it):",
+        WORKSPACE_BLOCK_HEADER,
         f"- Root: {root}",
     ]
     if git_root is not None:
@@ -584,6 +587,7 @@ _PROFILES: dict[str, ContextProfile] = {
     GENERAL_PROFILE.name: GENERAL_PROFILE,
     CODING_PROFILE.name: CODING_PROFILE,
 }
+
 
 def get_profile(name: str) -> ContextProfile:
     """Return a registered profile, falling back to ``general``."""

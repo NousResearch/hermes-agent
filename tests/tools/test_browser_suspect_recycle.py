@@ -42,7 +42,6 @@ def _local_session(name="stuck-session"):
 def _install_command_stubs(monkeypatch, tmp_path, process):
     """Common _run_browser_command environment with a fake daemon layer."""
     monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "agent-browser")
-    monkeypatch.setattr("tools.browser_tool_install._requires_real_termux_browser_install", lambda _cmd: False)
     monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: True)
     monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
     monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda _tid: None)
@@ -268,3 +267,61 @@ class TestFreshSessionClearsStaleFlag:
 
         assert session["session_name"] == "fresh"
         assert TASK not in bt._suspect_browser_sessions
+
+
+class TestBackendLevelFailureRecycles:
+    """#115184: a finished (non-timeout) agent-browser failure at the protocol level — exit 101
+    against a stale session daemon — must recycle the poisoned local record and retry once;
+    a parsed page-level error must not."""
+
+    @staticmethod
+    def _popen_sequence(monkeypatch, tmp_path, outputs):
+        """FakePopen replaying ``outputs`` (rc, stdout bytes) per spawn; records each argv."""
+        spawns = []
+
+        class FakePopen:
+            def __init__(self, argv, *_args, **kwargs):
+                rc, out = outputs[len(spawns)]
+                spawns.append(list(argv))
+                self.returncode = rc
+                os.write(kwargs["stdout"], out)
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        _install_command_stubs(monkeypatch, tmp_path, None)
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
+        monkeypatch.setattr("tools.browser_tool_real_profile._real_profile_cdp", lambda: (None, None))
+        monkeypatch.setattr("agent.deadline.kill_process_tree", lambda pid, **_k: None)
+        return spawns
+
+    def test_exit_101_evicts_poisoned_session_and_retries_once_on_a_fresh_one(self, monkeypatch, tmp_path):
+        stale = {"session_name": "stale-session", "bb_session_id": None, "cdp_url": None, "features": {"local": True}}
+        bt._active_sessions[TASK] = stale
+        ok = json.dumps({"success": True, "data": {"cdpUrl": "ws://127.0.0.1:1/x"}}).encode()
+        spawns = self._popen_sequence(monkeypatch, tmp_path, [(101, b""), (0, ok)])
+
+        result = bt_session._run_browser_command(TASK, "get", ["cdp-url"], timeout=5)
+
+        assert result["success"] is True and result["data"]["cdpUrl"] == "ws://127.0.0.1:1/x"
+        assert len(spawns) == 2
+        assert "stale-session" in spawns[0] and "stale-session" not in spawns[1]
+        fresh = bt._active_sessions[TASK]
+        assert fresh is not stale and fresh["session_name"] == spawns[1][spawns[1].index("--session") + 1]
+        assert bt._suspect_browser_sessions == {}  # flag consumed; fresh record is healthy
+
+    def test_parsed_page_level_error_is_returned_without_recycling(self, monkeypatch, tmp_path):
+        session_info = {"session_name": "healthy-session", "bb_session_id": None, "cdp_url": None,
+                        "features": {"local": True}}
+        bt._active_sessions[TASK] = session_info
+        page_error = json.dumps({"success": False, "error": "Element @e9 not found"}).encode()
+        spawns = self._popen_sequence(monkeypatch, tmp_path, [(0, page_error)])
+
+        result = bt_session._run_browser_command(TASK, "click", ["@e9"], timeout=5)
+
+        assert result == {"success": False, "error": "Element @e9 not found"}
+        assert len(spawns) == 1  # no retry
+        assert bt._active_sessions[TASK] is session_info  # cache untouched
+        assert bt._suspect_browser_sessions == {}

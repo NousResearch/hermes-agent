@@ -1,12 +1,13 @@
 import { selectableClass } from '@/components/onboarding-chat/chip'
+import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import type { InterfaceMode } from '@/store/interface-mode'
+import { readableInk } from '@/themes/color'
 
-// The live-catalog slugs the first-run picker shows, in this order. The catalog
-// decides what can be connected; this list picks the everyday apps out of it
-// (decision D89). A slug the catalog no longer carries is not shown, and a slug
-// the catalog gains is not shown until it is added here.
+// Curated leaders for the first-run picker. Other enabled catalog entries
+// remain searchable, so newly deployed connectors need no client list update.
 export const CONNECTOR_LEAD_ORDER = [
   'gmail',
   'googlecalendar',
@@ -35,7 +36,7 @@ export function orderConnectorPicks<T extends { connector: string; enabled?: boo
   const rank = new Map(CONNECTOR_LEAD_ORDER.map((slug, index) => [slug, index]))
 
   return rows
-    .filter(row => rank.has(row.connector) && row.enabled !== false && !CONNECTOR_PICKER_HIDDEN.has(row.connector))
+    .filter(row => row.enabled !== false && !CONNECTOR_PICKER_HIDDEN.has(row.connector))
     .sort((a, b) => {
       const ra = rank.get(a.connector) ?? Number.POSITIVE_INFINITY
       const rb = rank.get(b.connector) ?? Number.POSITIVE_INFINITY
@@ -64,30 +65,51 @@ export function AccentSwatch({
   active,
   hex,
   name,
+  onColorChange,
   onPick
 }: {
   active: boolean
   hex: string
   name: string
-  onPick: () => void
+  onColorChange?: (hex: string) => void
+  onPick?: () => void
 }) {
+  const className = cn(
+    // The border keeps the mono swatch visible when its colour matches the background.
+    'relative inline-flex size-9 items-center justify-center rounded-full border border-foreground/15 transition-transform duration-150',
+    !active && 'hover:scale-105'
+  )
+
+  const style = {
+    background: hex,
+    boxShadow: active ? `0 0 0 2px var(--dt-background), 0 0 0 4px ${hex}` : undefined
+  }
+
   return (
     <Tip label={name}>
-      <button
-        aria-label={name}
-        aria-pressed={active}
-        className={cn(
-          // The border keeps the mono swatch visible when its colour matches the background.
-          'size-9 rounded-full border border-foreground/15 transition-transform duration-150',
-          !active && 'hover:scale-105'
-        )}
-        onClick={onPick}
-        style={{
-          background: hex,
-          boxShadow: active ? `0 0 0 2px var(--dt-background), 0 0 0 4px ${hex}` : undefined
-        }}
-        type="button"
-      />
+      {onColorChange ? (
+        <label className={cn(className, 'focus-within:outline-2 focus-within:outline-ring')} style={style}>
+          <span className="flex" style={{ color: readableInk(hex) }}>
+            <Codicon name="add" size="1rem" />
+          </span>
+          <input
+            aria-label={name}
+            className="absolute inset-0 size-full cursor-pointer opacity-0"
+            onChange={event => onColorChange(event.target.value)}
+            type="color"
+            value={hex}
+          />
+        </label>
+      ) : (
+        <button
+          aria-label={name}
+          aria-pressed={active}
+          className={className}
+          onClick={onPick}
+          style={style}
+          type="button"
+        />
+      )}
     </Tip>
   )
 }
@@ -99,10 +121,23 @@ export type MiniNode = 1 | { dir: 'column' | 'row'; children: MiniNode[]; weight
 
 export const ELITE_LAYOUT_ID = 'terminal-deck'
 
-export const LAYOUTS: Array<{ id: string; name: string; tree: MiniNode }> = [
-  { id: 'basic', name: 'Basic', tree: { children: [1, 1], dir: 'row', weights: [1, 4.6] } },
+// Each pick is an arrangement AND an interface mode. First launch is the one
+// place a single question can answer both: someone here to talk to Hermes
+// should not have to find Simple mode afterwards, and a developer who asked
+// for the terminal deck wants the tooling on. Basic applies Simple's own
+// preset so its shelf shows the pick as active.
+export const LAYOUTS: Array<{ description: string; id: string; mode: InterfaceMode; name: string; tree: MiniNode }> = [
   {
+    description: 'For talking to Hermes.',
+    id: 'sidebar-left',
+    mode: 'simple',
+    name: 'Basic',
+    tree: { children: [1, 1], dir: 'row', weights: [1, 4.6] }
+  },
+  {
+    description: 'For developers: terminal, files, diffs.',
     id: ELITE_LAYOUT_ID,
+    mode: 'advanced',
     name: 'Elite',
     tree: {
       children: [{ children: [1, 1, 1], dir: 'row', weights: [1, 3.2, 1.2] }, 1],
@@ -160,11 +195,13 @@ function MiniWindowButtons() {
 
 export function LayoutPreviewCard({
   active,
+  description,
   name,
   onSelect,
   tree
 }: {
   active: boolean
+  description?: string
   name: string
   onSelect: () => void
   tree: MiniNode
@@ -177,7 +214,10 @@ export function LayoutPreviewCard({
           <MiniTree node={tree} />
         </span>
       </span>
-      <span className={cn('text-xs', active ? 'text-foreground' : 'text-muted-foreground')}>{name}</span>
+      <span className="flex flex-col items-center gap-0.5">
+        <span className={cn('text-xs', active ? 'text-foreground' : 'text-muted-foreground')}>{name}</span>
+        {description && <span className="text-[0.68rem] text-muted-foreground/70">{description}</span>}
+      </span>
     </button>
   )
 }

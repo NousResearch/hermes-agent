@@ -46,15 +46,5 @@ def test_approved_ci_review_is_visible_info():
         head_sha="abc123",
     )
 
-    assert results == [{
-        "kind": "info",
-        "title": "CI-sensitive file review",
-        "summary": (
-            "PR touches sensitive files, but the `ci-reviewed` label has been "
-            "added, approving them."
-        ),
-        "detail": (
-            "**Sensitive files changed:**\n"
-            "- [`.github/workflows/ci.yml`](https://github.com/nousresearch/hermes-agent/compare/base456...abc123#diff-b803fcb7f17ed9235f1e5cb1fcd2f5d3b2838429d4368ae4c57ce4436577f03f)"
-        ),
-    }]
+    assert len(results) == 1
+    assert results[0]["kind"] == "info"

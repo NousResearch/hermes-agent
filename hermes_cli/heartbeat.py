@@ -99,12 +99,15 @@ def _get_session_db() -> Optional[Any]:
         return None
 
 
+_META_PREFIX = "heartbeat:"
+
+
 def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
     db = _get_session_db() if session_id else None
     if db is None:
         return None
     try:
-        raw = db.get_meta(f"heartbeat:{session_id}")
+        raw = db.get_meta(_META_PREFIX + session_id)
     except Exception as exc:
         logger.debug("HeartbeatManager: get_meta failed: %s", exc)
         return None
@@ -116,6 +119,19 @@ def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
     return None if state is None or state.status == "cleared" else state
 
 
+def store_has_active_heartbeat(db: Any) -> bool:
+    """True when *db* holds an ACTIVE ``heartbeat:*`` row — or one that cannot be parsed (unknown, so
+    the caller keeps its full sweep). ``clear``/``pause`` keep their rows (status ``cleared``/``paused``),
+    so key existence alone is not "active". Read errors propagate: "unavailable" is the caller's call."""
+    for _key, raw in db.list_meta_prefix(_META_PREFIX):
+        try:
+            if HeartbeatState.from_json(raw).status == "active":
+                return True
+        except Exception:
+            return True
+    return False
+
+
 def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
     if not session_id:
         return
@@ -125,7 +141,7 @@ def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
         _warn_dropped_write("HeartbeatManager", "heartbeat", session_id)
         return
     try:
-        db.set_meta(f"heartbeat:{session_id}", state.to_json())
+        db.set_meta(_META_PREFIX + session_id, state.to_json())
     except Exception as exc:
         logger.debug("HeartbeatManager: set_meta failed: %s", exc)
 

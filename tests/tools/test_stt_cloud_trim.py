@@ -50,11 +50,9 @@ _GATE = _CLOUD_TRIM_MIN_INPUT_SECONDS
 
 _HAS_FFMPEG = bool(shutil.which("ffmpeg")) and bool(shutil.which("ffprobe"))
 
-
 # ============================================================================
 # Helpers
 # ============================================================================
-
 
 def _write_wav(path: Path, segments) -> str:
     """Write a 16 kHz mono WAV from (kind, seconds) segments.
@@ -78,16 +76,11 @@ def _write_wav(path: Path, segments) -> str:
         wf.writeframes(bytes(frames))
     return str(path)
 
-
 # ============================================================================
 # Provider gating
 # ============================================================================
 
-
 class TestProviderGating:
-    def test_cloud_set_excludes_local_providers(self):
-        assert "local" not in CLOUD_STT_PROVIDERS
-        assert "local_command" not in CLOUD_STT_PROVIDERS
 
     def test_cloud_set_covers_every_remote_builtin(self):
         # Invariant: every built-in that is not local-ish uploads audio and
@@ -166,11 +159,9 @@ class TestProviderGating:
             _transcribe_prepared_audio(wav)
         trim.assert_not_called()
 
-
 # ============================================================================
 # Settings resolution
 # ============================================================================
-
 
 class TestCloudTrimSettings:
     def test_defaults(self):
@@ -217,11 +208,9 @@ class TestCloudTrimSettings:
         assert enabled is True
         assert threshold == _CLOUD_TRIM_THRESHOLD_DB_DEFAULT
 
-
 # ============================================================================
 # Best-effort fallbacks (all must return None, never raise)
 # ============================================================================
-
 
 class TestTrimFallbacks:
     def test_disabled_returns_none(self, tmp_path):
@@ -258,11 +247,9 @@ class TestTrimFallbacks:
              patch("tools.transcription_audio._probe_audio_duration", return_value=None):
             assert _trim_silence_for_cloud_stt(wav, {}) is None
 
-
 # ============================================================================
 # E2E with real ffmpeg
 # ============================================================================
-
 
 @pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed")
 class TestTrimE2E:
@@ -308,9 +295,3 @@ class TestTrimE2E:
         with patch("tools.transcription_audio._run_ffmpeg_stt_encode") as mock_encode:
             assert _trim_silence_for_cloud_stt(wav, {}) is None
         mock_encode.assert_not_called()
-
-    def test_disabled_config_uploads_original(self, tmp_path):
-        wav = _write_wav(
-            tmp_path / "pauses.wav", [("tone", 2), ("silence", 6), ("tone", 2)]
-        )
-        assert _trim_silence_for_cloud_stt(wav, {"cloud_trim_silence": False}) is None

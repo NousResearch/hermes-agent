@@ -5,6 +5,7 @@ description: Wake Hermes when allowlisted Herdr panes need reconciliation, witho
   pane work.
 maintainer: chris-yyau
 tier: community
+category: automation
 docs_url: https://github.com/chris-yyau/hermes-herdr-auto-reconcile
 platforms: []
 capabilities:

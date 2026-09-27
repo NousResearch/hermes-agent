@@ -1417,8 +1417,8 @@ def load_jobs() -> List[Dict[str, Any]]:
         for note in notes:
             logger.warning("%s", note)
         # Keep the shrink-merge (a degraded-lock sibling's create may have landed since the read)
-        # unless disk is a shape the merge would refuse as corrupt.
-        save_jobs(jobs, replace=unmergeable)
+        # unless disk is STILL a shape the merge would refuse: a sibling may have rewritten it.
+        save_jobs(jobs, replace=unmergeable and _peek_jobs_unlocked() is None)
         logger.warning("Auto-repaired jobs.json (%s)", repair)
     _record_load_stamp(pre_read_stamp)
     return jobs

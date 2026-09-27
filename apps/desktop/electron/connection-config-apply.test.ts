@@ -80,6 +80,8 @@ describe('applyConnectionConfigAtomically', () => {
       nextRegistry: 'remote-registry',
       preflight: async () => {
         events.push('preflight')
+
+        return { wsVerified: true }
       },
       writeConfig: value => events.push(`config:${value}`),
       writeRegistry: value => events.push(`registry:${value}`),
@@ -101,7 +103,7 @@ describe('applyConnectionConfigAtomically', () => {
         previousRegistry: 'old-registry',
         nextConfig: 'remote-config',
         nextRegistry: 'remote-registry',
-        preflight: async () => {},
+        preflight: async () => ({ wsVerified: true }),
         writeConfig,
         writeRegistry,
         apply: async () => {
@@ -110,13 +112,39 @@ describe('applyConnectionConfigAtomically', () => {
       })
     ).rejects.toThrow('teardown/re-home failed')
 
-    // Activation failed AFTER a successful preflight already proved the new
-    // config reachable, so the write must not be rolled back to the old,
+    // Activation failed AFTER a preflight that actually proved the WS leg
+    // reachable, so the write must not be rolled back to the old,
     // unreachable config - that would strand the user on the dead gateway
     // they were trying to escape (see issue: "Save and reconnect" losing the
     // new URL on relaunch).
     expect(writeConfig.mock.calls).toEqual([['remote-config']])
     expect(writeRegistry.mock.calls).toEqual([['remote-registry']])
+  })
+
+  it('rolls back when the preflight ran but never verified the WS leg', async () => {
+    const writeConfig = vi.fn()
+    const writeRegistry = vi.fn()
+
+    await expect(
+      applyConnectionConfigAtomically({
+        previousConfig: 'old-config',
+        previousRegistry: 'old-registry',
+        nextConfig: 'remote-config',
+        nextRegistry: 'remote-registry',
+        // e.g. a tokenless gateway: the REST probe passed, but there was
+        // nothing to build a WS test URL with, so the transport the app
+        // actually uses was never exercised.
+        preflight: async () => ({ wsVerified: false }),
+        writeConfig,
+        writeRegistry,
+        apply: async () => {
+          throw new Error('teardown/re-home failed')
+        }
+      })
+    ).rejects.toThrow('teardown/re-home failed')
+
+    expect(writeConfig.mock.calls).toEqual([['remote-config'], ['old-config']])
+    expect(writeRegistry.mock.calls).toEqual([['remote-registry'], ['old-registry']])
   })
 
   it('leaves both stores untouched when the preflight rejects', async () => {

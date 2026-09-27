@@ -507,6 +507,9 @@ class StreamTransportMixin:
             return True
         self._already_sent = True
         self._track_preview_ids_from_result(result)
+        if (getattr(result, "message_id", None) and result.message_id != self._message_id
+                and not getattr(result, "continuation_message_ids", ())):
+            self._nonvisible_edit_ids.add(str(result.message_id))
         # Oversized edit split across continuations: message_id is now the LAST
         # continuation, which holds only the final chunk — retarget edits and reset
         # skip-if-same.  getattr keeps SimpleNamespace test mocks working.

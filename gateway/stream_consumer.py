@@ -151,6 +151,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # first-send. Used by the fresh-final logic to detect long-lived previews whose edit timestamps
         # would be stale by completion time. Ported from openclaw/openclaw#72038.
         self._preview_message_ids: set[str] = set()
+        self._nonvisible_edit_ids: set[str] = set()
         self._already_sent = False
         self._edit_supported = True  # False once progressive edits stop working
         self._last_edit_time = 0.0
@@ -205,6 +206,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
         self._clear_turn_final_flags()
+
+    @property
+    def final_message_ids(self) -> tuple[str, ...]:
+        """The visible message events in the current final segment."""
+        ids = self._segment_preview_message_ids & self._preview_message_ids
+        ids -= self._nonvisible_edit_ids
+        if self._message_id and self._message_id != "__no_edit__":
+            ids.add(self._message_id)
+        return tuple(sorted(ids))
 
     def _clear_turn_final_flags(self) -> None:
         """Reset every turn-final delivery flag to "nothing delivered yet".

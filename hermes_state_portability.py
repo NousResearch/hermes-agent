@@ -658,6 +658,9 @@ class SessionPortabilityMixin:
             if isinstance(value, int) and not isinstance(value, bool) and not (
                     self._SQLITE_INT_MIN <= value <= self._SQLITE_INT_MAX):
                 raise ValueError(f"{field} is outside SQLite's integer range")
+        if clean_session.get("title"):
+            # Inserted past the title writer: an over-cap title would refuse every later write naming it.
+            clean_session["title"] = fit_title(clean_session["title"], self.MAX_TITLE_LENGTH)
         clean_messages: list[dict[str, Any]] = []
         for message_index, message in enumerate(messages):
             clean_messages.append(self._normalize_import_message(message, message_index))

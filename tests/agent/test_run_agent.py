@@ -720,7 +720,7 @@ class TestInit:
 
 class TestHydrateTodoStore:
     @staticmethod
-    def _assistant_todo_call(call_id="c1"):
+    def _assistant_todo_call(call_id="c1", name="todo", arguments="{}"):
         return {
             "role": "assistant",
             "content": None,
@@ -728,10 +728,31 @@ class TestHydrateTodoStore:
                 {
                     "id": call_id,
                     "type": "function",
-                    "function": {"name": "todo", "arguments": "{}"},
+                    "function": {"name": name, "arguments": arguments},
                 }
             ],
         }
+
+    @pytest.mark.parametrize(
+        "name,arguments",
+        [
+            ("todo_list", "{}"),
+            ("tool_call", json.dumps({"calls": [{"name": "todo_list", "arguments": {}}]})),
+        ],
+        ids=["direct", "bridged"],
+    )
+    def test_todo_list_name_hydrates(self, agent, name, arguments):
+        """Regression for #124960: the current name and its tool_call-bridged form pair like legacy ``todo``."""
+        todos = [{"id": "t", "content": "Task", "status": "pending"}]
+        history = [
+            self._assistant_todo_call(name=name, arguments=arguments),
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"todos": todos, "revision": 3})},
+        ]
+
+        with patch("run_agent._set_interrupt"), patch("agent.interrupt_control._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.snapshot() == {"todos": todos, "revision": 3}
 
     def test_no_todo_in_history(self, agent):
         history = [

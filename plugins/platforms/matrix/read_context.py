@@ -182,6 +182,26 @@ async def check_session_access(adapter: Any, room_id: str, requester: str) -> Se
     return SessionAccess(chat_type=chat_type)
 
 
+def _current_read_access(
+    adapter: Any, room_id: str, requester: str, chat_type: str,
+) -> tuple[Any, str | None, dict | None]:
+    if room_id not in adapter._joined_rooms or not adapter._is_allowed_matrix_room(room_id, chat_type):
+        return None, None, {"error": "Matrix room is not allowed or joined"}
+    if adapter._is_sender_authorized(requester, chat_type=chat_type, chat_id=room_id) is not True:
+        return None, None, {"error": "Matrix requester is not authorized for this room"}
+    client = adapter._client
+    if client is None:
+        return None, None, {"error": "Matrix client is disconnected"}
+    return client, chat_type, None
+
+
+async def _read_access(adapter: Any, room_id: str, requester: str) -> tuple[Any, str | None, dict | None]:
+    access = await check_session_access(adapter, room_id, requester)
+    if access.error:
+        return None, None, {"error": access.error}
+    return _current_read_access(adapter, room_id, requester, access.chat_type)
+
+
 async def read_matrix_context(
     adapter: Any, kind: str, room_id: str, event_id: str | None, limit: int,
     *, requester: str,

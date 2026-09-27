@@ -402,6 +402,10 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
         written = write_backend_code(backend, handle, meta, origin, lambda code: write(code, backend.name))
         if written is not None:
             return written
+    from agent.vault_sms_otp import wait_for_code
+    sms_code = wait_for_code(origin)
+    if sms_code:
+        return write(sms_code, "sms")
     prompt = get_code_prompt_callback()
     if prompt is None or not can_prompt_here():
         return json.dumps({"success": False, "error_type": "prompt_unavailable",

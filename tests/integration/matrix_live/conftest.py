@@ -61,19 +61,23 @@ class LinuxNioObserver:
     account: MatrixAccount
 
     def run_python(self, code: str) -> str:
-        result = self.container.exec(["/opt/matrix-observer-env/bin/python", "-c", code])
+        result = self.container.exec(["/opt/hermes/.venv/bin/python", "-c", code])
         output = result.output.decode(errors="replace")
         assert result.exit_code == 0, f"Linux matrix-nio client failed:\n{output}"
         return output
 
 
-def _wait_for(predicate: Callable[[], bool], description: str, *, timeout: float = 60.0) -> None:
+def _wait_for(
+    predicate: Callable[[], bool], description: str, *, timeout: float = 60.0,
+    details: Callable[[], str] | None = None,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.25)
-    pytest.fail(f"Timed out waiting for {description}")
+    suffix = f"\n{details()}" if details is not None else ""
+    pytest.fail(f"Timed out waiting for {description}{suffix}")
 
 
 @pytest.fixture(scope="module")
@@ -114,6 +118,7 @@ def gateway_image(docker_engine: None) -> Iterator[str]:
         result = subprocess.run(
             [
                 "docker", "buildx", "build", "--load", "--progress=plain",
+                "-f", str(REPO_ROOT / "tests" / "integration" / "matrix_live" / "Dockerfile"),
                 "--label", f"{LABEL_SESSION_ID}={SESSION_ID}", "-t", image, str(REPO_ROOT),
             ],
             capture_output=True,
@@ -238,16 +243,6 @@ def linux_nio_observer(
     ).with_env("NIO_ACCESS_TOKEN", live_room.observer.access_token).with_env(
         "NIO_STORE_PATH", "/opt/data/matrix-nio-store"
     ) as container:
-        result = container.exec([
-            "python3", "-m", "pm.build_env", "--source", "/opt/hermes",
-            "--python", "/usr/local/bin/python3", "--out", "/opt/matrix-observer-env",
-            "--group", "test", "--no-install-project",
-        ])
-        assert result.exit_code == 0, (
-            "Linux matrix-nio[e2e] environment could not be built from uv.lock:\n"
-            + result.output.decode(errors="replace")[-6000:]
-        )
-
         observer = LinuxNioObserver(container, live_room.observer)
         observer.run_python(
             "from client import open_encrypted_client; "
@@ -302,5 +297,8 @@ def gateway(
                     pytest.fail(f"Gateway exited before Matrix connected:\n{output}")
                 return False
 
-            _wait_for(connected, "Matrix gateway initial sync", timeout=120)
+            _wait_for(
+                connected, "Matrix gateway initial sync", timeout=120,
+                details=lambda: container.get_wrapped_container().logs().decode(errors="replace")[-6000:],
+            )
             yield LiveGateway(container, model)

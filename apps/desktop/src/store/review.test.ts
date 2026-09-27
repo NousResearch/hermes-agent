@@ -23,6 +23,7 @@ import {
   createOrOpenPr,
   generateCommitMessage,
   openReview,
+  openReviewForPath,
   refreshReview,
   refreshShipInfo,
   requestRevert,
@@ -434,5 +435,54 @@ describe('generateCommitMessage', () => {
     const msg = await generateCommitMessage()
 
     expect(msg).toBe('')
+  })
+})
+
+describe('openReviewForPath', () => {
+  function stubWithReveal(review: ReviewStub, reveal: ReturnType<typeof vi.fn>) {
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+      git: { review },
+      revealPath: reveal,
+      openExternal: vi.fn()
+    }
+
+    return review
+  }
+
+  it('selects the matching git change and never reveals', async () => {
+    const review = stubWithReveal(
+      {
+        list: vi.fn(async () => ({ files: [file('src/a.ts')] })),
+        diff: vi.fn(async () => 'diff')
+      },
+      vi.fn(async () => true)
+    )
+    const revealPath = (window as unknown as { hermesDesktop: { revealPath: ReturnType<typeof vi.fn> } })
+      .hermesDesktop.revealPath
+    $reviewOpen.set(true)
+
+    await openReviewForPath('src/a.ts')
+
+    expect($reviewSelectedPath.get()).toBe('src/a.ts')
+    expect(review.diff).toHaveBeenCalled()
+    expect(revealPath).not.toHaveBeenCalled()
+  })
+
+  it('falls back to an OS reveal when the path has no git row (outside any repo)', async () => {
+    const review = stubWithReveal(
+      { list: vi.fn(async () => ({ files: [] })), diff: vi.fn(async () => '') },
+      vi.fn(async () => true)
+    )
+    const revealPath = (window as unknown as { hermesDesktop: { revealPath: ReturnType<typeof vi.fn> } })
+      .hermesDesktop.revealPath
+    $reviewOpen.set(true)
+
+    await openReviewForPath('/Users/x/.hermes/scripts/foo.sh')
+
+    // No git change to select, so the click lands on the file itself instead
+    // of stranding the pane on an empty list (#125035).
+    expect($reviewSelectedPath.get()).toBe(null)
+    expect(review.diff).not.toHaveBeenCalled()
+    expect(revealPath).toHaveBeenCalledWith('/Users/x/.hermes/scripts/foo.sh')
   })
 })

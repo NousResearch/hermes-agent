@@ -13,6 +13,7 @@ tool routes to a provider's edit endpoint when ``image_url`` /
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any, Dict
 
@@ -165,6 +166,111 @@ class TestFalRouting:
         assert out["modality"] == "image"
         assert capture["endpoint"] == image_tool.FAL_MODELS["fal-ai/flux-2-pro"]["edit_endpoint"]
         assert upscale_called["hit"] is False
+
+
+class TestLocalSourceConsent:
+    @pytest.mark.parametrize("entry,answer,error_type", [
+        ("handler", "decline", "source_export_denied"),
+        ("handler", "cancel", "source_export_denied"),
+        ("direct", "decline", "source_export_denied"),
+        ("direct", "cancel", "source_export_denied"),
+        ("plugin_fallback", "accept", "source_export_destination_changed"),
+    ])
+    def test_local_export_requires_approved_destination(
+        self, cfg_home, monkeypatch, tmp_path, entry, answer, error_type
+    ):
+        import tools.image_generation_tool as image_tool
+        import tools.image_source as image_source
+        from tools import approval_prompt
+
+        source = tmp_path / "private.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nprivate")
+        provider = "broken" if entry == "plugin_fallback" else "fal"
+        _write_cfg(cfg_home, {"image_gen": {"provider": provider, "model": "fal-ai/nano-banana-pro"}})
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+        monkeypatch.setattr(approval_prompt, "request_elicitation_consent", lambda *a, **k: answer)
+        monkeypatch.setattr(image_source, "resolve_source_sync", lambda *a, **k: pytest.fail("read before consent"))
+        monkeypatch.setattr(image_tool, "_submit_fal_request", lambda *a, **k: pytest.fail("submitted after denial"))
+        if entry == "plugin_fallback":
+            monkeypatch.setattr(image_tool, "_get_plugin_provider", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("missing")))
+
+        if entry != "direct":
+            raw = image_tool._handle_image_generate({
+                "prompt": "make it night", "image_url": str(source), "upscale": False,
+            })
+        else:
+            raw = image_tool.image_generate_tool(
+                prompt="make it night", image_url=str(source), upscale=False)
+        result = json.loads(raw)
+
+        assert result["success"] is False
+        assert result["error_type"] == error_type
+
+    @pytest.mark.parametrize("managed,source_kind", [
+        (False, "local"), (True, "local"), (False, "remote"), (False, "data"),
+    ])
+    def test_sources_reach_selected_fal_endpoint_with_local_consent(
+        self, cfg_home, monkeypatch, tmp_path, managed, source_kind
+    ):
+        import tools.image_generation_tool as image_tool
+        from tools import approval_prompt
+
+        source = tmp_path / "attached.png"
+        pixels = base64.b64decode(
+            b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
+        source.write_bytes(pixels)
+        data_url = f"data:image/png;base64,{base64.b64encode(pixels).decode('ascii')}"
+        source_ref = (str(source) if source_kind == "local" else
+                      "https://example.com/attached.png" if source_kind == "remote" else data_url)
+        _write_cfg(cfg_home, {"image_gen": {"model": "fal-ai/nano-banana-pro"}})
+        monkeypatch.setattr(image_tool, "fal_key_is_configured", lambda: not managed)
+
+        class Gateway:
+            gateway_origin = "https://nous.example/fal-queue"
+
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway",
+                            lambda: Gateway() if managed else None)
+        approval = []
+        monkeypatch.setattr(approval_prompt, "request_elicitation_consent",
+                            lambda message, description, **kwargs: approval.append((message, description)) or "accept")
+
+        class FakeFal:
+            def __init__(self):
+                self.uploads = []
+
+            def upload(self, data, mime):
+                self.uploads.append((data, mime))
+                return "https://fal.storage/attached.png"
+
+        fake = FakeFal()
+        monkeypatch.setattr(image_tool, "fal_client", fake)
+
+        class Handler:
+            def get(self):
+                return {"images": [{"url": "https://out/edited.png", "width": 1, "height": 1}]}
+
+        submitted = []
+        monkeypatch.setattr(image_tool, "_submit_fal_request",
+                            lambda endpoint, arguments: submitted.append((endpoint, arguments)) or Handler())
+
+        result = json.loads(image_tool._handle_image_generate({
+            "prompt": "make it night", "image_url": source_ref, "upscale": False,
+        }))
+
+        assert result["success"] is True
+        expected_source = (data_url if managed else "https://fal.storage/attached.png") if source_kind == "local" else source_ref
+        assert fake.uploads == ([(pixels, "image/png")] if source_kind == "local" and not managed else [])
+        expected_payload = image_tool._build_fal_edit_payload(
+            "fal-ai/nano-banana-pro", "make it night", [expected_source])
+        assert submitted == [("fal-ai/nano-banana-pro/edit", expected_payload)]
+        if source_kind == "local":
+            assert len(approval) == 1
+            assert str(source) in approval[0][0]
+            assert ("Nous managed FAL gateway" if managed else "FAL.ai storage") in approval[0][0]
+            assert "fal-ai/nano-banana-pro/edit" in approval[0][0]
+        else:
+            assert approval == []
 
 
 # ---------------------------------------------------------------------------

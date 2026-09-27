@@ -6,6 +6,7 @@
 keys. Clarity upscaling is strictly per-call opt-in: default-on degraded text/CJK/faces.
 """
 
+import base64
 import json
 import logging
 import os
@@ -414,12 +415,35 @@ def _prepare_fal_request(model_id, meta, prompt, aspect_ratio, seed, overrides, 
     return model_id, arguments
 
 
+_MAX_MANAGED_SOURCE_URL_BYTES = 20 * 1024 * 1024
+
+
+def _resolve_fal_source_image(source: str, task_id: Optional[str], *, managed: bool) -> str:
+    from tools.image_source import resolve_source_sync
+
+    source = source.strip()
+    if source.lower().startswith(("http://", "https://")):
+        return source
+
+    resolved = resolve_source_sync(source, task_id)
+    if source.lower().startswith("data:") or managed:
+        result = f"data:{resolved.mime};base64,{base64.b64encode(resolved.data).decode('ascii')}"
+    else:
+        _load_fal_client()
+        return fal_client.upload(resolved.data, resolved.mime)
+
+    if managed and len(result) > _MAX_MANAGED_SOURCE_URL_BYTES:
+        raise ValueError("Source image exceeds the managed FAL gateway's 20 MB inline limit")
+    return result
+
+
 def image_generate_tool(
     prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     num_inference_steps: Optional[int] = None, guidance_scale: Optional[float] = None,
     num_images: Optional[int] = None, output_format: Optional[str] = None,
     seed: Optional[int] = None, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None) -> str:
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
+    *, task_id: Optional[str] = None, _export_approved: bool = False) -> str:
     """Generate (or, with source images + an ``edit_endpoint`` model, edit) an image via FAL.
 
     Extra kwargs are overrides filtered per-model via ``supports`` / ``edit_supports`` (dropped
@@ -447,9 +471,24 @@ def image_generate_tool(
         _debug.save()
         return json.dumps(response, indent=2, ensure_ascii=False)
     try:
+        if not _export_approved:
+            export_error = _approve_local_image_export(image_url, reference_image_urls)
+            if export_error is not None:
+                return export_error
         endpoint, arguments = _prepare_fal_request(
             model_id, meta, prompt, aspect_ratio, seed,
             {k: v for k, v in overrides.items() if v is not None}, source_images)
+        if use_edit:
+            managed = _resolve_managed_fal_gateway() is not None
+            max_refs = int(meta.get("max_reference_images") or 1)
+            selected_sources = source_images[:max_refs] if max_refs > 0 else source_images
+            resolved_sources = [
+                _resolve_fal_source_image(source, task_id, managed=managed)
+                for source in selected_sources
+            ]
+            image_param = meta.get("edit_image_param") or "image_urls"
+            arguments[image_param] = (resolved_sources[0] if image_param != "image_urls"
+                                      else resolved_sources)
         result = _wait_fal_result(_submit_fal_request(endpoint, arguments=arguments))
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
         if not result or "images" not in result:
@@ -755,6 +794,60 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
     return image_url, reference_image_urls, None
 
 
+def _image_source_references(image_url, reference_image_urls) -> list[str]:
+    refs = reference_image_urls if isinstance(reference_image_urls, (list, tuple)) else []
+    return [source.strip() for source in (image_url, *refs)
+            if isinstance(source, str) and source.strip()]
+
+
+def _local_image_references(sources: list[str]) -> list[str]:
+    return [source for source in sources
+            if not source.lower().startswith(("http://", "https://", "data:"))]
+
+
+def _approve_local_image_export(image_url, reference_image_urls) -> Optional[str]:
+    sources = _image_source_references(image_url, reference_image_urls)
+    paths = _local_image_references(sources)
+    if not paths:
+        return None
+
+    configured = _plugin_provider_name()
+    managed_model = _managed_model_plugin() if configured is None else None
+    if configured is not None:
+        destination = f"image provider '{configured}'"
+    elif managed_model is not None:
+        destination = f"Nous {managed_model[0]} image provider, model '{managed_model[1]}'"
+        if managed_model[0] == "krea":
+            fal_model_id, fal_meta = _resolve_fal_model()
+            fallback_endpoint = fal_meta.get("edit_endpoint") or fal_model_id
+            fal_gateway = _resolve_managed_fal_gateway()
+            fallback = (f"Nous managed FAL gateway {fal_gateway.gateway_origin}"
+                        if fal_gateway is not None else "FAL.ai storage")
+            destination += f", or {fallback} and endpoint '{fallback_endpoint}' if Krea is unavailable"
+    else:
+        model_id, meta = _resolve_fal_model()
+        if not meta.get("edit_endpoint"):
+            return None
+        max_refs = int(meta.get("max_reference_images") or 1)
+        selected_sources = sources[:max_refs] if max_refs > 0 else sources
+        paths = _local_image_references(selected_sources)
+        if not paths:
+            return None
+        gateway = _resolve_managed_fal_gateway()
+        endpoint = meta.get("edit_endpoint") or model_id
+        destination = (f"Nous managed FAL gateway {gateway.gateway_origin}, endpoint '{endpoint}'"
+                       if gateway is not None else f"FAL.ai storage and endpoint '{endpoint}'")
+
+    from tools.approval_prompt import request_elicitation_consent
+
+    message = f"Send images from these source references to {destination}:\n" + "\n".join(paths)
+    description = "Hermes will resolve these references and send the resulting image bytes to the provider."
+    if request_elicitation_consent(message, description, surface="image-source-export",
+                                   title="Send local images to image provider?") != "accept":
+        return _provider_error("Local image export was not approved.", "source_export_denied")
+    return None
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -762,20 +855,38 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     upscale = args.get("upscale")
     task_id = kw.get("task_id")
-    # Confinement chokepoint BEFORE any dispatch: every route receives sandbox-confined bytes.
-    image_url, reference_image_urls, confine_error = _confine_source_images(
-        args.get("image_url"), args.get("reference_image_urls"), task_id)
-    if confine_error is not None:
-        return confine_error
-    # Order matters: explicit plugin provider, then the model-driven managed gateways (Krea /
-    # Portal — only under the "nous"/unset selection, so BYO/direct FAL stays untouched), then FAL.
-    sources = dict(image_url=image_url, reference_image_urls=reference_image_urls,
-                   upscale=upscale if isinstance(upscale, bool) else None)
+    try:
+        export_error = _approve_local_image_export(args.get("image_url"), args.get("reference_image_urls"))
+    except Exception as exc:
+        return _provider_error(f"Could not approve local image export: {exc}", "source_export_unavailable")
+    if export_error is not None:
+        return export_error
+    image_url = args.get("image_url")
+    reference_image_urls = args.get("reference_image_urls")
+    upscale_arg = upscale if isinstance(upscale, bool) else None
     raw = None
-    for route in (_dispatch_to_plugin_provider, _maybe_route_managed_model, image_generate_tool):
-        raw = route(prompt, aspect_ratio, **sources)
-        if raw is not None:
-            break
+    configured_provider = _plugin_provider_name()
+    if configured_provider is not None or _managed_model_plugin() is not None:
+        # Plugin routes receive sandbox-confined data. The FAL route uses the same resolver
+        # itself, so it keeps the original source type for direct byte uploads.
+        confined_url, confined_refs, confine_error = _confine_source_images(
+            image_url, reference_image_urls, task_id)
+        if confine_error is not None:
+            return confine_error
+        sources = dict(image_url=confined_url, reference_image_urls=confined_refs, upscale=upscale_arg)
+        raw = _dispatch_to_plugin_provider(prompt, aspect_ratio, **sources)
+        if raw is None and configured_provider is not None and _local_image_references(
+            _image_source_references(image_url, reference_image_urls)
+        ):
+            return _provider_error(
+                f"Selected image provider '{configured_provider}' was unavailable; local images were not sent.",
+                "source_export_destination_changed")
+        if raw is None:
+            raw = _maybe_route_managed_model(prompt, aspect_ratio, **sources)
+    if raw is None:
+        raw = image_generate_tool(
+            prompt, aspect_ratio, image_url=image_url, reference_image_urls=reference_image_urls,
+            upscale=upscale_arg, task_id=task_id, _export_approved=True)
     return _postprocess_image_generate_result(raw, task_id=task_id)
 
 

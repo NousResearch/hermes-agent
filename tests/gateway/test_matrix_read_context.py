@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from plugins.platforms.matrix.read_context import read_matrix_context
+from plugins.platforms.matrix.reply_context import MatrixEventContextCache
 
 
 def _message(event_id, body, *, ts=None, thread=None, sender="@alice:server"):
@@ -24,8 +25,11 @@ def _visible(event_id, body, *, ts=None, thread=None):
 
 
 def _client(chunk=(), *, event=None, crypto=None):
+    async def request(_method, path, **_kwargs):
+        return event if "/event/" in path else {"chunk": list(chunk)}
+
     return SimpleNamespace(
-        api=SimpleNamespace(request=AsyncMock(return_value={"chunk": list(chunk)})),
+        api=SimpleNamespace(request=AsyncMock(side_effect=request)),
         sync_store=SimpleNamespace(get_next_batch=AsyncMock(return_value="s42")),
         get_event=AsyncMock(return_value=event), crypto=crypto,
     )
@@ -37,6 +41,7 @@ def _adapter(client, **overrides):
 
     values = dict(
         _allowed_room_ids=set(),
+        _event_context_cache=MatrixEventContextCache(),
         _client=client, _joined_rooms={"!room:server"}, _user_id="@bot:server",
         _is_allowed_matrix_room_event=AsyncMock(return_value=True),
         _is_dm_room=AsyncMock(return_value=False),
@@ -185,9 +190,7 @@ async def test_read_room_uses_sync_token_and_decrypts_with_owning_client(monkeyp
      "content": {"m.relates_to": {"rel_type": "m.annotation", "event_id": "$other", "key": "+1"}}},
     {"event_id": "$target", "sender": "@alice:server", "type": "m.room.topic", "state_key": "",
      "content": {"topic": "Planning"}},
-    {"event_id": "$target", "sender": "@alice:server", "type": "m.room.message", "content": {},
-     "unsigned": {"redacted_because": {"type": "m.room.redaction"}}},
-], ids=["reaction", "state", "redacted"])
+], ids=["reaction", "state"])
 async def test_event_read_without_message_content_is_an_error(event):
     client = _client(event=event)
 

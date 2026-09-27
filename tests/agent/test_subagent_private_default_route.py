@@ -5,11 +5,12 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from agent.subagent_lifecycle import SubagentLaunchRequest, SubagentLifecycleError, SubagentLifecycleService, SubagentState
+from agent.subagent_lifecycle import SubagentHandle, SubagentLaunchRequest, SubagentLifecycleError, SubagentLifecycleService, SubagentState
 from agent import secret_scope
 from hermes_constants import set_hermes_home_override, reset_hermes_home_override, get_hermes_home
 
@@ -241,3 +242,18 @@ def test_private_wait_is_bounded_and_cancel_is_cooperative(tmp_path, monkeypatch
         secret_scope.reset_secret_scope(st)
         reset_hermes_home_override(ht)
         secret_scope.set_multiplex_active(False)
+
+
+def test_private_cancellation_does_not_log_caller_reason(monkeypatch):
+    from agent import subagent_lifecycle as module
+
+    service = SubagentLifecycleService(_parent)
+    record = SimpleNamespace(result=None, agent=object(), state=SubagentState.PENDING,
+                             updated_at=0, profile_key="private-profile")
+    monkeypatch.setattr(service, "_record", lambda _handle: record)
+    reasons = []
+    monkeypatch.setattr(module, "request_hard_interrupt",
+                        lambda _agent, reason, **_kwargs: reasons.append(reason) or True)
+
+    assert service.cancel(cast(SubagentHandle, object()), reason="sensitive-user-text").accepted
+    assert reasons == ["Lifecycle cancellation requested: private child"]

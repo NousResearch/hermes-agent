@@ -191,6 +191,14 @@ def _live_items(tracked: List[Dict], now: datetime, *, log_stale: bool = False) 
     for item in tracked:
         p = Path(item["path"])
         if p.exists():
+            # Refresh from disk: track() writes `size` once, and cron-output
+            # logs grow afterwards — a stale recorded size would let quick()
+            # auto-delete a file that has since crossed _LARGE_FILE_BYTES.
+            try:
+                if p.is_file():
+                    item["size"] = p.stat().st_size
+            except OSError:
+                pass
             yield item, p, (now - datetime.fromisoformat(item["timestamp"])).days
         elif log_stale:
             _log(f"STALE: {p} (removed from tracking)")

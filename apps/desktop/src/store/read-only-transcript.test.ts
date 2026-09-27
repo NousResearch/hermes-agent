@@ -3,10 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $connectionsRegistry } from './connections'
 import { $profiles } from './profile'
 import {
+  $readOnlyCronRuns,
   $readOnlyStoredTranscripts,
   clearStoredTranscriptReadOnly,
+  isCronRunReadOnly,
   isReadOnlyRuntimeId,
   isStoredTranscriptReadOnly,
+  markCronRunReadOnly,
   markStoredTranscriptReadOnly,
   readOnlyRuntimeIdFor,
   resumeWithStoredTranscriptFallback
@@ -25,6 +28,7 @@ beforeEach(() => {
   $connectionsRegistry.set(null)
   $profiles.set([])
   $readOnlyStoredTranscripts.set(new Set())
+  $readOnlyCronRuns.set(new Set())
 })
 
 afterEach(() => {
@@ -137,5 +141,40 @@ describe('read-only stored-transcript resume (#94724 no-owner recovery)', () => 
     expect(isStoredTranscriptReadOnly('stored-9')).toBe(true)
     clearStoredTranscriptReadOnly('stored-9')
     expect(isStoredTranscriptReadOnly('stored-9')).toBe(false)
+  })
+})
+
+describe('read-only cron runs (#88443 zombie cron session)', () => {
+  it('blocks writes on a cron run latched read-only', () => {
+    markCronRunReadOnly('cron_job-1_1700000000')
+
+    expect(isCronRunReadOnly('cron_job-1_1700000000')).toBe(true)
+    // The submit path's gate: one answer for every write surface.
+    expect(isStoredTranscriptReadOnly('cron_job-1_1700000000')).toBe(true)
+    // Unrelated ids stay writable.
+    expect(isStoredTranscriptReadOnly('cron_job-1_1800000000')).toBe(false)
+    expect(isStoredTranscriptReadOnly(null)).toBe(false)
+  })
+
+  it('survives a live resume clearing the owner-recovery latch', () => {
+    markCronRunReadOnly('cron-keep')
+    markStoredTranscriptReadOnly('cron-keep')
+
+    // Exactly what a successful resume does to the #94724 latch — the cron
+    // latch must NOT be collateral damage, or the guard evaporates the moment
+    // the transcript paints.
+    clearStoredTranscriptReadOnly('cron-keep')
+
+    expect(isStoredTranscriptReadOnly('cron-keep')).toBe(true)
+    expect(isStoredTranscriptReadOnly('legacy-owner-recovery')).toBe(false)
+  })
+
+  it('ignores blank ids and is idempotent', () => {
+    markCronRunReadOnly('   ')
+    expect(isCronRunReadOnly('')).toBe(false)
+
+    markCronRunReadOnly('cron-twice')
+    markCronRunReadOnly('cron-twice')
+    expect([...$readOnlyCronRuns.get()]).toEqual(['cron-twice'])
   })
 })

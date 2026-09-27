@@ -14,6 +14,12 @@
  * Every other failure keeps its existing semantics. Rows whose owner IS
  * resolvable never take this path, and a later successful live resume (e.g.
  * after the single-match owner backfill stamps the row) clears the flag.
+ *
+ * A second, unrelated reason a stored transcript is read-only lives here too:
+ * a cron run the scheduler never closed (#88443). It uses its own latch so a
+ * live resume cannot clear it — see `markCronRunReadOnly` below, which
+ * `isStoredTranscriptReadOnly` also reports, so every write path gets one
+ * answer.
  */
 import { atom } from 'nanostores'
 
@@ -49,7 +55,47 @@ export function clearStoredTranscriptReadOnly(storedSessionId: string): void {
 }
 
 export function isStoredTranscriptReadOnly(storedSessionId: null | string | undefined): boolean {
-  return Boolean(storedSessionId && $readOnlyStoredTranscripts.get().has(storedSessionId.trim()))
+  if (!storedSessionId) {
+    return false
+  }
+
+  const id = storedSessionId.trim()
+
+  return $readOnlyStoredTranscripts.get().has(id) || $readOnlyCronRuns.get().has(id)
+}
+
+/**
+ * Cron runs opened from the desktop's Cron surfaces (#88443).
+ *
+ * A cron run is an autonomous scheduled execution, never an interactive chat
+ * target. A run whose `ended_at` is NULL while no agent owns it is a ZOMBIE:
+ * the scheduler's `end_session` never ran (watchdog kill, crash, connection
+ * drop), so the row still looks open. Resuming it as a normal desktop chat
+ * routes the user's messages into a dead `source='cron'` session, and the
+ * run's own agent then executes unrelated desktop work under the cron
+ * identity.
+ *
+ * This latch is deliberately SEPARATE from the owner-recovery set above: a
+ * successful live resume clears that one (the owner proved routable again),
+ * but a never-closed cron run must stay non-writable for as long as this app
+ * session remembers it. The transcript still opens — `submit` refuses the
+ * send with the read-only explanation, and starting a fresh chat is the way
+ * forward.
+ */
+export const $readOnlyCronRuns = atom<ReadonlySet<string>>(new Set())
+
+export function markCronRunReadOnly(storedSessionId: string): void {
+  const id = storedSessionId.trim()
+
+  if (!id || $readOnlyCronRuns.get().has(id)) {
+    return
+  }
+
+  $readOnlyCronRuns.set(new Set([...$readOnlyCronRuns.get(), id]))
+}
+
+export function isCronRunReadOnly(storedSessionId: null | string | undefined): boolean {
+  return Boolean(storedSessionId && $readOnlyCronRuns.get().has(storedSessionId.trim()))
 }
 
 /** Synthetic runtime-id namespace for read-only tiles: a stored transcript

@@ -36,7 +36,7 @@
 // the stock Electron icon or another product's identity.
 
 import { resolve, join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 import { rcedit } from 'rcedit'
 
@@ -58,9 +58,12 @@ async function stampExeIdentity(exe, desktopRoot = resolve(import.meta.dirname, 
 
   console.log(`[set-exe-identity] stamping ${exe}`)
   console.log(`[set-exe-identity] icon: ${icon}`)
+  const { version } = JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8'))
 
   await rcedit(exe, {
     icon,
+    'file-version': version,
+    'product-version': version,
     'version-string': {
       ProductName: 'Agent Czesiek',
       FileDescription: 'Agent Czesiek',

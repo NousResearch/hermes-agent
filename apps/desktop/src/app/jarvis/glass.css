@@ -96,18 +96,12 @@
   filter: saturate(0.4) brightness(0.8);
 }
 
-/* Current place in the menu: a lit pill with an accent bar at its edge. */
+/* A quiet selected row stays visible without outshining the conversation. */
 .jarvis-nav-active {
   position: relative;
-  border: 1px solid color-mix(in srgb, var(--ui-accent) 32%, transparent);
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--ui-accent) 20%, transparent),
-    color-mix(in srgb, var(--ui-accent) 5%, transparent)
-  );
-  box-shadow:
-    inset 0 1px 0 var(--glass-highlight),
-    0 0 22px -8px color-mix(in srgb, var(--ui-accent) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ui-accent) 18%, transparent);
+  background: color-mix(in srgb, var(--ui-accent) 9%, var(--glass-bg));
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
 }
 
 .jarvis-nav-active::before {
@@ -116,10 +110,9 @@
   left: -1px;
   top: 22%;
   bottom: 22%;
-  width: 3px;
+  width: 2px;
   border-radius: 0 3px 3px 0;
   background: var(--ui-accent);
-  box-shadow: 0 0 10px var(--ui-accent);
 }
 
 /* A selected segment inside a glass toggle group. */

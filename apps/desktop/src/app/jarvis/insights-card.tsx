@@ -6,11 +6,12 @@ import { getCronJobs } from '@/api/cron'
 import { getUsageAnalytics } from '@/api/models'
 import { useI18n } from '@/i18n'
 import { BarChart3 } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 import { $activeGatewayProfile } from '@/store/profile'
 import type { AnalyticsDailyEntry } from '@/types/hermes'
 
+import { deriveJarvisMetrics } from './metrics'
 import { RailCard } from './rail-cards'
+import type { JarvisUiState } from './types'
 
 const INSIGHTS_DAYS = 14
 const INSIGHTS_REFRESH_MS = 5 * 60_000
@@ -71,9 +72,9 @@ export function sparklinePath(series: readonly number[], width: number, height: 
   }, '')
 }
 
-/** "Spostrzeżenia": the workspace's real rhythm — sessions over two weeks and the jobs that are on. */
-export function JarvisInsightsCard({ connected }: { connected: boolean }) {
-  const { t } = useI18n()
+/** Live workspace signals plus measured activity from the current conversation. */
+export function JarvisInsightsCard({ connected, state }: { connected: boolean; state: JarvisUiState }) {
+  const { locale, t } = useI18n()
   const copy = t.jarvisShell.home.insights
   const profile = useStore($activeGatewayProfile)
   const gradientId = useId()
@@ -97,6 +98,21 @@ export function JarvisInsightsCard({ connected }: { connected: boolean }) {
   const trend = analytics.data ? sessionTrend(analytics.data.daily, new Date()) : null
   const activeJobs = jobs.data ? jobs.data.filter(job => job.enabled).length : null
   const path = trend ? sparklinePath(trend.series, 240, 56) : ''
+  const metrics = deriveJarvisMetrics(state.activity)
+  const activityTime = metrics.events > 0 ? `${Math.ceil(metrics.spanMs / 60_000)} min` : '—'
+
+  const lastActivity =
+    metrics.lastAt === null
+      ? '—'
+      : new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(metrics.lastAt)
+
+  const summary = [
+    { label: copy.completedTasks, value: metrics.verified },
+    { label: copy.activeJobs, value: activeJobs ?? '—' },
+    { label: copy.activityTime, value: activityTime },
+    { label: copy.lastActivity, value: lastActivity },
+    { label: copy.pendingApproval, value: state.task.phase === 'approval' ? 1 : 0 }
+  ]
 
   return (
     <RailCard
@@ -128,32 +144,13 @@ export function JarvisInsightsCard({ connected }: { connected: boolean }) {
       ) : (
         <p className="mb-3 text-xs text-(--ui-text-tertiary)">{copy.empty}</p>
       )}
-      <dl className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col-reverse" title={copy.trendHint}>
-          <dt className="text-xs text-(--ui-text-secondary)">
-            {trend?.changePct == null ? copy.sessions : copy.trend}
-          </dt>
-          <dd
-            className={cn(
-              'text-2xl font-semibold tabular-nums',
-              trend?.changePct == null
-                ? 'text-(--ui-text-primary)'
-                : trend.changePct >= 0
-                  ? 'text-emerald-400'
-                  : 'text-amber-400'
-            )}
-          >
-            {trend?.changePct == null
-              ? trend
-                ? trend.total
-                : '—'
-              : `${trend.changePct >= 0 ? '+' : ''}${trend.changePct}%`}
-          </dd>
-        </div>
-        <div className="flex flex-col-reverse">
-          <dt className="text-xs text-(--ui-text-secondary)">{copy.activeJobs}</dt>
-          <dd className="text-2xl font-semibold tabular-nums text-(--ui-text-primary)">{activeJobs ?? '—'}</dd>
-        </div>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
+        {summary.map(({ label, value }) => (
+          <div className="flex min-h-12 flex-col justify-center gap-0.5" key={label}>
+            <dt className="text-xs text-(--ui-text-secondary)">{label}</dt>
+            <dd className="text-lg font-semibold tabular-nums text-(--ui-text-primary)">{value}</dd>
+          </div>
+        ))}
       </dl>
     </RailCard>
   )

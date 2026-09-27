@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
@@ -8,10 +9,12 @@ import type { JarvisNewsItem } from './news'
 import { initialJarvisUiState } from './projector'
 import type { JarvisUiState } from './types'
 
-function fixtureState(overrides: {
-  result?: string
-  taskPhase?: JarvisUiState['task']['phase']
-} = {}): JarvisUiState {
+function fixtureState(
+  overrides: {
+    result?: string
+    taskPhase?: JarvisUiState['task']['phase']
+  } = {}
+): JarvisUiState {
   return {
     ...initialJarvisUiState(),
     result: overrides.result,
@@ -19,16 +22,26 @@ function fixtureState(overrides: {
     task: { id: 't1', phase: overrides.taskPhase ?? 'idle' },
     activity: [
       { at: 1, label: 'Terminal', sessionId: 's1', taskId: 't1', toolCallId: 'tool-1', type: 'tool.started' },
-      { at: 2, detail: 'done', label: 'Terminal', sessionId: 's1', taskId: 't1', toolCallId: 'tool-1', type: 'tool.completed' }
+      {
+        at: 2,
+        detail: 'done',
+        label: 'Terminal',
+        sessionId: 's1',
+        taskId: 't1',
+        toolCallId: 'tool-1',
+        type: 'tool.completed'
+      }
     ]
   }
 }
 
 function renderDashboard(ui: React.ReactElement) {
   return render(
-    <I18nProvider configClient={null} initialLocale="pl">
-      {ui}
-    </I18nProvider>
+    <MemoryRouter>
+      <I18nProvider configClient={null} initialLocale="pl">
+        {ui}
+      </I18nProvider>
+    </MemoryRouter>
   )
 }
 
@@ -75,6 +88,21 @@ describe('Agent CzesiekDashboard', () => {
     expect(screen.getByTestId('real-chat')).toBeTruthy()
   })
 
+  it('collapses and restores the right rail without losing the conversation', () => {
+    renderDashboard(
+      <JarvisDashboard connected rail={<div data-testid="rail-card">Card</div>} state={fixtureState()}>
+        <div data-testid="real-chat">Real transcript and composer</div>
+      </JarvisDashboard>
+    )
+
+    expect(screen.getByTestId('rail-card')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Zwiń prawy panel' }))
+    expect(screen.queryByTestId('jarvis-rail')).toBeNull()
+    expect(screen.getByTestId('real-chat')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Pokaż prawy panel' }))
+    expect(screen.getByTestId('rail-card')).toBeTruthy()
+  })
+
   it('renders the tablet composition with an activity drawer that does not remount the conversation', () => {
     renderDashboard(
       <JarvisDashboard connected layout="tablet" state={fixtureState({ taskPhase: 'running' })}>
@@ -110,7 +138,7 @@ describe('Agent CzesiekDashboard', () => {
     )
 
     expect(screen.getByTestId('jarvis-dashboard').getAttribute('data-layout')).toBe('mobile')
-    expect(screen.getByTestId('jarvis-core').getAttribute('data-compact')).toBe('true')
+    expect(screen.getByTestId('jarvis-core').getAttribute('data-compact')).toBe('false')
     expect(screen.queryByRole('navigation')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Pokaż aktywność' }))
@@ -146,11 +174,13 @@ describe('Agent CzesiekDashboard', () => {
     expect(screen.queryByText('Połączono')).toBeNull()
 
     rerender(
-      <I18nProvider configClient={null} initialLocale="pl">
-        <JarvisDashboard connected={false} state={fixtureState()}>
-          <div />
-        </JarvisDashboard>
-      </I18nProvider>
+      <MemoryRouter>
+        <I18nProvider configClient={null} initialLocale="pl">
+          <JarvisDashboard connected={false} state={fixtureState()}>
+            <div />
+          </JarvisDashboard>
+        </I18nProvider>
+      </MemoryRouter>
     )
 
     expect(screen.getByText('Brak połączenia')).toBeTruthy()
@@ -186,12 +216,16 @@ describe('Agent CzesiekDashboard', () => {
     const panel = screen.getByRole('complementary', { name: 'Co robi Agent Czesiek' })
 
     fireEvent.click(within(panel).getByRole('button', { name: 'Statystyki' }))
-    expect(within(panel).getByText('Statystyki pojawią się, gdy Agent Czesiek zacznie pracować w tej rozmowie.')).toBeTruthy()
+    expect(
+      within(panel).getByText('Statystyki pojawią się, gdy Agent Czesiek zacznie pracować w tej rozmowie.')
+    ).toBeTruthy()
     expect(within(panel).queryByRole('img')).toBeNull()
 
     fireEvent.click(within(panel).getByRole('button', { name: 'Newsy' }))
     expect(
-      within(panel).getByText('Nic nowego. Ta lista wypełnia się, gdy Agent Czesiek pracuje i gdy pojawiają się aktualizacje.')
+      within(panel).getByText(
+        'Nic nowego. Ta lista wypełnia się, gdy Agent Czesiek pracuje i gdy pojawiają się aktualizacje.'
+      )
     ).toBeTruthy()
   })
 
@@ -199,7 +233,14 @@ describe('Agent CzesiekDashboard', () => {
     const onOpenUpdate = vi.fn()
 
     const news: JarvisNewsItem[] = [
-      { action: 'update-client', detail: 'Add Polish TTS', id: 'release:abc', kind: 'release', title: 'Nowa wersja Agenta Cześka', tone: 'accent' }
+      {
+        action: 'update-client',
+        detail: 'Add Polish TTS',
+        id: 'release:abc',
+        kind: 'release',
+        title: 'Nowa wersja Agenta Cześka',
+        tone: 'accent'
+      }
     ]
 
     renderDashboard(

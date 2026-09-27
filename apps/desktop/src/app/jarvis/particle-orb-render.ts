@@ -156,7 +156,7 @@ function drawLinks(
       continue
     }
 
-    const alpha = ((bucket + 1) / ALPHA_BUCKETS) * motion.links * (0.3 + level * 0.25) * (light ? 1.9 : 1)
+    const alpha = ((bucket + 1) / ALPHA_BUCKETS) * motion.links * (0.3 + level * 0.25) * (light ? 2.1 : 1)
     ctx.strokeStyle = `rgba(${near ? palette.front : palette.back}, ${alpha.toFixed(3)})`
     ctx.beginPath()
 
@@ -178,11 +178,11 @@ function drawParticles(
   radius: number
 ): void {
   const { count, level, motion, projected: out } = state
-  const dot = Math.max(0.6, radius / 150) * (1 + level * 0.25)
+  const dot = Math.max(0.7, radius / 142) * (1 + level * 0.3)
 
   const alpha = near
-    ? Math.min(1, (motion.brightness + level * 0.15) * (light ? 1.35 : 1))
-    : motion.brightness * (light ? 0.75 : 0.55)
+    ? Math.min(1, (motion.brightness + level * 0.15) * (light ? 1.5 : 1))
+    : motion.brightness * (light ? 0.9 : 0.55)
 
   if (near) {
     // Sparse bloom pass: only the brightest near points get a halo.

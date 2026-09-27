@@ -474,7 +474,7 @@ function JarvisDashboardFrame({
             providers={modelProviders}
             requestGateway={requestGateway}
           />
-          <JarvisInsightsCard connected={connected} />
+          <JarvisInsightsCard connected={connected} state={dashboardState} />
           <JarvisQuickAccessCard connected={connected} />
           <JarvisNewsLiveCard connected={connected} />
           <JarvisAgentsCard />

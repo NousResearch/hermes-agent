@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
@@ -7,6 +7,8 @@ import { pl } from '@/i18n/pl'
 import { applyVoiceEngineFromConfig } from '@/store/voice-prefs'
 
 import { JarvisHomeHero } from './home-hero'
+import { initialJarvisUiState } from './projector'
+import { $jarvisUi } from './store'
 
 const insert = vi.hoisted(() => vi.fn())
 
@@ -41,6 +43,7 @@ afterEach(() => {
   pulseApi.sendPulseFeedback.mockClear()
   vi.useRealTimers()
   window.localStorage.clear()
+  $jarvisUi.set(initialJarvisUiState())
 })
 
 describe('Agent CzesiekHomeHero', () => {
@@ -48,9 +51,7 @@ describe('Agent CzesiekHomeHero', () => {
     vi.useFakeTimers({ now: new Date(2026, 8, 25, 21, 30), toFake: ['Date'] })
     renderHero({ profileDisplayName: 'Chris' })
 
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
-      `${pl.jarvisShell.home.greetings.evening}, Chris.`
-    )
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Chris, dobry wieczór. Co dziś ogarniamy?')
   })
 
   it('says which voice answers: Gemini Live and its model when Live runs on Gemini', () => {
@@ -65,6 +66,19 @@ describe('Agent CzesiekHomeHero', () => {
     expect(line).toContain('gemini-3.8-live')
 
     applyVoiceEngineFromConfig({ voice: { engine: 'classic' } })
+  })
+
+  it('names the live planning, approval and speaking states under the orb', () => {
+    renderHero()
+
+    for (const [phase, voice, label] of [
+      ['planning', 'idle', pl.jarvisShell.home.orbStatus.thinking],
+      ['approval', 'idle', pl.jarvisShell.home.orbStatus.approval],
+      ['running', 'speaking', pl.jarvisShell.home.orbStatus.speaking]
+    ] as const) {
+      act(() => $jarvisUi.set({ ...initialJarvisUiState(), task: { id: 't1', phase }, voice }))
+      expect(screen.getByTestId('jarvis-home-status').textContent).toContain(label)
+    }
   })
 
   it('an action chip starts the request in the composer instead of sending it', () => {

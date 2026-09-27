@@ -82,7 +82,7 @@ function NavButton({ active, buttonRef, icon: Icon, label, onClick, onKeyDown, v
     <button
       aria-current={active ? 'page' : undefined}
       className={cn(
-        'group flex min-h-11 shrink-0 items-center gap-3 rounded-xl border border-transparent px-3 text-left text-sm font-medium transition-[background-color,border-color,color] duration-150 md:w-full',
+        'group flex h-11 min-h-11 shrink-0 items-center gap-3 rounded-xl border border-transparent px-3 text-left text-sm font-medium transition-[background-color,border-color,color] duration-150 md:w-full',
         FOCUS_RING,
         active
           ? 'jarvis-nav-active text-(--ui-text-primary)'
@@ -96,10 +96,8 @@ function NavButton({ active, buttonRef, icon: Icon, label, onClick, onKeyDown, v
     >
       <Icon
         className={cn(
-          'size-[1.1rem] shrink-0 transition-colors',
-          active
-            ? 'text-(--ui-accent) drop-shadow-[0_0_6px_var(--ui-accent)]'
-            : 'text-(--ui-text-tertiary) group-hover:text-(--ui-text-secondary)'
+          'size-[1.125rem] shrink-0 transition-colors',
+          active ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary) group-hover:text-(--ui-text-secondary)'
         )}
       />
       <span className="truncate">{label}</span>
@@ -222,7 +220,7 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
         <div className="flex gap-2 overflow-x-auto pb-1 md:flex-col md:gap-4 md:overflow-visible md:pb-0">
           {JARVIS_NAV_GROUPS.map(group => (
             <div className="contents md:flex md:flex-col md:gap-0.5" key={group.id}>
-              <p className="hidden px-3 pb-1 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-(--ui-text-tertiary) md:block">
+              <p className="hidden px-3 pb-1 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-(--ui-text-secondary) md:block">
                 {navCopy.sections[group.id]}
               </p>
               {group.views.map((view: JarvisMainView) => {
@@ -235,9 +233,9 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
                     icon={VIEW_ICONS[view]}
                     key={view}
                     label={copy.views[view]}
-                  onClick={() => onSelect(view)}
-                  onKeyDown={handleMainKeyDown(index)}
-                  view={view}
+                    onClick={() => onSelect(view)}
+                    onKeyDown={handleMainKeyDown(index)}
+                    view={view}
                   />
                 )
               })}

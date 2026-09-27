@@ -69,7 +69,14 @@ export function JarvisHomeHero({
   const name = rawName && rawName.toLowerCase() !== 'default' ? rawName : undefined
   const character = useStore($character)
   const greeting = greetingFor(character, new Date(), copy.greetings)
-  const hint = !connected ? copy.offline : listening ? copy.listening : copy.idleHint
+  const tone = plasmaTone(listening ? 'listening' : state.voice, state.task.phase)
+
+  const hint = !connected
+    ? copy.offline
+    : tone === 'working' && state.task.phase === 'planning'
+      ? copy.orbStatus.thinking
+      : copy.orbStatus[tone]
+
   const engine = useStore($voiceEngine)
   const live = useStore($liveVoiceChoice)
 
@@ -83,7 +90,7 @@ export function JarvisHomeHero({
       <section
         aria-labelledby="jarvis-home-title"
         className={cn(
-          'jarvis-home relative flex w-full max-w-4xl flex-col items-center gap-3 px-4 py-4 text-center [--jarvis-hero-size:min(440px,50vh,86cqw)] @2xl:[--jarvis-hero-size:min(520px,56vh,66cqw)]',
+          'jarvis-home relative flex w-full max-w-4xl flex-col items-center gap-3 px-4 py-4 text-center [--jarvis-hero-size:min(468px,52vh,88cqw)] @2xl:[--jarvis-hero-size:min(550px,58vh,70cqw)]',
           className
         )}
         data-testid="jarvis-home-hero"
@@ -93,15 +100,14 @@ export function JarvisHomeHero({
             className="text-4xl font-semibold leading-tight tracking-tight text-(--ui-text-primary) @2xl:text-5xl"
             id="jarvis-home-title"
           >
-            {greeting}
-            {name ? `, ${name}` : ''}.
+            {name ? `${name}, ${greeting.charAt(0).toLowerCase()}${greeting.slice(1)}` : greeting}
           </h1>
           <p className="text-lg text-(--ui-text-tertiary) @2xl:text-2xl">{copy.subtitle}</p>
         </div>
 
         <div
           className="jarvis-home__orb relative my-2 grid w-(--jarvis-hero-size) max-w-full shrink-0 place-items-center"
-          data-tone={plasmaTone(listening ? 'listening' : state.voice, state.task.phase)}
+          data-tone={tone}
         >
           <span aria-hidden="true" className="jarvis-home__orbit" />
           <JarvisCore live taskPhase={state.task.phase} variant="hero" voice={listening ? 'listening' : state.voice} />
@@ -142,7 +148,11 @@ export function JarvisHomeHero({
             aria-hidden="true"
             className={cn(
               'size-2 rounded-full',
-              !connected ? 'bg-(--ui-text-tertiary)' : listening ? 'animate-pulse bg-(--ui-accent)' : 'bg-emerald-400'
+              !connected
+                ? 'bg-(--ui-text-tertiary)'
+                : tone === 'idle'
+                  ? 'bg-emerald-400'
+                  : 'animate-pulse bg-(--ui-accent)'
             )}
           />
           {hint}

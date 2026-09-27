@@ -530,10 +530,16 @@ export interface Translations {
       }
       /** The home screen's top bar, action chips and rail cards (dashboard redesign). */
       subtitle: string
+      orbStatus: Record<
+        'approval' | 'error' | 'idle' | 'listening' | 'speaking' | 'success' | 'thinking' | 'working',
+        string
+      >
       footerMotto: string
       focusMode: string
       focusModeExit: string
       focusModeHint: string
+      showRail: string
+      hideRail: string
       actionsLabel: string
       actions: Record<'analyze' | 'automate' | 'generate' | 'plan', { label: string; prompt: string }>
       insights: {
@@ -542,6 +548,10 @@ export interface Translations {
         trend: string
         trendHint: string
         activeJobs: string
+        completedTasks: string
+        activityTime: string
+        lastActivity: string
+        pendingApproval: string
         sessions: string
         empty: string
       }

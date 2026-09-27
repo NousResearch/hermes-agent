@@ -104,7 +104,7 @@ const CZESIEK: Character = {
   },
   greetings: {
     afternoon: 'No siema. Popołudnie, jedziemy dalej.',
-    evening: 'Dobry wieczór. Co robimy z wieczorem?',
+    evening: 'Dobry wieczór. Co dziś ogarniamy?',
     morning: 'No siema. Siódma rano — kawa i jedziemy.',
     night: 'Pracujemy do późna? Szanuję. Zaczynamy.'
   },

@@ -517,10 +517,22 @@ export const zh: Translations = {
         more: count => `还有 ${count} 个`
       },
       subtitle: '随时准备就绪。',
+      orbStatus: {
+        approval: '等待你的批准',
+        error: '需要你的关注',
+        idle: '等待你的任务',
+        listening: '正在听你说话',
+        speaking: '正在回答',
+        success: '任务已完成',
+        thinking: '正在规划任务',
+        working: '正在执行任务'
+      },
       footerMotto: '永远领先一步。',
       focusMode: '专注模式',
       focusModeExit: '退出专注',
       focusModeHint: '隐藏侧边面板——只留下你、光球和对话。',
+      showRail: '显示右侧面板',
+      hideRail: '收起右侧面板',
       actionsLabel: '快捷操作',
       actions: {
         plan: { label: '制定计划', prompt: '为以下内容制定分步计划：' },
@@ -529,11 +541,15 @@ export const zh: Translations = {
         automate: { label: '自动化', prompt: '将此任务设为定时任务：' }
       },
       insights: {
-        title: '洞察',
+        title: '活动',
         live: '实时',
         trend: '活跃度',
         trendHint: '本周会话数与上周相比',
-        activeJobs: '活跃任务',
+        activeJobs: '活跃自动化',
+        completedTasks: '已完成任务',
+        activityTime: '活动时间',
+        lastActivity: '最近活动',
+        pendingApproval: '等待批准',
         sessions: '会话（14 天）',
         empty: '开始对话后将显示数据。'
       },

@@ -534,10 +534,22 @@ export const en: Translations = {
         more: count => `and ${count} more`
       },
       subtitle: 'Ready when you are.',
+      orbStatus: {
+        approval: 'Waiting for your approval',
+        error: 'Needs your attention',
+        idle: 'Waiting for your task',
+        listening: 'Listening to you',
+        speaking: 'Responding',
+        success: 'Task complete',
+        thinking: 'Planning the task',
+        working: 'Working on the task'
+      },
       footerMotto: 'Always one step ahead.',
       focusMode: 'Focus mode',
       focusModeExit: 'Exit focus',
       focusModeHint: 'Hides the side panels — just you, the orb and the conversation.',
+      showRail: 'Show right panel',
+      hideRail: 'Collapse right panel',
       actionsLabel: 'Quick actions',
       actions: {
         plan: { label: 'Make a plan', prompt: 'Make a step-by-step plan for: ' },
@@ -546,11 +558,15 @@ export const en: Translations = {
         automate: { label: 'Automate', prompt: 'Automate this as a scheduled job: ' }
       },
       insights: {
-        title: 'Insights',
+        title: 'Activity',
         live: 'Live',
         trend: 'Activity',
         trendHint: 'Sessions this week compared with the week before',
-        activeJobs: 'Active jobs',
+        activeJobs: 'Active automations',
+        completedTasks: 'Completed tasks',
+        activityTime: 'Activity time',
+        lastActivity: 'Last activity',
+        pendingApproval: 'Awaiting approval',
         sessions: 'Sessions (14 days)',
         empty: 'Data appears after your first conversations.'
       },

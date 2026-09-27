@@ -494,7 +494,12 @@ export const pl = defineLocale({
       connectedNoModel: 'OpenRouter połączony. Wybierz model w menu modelu.'
     },
     home: {
-      greetings: { morning: 'Dzień dobry', afternoon: 'Witaj', evening: 'Dobry wieczór', night: 'Pracujemy do późna' },
+      greetings: {
+        morning: 'Dzień dobry',
+        afternoon: 'Witaj',
+        evening: 'Dobry wieczór. Co dziś ogarniamy?',
+        night: 'Pracujemy do późna'
+      },
       question: 'Czego dziś potrzebujesz?',
       quote: '„Wielkie rzeczy zaczynają się od lepszych pytań.”',
       motto: 'Analizuj · Łącz · Działaj',
@@ -544,11 +549,23 @@ export const pl = defineLocale({
         defaultModel: 'Model domyślny',
         more: count => `i jeszcze ${count}`
       },
-      subtitle: 'Gotowy, gdy Ty jesteś.',
+      subtitle: 'Powiedz, czego potrzebujesz. Czesiek zaplanuje kolejne kroki.',
+      orbStatus: {
+        approval: 'Czeka na Twoją zgodę',
+        error: 'Potrzebuje uwagi',
+        idle: 'Czeka na Twoje zadanie',
+        listening: 'Słucha Cię',
+        speaking: 'Odpowiada',
+        success: 'Zadanie zakończone',
+        thinking: 'Myśli nad planem',
+        working: 'Wykonuje zadanie'
+      },
       footerMotto: 'Zawsze o krok dalej.',
       focusMode: 'Tryb skupienia',
       focusModeExit: 'Zakończ skupienie',
       focusModeHint: 'Chowa panele boczne — zostajesz Ty, orb i rozmowa.',
+      showRail: 'Pokaż prawy panel',
+      hideRail: 'Zwiń prawy panel',
       actionsLabel: 'Szybkie akcje',
       actions: {
         plan: { label: 'Stwórz plan', prompt: 'Stwórz plan krok po kroku dla: ' },
@@ -557,11 +574,15 @@ export const pl = defineLocale({
         automate: { label: 'Zautomatyzuj', prompt: 'Zautomatyzuj to zadanie jako zaplanowane zadanie: ' }
       },
       insights: {
-        title: 'Spostrzeżenia',
+        title: 'Aktywność',
         live: 'Na żywo',
         trend: 'Aktywność',
         trendHint: 'Sesje w tym tygodniu względem poprzedniego',
-        activeJobs: 'Aktywne zadania',
+        activeJobs: 'Aktywne automatyzacje',
+        completedTasks: 'Wykonane zadania',
+        activityTime: 'Czas aktywności',
+        lastActivity: 'Ostatnia aktywność',
+        pendingApproval: 'Czeka na zgodę',
         sessions: 'Sesje (14 dni)',
         empty: 'Dane pojawią się po pierwszych rozmowach.'
       },

@@ -129,6 +129,12 @@
   --jarvis-halo-opacity: 0.48;
 }
 
+.jarvis-core[data-task='approval'] {
+  --jarvis-blue: #d49b28;
+  --jarvis-violet: #e7b54f;
+  --jarvis-halo-opacity: 0.46;
+}
+
 .jarvis-core[data-voice='listening'] {
   --jarvis-blue: #29d8ff;
   --jarvis-violet: #398dff;
@@ -354,7 +360,11 @@
 /* The halo is the orb's glow: softer on a light surface, where it would
    otherwise read as a grey smudge. */
 :root:not(.dark) .jarvis-core[data-plasma='on'] .jarvis-core__halo {
-  opacity: calc(var(--jarvis-halo-opacity) * 0.45);
+  opacity: calc(var(--jarvis-halo-opacity) * 0.58);
+}
+
+:root:not(.dark) .jarvis-core[data-plasma='on'] .jarvis-core__plasma {
+  filter: drop-shadow(0 18px 18px rgb(30 64 105 / 0.12));
 }
 
 /* The state pips sit above the plasma so they stay legible. */

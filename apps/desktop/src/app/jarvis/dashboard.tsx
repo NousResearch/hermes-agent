@@ -6,7 +6,7 @@ import { NEW_CHAT_ROUTE } from '@/app/routes'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
-import { Activity, Maximize, Moon, Sun } from '@/lib/icons'
+import { Activity, ChevronLeft, ChevronRight, Maximize, Moon, Sun } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { JarvisCore } from './core'
@@ -186,7 +186,8 @@ export function JarvisDashboard({
   const copy = t.jarvisShell.dashboard
   const layout = useDashboardLayout(layoutOverride)
   const focus = useStore($jarvisFocusMode)
-  const showRail = layout === 'desktop' && !focus
+  const [railCollapsed, setRailCollapsed] = useState(false)
+  const showRail = layout === 'desktop' && !focus && !railCollapsed
   const [activityOpen, setActivityOpen] = useState(layout === 'desktop')
   const [view, setView] = useState<JarvisInsightsView>('activity')
   // The rail (desktop home cards) leaves the conversation column too narrow
@@ -231,6 +232,19 @@ export function JarvisDashboard({
       className="jarvis-conversation relative isolate flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
       data-home={home ? 'true' : undefined}
     >
+      {layout === 'desktop' && !focus && railCollapsed && (
+        <Button
+          aria-label={t.jarvisShell.home.showRail}
+          className="absolute right-4 top-16 z-10 jarvis-glass jarvis-glass-hover"
+          onClick={() => setRailCollapsed(false)}
+          size="icon"
+          title={t.jarvisShell.home.showRail}
+          type="button"
+          variant="secondary"
+        >
+          <ChevronLeft />
+        </Button>
+      )}
       {/* Theme-aware space backdrop shared by home and conversation. Decoration only. */}
       <span aria-hidden="true" className="jarvis-space" />
       {/* Balanced, centred header: the orb in the middle of the conversation
@@ -356,6 +370,17 @@ export function JarvisDashboard({
             className="jarvis-dashboard__rail flex w-80 shrink-0 flex-col gap-3 overflow-y-auto border-l border-(--ui-stroke-tertiary) p-3 backdrop-blur-2xl"
             data-testid="jarvis-rail"
           >
+            <Button
+              aria-label={t.jarvisShell.home.hideRail}
+              className="self-end jarvis-glass jarvis-glass-hover"
+              onClick={() => setRailCollapsed(true)}
+              size="icon"
+              title={t.jarvisShell.home.hideRail}
+              type="button"
+              variant="secondary"
+            >
+              <ChevronRight />
+            </Button>
             {rail}
             {insightsPanel}
             <p className="mt-auto flex items-center justify-end gap-2 px-1 pt-2 text-xs text-(--ui-text-tertiary)">
@@ -367,7 +392,19 @@ export function JarvisDashboard({
             </p>
           </div>
         ) : (
-          insightsPanel
+          <div className="relative flex shrink-0">
+            <Button
+              aria-label={t.jarvisShell.home.hideRail}
+              className="absolute right-3 top-2 z-10"
+              onClick={() => setRailCollapsed(true)}
+              size="icon"
+              type="button"
+              variant="ghost"
+            >
+              <ChevronRight />
+            </Button>
+            {insightsPanel}
+          </div>
         ))}
       {layout !== 'desktop' && (
         <Button

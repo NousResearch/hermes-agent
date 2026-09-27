@@ -121,7 +121,7 @@ export function drawPlasmaFrame(
   const size = Math.min(width, height)
   const cx = width / 2
   const cy = height / 2
-  const radius = size * 0.32
+  const radius = size * 0.35
   const energy = Math.min(1, level * 0.85 + signal * 0.45)
 
   ctx.clearRect(0, 0, width, height)

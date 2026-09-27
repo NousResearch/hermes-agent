@@ -60,12 +60,8 @@ export function RailCard({
   const headingId = `jarvis-rail-${testId}`
 
   return (
-    <section
-      aria-labelledby={headingId}
-      className="jarvis-glass rounded-3xl p-4"
-      data-testid={`jarvis-rail-${testId}`}
-    >
-      <div className="mb-3 flex min-h-8 items-center gap-2">
+    <section aria-labelledby={headingId} className="jarvis-glass rounded-3xl p-4" data-testid={`jarvis-rail-${testId}`}>
+      <div className="mb-3 flex min-h-9 items-center gap-2">
         <Icon className="size-4 shrink-0 text-(--ui-accent)" />
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-(--ui-text-primary)" id={headingId}>
           {title}
@@ -184,9 +180,7 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
             aria-checked={mode === item.id}
             className={cn(
               'min-h-11 min-w-0 rounded-xl px-1 text-[0.7rem] leading-tight font-medium outline-none transition-colors focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)',
-              mode === item.id
-                ? 'jarvis-segment-on'
-                : 'text-(--ui-text-secondary) hover:text-(--ui-text-primary)'
+              mode === item.id ? 'jarvis-segment-on' : 'text-(--ui-text-secondary) hover:text-(--ui-text-primary)'
             )}
             disabled={!connected}
             key={item.id}

@@ -74,8 +74,14 @@ def _stamp_event(obj: dict) -> None:
             while len(_replay_buffers) > _REPLAY_SESSIONS_MAX:
                 oldest_sid, oldest_buf = _replay_buffers.popitem(last=False)
                 _replay_total_bytes -= _replay_buffer_bytes.pop(oldest_sid, 0)
-                _replay_next_seq.pop(oldest_sid, None)
-                _replay_evicted_through.pop(oldest_sid, None)
+                # Keep the seq counter and the gap watermark for an evicted session: it may
+                # come back with a new event, and a client still holding its old high
+                # watermark must not see the counter restart (an empty, untruncated replay
+                # it would wrongly trust) — the watermark flags the hole instead.
+                _replay_evicted_through[oldest_sid] = max(
+                    _replay_evicted_through.get(oldest_sid, 0),
+                    _replay_next_seq.get(oldest_sid, 0),
+                )
         if size > _REPLAY_BUFFER_BYTES_MAX or size > _REPLAY_PROCESS_BYTES_MAX:
             _replay_evicted_through[sid] = seq
             return

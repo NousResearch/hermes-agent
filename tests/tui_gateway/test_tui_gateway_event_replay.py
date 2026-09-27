@@ -217,3 +217,25 @@ def test_truncation_detection_semantics():
     assert event_replay.is_truncated("s1", 5)
     # Unknown session: nothing evicted, nothing truncated.
     assert not event_replay.is_truncated("nope", 0)
+
+
+def test_fifo_session_eviction_leaves_a_gap_watermark_not_a_seq_reset():
+    """A session evicted FIFO must not come back with its seq counter reset:
+    a reconnecting client holding a high watermark would get no replay and no
+    truncated flag, silently trusting a history with a hole (#tui-gateway).
+    """
+    for _ in range(5):
+        event_replay._stamp_event(_frame("s0"))
+    for i in range(event_replay._REPLAY_SESSIONS_MAX + 1):
+        event_replay._stamp_event(_frame(f"s{i}"))
+    # s0 was stamped 6 times (5 + once as s{i==0}) then evicted FIFO; it becomes active again.
+    again = _frame("s0")
+    event_replay._stamp_event(again)
+
+    # The client saw seq 1..3 of s0 before eviction; seq 4..6 were dropped silently.
+    assert again["params"]["seq"] == 7  # counter must NOT have restarted
+    assert event_replay.is_truncated("s0", 3)  # hole must be flagged
+    assert event_replay.is_truncated("s0", 0)
+    # A client that saw everything through the eviction still gets a clean replay of seq 7.
+    assert not event_replay.is_truncated("s0", 6)
+    assert [e["seq"] for e in events_since("s0", 6)] == [7]

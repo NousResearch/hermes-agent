@@ -720,6 +720,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         apply_switch.assert_called_once_with(
             "sid", session, "profile/new-default --provider nous",
             confirm_expensive_model=True, pin_session_override=False, persist_override=False,
+            count_switch=False,
         )
 
     def test_marked_row_returns_no_overrides(self):

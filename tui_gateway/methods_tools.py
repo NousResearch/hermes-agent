@@ -771,7 +771,8 @@ def _cmd_moa(rid, params, session, name, arg):
             try:  # persist_override=False: turn-scoped, never persist the MoA provider to config.yaml
                 _apply_model_switch(
                     params.get("session_id", ""), session, f"{preset} --provider moa",
-                    confirm_expensive_model=False, pin_session_override=True, persist_override=False)
+                    confirm_expensive_model=False, pin_session_override=True, persist_override=False,
+                    count_switch=False)
             except Exception:
                 session.pop("moa_one_shot_restore", None)
                 raise

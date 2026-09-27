@@ -146,6 +146,10 @@ class SimplexAdapter(BasePlatformAdapter):
         self._health_task = asyncio.create_task(self._health_monitor())
         self._mark_connected()
         logger.info("SimpleX: connected to %s", self.ws_url)
+        names = [u for u in os.getenv("SIMPLEX_ALLOWED_USERS", "").split(",") if u.strip() not in ("", "*") and not u.strip().isdigit()]
+        if names and not is_reconnect:
+            logger.warning("SimpleX: SIMPLEX_ALLOWED_USERS entries %s are not numeric contactIds and are ignored "
+                           "(display names are not trusted; see /contacts for IDs)", names)
         self._wire_plugin_handlers(None)
         return True
 

@@ -1255,9 +1255,18 @@ def _best_effort(what: str, fn) -> None:
         _log.debug("%s skipped: %s", what, exc)
 
 
-def _publish_host_rendezvous(host: str, port: int) -> None:
+def _publish_host_rendezvous(host: str, port: int, *, isolated: bool = False) -> None:
     """Publish this backend's host record: ``ROLE_SERVE`` for the machine-level owner,
-    ``ROLE_DESKTOP_SERVE`` for a Desktop-owned child."""
+    ``ROLE_DESKTOP_SERVE`` for a Desktop-owned child.
+
+    ``isolated`` (``--isolated``) is a dedicated server that opted out of the host singleton on
+    the ATTACH side, so it must not take the record on the PUBLISH side either (#120165). As
+    written, a supervised `serve --isolated` and a supervised `dashboard` raced for ROLE_SERVE
+    and boot order decided the winner; when the isolated serve won, the dashboard refused on
+    every start (`Refusing to start: this host is already served by ...`) and its supervisor
+    looped forever. Discovery is unaffected: an isolated backend is already reachable through
+    ``spawn-ledger.json`` (``purpose=serve``), which is what the Desktop attach ladder reads.
+    """
     # Desktop-spawned backends (flag + per-spawn credential; the bare flag is inherited by every
     # Desktop shell) are loopback, random-port and per-profile. Recording one as the HOST owner
     # made a later independently supervised `dashboard --host 0.0.0.0 --port N` refuse behind
@@ -1265,6 +1274,15 @@ def _publish_host_rendezvous(host: str, port: int) -> None:
     # only. They still publish under their own role so `hermes plugins install` from a terminal
     # can reach the backend hosting the open chats on a Desktop-only box (#119644).
     from gateway import host_rendezvous as hr
+
+    if isolated:
+        # The attach side already refuses to adopt a host record under --isolated
+        # (``main_dashboard._attach_to_host_backend`` returns early on the same predicate).
+        # Claiming one here made the two gates asymmetric, so an isolated serve could take
+        # the record a supervised dashboard needs and park it in a refusal loop (#120165).
+        _log.debug("--isolated backend is not claiming the host record; "
+                   "it stays discoverable through spawn-ledger.json (purpose=serve)")
+        return
 
     desktop_child = is_desktop_owned_backend()
     role = hr.ROLE_DESKTOP_SERVE if desktop_child else hr.ROLE_SERVE
@@ -1381,7 +1399,8 @@ def _on_server_started(
     # for any profile find this process and attach instead of binding a second port. Published
     # after the bind so the record carries the real port, and beside — not instead of — the
     # spawn-ledger entry above, which Desktop's attach ladder reads.
-    _best_effort("host rendezvous publish", lambda: _publish_host_rendezvous(host, actual_port))
+    _best_effort("host rendezvous publish",
+                 lambda: _publish_host_rendezvous(host, actual_port, isolated=isolated))
 
     _write_dashboard_ready_file(actual_port)
     # Port-discovery sentinel parsed by the Desktop spawn. Written to fd 1:

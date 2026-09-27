@@ -5590,3 +5590,81 @@ class TestSubmittedCustomEndpointSurvivesAssignment:
         assert applied["base_url"] == "https://api.anthropic.com"
         assert applied["api_mode"] == "anthropic_messages"
         assert applied["api_key"] == "submitted-key"
+
+
+class TestIsolatedBackendHostRendezvous:
+    """Regression for #120165 — ``--isolated`` must gate the host singleton symmetrically.
+
+    It already gates the ATTACH side (``main_dashboard._attach_to_host_backend`` returns
+    early on the same predicate). Claiming the ROLE_SERVE record anyway let a supervised
+    ``serve --isolated`` take the record a supervised ``dashboard`` needs: boot order decided
+    the winner, and the loser refused on every start and looped forever under
+    ``Restart=on-failure`` with nothing listening on its port.
+    """
+
+
+    def test_isolated_backend_does_not_claim_the_host_serve_record(self, monkeypatch):
+        """Regression for #120165.
+
+        ``--isolated`` gates the ATTACH side of the host singleton, so it must gate the
+        PUBLISH side too. A supervised ``serve --isolated`` and a supervised ``dashboard``
+        otherwise raced for ROLE_SERVE, and when the isolated serve won, the dashboard
+        refused on every start and its supervisor looped forever with nothing on its port.
+        """
+        from gateway import host_rendezvous as hr
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        claimed = []
+        monkeypatch.setattr(
+            hr,
+            "claim_host_lock",
+            lambda role: (claimed.append(role) or (hr.HostLockOutcome.ACQUIRED, None)),
+        )
+        monkeypatch.setattr(hr, "cleanup_on_exit", lambda role: None)
+
+        web_server._publish_host_rendezvous("127.0.0.1", 9120, isolated=True)
+
+        assert claimed == [], "an --isolated backend took the host record it opted out of"
+
+    def test_isolated_backend_stays_discoverable_through_the_spawn_ledger(self, monkeypatch, tmp_path):
+        """Skipping the host record must not cost the backend its discovery path."""
+        from gateway import host_rendezvous as hr
+        import hermes_cli.web_server as web_server
+        from hermes_cli.main_dashboard import _host_backend_attachment
+
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        monkeypatch.setattr(hr, "cleanup_on_exit", lambda role: None)
+        try:
+            web_server._publish_host_rendezvous("127.0.0.1", 9120, isolated=True)
+            # No host record — that is the point.
+            assert hr.read_record(hr.ROLE_SERVE) is None
+            assert _host_backend_attachment() is None
+        finally:
+            hr.clear_record(hr.ROLE_SERVE)
+            hr.release_host_lock(hr.ROLE_SERVE)
+
+    def test_non_isolated_backend_still_claims_the_host_serve_record(self, monkeypatch):
+        """The gate is scoped to --isolated; every other backend keeps publishing."""
+        from gateway import host_rendezvous as hr
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        claimed = []
+        published = []
+        monkeypatch.setattr(
+            hr,
+            "claim_host_lock",
+            lambda role: (claimed.append(role) or (hr.HostLockOutcome.ACQUIRED, None)),
+        )
+        monkeypatch.setattr(hr, "publish_record", lambda *args, **kwargs: published.append((args, kwargs)))
+        monkeypatch.setattr(hr, "cleanup_on_exit", lambda role: None)
+
+        web_server._publish_host_rendezvous("0.0.0.0", 9119, isolated=False)
+
+        assert claimed == [hr.ROLE_SERVE]
+        assert published[0][1]["port"] == 9119

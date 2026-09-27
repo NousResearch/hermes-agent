@@ -9,6 +9,7 @@ shared metrics are enabled, and never raises into the caller.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Callable
 
 from . import shared_metrics_contract as contract
@@ -45,6 +46,35 @@ def record_compression(
         contract.COMPRESSION_MARK, fields_.compression_fields, trigger=trigger, outcome=outcome,
         tokens_before=tokens_before, context_length=context_length,
     )
+
+
+# Per-thread, not on the compressor or the agent: abort paths restore the compressor snapshot (seed
+# included) before they emit, and a stalled attempt's worker can unwind after its stall-fallback retry
+# began on another thread. An attempt begins and emits on one thread (the pool worker or the caller).
+_compression_attempt = threading.local()
+
+
+def begin_compression_attempt(trigger: str, tokens_before: Any) -> None:
+    _compression_attempt.pending = (trigger, tokens_before)
+
+
+def finish_compression_attempt(commit_status: str, failure_class: str | None, context_length: Any) -> None:
+    """Count this thread's pending compression attempt once."""
+    pending, _compression_attempt.pending = getattr(_compression_attempt, "pending", None), None
+    if not pending:
+        return
+    outcome = "success" if commit_status == "committed" else "skipped" if failure_class == "lock_contended" else "failed"
+    record_compression(trigger=pending[0], outcome=outcome, tokens_before=pending[1], context_length=context_length)
+
+
+def record_gateway_slash_command(event: Any) -> None:
+    """Count a user-typed gateway slash command once: a queued busy-path event re-enters
+    ``_handle_message`` when drained, so the event carries the mark."""
+    command = event.get_command()
+    if not command or getattr(event, "_slash_command_counted", False):
+        return
+    event._slash_command_counted = True
+    record_slash_command(command=command, surface="gateway")
 
 
 def record_model_switch(*, from_provider: str | None, to_provider: str | None, surface: str) -> None:

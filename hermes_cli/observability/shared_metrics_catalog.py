@@ -77,6 +77,30 @@ def display_languages() -> frozenset[str]:
     return _yaml_stems(_REPO_ROOT / "locales")
 
 
+@functools.cache
+def provider_names() -> frozenset[str]:
+    """Provider ids Hermes itself ships (auth registry, overlays, model catalog, aliases)."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.models import _KNOWN_PROVIDER_NAMES
+    from hermes_cli.providers import ALIASES, HERMES_OVERLAYS
+
+    return frozenset(PROVIDER_REGISTRY) | frozenset(HERMES_OVERLAYS) | frozenset(_KNOWN_PROVIDER_NAMES) | frozenset(ALIASES)
+
+
+@functools.cache
+def user_named_model_providers() -> frozenset[str]:
+    """Providers whose model ids the user names: custom endpoints and loopback servers."""
+    from urllib.parse import urlparse
+
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    loopback = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    return frozenset(
+        name for name, config in PROVIDER_REGISTRY.items()
+        if urlparse(str(getattr(config, "inference_base_url", "") or "")).hostname in loopback
+    ) | {CUSTOM}
+
+
 def _norm(value: object) -> str:
     return value.strip().lower() if isinstance(value, str) else ""
 
@@ -140,6 +164,42 @@ def aux_task_metric_name(raw: object) -> str:
     if not name:
         return "none"
     return name if name in _safe(aux_task_names) else "other"
+
+
+def provider_metric_name(raw: object) -> str:
+    """A shipped provider id; user-named providers (``custom:<name>``, unknown ids) read ``custom``."""
+    from .shared_metrics_contract import PROVIDER_IDENTIFIER_MAX_LENGTH, _metric_identifier
+
+    name = _metric_identifier(raw, max_length=PROVIDER_IDENTIFIER_MAX_LENGTH)
+    if name == "unknown":
+        return name
+    if name.startswith(CUSTOM):
+        return CUSTOM
+    return name if name in _safe(provider_names) or _models_dev_provider(name) else CUSTOM
+
+
+@functools.lru_cache(maxsize=256)
+def _models_dev_provider(name: str) -> bool:
+    """A public models.dev provider id, from the local cache only (never a network call)."""
+    try:
+        from agent.models_dev import get_provider_info
+
+        return get_provider_info(name, allow_network=False) is not None
+    except Exception:
+        return False
+
+
+def model_metric_name(raw: object, provider: str, *, max_length: int) -> str:
+    """The model id for a shipped remote provider; ``custom`` when the user names it (custom
+    endpoint, loopback server) or it looks like a filesystem path or URL."""
+    from .shared_metrics_contract import _metric_identifier
+
+    if provider in _safe(user_named_model_providers):
+        return CUSTOM
+    model = _metric_identifier(raw, max_length=max_length)
+    if "://" in model or ":/" in model or model.endswith((".gguf", ".bin", ".safetensors")):
+        return CUSTOM
+    return model
 
 
 def display_language_metric_name(raw: object) -> str:

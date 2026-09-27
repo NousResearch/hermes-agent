@@ -723,7 +723,7 @@ def test_tool_retry_bucket_requires_an_explicit_non_negative_count(
     assert tool_retry_bucket(retry_count) == expected
 
 
-def test_model_call_fields_report_terminal_model_and_provider_without_a_catalog():
+def test_model_call_fields_report_terminal_model_and_shipped_provider():
     assert model_call_fields({
         "model": "fallback/model",
         "response_model": "NVIDIA/Nemotron-3-Ultra",
@@ -733,12 +733,14 @@ def test_model_call_fields_report_terminal_model_and_provider_without_a_catalog(
         "model": "nvidia/nemotron-3-ultra",
         "provider": "openrouter",
     }
+    # A provider Hermes does not ship is user-named (a custom endpoint key): neither it nor
+    # the model id it serves leaves the machine.
     assert model_call_fields({
         "model": "ZAI/GLM-5.2",
         "provider": "Brev",
     }) == {
-        "model": "zai/glm-5.2",
-        "provider": "brev",
+        "model": "custom",
+        "provider": "custom",
     }
 
 

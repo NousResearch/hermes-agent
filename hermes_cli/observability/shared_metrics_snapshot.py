@@ -12,6 +12,7 @@ import json
 import sqlite3
 import time
 from itertools import islice
+from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home
@@ -86,12 +87,12 @@ def _safe_count(reader) -> int:
 _first_session_at: dict[str, float] = {}
 
 
-def _first_session_started_at() -> float | None:
+def _first_session_started_at(home: Path | None = None) -> float | None:
     """Epoch of the profile's first session; ``now`` when it has none yet (a brand-new install).
 
     Raises ``sqlite3.Error`` when state.db exists but cannot be read.
     """
-    home = get_hermes_home()
+    home = home or get_hermes_home()
     if str(home) in _first_session_at:
         return _first_session_at[str(home)]
     database = home / "state.db"
@@ -107,12 +108,13 @@ def _first_session_started_at() -> float | None:
     return _first_session_at[str(home)]
 
 
-def install_age_bucket() -> str:
-    """How long ago this profile's first-ever session started, bucketed; ``unknown`` if unreadable."""
+def install_age_bucket(home: Path | None = None) -> str:
+    """How long ago the profile's first-ever session started, bucketed; ``unknown`` if unreadable.
+    ``home`` defaults to the bound profile; callers off the turn thread must pass theirs."""
     from .shared_metrics_fields import install_age_bucket as bucket
 
     try:
-        first = _first_session_started_at()
+        first = _first_session_started_at(home)
     except sqlite3.Error:
         return "unknown"
     return bucket(time.time() - first)

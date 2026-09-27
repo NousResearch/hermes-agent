@@ -38,7 +38,7 @@ def _number(value: Any) -> float | None:
 
 
 def provider_identifier(value: Any) -> str:
-    return _metric_identifier(value, max_length=PROVIDER_IDENTIFIER_MAX_LENGTH)
+    return catalog.provider_metric_name(value)
 
 
 def session_fields(
@@ -99,7 +99,9 @@ def model_token_fields(
     return {
         "aux_task": catalog.aux_task_metric_name(aux_task) if call_role == "auxiliary" else "none",
         "call_role": call_role,
-        "model": _metric_identifier(model, max_length=MODEL_IDENTIFIER_MAX_LENGTH),
+        "model": catalog.model_metric_name(
+            model, provider_identifier(provider), max_length=MODEL_IDENTIFIER_MAX_LENGTH,
+        ),
         "provider": provider_identifier(provider),
         **amounts,
     }

@@ -1314,17 +1314,6 @@ class GatewayInboundMixin:
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
             return event, source, is_internal
 
-    @staticmethod
-    def _hm_count_slash_command(event: "MessageEvent") -> None:
-        """Count a user-typed slash command once: a queued busy-path event re-enters
-        ``_handle_message`` when drained, so the event carries the mark."""
-        command = event.get_command()
-        if not command or getattr(event, "_slash_command_counted", False):
-            return
-        event._slash_command_counted = True
-        from hermes_cli.observability.shared_metrics_events import record_slash_command
-        record_slash_command(command=command, surface="gateway")
-
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
@@ -1334,7 +1323,8 @@ class GatewayInboundMixin:
             return None
         event, source, is_internal = _admitted
         if not is_internal:
-            self._hm_count_slash_command(event)
+            from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
+            record_gateway_slash_command(event)
         # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
         # not on the adapter's raw inbound: profile routing, the ignored-channel
         # guard, plugin hooks and user authorization all reject events above,

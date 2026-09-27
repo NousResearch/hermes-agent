@@ -1064,6 +1064,16 @@ def start_task_run(
     )
 
 
+def close_session_run(session_id: str) -> None:
+    """Emit the summary of a session a surface retired without a finalize hook (gateway
+    auto-reset, idle expiry). Never creates a runtime; unknown ids are a no-op."""
+    if not session_id or not enabled():
+        return
+    runtime = _RUNTIMES.get(relay_runtime.current_profile_key())
+    if isinstance(runtime, _Runtime):
+        runtime._safe(runtime.close_session, {"session_id": session_id})
+
+
 def finish_task_run(
     *, session_id: str, task_id: str, platform: str,
     result: dict[str, Any] | None = None, error: BaseException | None = None,

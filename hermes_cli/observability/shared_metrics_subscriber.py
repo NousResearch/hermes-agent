@@ -9,6 +9,7 @@ from typing import Any
 
 from agent.relay_runtime import RUNTIME_INSTANCE_KEY
 from hermes_cli.config import detect_install_method
+from hermes_constants import get_hermes_home
 
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_fields import milestones_for
@@ -73,6 +74,8 @@ class SharedMetricsSubscriber:
         self._active = True
         self._lock = threading.RLock()
         self._milestones_done: set[str] = set(store.recorded_milestones())
+        # Events arrive on the Relay thread, which carries no profile binding.
+        self._hermes_home = get_hermes_home()
 
     def deactivate(self) -> None:
         """Stop accepting events before telemetry is disabled or torn down."""
@@ -92,7 +95,7 @@ class SharedMetricsSubscriber:
             return
         from .shared_metrics_snapshot import install_age_bucket
 
-        age = install_age_bucket()
+        age = install_age_bucket(self._hermes_home)
         for milestone in reached:
             self.store.record_milestone(milestone, age, self._client_resource)
             self._milestones_done.add(milestone)

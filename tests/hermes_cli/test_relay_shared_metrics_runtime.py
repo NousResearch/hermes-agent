@@ -673,7 +673,8 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         assert route_by_outcome[outcome]["dimensions"] == {
             "call_role": "primary",
             "error_class": error_class,
-            "model": model_canary,
+            # A custom endpoint's model id is user-named: it never leaves the machine.
+            "model": "custom",
             "outcome": outcome,
             "provider": "custom",
             "ttft_bucket": route_by_outcome[outcome]["dimensions"]["ttft_bucket"],
@@ -765,8 +766,8 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         "snapshot": snapshot,
         "packages": package_payloads,
     })
-    assert model_canary in serialized_analytics
     for canary in (
+        model_canary,
         prompt_canary,
         response_canary,
         tool_canary,
@@ -2793,6 +2794,59 @@ def test_sessions_summarize_on_close_and_milestones_latch_once_per_install(direc
     milestones = {d["milestone"]: v for d, v in _stored_values(tmp_path, "hermes.install.milestone")}
     assert milestones["first_task_started"] == 1
     assert milestones["first_task_success"] == 1
+
+
+def test_user_named_providers_and_models_never_reach_counters(direct_runtime, tmp_path):
+    """A custom endpoint's name (``custom:<key>``), its model id and loopback-server models read
+    ``custom``; shipped providers and their public model ids stay readable."""
+    from hermes_cli.observability import shared_metrics_events as events
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    events.record_setup_completed(surface="cli", provider="custom:acme-secret-llm")
+    events.record_model_switch(from_provider="custom:acme-secret-llm", to_provider="lmstudio", surface="cli")
+    events.record_fallback(from_provider="acme-unknown", to_provider="openrouter", reason="rate_limit")
+    runtime = relay_shared_metrics._get_runtime(retry_failed=True)
+    for provider, model in (("custom:acme-secret-llm", "acme-internal"), ("lmstudio", "bob-finetune"),
+                            ("openrouter", "c:/users/bob/model.gguf"), ("openrouter", "anthropic/claude-sonnet")):
+        runtime.record_auxiliary_tokens({
+            "usage": {"input_tokens": 5}, "aux_task": "compression", "provider": provider, "model": model,
+        })
+    runtime.relay.subscribers.flush()
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    stored = json.dumps(SharedMetricsStore(root / "metrics.sqlite3", root / "outbox").counter_snapshot())
+    assert not any(leak in stored for leak in ("acme", "bob", "users"))
+    tokens = {(d["provider"], d["model"]) for d, _ in _stored_values(tmp_path, "hermes.model_tokens.sum")}
+    assert tokens == {("custom", "custom"), ("lmstudio", "custom"), ("openrouter", "custom"),
+                      ("openrouter", "anthropic/claude-sonnet")}
+
+
+def test_milestone_install_age_is_the_subscriber_profile_not_the_relay_thread(tmp_path, monkeypatch):
+    """Under multiplex the Relay thread carries no profile binding: a milestone reached in
+    profile B must carry B's install age, not the launch profile's."""
+    import sqlite3 as _sqlite3
+    import time
+
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    launch, other = tmp_path / "A", tmp_path / "B"
+    for home in (launch, other):
+        home.mkdir()
+    with _sqlite3.connect(other / "state.db") as con:
+        con.execute("CREATE TABLE sessions (id TEXT, started_at REAL)")
+        con.execute("INSERT INTO sessions VALUES ('s1', ?)", (time.time() - 120 * 86400,))
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    token = set_hermes_home_override(str(other))
+    try:
+        subscriber = SharedMetricsSubscriber(SharedMetricsStore(), "1.0")
+    finally:
+        reset_hermes_home_override(token)
+    subscriber._record_milestones("hermes.setup.completed", {"provider": "nous", "surface": "cli"})
+    ages = [c["dimensions"]["install_age_bucket"] for c in subscriber.store.counter_snapshot()
+            if c["metric_name"] == "hermes.install.milestone"]
+    assert ages == ["gte_90d"]
 
 
 def test_token_usage_is_summed_per_model_and_auxiliary_task(direct_runtime, tmp_path):

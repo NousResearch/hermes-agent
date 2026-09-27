@@ -1497,27 +1497,9 @@ def _emit_compression_attempt_telemetry(
         logger.info(
             "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
-        _record_compression_metric(agent, commit_status=commit_status, failure_class=failure_class)
+        from hermes_cli.observability.shared_metrics_events import finish_compression_attempt
 
-
-# Per-thread, not on the compressor or the agent: abort paths restore the compressor snapshot (seed
-# included) before they emit, and a stalled attempt's worker can unwind after its stall-fallback retry
-# began on another thread. An attempt begins and emits on one thread (the pool worker or the caller).
-_attempt_metric = threading.local()
-
-
-def _record_compression_metric(agent: Any, *, commit_status: str, failure_class: str | None) -> None:
-    """Count this thread's pending attempt once in shared metrics."""
-    pending, _attempt_metric.pending = getattr(_attempt_metric, "pending", None), None
-    if not pending:
-        return
-    from hermes_cli.observability.shared_metrics_events import record_compression
-
-    outcome = "success" if commit_status == "committed" else "skipped" if failure_class == "lock_contended" else "failed"
-    record_compression(
-        trigger=pending["trigger"], outcome=outcome, tokens_before=pending["tokens_before"],
-        context_length=getattr(agent.context_compressor, "context_length", None),
-    )
+        finish_compression_attempt(commit_status, failure_class, getattr(agent.context_compressor, "context_length", None))
 
 
 def _existing_system_prompt(agent: Any, system_message: str) -> str:
@@ -4019,10 +4001,9 @@ def _begin_compression_attempt(
     trigger = trigger or ("manual" if force else "auto")
     with contextlib.suppress(Exception):
         agent._compression_attempt_id = attempt_id
-        _attempt_metric.pending = {
-            "trigger": trigger,
-            "tokens_before": approx_tokens or getattr(agent.context_compressor, "last_prompt_tokens", None),
-        }
+        from hermes_cli.observability.shared_metrics_events import begin_compression_attempt
+
+        begin_compression_attempt(trigger, approx_tokens or getattr(agent.context_compressor, "last_prompt_tokens", None))
         agent.context_compressor._compression_telemetry_seed = {
             "attempt_id": attempt_id, "session_id": agent.session_id or "", "trigger_source": trigger,
         }

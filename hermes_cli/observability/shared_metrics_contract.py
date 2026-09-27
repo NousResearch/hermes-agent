@@ -921,10 +921,12 @@ def _non_negative_number(value: Any) -> float | None:
 
 def model_call_fields(kwargs: dict[str, Any]) -> dict[str, str]:
     """Return the terminal model identity and provider route known to Hermes."""
-    model = _metric_identifier(kwargs.get("response_model"), max_length=MODEL_IDENTIFIER_MAX_LENGTH)
+    from .shared_metrics_catalog import model_metric_name, provider_metric_name
+
+    provider = provider_metric_name(kwargs.get("provider"))
+    model = model_metric_name(kwargs.get("response_model"), provider, max_length=MODEL_IDENTIFIER_MAX_LENGTH)
     if model == "unknown":
-        model = _metric_identifier(kwargs.get("model"), max_length=MODEL_IDENTIFIER_MAX_LENGTH)
-    provider = _metric_identifier(kwargs.get("provider"), max_length=PROVIDER_IDENTIFIER_MAX_LENGTH)
+        model = model_metric_name(kwargs.get("model"), provider, max_length=MODEL_IDENTIFIER_MAX_LENGTH)
     return {"model": model, "provider": provider}
 
 
@@ -967,7 +969,7 @@ def install_snapshot_fields(
     terminal_backend: Any, display_language: Any,
 ) -> dict[str, str]:
     """Bounded daily configuration snapshot: counts, closed enums and public names only."""
-    from .shared_metrics_catalog import display_language_metric_name
+    from .shared_metrics_catalog import display_language_metric_name, provider_metric_name
 
     provider = _norm(memory_provider)
     backend = _norm(terminal_backend) or "local"
@@ -975,8 +977,7 @@ def install_snapshot_fields(
         "cron_job_count_bucket": size_bucket(cron_jobs),
         "display_language": display_language_metric_name(display_language),
         "install_age_bucket": install_age_bucket if install_age_bucket in INSTALL_AGE_BUCKETS else "unknown",
-        "main_provider": _metric_identifier(main_provider, max_length=PROVIDER_IDENTIFIER_MAX_LENGTH)
-        if main_provider else "none",
+        "main_provider": provider_metric_name(main_provider) if main_provider else "none",
         "mcp_server_count_bucket": size_bucket(mcp_servers),
         "memory_provider": "builtin" if not provider
         else provider if provider in MEMORY_PROVIDERS else "plugin",

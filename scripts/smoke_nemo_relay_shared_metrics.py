@@ -334,7 +334,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "dimensions": {
             "call_role": "primary",
             "error_class": "none",
-            "model": MODEL_CANARY,
+            "model": "custom",
             "outcome": "success",
             "provider": "custom",
             "ttft_bucket": "lt_500ms",
@@ -484,6 +484,7 @@ def _validate_packages(
 
     serialized = json.dumps(packages)
     for prohibited in (
+        MODEL_CANARY,
         PROMPT_CANARY,
         RESPONSE_CANARY,
         TOOL_CALL_CANARY,
@@ -531,7 +532,7 @@ def _validate_packages(
     if model["dimensions"] != {
         "call_role": "primary",
         "error_class": "none",
-        "model": MODEL_CANARY,
+        "model": "custom",
         "outcome": "success",
         "provider": "custom",
         "ttft_bucket": "lt_500ms",

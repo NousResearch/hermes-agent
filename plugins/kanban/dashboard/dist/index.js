@@ -21,9 +21,9 @@
     Card, CardContent,
     Badge, Button, Input, Label, Select, SelectOption,
     Dialog, DialogContent, DialogTitle, DialogClose,
-    Tabs, TabsList, TabsTrigger,
+    Tabs, TabsList, TabsTrigger, Toast,
   } = SDK.components;
-  const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
+  const { useState, useEffect, useCallback, useMemo, useRef, useToast } = SDK.hooks;
   const { cn, timeAgo } = SDK.utils;
 
   // Newer host dashboards expose a DS-styled Checkbox on the plugin SDK.
@@ -1220,7 +1220,7 @@
       });
     }, [board, loadBoardList, switchBoard]);
 
-   const deleteTask = useCallback(function (taskId) {
+   const deleteTask = useCallback(function (taskId, opts) {
      return kanbanDialogs.request({
        kind: "confirm",
        title: tx(t, "trash.confirmTitle", "Delete task?"),
@@ -1228,8 +1228,8 @@
        confirmLabel: tx(t, "common.delete", "Delete"),
        destructive: true,
      }).then(function (r) {
-       if (!r.confirmed) return null;
-       return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}`, {
+       if (!r.confirmed) return { deleted: false };
+       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
          method: "DELETE",
        }).then(function () {
          loadBoard();
@@ -1238,8 +1238,13 @@
            next.delete(taskId);
            return next;
          });
-       }).catch(function (e) { setError(String(e.message || e)); });
-     }).catch(function () { /* cancelled */ });
+         return { deleted: true };
+       }).catch(function (e) {
+         // The modal passes quiet: it toasts the error itself.
+         if (!(opts && opts.quiet)) setError(String(e.message || e));
+         return { deleted: false, error: e };
+       });
+     }).catch(function () { return { deleted: false }; /* cancelled */ });
    }, [board, loadBoard, t, kanbanDialogs]);
 
     const deleteSelected = useCallback(function (count) {
@@ -1381,6 +1386,7 @@
           // owns its own kanbanDialogs so the dialog portal mounts in
           // its tree; we expose requestDialog as the imperative API.
           requestDialog: function (req) { return kanbanDialogs.request(req); },
+          onDeleteTask: deleteTask,
         }) : null,
       ),
     );
@@ -3868,6 +3874,27 @@
       ? (task.title || tx(t, "untitled", "(untitled)"))
       : props.taskId;
 
+    // The header menu's actions. The toast is mounted from inside the dialog
+    // so it portals after the modal and stays above its overlay.
+    const { showToast, toast } = useToast();
+    const copyText = function (text, okMsg) {
+      const failed = function () { showToast(tx(t, "copyFailed", "Copy failed"), "error"); };
+      try {
+        const p = navigator.clipboard && navigator.clipboard.writeText(text);
+        if (!p || !p.then) { failed(); return; }
+        p.then(function () { showToast(okMsg, "success"); }, failed);
+      } catch (_) { failed(); }
+    };
+    // Board's deleteTask owns the confirm, the DELETE and the selection
+    // cleanup; the modal only closes once the task is actually gone.
+    const deleteThisTask = function () {
+      if (!props.onDeleteTask) return;
+      props.onDeleteTask(props.taskId, { quiet: true }).then(function (res) {
+        if (res && res.deleted) props.onClose();
+        else if (res && res.error) showToast(parseApiErrorMessage(res.error), "error");
+      });
+    };
+
     // Radix listens for Esc on the document in the capture phase, before any
     // field's own onKeyDown, so an editor cannot stopPropagation its way out.
     // Keep the modal open when Esc lands in an inline editor or an open SDK
@@ -3895,10 +3922,25 @@
         "aria-describedby": undefined,
         onEscapeKeyDown: onEscapeKeyDown,
       },
+        h(Toast, { toast: toast }),
         h("div", { className: "hermes-kanban-drawer-head" },
           h("div", { className: "hermes-kanban-drawer-head-row" },
             task ? h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[task.status]) }) : null,
             h("span", { className: "hermes-kanban-drawer-id" }, props.taskId),
+            task
+              ? h(TaskActionsMenu, {
+                  task: task,
+                  onCopy: copyText,
+                  onArchive: function () {
+                    return doPatch({ status: "archived" }, {
+                      confirm: getDestructiveConfirm(t, "archived"),
+                      confirmLabel: tx(t, "archive", "Archive"),
+                      destructive: true,
+                    });
+                  },
+                  onDelete: deleteThisTask,
+                })
+              : null,
             h(DialogClose, {
               className: "hermes-kanban-drawer-close",
               "aria-label": tx(t, "close", "Close (Esc)"),
@@ -5254,6 +5296,120 @@
             h("span", { className: "hermes-kanban-estimate-note" }, tx(t, "makesModelCall", "makes a model call")),
           ),
       msg ? h("div", { className: "text-xs text-destructive", role: "status" }, msg) : null,
+    );
+  }
+
+  // Inline icons (plugins can't import lucide); lucide's paths, so they match
+  // the dashboard's own menus.
+  function Icon(props) {
+    return h("svg", {
+      viewBox: "0 0 24 24", width: 16, height: 16, fill: "none",
+      stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round",
+      strokeLinejoin: "round", "aria-hidden": "true", className: "shrink-0",
+    }, props.children);
+  }
+  const ICONS = {
+    more: [h("circle", { key: 1, cx: 12, cy: 5, r: 1 }), h("circle", { key: 2, cx: 12, cy: 12, r: 1 }),
+      h("circle", { key: 3, cx: 12, cy: 19, r: 1 })],
+    copy: [h("rect", { key: 1, x: 8, y: 8, width: 14, height: 14, rx: 2 }),
+      h("path", { key: 2, d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" })],
+    archive: [h("rect", { key: 1, x: 2, y: 3, width: 20, height: 5, rx: 1 }),
+      h("path", { key: 2, d: "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" }), h("path", { key: 3, d: "M10 12h4" })],
+    trash: [h("path", { key: 1, d: "M3 6h18" }), h("path", { key: 2, d: "M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" }),
+      h("path", { key: 3, d: "M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" })],
+  };
+
+  const MENU_ITEM_CN = "flex w-full items-center gap-2.5 px-3 py-2 text-xs uppercase tracking-wider " +
+    "focus-visible:outline-none disabled:opacity-40";
+
+  // Task header "…" menu, in the dashboard's ProfileActionsMenu pattern (ghost
+  // icon trigger, bordered card panel, uppercase items, destructive last):
+  // the SDK exposes no menu primitive. Esc closes just the menu.
+  function TaskActionsMenu(props) {
+    const { t } = useI18n();
+    const [open, setOpen] = useState(false);
+    const containerRef = useRef(null);
+    const menuRef = useRef(null);
+    const task = props.task;
+    const trigger = function () {
+      return containerRef.current && containerRef.current.querySelector("[aria-haspopup='menu']");
+    };
+
+    useEffect(function () {
+      if (!open) return;
+      const first = menuRef.current && menuRef.current.querySelector("[role='menuitem']:not(:disabled)");
+      if (first) first.focus();
+      const onDown = function (e) {
+        if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
+      };
+      window.addEventListener("mousedown", onDown);
+      return function () { window.removeEventListener("mousedown", onDown); };
+    }, [open]);
+
+    const onKeyDown = function (e) {
+      const items = Array.prototype.slice.call(
+        menuRef.current.querySelectorAll("[role='menuitem']:not(:disabled)"));
+      const i = items.indexOf(document.activeElement);
+      const go = function (n) {
+        e.preventDefault();
+        if (items.length) items[(n + items.length) % items.length].focus();
+      };
+      if (e.key === "ArrowDown") go(i + 1);
+      else if (e.key === "ArrowUp") go(i - 1);
+      else if (e.key === "Home") go(0);
+      else if (e.key === "End") go(items.length - 1);
+      else if (e.key === "Escape") {
+        e.preventDefault();
+        setOpen(false);
+        const b = trigger();
+        if (b) b.focus();
+      } else if (e.key === "Tab") setOpen(false);
+    };
+    const item = function (key, icon, label, onClick, opts) {
+      const danger = opts && opts.danger;
+      return h("button", {
+        key: key,
+        type: "button",
+        role: "menuitem",
+        tabIndex: -1,
+        disabled: !!(opts && opts.disabled),
+        className: cn(MENU_ITEM_CN, danger
+          ? "border-t border-border text-destructive hover:bg-destructive/10 focus-visible:bg-destructive/10"
+          : "hover:bg-muted/50 focus-visible:bg-muted/50"),
+        onClick: function () { setOpen(false); onClick(); },
+      }, h(Icon, null, ICONS[icon]), label);
+    };
+
+    return h("div", { className: "relative hermes-kanban-task-actions", ref: containerRef },
+      h(Button, {
+        ghost: true,
+        size: "icon",
+        title: tx(t, "taskActions", "Task actions"),
+        "aria-label": tx(t, "taskActions", "Task actions"),
+        "aria-haspopup": "menu",
+        "aria-expanded": open,
+        onClick: function () { setOpen(function (v) { return !v; }); },
+      }, h(Icon, null, ICONS.more)),
+      open
+        ? h("div", {
+            role: "menu",
+            ref: menuRef,
+            "aria-label": tx(t, "taskActions", "Task actions"),
+            "data-kanban-owns-escape": "",
+            onKeyDown: onKeyDown,
+            className: "absolute right-0 top-full z-50 mt-1 min-w-[200px] border border-border bg-card shadow-lg",
+          },
+            item("id", "copy", tx(t, "copyTaskId", "Copy task id"), function () {
+              props.onCopy(task.id, tx(t, "copiedId", "Copied id"));
+            }),
+            item("title", "copy", tx(t, "copyTitle", "Copy title"), function () {
+              props.onCopy(task.title || "", tx(t, "copiedTitle", "Copied title"));
+            }, { disabled: !task.title }),
+            item("archive", "archive", tx(t, "archive", "Archive"), props.onArchive,
+              { disabled: task.status === "archived" }),
+            item("delete", "trash", tx(t, "common.delete", "Delete"), props.onDelete, { danger: true }),
+          )
+        : null,
     );
   }
 

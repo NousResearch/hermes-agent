@@ -393,6 +393,9 @@
   padding: 0 0.25rem;
 }
 .hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
+/* The "…" menu takes the push-right slot; the close button follows it. */
+.hermes-kanban-task-actions { margin-left: auto; }
+.hermes-kanban-task-actions + .hermes-kanban-drawer-close { margin-left: 0; }
 
 .hermes-kanban-sr-only {
   position: absolute;

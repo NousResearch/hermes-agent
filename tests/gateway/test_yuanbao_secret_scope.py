@@ -35,7 +35,7 @@ class TestYuanbaoAdapterAuthzScope:
         finally:
             secret_scope.reset_secret_scope(token)
         assert adapter._access_policy._dm_policy == "allowlist"
-        assert adapter._access_policy._dm_allow_from == ["scoped-user"]
+        assert adapter._access_policy._allow_from == ["scoped-user"]
 
     def test_scoped_miss_does_not_admit_default_profiles_allowlist(self, multiplex_on, monkeypatch):
         monkeypatch.setenv("YUANBAO_DM_POLICY", "allowlist")
@@ -46,7 +46,7 @@ class TestYuanbaoAdapterAuthzScope:
         finally:
             secret_scope.reset_secret_scope(token)
         assert adapter._access_policy._dm_policy == "pairing"
-        assert adapter._access_policy._dm_allow_from == []
+        assert adapter._access_policy._allow_from == []
 
 
 class TestYuanbaoAccessPolicyOpenDmOptIn:

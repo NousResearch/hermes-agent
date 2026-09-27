@@ -1,14 +1,21 @@
 import { atom } from 'nanostores'
 
+import { translateNow } from '@/i18n'
 import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { persistString, storedString } from '@/lib/storage'
 
 import { $gateway } from './gateway'
 import { withinNativeNotifyBaseline } from './notify-baseline'
-import { clearApprovalRequest } from './prompts'
+import {
+  answerApproval,
+  clearApprovalRequest,
+  replayPendingApproval,
+  sessionApprovalRequest,
+  sessionApprovalRequests
+} from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
-import { $activeSessionId } from './session'
-import { requestForOwnedSession, storedSessionIdForRuntimeId } from './session-states'
+import { $activeSessionId, ownerLookupSessionRows, sessionMatchesStoredId } from './session'
+import { storedSessionIdForRuntimeId } from './session-states'
 
 export type { HermesOpenTarget }
 
@@ -149,6 +156,29 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
   return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
 }
 
+/** Last-resort label for a session the renderer has no row for (yet): the id
+ *  tail still tells three parked approvals apart. */
+const shortSessionId = (id: string) => `#${id.slice(-6)}`
+
+/** Blocking prompts name their session in the title ("Approval needed — Fix the
+ *  flaky test") so parallel parked approvals stay tellable apart; the caller's
+ *  `title` stays the bare fallback for a prompt with no session. */
+const NAMED_TITLE_KEYS: Partial<Record<NativeNotificationKind, string>> = {
+  approval: 'notifications.native.approvalTitleNamed',
+  input: 'notifications.native.inputTitleNamed'
+}
+
+/** Sidebar naming order (title → preview → short id) via the locale's
+ *  named-title template; the runtime id the caller already passes is the whole
+ *  hint needed. */
+function withSessionLabel(namedKey: string, runtimeSessionId: string): string {
+  const storedId = storedSessionIdForRuntimeId(runtimeSessionId) ?? runtimeSessionId
+  const row = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedId))
+  const name = row?.title?.trim() || row?.preview?.trim() || shortSessionId(storedId)
+
+  return translateNow(namedKey, name.length > 80 ? `${name.slice(0, 80).trimEnd()}…` : name)
+}
+
 export interface NativeNotificationAction {
   id: string
   text: string
@@ -208,6 +238,9 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     return false
   }
 
+  const namedKey = input.sessionId ? NAMED_TITLE_KEYS[input.kind] : undefined
+  const title = namedKey && input.sessionId ? withSessionLabel(namedKey, input.sessionId) : input.title
+
   void window.hermesDesktop?.notify({
     actions: input.actions,
     activate: input.activate,
@@ -219,7 +252,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     sessionId: input.sessionId ?? undefined,
     silent: input.silent,
     tag: input.tag,
-    title: input.title
+    title
   })
 
   return true
@@ -349,7 +382,9 @@ export function dispatchPluginNativeNotification(pluginId: string, input: Plugin
 // Resolve a pending approval from a notification button, mirroring the in-app
 // Run/Reject bar. Keyed by session id — a background approval has no local guard.
 export async function respondToApprovalAction(sessionId: null | string, actionId: string): Promise<void> {
-  const choice = actionId === 'approve' ? 'once' : actionId === 'reject' ? 'deny' : null
+  const [action, ...idParts] = actionId.split(':')
+  const requestId = idParts.length ? idParts.join(':') : sessionApprovalRequest(sessionId).get()?.requestId
+  const choice = action === 'approve' ? 'once' : action === 'reject' ? 'deny' : null
 
   if (!choice) {
     return
@@ -366,19 +401,17 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
   }
 
   try {
-    // Route through the session's OWNER (tile route → known profile); the
-    // ambient socket follows foreground focus and, for a background approval
-    // raised by a cross-profile session, points at a backend that never held
-    // the approval (#91684 client half). Ambient only when no owner is known.
-    await requestForOwnedSession(
-      sessionId,
-      // Bound (not wrapped) so the ambient fallback keeps the exact 2-arg
-      // call shape gateway.request callers assert on.
-      gateway.request.bind(gateway) as typeof gateway.request,
-      'approval.respond',
-      { choice, session_id: sessionId ?? undefined }
-    )
-    clearApprovalRequest(sessionId)
+    const parked = sessionApprovalRequests(sessionId)
+      .get()
+      .find(request => request.requestId === requestId)
+
+    await answerApproval(gateway, parked ?? { sessionId, requestId }, choice)
+
+    if (requestId || sessionApprovalRequest(sessionId).get()?.requestId === undefined) {
+      clearApprovalRequest(sessionId, requestId)
+    }
+
+    void replayPendingApproval(gateway, sessionId).catch(() => undefined)
   } catch (error) {
     if (sessionId && isSessionGoneForBackgroundPolling(error)) {
       markSessionGone(sessionId)

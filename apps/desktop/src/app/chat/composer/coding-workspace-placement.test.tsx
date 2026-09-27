@@ -59,12 +59,16 @@ it.each([false, true])('keeps draft and bound workspace as the same header row o
   const surface = draft.closest('[data-slot="composer-surface"]')!
   expect(surface).toBeTruthy()
   expect(draft.parentElement).toBe(surface)
-  expect(draft.nextElementSibling?.getAttribute('data-slot')).toBe('composer-fade')
+  // Upstream wraps the git/coding status row in the collapsible status drawer
+  // (row 2); the draft pickers stay the first header row, then the input.
+  const fade = surface.querySelector(':scope > [data-slot="composer-fade"]')!
+  expect(draft.nextElementSibling === fade || draft.nextElementSibling?.nextElementSibling === fade).toBe(true)
   state.bound = true
   view.rerender(<ChatBar {...props} sessionId="bound" />)
   const summary = view.container.querySelector('[data-slot="coding-workspace-summary"]')!
   expect(view.container.querySelectorAll('[data-slot="coding-workspace-summary"]')).toHaveLength(1)
   expect(view.container.querySelector('[data-slot="coding-workspace-controls"]')).toBeNull()
-  expect(summary.parentElement).toBe(surface)
-  expect(summary.nextElementSibling?.getAttribute('data-slot')).toBe('composer-fade')
+  const drawer = summary.closest('.status-drawer')!
+  expect(drawer.parentElement).toBe(surface)
+  expect(drawer.nextElementSibling?.getAttribute('data-slot')).toBe('composer-fade')
 })

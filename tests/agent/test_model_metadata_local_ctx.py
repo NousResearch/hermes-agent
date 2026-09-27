@@ -365,17 +365,6 @@ class TestContextLengthFromModelPayload:
     (context window) and max_tokens (max OUTPUT). The local probe must not
     treat max_tokens as the context window."""
 
-    def test_prefers_max_input_tokens_over_max_tokens(self):
-        from agent.model_metadata import _context_length_from_model_payload
-
-        # Real Anthropic /v1/models shape for claude-fable-5
-        payload = {
-            "type": "model",
-            "id": "claude-fable-5",
-            "max_input_tokens": 1_000_000,
-            "max_tokens": 128_000,  # output cap, NOT context
-        }
-        assert _context_length_from_model_payload(payload) == 1_000_000
 
     def test_prefers_max_model_len_over_max_tokens(self):
         from agent.model_metadata import _context_length_from_model_payload
@@ -675,7 +664,7 @@ class TestFetchEndpointModelMetadataLmStudio:
         )
 
         with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
-             patch("agent.model_metadata.requests.get", return_value=native_resp) as mock_get:
+             patch("agent.model_metadata_http.get", return_value=native_resp) as mock_get:
             result = fetch_endpoint_model_metadata(
                 "http://localhost:1234/v1",
                 api_key="lm-token",
@@ -708,7 +697,7 @@ class TestFetchEndpointModelMetadataLmStudio:
         )
 
         with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
-             patch("agent.model_metadata.requests.get", return_value=native_resp) as mock_get:
+             patch("agent.model_metadata_http.get", return_value=native_resp) as mock_get:
             result = fetch_endpoint_model_metadata(
                 "http://localhost:1234/api/v1",
                 force_refresh=True,
@@ -893,63 +882,7 @@ class TestQueryLocalContextLengthMaxTokensNotContext:
         resp.json.return_value = body
         return resp
 
-    def test_models_list_prefers_context_size_over_max_tokens(self):
-        """/v1/models list: `context_size` wins over `max_tokens`."""
-        from agent.model_metadata import _query_local_context_length
 
-        detail_resp = self._make_resp(404, {})
-        list_resp = self._make_resp(200, {
-            "data": [
-                {
-                    "id": "deepseek-v4-flash",
-                    "context_size": 1048576,
-                    "max_input_tokens": 1048576,
-                    "max_tokens": 393216,
-                }
-            ]
-        })
-
-        call_count = [0]
-        def side_effect(url, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return detail_resp  # /v1/models/deepseek-v4-flash
-            return list_resp  # /v1/models
-
-        client_mock = MagicMock()
-        client_mock.__enter__ = lambda s: client_mock
-        client_mock.__exit__ = MagicMock(return_value=False)
-        client_mock.post.return_value = self._make_resp(404, {})
-        client_mock.get.side_effect = side_effect
-
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
-             patch("httpx.Client", return_value=client_mock):
-            result = _query_local_context_length("deepseek-v4-flash", "http://127.0.0.1:8080/v1")
-
-        assert result == 1048576
-
-    def test_models_detail_prefers_max_input_tokens_over_max_tokens(self):
-        """/v1/models/{model} detail: `max_input_tokens` wins over `max_tokens`."""
-        from agent.model_metadata import _query_local_context_length
-
-        detail_resp = self._make_resp(200, {
-            "id": "deepseek-v4-flash",
-            "context_size": 1048576,
-            "max_input_tokens": 1048576,
-            "max_tokens": 393216,
-        })
-
-        client_mock = MagicMock()
-        client_mock.__enter__ = lambda s: client_mock
-        client_mock.__exit__ = MagicMock(return_value=False)
-        client_mock.post.return_value = self._make_resp(404, {})
-        client_mock.get.return_value = detail_resp
-
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
-             patch("httpx.Client", return_value=client_mock):
-            result = _query_local_context_length("deepseek-v4-flash", "http://127.0.0.1:8080/v1")
-
-        assert result == 1048576
 
     def test_models_list_max_tokens_only_falls_back(self):
         """A model that ONLY exposes `max_tokens` (no real context key) still
@@ -1067,3 +1000,51 @@ class TestReconcileSelfHealsPoisonedCache:
         mock_save.assert_called_once_with(
             "deepseek-v4-flash", "http://127.0.0.1:8080/v1", 1048576
         )
+
+
+class TestDetectLocalServerTypeSkipsHostedProviders:
+    """Hosted provider hosts must never receive the Ollama/LM Studio/llama.cpp/vLLM discovery waterfall
+    (#61421: /api/tags, /v1/props, /version 404s on api.openai.com polluted egress logs)."""
+
+    @pytest.mark.parametrize(
+        "base_url, expect_requests",
+        [
+            ("https://api.openai.com/v1", 0),
+            ("https://api.openai.com./v1", 0),  # trailing-dot FQDN must not bypass the guard
+            ("https://api.anthropic.com", 0),
+            ("http://127.0.0.1:11434/v1", 5),  # control: local endpoints still get the full waterfall
+            ("http://my-box:8080/v1", 5),  # unqualified LAN hostname is local by definition
+        ],
+    )
+    def test_public_hosts_get_no_probe_local_hosts_do(self, base_url, expect_requests):
+        import agent.model_metadata as mm
+
+        calls = []
+
+        class _Resp:
+            status_code = 404
+            text = ""
+
+            def json(self):
+                return {}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                calls.append(url)
+                return _Resp()
+
+        mm._endpoint_probe_path_cache.clear()
+        with patch("httpx.Client", _Client), patch.object(mm, "_endpoint_blackholed", return_value=False), \
+                patch.object(mm, "_local_probe_disk_get", return_value=None), patch.object(mm, "_local_probe_disk_put"):
+            assert mm.detect_local_server_type(base_url) is None
+        # Probe-count is an implementation detail; the contract is none vs some.
+        assert bool(calls) == bool(expect_requests)

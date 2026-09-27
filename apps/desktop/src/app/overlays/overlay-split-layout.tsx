@@ -1,6 +1,9 @@
-import { Fragment, memo, type ReactNode } from 'react'
+import { Fragment, memo, type ReactNode, useEffect, useId, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { TabDropdown } from '@/components/ui/tab-dropdown'
+import { useI18n } from '@/i18n'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -30,13 +33,19 @@ interface OverlayMainProps {
 
 interface OverlayNavItemProps {
   active: boolean
-  icon: IconComponent
+  current?: boolean
+  /** Optional: filter/value rows (catalog facets) read as plain labels. */
+  icon?: IconComponent
   /** Stable identity for the row, used as its `data-tour` handle. */
   id?: string
   label: string
   // Renders as an indented child of another nav item: smaller icon and a
   // lighter active state so it never competes with the boxed parent item.
   nested?: boolean
+  /** Presentational only (e.g. `CheckboxMark`); the row stays the one control. */
+  leading?: ReactNode
+  /** Toggle rows (multi-select facets) announce their state. */
+  pressed?: boolean
   onClick: () => void
   trailing?: ReactNode
 }
@@ -102,23 +111,28 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
 
 export const OverlayNavItem = memo(function OverlayNavItem({
   active,
+  current = active,
   icon: Icon,
   id,
   label,
   nested,
   onClick,
+  leading,
+  pressed,
   trailing
 }: OverlayNavItemProps) {
   return (
     <button
+      aria-current={current ? 'page' : undefined}
+      aria-pressed={pressed}
       className={cn(
-        'flex h-7 w-full items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
+        'row-hover flex h-7 w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
         nested
           ? active
-            ? 'border-transparent bg-(--chrome-action-hover) font-medium text-foreground'
+            ? 'border-transparent bg-(--ui-row-active-background) font-medium text-foreground'
             : 'border-transparent bg-transparent text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
           : active
-            ? 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) text-foreground'
+            ? 'border-(--ui-stroke-tertiary) bg-(--ui-row-active-background) text-foreground'
             : 'border-transparent bg-transparent text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
       )}
       // Names the row by its own id, so a tour can address one link
@@ -127,13 +141,16 @@ export const OverlayNavItem = memo(function OverlayNavItem({
       onClick={onClick}
       type="button"
     >
-      <Icon
-        className={cn(
-          'shrink-0',
-          nested ? 'size-3.5' : 'size-4',
-          active ? 'text-foreground/80' : 'text-muted-foreground/80'
-        )}
-      />
+      {leading}
+      {Icon && (
+        <Icon
+          className={cn(
+            'shrink-0',
+            nested ? 'size-3.5' : 'size-4',
+            active ? 'text-foreground/80' : 'text-muted-foreground/80'
+          )}
+        />
+      )}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {trailing}
     </button>
@@ -149,8 +166,8 @@ export interface OverlayNavLink {
 }
 
 export interface OverlayNavGroup extends OverlayNavLink {
-  /** Sub-links: expanded under the active group on the rail, always listed
-   *  (flattened + indented) in the narrow dropdown. */
+  /** Sub-links: revealed by navigation or independently by the disclosure.
+   *  Always listed (flattened + indented) in the narrow dropdown. */
   children?: OverlayNavLink[]
   /** Visual break before this group — a spacer on the rail, a separator in
    *  the dropdown. */
@@ -163,36 +180,106 @@ export interface OverlayNavGroup extends OverlayNavLink {
 // same way instead of stacking its whole sidebar. Drop it in as the first
 // child of an OverlaySplitLayout, before OverlayMain.
 export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: OverlayNavGroup[] }) {
+  const { t } = useI18n()
+  const navId = useId()
+  const [disclosures, setDisclosures] = useState<Record<string, boolean>>({})
+  const activeGroup = groups.find(group => group.active)
+  const activeGroupId = activeGroup?.id
+  const activeChildId = activeGroup?.children?.find(child => child.active)?.id
+
+  // Route entry reveals its branch. Explicitly opened inactive branches stay
+  // open, while automatically revealed branches fold when leaving them.
+  useEffect(() => {
+    if (!activeGroupId) {
+      return
+    }
+
+    setDisclosures(previous => {
+      if (previous[activeGroupId] !== false) {
+        return previous
+      }
+
+      const next = { ...previous }
+      delete next[activeGroupId]
+
+      return next
+    })
+  }, [activeGroupId, activeChildId])
+
   return (
     <>
       <OverlaySidebar className={RAIL_HIDDEN}>
-        {groups.map(group => (
-          <Fragment key={group.id}>
-            {group.gapBefore && <div aria-hidden className="h-2" />}
-            <OverlayNavItem
-              active={group.active}
-              icon={group.icon}
-              id={group.id}
-              label={group.label}
-              onClick={group.onSelect}
-            />
-            {group.children && group.active && (
-              <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
-                {group.children.map(child => (
-                  <OverlayNavItem
-                    active={child.active}
-                    icon={child.icon}
-                    id={child.id}
-                    key={child.id}
-                    label={child.label}
-                    nested
-                    onClick={child.onSelect}
-                  />
-                ))}
+        {groups.map(group => {
+          const hasChildren = Boolean(group.children?.length)
+          const expanded = disclosures[group.id] ?? group.active
+          const childrenId = `${navId}-${group.id}`
+
+          return (
+            <Fragment key={group.id}>
+              {group.gapBefore && <div aria-hidden className="h-2" />}
+              <div className="relative">
+                <OverlayNavItem
+                  active={group.active}
+                  current={group.active && !group.children?.some(child => child.active)}
+                  icon={group.icon}
+                  id={group.id}
+                  label={group.label}
+                  onClick={() => {
+                    if (hasChildren) {
+                      setDisclosures(previous => {
+                        if (previous[group.id] !== false) {
+                          return previous
+                        }
+
+                        const next = { ...previous }
+                        delete next[group.id]
+
+                        return next
+                      })
+                    }
+
+                    group.onSelect()
+                  }}
+                  trailing={hasChildren ? <span aria-hidden className="w-4 shrink-0" /> : undefined}
+                />
+                {hasChildren && (
+                  <Button
+                    aria-controls={childrenId}
+                    aria-expanded={expanded}
+                    aria-label={`${expanded ? t.common.collapse : t.common.expand}: ${group.label}`}
+                    className="absolute right-0.5 top-1/2 -translate-y-1/2"
+                    data-tour={`nav-toggle-${group.id}`}
+                    onClick={() => setDisclosures(previous => ({ ...previous, [group.id]: !expanded }))}
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <DisclosureCaret open={expanded} />
+                  </Button>
+                )}
               </div>
-            )}
-          </Fragment>
-        ))}
+              {hasChildren && (
+                <div
+                  className={cn('ml-3.5 flex flex-col gap-0.5 pl-1.5', !expanded && 'hidden')}
+                  hidden={!expanded}
+                  id={childrenId}
+                >
+                  {group.children?.map(child => (
+                    <OverlayNavItem
+                      active={child.active}
+                      icon={child.icon}
+                      id={child.id}
+                      key={child.id}
+                      label={child.label}
+                      nested
+                      onClick={child.onSelect}
+                    />
+                  ))}
+                </div>
+              )}
+            </Fragment>
+          )
+        })}
         {footer && <div className="mt-auto flex items-center gap-1 pt-2">{footer}</div>}
       </OverlaySidebar>
 
@@ -203,7 +290,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
           and the height matches the strip so the trigger lines up with the X. */}
       <div
         className={cn(
-          'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 pl-3 pr-12',
+          'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 pl-3 pr-[calc(var(--titlebar-tools-right,0.75rem)+2.25rem)]',
           BAR_HIDDEN
         )}
       >

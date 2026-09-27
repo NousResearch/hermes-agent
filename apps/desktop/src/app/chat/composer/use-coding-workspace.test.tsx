@@ -10,14 +10,24 @@ import { $connection } from '@/store/session'
 import { useCodingWorkspace } from './use-coding-workspace'
 
 const mocks = vi.hoisted(() => ({ read: vi.fn(), register: vi.fn(), inspect: vi.fn(), set: vi.fn(), pick: vi.fn() }))
-vi.mock('@/hermes', () => ({ getHermesConfigRecord: (...args: unknown[]) => mocks.read(...args), profileScopeKey: (s: unknown) => JSON.stringify(s) }))
-vi.mock('@/store/profile', async () => {
- const { atom } = await import('nanostores')
+vi.mock('@/hermes', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getHermesConfigRecord: (...args: unknown[]) => mocks.read(...args),
+  profileScopeKey: (s: unknown) => JSON.stringify(s)
+}))
+vi.mock('@/store/profile', async importOriginal => {
+  const { atom } = await import('nanostores')
 
- return { $newChatProfile: atom('coder'), $newChatRoute: atom(null), $newChatConnectionId: atom('local'), $activeGatewayProfile: atom('coder'),
- resolveNewChatBackendOwner: () => ({ connectionId: 'local', profile: 'coder' }) }
+  return {
+    ...(await importOriginal<Record<string, unknown>>()),
+    $newChatProfile: atom('coder'), $newChatRoute: atom(null), $newChatConnectionId: atom('local'), $activeGatewayProfile: atom('coder'),
+    resolveNewChatBackendOwner: () => ({ connectionId: 'local', profile: 'coder' })
+  }
 })
-vi.mock('@/store/session', async () => ({ $connection: (await import('nanostores')).atom({ connectionId: 'local' }) }))
+vi.mock('@/store/session', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  $connection: (await import('nanostores')).atom({ connectionId: 'local' })
+}))
 vi.mock('@/store/coding-workspaces', async importOriginal => ({
  ...(await importOriginal<Record<string, unknown>>()),
  setCodingWorkspaceIntent: (...a: unknown[]) => mocks.set(...a), inspectCodingWorkspace: (...a: unknown[]) => mocks.inspect(...a),

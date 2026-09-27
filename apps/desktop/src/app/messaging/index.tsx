@@ -38,6 +38,7 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
 import { PageSearchShell } from '../page-search-shell'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
+import { credentialPreview } from '../settings/helpers'
 import { ListRow } from '../settings/primitives'
 import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -164,6 +165,18 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       setRestartNeeded(false)
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
+  }, [])
+
+  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
+  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
+  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
+    if (hotServed) {
+      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
+
+      return
+    }
+
+    setRestartNeeded(true)
   }, [])
 
   const refreshPlatforms = useCallback(
@@ -320,7 +333,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`enabled:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
       setPlatforms(
         current =>
           current?.map(row =>
@@ -333,11 +346,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               : row
           ) ?? current
       )
-      setRestartNeeded(true)
+      settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: m.restartToApply
+        message: result.hot_served ? m.appliedLive : m.restartToApply
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -356,14 +369,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`env:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { env }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { env }, scopeProfile)
       setEdits(current => ({ ...current, [platform.id]: {} }))
       await refreshPlatforms()
-      setRestartNeeded(true)
+      settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: m.restartToReconnect
+        message: result.hot_served ? m.connectingLive : m.restartToReconnect
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -376,7 +389,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`clear:${key}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
       setEdits(current => ({
         ...current,
         [platform.id]: {
@@ -385,7 +398,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      setRestartNeeded(true)
+      settleAfterUpdate(result.hot_served)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
       notifyError(err, m.failedClear(key))
@@ -401,13 +414,28 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     await refreshPlatforms(true)
 
     if (result.restart_started) {
-      notify({ kind: 'success', title: m.setupSaved('Telegram'), message: m.telegramQr.savedRestarting })
+      const connectedBot = result.bot_username ? `${m.states.connected}: @${result.bot_username}` : null
+
+      notify({
+        kind: 'success',
+        title: m.setupSaved('Telegram'),
+        message: [connectedBot, m.telegramQr.savedRestarting].filter(Boolean).join(' · ')
+      })
       setRestartNeeded(false)
       const ok = await watchGatewayRestartOutcome()
 
       if (!ok) {
         setRestartNeeded(true)
-        notifyError(new Error(m.restartFailedManual), m.restartFailedManual)
+        notify({
+          kind: 'error',
+          title: m.restartFailedManual,
+          message: m.restartFailedManualDetail,
+          action: { label: m.restartAgain, onClick: () => void runGatewayRestart() },
+          secondaryAction: {
+            label: m.openLogs,
+            onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined)
+          }
+        })
       }
 
       void refreshPlatforms(true)
@@ -883,13 +911,16 @@ function PlatformActionBar({
 
   return (
     <>
-      <Switch
-        aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
-        checked={platform.enabled}
-        disabled={saving === `enabled:${platform.id}`}
-        onCheckedChange={onToggle}
-        size="xs"
-      />
+      <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+        <Switch
+          aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
+          checked={platform.enabled}
+          disabled={saving === `enabled:${platform.id}`}
+          onCheckedChange={onToggle}
+          size="xs"
+        />
+        {platform.enabled ? m.enabled : m.disabled}
+      </label>
 
       <div className="ml-auto flex items-center gap-2">
         {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
@@ -963,12 +994,12 @@ function MessagingField({
   return (
     <ListRow
       action={
-        <div className="flex items-center gap-2">
+        <div className="flex w-full items-center gap-2 @2xl:w-88">
           <Input
             className={CREDENTIAL_CONTROL_CLASS}
             id={fieldId}
             onChange={event => onEdit(field.key, event.target.value)}
-            placeholder={field.is_set ? field.redacted_value || m.replaceValue : copy.placeholder}
+            placeholder={field.is_set ? credentialPreview(field.redacted_value) || m.replaceValue : copy.placeholder}
             type={field.is_password ? 'password' : 'text'}
             value={edits[field.key] || ''}
           />
@@ -1012,6 +1043,19 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
   const { t } = useI18n()
+
+  // A served secondary's api_server/webhook live on the shared gateway listener under
+  // /p/<profile>/: the state pill says connected, this line says where to point the client.
+  if (platform.ingress_url) {
+    return (
+      <p className="mt-2 text-xs leading-5 text-muted-foreground break-all">
+        {t.messaging.sharedListenerUrl}{' '}
+        <code className="font-mono text-foreground" data-slot="ingress-url">
+          {platform.ingress_url}
+        </code>
+      </p>
+    )
+  }
 
   if (!platform.enabled || platform.state === 'connected') {
     return null

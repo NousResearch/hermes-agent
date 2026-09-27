@@ -22,12 +22,20 @@ export function getMessagingPlatforms(profile?: null | string): Promise<Messagin
   })
 }
 
+/** `hot_served`: a live multiplexer serving this named profile rebuilt its adapters from the new
+ *  credentials right away — no gateway restart is needed for the change to take effect. */
+export interface MessagingPlatformUpdateResponse {
+  hot_served?: boolean
+  ok: boolean
+  platform: string
+}
+
 export function updateMessagingPlatform(
   platformId: string,
   body: MessagingPlatformUpdate,
   profile?: null | string
-): Promise<{ ok: boolean; platform: string }> {
-  return hermesApi<{ ok: boolean; platform: string }>({
+): Promise<MessagingPlatformUpdateResponse> {
+  return hermesApi<MessagingPlatformUpdateResponse>({
     ...profileScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
     method: 'PUT',
@@ -78,11 +86,13 @@ export function applyTelegramOnboarding(
   allowedUserIds: string[],
   profile?: null | string
 ): Promise<TelegramOnboardingApplyResponse> {
+  const scope = profileScoped(profile)
+
   return hermesApi<TelegramOnboardingApplyResponse>({
-    ...profileScoped(profile),
+    ...scope,
     path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
     method: 'POST',
-    body: { allowed_user_ids: allowedUserIds, ...profileScoped(profile) }
+    body: { allowed_user_ids: allowedUserIds, profile: scope.profile }
   })
 }
 
@@ -113,22 +123,26 @@ export function approvePairing(
   requestId: string,
   profile?: null | string
 ): Promise<{ ok: boolean; user: PairingUser }> {
+  const scope = profileScoped(profile)
+
   return hermesApi<{ ok: boolean; user: PairingUser }>({
-    ...profileScoped(profile),
+    ...scope,
     path: '/api/pairing/approve',
     method: 'POST',
     // These endpoints read the profile off the body, not the query string —
-    // `profileScoped()` alone would approve into the wrong profile's store.
-    body: { platform, request_id: requestId, ...profileScoped(profile) }
+    // the request scope alone would approve into the wrong profile's store.
+    body: { platform, request_id: requestId, profile: scope.profile }
   })
 }
 
 export function revokePairing(platform: string, userId: string, profile?: null | string): Promise<{ ok: boolean }> {
+  const scope = profileScoped(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+    ...scope,
     path: '/api/pairing/revoke',
     method: 'POST',
-    body: { platform, user_id: userId, ...profileScoped(profile) }
+    body: { platform, user_id: userId, profile: scope.profile }
   })
 }
 

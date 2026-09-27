@@ -56,7 +56,7 @@ it.each(['local', 'remote'] as const)('keeps a named %s legacy profile on its ow
   await waitFor(() => expect(result.current.visible).toBe(true))
   const owner = result.current.owner!
   expect(owner).toEqual({ connectionId: null, profile: 'coder', draftKey: '__new__' })
-  expect(api).toHaveBeenCalledWith({ path: '/api/config', profile: 'coder' })
+  expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/config', profile: 'coder' }))
   const release = await retainGatewayForAgent(owner.connectionId, owner.profile)
   await act(async () => { await ensureGatewayAgent('another-source', 'coder') })
   expect(activeGateway()).not.toBe(legacySocket)

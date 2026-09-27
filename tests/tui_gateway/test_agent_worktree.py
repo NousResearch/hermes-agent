@@ -59,7 +59,7 @@ def _no_db(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_persist_session_git_meta", lambda *_a: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _s: None)
-    monkeypatch.setattr(server, "_is_local_terminal_backend", lambda: True)
+    monkeypatch.setattr(server, "_session_is_local_backend", lambda _session: True)
 
 
 def _terminal_call(workdir=None, result=None):
@@ -166,7 +166,7 @@ def test_a_coding_workspace_binding_wins(session, repo_with_worktree):
 
 def test_remote_backends_do_not_adopt(session, repo_with_worktree, monkeypatch):
     _, worktree = repo_with_worktree
-    monkeypatch.setattr(server, "_is_local_terminal_backend", lambda: False)
+    monkeypatch.setattr(server, "_session_is_local_backend", lambda _session: False)
 
     assert server._observe_terminal_activity(session, *_terminal_call(workdir=str(worktree))) is False
 

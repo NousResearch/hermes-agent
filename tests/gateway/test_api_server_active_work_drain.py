@@ -8,6 +8,7 @@ turns once the gateway starts draining.
 """
 
 import asyncio
+import hashlib
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,7 +18,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import make_restart_runner
@@ -109,14 +112,7 @@ class TestAPIServerAdapterWorkCount:
 
         assert adapter.active_agent_work_count() == 1
 
-    def test_interrupt_active_runs_interrupts_adapter_owned_agents(self):
-        adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        agent = MagicMock()
-        adapter._active_run_agents = {"run-1": agent}
 
-        assert adapter.interrupt_active_runs("gateway shutdown") == 1
-
-        agent.interrupt.assert_called_once_with("gateway shutdown")
 
 
 class TestDrainWaitsForApiWork:
@@ -184,7 +180,7 @@ class TestDrainWaitsForApiWork:
 
         runner._interrupt_running_agents("gateway shutdown")
 
-        agent.interrupt.assert_called_once_with("gateway shutdown")
+        agent.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
     @pytest.mark.asyncio
     async def test_drain_still_waits_for_chat_cron_and_api_work(self):
@@ -192,13 +188,13 @@ class TestDrainWaitsForApiWork:
 
         runner, _adapter = make_restart_runner()
         runner._running_agents = {"session-1": MagicMock()}
-        sched._running_job_ids.add("job-1")
+        sched._running_job_ids.add(sched._inflight_key("job-1"))
         runner.adapters = {Platform.API_SERVER: _make_api_adapter(queued_ids=["run-1"])}
 
         async def finish_all():
             await asyncio.sleep(0.12)
             runner._running_agents.clear()
-            sched._running_job_ids.discard("job-1")
+            sched._running_job_ids.discard(sched._inflight_key("job-1"))
             runner.adapters[Platform.API_SERVER]._active_run_tasks.clear()
 
         task = asyncio.create_task(finish_all())
@@ -206,7 +202,7 @@ class TestDrainWaitsForApiWork:
             _snapshot, timed_out = await runner._drain_active_agents(2.0)
         finally:
             await task
-            sched._running_job_ids.discard("job-1")
+            sched._running_job_ids.discard(sched._inflight_key("job-1"))
 
         assert timed_out is False
 
@@ -351,6 +347,40 @@ class TestRunAgentRegistersForShutdownInterrupt:
         assert adapter._shutdown_interruptible_agents == {}
 
     @pytest.mark.asyncio
+    async def test_cancelled_handler_keeps_the_worker_counted_until_the_turn_exits(self):
+        """Cancelling the ``_run_agent`` handler task must not drop the worker count (#116535).
+
+        The handler-side ``_inflight_agent_runs`` legitimately drops in the handler's
+        ``finally``; the shutdown SessionDB-close gate reads the worker-scoped count instead,
+        which the real ``_run_agent`` call site must hold until the executor thread exits.
+        """
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        loop = asyncio.get_running_loop()
+        started, release = asyncio.Event(), threading.Event()
+        agent = _parked_agent(loop, started, release)
+        agent.interrupt.side_effect = None
+        baseline = _api_runs.api_worker_live_count()
+
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            task = asyncio.ensure_future(
+                adapter._run_agent(user_message="hello", conversation_history=[], session_id="s1"))
+            await asyncio.wait_for(started.wait(), _TURN_UNBLOCK_TIMEOUT)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert adapter._inflight_agent_runs == 0
+            assert _api_runs.api_worker_live_count() == baseline + 1, (
+                "cancelled handler dropped the worker-scoped count while the turn was still running")
+
+            release.set()
+            for _ in range(200):
+                if _api_runs.api_worker_live_count() == baseline:
+                    break
+                await asyncio.sleep(0.01)
+        assert _api_runs.api_worker_live_count() == baseline, "worker exit did not release the count"
+
+    @pytest.mark.asyncio
     async def test_agent_is_unregistered_when_the_turn_raises(self):
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         agent = MagicMock()
@@ -375,7 +405,7 @@ class TestInterruptActiveRuns:
         adapter._active_run_agents = {"run-1": agent}
 
         assert adapter.interrupt_active_runs("gateway shutdown") == 1
-        agent.interrupt.assert_called_once_with("gateway shutdown")
+        agent.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
     def test_interrupts_each_agent_exactly_once_across_both_registries(self):
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -389,9 +419,9 @@ class TestInterruptActiveRuns:
         }
 
         assert adapter.interrupt_active_runs("gateway shutdown") == 3
-        shared.interrupt.assert_called_once_with("gateway shutdown")
-        run_only.interrupt.assert_called_once_with("gateway shutdown")
-        turn_only.interrupt.assert_called_once_with("gateway shutdown")
+        shared.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
+        run_only.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
+        turn_only.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
 
     def test_one_bad_agent_does_not_strand_the_others(self):
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -406,10 +436,71 @@ class TestInterruptActiveRuns:
         }
 
         assert adapter.interrupt_active_runs("gateway shutdown") == 1
-        healthy.interrupt.assert_called_once_with("gateway shutdown")
+        healthy.interrupt.assert_called_once_with("gateway shutdown", tool_reason="gateway shutdown")
+
 
 
 class TestShutdownInterruptReachesEveryApiTurn:
+    @pytest.mark.parametrize("late_outcome", ["success", "failure"])
+    @pytest.mark.asyncio
+    async def test_shutdown_terminalizes_durable_run_before_late_completion(
+        self, tmp_path, late_outcome
+    ):
+        runner, _adapter = make_restart_runner()
+        api = APIServerAdapter(PlatformConfig(enabled=True))
+        api._run_idempotency_store.close()
+        api._run_idempotency_store = RunIdempotencyStore(str(tmp_path / "idem.db"))
+        runner.adapters = {Platform.API_SERVER: api}
+        app = _make_admission_app(api)
+
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        agent = _parked_agent(loop, started, release)
+        if late_outcome == "failure":
+            def _late_failure(user_message=None, conversation_history=None, task_id=None):
+                loop.call_soon_threadsafe(started.set)
+                release.wait(_TURN_UNBLOCK_TIMEOUT)
+                raise RuntimeError("late failure")
+
+            agent.run_conversation.side_effect = _late_failure
+        run_id = None
+        try:
+            with patch.object(api, "_create_agent", return_value=agent):
+                async with TestClient(TestServer(app)) as client:
+                    request = asyncio.ensure_future(
+                        client.post(
+                            "/v1/runs",
+                            json={"input": "hello"},
+                            headers={"Idempotency-Key": "shutdown-run"},
+                        )
+                    )
+                    await asyncio.wait_for(started.wait(), _TURN_UNBLOCK_TIMEOUT)
+                    response = await request
+                    assert response.status == 202
+                    run_id = (await response.json())["run_id"]
+
+                    runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
+                    for _ in range(100):
+                        if run_id not in api._active_run_tasks:
+                            break
+                        await asyncio.sleep(0.01)
+        finally:
+            release.set()
+            api._run_idempotency_store.close()
+
+        scope = hashlib.sha256(b"default\0unauthenticated-test-listener").hexdigest()
+        status_store = RunIdempotencyStore(str(tmp_path / "idem.db"))
+        try:
+            record = status_store.status_for_run(scope, run_id)
+        finally:
+            status_store.close()
+        assert record is not None
+        assert record["status"]["status"] == "interrupted"
+        assert record["status"]["last_event"] == "run.interrupted"
+        assert record["status"]["error"] == "Gateway shutdown interrupted the run."
+        assert api._shutdown_interrupted_run_ids == set()
+
     @pytest.mark.asyncio
     async def test_chat_completions_turn_is_interrupted(self):
         """A non-``/v1/runs`` API turn, end to end through the real handler.
@@ -446,9 +537,7 @@ class TestShutdownInterruptReachesEveryApiTurn:
 
                     runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
 
-                    agent.interrupt.assert_called_once_with(
-                        _INTERRUPT_REASON_GATEWAY_SHUTDOWN
-                    )
+                    agent.interrupt.assert_called_once_with(_INTERRUPT_REASON_GATEWAY_SHUTDOWN, tool_reason="gateway shutdown")
                     response = await asyncio.wait_for(request, _TURN_UNBLOCK_TIMEOUT)
                     assert response.status == 200
         finally:
@@ -488,9 +577,7 @@ class TestShutdownInterruptReachesEveryApiTurn:
 
                     runner._interrupt_running_agents(_INTERRUPT_REASON_GATEWAY_SHUTDOWN)
 
-                    agent.interrupt.assert_called_once_with(
-                        _INTERRUPT_REASON_GATEWAY_SHUTDOWN
-                    )
+                    agent.interrupt.assert_called_once_with(_INTERRUPT_REASON_GATEWAY_SHUTDOWN, tool_reason="gateway shutdown")
                     response = await asyncio.wait_for(request, _TURN_UNBLOCK_TIMEOUT)
                     assert response.status == 200
                     await asyncio.wait_for(response.text(), _TURN_UNBLOCK_TIMEOUT)
@@ -533,7 +620,11 @@ class TestShutdownSettleWindow:
 
         settled_at_kill: list = []
 
-        def _spy_kill_all(task_id=None):
+        def _spy_kill_all(task_id=None, **kwargs):
+            # kwargs carry kill_all's keyword-only args; the shutdown sweep
+            # passes source="gateway_shutdown" (#41225) so persisted jobs are
+            # still killed on host exit.
+            assert kwargs.get("source") == "gateway_shutdown", kwargs
             settled_at_kill.append(api.settled)
             return 0
 
@@ -543,7 +634,7 @@ class TestShutdownSettleWindow:
         monkeypatch.setattr(bt_lifecycle, "cleanup_all_browsers", lambda: None)
 
         with patch("gateway.status.remove_pid_file"), \
-             patch("gateway.status.write_runtime_status"), \
+             patch("gateway.status.publish_runtime_status"), \
              patch("cron.scheduler.mark_job_run"):
             await runner.stop()
 
@@ -595,7 +686,7 @@ class TestShutdownSettleWindow:
         monkeypatch.setattr(type(loop), "time", _fast_time)
         try:
             with patch("gateway.status.remove_pid_file"), \
-                 patch("gateway.status.write_runtime_status"), \
+                 patch("gateway.status.publish_runtime_status"), \
                  patch("cron.scheduler.mark_job_run"):
                 await runner.stop()
         finally:
@@ -609,3 +700,17 @@ class TestShutdownSettleWindow:
         ]
 
 
+@pytest.mark.asyncio
+async def test_failed_executor_submission_releases_the_worker_count():
+    """A request that reaches ``run_in_executor`` after ``shutdown_default_executor()`` raises
+    RuntimeError and never runs a worker; the worker-scoped count must not stay elevated for the
+    process lifetime, or the shutdown SessionDB-close gate skips the close forever (#116535)."""
+    baseline = _api_runs.api_worker_live_count()
+
+    class _ShutExecutorLoop:
+        def run_in_executor(self, executor, fn):
+            raise RuntimeError("Executor shutdown has been called")
+
+    with pytest.raises(RuntimeError, match="Executor shutdown"):
+        _api_runs._submit_api_worker(_ShutExecutorLoop(), lambda: None)
+    assert _api_runs.api_worker_live_count() == baseline

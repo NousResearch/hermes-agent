@@ -282,7 +282,7 @@ def test_completion_base_inspection_uses_exact_owner_fallback(tmp_path, monkeypa
         menu = call("complete.path", word="@file:", profile=profile, cwd=None)
         assert base == str(expected)
         assert [item["text"] for item in menu["items"]] == [f"@file:{expected.name}.txt"]
-        explicit = call("complete.path", word="", profile=profile, cwd=str(ambient))
+        explicit = call("complete.path", word="", profile=profile, cwd=str(ambient), cwd_explicit=True)
         assert explicit["sourceCwd"] == str(ambient)
 
 

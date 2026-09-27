@@ -94,7 +94,7 @@ def _observe_terminal_activity(session: dict | None, args: dict | None, result) 
     """Adopt (or switch) the agent worktree from one terminal completion. Returns True when the badge changed.
     Sticky: activity outside any linked worktree (browsing ``/tmp``, the main checkout, another repo) neither adopts
     nor clears — turn settle revalidates. A coding-workspace binding owns the identity; nothing competes with it."""
-    if not session or not _is_local_terminal_backend() or session.get("coding_workspace"):
+    if not session or not _session_is_local_backend(session) or session.get("coding_workspace"):
         return False
     activity = _terminal_activity_cwd(session, args, result)
     if not activity:
@@ -118,7 +118,7 @@ def _revalidate_agent_worktree(session: dict | None) -> bool:
     if not session or not isinstance(session.get("agent_worktree"), dict):
         return False
     current = session["agent_worktree"]
-    tree = _linked_worktree_for(str(current.get("cwd") or "")) if _is_local_terminal_backend() else None
+    tree = _linked_worktree_for(str(current.get("cwd") or "")) if _session_is_local_backend(session) else None
     if tree is None or _agent_worktree_is_own_workspace(session, tree["cwd"]):
         return _set_agent_worktree(session, None)
     return _set_agent_worktree(session, tree)

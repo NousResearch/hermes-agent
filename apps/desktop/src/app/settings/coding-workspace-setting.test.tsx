@@ -9,7 +9,10 @@ const mocks = vi.hoisted(() => ({ read: vi.fn(), save: vi.fn(), error: vi.fn() }
 vi.mock('@/hermes', () => ({
   getHermesConfigRecord: (scope: unknown) => mocks.read(scope),
   saveHermesConfigRecord: (config: unknown, scope: unknown) => mocks.save(config, scope),
-  profileScopeKey: (scope: unknown) => JSON.stringify(scope)
+  profileScopeKey: (scope: unknown) => JSON.stringify(scope),
+  peekConfigReadOrigin: () => undefined,
+  retainConfigReadOrigin: (next: unknown) => next,
+  setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/store/notifications', () => ({ notifyError: (...args: unknown[]) => mocks.error(...args) }))
 vi.mock('@/i18n', async () => {

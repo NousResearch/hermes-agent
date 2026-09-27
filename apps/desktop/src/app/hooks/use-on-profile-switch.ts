@@ -12,7 +12,12 @@ export function useOnProfileSwitch(onSwitch: () => void): void {
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (previousProfile.current === profile) {return}
+    // StrictMode replays mount effects without changing the profile. Counting
+    // effect runs would clear a seeded settings draft and leave it loading.
+    if (previousProfile.current === profile) {
+      return
+    }
+
     previousProfile.current = profile
     onSwitch()
     // Fire on profile change only; onSwitch identity is intentionally ignored.

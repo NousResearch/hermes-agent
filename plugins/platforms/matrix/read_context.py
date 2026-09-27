@@ -15,6 +15,8 @@ from plugins.platforms.matrix.thread_context import (
     history_message,
 )
 
+from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
+
 _MESSAGE_FILTER = json.dumps({"types": ["m.room.message", "m.room.encrypted", "m.sticker"]})
 
 
@@ -111,6 +113,28 @@ async def read_matrix_context(
             skipped += 1
             continue
         events.append(visible)
+
+    targets = [event for event in events if isinstance(event["event_id"], str)]
+    snapshots = await fetch_reactions_for_events(
+        client, room_id, [event["event_id"] for event in targets],
+        limit=50 if kind == "event" else 8,
+    )
+    for event, snapshot in zip(targets, snapshots):
+        if snapshot.reactions:
+            event["reactions"] = [
+                reaction.to_dict(sender_authorized=(
+                    reaction.sender == adapter._user_id or adapter._is_sender_authorized(
+                        reaction.sender, chat_type=chat_type, chat_id=room_id,
+                    ) is True
+                ))
+                for reaction in snapshot.reactions
+            ]
+        if snapshot.truncated:
+            event["reactions_truncated"] = True
+        for reaction_id in snapshot.missing_keys:
+            errors.append({"event_id": reaction_id, "error": "missing decryption keys"})
+        if snapshot.error:
+            errors.append({"event_id": event["event_id"], "error": snapshot.error})
 
     if kind == "event" and not events and not errors:
         return {"error": "Matrix event has no message content"}

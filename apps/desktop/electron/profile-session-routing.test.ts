@@ -20,13 +20,14 @@ import {
   mergeProfileSessionWindow,
   mergeRegistrySessionRows,
   pathWithRemoteOwnerScope,
+  pinnedRegistrySessionDescriptor,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
-  tagRegistrySessionResponse,
-  tagRemoteSessionRows
+  tagRemoteSessionRows,
+  tagSessionResponseOwnership
 } from './profile-session-routing'
 
 test('remote session routing includes the mutation snapshot and session reads, no other child route', () => {
@@ -78,7 +79,10 @@ test('pinned registry aggregation requires the selected profile backend for per-
     {
       connectionId: 'gateway-ssh',
       kind: 'ssh',
-      backends: [{ descriptor: 'research-desc', profileLabel: 'research' }]
+      backends: [
+        { descriptor: 'default-desc', profileLabel: 'default' },
+        { descriptor: 'research-desc', profileLabel: 'research' }
+      ]
     },
     {
       connectionId: 'local',
@@ -96,10 +100,22 @@ test('pinned registry aggregation requires the selected profile backend for per-
   ]
 
   assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'research', sources), true)
-  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'default', sources), false)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'missing', sources), false)
   assert.equal(hasPinnedRegistrySessionSource('local', 'work', sources, false), true)
   assert.equal(hasPinnedRegistrySessionSource('local', 'missing', sources, false), false)
   assert.equal(hasPinnedRegistrySessionSource('gateway-remote', 'any-profile', sources), true)
+  assert.equal(pinnedRegistrySessionDescriptor('gateway-ssh', { profile: 'research' }, sources), 'research-desc')
+  assert.equal(
+    pinnedRegistrySessionDescriptor(
+      'gateway-ssh',
+      { connectionOwnerProfile: 'default', profile: 'research' },
+      sources
+    ),
+    'default-desc'
+  )
+  assert.equal(pinnedRegistrySessionDescriptor('local', { profile: 'work' }, sources), 'work-desc')
+  assert.equal(pinnedRegistrySessionDescriptor('gateway-remote', { profile: 'any-profile' }, sources), 'remote-desc')
+  assert.equal(pinnedRegistrySessionDescriptor('gateway-ssh', { profile: 'missing' }, sources), null)
 })
 
 test('unscoped aggregates include local rows when the primary is remote', () => {
@@ -769,6 +785,7 @@ test('archived merged pages reach every archived row from older and current back
       )
 
       const merged = [...base.sessions].sort((a: any, b: any) => b.last_active - a.last_active)
+
       const response = composeUnifiedSessionResponse(base, merged, offset, 200, base.total, base.profile_totals, [], {
         archivedOnly: true
       })
@@ -966,7 +983,13 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
         ],
         total: 2
       }
-    }
+    },
+    undefined,
+    (sourceRows, descriptor) =>
+      sourceRows.map(row => ({
+        ...(row as Record<string, unknown>),
+        _desktop_route_binding: `${String(descriptor)}:${String((row as Record<string, unknown>).id)}`
+      }))
   )
 
   assert.equal(calls.length, 1)
@@ -976,10 +999,15 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
 
   // The remote's own profile stamps survive; missing stamps get 'default'.
   assert.deepEqual(
-    rows.map(row => [(row as any).id, (row as any).profile, (row as any).connection_id]),
+    rows.map(row => [
+      (row as any).id,
+      (row as any).profile,
+      (row as any).connection_id,
+      (row as any)._desktop_route_binding
+    ]),
     [
-      ['r-1', 'hermes-claude', 'gw-cloud'],
-      ['r-2', 'default', 'gw-cloud']
+      ['r-1', 'hermes-claude', 'gw-cloud', 'cloud-desc:r-1'],
+      ['r-2', 'default', 'gw-cloud', 'cloud-desc:r-2']
     ]
   )
 })
@@ -1046,42 +1074,104 @@ test('registry paging and splicing keep same-id sessions from different profiles
 })
 
 test('registry-pinned session responses retain their owning connection', () => {
-  const sidebar = tagRegistrySessionResponse(
+  const bindRows = (rows: unknown[]) =>
+    rows.map(row => ({
+      ...(row as Record<string, unknown>),
+      _desktop_route_binding: `bound:${String((row as Record<string, unknown>).id)}`
+    }))
+
+  const sidebar = tagSessionResponseOwnership(
     '/api/profiles/sessions/sidebar?recents_profile=default',
     {
       recents: { sessions: [{ id: 'remote-chat', profile: 'default' }] },
       cron: { sessions: [{ id: 'remote-cron', profile: 'default' }] },
       messaging: { sessions: [] }
     },
-    'test-amnezia'
+    'test-amnezia',
+    bindRows
   ) as any
 
   assert.equal(sidebar.recents.sessions[0].connection_id, 'test-amnezia')
+  assert.equal(sidebar.recents.sessions[0]._desktop_route_binding, 'bound:remote-chat')
   assert.equal(sidebar.cron.sessions[0].connection_id, 'test-amnezia')
 
-  const aggregate = tagRegistrySessionResponse(
+  const aggregate = tagSessionResponseOwnership(
     '/api/profiles/sessions?profile=all',
     { sessions: [{ id: 'remote-profile-chat', profile: 'research' }] },
-    'test-amnezia'
+    'test-amnezia',
+    bindRows
   ) as any
 
   assert.equal(aggregate.sessions[0].connection_id, 'test-amnezia')
+  assert.equal(aggregate.sessions[0]._desktop_route_binding, 'bound:remote-profile-chat')
 
-  const single = tagRegistrySessionResponse(
+  const single = tagSessionResponseOwnership(
     '/api/sessions/remote-chat?profile=default',
     { id: 'remote-chat', profile: 'default' },
-    'test-amnezia'
+    'test-amnezia',
+    bindRows
   ) as any
 
   assert.equal(single.connection_id, 'test-amnezia')
+  assert.equal(single._desktop_route_binding, 'bound:remote-chat')
+})
+
+test('legacy session responses bind every returned shape without claiming a registry connection', () => {
+  const bindRows = (rows: unknown[]) =>
+    rows.map(row => ({
+      ...(row as Record<string, unknown>),
+      _desktop_route_binding: `legacy:${String((row as Record<string, unknown>).id)}`
+    }))
+
+  const aggregate = tagSessionResponseOwnership(
+    '/api/profiles/sessions?profile=all',
+    { sessions: [{ id: 'aggregate-chat' }] },
+    null,
+    bindRows
+  ) as any
+
+  const sidebar = tagSessionResponseOwnership(
+    '/api/profiles/sessions/sidebar?recents_profile=all',
+    {
+      recents: { sessions: [{ id: 'recent-chat' }] },
+      cron: { sessions: [{ id: 'cron-chat' }] },
+      messaging: { sessions: [{ id: 'message-chat' }] }
+    },
+    null,
+    bindRows
+  ) as any
+
+  const single = tagSessionResponseOwnership(
+    '/api/sessions/single-chat?profile=default',
+    { id: 'single-chat' },
+    null,
+    bindRows
+  ) as any
+
+  assert.deepEqual(
+    [
+      aggregate.sessions[0],
+      sidebar.recents.sessions[0],
+      sidebar.cron.sessions[0],
+      sidebar.messaging.sessions[0],
+      single
+    ].map(row => [row._desktop_route_binding, row.connection_id]),
+    [
+      ['legacy:aggregate-chat', undefined],
+      ['legacy:recent-chat', undefined],
+      ['legacy:cron-chat', undefined],
+      ['legacy:message-chat', undefined],
+      ['legacy:single-chat', undefined]
+    ]
+  )
 })
 
 test('registry response ownership tagging ignores non-session payloads and transcript messages', () => {
   const status = { ok: true }
   const messages = { messages: [{ id: 'message-1' }], session_id: 'remote-chat' }
 
-  assert.equal(tagRegistrySessionResponse('/api/status', status, 'test-amnezia'), status)
-  assert.equal(tagRegistrySessionResponse('/api/sessions/remote-chat/messages', messages, 'test-amnezia'), messages)
+  assert.equal(tagSessionResponseOwnership('/api/status', status, 'test-amnezia'), status)
+  assert.equal(tagSessionResponseOwnership('/api/sessions/remote-chat/messages', messages, 'test-amnezia'), messages)
   assert.equal((messages.messages[0] as any).connection_id, undefined)
 })
 

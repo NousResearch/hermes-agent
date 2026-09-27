@@ -109,6 +109,7 @@ import {
 } from '@/store/session-removal'
 import {
   requestForSessionProfile,
+  sessionMutationScopeFromRow,
   type SessionOwnerRoute,
   sessionOwnerRouteFromRow,
   type SessionOwnerScope,
@@ -152,6 +153,7 @@ import {
 } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
+import { archiveSessionWithOwner } from './archive-owner'
 import { branchThroughRowId } from './branch-boundary'
 import { branchCreateKey } from './branch-create-key'
 import type { SessionCreateOverrides } from './create-overrides'
@@ -190,6 +192,7 @@ import {
 } from './resume-reconcile'
 import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
+import { applyStoredUsage } from './stored-usage'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -266,15 +269,6 @@ export interface BranchLoadedSessionOptions {
 // How long we keep creatingSessionRef after create/fork navigate before giving up
 // if the router never lands on the pending stored id (stuck navigate / lost race).
 const CREATE_GUARD_RELEASE_MS = 3_000
-
-// Reflect a stored row's persisted token counts into the live usage atom
-// (total is derived, so callers can't drift it out of sync with input/output).
-function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?: number | null }) {
-  const input = stored.input_tokens || 0
-  const output = stored.output_tokens || 0
-
-  setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
-}
 
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
@@ -2831,6 +2825,7 @@ export function useSessionActions({
       creatingSessionRef,
       ensureSessionState,
       navigate,
+      releaseCreatingSessionGuard,
       requestGateway,
       resumeSession,
       selectedStoredSessionIdRef,
@@ -3061,12 +3056,8 @@ export function useSessionActions({
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
 
-      const removedOwner: SessionOwnerScope = removed?.connection_id
-        ? {
-            connectionId: removed.connection_id,
-            profile: removed.profile || 'default'
-          }
-        : profile
+      const removedOwner: SessionOwnerScope = sessionOwnerRouteFromRow(removed) ?? profile
+      const removedMutationOwner = sessionMutationScopeFromRow(removed) ?? profile
 
       const previousArchived = $archivedSessions.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
@@ -3074,6 +3065,10 @@ export function useSessionActions({
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
       const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
 
+      // Pin sync resolves the immutable mutation owner synchronously from the
+      // loaded row. Remove the pin before dropping that row, or the implicit
+      // unpin falls back to the ambient gateway.
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
       dropListedSession(storedSessionId)
       $archivedSessions.set(previousArchived.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       // Evict from the project tree's optimistic layer too (the backend snapshot
@@ -3082,7 +3077,6 @@ export function useSessionActions({
       // the delete RPC is in flight, so a racing refresh can't flash it back.
       tombstoneSessions(removedIds)
       beginSessionMutation(removedIds)
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
 
       // Tear down before awaiting so the route effect can't resume the
       // doomed session via the stale /<sid> URL.
@@ -3134,7 +3128,7 @@ export function useSessionActions({
           }).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId, removedOwner)
+        await deleteSession(storedSessionId, removedMutationOwner)
 
         dropTranscriptTailEverywhere(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll
@@ -3263,18 +3257,21 @@ export function useSessionActions({
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
       const archivedIds = [storedSessionId, archived?.id, archived?._lineage_root_id]
 
+      // Pin sync resolves the immutable mutation owner synchronously from the
+      // loaded row. Remove the pin before dropping that row, or the implicit
+      // unpin falls back to the ambient gateway.
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
       // Soft-hide: drop from every sidebar slice immediately, keep the data.
       dropListedSession(storedSessionId)
       tombstoneSessions(archivedIds)
       beginSessionMutation(archivedIds)
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
         startFreshSessionDraft(true)
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, profile)
+        await archiveSessionWithOwner(storedSessionId, archived, profile, setSessionArchived)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedIds, profile)
@@ -3321,9 +3318,10 @@ export function useSessionActions({
 
       const archived = $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
       const profile = archived?.profile?.trim() || undefined
+      const owner = sessionMutationScopeFromRow(archived) ?? profile
 
       try {
-        await setSessionArchived(storedSessionId, false, profile)
+        await setSessionArchived(storedSessionId, false, owner)
 
         // Drop the archived-view row first so the view reflects the restore
         // even when the session cannot be re-listed below (e.g. it belongs to

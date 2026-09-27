@@ -29,7 +29,11 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
-import { $workspaceOwnerLabels, workspaceOwnerTitle, workspaceSessionRenameable } from '@/components/pane-shell/workspace-scope'
+import {
+  $workspaceOwnerLabels,
+  workspaceOwnerTitle,
+  workspaceSessionRenameable
+} from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
@@ -774,10 +778,16 @@ export function stackSessionTilesIntoMain(): void {
  *  updates in other sessions) — for a context menu that's almost never open.
  *  Same class as the TreeGroup fix (#72245): derive narrowly, bail out unless
  *  the derived values change. */
-function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: string; renameable: boolean; title: string } {
-  const cache = useRef<
-    { key: string; value: { pinId: string; profile?: string; renameable: boolean; title: string } } | null
-  >(null)
+function useTileMenuRow(storedSessionId: string): {
+  pinId: string
+  profile?: string
+  renameable: boolean
+  title: string
+} {
+  const cache = useRef<{
+    key: string
+    value: { pinId: string; profile?: string; renameable: boolean; title: string }
+  } | null>(null)
 
   const subscribe = useCallback((onChange: () => void) => {
     const offSessions = $sessions.listen(onChange)

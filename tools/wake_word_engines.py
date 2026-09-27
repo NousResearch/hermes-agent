@@ -198,8 +198,28 @@ class _SherpaKwsEngine(_Engine):
             for prof, p in ww.enrolled_profile_phrases().items():
                 phrase_map.setdefault(p.strip(), prof)
         phrases = list(phrase_map)
-        tokens = text2token([p.upper() for p in phrases], tokens=str(d / "tokens.txt"), tokens_type="bpe",
-                            bpe_model=str(d / "bpe.model"))
+        # Model dirs ship one of two tokenizers: the classic bpe layout (bpe.model beside
+        # tokens.txt) or the zh-en / wenetspeech phone layout, whose *.phone lexicon needs
+        # phone+ppinyin. Hard-coding "bpe" made every phone-layout model (the shipped
+        # zipformer-zh-en KWS model among them) crash on the missing bpe.model, so pick the
+        # layout that is actually on disk (#110003).
+        bpe_model = d / "bpe.model"
+        if bpe_model.exists():
+            tokens = text2token([p.upper() for p in phrases], tokens=str(d / "tokens.txt"),
+                                tokens_type="bpe", bpe_model=str(bpe_model))
+        else:
+            lexicon = next(iter(sorted(d.glob("*.phone"))), None)
+            if lexicon is None:
+                raise RuntimeError(
+                    f"sherpa KWS model at {d} ships neither bpe.model nor a *.phone lexicon "
+                    "(one of the two layouts is required)")
+            try:
+                tokens = text2token([p.upper() for p in phrases], tokens=str(d / "tokens.txt"),
+                                    tokens_type="phone+ppinyin", lexicon=str(lexicon))
+            except ImportError as exc:  # pypinyin backs sherpa's ppinyin tokenizer
+                raise RuntimeError(
+                    f"sherpa KWS model at {d} uses the phone+ppinyin layout, which needs the "
+                    "'pypinyin' package (installed by the wake-sherpa extra)") from exc
         # sherpa keyword entries reject spaces in the @display-name; underscore them and
         # map display → profile for match routing.
         self._display_to_profile: Dict[str, str] = {}

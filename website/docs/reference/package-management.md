@@ -265,7 +265,15 @@ $env:HERMES_RUNTIME_DIR = Join-Path $env:HERMES_HOME 'tools'
 
 `HERMES_RUNTIME_DIR` in these examples is a process-local development override.
 It makes the bootstrap and PM use the same writable store. Do not persist a
-path into an installed MSIX or macOS bundle. Activation runs the setup script's
+path into an installed MSIX or macOS bundle.
+
+The store is machine-scoped: `$HERMES_HOME/tools` is the right slot only when
+the home IS the machine root. Two shapes fold away from it —
+`HERMES_HOME=<root>/profiles/<name>` resolves to `<root>/tools` (a named
+profile shares its root's store) and any home under the platform default
+(`~/.hermes/...`) to that default. Leave `HERMES_RUNTIME_DIR` unset and let
+`get_default_hermes_root()` (mirrored by the bootstraps) resolve the fold.
+Activation runs the setup script's
 runtime-only path to provision tools and sync the `all` Python extra. It does
 not select `dev` or install JS workspaces. It maintains installation-local
 commands and repairs existing owned PATH wrappers, but does not create new PATH

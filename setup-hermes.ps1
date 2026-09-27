@@ -15,6 +15,227 @@
 param([switch]$RuntimeOnly, [string]$TestExtras = '')
 $ErrorActionPreference = 'Stop'
 
+# The MACHINE-scoped bootstrap root: HERMES_HOME is the PROFILE home, but the
+# store is shared by every profile, so this fold mirrors
+# get_default_hermes_root() (<root>\profiles\<name> and anything under the
+# platform default fold back to the root); byte-identical to the twin in
+# scripts/install.ps1 (the mirror-body test compares both with pm's answer). A
+# stamped ``runtimeDir`` is not yet readable here (no Python yet); a sealed
+# payload's writable store folds to this same root, so one branch covers both.
+# HERMES_RUNTIME_DIR remains the explicit override.
+# --- BEGIN store-root resolver (mirrored in scripts/install.ps1) ---
+function Expand-HermesHomeValue {
+    # os.path.expandvars + expanduser for both parameter styles: %VAR% on
+    # Windows, $VAR/${VAR} on POSIX (pwsh) -- and an UNSET name stays literal,
+    # the way expandvars keeps it. A leading ~ becomes the home.
+    param([string]$Value)
+    $pattern = '%([^%]+)%|\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)'
+    $Value = [regex]::Replace($Value, $pattern, {
+        param($m)
+        $name = if ($m.Groups[1].Success) { $m.Groups[1].Value }
+                elseif ($m.Groups[2].Success) { $m.Groups[2].Value }
+                else { $m.Groups[3].Value }
+        $v = [Environment]::GetEnvironmentVariable($name)
+        if ($null -eq $v) { $m.Value } else { $v }
+    })
+    if ($Value -eq '~' -or $Value.StartsWith('~/') -or $Value.StartsWith('~\')) {
+        if ($HOME) { $Value = $HOME + $Value.Substring(1) }
+    }
+    return $Value
+}
+function _HermesNormPath {
+    # Lexical Path normalization: drop "." segments and repeated separators,
+    # the way Path does before the fold compares parents. Exactly TWO leading
+    # separators are kept (POSIX defines that form; Windows reads it as UNC);
+    # three or more collapse to one -- pathlib folds neither differently. ".."
+    # is kept: pathlib resolves it lexically to nothing here either.
+    param([string]$Value, [string]$Sep)
+    $isWin = $Sep -eq '\'
+    $prefix = ''
+    $body = $Value
+    if ($isWin) {
+        if ($body -match '^[A-Za-z]:') { $prefix = $body.Substring(0, 2); $body = $body.Substring(2) }
+        $stripped = $body.TrimStart('\', '/')
+        $leading = $body.Length - $stripped.Length
+        if ($leading -ge 1 -and $prefix -eq '') {
+            if ($leading -eq 2) { $prefix = '\\' } else { $prefix = '\' }
+        }
+        $body = $stripped
+    } else {
+        $stripped = $body.TrimStart('/')
+        $leading = $body.Length - $stripped.Length
+        if ($leading -ge 1) {
+            if ($leading -eq 2) { $prefix = '//' } else { $prefix = '/' }
+        }
+        $body = $stripped
+    }
+    # POSIX does not treat a backslash as a separator -- only Windows does.
+    $splitPattern = if ($isWin) { '[\\/]' } else { '/' }
+    $parts = @($body -split $splitPattern | Where-Object { $_ -and $_ -ne '.' })
+    if (-not $parts -or $parts.Count -eq 0) { return $prefix }
+    $joined = $parts -join $Sep
+    if ($prefix -and -not $prefix.EndsWith('\') -and -not $prefix.EndsWith('/')) {
+        return $prefix + $Sep + $joined
+    }
+    return $prefix + $joined
+}
+function _HermesResolvePath {
+    # What Path.resolve(strict=False) yields: the realpath of the longest
+    # EXISTING directory prefix (reparse points followed -- a link that leaves
+    # the default home can never pass the containment check), with the
+    # remaining components applied lexically and ".." popping the resolved
+    # parent. Relative input is joined to the process cwd first, like Path.
+    param([string]$Value, [string]$Sep)
+    $work = ($Value -replace '/', $Sep)
+    if (-not [System.IO.Path]::IsPathRooted($work)) {
+        $work = (Join-Path (Get-Location).Path $work) -replace '/', $Sep
+    }
+    # A bare root resolves to itself.
+    if ($work -match '^[A-Za-z]:$' -or $work -match '^[A-Za-z]:[\\/]$' -or $work -eq $Sep) {
+        if ($work.EndsWith($Sep)) { return $work }
+        return $work + $Sep
+    }
+    # UNC root (\\server\share): the share is the anchor -- the existence
+    # walk must not rise above it (a share may not exist on this host), and
+    # ".." must not pop past it either (pathlib keeps it, like a drive root).
+    $uncAnchor = if ($work -match '^\\\\[^\\/]+[\\/][^\\/]+') { $matches[0] } else { '' }
+    $dir = $work.TrimEnd($Sep)
+    $tail = @()
+    # Test-Path resolves "."/".." first (missing "x" in "x/.." tests True), so
+    # pop lexically while dots remain — a ".." left in $dir flips the
+    # containment fold (ellipsis_mid_* rows). Leaf via LastIndexOf: Split-Path
+    # -Leaf resolves a trailing ".." first (ellipsis_missing_mid).
+    while ($true) {
+        if ($uncAnchor -and $dir -eq $uncAnchor) { break }
+        $hasDots = $dir -match '(^|[\\/])\.\.?([\\/]|$)'
+        if (-not $hasDots -and (Test-Path -LiteralPath $dir -PathType Container)) { break }
+        $idx = $dir.LastIndexOf($Sep)
+        if ($idx -lt 0) { break }
+        $leaf = $dir.Substring($idx + 1)
+        if ($leaf -eq '') { break }  # already at a root: nothing left to pop
+        $dir = if ($idx -eq 0) { $Sep } else { $dir.Substring(0, $idx) }
+        # Bare "C:" is Get-Item's current dir on the drive; keep the root form.
+        if ($Sep -eq '\' -and $dir -match '^[A-Za-z]:$') { $dir = $dir + $Sep }
+        $tail = , $leaf + $tail
+    }
+    if (-not $dir) { $dir = $Sep }
+    # Follow reparse points on the existing anchor (PS 5.1-compatible).
+    $real = $dir
+    $item = Get-Item -LiteralPath $real -Force -ErrorAction SilentlyContinue
+    while ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        $target = $item.Target
+        if (-not $target) { break }
+        if (-not [System.IO.Path]::IsPathRooted(($target -replace '/', $Sep))) {
+            $target = Join-Path (Split-Path -Parent $real) $target
+        }
+        $real = $target -replace '/', $Sep
+        $item = Get-Item -LiteralPath $real -Force -ErrorAction SilentlyContinue
+    }
+    $baseComps = @(($real -split '[\\/]' | Where-Object { $_ }))
+    # The rebuild restores the full prefix: collapsing to one leading
+    # separator would turn \\server\share into \server\share, a different path.
+    $uncPrefix = ''
+    $prefix = ''
+    $skip = 0
+    $popFloor = 0
+    if ($baseComps.Count -ge 2 -and $real -match '^\\\\') {
+        $uncPrefix = '\\' + (@($baseComps[0..1]) -join $Sep)
+        $skip = 2
+        $popFloor = 2
+    } elseif ($baseComps.Count -gt 0 -and $real -match '^[A-Za-z]:') {
+        $prefix = $baseComps[0]
+        $skip = 1
+        $popFloor = 1
+    }
+    $out = @()
+    foreach ($c in $tail) {
+        if ($c -eq '.') { continue }
+        if ($c -eq '..') {
+            if ($out.Count -gt 0) {
+                if ($out.Count -eq 1) { $out = @() } else { $out = @($out[0..($out.Count - 2)]) }
+            } elseif ($baseComps.Count -gt $popFloor) {
+                if ($baseComps.Count -eq 1) { $baseComps = @() } else { $baseComps = @($baseComps[0..($baseComps.Count - 2)]) }
+            }
+            # ".." below the anchor stays there, like Path("/..") or Path("C:/..")
+        } else {
+            $out += $c
+        }
+    }
+    $bodyComps = @($baseComps | Select-Object -Skip $skip)
+    $joined = (@($bodyComps) + $out) -join $Sep
+    if ($uncPrefix) { return ($uncPrefix + $Sep + $joined).TrimEnd($Sep) }
+    if ($prefix) { return $prefix + $Sep + $joined }
+    return $Sep + $joined
+}
+function Get-HermesRoot {
+    $sep = [string][System.IO.Path]::DirectorySeparatorChar
+    $suffix = if ($env:HERMES_DATA_DIR_SUFFIX) { $env:HERMES_DATA_DIR_SUFFIX } else { '' }
+    # _get_platform_default_hermes_home(): LOCALAPPDATA first, else the platform
+    # default home of the current OS -- AppData\Local on Windows, ~/.hermes on POSIX.
+    $default = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "hermes$suffix" }
+               elseif ($sep -eq '\') { Join-Path $HOME "AppData/Local/hermes$suffix" }
+               else { Join-Path $HOME ".hermes$suffix" }
+    # get_default_hermes_root() decides containment on RESOLVED paths (so a
+    # ".." or a link leaving the default home cannot pass a prefix check) but
+    # folds and RETURNS the lexical form, which keeps ".." verbatim.
+    $defaultLex = _HermesNormPath (Expand-HermesHomeValue $default) $sep
+    $defaultLex = $defaultLex.TrimEnd('/', '\')
+    $defaultRes = _HermesResolvePath $defaultLex $sep
+    $rootLex = if ($env:HERMES_HOME) { Expand-HermesHomeValue $env:HERMES_HOME } else { $defaultLex }
+    $rootLex = (_HermesNormPath $rootLex $sep).TrimEnd('/', '\')
+    # '.' / './' normalize to nothing; answer '.' like Path('.') — an empty
+    # root would make the store land on the drive root.
+    if (-not $rootLex) { $rootLex = '.' }
+    $rootRes = _HermesResolvePath $rootLex $sep
+    # Mirror pathlib's own comparison: Windows accepts either separator and folds
+    # case, POSIX does neither. A separator- or case-sensitive StartsWith here
+    # skips the fold and stages uv inside the home instead of at the machine
+    # root; PowerShell's bare -eq is case-insensitive on POSIX, where pathlib is
+    # not, so the fold flips by platform the same way resolve()+normcase does.
+    $root = $rootLex
+    $default = $defaultLex
+    if ($sep -eq '\') {
+        $rootRes = $rootRes.Replace('/', '\')
+        $defaultRes = $defaultRes.Replace('/', '\')
+    }
+    $cmp = if ($sep -eq '\') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if ($rootRes.Equals($defaultRes, $cmp) -or $rootRes.StartsWith($defaultRes + $sep, $cmp)) { return $default }
+    $parent = Split-Path -Parent $root
+    # `profiles` stays -ceq: hermes_constants compares the NAME as a str, which is
+    # case-sensitive on every platform. Lexical leaf: Split-Path -Leaf resolves a
+    # trailing ".." and would misread a "profiles/.." parent (ellipsis_profile_leaf).
+    $pleaf = ''
+    if ($parent) {
+        $pidx = $parent.LastIndexOf($sep)
+        $pleaf = if ($pidx -ge 0) { $parent.Substring($pidx + 1) } else { $parent }
+    }
+    if ($pleaf -ceq 'profiles') {
+        $profileRoot = Split-Path -Parent $parent
+        if (-not $profileRoot) {
+            $profileRoot = if ($root.StartsWith($sep)) { $sep } else { '.' }
+        }
+        return $profileRoot
+    }
+    return $root
+}
+# --- END store-root resolver ---
+
+# --- BEGIN uv state pins (mirrored in scripts/install.ps1) ---
+function Set-UvStatePins {
+    # uv's default state (%LOCALAPPDATA%\uv and its cache) belongs to the USER's
+    # uv (#101269); pin both to the MACHINE root -- not a profile home. The
+    # cache keeps its OWN slot -- pm seeds <root>\cache\uv once, skipping
+    # entries that already exist, so bootstrap bytes there first would mark a
+    # partial seed done -- while nothing seeds the python dir the `find` below
+    # reads back.
+    $hermesRoot = Get-HermesRoot
+    $cache = Join-Path $hermesRoot 'cache'
+    $env:UV_CACHE_DIR = Join-Path $cache 'uv-bootstrap'
+    $env:UV_PYTHON_INSTALL_DIR = Join-Path $cache 'uv-python'
+}
+# --- END uv state pins ---
+Set-UvStatePins
+
 Write-Host ''
 Write-Host 'Hermes Agent Setup' -ForegroundColor Cyan
 Write-Host ''
@@ -24,7 +245,9 @@ $lockPath = Join-Path $repo 'pm/lock.json'
 if (-not (Test-Path $lockPath)) { throw 'pm/lock.json not found' }
 $lock = Get-Content -Raw $lockPath | ConvertFrom-Json
 
-$machineArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
+# -ErrorAction SilentlyContinue: a restricted host must fall back to x64 like
+# install.ps1's Get-WindowsArch, not die on the registry probe.
+$machineArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue).PROCESSOR_ARCHITECTURE
 $arch = if ($machineArch -eq 'ARM64') { 'arm64' } else { 'x64' }
 $target = "win32-$arch"
 
@@ -38,9 +261,9 @@ if (-not $artifact) { $artifact = $uvPin.artifacts.any }
 if (-not $artifact) { throw "no uv artifact for $target" }
 
 $pyPin = $lock.packages.python
-$pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { '3.11' }
+$pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { '3.14' }
 
-$store = if ($env:HERMES_RUNTIME_DIR) { $env:HERMES_RUNTIME_DIR } else { Join-Path $HOME '.hermes/tools' }
+$store = if ($env:HERMES_RUNTIME_DIR) { $env:HERMES_RUNTIME_DIR } else { Join-Path (Get-HermesRoot) 'tools' }
 $entry = Join-Path $store "uv-$($uvPin.version)-$target"
 $uv = Join-Path $entry 'uv.exe'
 

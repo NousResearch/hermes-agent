@@ -5,6 +5,7 @@ import { getSkills } from '@/api/skills'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -131,6 +132,7 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   return (
     <Panel closeLabel={t.agents.close} onClose={onClose}>
       <div className="grid min-h-0 gap-6 overflow-y-auto">
+        <button className="justify-self-start rounded-xl border border-border bg-background px-4 py-3 text-sm font-medium" onClick={() => { onClose(); revealTreePane('bots') }} type="button">Podłącz bota lub wybierz agenta</button>
           <section className="grid gap-2"><h2 className="text-sm font-semibold">Praca agentów</h2>{tree.length === 0 ? <PanelEmpty description={t.agents.emptyDesc} icon="hubot" title={t.agents.emptyTitle} /> : <><PanelHeader subtitle={t.agents.subtitle} title={t.agents.title} /><SubagentTree tree={tree} /></>}</section>
         <section className="grid gap-3 border-t border-border/60 pt-4">
           <div><h1 className="text-base font-semibold">Gotowe role asystenta</h1><p className="text-xs text-muted-foreground">Wybierz rolę i wpisz zadanie. Czesiek koordynuje, subagent wykonuje. Zmiany dotyczą nowego zadania.</p></div>

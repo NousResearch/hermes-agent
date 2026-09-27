@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 /**
  * The dashboard's right-rail cards: the model and work mode, live AI news and
  * the agents (profiles) on this machine.
@@ -6,8 +7,6 @@
  * aggregated feeds, the profile list — and each owns its empty and failure
  * states, so one broken source never blanks the rail.
  */
-
-import { useStore } from '@nanostores/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ReactNode, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
@@ -32,6 +31,7 @@ import type { ModelOptionProvider } from '@/types/hermes'
 
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../routes'
 
+import { LiveModelPicker } from './live-model-picker'
 import {
   JARVIS_WORK_MODES,
   type JarvisWorkModeId,
@@ -100,7 +100,7 @@ function shortModel(model: string): string {
 }
 
 export function JarvisModelCard({ connected, onSelectModel, providers, requestGateway }: JarvisModelCardProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const copy = t.jarvisShell.home.model
   const navigate = useNavigate()
   const currentModel = useStore($currentModel)
@@ -160,6 +160,8 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
       testId="model"
       title={copy.title}
     >
+      <LiveModelPicker connected={connected} />
+      <p className="mb-2 text-xs font-semibold text-(--ui-text-secondary)">{t.jarvisShell.home.model.modeLabel} · Hermes</p>
       <div className="jarvis-glass mb-3 flex min-w-0 items-center gap-3 rounded-2xl px-3 py-2">
         <Brain className="size-4 shrink-0 text-(--ui-accent)" />
         <div className="min-w-0">
@@ -199,16 +201,16 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
       </p>
       {openRouter.connected ? (
         openRouter.presets.length > 0 ? (
-          <ul className="grid gap-1">
+          <ul className="grid min-w-0 gap-2">
             {openRouter.presets.map(preset => {
               const active = currentProvider === OPENROUTER_PROVIDER_SLUG && currentModel === preset.model
 
               return (
-                <li key={preset.id}>
+                <li className="min-w-0" key={preset.id}>
                   <button
                     aria-pressed={active}
                     className={cn(
-                      'flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none transition-colors focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)',
+                      'flex min-h-11 w-full min-w-0 items-center gap-2 rounded-xl border border-(--glass-border) px-2 py-2 text-left text-xs outline-none transition-colors focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-(--ui-accent)',
                       active ? 'bg-(--ui-accent)/12 text-(--ui-text-primary)' : 'hover:bg-(--chrome-action-hover)'
                     )}
                     disabled={!connected || !onSelectModel || pending !== null}
@@ -217,7 +219,7 @@ export function JarvisModelCard({ connected, onSelectModel, providers, requestGa
                     type="button"
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">{presetLabel(preset.id)}</span>
+                      <span className="block whitespace-normal leading-snug font-medium">{presetLabel(preset.id)}</span>
                       <span className="block truncate text-xs text-(--ui-text-secondary)">
                         {shortModel(preset.model)}
                       </span>

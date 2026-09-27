@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
-import { Monitor } from '@/lib/icons'
 import { $petOverlayActive, popOutDesktopOrb } from '@/store/pet-overlay'
 
 import { desktopOrbCopy } from './desktop-orb-copy'
@@ -32,7 +31,7 @@ export function DesktopOrbToggle({ compact = false }: { compact?: boolean }) {
       title={label}
       variant="secondary"
     >
-      <Monitor />
+      <span aria-hidden="true" className="jarvis-mini-orb" />
       {compact ? null : label}
     </Button>
   )

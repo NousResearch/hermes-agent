@@ -51,10 +51,20 @@ export function getRealtimeVoiceStatus(provider?: LiveVoiceProviderId): Promise<
   })
 }
 
-export function createRealtimeVoiceSession(): Promise<RealtimeVoiceSessionResponse> {
-  return hermesApi<RealtimeVoiceSessionResponse>({
-    ...profileScoped(),
-    method: 'POST',
-    path: '/api/voice/realtime/session'
-  })
+export async function createRealtimeVoiceSession(): Promise<RealtimeVoiceSessionResponse> {
+  try {
+    return await hermesApi<RealtimeVoiceSessionResponse>({
+      ...profileScoped(),
+      method: 'POST',
+      path: '/api/voice/realtime/session'
+    })
+  } catch (error) {
+    if (error instanceof Error && /\b(404|405)\b/.test(error.message)) {
+      throw new Error(
+        'Wybrany Hermes nie obsługuje rozmowy Live. Uruchom najnowszą wersję Agenta Cześka z silnikiem dołączonym do instalatora. Twoje klucze i rozmowy pozostają w profilu.'
+      )
+    }
+
+    throw error
+  }
 }

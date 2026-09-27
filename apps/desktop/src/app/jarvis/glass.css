@@ -4,9 +4,9 @@
    Tokens flip with the theme; components only pick a class. */
 
 :root {
-  --glass-bg: rgb(255 255 255 / 0.62);
+  --glass-bg: rgb(255 255 255 / 0.88);
   --glass-bg-strong: rgb(255 255 255 / 0.8);
-  --glass-border: rgb(15 23 42 / 0.09);
+  --glass-border: rgb(15 23 42 / 0.18);
   --glass-highlight: rgb(255 255 255 / 0.95);
   --glass-shadow: 0 12px 32px -18px rgb(30 41 82 / 0.35);
   --glass-blur: 22px;
@@ -15,9 +15,9 @@
 }
 
 :root.dark {
-  --glass-bg: rgb(22 30 62 / 0.38);
+  --glass-bg: rgb(22 30 62 / 0.88);
   --glass-bg-strong: rgb(18 25 52 / 0.62);
-  --glass-border: rgb(150 170 255 / 0.12);
+  --glass-border: rgb(150 170 255 / 0.28);
   --glass-highlight: rgb(255 255 255 / 0.07);
   --glass-shadow: 0 20px 44px -22px rgb(0 0 0 / 0.8);
   --aurora-a: rgb(0 170 255 / 0.12);
@@ -129,4 +129,17 @@
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+}
+
+.jarvis-home__caption {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(18px);
+}
+.jarvis-home__actions { margin-top: 6px; margin-bottom: 12px; }
+.jarvis-mini-orb {
+  display: block; width: 26px; height: 26px; border-radius: 50%;
+  background: radial-gradient(circle at 30% 25%, white, #7dd3fc 24%, #6366f1 65%, #312e81);
+  box-shadow: inset -3px -3px 6px rgb(30 27 75 / .35), 0 2px 7px rgb(79 125 255 / .3);
+  border: 1px solid var(--glass-highlight);
 }

@@ -17,6 +17,7 @@ import {
   Monitor,
   Moon,
   Network,
+  Plus,
   Search,
   Settings2,
   Sparkles,
@@ -28,7 +29,7 @@ import {
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { openCommandPalette } from '@/store/command-palette'
-import { $activeGatewayProfile, $profiles, profileLabel } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, newSessionInProfile, profileLabel } from '@/store/profile'
 import { setSessionPickerOpen } from '@/store/session'
 import { useTheme } from '@/themes/context'
 
@@ -240,12 +241,23 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
                 )
               })}
               {group.id === 'work' ? (
-                <NavButton
-                  active={false}
-                  icon={Clock}
-                  label={locale === 'pl' ? 'Historia' : 'History'}
-                  onClick={() => setSessionPickerOpen(true)}
-                />
+                <>
+                  <NavButton
+                    active={false}
+                    icon={Plus}
+                    label={locale === 'pl' ? 'Nowa sesja' : 'New session'}
+                    onClick={() => {
+                      onSelect('jarvis')
+                      newSessionInProfile($activeGatewayProfile.get() || 'default')
+                    }}
+                  />
+                  <NavButton
+                    active={false}
+                    icon={Clock}
+                    label={locale === 'pl' ? 'Historia' : 'History'}
+                    onClick={() => setSessionPickerOpen(true)}
+                  />
+                </>
               ) : null}
             </div>
           ))}

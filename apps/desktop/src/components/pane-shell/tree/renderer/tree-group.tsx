@@ -32,6 +32,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
+import { $productShellNav } from '@/store/product-shell'
 import { closeAllOpenSessionTiles } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
@@ -236,6 +237,7 @@ export function TreeGroup({
   leftEdge?: boolean
   rightEdge?: boolean
 }) {
+  const productShell = useStore($productShellNav)
   const { t } = useI18n()
   const ref = useRef<HTMLDivElement>(null)
   const stripRef = useRef<HTMLDivElement>(null)
@@ -508,7 +510,7 @@ export function TreeGroup({
           data-panel-header=""
           style={topEdge ? { height: TITLEBAR_HEIGHT } : undefined}
         >
-          {topEdge && leftEdge && (
+          {topEdge && leftEdge && !productShell && (
             <div className="flex shrink-0">
               <div className="w-(--titlebar-controls-left,14px) [-webkit-app-region:drag]" data-window-drag-handle="" />
               <div className="relative w-(--titlebar-controls-width,96px)">

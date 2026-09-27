@@ -364,7 +364,8 @@ import {
   discoverCollaborators,
   type ExistingCollaborator,
   readCollaboratorChoice,
-  saveCollaboratorChoice
+  saveCollaboratorChoice,
+  supportsCzesiekLive
 } from './runtime-collaborator'
 import {
   classifyStoredSecret,
@@ -5039,7 +5040,11 @@ function resolveHermesBackend(backendArgs) {
       }
     }
 
-    if (choice.mode === 'existing') {
+    if (choice.mode === 'existing' && !supportsCzesiekLive(choice.root)) {
+      rememberLog('[runtime] External Hermes lacks Czesiek Live routes; using bundled engine with the same private profile.')
+    }
+
+    if (choice.mode === 'existing' && supportsCzesiekLive(choice.root)) {
       return {
         kind: 'python',
         label: `współpracownik Hermes z ${choice.root}`,

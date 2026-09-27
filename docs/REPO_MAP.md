@@ -68,3 +68,9 @@ Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md
 - `apps/desktop/electron/update-recovery.ts`: kopia aplikacji i danych, przywracanie z zachowaniem obecnej wersji; `recovery-controller.ts` zatrzymuje backend i blokuje równoległy start podczas kopii.
 - `apps/desktop/src/app/settings/recovery-settings.tsx`: wspólny panel kopii w ustawieniach i przy błędzie startu.
 - `apps/desktop/scripts/prepare-clean-windows-test.ps1`: przygotowanie testu w Windows Sandbox. Samo przygotowanie nie jest potwierdzeniem instalacji.
+
+### Rozmowa Live i pulpit
+- `apps/desktop/src/app/jarvis/live-model-picker.tsx`: osobny wybór modelu głosu, zapis przypięty do połączenia i profilu; model wykonawczy pozostaje bez zmian.
+- `apps/desktop/src/app/jarvis/use-live-autostart.ts`: start rozmowy po konfiguracji, raz na profil/połączenie podczas uruchomienia aplikacji; wymaga dostępnego klucza i zgody na mikrofon.
+- `apps/desktop/src/app/jarvis/home-hero.tsx`: orb, przyciski rozmowy i propozycje zadań.
+- Starszy współpracownik bez adaptera Live jest pomijany; aplikacja korzysta z dołączonego silnika. `scripts/smoke-bundled-runtime.mjs` sprawdza także status Live i brak klucza (400 zamiast 405).

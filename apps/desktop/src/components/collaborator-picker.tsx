@@ -79,8 +79,8 @@ export function CollaboratorPicker() {
             : 'Checking the environment…'
           : !items.length
             ? pl
-              ? 'Nie znaleziono gotowej instalacji. Możesz wskazać jej folder lub przygotować nową.'
-              : 'No ready installation found. Choose its folder or prepare a new one.'
+              ? 'Nie znaleziono instalacji zgodnej z rozmową Live. Użyj silnika dołączonego do Cześka — bez pobierania.'
+              : 'No Live-compatible installation found. Use the engine bundled with Czesiek — no download needed.'
             : null}
       </div>
       {items.map(item => (

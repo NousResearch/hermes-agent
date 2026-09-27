@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import * as profiles from '@/store/profile'
 import { ThemeProvider } from '@/themes/context'
 
 import { JarvisShell } from './shell'
@@ -20,14 +21,24 @@ afterEach(() => {
 })
 
 describe('Agent CzesiekShell', () => {
+  it('opens a fresh conversation in the active profile', () => {
+    const start = vi.spyOn(profiles, 'newSessionInProfile').mockImplementation(() => {})
+    renderShell('jarvis')
+    fireEvent.click(screen.getByRole('button', { name: 'Nowa sesja' }))
+    expect(start).toHaveBeenCalledWith(profiles.$activeGatewayProfile.get() || 'default')
+    start.mockRestore()
+  })
+
   it('renders the focused product navigation with 44px targets', () => {
     renderShell('jarvis')
 
     const navigation = screen.getByRole('navigation', { name: 'Główna nawigacja' })
+
     const labels = [
       'Pulpit',
       'Zadania',
       'Agenci',
+      'Nowa sesja',
       'Historia',
       'Moje prompty',
       'Pliki i wyniki',

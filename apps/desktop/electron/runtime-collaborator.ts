@@ -11,6 +11,11 @@ export interface ExistingCollaborator {
 export type CollaboratorChoice = { mode: 'bundled' } | { mode: 'existing'; root: string; python: string }
 const run = promisify(execFile)
 
+/** Older Hermes installations cannot serve the Czesiek Live voice adapter. */
+export function supportsCzesiekLive(root: string): boolean {
+  return fs.existsSync(path.join(root, 'hermes_cli', 'web_routers', 'voice_realtime.py'))
+}
+
 export function readCollaboratorChoice(file: string): CollaboratorChoice | null {
   let choice: CollaboratorChoice | null
 
@@ -21,9 +26,13 @@ export function readCollaboratorChoice(file: string): CollaboratorChoice | null 
     return null
   }
 
-  if (!choice) {return null}
+  if (!choice) {
+    return null
+  }
 
-  if (choice.mode === 'bundled') {return { mode: 'bundled' }}
+  if (choice.mode === 'bundled') {
+    return { mode: 'bundled' }
+  }
 
   if (
     choice.mode === 'existing' &&
@@ -31,8 +40,9 @@ export function readCollaboratorChoice(file: string): CollaboratorChoice | null 
     typeof choice.python === 'string' &&
     fs.existsSync(choice.python) &&
     fs.existsSync(path.join(choice.root, 'hermes_cli/main.py'))
-  )
-    {return choice}
+  ) {
+    return choice
+  }
 
   return null
 }
@@ -51,15 +61,19 @@ export async function discoverCollaborators(roots: string[]): Promise<ExistingCo
   try {
     const results = await Promise.all(
       [...new Set(roots.map(root => path.resolve(root)))].map(async root => {
-        if (!fs.existsSync(path.join(root, 'hermes_cli/main.py'))) {return null}
+        if (!fs.existsSync(path.join(root, 'hermes_cli/main.py')) || !supportsCzesiekLive(root)) {
+          return null
+        }
 
         for (const venv of ['venv', '.venv']) {
           const python = path.join(root, venv, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
 
-          if (!fs.existsSync(python)) {continue}
+          if (!fs.existsSync(python)) {
+            continue
+          }
 
           try {
-            await run(python, ['-c', 'import hermes_cli.main, fastapi, uvicorn'], {
+            await run(python, ['-c', 'import hermes_cli.main, hermes_cli.web_routers.voice_realtime, fastapi, uvicorn'], {
               cwd: root,
               windowsHide: true,
               timeout: 30000,

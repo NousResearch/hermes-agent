@@ -1,8 +1,10 @@
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 const root = path.resolve(process.argv[2] || 'build/runtime')
 const home = fs.mkdtempSync(path.join(process.env.TEMP || '.', 'czesiek-runtime-smoke-'))
+const token = randomUUID()
 const guard = path.join(home, 'offline-guard')
 fs.mkdirSync(guard)
 fs.writeFileSync(
@@ -14,6 +16,7 @@ const env = Object.fromEntries(
 )
 Object.assign(env, {
   HERMES_HOME: home,
+  HERMES_DASHBOARD_SESSION_TOKEN: token,
   HERMES_SERVE_HEADLESS: '1',
   HERMES_DESKTOP: '1',
   PYTHONPATH: guard + ';' + root + '/agent',
@@ -44,9 +47,14 @@ const onData = async data => {
   checking = true
   try {
     const response = await fetch('http://127.0.0.1:' + match[1] + '/api/health')
+    const voice = await fetch('http://127.0.0.1:' + match[1] + '/api/voice/realtime/status', { headers: { 'X-Hermes-Session-Token': token } })
+    const session = await fetch('http://127.0.0.1:' + match[1] + '/api/voice/realtime/session', { method: 'POST', headers: { 'X-Hermes-Session-Token': token } })
+    if (voice.status !== 200 || session.status !== 400) throw new Error(`Live routes: status=${voice.status}, session=${session.status}`)
     console.log(
       JSON.stringify({
         status: response.status,
+        liveStatus: voice.status,
+        liveSessionWithoutKey: session.status,
         profile: home,
         python: root + '/python/python.exe',
         externalPythonNetwork: 'blocked',

@@ -4,7 +4,12 @@ import path from 'node:path'
 
 import { afterEach, expect, test } from 'vitest'
 
-import { discoverCollaborators, readCollaboratorChoice, saveCollaboratorChoice } from './runtime-collaborator'
+import {
+  discoverCollaborators,
+  readCollaboratorChoice,
+  saveCollaboratorChoice,
+  supportsCzesiekLive
+} from './runtime-collaborator'
 
 const roots: string[] = []
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })))
@@ -43,4 +48,12 @@ test('discovery does not offer an incomplete installation or install anything in
   fs.writeFileSync(path.join(root, 'hermes_cli/main.py'), '')
   expect(await discoverCollaborators([root, root])).toEqual([])
   expect(fs.readdirSync(root)).toEqual(['hermes_cli'])
+})
+
+test('Live compatibility rejects upstream engines and accepts the bundled adapter', () => {
+  const root = fixture()
+  expect(supportsCzesiekLive(root)).toBe(false)
+  fs.mkdirSync(path.join(root, 'hermes_cli/web_routers'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'hermes_cli/web_routers/voice_realtime.py'), '')
+  expect(supportsCzesiekLive(root)).toBe(true)
 })

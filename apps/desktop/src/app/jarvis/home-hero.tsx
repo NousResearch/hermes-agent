@@ -19,6 +19,7 @@ import { $jarvisRailVisible } from './focus-mode'
 import { plasmaTone } from './plasma'
 import { JarvisQuickAccess } from './quick-access'
 import { $jarvisUi } from './store'
+import { useLiveAutostart } from './use-live-autostart'
 
 type IconComponent = React.ComponentType<{ className?: string }>
 
@@ -59,6 +60,7 @@ export function JarvisHomeHero({
   onStopListening,
   profileDisplayName
 }: JarvisHomeHeroProps) {
+  useLiveAutostart(connected)
   const { t } = useI18n()
   const copy = t.jarvisShell.home
   const briefingCopy = t.jarvisShell.briefing
@@ -90,31 +92,40 @@ export function JarvisHomeHero({
       <section
         aria-labelledby="jarvis-home-title"
         className={cn(
-          'jarvis-home relative flex w-full max-w-4xl flex-col items-center gap-3 px-4 py-4 text-center [--jarvis-hero-size:min(468px,52vh,88cqw)] @2xl:[--jarvis-hero-size:min(550px,58vh,70cqw)]',
+          'jarvis-home relative flex w-full max-w-4xl flex-col items-center gap-2 px-3 pt-3 pb-24 text-center [--jarvis-hero-size:min(468px,42vh,88cqw)] @2xl:[--jarvis-hero-size:min(550px,46vh,70cqw)]',
           className
         )}
         data-testid="jarvis-home-hero"
       >
-        <div className="flex flex-col items-center gap-2">
+        <div className="jarvis-home__caption flex flex-col items-center gap-2 rounded-2xl px-5 py-3">
           <h1
-            className="text-4xl font-semibold leading-tight tracking-tight text-(--ui-text-primary) @2xl:text-5xl"
+            className="text-2xl font-semibold leading-tight tracking-tight text-(--ui-text-primary) @2xl:text-3xl"
             id="jarvis-home-title"
           >
             {name ? `${name}, ${greeting.charAt(0).toLowerCase()}${greeting.slice(1)}` : greeting}
           </h1>
-          <p className="text-lg text-(--ui-text-tertiary) @2xl:text-2xl">{copy.subtitle}</p>
+          <p className="text-base text-(--ui-text-secondary) @2xl:text-lg">{copy.subtitle}</p>
         </div>
 
-        <div
-          className="jarvis-home__orb relative my-2 grid w-(--jarvis-hero-size) max-w-full shrink-0 place-items-center"
-          data-tone={tone}
-        >
-          <span aria-hidden="true" className="jarvis-home__orbit" />
-          <JarvisCore live taskPhase={state.task.phase} variant="hero" voice={listening ? 'listening' : state.voice} />
+        <div aria-label={copy.actionsLabel} className="jarvis-home__actions flex flex-wrap justify-center gap-2" role="group">
+          {HOME_ACTIONS.map(({ icon: Icon, id }) => (
+            <button
+              className={cn(
+                'jarvis-glass jarvis-glass-hover flex min-h-11 items-center gap-2 rounded-full px-3 text-xs font-medium text-(--ui-text-primary)',
+                FOCUS_RING
+              )}
+              key={id}
+              onClick={() => requestComposerInsert(copy.actions[id].prompt, { mode: 'prefix', target: 'main' })}
+              type="button"
+            >
+              <Icon className="size-4 text-(--ui-accent)" />
+              {copy.actions[id].label}
+            </button>
+          ))}
         </div>
 
         <div className="flex flex-wrap items-center justify-center gap-2">
-          <DesktopOrbToggle />
+          <DesktopOrbToggle compact />
           <Button
             aria-pressed={listening}
             className={cn('min-h-12 rounded-full px-7 text-base font-semibold', !listening && 'jarvis-cta')}
@@ -127,7 +138,7 @@ export function JarvisHomeHero({
             {listening ? copy.stopTalking : copy.talk}
           </Button>
           <Button
-            className="min-h-11 jarvis-glass jarvis-glass-hover rounded-full px-4 text-(--ui-text-primary) px-5"
+            className="min-h-11 jarvis-glass jarvis-glass-hover rounded-full px-4 text-(--ui-text-primary)"
             disabled={!connected}
             onClick={() => requestBriefing({ speak: true })}
             title={briefingCopy.buttonHint}
@@ -140,8 +151,16 @@ export function JarvisHomeHero({
         </div>
 
         <div
+          className="jarvis-home__orb relative my-2 grid w-(--jarvis-hero-size) max-w-full shrink-0 place-items-center"
+          data-tone={tone}
+        >
+          <span aria-hidden="true" className="jarvis-home__orbit" />
+          <JarvisCore live taskPhase={state.task.phase} variant="hero" voice={listening ? 'listening' : state.voice} />
+        </div>
+
+        <div
           aria-live="polite"
-          className="flex items-center gap-2 text-sm text-(--ui-text-tertiary)"
+          className="jarvis-home__caption flex items-center gap-2 rounded-full px-3 py-1 text-xs text-(--ui-text-secondary)"
           data-testid="jarvis-home-status"
         >
           <span
@@ -158,29 +177,12 @@ export function JarvisHomeHero({
           {hint}
         </div>
         <p
-          className="-mt-2 text-xs text-(--ui-text-tertiary)"
+          className="jarvis-home__caption rounded-full px-3 py-1 text-xs text-(--ui-text-secondary)"
           data-testid="jarvis-home-voice-engine"
           title={copy.voiceEngine.hint}
         >
           {copy.voiceEngine.label}: <span className="text-(--ui-text-secondary)">{voiceName}</span>
         </p>
-
-        <div aria-label={copy.actionsLabel} className="flex flex-wrap justify-center gap-2" role="group">
-          {HOME_ACTIONS.map(({ icon: Icon, id }) => (
-            <button
-              className={cn(
-                'jarvis-glass jarvis-glass-hover flex min-h-11 items-center gap-2 rounded-full px-4 text-sm font-medium text-(--ui-text-primary)',
-                FOCUS_RING
-              )}
-              key={id}
-              onClick={() => requestComposerInsert(copy.actions[id].prompt, { mode: 'prefix', target: 'main' })}
-              type="button"
-            >
-              <Icon className="size-4 text-(--ui-accent)" />
-              {copy.actions[id].label}
-            </button>
-          ))}
-        </div>
 
         {railVisible ? null : (
           <div className="flex w-full max-w-sm flex-col gap-2 pt-2 text-left">

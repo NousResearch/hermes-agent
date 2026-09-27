@@ -341,6 +341,33 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_numeric_resume_uses_the_ids_from_the_displayed_resume_list(self, tmp_path):
+        """A number is a choice from the prior screen, not a fresh recency query."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        list_event = _make_event(text="/resume")
+        lane_key = _session_key_for_event(list_event)
+        for sid, title in (("shown_first", "Shown First"), ("shown_second", "Shown Second")):
+            db.create_session(sid, "telegram", session_key=lane_key, user_id="12345", chat_id="67890")
+            db.set_session_title(sid, title)
+        db._conn.execute("UPDATE sessions SET last_activity_at=200 WHERE id='shown_first'")
+        db._conn.execute("UPDATE sessions SET last_activity_at=100 WHERE id='shown_second'")
+        db._conn.commit()
+
+        runner = _make_runner(session_db=db, event=list_event)
+        listing = await runner._handle_resume_command(list_event)
+        assert listing.index("Shown First") < listing.index("Shown Second")
+
+        # A background touch changes what a fresh recency query would return between browse and selection.
+        db._conn.execute("UPDATE sessions SET last_activity_at=300 WHERE id='shown_second'")
+        db._conn.commit()
+        await runner._handle_resume_command(_make_event(text="/resume 1"))
+
+        assert runner.session_store.switch_session.call_args[0][1] == "shown_first"
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_bare_resume_normalizes_telegram_lobby_source_to_bound_topic(
         self, tmp_path
     ):
@@ -387,6 +414,30 @@ class TestHandleResumeCommand:
 
 class TestHandleSessionsCommand:
     """Tests for GatewayRunner._handle_sessions_command."""
+
+    @pytest.mark.asyncio
+    async def test_sessions_number_resumes_the_row_that_screen_numbered(self, tmp_path):
+        """`/sessions` and `/resume N` share one pinned display snapshot."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        list_event = _make_event(text="/sessions")
+        lane_key = _session_key_for_event(list_event)
+        for sid, title in (("older", "Older"), ("newer", "Newer")):
+            db.create_session(sid, "telegram", session_key=lane_key, user_id="12345", chat_id="67890")
+            db.set_session_title(sid, title)
+
+        runner = _make_runner(session_db=db, event=list_event)
+        listing = await runner._handle_sessions_command(list_event)
+        assert "1. **Newer**" in listing
+
+        # `/resume`'s independent last-activity query would now put Older first.
+        db._conn.execute("UPDATE sessions SET last_activity_at=9999999999 WHERE id='older'")
+        db._conn.commit()
+        await runner._handle_resume_command(_make_event(text="/resume 1"))
+
+        assert runner.session_store.switch_session.call_args[0][1] == "newer"
+        db.close()
 
     @pytest.mark.asyncio
     async def test_sessions_full_keeps_legacy_reset_child_after_parent_resume(

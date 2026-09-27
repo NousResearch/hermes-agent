@@ -94,9 +94,12 @@ discord:
   websocket_liveness_failure_threshold: 2
   websocket_heartbeat_ack_max_age_seconds: 60
   websocket_max_latency_seconds: 30
+  websocket_event_max_silence_seconds: 14400
 ```
 
 旧的 `liveness_interval_seconds` / `liveness_failure_threshold` 仅作为迁移别名保留，不再表示 REST probe。
+
+`websocket_event_max_silence_seconds` 是唯一的例外：它只守护"事件分发"这一个维度，设为 `0` 仅停用该检查——ready/ACK/延迟检测继续生效。一条连接可以在保持 ESTABLISHED 并正常应答心跳的同时，不再投递任何 Gateway 事件（心跳 ACK 是不带事件类型的帧，任何传输层检查都看不到这种状态）。默认值 4 小时对应实际故障的观察窗口；安静的服务器可能数小时没有任何事件，除非明确了解自身流量，否则请保持该阈值宽松。
 
 ## 第一步：创建 Discord 应用
 
@@ -691,7 +694,7 @@ discord:
 
 点击编号按钮作答，或点击**其他**输入自由格式的响应（你在该频道中发送的下一条消息将成为答案）。开放式的 `clarify` 调用（没有预设选项）会跳过按钮，直接捕获你的下一条消息。
 
-按钮在做出选择后会自动禁用，防止重复点击导致重复解析提示。通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `600` 秒）。如果你在超时内没有响应，agent 会以一条哨兵消息解除阻塞并自行调整，而不是一直挂起。
+按钮在做出选择后会自动禁用，防止重复点击导致重复解析提示。通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `3600` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，agent 会以一条哨兵消息解除阻塞并自行调整，而不是一直挂起。
 
 ## 主频道
 
@@ -721,8 +724,8 @@ Hermes Agent 支持 Discord 语音消息：
 - **Discord 语音频道**：Hermes 还可以加入语音频道，聆听用户说话，并在频道中回话。
 
 完整的设置和操作指南，请参阅：
-- [语音模式](/user-guide/features/voice-mode)
-- [与 Hermes 使用语音模式](/guides/use-voice-mode-with-hermes)
+- [语音模式](../features/voice-mode.md)
+- [与 Hermes 使用语音模式](../../guides/use-voice-mode-with-hermes.md)
 
 ## 论坛频道
 

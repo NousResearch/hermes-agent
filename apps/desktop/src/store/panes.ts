@@ -1,4 +1,8 @@
-import { atom, computed, type ReadableAtom } from 'nanostores'
+import { computed, type ReadableAtom } from 'nanostores'
+
+import { LAYOUT_KEYS } from '@/lib/layout-persistence'
+import { Codecs } from '@/lib/persisted'
+import { modeLayout } from '@/store/interface-mode'
 
 export interface PaneStateSnapshot {
   open: boolean
@@ -11,8 +15,6 @@ export interface PaneRegisterDefaults {
   open: boolean
   widthOverride?: number
 }
-
-const STORAGE_KEY = 'hermes.desktop.paneStates.v1'
 
 function isSnapshot(value: unknown): value is PaneStateSnapshot {
   if (!value || typeof value !== 'object') {
@@ -34,52 +36,19 @@ function isSnapshot(value: unknown): value is PaneStateSnapshot {
   return widthOk && heightOk
 }
 
-function load(): Record<string, PaneStateSnapshot> {
-  if (typeof window === 'undefined') {
-    return {}
-  }
+const paneDefaults: Record<string, PaneStateSnapshot> = {}
 
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-
-    if (raw) {
-      const parsed = JSON.parse(raw) as unknown
-
-      if (parsed && typeof parsed === 'object') {
-        const out: Record<string, PaneStateSnapshot> = {}
-
-        for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
-          if (isSnapshot(value)) {
-            out[id] = { open: value.open, widthOverride: value.widthOverride, heightOverride: value.heightOverride }
-          }
-        }
-
-        return out
-      }
+export const $paneStates = modeLayout.atom<Record<string, PaneStateSnapshot>>(
+  LAYOUT_KEYS.panes,
+  () => ({ ...paneDefaults }),
+  Codecs.json(parsed => {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ...paneDefaults }
     }
-  } catch {
-    // Treat unparseable persisted state as missing.
-  }
 
-  return {}
-}
-
-// Persists both open state and resize width; load() validates each snapshot.
-function persist(states: Record<string, PaneStateSnapshot>) {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(states))
-  } catch {
-    // Storage failures are nonfatal.
-  }
-}
-
-export const $paneStates = atom<Record<string, PaneStateSnapshot>>(load())
-
-$paneStates.subscribe(persist)
+    return { ...paneDefaults, ...Object.fromEntries(Object.entries(parsed).filter(([, value]) => isSnapshot(value))) }
+  })
+)
 
 // Cached per-pane derived atoms keep useStore subscriptions referentially stable.
 function memoized<T>(
@@ -108,6 +77,7 @@ export const $paneWidthOverride = (id: string) => memoized(widthCache, id, s => 
 export const $paneHeightOverride = (id: string) => memoized(heightCache, id, s => s?.heightOverride)
 
 export function ensurePaneRegistered(id: string, defaults: PaneRegisterDefaults) {
+  paneDefaults[id] = { ...defaults }
   const current = $paneStates.get()
 
   if (current[id] !== undefined) {

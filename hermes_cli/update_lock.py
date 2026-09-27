@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
+import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -48,18 +50,12 @@ def update_marker_path() -> Path:
 
 
 def _pid_alive(pid: int) -> bool:
-    """True when a process with ``pid`` currently exists.
-
-    Delegates to :func:`gateway.status._pid_exists`. Do NOT hand-roll ``os.kill(pid, 0)``: on
-    Windows CPython routes ``sig=0`` to ``GenerateConsoleCtrlEvent``, which Ctrl+C's the
-    target's whole console process group (bpo-14484). Any pid we cannot evaluate counts as
-    dead so a corrupt marker never wedges the lock.
-    """
+    """Use the dependency-free, Windows-safe probe before PM is available."""
     if pid <= 0:
         return False
     try:
-        from gateway.status import _pid_exists
-        return bool(_pid_exists(pid))
+        from hermes_cli._early_recovery import _pid_is_running
+        return _pid_is_running(pid)
     except Exception as exc:
         logger.debug("Could not probe pid %s: %s", pid, exc)
         return False
@@ -75,6 +71,107 @@ def _handoff_pid() -> int | None:
     return pid if pid > 0 else None
 
 
+def _windows_parent_pid(pid: int) -> int | None:
+    """The parent of ``pid`` from a Toolhelp32 process snapshot (stdlib ctypes).
+
+    Windows keeps a dead parent's pid in the snapshot and reuses pids, so, like
+    psutil, a "parent" created after the child is a recycled pid, not our parent.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for walk in (kernel32.Process32FirstW, kernel32.Process32NextW):
+        walk.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        walk.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def created(target: int) -> int | None:
+        handle = kernel32.OpenProcess(0x1000, False, target)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+                return None
+            return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        finally:
+            kernel32.CloseHandle(handle)
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        return None
+    parent = None
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while found:
+            if entry.th32ProcessID == pid:
+                parent = int(entry.th32ParentProcessID)
+                break
+            found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    if not parent:
+        return None
+    parent_created, child_created = created(parent), created(pid)
+    if parent_created is not None and child_created is not None and parent_created > child_created:
+        return None
+    return parent
+
+
+def _stdlib_parent_pid(pid: int) -> int | None:
+    """The parent of ``pid`` without psutil, or ``None`` when unresolvable.
+
+    The update-takeover child is spawned ``-I -S -B`` (hermes_cli/_old_updater.py) so
+    psutil cannot import there — and that grandchild is exactly the process that most
+    needs the two-hop ancestry walk to adopt the orchestrator's marker. /proc serves
+    Linux; macOS keeps /proc absent, so shell out to ps once per hop; Windows has
+    neither, so ask the Toolhelp32 snapshot.
+    """
+    if sys.platform == "win32":
+        try:
+            return _windows_parent_pid(pid)
+        except (OSError, AttributeError, ValueError):
+            return None
+    try:
+        if os.path.isdir("/proc"):
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                stat = fh.read()
+        else:
+            out = subprocess.run(
+                ["ps", "-o", "ppid=", "-p", str(pid)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", check=True, timeout=5,
+            ).stdout
+            value = int(out.strip() or -1)
+            return value if value > 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    # Field 4 (1-indexed) is ppid, but comm may contain spaces/parens: split
+    # after the closing paren of comm instead of on whitespace.
+    try:
+        return int(stat[stat.rindex(b")") + 2:].split()[1])
+    except (ValueError, IndexError):
+        return None
+
+
 def _is_ancestor_pid(pid: int) -> bool:
     """True when ``pid`` is a live ancestor of this process.
 
@@ -84,9 +181,24 @@ def _is_ancestor_pid(pid: int) -> bool:
     """
     if pid <= 0:
         return False
+    if pid == os.getppid():
+        return True
     try:
         import psutil
         return any(parent.pid == pid for parent in psutil.Process().parents())
+    except ImportError:
+        # -I -S -B takeover child: walk the same chain with stdlib probes.
+        child = os.getpid()
+        for _ in range(32):
+            parent = _stdlib_parent_pid(child)
+            if parent is None:
+                return False
+            if parent == pid:
+                return True
+            if parent == child:  # pid 1 re-parenting or a kernel loop guard
+                return False
+            child = parent
+        return False
     except Exception as exc:
         logger.debug("Could not walk process ancestry for pid %s: %s", pid, exc)
         return False
@@ -109,7 +221,7 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     """
     marker = path or update_marker_path()
     try:
-        lines = marker.read_text(encoding="utf-8").splitlines()
+        lines = marker.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return None
     try:
@@ -129,17 +241,17 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     return UpdateHolder(pid=pid, age_seconds=age)
 
 
-def describe_holder(holder: UpdateHolder) -> str:
+def describe_holder(holder: UpdateHolder | None) -> str:
     """One-line, user-facing explanation of who holds the update lock."""
-    minutes, seconds = divmod(int(max(holder.age_seconds, 0)), 60)
+    minutes, seconds = divmod(int(max(0 if holder is None else holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+    who = f", process {holder.pid}" if holder else ""
     return (
-        f"✗ Another Hermes update is already running (PID {holder.pid}, "
-        f"started {elapsed} ago).\n"
+        f"✗ Another Hermes update is already running (started {elapsed} ago{who}).\n"
         "\n"
-        "  Two updates mutating the same checkout corrupt it: one rewrites\n"
-        "  source while the other is mid-install. Wait for it to finish, or\n"
-        "  close the window/dashboard tab that started it, then retry."
+        "  Running two at once would corrupt the install. Wait for it to finish\n"
+        "  (watch `hermes logs`), or close the Desktop/dashboard window that\n"
+        "  started it, then run `hermes update` again."
     )
 
 
@@ -165,7 +277,12 @@ class UpdateLock:
         release. The ancestry path covers staged updaters older than the env-var export.
         """
         existing = read_live_update(path=self.path)
-        if existing is not None:
+        # A live claim naming our own pid is a killed update's marker whose pid this retry
+        # inherited (containers restart pid numbering): no other live process has our pid, and
+        # nothing pre-writes a marker for `hermes update` (it always runs under a parent's claim).
+        # It is a new attempt, so it is claimed fresh like a dead holder's. Keeping the old
+        # started_at would let the ceiling expire mid-run and admit a second updater.
+        if existing is not None and existing.pid != os.getpid():
             if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
                 return True
             self.holder = existing
@@ -187,7 +304,7 @@ class UpdateLock:
             return
         self.acquired = False
         try:
-            owner = int(self.path.read_text(encoding="utf-8").splitlines()[0].strip())
+            owner = int(self.path.read_text(encoding="utf-8-sig").splitlines()[0].strip())
         except (OSError, IndexError, ValueError):
             return
         if owner != os.getpid():

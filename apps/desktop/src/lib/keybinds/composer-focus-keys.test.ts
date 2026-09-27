@@ -166,13 +166,14 @@ describe('composerFocusKeysAllowed', () => {
     expect(composerFocusKeysAllowed(keydown({ key: 'h', code: 'KeyH', target: document.body }), 'type')).toBe(true)
   })
 
-  it('refuses editables; refuses Enter on buttons but allows / and typing', () => {
+  it('refuses editables; leaves Enter and Space to buttons but allows / and typing', () => {
     const input = document.createElement('input')
     const button = document.createElement('button')
     document.body.append(input, button)
 
     expect(composerFocusKeysAllowed(keydown({ key: 'a', code: 'KeyA', target: input }), 'type')).toBe(false)
     expect(composerFocusKeysAllowed(keydown({ key: 'Enter', code: 'Enter', target: button }), 'enter')).toBe(false)
+    expect(composerFocusKeysAllowed(keydown({ key: ' ', code: 'Space', target: button }), 'type')).toBe(false)
     expect(composerFocusKeysAllowed(keydown({ key: '/', code: 'Slash', target: button }), '/')).toBe(true)
     expect(composerFocusKeysAllowed(keydown({ key: 'a', code: 'KeyA', target: button }), 'type')).toBe(true)
   })

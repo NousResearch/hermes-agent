@@ -38,8 +38,8 @@ _METRIC_IDENTIFIER_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789.
 _METRIC_IDENTIFIER_START_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 
 EXECUTION_SURFACES = frozenset({
-    "api", "batch", "cli", "desktop", "gateway", "python", "scheduled_task", "tui", "other",
-    "unknown",
+    "acp", "api", "batch", "cli", "desktop", "gateway", "python", "scheduled_task", "tui",
+    "other", "unknown",
 })
 TASK_OUTCOMES = frozenset({"cancelled", "failed", "success", "timed_out", "unknown"})
 TASK_END_REASONS = frozenset({
@@ -61,7 +61,7 @@ TOOL_CATEGORIES = frozenset({
     "skill", "terminal", "unknown", "web",
 })
 TOOL_OUTCOMES = frozenset({"blocked", "cancelled", "failed", "success", "timed_out", "unknown"})
-TOOL_APPROVAL_OUTCOMES = frozenset({"approved", "denied", "not_required", "timed_out", "unknown"})
+TOOL_APPROVAL_OUTCOMES = frozenset({"approved", "cancelled", "denied", "not_required", "timed_out", "unknown"})
 TOOL_APPROVAL_ATTRIBUTIONS = frozenset({"tool_call", "unattributed"})
 TOOL_LATENCY_BUCKETS = frozenset({
     "100ms_to_250ms", "10s_to_30s", "1s_to_2s", "250ms_to_500ms", "2s_to_5s", "500ms_to_1s",
@@ -420,7 +420,9 @@ def task_start_fields(kwargs: dict[str, Any]) -> dict[str, str]:
 
 
 _SURFACE_ENTRYPOINTS = {
-    **dict.fromkeys(("cli", "desktop", "tui"), "interactive"),
+    # An ACP session is a human in an editor (VS Code / Zed / JetBrains), same
+    # dispatch shape as the other interactive surfaces.
+    **dict.fromkeys(("acp", "cli", "desktop", "tui"), "interactive"),
     **{s: s for s in ("api", "batch", "python", "scheduled_task", "unknown")},
     "gateway": "gateway_message",
 }
@@ -546,6 +548,7 @@ _APPROVAL_CHOICES = {
     ),
     **dict.fromkeys(("deny", "denied", "smart_deny"), "denied"),
     **dict.fromkeys(("timed_out", "timeout"), "timed_out"),
+    "cancelled": "cancelled",  # prompt withdrawn / undeliverable / unanswered — not a user decision
 }
 
 

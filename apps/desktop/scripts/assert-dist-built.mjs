@@ -12,6 +12,7 @@
 // See issues #39484 (renderer blank page) and #41327 / #39472 (dashboard 404).
 
 import { existsSync, readFileSync, statSync, readdirSync } from "fs"
+import { spawnSync } from "child_process"
 import { join, resolve } from "path"
 import { isMain } from "./utils.mjs"
 
@@ -77,6 +78,52 @@ export function checkDistBuilt(distDir) {
     }
   }
 
+  // Parse-validate every emitted chunk as an ES module. Corrupted-silent-fail
+  // bundles (a dropped identifier token mid-file) produce invalid syntax that
+  // only explodes at module-evaluation time in Electron's renderer.
+  const chunkParse = verifyChunksParse(assetsDir)
+  if (!chunkParse.ok) {
+    return chunkParse
+  }
+
+  return { ok: true }
+}
+
+// Renderer chunks are emitted as ESM (`<script type="module">` in index.html).
+// A silent bundler failure can emit syntactically invalid chunks that parse fine
+// as CJS-ish text but throw on module evaluation in Electron — the app then
+// white-screens with `Uncaught SyntaxError` in the renderer console (observed
+// 2026-09: the update-produced bundle was missing a 10-byte identifier token,
+// `{$:n,}` vs `{categories:n,}`, leaving an invalid destructuring pattern).
+// Parse each emitted chunk as an ES module before packaging so a corrupted
+// build fails loudly and the update retry rebuilds instead of shipping it.
+function verifyChunksParse(assetsDir) {
+  const nodeBin = process.env.NODE ||
+    (process.execPath && process.execPath.endsWith("node") ? process.execPath : "node")
+  const chunks = readdirSync(assetsDir).filter(name => name.endsWith(".js"))
+  for (const name of chunks) {
+    const file = join(assetsDir, name)
+    const probe = spawnSync(nodeBin, ["--input-type=module", "--check"], {
+      input: readFileSync(file),
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: 60_000,
+    })
+    if (probe.error) {
+      return {
+        ok: false,
+        error: `could not run node to syntax-check ${name}: ${probe.error.message}`,
+      }
+    }
+    if (probe.status !== 0) {
+      const detail = String(probe.stderr || "").trim().split("\n").slice(0, 4).join(" / ")
+      return {
+        ok: false,
+        error: `built chunk is not valid ES module syntax: ${name} — ${detail}. ` +
+          `A renderer chunk failed to parse, so packaging would ship an app that ` +
+          `white-screens with "Uncaught SyntaxError" on launch. Re-run the build.`,
+      }
+    }
+  }
   return { ok: true }
 }
 

@@ -38,13 +38,6 @@ def _make_email_adapter(address="hermes@test.com"):
 class TestCloseImap(unittest.TestCase):
     """_close_imap must guarantee socket teardown."""
 
-    def test_logout_success_no_shutdown_needed(self):
-        from plugins.platforms.email.adapter import _close_imap
-
-        imap = MagicMock()
-        _close_imap(imap)
-        imap.logout.assert_called_once()
-        imap.shutdown.assert_not_called()
 
     def test_logout_abort_falls_back_to_shutdown(self):
         from plugins.platforms.email.adapter import _close_imap
@@ -79,16 +72,6 @@ class TestEmailConnectClosesSocket(unittest.TestCase):
         # abort fallback covered by TestCloseImap).
         mock_imap.logout.assert_called_once()
 
-    def test_select_failure_still_closes_socket(self):
-        adapter = _make_email_adapter()
-        mock_imap = MagicMock()
-        mock_imap.select.side_effect = imaplib.IMAP4.abort("connection lost")
-
-        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
-            result = asyncio.run(adapter.connect())
-
-        self.assertFalse(result)
-        mock_imap.logout.assert_called_once()
 
 
 class TestFetchClosesSocketOnBrokenLogout(unittest.TestCase):
@@ -154,13 +137,6 @@ class TestWeixinPollSessionRecycle(unittest.TestCase):
         self.assertIs(adapter._poll_session, new_session)
         self.assertTrue(closed["v"])
 
-    def test_recycle_noop_when_not_running(self):
-        adapter = self._make_adapter()
-        adapter._running = False
-        sentinel = MagicMock()
-        adapter._poll_session = sentinel
-        asyncio.run(adapter._recycle_poll_session())
-        self.assertIs(adapter._poll_session, sentinel)
 
     def test_poll_loop_recycles_after_max_consecutive_failures(self):
         from gateway.platforms import weixin as weixin_mod

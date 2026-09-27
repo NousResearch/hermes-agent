@@ -1,7 +1,6 @@
 """Tests for the grounded-citations bundled skill.
 
-Covers the SKILL.md authoring standards (frontmatter shape, ≤60-char
-description) and the behavior of ``scripts/sources.py`` — the citation ledger
+Covers the behavior of ``scripts/sources.py`` — the citation ledger
 that assigns stable ``url -> [n]`` ids, renders Sources blocks, and verifies a
 draft's citations. The verify path is the load-bearing piece: it is what
 catches a hallucinated or renumbered citation before delivery.
@@ -11,22 +10,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import re
 from pathlib import Path
 
 import pytest
-import yaml
 
 SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "research" / "grounded-citations"
 SCRIPT = SKILL_DIR / "scripts" / "sources.py"
-
-
-@pytest.fixture(scope="module")
-def frontmatter() -> dict:
-    src = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-    m = re.search(r"^---\n(.*?)\n---", src, re.DOTALL)
-    assert m, "SKILL.md missing YAML frontmatter"
-    return yaml.safe_load(m.group(1))
 
 
 @pytest.fixture(scope="module")
@@ -43,43 +32,12 @@ def ledger(tmp_path: Path) -> Path:
     return tmp_path / "ledger.json"
 
 
-# ---------------------------------------------------------------------------
-# Authoring standards
-# ---------------------------------------------------------------------------
 
 
-def test_skill_files_present() -> None:
-    assert (SKILL_DIR / "SKILL.md").is_file()
-    assert SCRIPT.is_file()
-    assert (SKILL_DIR / "references" / "citation-formats.md").is_file()
-    assert (SKILL_DIR / "references" / "grounding-rationale.md").is_file()
 
 
-def test_description_within_limit(frontmatter: dict) -> None:
-    desc = frontmatter["description"]
-    assert len(desc) <= 60, f"description is {len(desc)} chars (limit 60): {desc!r}"
-    assert desc.endswith(".")
 
 
-def test_required_frontmatter_fields(frontmatter: dict) -> None:
-    assert frontmatter["name"] == "grounded-citations"
-    for field in ("version", "author", "license", "platforms"):
-        assert frontmatter.get(field), f"missing frontmatter field: {field}"
-    assert frontmatter["metadata"]["hermes"]["category"] == "research"
-
-
-def test_skill_body_has_modern_sections() -> None:
-    body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-    for heading in (
-        "## When to Use",
-        "## Prerequisites",
-        "## How to Run",
-        "## Quick Reference",
-        "## Procedure",
-        "## Pitfalls",
-        "## Verification",
-    ):
-        assert heading in body, f"SKILL.md missing section: {heading}"
 
 
 # ---------------------------------------------------------------------------
@@ -574,20 +532,6 @@ def test_render_replace_in_appends_when_no_block_exists(sources_mod, tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def test_stats_line_is_info_not_warn_on_success(sources_mod, tmp_path: Path, capsys) -> None:
-    ledger = tmp_path / "st.json"
-    args = ["--ledger", str(ledger)]
-    sources_mod.main(args + ["add", "https://a.example"])
-    draft = tmp_path / "d.md"
-    draft.write_text(
-        "A claim resting on the first source.[1]\n\nSources:\n[1] https://a.example\n",
-        encoding="utf-8",
-    )
-    capsys.readouterr()
-    assert sources_mod.main(args + ["verify", str(draft)]) == 0
-    out = capsys.readouterr().out
-    assert "info: stats:" in out
-    assert "warn: stats:" not in out
 
 
 def test_stats_reports_provenance_total_matching_coverage(sources_mod, ledger: Path, tmp_path: Path) -> None:

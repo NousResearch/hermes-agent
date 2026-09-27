@@ -39,7 +39,8 @@ def _agent(max_iterations: int | None):
 
 async def _busy_ack(agent) -> str:
     import gateway.run as gr
-    from gateway.platforms.base import MessageEvent, MessageType, SessionSource, build_session_key
+    from gateway.platforms.base import SessionSource, build_session_key
+    from gateway.platforms.event import MessageEvent, MessageType
 
     gr._load_gateway_config = lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}}
     runner = object.__new__(gr.GatewayRunner)
@@ -74,7 +75,7 @@ async def _heartbeat(agent) -> str:
     mixin = GatewayTurnMixin()
     adapter = MagicMock()
     adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb1"))
-    mixin._adapter_for_source = MagicMock(return_value=adapter)
+    mixin._delivery_adapter_for = MagicMock(return_value=adapter)
     mixin._should_emit_long_running_notification = MagicMock(side_effect=[True, False])
     disp = MagicMock()
     disp._display_surface_mode.return_value = "on"

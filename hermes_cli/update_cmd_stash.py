@@ -5,6 +5,7 @@ Origin helpers are imported lazily per function (no cycle; test patches on the o
 """
 
 import logging
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,6 +35,22 @@ def _git_quiet(git_cmd: list[str], args: list[str], cwd: Path, **kwargs):
         return None
 
 
+def _intent_to_add_paths(porcelain_z: str) -> tuple[str, ...]:
+    """Paths recorded with ``git add -N`` (intent-to-add), read from NUL-separated porcelain output.
+
+    Such an entry carries the empty blob with zeroed stat data, so it is never "uptodate" and
+    ``git stash push`` rejects the whole stash with ``Entry 'X' not uptodate. Cannot merge.`` - a dead
+    end for the user, because that is the state an editor leaves behind when it shows a new file in
+    diffs. Porcelain marks it ``" A"`` (in the worktree, absent from the index); a real staged add is
+    ``"A "`` and an untracked file ``"??"``. Rename records carry a second, prefix-less field, which
+    the leading ``" A"`` test cannot match.
+    """
+    return tuple(
+        record[3:] for record in porcelain_z.split("\0")
+        if len(record) > 3 and record[0] == " " and record[1] == "A"
+    )
+
+
 def _git_paths_z(git_cmd: list[str], args: list[str], cwd: Path):
     """NUL-separated path listing as a set, or None when git failed (surrogateescape keeps odd filenames)."""
     result = _git_quiet(git_cmd, args, cwd, text=True, encoding="utf-8", errors="surrogateescape")
@@ -57,8 +74,8 @@ def _print_first_line(text: str) -> None:
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
-    from hermes_cli.update_cmd import _git_run
-    status = _git_run(git_cmd, ["status", "--porcelain"], cwd, check=True)
+    from hermes_cli.update_cmd_git import _git_run
+    status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
     if not status.stdout.strip():
         return None
     # Unmerged index entries (interrupted merge/rebase) make `git stash` fail with
@@ -66,6 +83,17 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     if _git_run(git_cmd, ["ls-files", "--unmerged"], cwd).stdout.strip():
         print("→ Clearing unmerged index entries from a previous conflict...")
         subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
+
+    # Intent-to-add entries are the other index state `git stash push` refuses (see
+    # _intent_to_add_paths). Promoting them to real staged adds keeps their content and is lossless
+    # for the user's work; after the restore they come back as staged additions, which is the closest
+    # `git stash` can represent.
+    intent_to_add = _intent_to_add_paths(status.stdout)
+    if intent_to_add:
+        print(f"→ Making {len(intent_to_add)} intent-to-add file(s) stashable...")
+        add = _git_run(git_cmd, ["add", "--", *intent_to_add], cwd)
+        if add.returncode != 0:
+            _print_nonempty(add.stderr)
 
     stash_name = datetime.now(timezone.utc).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
     print("→ Local changes detected — stashing before update...")
@@ -81,6 +109,8 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
             print("✗ Could not stash local changes — update aborted.")
             _print_first_line(push.stderr)
             print("  Commit, stash, or clean up your local changes manually, then re-run `hermes update`.")
+            print("  (An index entry from `git add -N` is the usual cause of this error; `git add` the")
+            print("   paths it names, or `git reset` them, and the update will proceed.)")
             raise subprocess.CalledProcessError(push.returncode, push.args, output=push.stdout, stderr=push.stderr)
         # Non-zero but entry created: push saved everything yet couldn't delete some untracked files
         # (e.g. root-owned dir). Not a failure — continue.
@@ -94,12 +124,17 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 
 
 def _resolve_stash_selector(git_cmd: list[str], cwd: Path, stash_ref: str) -> Optional[str]:
-    from hermes_cli.update_cmd import _git_run
+    """Selector for the stash entry whose commit is *stash_ref*, as the bare index ``N``
+    (git accepts it wherever ``stash@{N}`` is valid). Never ``stash@{N}`` itself: on native
+    Windows the MSYS runtime strips the braces from git.exe's argv, so ``stash@{0}`` reaches git
+    as ``stash@0`` and the drop fails (#87542)."""
+    from hermes_cli.update_cmd_git import _git_run
     stash_list = _git_run(git_cmd, ["stash", "list", "--format=%gd %H"], cwd, check=True)
     for line in stash_list.stdout.splitlines():
         selector, _, commit = line.partition(" ")
         if commit.strip() == stash_ref:
-            return selector.strip()
+            match = re.fullmatch(r"stash@\{(\d+)\}", selector.strip())
+            return match.group(1) if match else selector.strip()
     return None
 
 
@@ -114,7 +149,7 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
     ``git stash`` invisibly for weeks (#63717 problem 6). This prints a short notice naming the stale
     entries with recovery/cleanup guidance.
     """
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     try:
         stash_list = _git_run(git_cmd, ["stash", "list", "--format=%gd %s"], cwd)
         if stash_list.returncode != 0:
@@ -152,13 +187,25 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
         return 0
 
 
+def _record_stash_disposition(outcome: str, stash_ref: str, detail: str = "") -> None:
+    """Note the autostash disposition in the update receipt so a parked stash is visible
+    to automation reading receipts instead of stdout (#115363: an update that ended with
+    local changes parked in the stash reported a bare success with no trace of them)."""
+    from hermes_cli.update_receipt import record_step
+    record_step(
+        "local_changes_stash",
+        outcome != "parked",
+        f"{outcome}: {stash_ref}" + (f" ({detail})" if detail else ""),
+    )
+
+
 def _print_stash_cleanup_guidance(stash_ref: str, stash_selector: Optional[str] = None) -> None:
     print("  Check `git status` first so you don't accidentally reapply the same change twice.")
     print("  Find the saved entry with: git stash list --format='%gd %H %s'")
     if stash_selector:
         print(f"  Remove it with: git stash drop {stash_selector}")
     else:
-        print(f"  Look for commit {stash_ref}, then drop its selector with: git stash drop stash@{{N}}")
+        print(f"  Look for commit {stash_ref}, then drop it by index with: git stash drop <N>")
 
 
 def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
@@ -177,6 +224,33 @@ def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
     return saw_untracked_error
 
 
+def _untracked_files_replaced_by_update(git_cmd: list[str], cwd: Path, stash_ref: str, stderr: str) -> list[str]:
+    """Paths ``git stash apply`` refused ("<path> already exists, no checkout") because the update
+    now tracks its own file there (``HEAD:<path>``) and the tree does not hold the stash's untracked
+    copy (``<stash>^3``). An untracked occupant HEAD does not track is the #70127 file that could
+    not be deleted at stash time, whatever its content now; it is never the update's."""
+    replaced = []
+    suffix = " already exists, no checkout"
+    for ln in (stderr or "").splitlines():
+        ln = ln.strip()
+        if not ln.endswith(suffix):
+            continue
+        rel = ln[: -len(suffix)]
+        tracked = subprocess.run([*git_cmd, "cat-file", "-e", f"HEAD:{rel}"], cwd=cwd, capture_output=True, check=False)
+        if tracked.returncode != 0:
+            continue
+        stashed = subprocess.run(
+            [*git_cmd, "show", f"{stash_ref}^3:{rel}"], cwd=cwd, capture_output=True, check=False,
+        )
+        try:
+            current = (Path(cwd) / rel).read_bytes()
+        except OSError:
+            current = None
+        if stashed.returncode != 0 or current != stashed.stdout:
+            replaced.append(rel)
+    return replaced
+
+
 def _park_stashed_changes(stash_ref: str) -> None:
     """Leave a pre-update autostash parked (``--keep-stash``, the desktop updater's mode): local source
     edits must never be silently re-applied onto updated code; the entry stays in ``git stash``."""
@@ -184,6 +258,7 @@ def _park_stashed_changes(stash_ref: str) -> None:
     print("ℹ️  Local changes were stashed before updating and were NOT re-applied (--keep-stash).")
     print(f"  Stash ref: {stash_ref}")
     print(f"  Restore manually with: git stash apply {stash_ref}")
+    _record_stash_disposition("parked", stash_ref, "--keep-stash")
 
 
 def _git_untracked_paths(git_cmd: list[str], cwd: Path) -> set[str] | None:
@@ -267,21 +342,24 @@ def _confirm_restore(stash_ref: str, input_fn) -> bool:
     return False
 
 
-def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
-    """``git stash apply``; False (tree reset, stash kept) on conflicts or any failure other than the
-    undeletable-untracked class."""
-    from hermes_cli.update_cmd import _git_run
+def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> list[str] | None:
+    """``git stash apply``; the untracked paths the update replaced (empty on a full restore), or
+    None (tree reset, stash kept) on conflicts or any failure other than the already-exists class."""
+    from hermes_cli.update_cmd_git import _git_run
     print("→ Restoring local changes...")
     restore = _git_run(git_cmd, ["stash", "apply", stash_ref], cwd)
     unmerged = _git_run(git_cmd, ["diff", "--name-only", "--diff-filter=U"], cwd)  # conflicts can exist even on rc 0
     conflicted_files = unmerged.stdout.strip()
     if restore.returncode == 0 and not conflicted_files:
-        return True
+        return []
     if not conflicted_files and _stash_apply_failed_only_on_existing_untracked(restore.stderr):
-        # Tracked changes applied; only undeletable-at-stash-time untracked files were refused. Their
-        # content is untouched — treat as restored.
-        print("  ⚠ Some stashed untracked files already exist in the working tree and were kept as-is.")
-        return True
+        # Tracked changes applied; git refused to overwrite untracked files that already exist. That is
+        # harmless only when the occupant IS the stashed copy (undeletable at stash time, #70127). When
+        # the update added its own file at that path, the stash is the only copy of the user's file.
+        replaced = _untracked_files_replaced_by_update(git_cmd, cwd, stash_ref, restore.stderr)
+        if not replaced:
+            print("  ⚠ Some stashed untracked files already exist in the working tree and were kept as-is.")
+        return replaced
     print("✗ Update pulled new code, but restoring local changes hit conflicts.")
     _print_nonempty(restore.stdout)
     _print_nonempty(restore.stderr)
@@ -294,11 +372,12 @@ def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> bool:
     _reset_hard(git_cmd, cwd)  # conflict markers make hermes unrunnable; changes stay in the stash
     print("Working tree reset to clean state.")
     print(f"Restore your changes later with: git stash apply {stash_ref}")
-    return False  # code update succeeded; cmd_update continues (deps, skills, gateway)
+    _record_stash_disposition("parked", stash_ref, "restore hit conflicts")
+    return None  # code update succeeded; cmd_update continues (deps, skills, gateway)
 
 
 def _drop_restored_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> None:
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
     if stash_selector is None:
         print("⚠ Local changes were restored, but Hermes couldn't find the stash entry to drop.")
@@ -317,19 +396,20 @@ def _drop_restored_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> None:
 def _restore_stashed_changes(
     git_cmd: list[str], cwd: Path, stash_ref: str, prompt_user: bool = False, input_fn=None,
 ) -> bool:
-    from hermes_cli.update_cmd import (
-        _critical_module_import_failures, _git_untracked_paths, _restored_python_paths, _validate_python_files_syntax,
-    )
+    from hermes_cli.update_cmd import _critical_module_import_failures, _git_untracked_paths, _restored_python_paths, _validate_python_files_syntax
     if prompt_user and not _confirm_restore(stash_ref, input_fn):
+        _record_stash_disposition("parked", stash_ref, "restore declined")
         return False
     preexisting_untracked = _git_untracked_paths(git_cmd, cwd)
     if preexisting_untracked is None:
         print("  The stash was not restored because its cleanup baseline is unknown.")
         print(f"  Restore manually with: git stash apply {stash_ref}")
+        _record_stash_disposition("parked", stash_ref, "untracked baseline unknown")
         return False
     clean_import_failures = _critical_module_import_failures(cwd, report_runtime_errors=True)
-    if not _apply_stash(git_cmd, cwd, stash_ref):
-        return False
+    replaced = _apply_stash(git_cmd, cwd, stash_ref)
+    if replaced is None:
+        return False  # disposition already recorded inside _apply_stash
 
     def reject(failing_target: str, detail) -> None:
         _reject_unsafe_stash_restore(git_cmd, cwd, stash_ref, preexisting_untracked, failing_target, detail)
@@ -344,7 +424,18 @@ def _restore_stashed_changes(
         if clean_import_failures.get(module) != error:
             reject(f"agent import {module or 'unknown'}", error[1])
             break
+    if replaced:
+        # The restored tree is healthy, but dropping the stash would lose the user's copies.
+        print(f"⚠ The update added {len(replaced)} file(s) where you had untracked files of the same name:")
+        for path in replaced[:10]:
+            print(f"    {path}")
+        print("  The updated files are in place; your versions are kept in the stash, which was NOT dropped.")
+        print(f"  Stash ref: {stash_ref}")
+        print(f"  Recover a file with: git show {stash_ref}^3:<path> > <path>.mine")
+        _record_stash_disposition("parked", stash_ref, f"untracked files replaced by the update: {', '.join(replaced[:10])}")
+        return False
     _drop_restored_stash(git_cmd, cwd, stash_ref)
+    _record_stash_disposition("restored", stash_ref)
     print("⚠ Local changes were restored on top of the updated codebase.")
     print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
     return True
@@ -356,7 +447,7 @@ def _discard_stashed_changes(git_cmd: list[str], cwd: Path, stash_ref: str) -> b
     Unlike reset --hard + clean -fd this touches only what was stashed; ignored paths are never affected.
     Returns True if dropped, False on git failure (stash left in place).
     """
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
     if stash_selector is None:
         print(
@@ -370,6 +461,8 @@ def _discard_stashed_changes(git_cmd: list[str], cwd: Path, stash_ref: str) -> b
         print("⚠ Configured to discard local changes, but Hermes couldn't drop the saved stash entry.")
         _print_first_line(drop.stderr)
         _print_stash_cleanup_guidance(stash_ref, stash_selector)
+        _record_stash_disposition("parked", stash_ref, "configured discard failed")
         return False
     print("→ Discarded local source changes (updates.non_interactive_local_changes=discard).")
+    _record_stash_disposition("discarded", stash_ref)
     return True

@@ -243,7 +243,7 @@ class CLIBillingMixin:
             self._print_logged_out(state, "Could not load subscription", "/subscription")
             return
         if state.context == "team":  # no personal plan — teams run on a shared balance
-            self._block_header("⚕", "Team subscription")
+            self._block_header("☤", "Team subscription")
             self._print_org_line(state)
             print(f"  This terminal is connected to {state.org_name or 'a team org'}. Teams run on a shared")
             print("  balance · use /topup to add funds.")
@@ -288,7 +288,7 @@ class CLIBillingMixin:
             _cprint(f"  {_from} ──▶ {_to}  {_d('· ' + _when)}")
             self._dim(f"You keep {_from} (and its credits) until then.")
             _cprint("")
-        _cprint(f"  ⚕ {_b(status)}")
+        _cprint(f"  ☤ {_b(status)}")
         print(f"  {_RULE}")
         for _bar_ln in self._usage_bar_lines(usage, plan_name):
             print(_bar_ln)
@@ -321,7 +321,7 @@ class CLIBillingMixin:
         if not tiers:
             self._subscription_open_portal(state, manage_url, verb="Start a subscription")
             return
-        self._block_header("⚕", "Choose a plan")
+        self._block_header("☤", "Choose a plan")
         for i, t in enumerate(tiers, 1):
             print(f"  {i}. {format_tier_row(t)}")
         self._dim('Starting a subscription opens the portal to add your card.')

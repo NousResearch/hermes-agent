@@ -1,0 +1,21 @@
+name: vault-view
+repo: https://github.com/ergocogn/hermes-desktop-plugin-vault-view
+sha: a732c9382187c8f7d31c3e0057739f6f507378e4
+version: "0.4.6"
+title: Vault View
+description: "Local Markdown vault workspace for Hermes Desktop: visual editing, progressive reading, cached image previews, shared tabs, tag search, links, backlinks and a graph. Compatible with Obsidian vaults. File transport requires Unix/WSL utilities; ffmpeg thumbnails are optional. Automatic note-content sharing is disabled; direct Obsidian opening is temporarily hidden."
+maintainer: ergocogn
+tier: community
+category: desktop
+docs_url: https://github.com/ergocogn/hermes-desktop-plugin-vault-view#readme
+readme: true
+image: https://raw.githubusercontent.com/ergocogn/hermes-desktop-plugin-vault-view/a732c9382187c8f7d31c3e0057739f6f507378e4/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ergocogn/hermes-desktop-plugin-vault-view/a732c9382187c8f7d31c3e0057739f6f507378e4/screenshots/vault-view-light.png
+  - https://raw.githubusercontent.com/ergocogn/hermes-desktop-plugin-vault-view/a732c9382187c8f7d31c3e0057739f6f507378e4/screenshots/vault-view-settings.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

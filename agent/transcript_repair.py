@@ -9,8 +9,7 @@ import sqlite3
 from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.message_metadata import CANONICAL_ROW as _CANONICAL_ROW
-from agent.message_metadata import DB_ROW_SNAPSHOT as _DB_ROW_SNAPSHOT
+from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
 
@@ -62,13 +61,14 @@ def transcript_row_snapshot(row: Mapping[str, Any]) -> str:
 
 
 def stamp_inserted_row_snapshots(conn: sqlite3.Connection, session_id: str, messages: List[Dict[str, Any]]) -> None:
-    """Stamp the stored-row digest on freshly inserted live dicts (flush path only; one SELECT per batch)."""
+    """Stamp the stored-row digest on freshly inserted dicts (every ``_insert_message_rows`` caller; one SELECT
+    per batch)."""
     by_id = {msg["_row_id"]: msg for msg in messages if isinstance(msg.get("_row_id"), int)}
     for chunk in _id_chunks(by_id):
         for row in conn.execute(
             f"SELECT * FROM messages WHERE session_id = ? AND id IN ({_placeholders(chunk)})", (session_id, *chunk)
         ).fetchall():
-            by_id[int(row["id"])][_DB_ROW_SNAPSHOT] = transcript_row_snapshot(row)
+            by_id[int(row["id"])][DB_ROW_SNAPSHOT] = transcript_row_snapshot(row)
 
 
 def is_content_blank(content: Any) -> bool:
@@ -110,8 +110,9 @@ def resolve_and_repair_transcript_batch(
 
         target_id = int(target_row["id"])
         msg["_row_id"] = target_id
-        expected = msg.get(_DB_ROW_SNAPSHOT)
+        expected = msg.get(DB_ROW_SNAPSHOT)
         canonical = None
+        adopt = wrote = False
         if isinstance(expected, str):
             # The digest covers only the columns we own, so it answers "is the row still what we last
             # committed?". Match: the live dict is the source of truth (the DB holds its lossy durable
@@ -124,6 +125,7 @@ def resolve_and_repair_transcript_batch(
                 serialized = serialize_message_fn(msg, float(target_row["timestamp"]))
                 if any(target_row[column] != serialized[column] for column in _OWNED_COLUMNS):
                     _rewrite_row(conn, session_id, target_row, serialized)
+                    wrote = True
                 missing = {c: target_row[c] for c in _LIVE_MISSING_METADATA if msg.get(c) is None}
                 if any(value is not None for value in missing.values()):
                     decoded = decode_row_fn(target_row)
@@ -132,31 +134,29 @@ def resolve_and_repair_transcript_batch(
         elif role == "assistant" and is_content_blank(decode_content_fn(target_row["content"])):
             # Legacy dict (no digest) over a blank assistant row: the interrupted-stream repair. Fill the row
             # from live content with a content-only CAS and never adopt the blank row onto the live dict.
-            adopt = False
-            conn.execute(
+            wrote = conn.execute(
                 "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND content IS ?",
                 (encode_content_fn(msg.get("content")), target_id, session_id, target_row["content"]),
-            )
+            ).rowcount > 0
         else:
             # Legacy dict (no digest: a resumed or cloned dict) over a non-blank assistant row: another writer
             # already filled it. Adopt its content only, never the whole row: the live tool_calls /
             # reasoning* / codex_* fields may be sanitizer-fixed while the durable JSON still holds the raw
             # escaped surrogate, and live-only fields must survive.
-            adopt = False
             if role == "assistant":
                 canonical = {"content": decode_content_fn(target_row["content"]), _CONTENT_ONLY: True}
 
         final_row = conn.execute(
             "SELECT * FROM messages WHERE id = ? AND session_id = ?", (target_id, session_id)
-        ).fetchone()
+        ).fetchone() if wrote else target_row
         msg["timestamp"] = final_row["timestamp"]
-        msg[_DB_ROW_SNAPSHOT] = transcript_row_snapshot(final_row)
+        msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(final_row)
         if adopt:
             canonical = decode_row_fn(final_row)
         if canonical:
-            msg[_CANONICAL_ROW] = canonical
+            msg[CANONICAL_ROW] = canonical
         else:
-            msg.pop(_CANONICAL_ROW, None)
+            msg.pop(CANONICAL_ROW, None)
     return inserted_rows
 
 
@@ -273,9 +273,9 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
             written["_row_id"] = row["_row_id"]
         if isinstance(row.get("timestamp"), (int, float)):
             written["timestamp"] = row["timestamp"]
-        if isinstance(row.get(_DB_ROW_SNAPSHOT), str):
-            written[_DB_ROW_SNAPSHOT] = row[_DB_ROW_SNAPSHOT]
-        canonical = row.get(_CANONICAL_ROW)
+        if isinstance(row.get(DB_ROW_SNAPSHOT), str):
+            written[DB_ROW_SNAPSHOT] = row[DB_ROW_SNAPSHOT]
+        canonical = row.get(CANONICAL_ROW)
         if isinstance(canonical, dict) and canonical.get(_METADATA_ONLY):
             # Our own row: only hand over presentation metadata the live dict lacks, never payload.
             for key in _LIVE_MISSING_METADATA:

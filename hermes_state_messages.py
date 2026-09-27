@@ -430,20 +430,7 @@ class SessionMessagesMixin:
                     compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
                     turn_lease_ttl_seconds=turn_lease_ttl_seconds)
                 for start in range(0, len(messages), chunk_rows))
-        # _execute_write re-runs _do after a rollback: every attempt must start from the caller's state, or a
-        # rolled-back attempt's stamped _row_id could resolve to a row another writer took meanwhile.
-        _absent = object()
-        pre_state = [{k: m.get(k, _absent) for k in ("_row_id", DB_ROW_SNAPSHOT, "timestamp")}
-                     for m in messages]
-
         def _do(conn):
-            for msg, state in zip(messages, pre_state):
-                msg.pop(CANONICAL_ROW, None)
-                for key, value in state.items():
-                    if value is _absent:
-                        msg.pop(key, None)
-                    else:
-                        msg[key] = value
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             from agent.transcript_repair import resolve_and_repair_transcript_batch
@@ -461,7 +448,35 @@ class SessionMessagesMixin:
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
-        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp")
+
+    def _execute_transcript_write(self, fn, messages: List[Dict[str, Any]], **kwargs):
+        """``_execute_write(fn)`` for callbacks that stamp row state onto the caller's *messages* (every
+        :meth:`_insert_message_rows` caller). Each attempt, and a final failure, restores the caller's
+        ``_row_id`` / digest / timestamp: a rolled-back insert's id is reused by SQLite, so a stale stamp
+        would make a later flush adopt another writer's row and drop this message."""
+        _absent = object()
+        pre_state = [tuple(m.get(k, _absent) for k in self._ROW_STATE_KEYS) for m in messages]
+
+        def _restore() -> None:
+            for msg, state in zip(messages, pre_state):
+                msg.pop(CANONICAL_ROW, None)
+                for key, value in zip(self._ROW_STATE_KEYS, state):
+                    if value is _absent:
+                        msg.pop(key, None)
+                    else:
+                        msg[key] = value
+
+        def _attempt(conn):
+            _restore()
+            return fn(conn)
+        try:
+            return self._execute_write(_attempt, **kwargs)
+        except BaseException:
+            _restore()
+            raise
 
     def set_latest_matching_message_display_kind(self, session_id: str, *, role: str, content: str,
                                                  display_kind: str,
@@ -602,8 +617,8 @@ class SessionMessagesMixin:
             role = msg.get("role", "unknown")
             tool_calls = _parse_tool_calls(msg.get("tool_calls"))
             message_timestamp = _coerce_timestamp(msg.get("timestamp"), now_ts)
-            serialized = self._serialized_message_row(session_id, msg, message_timestamp)
-            cur = conn.execute(_INSERT_MESSAGE_SQL, tuple(serialized[column] for column in _MESSAGE_WRITE_COLUMNS))
+            cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
+                session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
             # Keep the caller's live row aligned with the durable identity. Rows created without an explicit
             # timestamp (notably mid-turn steers) may be carried through several compaction generations; if
             # the generated timestamp exists only in SQLite, every copy receives a new identity and renders
@@ -691,7 +706,7 @@ class SessionMessagesMixin:
             inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
                          (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
-        self._execute_write(_do)
+        self._execute_transcript_write(_do, messages)
 
     @classmethod
     def _row_identity(cls, role: str, content: Any, tool_call_id: Any, tool_calls: Any) -> tuple:
@@ -989,7 +1004,7 @@ class SessionMessagesMixin:
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted
-        return self._execute_write(_do)
+        return self._execute_transcript_write(_do, compacted_messages)
 
     def _message_column_names(self, conn) -> List[str]:
         """Column names of the messages table, cached per-connection era."""

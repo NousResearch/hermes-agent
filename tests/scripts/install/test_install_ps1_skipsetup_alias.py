@@ -38,3 +38,27 @@ def test_skipsetup_still_binds(tmp_path):
         "-SkipSetup failed to bind:\n" + result.stderr + result.stdout)
     report = json.loads(result.stdout)
     assert report, "expected the resolved-paths JSON report on stdout"
+
+
+def test_skipsetup_alone_skips_needs_input_stage(tmp_path):
+    """-SkipSetup without -NonInteractive must fold into it (#125371 review).
+
+    Driving ``-Stage setup`` (``needs_user_input = $true``) with only the alias
+    proves the fold itself: deleting the ``if ($SkipSetup)`` line makes the
+    stage dispatch run interactively instead of emitting the skipped frame.
+    """
+    powershell = shutil.which("powershell")
+    assert powershell
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(INSTALLER), "-SkipSetup", "-Stage", "setup", "-Json",
+         "-HermesHome", str(tmp_path / "home"), "-InstallDir", str(tmp_path / "install")],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, (
+        "-SkipSetup -Stage setup failed:\n" + result.stderr + result.stdout)
+    frame = json.loads(result.stdout.strip().splitlines()[-1])
+    assert frame["ok"] is True
+    assert frame["stage"] == "setup"
+    assert frame["skipped"] is True, frame
+    assert frame.get("reason") == "needs user input", frame

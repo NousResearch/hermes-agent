@@ -3542,8 +3542,10 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
 
       preflightStateDb({
         python: await findPythonForRoot(root),
+        updateRoot: root,
         script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
         home,
+        isWindows: IS_WINDOWS,
         log
       })
     },

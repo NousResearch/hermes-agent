@@ -109,7 +109,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 
 | 变量 | 描述 |
 |----------|-------------|
-| `HERMES_PORTAL_BASE_URL` | 覆盖 Nous Portal URL（用于开发/测试） |
+| `HERMES_PORTAL_BASE_URL` | 覆盖 Nous Portal URL（用于开发/测试）。旧的 `NOUS_BASE_URL` 已不再读取，请改用此变量。 |
 | `NOUS_INFERENCE_BASE_URL` | 覆盖 Nous 推理 API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | 重新铸造前的最小 agent 密钥 TTL（默认：1800 = 30 分钟） |
 | `HERMES_NOUS_TIMEOUT_SECONDS` | Nous 凭证/token 流程的 HTTP 超时 |

@@ -247,6 +247,12 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
     {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "obsidian",  "label": "Obsidian",       "description": "Quiet charcoal with sage accents"},
+    {"name": "porcelain", "label": "Porcelain",      "description": "Light mode — warm paper and deep forest green"},
+    {"name": "amber",     "label": "Amber",          "description": "Amber phosphor on black, set in monospace"},
+    {"name": "regalia",   "label": "Regalia",        "description": "Gold on deep burgundy with calligraphic headings"},
+    {"name": "sandstone", "label": "Sandstone",      "description": "Light mode — warm paper and terracotta, serif headings"},
+    {"name": "nebula",    "label": "Nebula",         "description": "Deep violet with cyan signals"},
 ]
 
 

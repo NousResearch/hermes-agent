@@ -1925,6 +1925,9 @@ class BasePlatformAdapter(ABC):
         # could drop a newer guard.
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        # Consecutive in-band drains per session whose handler returned nothing while an event sat
+        # pending (the runner's busy-demotion re-queue); drives the drain back-off (#123229).
+        self._requeue_counts: Dict[str, int] = {}
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
@@ -4473,6 +4476,8 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
+            if response is not None:
+                self._requeue_counts.pop(session_key, None)  # the handler consumed its event
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4548,7 +4553,8 @@ class BasePlatformAdapter(ABC):
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-                self._spawn_drain_task(pending_event, session_key)
+                self._spawn_drain_task(pending_event, session_key,
+                                       delay=self._requeue_backoff_delay(session_key, response))
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
@@ -4577,14 +4583,44 @@ class BasePlatformAdapter(ABC):
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)
 
-    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str) -> None:
+    _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
+    _REQUEUE_BACKOFF_MAX_SECONDS = 5.0
+
+    def _requeue_backoff_delay(self, session_key: str, response: Any) -> float:
+        """Delay before re-dispatching a follow-up the handler left pending without answering.
+
+        The runner's busy-demotion puts the event back (possibly a rewritten copy, so this counts
+        per session, not by event identity) and returns None; re-dispatching at once hot-loops for
+        the whole busy window (#123229). The first re-queue stays immediate — restart auto-resume
+        relies on one self-bounce — then back off exponentially to a cap. Defers, never drops."""
+        if response is not None:
+            return 0.0
+        attempts = self._requeue_counts.get(session_key, 0)
+        self._requeue_counts[session_key] = attempts + 1
+        if attempts == 0:
+            return 0.0
+        delay = min(self._REQUEUE_BACKOFF_MAX_SECONDS,
+                    self._REQUEUE_BACKOFF_INITIAL_SECONDS * 2 ** min(attempts - 1, 16))
+        (logger.info if attempts == 1 else logger.debug)(
+            "[%s] Handler re-queued a pending event for %s again (session busy elsewhere); "
+            "backing off %.2fs", self.name, session_key, delay)
+        return delay
+
+    def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str,
+                          delay: float = 0.0) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained
         follow-ups grew the C stack to SIGSEGV). Clearing (not deleting) the Event keeps the guard
-        live for concurrent inbound; ownership moves so stale-lock detection works."""
+        live for concurrent inbound; ownership moves so stale-lock detection works. ``delay`` is
+        slept INSIDE the new owner task, before its processing try/finally, so a cancel during the
+        back-off just ends it — it can't hit ``_finish_session_task``'s late-arrival respawn."""
         self._clear_session_guard(session_key)
         self._track_session_task(
-            session_key,
-            asyncio.create_task(self._process_message_background(pending_event, session_key)))
+            session_key, asyncio.create_task(self._drain_after(pending_event, session_key, delay)))
+
+    async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float) -> None:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        await self._process_message_background(pending_event, session_key)
 
     def _clear_session_guard(self, session_key: str) -> None:
         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""

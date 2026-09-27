@@ -17,6 +17,7 @@ router's IPS classified the burst as a DDoS from this host and blocked discord.c
 """
 
 import asyncio
+import dataclasses
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -111,10 +112,19 @@ def _runner_with_running_agent(adapter, *, compression_in_flight):
 
 
 @pytest.mark.asyncio
-async def test_requeued_busy_event_does_not_hot_loop():
+@pytest.mark.parametrize("rewrite_hook", [False, True])
+async def test_requeued_busy_event_does_not_hot_loop(rewrite_hook):
     adapter = _Adapter()
     runner, agent, sk = _runner_with_running_agent(adapter, compression_in_flight=True)
-    adapter.set_message_handler(runner._handle_message)
+
+    async def handler(event):
+        # A pre_gateway_dispatch "rewrite" hands the runner a dataclasses.replace copy, so the
+        # event it re-queues is a different object than the one the adapter dispatched.
+        if rewrite_hook:
+            event = dataclasses.replace(event, text=event.text)
+        return await runner._handle_message(event)
+
+    adapter.set_message_handler(handler)
 
     # The new adapter holds no guard for the session (the reconnect replaced it mid-turn).
     assert sk not in adapter._active_sessions

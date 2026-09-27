@@ -382,3 +382,63 @@ async def test_plugin_control_and_turn_route_share_durable_identity_after_rotati
     assert route["model"] == "test-model"
     assert route_contexts[0]["session_id"] == "physical-after"
     assert route_contexts[0]["session_key"] == "durable-chat"
+
+
+@pytest.mark.asyncio
+async def test_plugin_pin_command_uses_durable_identity_for_next_turn(monkeypatch):
+    """A pin command and its following routed turn use the same durable key."""
+    runner = _make_runner()
+    runner._draining = False
+    runner._hm_quick_commands = lambda: {}
+    runner._session_key_for_source = lambda _source: "durable-chat"
+    runner.session_store = SimpleNamespace(peek_session_id=lambda _key: "physical-before")
+    runner.config.get_connected_platforms = lambda: []
+    runner._run_in_executor_with_context = asyncio.to_thread
+
+    pinned = {}
+
+    def veto_pin(args, *, session_key=None, **_context):
+        pinned[session_key] = args
+        return "routing pinned"
+
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler", lambda _name: veto_pin)
+    source = _make_source()
+    event = MessageEvent(text="/veto-pin target-model", source=source)
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(
+        event, source, "veto-pin"
+    )
+
+    assert handled is True
+    assert result == "routing pinned"
+    assert pinned == {"durable-chat": "target-model"}
+
+    route_contexts = []
+
+    def apply_route(route, **context):
+        route_contexts.append(context)
+        assert pinned.get(context["session_key"]) == "target-model"
+        return SimpleNamespace(changed=False, payload=route, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_turn_route_middleware", apply_route)
+    route = runner._resolve_turn_agent_config(
+        "next user turn",
+        "test-model",
+        {
+            "api_key": "test-key",
+            "base_url": "https://example.invalid/v1",
+            "provider": "custom",
+            "requested_provider": "custom:alpha",
+            "api_mode": "chat_completions",
+            "args": [],
+            "capabilities": {},
+        },
+        session_id="physical-after",
+        session_key="durable-chat",
+        source=source,
+        conversation_history=[{"role": "user", "content": "before"}],
+        internal=False,
+    )
+
+    assert route["model"] == "test-model"
+    assert route_contexts[0]["session_id"] == "physical-after"
+    assert route_contexts[0]["session_key"] == "durable-chat"

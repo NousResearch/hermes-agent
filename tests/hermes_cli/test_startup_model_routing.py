@@ -186,6 +186,38 @@ def test_startup_route_decodes_custom_colon_qualified_model(tmp_path, monkeypatc
         user_providers=cfg.get("providers")) is None
 
 
+def test_startup_route_keeps_vendor_prefix_on_pinned_custom_provider(monkeypatch):
+    """A configured custom-provider pin owns the route; a bare ``hf:`` vendor prefix the endpoint
+    itself requires must not be consumed as a provider hint and reroute to ``huggingface``,
+    dropping the pin (#125578). Leaving the route unresolved keeps the pin and the prefixed model
+    for the runtime resolver, which routes ``custom:<name>`` + ``hf:<model>`` correctly."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    providers = {
+        "synthetic": {
+            "base_url": "https://api.synthetic.new/openai/v1",
+            "key_env": "SYNTHETIC_API_KEY",
+        }
+    }
+    assert (
+        model_switch.resolve_startup_model_route(
+            "hf:zai-org/GLM-5.3-Flash",
+            current_provider="custom:synthetic",
+            user_providers=providers,
+        )
+        is None
+    )
+    # Without a configured custom pin the prefix still routes to the vendor provider (unchanged).
+    assert model_switch.resolve_startup_model_route(
+        "hf:zai-org/GLM-5.3-Flash", user_providers=providers
+    ) == model_switch.StartupModelRoute("zai-org/GLM-5.3-Flash", "huggingface", "")
+    # The documented ``custom:<name>:<model>`` decode is unaffected by the pin (prefix is custom).
+    assert model_switch.resolve_startup_model_route(
+        "custom:synthetic:foo-model",
+        current_provider="custom:synthetic",
+        user_providers=providers,
+    ) == model_switch.StartupModelRoute("foo-model", "custom:synthetic", "")
+
+
 def test_oneshot_and_tui_qualified_model_never_reaches_default_provider(tmp_path, monkeypatch):
     """``hermes -z -m custom:<name>:<model>`` and ``hermes --tui -m …`` route through the same
     startup owner, so provider auto-detection never hands the qualified string to the configured

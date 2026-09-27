@@ -70,3 +70,22 @@ async def test_fresh_callback_delivery(monkeypatch, mode):
         assert clients and all(c.is_closed for c in clients)
     finally:
         manager.unload(manifest)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('target,extra', [
+    ('alice', {}),
+    ('unknown:alice', {'corp_id': 'corp', 'corp_secret': 'fixture', 'agent_id': '1'}),
+    ('corp:', {'corp_id': 'corp', 'corp_secret': 'fixture', 'agent_id': '1'}),
+    ('alice', {'apps': [{'name': 'a', 'corp_id': 'a'}, {'name': 'b', 'corp_id': 'b'}]}),
+])
+async def test_ambiguous_or_missing_app_never_opens_client(monkeypatch, target, extra):
+    from plugins.platforms.wecom.adapter import _callback_standalone_send
+    from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Invalid routing must not create a transport')
+
+    monkeypatch.setattr(WecomCallbackAdapter, '_ensure_http_client', forbidden)
+    result = await _callback_standalone_send(PlatformConfig(enabled=True, extra=extra), target, 'hello')
+    assert result.get('error')

@@ -395,6 +395,9 @@ async def test_matrix_pin_uses_current_session_owner_and_validates_event_id(inva
 
 
 def test_matrix_pin_is_restricted_to_explicit_matrix_admin_toolset():
+    import model_tools
+
+    original_tool_loop = model_tools._tool_loop
     config = {"platform_toolsets": {
         "matrix": ["hermes-matrix", "matrix_admin"],
         "telegram": ["hermes-telegram", "matrix_admin"],
@@ -412,5 +415,8 @@ def test_matrix_pin_is_restricted_to_explicit_matrix_admin_toolset():
         result = json.loads(pin_response)
     finally:
         clear_session_vars(tokens)
+        tool_loop = model_tools._tool_loop
+        if tool_loop is not None and tool_loop is not original_tool_loop:
+            tool_loop.close()
 
     assert result == {"error": "Matrix pin actions require a live Matrix session"}

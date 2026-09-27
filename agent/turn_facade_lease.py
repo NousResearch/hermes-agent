@@ -218,18 +218,18 @@ class TurnLeaseAdmission:
     conversation_history: Optional[List[Dict[str, Any]]] = None
 
 
-def _durable_session_exists(db, session_id: str) -> bool:
+def _durable_session_exists(db, session_id: str) -> Optional[bool]:
+    """True / False when the row read answered; None when it failed and the state is unknown."""
     try:
         return db.get_session(session_id) is not None
     except Exception:
-        # A locked / non-WAL read is not proof the row is absent: get_session returns None — it
-        # does not raise — when the row is missing. Treat the session as durable so a waited turn
-        # reloads rather than runs on a stale in-memory transcript. See #84234.
+        # A locked / non-WAL read proves neither presence nor absence: get_session returns None —
+        # it does not raise — when the row is missing. See #84234.
         logger.warning(
-            "Could not check durable session after turn lease admission; treating it as durable",
+            "Could not check durable session after turn lease admission; row state is unknown",
             exc_info=True,
         )
-        return True
+        return None
 
 
 def admit_durable_turn_lease(
@@ -288,11 +288,13 @@ def admit_durable_turn_lease(
         durable = _durable_session_exists(db, session_id)
         if durable:
             # Row proven to exist — suppress the redundant create attempt. A missing row leaves
-            # the flag alone: the flush heals a row deleted under a live agent (#123583).
+            # the flag alone: the flush heals a row deleted under a live agent (#123583). So does
+            # an unknown one: the create is an upsert that never overwrites an existing row.
             agent._session_db_created = True
         # Reload only a transcript that exists: callers may seed a fresh id in memory before its
-        # row is written, and reloading an absent row would erase that seed.
-        if waited and durable:
+        # row is written, and reloading an absent row would erase that seed. An unknown row still
+        # reloads after a wait (the holder wrote meanwhile); that read raising ends the turn.
+        if waited and durable is not False:
             agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
             # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
@@ -311,7 +313,8 @@ def admit_durable_turn_lease(
                 if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
                 and "_row_id" not in m
             )
-            admission.conversation_history = reloaded
+            if durable or reloaded:
+                admission.conversation_history = reloaded
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.

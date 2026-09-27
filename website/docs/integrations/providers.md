@@ -1160,8 +1160,8 @@ providers:
 
 Switch between them with `/model custom:neon-preview:gpt-5-mini`. A branch outside that lineage needs its own credential and its own `key_env`.
 
-:::warning Beta constraints
-Neon AI Gateway is in beta, requires a paid Neon plan, and runs only in AWS US East (Ohio) (`aws-us-east-2`). Outside a credential's branch lineage the gateway returns `403` with `credential not authorized for this branch`. The beta caps usage at 200,000 tokens per minute per account, counting input and output together.
+:::warning Availability
+Neon AI Gateway is generally available. It requires a paid Neon plan and is not available in every region; see [Regions](https://neon.com/docs/introduction/regions) for current coverage. Outside a credential's branch lineage the gateway returns `403` with `credential not authorized for this branch`. Neon also enforces account-level token-per-minute rate limits; exceeding them returns `429 Too Many Requests`.
 :::
 
 :::info Some models are Responses-only

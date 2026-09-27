@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+#
+# litco-agent-drain: ExecStop= of litco-agent.service. systemd runs it BEFORE
+# it sends SIGTERM to the gateway, so a stop or restart waits here until the
+# turn server reports no running turn. With TimeoutStopSec=infinity nothing
+# kills a turn in progress; the stop simply waits (the LitSpace worker rule).
+#
+# Scope: counts turns driven through the litco_turn server (LitKit's Slack
+# gateway, web channel, Telegram relay). Native Slack/Telegram adapter turns
+# and cron jobs are drained by Hermes itself on SIGTERM.
+#
+# Reads only LITCO_TURN_HOST, LITCO_TURN_PORT and LITCO_DRAIN_MAX_SECONDS.
+# /health needs no secret. If the server is unreachable there is nothing to
+# drain and the script exits 0 at once.
+#
+# To stop with a turn still running, on purpose: `systemctl kill litco-agent`.
+
+set -uo pipefail
+
+HOST="${LITCO_TURN_HOST:-127.0.0.1}"
+PORT="${LITCO_TURN_PORT:-8765}"
+MAX="${LITCO_DRAIN_MAX_SECONDS:-0}"   # 0 = wait as long as it takes
+INTERVAL="${LITCO_DRAIN_INTERVAL_SECONDS:-5}"
+[[ "$HOST" == "0.0.0.0" ]] && HOST=127.0.0.1
+URL="http://${HOST}:${PORT}/health"
+
+active_turns() {
+  local body
+  body="$(curl -fsS --max-time 5 "$URL" 2>/dev/null)" || return 1
+  python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("activeTurns", 0)))' <<<"$body" 2>/dev/null
+}
+
+start=$(date +%s)
+last_log=0
+while true; do
+  if ! n="$(active_turns)"; then
+    echo "litco-agent-drain: turn server not reachable at ${URL}; nothing to drain"
+    exit 0
+  fi
+  if [[ "$n" -eq 0 ]]; then
+    echo "litco-agent-drain: no running turns; stopping"
+    exit 0
+  fi
+  now=$(date +%s)
+  if (( now - last_log >= 60 )); then
+    echo "litco-agent-drain: waiting for ${n} running turn(s) ($(( now - start ))s so far)"
+    last_log=$now
+  fi
+  if (( MAX > 0 && now - start >= MAX )); then
+    echo "litco-agent-drain: LITCO_DRAIN_MAX_SECONDS=${MAX} reached with ${n} turn(s) running; stopping anyway"
+    exit 0
+  fi
+  sleep "$INTERVAL"
+done

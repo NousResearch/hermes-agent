@@ -1,0 +1,10 @@
+[Unit]
+Description=Stub OpenAI-compatible model for the litco-agent smoke test
+Before=litco-agent.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/litco-stub-model 18080
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

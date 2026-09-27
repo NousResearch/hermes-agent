@@ -1,0 +1,72 @@
+# litco-agent matter host: the Hermes gateway with the litco_turn platform
+# (turn server for LitKit) plus any native channel (Slack, Telegram) whose
+# tokens are present in the env file. Installed by deploy/host/install-host.sh.
+#
+# A system unit that runs as the hermes user, so systemd (as root) can read the
+# root-owned 0600 /etc/litco-agent/env that cloud-init writes; a user unit could
+# not. Linger is still enabled for hermes because upstream cron/Kanban workers
+# use `systemd-run --user` (hence the user@10000 ordering).
+#
+# No sandboxing directives: the pilot posture is a full shell, open egress and
+# a browser (MATTER_AGENT_VM_PILOT section 7). Chromium's sandbox also needs
+# the user namespaces that NoNewPrivileges/RestrictNamespaces would take away.
+
+[Unit]
+Description=litco-agent matter host (Hermes gateway + litco_turn)
+Documentation=file:///opt/litco-agent/app/deploy/host/README.md
+After=network-online.target tailscaled.service user@10000.service
+Wants=network-online.target user@10000.service
+# The image bakes this unit enabled with no env file; it must not run until
+# cloud-init has written one (cloud-init then RESTARTS it).
+ConditionPathExists=/etc/litco-agent/env
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/home/hermes
+EnvironmentFile=/etc/litco-agent/env
+Environment=HOME=/home/hermes
+Environment=USER=hermes
+Environment=LOGNAME=hermes
+Environment=XDG_RUNTIME_DIR=/run/user/10000
+Environment=HERMES_HOME=/home/hermes/.hermes
+Environment=HERMES_RUNTIME_DIR=/opt/litco-agent/tools
+Environment=HERMES_SUPERVISED_CHILD=1
+Environment=LITCO_APP_DIR=/opt/litco-agent/app
+# toolenv first: `python` in the agent's terminal is the data stack (duckdb,
+# pandas, matplotlib, python-docx, PyMuPDF, openpyxl). The gateway itself runs
+# from the Hermes venv by absolute path.
+Environment=PATH=/opt/litco-agent/toolenv/bin:/opt/litco-agent/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UMask=0027
+
+ExecStartPre=/usr/local/bin/litco-agent-init
+ExecStart=/opt/litco-agent/app/.venv/bin/python -m hermes_cli.main gateway run
+# Stop order: wait for running turns, mark the stop as planned (so Hermes does
+# not log it as a crash), then SIGTERM the main process only (KillMode=mixed).
+ExecStop=/usr/local/bin/litco-agent-drain
+ExecStop=-/opt/litco-agent/app/.venv/bin/python -m gateway.systemd_stop_mark
+ExecStopPost=-/opt/litco-agent/app/.venv/bin/python -m gateway.cgroup_cleanup
+ExecReload=/bin/kill -USR1 $MAINPID
+
+Restart=always
+RestartSec=5
+# Upstream exit codes: 75 = gateway asks to be restarted, 78 = fatal config.
+RestartForceExitStatus=75
+SuccessExitStatus=75
+RestartPreventExitStatus=78
+KillMode=mixed
+KillSignal=SIGTERM
+# Never kill a running turn: the stop waits in litco-agent-drain as long as it
+# takes. Use `systemctl kill litco-agent` to override on purpose.
+TimeoutStopSec=infinity
+TimeoutStartSec=120
+LimitNOFILE=65535
+TasksMax=8192
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=litco-agent
+
+[Install]
+WantedBy=multi-user.target

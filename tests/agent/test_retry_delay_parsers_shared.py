@@ -76,3 +76,28 @@ class TestResetDelayOneTable:
 
         assert reset_delay_from_message("resets in the future, maybe") is None
         assert "reset_at" not in _normalize_error_context({"message": "resets in the future, maybe"})
+
+
+class TestAbsoluteTimestampParsing:
+    def test_naive_iso_reset_at_is_utc_not_host_local(self, monkeypatch):
+        """A timezone-less ISO reset_at from a provider must read as UTC.
+
+        datetime.timestamp() interprets a naive datetime in the host's local
+        zone, so a non-UTC host benched or released credentials off by the
+        host offset. Run under a non-UTC zone so the regression is real.
+        """
+        import time
+        from agent.credential_pool import _normalize_error_context, _parse_absolute_timestamp
+
+        monkeypatch.setenv("TZ", "Asia/Shanghai")
+        time.tzset()
+        try:
+            utc_epoch = datetime(2030, 1, 1, tzinfo=timezone.utc).timestamp()
+            assert _parse_absolute_timestamp("2030-01-01T00:00:00") == utc_epoch
+            # The offset-bearing forms were never ambiguous.
+            assert _parse_absolute_timestamp("2030-01-01T00:00:00Z") == utc_epoch
+            assert _parse_absolute_timestamp("2030-01-01T08:00:00+08:00") == utc_epoch
+            assert _normalize_error_context({"reset_at": "2030-01-01T00:00:00"})["reset_at"] == utc_epoch
+        finally:
+            monkeypatch.delenv("TZ", raising=False)
+            time.tzset()

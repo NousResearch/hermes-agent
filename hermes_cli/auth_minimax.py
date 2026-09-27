@@ -226,13 +226,10 @@ def _minimax_oauth_login(*, region: str = "global", open_browser: bool = True, t
 
 def _refresh_minimax_oauth_state(state: Dict[str, Any], *, timeout_seconds: float = 15.0, force: bool = False) -> Dict[str, Any]:
     """Refresh MiniMax OAuth access token if close to expiry (or forced)."""
-    from hermes_cli.auth import _minimax_save_auth_state
+    from hermes_cli.auth import _minimax_save_auth_state, _parse_iso_timestamp
     if not state.get("refresh_token"):
         raise _minimax_err("MiniMax OAuth state has no refresh_token; please re-login.", "no_refresh_token", relogin=True)
-    try:
-        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
-    except Exception:
-        expires_at = 0.0
+    expires_at = _parse_iso_timestamp(state.get("expires_at")) or 0.0
     if not force and (expires_at - time.time()) > MINIMAX_OAUTH_REFRESH_SKEW_SECONDS:
         return state
 

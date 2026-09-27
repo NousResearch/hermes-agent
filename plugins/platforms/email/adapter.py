@@ -294,8 +294,10 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "no Authentication-Results from trusted authserv-id"
     methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
     props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(trusted)}
-    if methods.get("dmarc") == "pass":  # DMARC already enforces From alignment
-        return True, "dmarc=pass"
+    dmarc_from = props.get("header.from", "")
+    if methods.get("dmarc") == "pass" and (not dmarc_from or _domains_aligned(
+            _domain_of(dmarc_from) if "@" in dmarc_from else dmarc_from, from_domain)):
+        return True, "dmarc=pass"  # the verdict must be for the From domain we parsed
     if methods.get("spf") == "pass":  # envelope/MAIL FROM domain must align with From
         spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get("smtp.from", "") or props.get("envelope-from", "")
         if _domains_aligned(_domain_of(spf_domain) if "@" in spf_domain else spf_domain, from_domain):

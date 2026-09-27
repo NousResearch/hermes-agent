@@ -735,6 +735,105 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     assert entries[0]["priority"] == 0
 
 
+def test_auth_remove_digit_target_is_an_index_not_a_label(tmp_path, monkeypatch):
+    """A pure-digit target resolves as the numbered position, never a label.
+
+    Labels are free-form, so an entry can be labelled "2"; before the reorder the
+    label match ran first and `auth remove 2` deleted that entry instead of the
+    credential shown as #2 in `auth list`. Duplicated numeric labels were worse:
+    the ambiguous-label error advised the numeric index, which could never be
+    reached. Pins both cases: the digit target picks the position, and a
+    numeric label on a different entry survives.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    # Prevent pool auto-seeding from host env vars and file-backed sources
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "2",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-numericlabel",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "real-two",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-realtwo",
+                    },
+                    {
+                        "id": "cred-3",
+                        "label": "2",
+                        "auth_type": "api_key",
+                        "priority": 2,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-duplabel",
+                    },
+                    {
+                        "id": "cred-4",
+                        "label": "99",
+                        "auth_type": "api_key",
+                        "priority": 3,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-outofrange",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    assert len(pool.entries()) == 4
+    # "2" is a duplicated label AND a valid index: the index wins (old code
+    # dead-ended on the ambiguous-label error whose index advice was
+    # unreachable for a digit target).
+    index, entry, error = pool.resolve_target("2")
+    assert (index, entry.id) == (2, "cred-2")
+    # An out-of-range digit does not fall back to the matching label; the error
+    # names the shadowed label and the id escape hatch.
+    index, entry, error = pool.resolve_target("99")
+    assert index is None and 'labelled "99"' in error and "entry id" in error
+    # Non-digit labels still resolve, and a numeric-labelled entry stays
+    # reachable by its id.
+    assert pool.resolve_target("real-two")[0] == 2
+    assert pool.resolve_target("cred-1")[0] == 1
+    # Superscript digits satisfy isdigit() but not int(); they must not crash.
+    index, entry, error = pool.resolve_target("²")
+    assert index is None and error is not None
+    # Beyond int()'s str-digit cap the target cannot be an index; no traceback.
+    index, entry, error = pool.resolve_target("9" * 5000)
+    assert index is None and error is not None
+
+    from hermes_cli.auth_commands import auth_remove_command
+
+    class _Args:
+        provider = "anthropic"
+        target = "2"
+
+    auth_remove_command(_Args())
+
+    entries = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]["anthropic"]
+    assert [e["label"] for e in entries] == ["2", "2", "99"]
+    assert "cred-2" not in {e["id"] for e in entries}
+
+
 def test_auth_remove_codex_migrates_legacy_dict_suppression(tmp_path, monkeypatch):
     """Removing a Codex credential must tolerate legacy dict suppression data."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

@@ -610,10 +610,13 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     Push-Location $WorkRoot
     try {
+        # 30 min, not the 10 min default: from v2026.9.24 the app's update
+        # runs the historical venv->PM takeover plus a full Desktop rebuild
+        # (9m43s measured), like the 35 min open-app-update wait below.
         & $node (Join-Path $AssetsDir "launch-from-spec.mjs") --spec $spec `
             --old-sha (Read-State).old --chat-out $chatOut --mock-url $env:HERMES_E2E_MOCK_URL `
             --result (Join-Path $HermesHome ".hermes-update-result.json") `
-            --expect-sha $TargetSha --repo-dir $InstallDir 2>&1 |
+            --expect-sha $TargetSha --repo-dir $InstallDir --timeout-ms 1800000 2>&1 |
             ForEach-Object { Write-Host "  pw| $_" }
         $driveExit = $LASTEXITCODE
     } finally {

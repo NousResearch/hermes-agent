@@ -3216,6 +3216,7 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    signal_fn=None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3235,10 +3236,19 @@ def block_task(
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, block_kind, block_recurrences, worker_pid, claim_lock, worker_started_at"
+            " FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
+        # Snapshot for the post-commit termination below (#76196 pattern, same
+        # as archive_task). A worker-asserting caller (expected_run_id) signals
+        # itself away from the transition path, so only operator blocks terminate.
+        was_running = cur_row["status"] == "running" and expected_run_id is None
+        prev_pid = _row_get(cur_row, "worker_pid")
+        prev_lock = _row_get(cur_row, "claim_lock")
+        prev_started = _row_get(cur_row, "worker_started_at")
         # The breaker (``_record_task_failure``) parks cards ``blocked`` with no
         # ``block_kind`` and no ``blocked`` event -- the policy is the
         # supervisor's, not the kernel's -- but the transition guard below only
@@ -3302,8 +3312,19 @@ def block_task(
         if kind == "dependency":
             # Historical ordering: the dependency lane fires inside the txn.
             _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
-            return True
-    _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
+        else:
+            _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
+    if was_running:
+        # Post-commit kill (same pattern as archive_task): the transition won,
+        # the pid/claim snapshot is ours, and ``blocked``/``todo``/``triage``
+        # releases the card for respawn — a live worker beside it would
+        # duplicate work (#76196). Termination lands as its own audit event so
+        # the ``blocked`` event stays atomic with the status flip.
+        termination = _terminate_reclaimed_worker(
+            prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started,
+        )
+        with write_txn(conn):
+            _append_event(conn, task_id, "block_worker_termination", termination, run_id=run_id)
     return True
 
 
@@ -3959,11 +3980,25 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def schedule_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    expected_run_id: Optional[int] = None,
+    expected_run_id: Optional[int] = None, signal_fn=None,
 ) -> bool:
     """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
     until ``unblock_task`` re-gates it."""
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, worker_pid, claim_lock, worker_started_at FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        # Post-commit termination snapshot (#76196 pattern, see archive_task):
+        # a worker-asserting caller parks its own run — it exits on its own
+        # terms — while an operator scheduling a running card must not leave a
+        # live worker beside an untracked claim.
+        was_running = row["status"] == "running" and expected_run_id is None
+        prev_pid = _row_get(row, "worker_pid")
+        prev_lock = _row_get(row, "claim_lock")
+        prev_started = _row_get(row, "worker_started_at")
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks
@@ -3983,7 +4018,13 @@ def schedule_task(
             conn, task_id, outcome="scheduled", status="scheduled", summary=reason, synthesize=bool(reason),
         )
         _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
-        return True
+    if was_running:
+        termination = _terminate_reclaimed_worker(
+            prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started,
+        )
+        with write_txn(conn):
+            _append_event(conn, task_id, "schedule_worker_termination", termination, run_id=run_id)
+    return True
 
 
 # --- Worker context builder (what a spawned worker sees) ---

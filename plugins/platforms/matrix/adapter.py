@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import array
+import hashlib
 import inspect
 import json
 from contextlib import suppress
@@ -77,7 +78,7 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
-from plugins.platforms.matrix.room_context import PendingRoomNotes, room_state_change_note
+from plugins.platforms.matrix.room_context import PendingRoomNotes, RoomStateNote, room_state_change_note
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -342,6 +343,7 @@ class MatrixRoomIdentity:
     canonical_alias: str | None
     server_name: str | None
     joined_member_count: int | None
+    members_digest: str | None
     is_direct_account_data: bool
     display_name: str
     has_explicit_name: bool
@@ -2147,6 +2149,7 @@ class MatrixAdapter(BasePlatformAdapter):
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
+        source.room_members_digest = identity.members_digest
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
@@ -2203,6 +2206,13 @@ class MatrixAdapter(BasePlatformAdapter):
         if event.internal or event.message_type != MessageType.TEXT:
             return None
         return self._pending_room_notes.take(event.source.chat_id, session_key, created_at)
+
+    def take_turn_room_notes(
+        self, event: MessageEvent, session_key: str, created_at: datetime | None,
+    ) -> Dict[str, RoomStateNote]:
+        if event.internal or event.message_type != MessageType.TEXT:
+            return {}
+        return self._pending_room_notes.take_notes(event.source.chat_id, session_key, created_at)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
@@ -2848,8 +2858,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     return dict(profiles)
         return None
 
-    async def _compute_room_display_name(self, room_id: str) -> Optional[str]:
-        profiles = await self._get_room_member_profiles(room_id)
+    def _compute_room_display_name(self, profiles: Optional[Dict[Any, Any]]) -> Optional[str]:
         if not profiles:
             return None
 
@@ -2910,16 +2919,27 @@ class MatrixAdapter(BasePlatformAdapter):
         canonical_alias = await self._get_room_state_value(room_id, "m.room.canonical_alias", "alias")
         members = await self._get_room_members(room_id)
         member_count = len(members) if members is not None else None
+        profiles = await self._get_room_member_profiles(room_id) if members is not None else None
+        members_digest = None
+        if members is not None and profiles is not None:
+            profile_names = {
+                str(user_id): str(getattr(profile, "displayname", None) or "")
+                for user_id, profile in profiles.items()
+            }
+            member_rows = [(user_id, profile_names.get(user_id, "")) for user_id in sorted(members)]
+            members_digest = hashlib.sha256(
+                json.dumps(member_rows, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
         is_likely_dm = bool(members is not None and len(members) == 2 and self._user_id in members)
         computed_name = None
         if not room_name and not canonical_alias:
-            computed_name = await self._compute_room_display_name(room_id)
+            computed_name = self._compute_room_display_name(profiles)
         identity = MatrixRoomIdentity(
             room_id=room_id, room_name=room_name, room_topic=room_topic, canonical_alias=canonical_alias,
             server_name=(room_id.rsplit(":", 1)[-1].strip() or None) if ":" in room_id else None,
-            joined_member_count=member_count,
+            joined_member_count=member_count, members_digest=members_digest,
             is_direct_account_data=is_direct, display_name=room_name or canonical_alias or computed_name or room_id,
             has_explicit_name=has_explicit_name, chat_type="dm" if is_likely_dm else "room",
             conflict=bool(is_direct and not is_likely_dm))

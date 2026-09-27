@@ -7,29 +7,29 @@ export const esOverrides = {
   sharedMetrics: {
     consentTitle: '¿Nos ayudas a mejorar Hermes?',
     consentBody:
-      'Hermes puede contar cómo se usa —nunca lo que escribes— y, si lo eliges, enviar un resumen diario a Nous Research. No se comparte nada a menos que lo elijas aquí.',
+      'Las métricas compartidas solo contienen contadores acotados. Nunca prompts, archivos, rutas ni textos de error. La recopilación es local. Enviarlas a Nous es una aceptación aparte.',
     whatIsCollected: 'Qué se recopila',
-    collectedIntro: 'Solo contadores acotados, como:',
-    collectedActivity: 'Actividad, sesiones, resultados y tipos de error',
-    collectedModels: 'Nombres de modelos y proveedores, y volumen de tokens',
-    collectedNames: 'Nombres de herramientas, comandos y habilidades integrados',
-    collectedMilestones: 'Hitos de configuración y de uso de funciones',
-    collectedConfig: 'Un resumen diario de tu configuración (solo recuentos)',
-    neverCollected: 'Nunca tus prompts, respuestas, archivos, rutas ni textos de error.',
-    installId: 'Los resúmenes llevan un ID de instalación aleatorio creado para este perfil. No te identifica.',
+    collectedIntro: 'Solo contadores acotados:',
+    collectedActivity: 'Actividad, duración de sesiones, resultados y clases de error',
+    collectedModels: 'Rutas de modelo y totales de tokens',
+    collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
+    collectedMilestones: 'Recuentos de configuración agrupados',
+    installId:
+      'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas.',
     consentWindow:
-      'Solo se envían los datos registrados mientras compartir está activado. Puedes desactivarlo cuando quieras.',
+      'Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada; los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras.',
     readDocs: 'Leer todos los detalles',
-    share: 'Compartir estadísticas de uso con Nous',
-    local: 'Guardarlas solo en este dispositivo',
+    share: 'Recopilar y enviar a Nous',
+    local: 'Recopilar solo en local',
     off: 'No, gracias',
     changeLater: 'Puedes cambiarlo cuando quieras en Ajustes → Seguridad.',
     saveFailed: 'No se pudo guardar tu elección',
     collectLabel: 'Recopilar estadísticas de uso',
     collectDesc:
-      'Guarda contadores de uso acotados en este dispositivo. Nunca prompts, respuestas, archivos, rutas ni textos de error.',
+      'Contadores acotados guardados en este dispositivo. Nunca prompts, archivos, rutas ni textos de error.',
     sendLabel: 'Enviar estadísticas de uso a Nous',
-    sendDesc: 'Sube un resumen diario a Nous Research para ayudar a mejorar Hermes. Requiere la recopilación activada.',
+    sendDesc:
+      'Sube cada paquete diario al servicio de telemetría de Nous. Solo se envían datos de una ventana de consentimiento. Requiere la recopilación activada.',
     unavailable: 'Actualiza el backend de Hermes para cambiar este ajuste.'
   },
   intro: introEs,

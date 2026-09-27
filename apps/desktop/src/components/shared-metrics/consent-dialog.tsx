@@ -135,9 +135,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
                 <li>{copy.collectedModels}</li>
                 <li>{copy.collectedNames}</li>
                 <li>{copy.collectedMilestones}</li>
-                <li>{copy.collectedConfig}</li>
               </ul>
-              <p className="font-medium text-(--ui-text-primary)">{copy.neverCollected}</p>
               <p>{copy.installId}</p>
               <p>{copy.consentWindow}</p>
               <div>

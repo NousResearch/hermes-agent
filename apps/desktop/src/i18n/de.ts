@@ -7,31 +7,28 @@ export const deOverrides = {
   sharedMetrics: {
     consentTitle: 'Hermes verbessern helfen?',
     consentBody:
-      'Hermes kann zählen, wie es genutzt wird – nie, was Sie schreiben – und auf Wunsch eine tägliche Zusammenfassung an Nous Research senden. Nichts wird geteilt, solange Sie es hier nicht auswählen.',
+      'Geteilte Metriken enthalten nur begrenzte Zähler. Niemals Prompts, Dateien, Pfade oder Fehlertexte. Die Erfassung bleibt lokal. Das Senden an Nous ist eine separate Zustimmung.',
     whatIsCollected: 'Was erfasst wird',
-    collectedIntro: 'Nur begrenzte Zähler, zum Beispiel:',
-    collectedActivity: 'Aktivität, Sessions, Ergebnisse und Fehlerarten',
-    collectedModels: 'Modell- und Anbieternamen sowie Token-Mengen',
-    collectedNames: 'Namen integrierter Tools, Befehle und Skills',
-    collectedMilestones: 'Meilensteine bei Einrichtung und Funktionen',
-    collectedConfig: 'Eine tägliche Übersicht Ihrer Einrichtung (nur Anzahlen)',
-    neverCollected: 'Niemals Ihre Prompts, Antworten, Dateien, Pfade oder Fehlertexte.',
+    collectedIntro: 'Nur begrenzte Zähler:',
+    collectedActivity: 'Aktivität, Session-Länge, Ergebnisse und Fehlerklassen',
+    collectedModels: 'Modellrouten und Token-Summen',
+    collectedNames: 'Namen integrierter Tools, Befehle und Katalogeinträge',
+    collectedMilestones: 'Gruppierte Einrichtungszahlen',
     installId:
-      'Zusammenfassungen tragen eine zufällige Installations-ID für dieses Profil. Sie identifiziert Sie nicht.',
+      'Beim Senden wird jedes Tagespaket an den Nous-Telemetriedienst hochgeladen. Pakete tragen die Installations-ID dieses Profils: eine feste zufällige UUID ohne persönliche Daten, zurückgesetzt durch Löschen des Shared-Metrics-Ordners.',
     consentWindow:
-      'Gesendet werden nur Daten, die bei aktivierter Freigabe erfasst wurden. Sie können sie jederzeit abschalten.',
+      'Gesendet werden nur Pakete, deren gesamter Erfassungszeitraum in ein erfasstes Zustimmungsfenster fällt – Daten von vor Ihrer Zustimmung oder aus Lücken, in denen das Senden aus war, bleiben auf diesem Rechner. Das Senden lässt sich jederzeit wieder abschalten.',
     readDocs: 'Alle Details lesen',
-    share: 'Nutzungsstatistiken mit Nous teilen',
-    local: 'Nur auf diesem Gerät behalten',
+    share: 'Erfassen und an Nous senden',
+    local: 'Nur lokal erfassen',
     off: 'Nein, danke',
     changeLater: 'Sie können das jederzeit unter Einstellungen → Sicherheit ändern.',
     saveFailed: 'Ihre Auswahl konnte nicht gespeichert werden',
     collectLabel: 'Nutzungsstatistiken erfassen',
-    collectDesc:
-      'Begrenzte Nutzungszähler auf diesem Gerät speichern. Nie Prompts, Antworten, Dateien, Pfade oder Fehlertexte.',
+    collectDesc: 'Begrenzte Zähler auf diesem Gerät. Niemals Prompts, Dateien, Pfade oder Fehlertexte.',
     sendLabel: 'Nutzungsstatistiken an Nous senden',
     sendDesc:
-      'Täglich eine Zusammenfassung an Nous Research hochladen, um Hermes zu verbessern. Erfordert aktive Erfassung.',
+      'Jedes Tagespaket an den Nous-Telemetriedienst hochladen. Nur Daten aus einem Zustimmungsfenster werden gesendet. Erfordert aktive Erfassung.',
     unavailable: 'Aktualisieren Sie das Hermes-Backend, um diese Einstellung zu ändern.'
   },
   intro: introDe,

@@ -16,27 +16,28 @@ export const en: Translations = {
   sharedMetrics: {
     consentTitle: 'Help improve Hermes?',
     consentBody:
-      'Hermes can count how it is used — never what you say — and, if you choose, send a daily summary to Nous Research. Nothing is shared unless you pick it here.',
+      'Shared metrics contain only bounded counters. Never prompts, files, paths or error text. Collection is local. Sending them to Nous is a separate opt-in.',
     whatIsCollected: 'What is collected',
-    collectedIntro: 'Only bounded counters, such as:',
-    collectedActivity: 'Activity, sessions, outcomes and error types',
-    collectedModels: 'Model and provider names, and token volumes',
-    collectedNames: 'Names of built-in tools, commands and skills',
-    collectedMilestones: 'Setup and feature milestones',
-    collectedConfig: 'A daily summary of your setup (counts only)',
-    neverCollected: 'Never your prompts, responses, files, paths or error text.',
-    installId: 'Summaries carry a random install ID made for this profile. It does not identify you.',
-    consentWindow: 'Only data recorded while sharing is on is ever sent. You can turn it off any time.',
+    collectedIntro: 'Only bounded counters:',
+    collectedActivity: 'Activity, session length, outcomes and error classes',
+    collectedModels: 'Model routes and token totals',
+    collectedNames: 'Built-in tool, command and catalog names',
+    collectedMilestones: 'Bucketed setup counts',
+    installId:
+      'Sending uploads each daily package to the Nous telemetry service. Packages carry this profile’s install ID: a stable random UUID with no personal information, reset by deleting the shared-metrics directory.',
+    consentWindow:
+      'Only packages whose entire collection period falls inside a recorded consent window are ever sent — data from before you opt in, or from any gap while sending was off, stays on this machine. Sending can be turned off again at any time.',
     readDocs: 'Read the full details',
-    share: 'Share usage stats with Nous',
-    local: 'Keep them on this device',
+    share: 'Collect and send to Nous',
+    local: 'Collect locally only',
     off: 'No thanks',
     changeLater: 'You can change this any time in Settings → Safety.',
     saveFailed: 'Couldn’t save your choice',
     collectLabel: 'Collect usage stats',
-    collectDesc: 'Keep bounded usage counters on this device. Never prompts, responses, files, paths or error text.',
+    collectDesc: 'Bounded counters kept on this device. Never prompts, files, paths or error text.',
     sendLabel: 'Send usage stats to Nous',
-    sendDesc: 'Upload a daily summary to Nous Research to help improve Hermes. Needs collection on.',
+    sendDesc:
+      'Upload each daily package to the Nous telemetry service. Only data from inside a consent window is sent. Needs collection on.',
     unavailable: 'Update the Hermes backend to change this setting.'
   },
   // English editorial copy stays in the shipped JSONL; other locales override it.

@@ -7,31 +7,29 @@ export const frOverrides = {
   sharedMetrics: {
     consentTitle: 'Aider à améliorer Hermes ?',
     consentBody:
-      'Hermes peut compter comment il est utilisé — jamais ce que vous écrivez — et, si vous le souhaitez, envoyer un résumé quotidien à Nous Research. Rien n’est partagé tant que vous ne le choisissez pas ici.',
+      'Les métriques partagées ne contiennent que des compteurs bornés. Jamais de prompts, fichiers, chemins ni textes d’erreur. La collecte reste locale. Les envoyer à Nous est un consentement distinct.',
     whatIsCollected: 'Ce qui est collecté',
-    collectedIntro: 'Uniquement des compteurs bornés, par exemple :',
-    collectedActivity: 'Activité, sessions, résultats et types d’erreur',
-    collectedModels: 'Noms des modèles et fournisseurs, et volumes de tokens',
-    collectedNames: 'Noms des outils, commandes et compétences intégrés',
-    collectedMilestones: 'Étapes de configuration et d’utilisation des fonctionnalités',
-    collectedConfig: 'Un résumé quotidien de votre configuration (comptes uniquement)',
-    neverCollected: 'Jamais vos prompts, réponses, fichiers, chemins ni textes d’erreur.',
+    collectedIntro: 'Uniquement des compteurs bornés :',
+    collectedActivity: 'Activité, durée des sessions, résultats et classes d’erreur',
+    collectedModels: 'Routes de modèles et totaux de tokens',
+    collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
+    collectedMilestones: 'Comptes de configuration regroupés',
     installId:
-      'Les résumés portent un identifiant d’installation aléatoire créé pour ce profil. Il ne vous identifie pas.',
+      'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
     consentWindow:
-      'Seules les données enregistrées pendant que le partage est actif sont envoyées. Vous pouvez le désactiver à tout moment.',
+      'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
     readDocs: 'Lire tous les détails',
-    share: 'Partager les statistiques d’utilisation avec Nous',
-    local: 'Les garder sur cet appareil',
+    share: 'Collecter et envoyer à Nous',
+    local: 'Collecter en local uniquement',
     off: 'Non merci',
     changeLater: 'Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
     saveFailed: 'Impossible d’enregistrer votre choix',
     collectLabel: 'Collecter les statistiques d’utilisation',
     collectDesc:
-      'Conserver des compteurs d’utilisation bornés sur cet appareil. Jamais de prompts, réponses, fichiers, chemins ni textes d’erreur.',
+      'Compteurs bornés conservés sur cet appareil. Jamais de prompts, fichiers, chemins ni textes d’erreur.',
     sendLabel: 'Envoyer les statistiques d’utilisation à Nous',
     sendDesc:
-      'Envoyer chaque jour un résumé à Nous Research pour aider à améliorer Hermes. Nécessite la collecte activée.',
+      'Envoyer chaque paquet quotidien au service de télémétrie de Nous. Seules les données d’une fenêtre de consentement sont envoyées. Nécessite la collecte activée.',
     unavailable: 'Mettez à jour le backend Hermes pour modifier ce réglage.'
   },
   intro: introFr,

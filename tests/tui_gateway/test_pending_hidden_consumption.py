@@ -15,7 +15,7 @@ def test_unhide_survives_next_session_row_persist(tmp_path, monkeypatch, first_a
         monkeypatch.setattr(srv, "_get_db", lambda: db)
         monkeypatch.setattr(srv, "_schedule_agent_build", lambda sid: None)
         monkeypatch.setattr(srv, "_schedule_session_cap_enforcement", lambda: None)
-        created = srv._methods["session.create"](1, {"hidden": True})
+        created = srv._methods["session.create"](1, {"hidden": True, "title": "Bot Chat"})
         assert "error" not in created, created
         sid = created["result"]["session_id"]
         session = srv._sessions[sid]

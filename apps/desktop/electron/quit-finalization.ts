@@ -27,6 +27,72 @@ export interface QuitFinalization {
   cancel: () => void
 }
 
+export interface ManagedUpdateQuitCoordinatorOptions {
+  hasInFlightUpdates: () => boolean
+  waitForUpdates: () => Promise<void>
+  requestQuit: () => void
+  armSealedTeardown: (delayMs?: number) => void
+}
+
+export interface ManagedUpdateQuitCoordinator {
+  handleBeforeQuit: (event: { preventDefault: () => void }) => boolean
+  armSealedQuitExit: (delayMs?: number) => void
+  isWaitDone: () => boolean
+}
+
+/**
+ * Ensures in-flight managed updates or recoveries are joined before before-quit
+ * teardown seals the backend.
+ *
+ * While updates are in flight, before-quit is prevented and sealed-teardown
+ * watchdogs are suppressed. Once the update operations settle, app.quit() is
+ * re-requested so normal teardown can proceed and arm the watchdog.
+ */
+export function createManagedUpdateQuitCoordinator({
+  hasInFlightUpdates,
+  waitForUpdates,
+  requestQuit,
+  armSealedTeardown
+}: ManagedUpdateQuitCoordinatorOptions): ManagedUpdateQuitCoordinator {
+  let waitPromise: Promise<void> | null = null
+  let waitDone = false
+
+  function isInFlight(): boolean {
+    return !waitDone && (waitPromise !== null || hasInFlightUpdates())
+  }
+
+  return {
+    handleBeforeQuit(event) {
+      if (!isInFlight()) {
+        return false
+      }
+
+      event.preventDefault()
+
+      if (!waitPromise) {
+        waitPromise = waitForUpdates().finally(() => {
+          waitDone = true
+          requestQuit()
+        })
+      }
+
+      return true
+    },
+
+    armSealedQuitExit(delayMs?: number) {
+      if (isInFlight()) {
+        return
+      }
+
+      armSealedTeardown(delayMs)
+    },
+
+    isWaitDone() {
+      return waitDone
+    }
+  }
+}
+
 /**
  * Provides a bounded escape hatch for an Electron process that has admitted
  * quit but never emits the completed quit event.

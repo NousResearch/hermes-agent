@@ -259,30 +259,82 @@ pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
         && resolve_hermes_desktop_exe(install_root).is_some()
 }
 
+/// A full lowercase 40-hex sha, mirroring scripts/verify-bootstrap-version-stamp.py.
+/// Fallback all-zero stamps (packaged placeholder pins) are not real pins.
+fn is_pinned_commit(commit: &str) -> bool {
+    commit.len() == 40
+        && commit.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && commit.bytes().any(|b| b != b'0')
+}
+
+/// Commit recorded by the completion stage of the install script we just drove.
+/// install.ps1/install.sh resolve the sha through the git they stage themselves,
+/// so this survives a machine without git on PATH -- the fallback below fails there.
+fn read_existing_marker_commit(install_root: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(crate::paths::likely_bootstrap_marker(install_root)).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("pinnedCommit")?
+        .as_str()
+        .filter(|commit| is_pinned_commit(commit))
+        .map(str::to_string)
+}
+
 fn resolve_marker_commit(install_root: &Path, pin: &Pin) -> Option<String> {
     if let Some(commit) = pin
         .commit
         .as_ref()
-        .filter(|commit| !commit.trim().is_empty())
+        .filter(|commit| is_pinned_commit(commit.trim()))
     {
-        return Some(commit.clone());
+        return Some(commit.trim().to_string());
     }
 
-    let output = std::process::Command::new("git")
+    // The checkout owns source runtime identity: its live HEAD wins, so a
+    // repair/update bootstrap reports where the checkout actually is. Mirrors
+    // resolveMarkerPinnedCommit() in bootstrap-runner.ts.
+    if let Ok(output) = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(install_root)
         .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    {
+        if output.status.success() {
+            let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if is_pinned_commit(&commit) {
+                return Some(commit);
+            }
+        }
     }
 
-    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if commit.is_empty() {
-        None
-    } else {
-        Some(commit)
-    }
+    read_existing_marker_commit(install_root)
+}
+
+/// Current UTC as the receipt's contracted ``completedAt`` ISO-8601 stamp
+/// (install.ps1/install.sh schema, checked by
+/// scripts/verify-bootstrap-version-stamp.py).
+fn completed_at_iso_utc() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    // Howard Hinnant's civil_from_days: valid over the whole u64 seconds range.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let (year, month) = if m <= 2 { (y + 1, m) } else { (y, m) };
+    format!(
+        "{year:04}-{month:02}-{d:02}T{:02}:{:02}:{:02}.000Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
 }
 
 fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<serde_json::Value> {
@@ -298,15 +350,11 @@ fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<ser
         })?;
     }
 
-    let completed_at_unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
     let marker = serde_json::json!({
         "schemaVersion": 1,
         "pinnedCommit": resolve_marker_commit(install_root, pin),
         "pinnedBranch": pin.branch.clone(),
-        "completedAtUnix": completed_at_unix,
+        "completedAt": completed_at_iso_utc(),
     });
     let mut body = serde_json::to_vec_pretty(&marker)?;
     body.push(b'\n');
@@ -1168,7 +1216,7 @@ mod tests {
     fn bootstrap_complete_marker_uses_desktop_compatible_schema() {
         let root = unique_tmp_dir("marker-schema");
         let pin = Pin {
-            commit: Some("abcdef1234567890".to_string()),
+            commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             branch: Some("main".to_string()),
         };
 
@@ -1180,12 +1228,124 @@ mod tests {
 
         assert_eq!(marker, from_disk);
         assert_eq!(from_disk["schemaVersion"], 1);
-        assert_eq!(from_disk["pinnedCommit"], "abcdef1234567890");
+        assert_eq!(from_disk["pinnedCommit"], "0123456789abcdef0123456789abcdef01234567");
         assert_eq!(from_disk["pinnedBranch"], "main");
         assert!(
-            from_disk["completedAtUnix"].as_u64().is_some(),
-            "marker must carry a completion timestamp"
+            from_disk["completedAt"]
+                .as_str()
+                .is_some_and(|ts| ts.ends_with('Z') && ts.len() == "YYYY-MM-DDTHH:MM:SS.mmmZ".len()),
+            "marker must carry the contracted ISO-8601 completedAt stamp"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_complete_marker_keeps_receipt_commit_without_git() {
+        // Regression for #124949: on a machine without git on PATH (install.ps1
+        // resolved the sha through the git it stages itself) the branch-pin path
+        // used to publish pinnedCommit null, clobbering the correct receipt
+        // Stage-Complete had just written. The receipt must carry forward.
+        let root = unique_tmp_dir("marker-no-git-inherit");
+        let ps1_receipt = serde_json::json!({
+            "schemaVersion": 1,
+            "pinnedCommit": "0123456789abcdef0123456789abcdef01234567",
+            "pinnedBranch": "main",
+            "completedAt": "2026-09-27T08:00:00.000Z",
+        });
+        std::fs::write(
+            root.join(".hermes-bootstrap-complete"),
+            serde_json::to_vec_pretty(&ps1_receipt).unwrap(),
+        )
+        .unwrap();
+
+        // Not a git repo (and possibly no git on PATH) → rev-parse cannot win.
+        let pin = Pin {
+            commit: None,
+            branch: Some("main".to_string()),
+        };
+        let marker = write_bootstrap_complete_marker(&root, &pin)
+            .expect("marker write should succeed");
+
+        assert_eq!(
+            marker["pinnedCommit"],
+            ps1_receipt["pinnedCommit"],
+            "receipt commit must survive the Rust rewrite"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_complete_marker_prefers_checkout_head_over_receipt() {
+        // The checkout owns runtime identity: a live git HEAD wins over the
+        // stale receipt, mirroring resolveMarkerPinnedCommit() in
+        // bootstrap-runner.ts.
+        let root = unique_tmp_dir("marker-head-wins");
+        make_release_tree(&root);
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .expect("git available for this test");
+        assert!(status.success());
+        let status = std::process::Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let head = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&root)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        std::fs::write(
+            root.join(".hermes-bootstrap-complete"),
+            r#"{"schemaVersion":1,"pinnedCommit":"1111111111111111111111111111111111111111","pinnedBranch":"main","completedAt":"2026-09-27T08:00:00.000Z"}"#,
+        )
+        .unwrap();
+
+        let pin = Pin {
+            commit: None,
+            branch: Some("main".to_string()),
+        };
+        let marker = write_bootstrap_complete_marker(&root, &pin)
+            .expect("marker write should succeed");
+
+        assert_eq!(
+            marker["pinnedCommit"], head,
+            "live checkout HEAD must win over the stale receipt"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_complete_marker_matches_version_stamp_contract() {
+        // Regression for #124949: scripts/verify-bootstrap-version-stamp.py
+        // requires completedAt (ISO-8601 UTC); completedAtUnix always failed it.
+        let root = unique_tmp_dir("marker-contract");
+        let pin = Pin {
+            commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            branch: Some("main".to_string()),
+        };
+        let marker = write_bootstrap_complete_marker(&root, &pin)
+            .expect("marker write should succeed");
+
+        assert!(
+            marker.get("completedAtUnix").is_none(),
+            "retired completedAtUnix field must not come back"
+        );
+        let completed_at = marker["completedAt"].as_str().unwrap();
+        assert_eq!(completed_at.len(), 24, "{completed_at}");
+        assert!(completed_at.ends_with('Z'), "{completed_at}");
+        assert_eq!(&completed_at[4..5], "-");
+        assert_eq!(&completed_at[7..8], "-");
+        assert_eq!(&completed_at[10..11], "T");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1194,7 +1354,7 @@ mod tests {
         let root = unique_tmp_dir("marker-atomic");
         make_release_tree(&root);
         let pin = Pin {
-            commit: Some("abcdef1234567890".to_string()),
+            commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             branch: Some("main".to_string()),
         };
 
@@ -1241,7 +1401,7 @@ mod tests {
         let not_a_dir = base.join("not-a-dir");
         std::fs::write(&not_a_dir, b"not a directory").unwrap();
         let pin = Pin {
-            commit: Some("abcdef1234567890".to_string()),
+            commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             branch: Some("main".to_string()),
         };
 

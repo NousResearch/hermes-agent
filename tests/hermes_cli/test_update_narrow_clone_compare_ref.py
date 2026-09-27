@@ -34,7 +34,7 @@ def narrow_clone(tmp_path: Path) -> Path:
     seed = tmp_path / "seed"
     _run(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     _run(tmp_path, "clone", "-q", f"file://{origin}", str(seed))
-    (seed / "f.txt").write_text("a\n")
+    (seed / "f.txt").write_text("a\n", encoding="utf-8")
     _run(seed, "add", "f.txt")
     _run(seed, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
     _run(seed, "tag", "v1")
@@ -68,7 +68,7 @@ def test_forced_refspec_updates_shallow_clone_to_new_tip(narrow_clone: Path) -> 
     assert stale
 
     # Advance origin/main past the pinned tag.
-    (adv / "f.txt").write_text("b\n")
+    (adv / "f.txt").write_text("b\n", encoding="utf-8")
     _run(adv, "add", "f.txt")
     assert _run(adv, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "second").returncode == 0
     assert _run(adv, "push", "-q", "origin", "main").returncode == 0

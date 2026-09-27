@@ -1106,7 +1106,7 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
 
     from hermes_cli._subprocess_compat import expose_pm_git
 
-    expose_pm_git()
+    expose_pm_git(_m().PROJECT_ROOT)
     git_cmd = _base_git_cmd()
     if sys.platform == "win32" and git_dir.exists():
         _git_run(git_cmd, ["config", "windows.appendAtomically", "false"])

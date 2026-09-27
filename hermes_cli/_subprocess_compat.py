@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
 __all__ = [
@@ -372,22 +373,26 @@ def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
         return env
 
 
-def expose_pm_git() -> None:
-    """Put PM's git on this process's PATH when Windows has no git of its own.
+def expose_pm_git(project_root: Path) -> None:
+    """Put PM's git on PATH, and in PM's facts, for a Windows git checkout.
 
-    On a machine without git, install.ps1 stages the pinned Git for Windows for
-    its own process only; PM's facts never record it. Every later bare ``git``
-    (``hermes update``, the source-completion stamp) then died with
-    ``[WinError 2]``. Callers are explicit user actions (like
-    ``ensure_tools_for_sync``), so acquire PM's git outright; children inherit
-    the PATH. A machine with a working git is untouched. Raises what
-    ``pm.ensure`` raises.
+    install.ps1 stages the pinned Git for Windows into PM's store for its own
+    process only, and PM's facts never record it, so every later bare ``git``
+    (``hermes update``, the source-completion stamp, plugin installs, doctor)
+    died with ``[WinError 2]``. A git found under PM's store is that unrecorded
+    copy inherited from the installer, so it is recorded too. Callers are
+    explicit user actions (like ``ensure_tools_for_sync``), so acquire PM's git
+    outright; children inherit the PATH. The machine's own git, and a git-less
+    ZIP install that never runs git, are untouched. Raises what ``pm.ensure``
+    raises.
     """
-    if sys.platform != "win32":
+    if sys.platform != "win32" or not (Path(project_root) / ".git").exists():
         return
     from hermes_platform.resolver import locate_command
+    from pm.paths import store_root
 
-    if locate_command("git").found:
+    found = locate_command("git").command
+    if found and not Path(found[0]).resolve().is_relative_to(store_root()):
         return
     from pm import ensure
 

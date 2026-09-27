@@ -52,7 +52,7 @@ def complete_source_checkout(
 
         # The builds, the release-history refresh and the install stamp all run
         # git; a fresh Windows machine has only PM's.
-        expose_pm_git()
+        expose_pm_git(root)
     except Exception as exc:  # noqa: BLE001 — git-less steps below still complete
         print(f"⚠ Could not provide git for the source completion: {exc}", file=sys.stderr)
     publish_launchers(root)

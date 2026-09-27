@@ -394,6 +394,7 @@ async def _exec_buzz(
     """Run the buzz CLI (argv, never a shell) -> ``(rc, stdout, stderr)``. Key travels via env only."""
     from tools.environments.local import hermes_subprocess_env
     env = hermes_subprocess_env()  # a third-party CLI: its own key only, never Hermes' credentials
+    env["HOME"] = env["HERMES_REAL_HOME"]  # its own config and credentials file live under the user's HOME
     env["BUZZ_RELAY_URL"] = relay_url
     env["BUZZ_PRIVATE_KEY"] = private_key
     env.pop("BUZZ_AUTH_TAG", None)

@@ -983,8 +983,7 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
         # and relay tokens never do. HOME stays the user's: ov.conf defaults to ~/.openviking.
         from tools.environments.local import hermes_subprocess_env
         child_env = hermes_subprocess_env(inherit_credentials=True)
-        if "HOME" in os.environ:
-            child_env["HOME"] = os.environ["HOME"]
+        child_env["HOME"] = child_env["HERMES_REAL_HOME"]
         child_env.pop("PYTHONPATH", None)
         with log_path.open("ab") as log_file:
             subprocess.Popen([server_cmd, "--host", host, "--port", str(port)], stdout=log_file, stderr=log_file,

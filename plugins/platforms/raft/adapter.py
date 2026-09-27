@@ -378,6 +378,7 @@ class RaftAdapter(BasePlatformAdapter):
         from tools.environments.local import hermes_subprocess_env
         # The raft CLI needs its own profile and channel token, never Hermes' credentials.
         env = {**hermes_subprocess_env(), "RAFT_PROFILE": profile, "RAFT_CHANNEL_TOKEN": self._bridge_token}
+        env["HOME"] = env["HERMES_REAL_HOME"]  # the raft CLI's own login lives under the user's HOME
         try:
             self._bridge_process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL)
             logger.info("[raft] Spawned bridge pid=%d profile=%s endpoint=%s", self._bridge_process.pid, profile, endpoint)

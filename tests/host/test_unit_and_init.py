@@ -145,6 +145,29 @@ def test_init_renders_config_and_soul(tmp_path):
     assert (tmp_path / "matter").is_dir()
 
 
+def test_init_disables_tool_search_and_points_skills_at_the_checkout(tmp_path):
+    app_dir = tmp_path / "opt" / "litco-agent" / "app"
+    (app_dir / "hermes_cli").mkdir(parents=True)
+    shutil.copy(REPO / "hermes_cli" / "config_defaults.py", app_dir / "hermes_cli" / "config_defaults.py")
+    env = env_for(tmp_path, LITCO_APP_DIR=str(app_dir), LITCO_PROFILE_DIR=str(HOST / "profile"))
+    assert init.main(env) == 0
+    config = rendered(tmp_path)[0]
+    assert config["tools"]["tool_search"]["enabled"] == "off"  # the string, not YAML 1.1 false
+    assert config["skills"]["external_dirs"] == [str(app_dir / "litco" / "skills")]
+    # resolved from the non-secret env alone
+    assert env.read <= set(init.NON_SECRET_KEYS) and not env.read & set(SECRETS)
+    for path in (tmp_path / "hermes-home").iterdir():
+        for value in SECRETS.values():
+            assert value not in path.read_text()
+
+
+def test_skills_dir_defaults_to_the_image_checkout():
+    values = init.read_settings({"LITCO_MATTER_ID": "m1"})
+    assert values["LITCO_APP_DIR"] == "/opt/litco-agent/app"
+    assert init.substitutions(dict(values, LITCO_APP_DIR=str(REPO)))["LITCO_SKILLS_DIR"] == \
+        str(REPO / "litco" / "skills")
+
+
 def test_init_config_version_matches_this_checkout(tmp_path):
     import re
     expected = re.search(r'"_config_version":\s*(\d+)', (REPO / "hermes_cli/config_defaults.py").read_text())
@@ -191,6 +214,7 @@ def test_approvals_knob_passes_through_the_owner_choice(tmp_path, mode):
     {"LITCO_TURN_PORT": "http"},
     {"LITCO_MODEL": 'x"\nprovider: evil'},
     {"LITCO_MODEL_KEY_ENV": "lower; rm"},
+    {"LITCO_APP_DIR": '/opt/x"\nevil: 1'},
 ])
 def test_init_refuses_bad_settings_with_ex_config(tmp_path, extra, capsys):
     assert init.main(env_for(tmp_path, **extra)) == 78

@@ -32,6 +32,17 @@ platform_toolsets:
   slack: *matter_tools
   telegram: *matter_tools
 
+# The LitKit toolset is a bundled plugin whose tools would otherwise sit behind
+# Hermes's tool-search step; a matter agent should see them directly.
+tools:
+  tool_search:
+    enabled: "off"
+
+# The firm's legal skills, shipped in the checkout at the pinned ref.
+skills:
+  external_dirs:
+    - "{{LITCO_SKILLS_DIR}}"
+
 terminal:
   backend: local
   # Each LitKit thread gets its own working directory under the matter home

@@ -78,7 +78,7 @@ def read_settings(environ=None) -> dict:
     if values["LITCO_MODEL_KEY_ENV"] and not _ENV_NAME.match(values["LITCO_MODEL_KEY_ENV"]):
         raise InitError("LITCO_MODEL_KEY_ENV must be an environment variable name")
     for key in ("LITCO_INSTANCE_URL", "LITCO_MODEL", "LITCO_MODEL_PROVIDER", "LITCO_MODEL_BASE_URL",
-                "LITCO_MATTER_HOME", "LITCO_TURN_HOST"):
+                "LITCO_MATTER_HOME", "LITCO_TURN_HOST", "LITCO_APP_DIR"):
         if not _PLAIN.match(values[key]):
             raise InitError(f"{key} contains characters that cannot go into the profile")
     return values
@@ -99,6 +99,8 @@ def hermes_config_version(app_dir: Path) -> str:
 def substitutions(values: dict) -> dict:
     subst = dict(values)
     subst["HERMES_CONFIG_VERSION"] = hermes_config_version(Path(values["LITCO_APP_DIR"]))
+    # The firm's legal skills ship in the checkout (litco/skills), so they move with the fork's ref.
+    subst["LITCO_SKILLS_DIR"] = str(Path(values["LITCO_APP_DIR"]) / "litco" / "skills")
     extra = []
     if values["LITCO_MODEL_BASE_URL"]:
         extra.append(f'  base_url: "{values["LITCO_MODEL_BASE_URL"]}"')

@@ -383,7 +383,11 @@ def expose_pm_git() -> None:
     the PATH. A machine with a working git is untouched. Raises what
     ``pm.ensure`` raises.
     """
-    if sys.platform != "win32" or shutil.which("git"):
+    if sys.platform != "win32":
+        return
+    from hermes_platform.resolver import locate_command
+
+    if locate_command("git").found:
         return
     from pm import ensure
 

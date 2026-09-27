@@ -378,6 +378,8 @@ def _parse_hooks(hooks_cfg: Any) -> tuple[list[ShellHookSpec], bool]:
     if hooks_cfg is None:
         return [], True
     if not isinstance(hooks_cfg, dict):
+        logger.warning("hooks: must be a mapping of event name to a list of hook definitions; got %s",
+                       type(hooks_cfg).__name__)
         return [], False
     specs: list[ShellHookSpec] = []
     complete = True

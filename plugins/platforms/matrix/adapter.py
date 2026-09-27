@@ -14,13 +14,12 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
   true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
 
-Note: any room with <=2 joined members is auto-classified as a DM (see
-``_resolve_room_identity``), regardless of ``m.direct`` account data or an explicit room name —
-clients auto-name DMs like "Alice & Bot", so name alone can't be trusted. A DM-classified room
+Note: only a room with the bot and exactly one other joined member is classified as a DM (see
+``_resolve_room_identity``), regardless of ``m.direct`` account data or an explicit room name.
+When joined membership cannot be read, the room is treated as a group. A DM-classified room
 therefore bypasses MATRIX_ALLOWED_ROOMS, MATRIX_FREE_RESPONSE_ROOMS, and MATRIX_REQUIRE_MENTION,
 and follows MATRIX_DM_AUTO_THREAD / MATRIX_DM_MENTION_THREADS instead of MATRIX_AUTO_THREAD /
-MATRIX_SESSION_SCOPE. To make a deliberately-created 2-person room behave like a regular room,
-add a third member so it has >2 joined members.
+MATRIX_SESSION_SCOPE.
 """
 
 from __future__ import annotations
@@ -54,7 +53,7 @@ from gateway.platforms._shared import (
 
 try:
     from mautrix.types import (
-        ContentURI, EventID, EventType, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
+        ContentURI, EventID, EventType, Membership, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
 except ImportError:
     # Import-safe stubs without mautrix: check_matrix_requirements() gates production use, but
     # tests exercise adapter methods so the attributes must exist.
@@ -65,6 +64,8 @@ except ImportError:
         "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name"})
     PresenceState = type("_PresenceStateStub", (), {  # type: ignore[misc,assignment]
         "ONLINE": "online", "OFFLINE": "offline", "UNAVAILABLE": "unavailable"})
+    Membership = type("_MembershipStub", (), {  # type: ignore[misc,assignment]
+        "JOIN": "join", "INVITE": "invite"})
     RoomCreatePreset = type("_RoomCreatePresetStub", (), {  # type: ignore[misc,assignment]
         "PRIVATE": "private_chat", "PUBLIC": "public_chat", "TRUSTED_PRIVATE": "trusted_private_chat"})
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
@@ -2735,20 +2736,26 @@ class MatrixAdapter(BasePlatformAdapter):
                 return str(value)
         return None
 
-    async def _get_room_member_count(self, room_id: str) -> Optional[int]:
-        """state_store first (cached), then a direct joined_members API query."""
-        state_store = getattr(self._client, "state_store", None) if self._client else None
-        if state_store:
+    async def _get_room_members(self, room_id: str) -> Optional[set[str]]:
+        """Read the complete joined member list from the store or homeserver."""
+        client = getattr(self, "_client", None)
+        if client is None:
+            return None
+
+        state_store = getattr(client, "state_store", None)
+        if state_store is not None:
             with suppress(Exception):
-                members = await state_store.get_members(room_id)
-                if members is not None:
-                    return len(members)
-        client = getattr(self, "_client", None)  # object.__new__-built test doubles may lack it
-        if client is not None and hasattr(client, "joined_members"):
-            with suppress(Exception):
-                resp = await client.joined_members(room_id)
-                if getattr(resp, "members", None) is not None:
-                    return len(resp.members)
+                if await state_store.has_full_member_list(RoomID(room_id)):
+                    members = await state_store.get_members(
+                        RoomID(room_id), memberships=(Membership.JOIN,)
+                    )
+                    if members is not None:
+                        return {str(member) for member in members}
+
+        with suppress(Exception):
+            members = await asyncio.wait_for(client.get_joined_members(RoomID(room_id)), timeout=10)
+            if isinstance(members, dict):
+                return {str(member) for member in members}
         return None
 
     async def _get_room_state_value(self, room_id: str, event_type: str, key: str) -> Optional[str]:
@@ -2772,7 +2779,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._room_identity_cached_at.pop(room_id, None)
 
     async def _resolve_room_identity(self, room_id: str, *, force_refresh: bool = False) -> MatrixRoomIdentity:
-        """Resolve room identity; member count is the primary DM signal (see below)."""
+        """Resolve room identity from joined membership and room metadata."""
         cached = self._room_identities.get(room_id)
         ttl = self._room_identity_ttl_seconds
         cache_fresh = ttl <= 0 or time.monotonic() - self._room_identity_cached_at.get(room_id, 0.0) <= ttl
@@ -2781,19 +2788,18 @@ class MatrixAdapter(BasePlatformAdapter):
         room_name = await self._get_room_state_value(room_id, "m.room.name", "name")
         room_topic = await self._get_room_state_value(room_id, "m.room.topic", "topic")
         canonical_alias = await self._get_room_state_value(room_id, "m.room.canonical_alias", "alias")
-        member_count = await self._get_room_member_count(room_id)
+        members = await self._get_room_members(room_id)
+        member_count = len(members) if members is not None else None
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
-        # <=2 members is necessarily a DM regardless of m.direct/name (clients auto-name DMs
-        # like "Alice & Bot"); fall back to m.direct + unnamed only when the count is unknown.
-        is_likely_dm = (member_count is not None and member_count <= 2) or (is_direct and not has_explicit_name)
+        is_likely_dm = bool(members is not None and len(members) == 2 and self._user_id in members)
         identity = MatrixRoomIdentity(
             room_id=room_id, room_name=room_name, room_topic=room_topic, canonical_alias=canonical_alias,
             server_name=(room_id.rsplit(":", 1)[-1].strip() or None) if ":" in room_id else None,
             joined_member_count=member_count,
             is_direct_account_data=is_direct, display_name=room_name or canonical_alias or room_id,
             has_explicit_name=has_explicit_name, chat_type="dm" if is_likely_dm else "room",
-            conflict=bool(is_direct and has_explicit_name and (member_count is None or member_count > 2)))
+            conflict=bool(is_direct and not is_likely_dm))
         if len(self._room_identities) >= self._room_identity_cache_max:
             oldest = min(self._room_identity_cached_at, key=self._room_identity_cached_at.get, default=None)
             if oldest:

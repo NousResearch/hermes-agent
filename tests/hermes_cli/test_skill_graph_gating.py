@@ -80,7 +80,7 @@ class TestSkillGraphGating:
 
         render, options = context.prompt_sections["skill-graph.discovery"]
         assert callable(render)
-        assert options == {"position": "after_memory", "max_chars": 8000}
+        assert options == {"position": "after_memory", "max_chars": 4000}
 
         search_schema = context.tools["skill_graph_search"]["schema"]["parameters"]
         assert "query" not in search_schema.get("required", [])

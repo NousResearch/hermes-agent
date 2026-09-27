@@ -485,6 +485,9 @@ def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
                        if not (a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name)]
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
         lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+
+    # Bang command shortcut (Codex-style ! prefix for direct shell execution)
+    lines.append("`! <command>` — Run a shell command directly without LLM call (e.g. `! ls -la`)")
     return lines
 
 

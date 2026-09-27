@@ -29,9 +29,9 @@ from gateway.session import (
     SessionSource, build_session_context, is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
+from gateway.bang_shell import is_bang_command, parse_bang_command, USAGE_HINT
 from gateway.turn_lease import TurnLeaseTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
-
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
     from gateway.run_turn_runner import TurnRunner  # noqa: F401
@@ -602,6 +602,16 @@ class GatewayInboundMixin:
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
             self._hm_merge_pending_for_source(source, _quick_key, event)
             return True, None
+
+        # Bang shell on the running-agent fast-path: ``!<command>`` runs directly without
+        # interrupting the agent, never touches the turn, costs zero tokens.
+        if is_bang_command(event.text):
+            _bang_cmd = parse_bang_command(event.text)
+            if _bang_cmd:
+                _result = await self._hm_run_bang_command(_bang_cmd)
+                return True, _result if _result is not None else ""
+            return True, USAGE_HINT
+
         return False, None
 
     def _hm_busy_telegram_grace_queue(
@@ -1022,6 +1032,48 @@ class GatewayInboundMixin:
         except Exception as e:
             return f"Quick command error: {e}"
 
+    async def _hm_run_bang_command(self, command: str) -> Optional[str]:
+        """Run a ``!<command>`` bang-shell command directly in the gateway process.
+
+        Like ``_hm_run_exec_quick_command`` (and for the same reasons) this runs
+        synchronously in a thread via ``to_thread`` so that ``subprocess.run``'s blocking
+        IO does not stall the asyncio event loop. The command is never sent to the LLM,
+        never enters session history, and cannot perturb role alternation or the prompt
+        cache. Output is redacted for leaked API keys and truncated so a runaway
+        ``!tail -f`` can't OOM the gateway.
+
+        Returns the command's output as a string, or ``None`` when the command produced
+        no output on either stream.
+        """
+        import textwrap
+        import subprocess
+        from tools.environments.local import build_subprocess_env
+
+        def _run() -> tuple[int, str]:
+            proc = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                env=build_subprocess_env(),
+                timeout=30,
+            )
+            raw = (proc.stdout or "") + (proc.stderr or "")
+            if raw:
+                from agent.redact import redact_sensitive_text
+                raw = redact_sensitive_text(raw)
+            return proc.returncode, raw.strip()
+
+        try:
+            _rc, _out = await asyncio.to_thread(_run)
+            if not _out:
+                return None
+            return textwrap.shorten(_out, width=4000, placeholder=f"\n[output truncated: {len(_out) - 4000} more chars]")
+        except subprocess.TimeoutExpired:
+            return "Bang command timed out (30s)."
+        except Exception as e:
+            return f"Bang command error: {e}"
+
     async def _hm_dispatch_quick_and_plugin_commands(
         self, event: "MessageEvent", source: SessionSource, command: Optional[str]
     ) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -1297,6 +1349,16 @@ class GatewayInboundMixin:
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply
+
+        # Bang shell: ``!<command>`` runs directly, never touches the agent, costs zero
+        # tokens and cannot perturb role alternation. Checked here (idle path) and in
+        # ``_hm_busy_slash_or_photo`` (running-agent path) so it short-circuits both.
+        if not is_internal and is_bang_command(event.text):
+            _bang_cmd = parse_bang_command(event.text)
+            if _bang_cmd:
+                _result = await self._hm_run_bang_command(_bang_cmd)
+                return _result if _result is not None else ""
+            return USAGE_HINT
 
         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
         self._hm_evict_idle_stale_agent(_quick_key)

@@ -717,6 +717,23 @@ def _looks_like_slash_command(text: str) -> bool:
     return "/" not in text.split()[0][1:]
 
 
+def _looks_like_bang_command(text: str) -> bool:
+    """``!ls`` / ``! ls`` yes: direct shell command, no LLM invocation.
+
+    Mirrors the Codex/Claude-Code ``!`` shortcut: ``!ls`` / ``! ls`` runs the
+    command directly without invoking the LLM.  A leading ``!`` is almost never
+    a legitimate part of a normal chat sentence, and this only fires in the CLI
+    REPL (and the gateway inbound path), not the oneshot path.
+    """
+    return bool(text) and text.lstrip().startswith("!")
+
+
+def _extract_bang_command(text: str) -> str:
+    """Strip the leading ``!`` (and any whitespace right after it) and return
+    the shell command text."""
+    return text.lstrip()[1:].lstrip() if text.lstrip().startswith("!") else ""
+
+
 _skill_commands = None
 _skill_bundles = None
 

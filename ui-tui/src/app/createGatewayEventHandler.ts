@@ -23,7 +23,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall } from '../lib/text.js'
-import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
+import { bootSeededPin, bootTheme, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
@@ -198,9 +198,16 @@ const applySkin = (s: GatewaySkin) => {
 }
 
 /** Re-derive the theme from current detection signals (env overrides, cached
- *  OSC-11 answer) — used by /theme, config sync, and the OSC listener. */
+ *  OSC-11 answer) — used by /theme, config sync, and the OSC listener.
+ *
+ *  Without a skin yet, prefer the boot-cached theme over recomputing the
+ *  hardcoded default: the OSC-11 probe routinely answers before the gateway
+ *  skin event arrives, and repainting the default in between defeats the
+ *  flash-free boot cache for every terminal that answers the probe (#124687).
+ *  A skin's own palette governs its polarity once it arrives, so deferring
+ *  the correction until then costs nothing when a skin is configured. */
 export function reapplyTheme(): void {
-  const theme = lastSkin ? themeForSkin(lastSkin) : defaultThemeForCurrentBackground()
+  const theme = lastSkin ? themeForSkin(lastSkin) : (bootTheme ?? defaultThemeForCurrentBackground())
 
   commitTheme(theme)
   // Polarity flips swap paired palettes, so the default fg must track the

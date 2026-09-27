@@ -59,9 +59,19 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
         if db is not None:
             db.close()
 
-    print(f"\nResume this session with:\n  hermes --tui --resume {target}")
+    # Session IDs are profile-constrained: non-default profiles need `-p <profile>` in
+    # the hint ("default"/"custom" use the standard HERMES_HOME) — mirrors the classic
+    # CLI exit summary (cli_session_mixin.py::_print_exit_summary, #30444); the TUI
+    # launcher is a separate entry point that the earlier fix missed (#125078).
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        _active_profile = get_active_profile_name()
+    except Exception:
+        _active_profile = "default"
+    profile_flag = "" if _active_profile in ("default", "custom") else f" -p {_active_profile}"
+    print(f"\nResume this session with:\n  hermes --tui --resume {target}{profile_flag}")
     if title:
-        print(f'  hermes --tui -c "{title}"')
+        print(f'  hermes --tui -c "{title}"{profile_flag}')
     print(f"\nSession:        {target}")
     if title:
         print(f"Title:          {title}")

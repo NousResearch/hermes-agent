@@ -39,3 +39,32 @@ def test_missing_user_local_bin_not_appended(monkeypatch, tmp_path):
     monkeypatch.setattr(local_mod, "_managed_runtime_path_entries", lambda: [])
 
     assert ".local" not in _append_missing_sane_path_entries("/usr/bin:/bin")
+
+
+def test_background_spawn_env_completes_path_like_foreground(monkeypatch, tmp_path):
+    """``ProcessRegistry._spawn_env`` must resolve the same managed-runtime and
+    ``~/.local/bin`` entries as a foreground ``_make_run_env`` run: on an install
+    whose only uv is the managed ``$HERMES_HOME/bin`` one, a background job
+    printed ``command not found: uv`` while the same command ran in the
+    foreground (#124820)."""
+    from tools.process_registry import ProcessRegistry
+
+    managed_bin = tmp_path / "hermes-home" / "bin"
+    managed_bin.mkdir(parents=True)
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
+    monkeypatch.setattr(local_mod, "_managed_runtime_path_entries", lambda: [str(managed_bin)])
+    monkeypatch.setattr(local_mod, "_resolve_hermes_bin_dir", lambda: None)
+
+    fg = _make_run_env({})["PATH"].split(":")
+    bg = ProcessRegistry._spawn_env({})["PATH"].split(":")
+
+    # Inherited user entries keep precedence in both modes.
+    assert bg[:2] == ["/usr/bin", "/bin"]
+    # The managed runtime and ~/.local/bin resolve in background as in foreground.
+    for entry in (str(managed_bin), str(local_bin)):
+        assert entry in bg
+        assert entry in fg

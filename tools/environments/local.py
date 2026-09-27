@@ -304,11 +304,15 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     return _finalize_child_env(out)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
+def _sanitize_subprocess_env(
+    base_env: dict | None, extra_env: dict | None = None, *, fix_path=None
+) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment (background/PTY
-    spawn path, search workers, computer-use driver, user-script runners)."""
+    spawn path, search workers, computer-use driver, user-script runners).
+    *fix_path* overrides the identity PATH transform so callers that promise
+    ``LocalEnvironment`` parity can reuse the terminal's completion."""
     return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
-                         _plugin_terminal_env_strip_keys(), lambda p: p)
+                         _plugin_terminal_env_strip_keys(), fix_path or (lambda p: p))
 
 
 def hermes_subprocess_env(

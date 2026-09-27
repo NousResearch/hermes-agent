@@ -79,10 +79,19 @@ export function isCanonicalChatOnScreen(
   return [canonical.id, canonical.resolved_id].filter(Boolean).map(String).includes(String(storedSessionId))
 }
 
+interface OpenStoredBotChatOptions {
+  /** Background re-resume: thread refreshInPlace to host.openSession so the
+   *  refresh never navigates (issue 121874). Await the transcript refresh
+   *  only for explicit opens — a background wake resolves once the resume
+   *  is requested, never blocking on a cold backend. */
+  background?: boolean
+}
+
 async function openStoredBotChat(
   owner: RosterRow | string,
   storedId: string,
-  summary: CanonicalChatRow
+  summary: CanonicalChatRow,
+  { background = false }: OpenStoredBotChatOptions = {}
 ): Promise<string> {
   if (!storedId || typeof host.openSession !== 'function') {
     throw new Error('This Hermes Desktop version cannot open stored sessions')
@@ -128,11 +137,12 @@ async function openStoredBotChat(
     // the reason this stopped being `main`); it just loads into main instead of
     // minting a second tab when there is nothing to front.
     intent: 'in-place',
-    awaitHydration: true,
+    awaitHydration: !background,
     expectHistory,
     forceResume: true,
     hydrationTimeoutMs,
     keepAllProfilesScope: true,
+    ...(background ? { refreshInPlace: true } : {}),
     workspaceMode: 'bots',
     workspaceOwnerKey: ownerKey,
     retryHydrationTimeoutOnce: true,
@@ -291,6 +301,18 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
 
 interface CreateCanonicalChatOptions {
   kickoff?: boolean
+  openingStillCurrent?: (() => boolean) | null
+}
+
+interface OpenCanonicalChatOptions {
+  /** Re-resolve and REFRESH the open chat without any navigation: the wake
+   *  was triggered by a background event (session.reclaimed, roster
+   *  activity), and a background event must never take the route or the
+   *  foreground away from whatever the user is reading (issue 121874 —
+   *  /kanban was replaced by the Bot Chat route). Threaded to
+   *  host.openSession's refreshInPlace; without an SDK that supports it the
+   *  open degrades to the old navigating shape. */
+  background?: boolean
   openingStillCurrent?: (() => boolean) | null
 }
 
@@ -546,7 +568,7 @@ export function createCanonicalChat(
  *  bot's chat opens without re-homing Desktop's chrome. */
 export async function openBotCanonicalChat(
   owner: RosterRow | string,
-  openingStillCurrent: (() => boolean) | null = null
+  { background = false, openingStillCurrent = null }: OpenCanonicalChatOptions = {}
 ): Promise<{ openedId: string; registryId: string } | null> {
   const existing = await findExistingCanonicalChat(owner)
 
@@ -556,7 +578,7 @@ export async function openBotCanonicalChat(
     }
 
     const openedId = existing.resolved_id || existing.id
-    await openStoredBotChat(owner, openedId, existing)
+    await openStoredBotChat(owner, openedId, existing, { background })
 
     // Both identities matter downstream: the durable registry row names the
     // chat; the resolved lineage tip is what actually takes session focus.
@@ -566,6 +588,13 @@ export async function openBotCanonicalChat(
       registryId: String(existing.id),
       openedId: String(openedId)
     }
+  }
+
+  // A background re-resume never MINTS: it fires while nobody asked for this
+  // bot, so a resolution miss keeps whatever the user is looking at instead
+  // of creating a fresh forever-chat under their feet.
+  if (background) {
+    return null
   }
 
   const created = await createCanonicalChat(owner, {

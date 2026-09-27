@@ -438,7 +438,9 @@ describe('checkBackendUpdates', () => {
 
     const result = await checkBackendUpdates()
 
-    expect(result?.behind).toBe(0)
+    // behind: -1 is the producer's "update available, count unknown" sentinel;
+    // DesktopUpdateStatus carries it as null, never a literal number.
+    expect(result?.behind).toBeNull()
     expect(result?.updateAvailable).toBe(true)
     expect(result?.targetSha).toBe('backend:0.16.0')
   })

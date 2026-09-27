@@ -822,10 +822,12 @@ def _pull_updates(
     merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
     target_sha = (_git_run(git_cmd, ["rev-parse", f"{merge_ref}^{{commit}}"]).stdout or "").strip()
     movement_baseline = pre_sync_sha or pre_pull_sha
-    if rollback_branch is not None and pre_sync_sha == target_sha:
-        # The caller already ran the target, but its local update branch was
-        # stale. Verify the fast-forward from that branch's tip, not a round
-        # trip back to the original detached SHA. Rollback still uses the latter.
+    if rollback_branch is not None and pre_pull_sha != target_sha:
+        # The switched-to branch still needs repair. Verify movement from its
+        # immediate tip through both origin and optional upstream sync; the
+        # final upstream tip may legitimately equal the original detached SHA.
+        # Keep the original SHA separately for syntax rollback. If checkout
+        # already landed at the target, it remains the movement being verified.
         movement_baseline = pre_pull_sha
     with _best_effort('Could not write the interrupted-pull marker: %s'):
         pull_marker.write_text(
@@ -1282,8 +1284,15 @@ def _finish_already_up_to_date(
 def _apply_pulled_update(
     git_cmd, branch, pre_pull_sha, _plan, *, _windows_gateway_resume, completion_request: dict) -> None:
     """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart."""
+    movement_baseline = _plan.pre_sync_sha or pre_pull_sha
+    if getattr(_plan, "rollback_branch", None) is not None:
+        target_sha = (_git_run(git_cmd, ["rev-parse", f"origin/{branch}^{{commit}}"]).stdout or "").strip()
+        if pre_pull_sha != target_sha:
+            # Preserve the repair baseline used by _pull_updates, including a
+            # fork sync that returned to the original detached checkout SHA.
+            movement_baseline = pre_pull_sha
     post_pull_sha = _verify_head_after_pull(
-        git_cmd, branch, _plan.pre_sync_sha or pre_pull_sha, in_place_update=_plan.in_place_update,
+        git_cmd, branch, movement_baseline, in_place_update=_plan.in_place_update,
         _windows_gateway_resume=_windows_gateway_resume)
 
     if completion_request is not None:

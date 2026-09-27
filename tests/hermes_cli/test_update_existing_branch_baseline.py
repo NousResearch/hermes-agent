@@ -117,6 +117,50 @@ def test_stale_local_main_can_catch_up_to_original_detached_tip(checkout):
     assert git(root, "rev-parse", "main") == tip
 
 
+@pytest.mark.parametrize("upstream_result", ["original", "unchanged", "wrong-branch", "reverted"])
+def test_fork_sync_after_stale_branch_repair(checkout, monkeypatch, upstream_result):
+    root, old, tip = checkout
+    git(root, "checkout", "-q", "main")
+    git(root, "commit", "--allow-empty", "-qm", "upstream")
+    upstream_tip = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "-q", "--detach", upstream_tip)
+    git(root, "branch", "-f", "main", old)
+    plan = prepare(root)
+
+    def sync(*args, **kwargs):
+        assert git(root, "rev-parse", "HEAD") == tip
+        if upstream_result == "original":
+            git(root, "merge", "--ff-only", upstream_tip)
+        elif upstream_result == "wrong-branch":
+            git(root, "checkout", "-qb", "wrong")
+        elif upstream_result == "reverted":
+            git(root, "reset", "--hard", old)
+        return True
+
+    monkeypatch.setattr(update_cmd._m(), "_sync_with_upstream_if_needed", sync)
+    kwargs = dict(prompt_for_restore=False, gw_input_fn=None,
+                  discard_local_changes=False, keep_stash=False,
+                  pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch,
+                  sync_upstream=True)
+    if upstream_result in {"wrong-branch", "reverted"}:
+        with pytest.raises(SystemExit) as exc:
+            update_cmd._pull_updates(["git"], "main", plan.auto_stash_ref, **kwargs)
+        assert exc.value.code == 1
+    else:
+        before_pull = update_cmd._pull_updates(["git"], "main", plan.auto_stash_ref, **kwargs)
+        completed = []
+        monkeypatch.setattr(update_cmd, "_complete_source_update", completed.append)
+        request = {}
+        update_cmd._apply_pulled_update(
+            ["git"], "main", before_pull, plan,
+            _windows_gateway_resume=None, completion_request=request,
+        )
+        assert completed == [request]
+        assert request["expected_sha"] == (upstream_tip if upstream_result == "original" else tip)
+        assert git(root, "rev-parse", "main") == (upstream_tip if upstream_result == "original" else tip)
+        assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
 def test_command_hands_off_after_existing_main_switch(update_tree, monkeypatch, capsys):
     t = update_tree
     monkeypatch.setattr("hermes_cli.update_owning_install.retarget_to_owning_install", lambda *_: None)

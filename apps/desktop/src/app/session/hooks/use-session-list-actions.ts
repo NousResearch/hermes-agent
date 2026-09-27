@@ -66,6 +66,7 @@ const SIDEBAR_EXCLUDED_SOURCES = [
   'tool',
   ...MESSAGING_SESSION_SOURCE_IDS
 ]
+
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]

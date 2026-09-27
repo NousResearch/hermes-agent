@@ -455,6 +455,7 @@ describe('toChatMessages', () => {
     // backend arrives untyped and must disappear the same way — the user never wrote it.
     const legacyWake =
       '[Background process proc_ea2cdb25d899 heartbeat #7 — still running after 7m2s (next in 60s; you will also be told when it exits).\nCommand: zsh -ic hgui\nOutput since last heartbeat:\n(no new output since the last heartbeat)]'
+
     const messages = toChatMessages([
       { role: 'user', content: 'start the dev server', timestamp: 1 },
       { role: 'assistant', content: 'Started on slot 0.', timestamp: 2 },

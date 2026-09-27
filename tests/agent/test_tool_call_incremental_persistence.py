@@ -762,7 +762,8 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     session_id = "sess-sanitized-active-rows"
     db = _attach_real_session_db(agent, tmp_path / "state.db", session_id)
     messages = [
-        {"role": "user", "content": [
+        # Int message_id: SQLite TEXT affinity stores it as "12345", so the digest must hash stored rows.
+        {"role": "user", "message_id": 12345, "content": [
             {"type": "text", "text": "hi \ud800 there " + "x" * 4000},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
         ]},
@@ -779,6 +780,8 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     with other:
         other.execute("UPDATE messages SET content = ? WHERE id = ?", ("winner", durable_ids[2]))
     other.close()
+    # A same-process metadata write (reaction) changes the user row's digest but not its content.
+    assert db.set_message_reaction(session_id, durable_ids[0], "\U0001F44D")
 
     assert _sanitize_messages_surrogates(messages) is True
     assert not any(message.get("_db_persisted") for message in (messages[0], messages[2]))
@@ -790,8 +793,10 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     assert [row["id"] for row in rows] == durable_ids
     assert [message["_row_id"] for message in messages] == durable_ids
     assert rows[0]["content"].startswith("hi \ufffd there")
-    # Our own rewrite never copies the lossy durable projection back: the live image part survives.
+    # Neither our own rewrite nor a metadata-only change copies the lossy durable projection back: the live
+    # image part survives while the reaction metadata is synced.
     assert messages[0]["content"][1]["type"] == "image_url"
+    assert messages[0]["display_metadata"] == rows[0]["display_metadata"]
     assert rows[2]["content"] == "winner"
     assert messages[2]["content"] == "winner"
 

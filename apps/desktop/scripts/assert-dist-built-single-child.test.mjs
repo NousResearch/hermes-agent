@@ -40,7 +40,12 @@ test('checkDistBuilt syntax-checks every chunk in a single node child', () => {
     assert.deepEqual(checkDistBuilt(distDir), { ok: true })
     expect(vi.mocked(spawnSync)).toHaveBeenCalledTimes(1)
     const [cmd, argv, options] = vi.mocked(spawnSync).mock.calls[0]
-    assert.equal(cmd, process.execPath)
+    // Mirror the resolver under test: on Windows process.execPath is
+    // node.exe, which fails the endsWith('node') probe, so the resolver
+    // falls back to the bare 'node' PATH lookup — same as production.
+    const expectedBin = process.env.NODE ||
+      (process.execPath && process.execPath.endsWith('node') ? process.execPath : 'node')
+    assert.equal(cmd, expectedBin)
     // argv carries only the fixed probe: no per-chunk file arguments, the
     // chunk list travels over stdin via options.input instead.
     const chunkArgs = argv.filter(a => typeof a === 'string' && a.includes('chunk-'))

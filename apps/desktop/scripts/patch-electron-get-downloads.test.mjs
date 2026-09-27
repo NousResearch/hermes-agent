@@ -193,6 +193,139 @@ test('a stalled transfer aborts on the stall watchdog, not a fixed minute budget
   }
 })
 
+test('byte progress is forwarded while chunks arrive, not only at EOF', async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'eg-progress-'))
+  try {
+    const body = '0123456789abcdef'
+    // Shared between the server and the progress callback: the server releases
+    // the second half ONLY after an intermediate progress report has been
+    // observed. Without report() inside the chunk loop, no mid-transfer
+    // callback ever fires, the second half is never released, and the stall
+    // watchdog (5s here) aborts the transfer — the 3s-escape shape of the
+    // review's regression, bounded.
+    const state = { halfSeen: false }
+    const server = http.createServer((request, response) => {
+      response.writeHead(200, { 'content-length': String(body.length) })
+      response.write(body.slice(0, 8))
+      const poll = setInterval(() => {
+        if (state.halfSeen || response.destroyed) { clearInterval(poll); response.end(body.slice(8)) }
+      }, 10)
+      response.on('close', () => clearInterval(poll))
+      response.on('error', () => {}) // client-side abort after the assertion is not a failure
+    })
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const target = path.join(work, 'prog.zip')
+      const reports = []
+      await resumableFetchToFile(`http://127.0.0.1:${server.address().port}/electron.zip`, target,
+        { getProgressCallback: info => { reports.push(info.transferred); if (info.transferred >= 8) state.halfSeen = true } }, 0, 5_000)
+      assert.equal(fs.readFileSync(target, 'utf8'), body)
+      assert.ok(reports.some(t => t > 0 && t < body.length), 'an intermediate progress report fired before EOF')
+    } finally {
+      server.close()
+    }
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true })
+  }
+})
+
+test('a 206 that does not continue the requested offset is refused, not appended', async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'eg-range-'))
+  try {
+    const body = '0123456789abcdef'
+    let requests = 0
+    const server = http.createServer((request, response) => {
+      requests++
+      const start = Number(request.headers.range?.match(/bytes=(\d+)-/)?.[1] ?? -1)
+      if (start > 0) {
+        // A 206 for the WHOLE object (or any wrong start): appending would
+        // silently mix bytes into the partial file.
+        response.writeHead(206, { 'content-length': String(body.length), 'content-range': `bytes 0-${body.length - 1}/${body.length}` })
+        response.end(body)
+        return
+      }
+      response.writeHead(200, { 'content-length': String(body.length) })
+      response.end(body)
+    })
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const target = path.join(work, 'partial.zip')
+      fs.writeFileSync(target, '01234567')
+      await new ResumableDownloader({ sharedRoot: path.join(work, 'no-shared-cache') })
+        .download(`http://127.0.0.1:${server.address().port}/electron.zip`, target, {})
+      assert.equal(fs.readFileSync(target, 'utf8'), body, 'restart from zero after the bad 206')
+      assert.equal(requests, 2)
+    } finally {
+      server.close()
+    }
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true })
+  }
+})
+
+test('a corrupt shared-cache seed is evicted on the next run and re-downloaded', async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'eg-poison-'))
+  try {
+    const body = '0123456789abcdef'
+    let requests = 0
+    const server = http.createServer((request, response) => {
+      requests++
+      response.writeHead(200, { 'content-length': String(body.length) })
+      response.end(body)
+    })
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${server.address().port}/electron-v99-win32-x64.zip`
+    const sharedRoot = path.join(work, 'shared')
+    // Seed the shared cache with a corrupt non-empty copy (the killed-mid-fetch shape)
+    const key = electronCacheKey(url)
+    const seedDir = path.join(sharedRoot, key)
+    fs.mkdirSync(seedDir, { recursive: true })
+    fs.writeFileSync(path.join(seedDir, 'electron-v99-win32-x64.zip'), 'x'.repeat(999))
+    try {
+      const downloader = new ResumableDownloader({ sharedRoot })
+      const first = path.join(work, 'run1', 'artifact.zip')
+      fs.mkdirSync(path.dirname(first), { recursive: true }) // downloadArtifact owns the temp dir in production
+      await downloader.download(url, first, {})           // run 1: serves the poison, records the marker
+      assert.equal(requests, 0, 'run 1 seeded from the shared cache without touching the network')
+      assert.equal(fs.readFileSync(first, 'utf8'), 'x'.repeat(999), 'run 1 copies the (corrupt) seed byte for byte')
+      const second = path.join(work, 'run2', 'artifact.zip')
+      await downloader.download(url, second, {})          // run 2: evicts the seed once, re-downloads
+      assert.equal(requests, 1, 'run 2 healed by fetching from the network')
+      assert.equal(fs.readFileSync(second, 'utf8'), body, 'run 2 holds the real bytes')
+      assert.ok(!fs.existsSync(path.join(seedDir, 'electron-v99-win32-x64.zip')), 'the poisoned seed was unlinked')
+    } finally {
+      server.close()
+    }
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true })
+  }
+})
+
+test('retry is capped at MAX_ATTEMPTS: a persistently failing server terminates, not loops', async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'eg-cap-'))
+  try {
+    let requests = 0
+    const server = http.createServer((request, response) => {
+      requests++
+      response.writeHead(500, { 'content-length': '0' })
+      response.end()
+    })
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const target = path.join(work, 'capped.zip')
+      await assert.rejects(
+        new ResumableDownloader({ sharedRoot: path.join(work, 'no-shared-cache'), retryDelayMs: 1 })
+          .download(`http://127.0.0.1:${server.address().port}/electron.zip`, target, {}),
+        /Response code 500/)
+      assert.equal(requests, 6, 'the attempt cap is enforced: exactly MAX_ATTEMPTS requests, then failure')
+    } finally {
+      server.close()
+    }
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true })
+  }
+})
+
 test('resolver transform targets the published @electron/get 5.1.0 shape and fails closed on drift', () => {
   const published = `import { FetchDownloader } from './FetchDownloader.js';\nexport async function getDownloaderForSystem() {\n    return new FetchDownloader();\n}\n//# sourceMappingURL=downloader-resolver.js.map`
   const patched = patchResolverSource(published, 'file:///hermes/patch.mjs')

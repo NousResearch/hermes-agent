@@ -816,7 +816,8 @@ def _withdraw_expired_envelope(reply_path: str, ttl_seconds: str) -> bool:
     ``queued_expired``, with no waiter left to hear it; telling the sender "do not resend" dropped the message
     for good. The unlink races the drain's claim (a rename out of the outbox) atomically: once it succeeds no
     Desktop can deliver the message, so "not delivered" is safe to say. A claimed envelope may still be
-    answered, and one within its TTL may still be picked up; both keep the old guidance."""
+    answered, so the caller says its fate is unknown; one within its TTL may still be picked up and keeps
+    the old guidance."""
     outbox = Path(reply_path).parent.parent / "outbox" / Path(reply_path).name  # bot_relay.OUTBOX_DIR
     try:
         ttl = float(ttl_seconds)

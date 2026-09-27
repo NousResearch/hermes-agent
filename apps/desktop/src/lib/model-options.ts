@@ -64,6 +64,32 @@ export function moaPickRemoved(
   return !(row?.models ?? []).includes(model)
 }
 
+/** A bare provider slug is the pre-migration spelling of a custom entry. The
+ *  catalog aliases `custom:<key>` with the bare config key (#87035), so a pick
+ *  still carrying `nvidia` and a profile default of `custom:nvidia` name the
+ *  SAME endpoint — the pick's spelling is simply stale, not a distinct choice.
+ *  Shipping the bare slug resolves the NATIVE provider instead of the custom
+ *  entry, silently dropping the entry's `extra_body` (e.g.
+ *  `thinking: {type: adaptive}`) that the user configured (#81922).
+ *
+ *  Only a bare slug can be superseded: a pick that already names a provider
+ *  class (`custom:<other>`, `moa`, `openai-codex`) is a different endpoint and
+ *  keeps the sticky behavior. The bare slug must be the default's own key, so
+ *  an unrelated manual pick (`anthropic` while the default is `custom:nvidia`)
+ *  is never clobbered. */
+export function customDefaultSupersedesPick(pickProvider: string, defaultProvider: string): boolean {
+  const pick = (pickProvider || '').trim().toLowerCase()
+  const fallback = (defaultProvider || '').trim().toLowerCase()
+
+  if (!pick || pick === fallback || !fallback.startsWith('custom:')) {
+    return false
+  }
+
+  const key = fallback.slice('custom:'.length).trim()
+
+  return key.length > 0 && pick === key
+}
+
 interface ModelOptionsRequest {
   /** When false, include ambient/unconfigured providers (onboarding/setup
    *  surfaces). Chat pickers default to true so only explicitly configured

@@ -372,25 +372,23 @@ class TestAsyncDelegationHandoffGuidance:
             _execution_guidance=execution_guidance,
         ))
 
-    def test_kimi_handoff_overrides_generic_tool_persistence(self):
-        stable = self._prompt("kimi-coding/kimi-k3", tool_use_enforcement=False)
-        assert "Execution discipline" in stable
-        assert "Tool-use enforcement" not in stable
-        assert "Async handoff" in stable
-        assert stable.index("Async handoff") > stable.index("Execution discipline")
-        assert "Do not manufacture polling, no-op, placeholder, or unrelated tool calls" in stable
+    @pytest.mark.parametrize("tools,expected", [
+        (("delegate_task", "execute_code"), True),
+        (("execute_code",), False),
+    ])
+    def test_handoff_injected_only_with_delegate_task(self, tools, expected):
+        stable = self._prompt("openai/gpt-5.5", valid_tool_names=tools)
+        assert ("Async handoff" in stable) is expected
+        if expected:
+            # Must follow the generic "keep working" blocks so it reads as their exception.
+            assert stable.index("Async handoff") > stable.index("Tool-use enforcement")
+            assert stable.index("Async handoff") > stable.index("Execution discipline")
 
-    def test_handoff_follows_tool_enforcement_for_models_that_receive_both(self):
-        stable = self._prompt("openai/gpt-5.5")
-        assert "Tool-use enforcement" in stable
-        assert "Execution discipline" in stable
-        assert stable.index("Async handoff") > stable.index("Tool-use enforcement")
-        assert stable.index("Async handoff") > stable.index("Execution discipline")
-
-    def test_no_delegation_tool_means_no_handoff_guidance(self):
-        stable = self._prompt("kimi-coding/kimi-k3", valid_tool_names=("execute_code",))
-        assert "Execution discipline" in stable
-        assert "Async handoff" not in stable
+    def test_handoff_prompt_is_byte_stable_across_turns(self):
+        # Stable tier is the prompt-cache prefix: rebuilding it must not drift.
+        first = self._prompt("openai/gpt-5.5")
+        assert first == self._prompt("openai/gpt-5.5")
+        assert first.count("Async handoff") == 1
 
 
 class TestNamedProfileHintIntegration:

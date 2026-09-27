@@ -15,7 +15,11 @@ Contract: a restored turn whose reasoning_details carry >=2 signed thinking bloc
 tool_calls (the interleaved fingerprint) must not replay signed blocks in the reconstructed
 order — they are demoted to text on the latest assistant turn (existing dead-signature
 policy) while the verbatim channel keeps working for in-memory turns. A single-signed-block
-turn hoists onto an identical prefix and must KEEP replaying signed.
+turn keeps replaying signed: the persisted fields cannot distinguish "the block was first"
+(valid after the hoist) from "the block followed a tool_use" (dead), and demoting both
+would strip the ordinary thinking -> tool_use turn. The residual hole (tool_use ->
+thinking -> tool_use stays signed) is pinned by test_single_signed_thinking_after_tool_use
+and documented on _interleaved_signature_layout_dead; a provenance-based fix is #124570.
 """
 
 from types import SimpleNamespace
@@ -144,6 +148,51 @@ class TestInterleavedResumeSignatures:
             if isinstance(b, dict) and b.get("type") == "thinking" and b.get("signature")
         ]
         assert signed, "single-block turn hoists to an identical prefix; signed replay must survive"
+
+    def test_single_signed_thinking_after_tool_use_stays_signed(self):
+        """The known residual hole, pinned: with ONE signed block that followed a tool_use on
+        the original wire (tool_use -> thinking -> tool_use), the restore hoists it to position
+        0 with its signature still attached — a dead layout the persisted fields cannot
+        distinguish from the valid first-block shape. This PR accepts that hole (demoting both
+        single-block shapes would strip the ordinary thinking -> tool_use turn); the
+        provenance-based fix is #124570. If this test starts failing, the exemption changed."""
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="tool_use", id="toolu_1", name="read_file", input={"path": "a.py"}),
+                SimpleNamespace(type="thinking", thinking="Plan B: inspect B now.", signature="sig-B" * 80),
+                SimpleNamespace(type="tool_use", id="toolu_2", name="read_file", input={"path": "b.py"}),
+            ],
+            stop_reason="tool_use",
+            usage=None,
+        )
+        normalized = get_transport("anthropic_messages").normalize_response(response)
+        provider_data = normalized.provider_data or {}
+        restored = {
+            "role": "assistant",
+            "content": normalized.content or "",
+            "reasoning_details": provider_data.get("reasoning_details"),
+            "tool_calls": [
+                {"id": tc.id, "type": "function", "function": {"name": tc.name, "arguments": tc.arguments}}
+                for tc in (normalized.tool_calls or [])
+            ],
+        }
+
+        converted = _convert([
+            {"role": "user", "content": "Inspect a.py, then b.py."},
+            restored,
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "a.py: ok"},
+            {"role": "tool", "tool_call_id": "toolu_2", "content": "b.py: ok"},
+        ])
+
+        content = _last_assistant(converted)["content"]
+        types = [b.get("type") for b in content if isinstance(b, dict)]
+        assert types[0] == "thinking", "reconstruction hoists the single thinking block first"
+        signed = [
+            b for b in content
+            if isinstance(b, dict) and b.get("type") == "thinking" and b.get("signature")
+        ]
+        assert signed, "the hoisted block keeps its signature — the residual hole this PR accepts"
+        assert not content[0].get("_thinking_signature_invalidated") if isinstance(content[0], dict) else True
 
     def test_in_memory_ordered_channel_unaffected(self):
         """Live sessions replay through anthropic_content_blocks verbatim and must not be demoted."""

@@ -176,6 +176,33 @@ def resolve_update_channel(
     return default_channel(root)
 
 
+def unconfigured_main_default_notice(
+    config: Optional[dict] = None,
+    project_root: Optional[Path] = None,
+) -> str | None:
+    """A one-line warning for a source install that has never picked a channel.
+
+    Only ``resolve_update_channel``'s own fallthrough — no ``update.installs``
+    record for this install, and no package tag fixing its identity — reaches
+    ``main`` here (#124584): a plain, unattended ``hermes update`` then pulls
+    untagged, unreleased commits with no rollback story, and nothing else says
+    so. A caller must gate this on the run's OWN choice being non-explicit
+    (no ``--branch``, no transient ``--channel``): an explicit request for
+    main, this run or ever (``--set-channel main``), already carries that
+    intent and needs no warning.
+    """
+    root = Path(project_root) if project_root is not None else install_root()
+    if _package_channel(_read_stamp(root)):
+        return None
+    if channel_record(config, root).get("channel") is not None:
+        return None
+    return (
+        "→ No update channel is configured for this install, so it tracks "
+        "main — unreleased, untagged commits with no rollback story. Run "
+        "`hermes update --set-channel stable` to track releases instead."
+    )
+
+
 def set_install_channel(
     channel: str,
     project_root: Optional[Path] = None,

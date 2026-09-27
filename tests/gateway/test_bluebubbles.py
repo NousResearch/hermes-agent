@@ -254,9 +254,12 @@ class TestBlueBubblesAttachmentDownload:
 
         cached_path = None
 
-        async def mock_cache_image(data, ext):
-            nonlocal cached_path
+        forwarded_name = None
+
+        async def mock_cache_image(data, ext, filename=None):
+            nonlocal cached_path, forwarded_name
             cached_path = f"/tmp/test_image{ext}"
+            forwarded_name = filename
             return cached_path
 
         monkeypatch.setattr(
@@ -269,6 +272,7 @@ class TestBlueBubblesAttachmentDownload:
             adapter._download_attachment("att-guid-123", att_meta)
         )
         assert result == "/tmp/test_image.png"
+        assert forwarded_name == "photo.png"
 
 
 class TestBlueBubblesAttachmentSend:

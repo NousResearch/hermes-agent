@@ -399,11 +399,17 @@ def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=No
                 proc = psutil.Process(pid)
                 if not _same_incarnation(proc, entry.get("create_time")):
                     continue  # PID reused since registration
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2.0)
-                except psutil.TimeoutExpired:
-                    proc.kill()
+                # Windows: descendants (npx.cmd → node.exe) have no pgid to group-kill and
+                # reparent with ParentId=null when the direct child exits first (#61059), so
+                # reap the whole tree. On POSIX the killpg-based sweep already reaches them.
+                if _IS_WINDOWS:
+                    _kill_process_tree_windows(proc)
+                else:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2.0)
+                    except psutil.TimeoutExpired:
+                        proc.kill()
             reaped.append(pid)
         except Exception:
             logger.debug("mcp-helper orphan reap failed for %s", entry, exc_info=True)
@@ -413,6 +419,36 @@ def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=No
 
 
 # Layer 3 — Windows job-object self-attach
+
+
+def _kill_process_tree_windows(proc) -> None:
+    """Terminate *proc* and every still-alive descendant (npx.cmd → node.exe), Windows-only
+    (#61059): without a pgid there is no group-kill, and grandchildren reparent to nothing
+    (ParentId=null) once the direct child exits, so they must be reached through the tree."""
+    import psutil
+
+    try:
+        descendants = proc.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        descendants = []
+    for child in descendants:
+        try:
+            child.terminate()
+        except Exception:  # noqa: BLE001 - raced away or refused; keep going
+            pass
+    try:
+        proc.terminate()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _, alive = psutil.wait_procs(descendants + [proc], timeout=2.0)
+    except Exception:  # noqa: BLE001 - broken fake/raced process; nothing more to force-kill
+        return
+    for survivor in alive:
+        try:
+            survivor.kill()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def attach_self_to_kill_on_close_job() -> bool:

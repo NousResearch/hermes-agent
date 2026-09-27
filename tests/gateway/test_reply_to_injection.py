@@ -213,3 +213,32 @@ async def test_matrix_thread_backfill_reaches_new_session_only(monkeypatch: pyte
         "!room:example.org", "$root", exclude_event_id="$current"
     )
     runner._expand_inbound_context_references.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_matrix_thread_backfill_keeps_separate_thread_contexts(monkeypatch: pytest.MonkeyPatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    runner = _make_runner()
+    adapter = MagicMock()
+    contexts = {"$first-root": "[alice] first topic", "$second-root": "[bob] second topic"}
+    adapter.fetch_thread_context = AsyncMock(
+        side_effect=lambda room, root, **kwargs: contexts[root]
+    )
+    monkeypatch.setattr(runner, "_intake_adapter_for", lambda source: adapter)
+
+    prepared = []
+    for root, event_id in (("$first-root", "$first-reply"), ("$second-root", "$second-reply")):
+        source = SessionSource(
+            platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group", thread_id=root,
+        )
+        event = MessageEvent(text="continue", source=source, message_id=event_id)
+        prepared.append(await runner._prepare_inbound_message_text(event=event, source=source, history=[]))
+
+    assert prepared == [
+        "[alice] first topic\n\ncontinue",
+        "[bob] second topic\n\ncontinue",
+    ]
+    assert [call.args[1] for call in adapter.fetch_thread_context.await_args_list] == [
+        "$first-root", "$second-root",
+    ]

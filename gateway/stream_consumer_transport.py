@@ -333,8 +333,10 @@ class StreamTransportMixin:
         if not source.startswith(protected):
             return
         end = receipt["attempted_end"]
-        # Each iteration consumes a nonempty source span or stops. A second lost
-        # ack can leave further, provably unattempted slices; those are still safe.
+        # Final reconciliation owns one additional definite-rejection retry.
+        # Otherwise each iteration consumes a source span or stops; a lost ack
+        # can leave further, provably unattempted slices that are still safe.
+        retry_rejected = final
         while end < len(source) and self._run_still_current() and not self._egress_declined:
             remainder = source[end:]
             # Bind the request before awaiting, including cancellation mid-ack.
@@ -358,19 +360,33 @@ class StreamTransportMixin:
             next_end = end + len(attempted)
             # Earlier uncertainty remains uncertainty even if the suffix succeeds.
             self._source_receipt = {**receipt, "source": source, "attempted_end": next_end}
-            if result.success or next_end <= end or not raw.get("_delivery_uncertain"):
+            if result.success or next_end >= len(source):
+                return
+            if not raw.get("_delivery_uncertain"):
+                if not retry_rejected:
+                    if final:
+                        logger.error(
+                            "Source suffix undelivered after bounded recovery "
+                            "(chat=%s, remaining_chars=%d): %s",
+                            self.chat_id, len(source) - next_end, result.error)
+                    return
+                retry_rejected = False
+            elif next_end <= end:
                 return
             end = next_end
 
     @property
     def source_delivery_pending(self) -> bool:
-        """An uncertain active receipt, or the last segment if no new text followed."""
+        """An uncertain/partial active receipt, or the last segment without new text."""
         if self._source_receipt:
-            return self._source_receipt["uncertain"]
+            receipt = self._source_receipt
+            return (receipt["uncertain"]
+                    or (not self._final_content_delivered
+                        and 0 < receipt["confirmed_end"] < len(receipt["source"])))
         return bool(self._source_receipt_segments and not (self._stream_ledger or self._message_id))
 
     async def reconcile_source_final(self, final_text: str) -> bool:
-        """Own this exact final after a source-aware lost ack; True suppresses full replay.
+        """Own this exact final after a source-aware partial/lost ack; True suppresses replay.
 
         Called by the gateway after the consumer joins. This is responsibility for
         delivery, not a claim that unacknowledged content reached the server.

@@ -1650,6 +1650,14 @@ def _deliver_via_live_adapter(
             if not adapter_ok and len(unverified_targets) > unverified_before:
                 # Receipt owns this attempt, but cannot confirm the full delivery.
                 # Stop fallback without logging success or seeding a continuation.
+                # Independent attachments still get their own delivery attempt.
+                try:
+                    if media_files:
+                        _live_send_media(t, media_metadata, media_files, delivery_errors)
+                except Exception as e:
+                    _note_target_error(
+                        job, f"live adapter media delivery to {t.where} failed: {e}",
+                        delivery_errors)
                 return True
 
         # Media rides the same DM-topic-aware routing as text. Skipped after a confirmation

@@ -2028,10 +2028,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _resolve_message_context(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
-        relates_to: dict, mention_claimed: bool = False) -> Optional[tuple]:
+        relates_to: dict, mention_claimed: bool = False, voice_gate=None) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
         display_name, source) or None when the message should be dropped. ``mention_claimed``
-        marks a parked voice claimed by the sender's follow-up bare @mention."""
+        marks a parked voice claimed by the sender's follow-up bare @mention; ``voice_gate`` is
+        the in-flight mark of a parkable voice, released once the park decision is made."""
         identity = await self._resolve_room_identity(room_id)
         is_dm = await self._is_dm_room(room_id)
         chat_type = "dm" if is_dm else "group"
@@ -2047,8 +2048,8 @@ class MatrixAdapter(BasePlatformAdapter):
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
                 if not is_mentioned and not body.startswith("/"):
-                    if is_voice_event(source_content):  # a bare @mention may follow (Element X)
-                        self._parked_voices.park(room_id, sender, event_id, source_content, relates_to)
+                    if voice_gate is not None:  # parkable voice: a bare @mention may follow (Element X)
+                        self._parked_voices.park(room_id, sender, voice_gate, event_id, source_content, relates_to)
                     logger.debug(
                         "Matrix: ignoring message %s in %s — no @mention "
                         "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
@@ -2081,6 +2082,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     self._matrix_session_scope != "room" and self._auto_thread)
             if synthetic:
                 thread_id = event_id
+        if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
+            self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
@@ -2194,12 +2197,13 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
         # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
         # non-allowlisted room must not pull media onto the host only to drop it.
-        # First await: mark a parkable voice in-flight so a concurrent bare mention waits for it.
-        gate = (self._parked_voices.begin(room_id, sender)
-                if self._require_mention and not mention_claimed and is_voice_event(source_content) else None)
+        # First await: mark a voice that may park in-flight so a concurrent bare mention waits for it.
+        gate = self._parked_voices.begin(room_id, sender) if self._voice_may_park(
+            room_id, body, source_content, relates_to, mention_claimed) else None
         try:
             ctx = await self._resolve_message_context(
-                room_id, sender, event_id, body, source_content, relates_to, mention_claimed=mention_claimed)
+                room_id, sender, event_id, body, source_content, relates_to, mention_claimed=mention_claimed,
+                voice_gate=gate)
         finally:
             if gate is not None:
                 self._parked_voices.release(room_id, sender, gate)
@@ -2903,6 +2907,19 @@ class MatrixAdapter(BasePlatformAdapter):
         if localpart and re.search(r"\b" + re.escape(localpart) + r"\b", body, re.IGNORECASE):
             return True
         return bool(formatted_body and self._user_id and f"matrix.to/#/{self._user_id}" in formatted_body)
+
+    def _voice_may_park(self, room_id: str, body: str, content: dict, relates_to: dict,
+                        mention_claimed: bool) -> bool:
+        """Synchronous pre-check of the ``_resolve_message_context`` park branch (only DM-ness
+        needs an await; a DM voice's mark is released as soon as that is known)."""
+        if mention_claimed or not self._require_mention or not is_voice_event(content):
+            return False
+        if room_id in self._free_rooms or (self._allowed_rooms and room_id not in self._allowed_rooms):
+            return False
+        thread_id = relates_to.get("event_id") if relates_to.get("rel_type") == "m.thread" else None
+        if thread_id and thread_id in self._threads:
+            return False
+        return not body.startswith("/") and not self._content_mentions_bot(body, content)
 
     def _content_mentions_bot(self, body: str, content: dict) -> bool:
         """``_is_bot_mentioned`` fed from an event's content (MSC3952 ``m.mentions`` is authoritative)."""

@@ -23,6 +23,7 @@ __all__ = ["StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THIN
 THINK_TAG_NAMES: Tuple[str, ...] = (
     "think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD",
     "思考", "反思", "推理", "推敲",
+    "mm:think",  # MiniMax-M3 namespaced variant (#124705)
 )
 THINK_OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
 THINK_CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)

@@ -47,9 +47,9 @@ def _strip_reasoning_tags(text: str) -> str:
     from cli import _REASONING_TAGS, _TOOL_CALL_TAGS
     cleaned = text
     for tag in _REASONING_TAGS:
-        cleaned = re.sub(rf"<{tag}>.*?</{tag}>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(rf"<{tag}>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
-        cleaned = re.sub(rf"</{tag}>\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(rf"<(?:[\w.-]+:)?{tag}>.*?</(?:[\w.-]+:)?{tag}>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(rf"<(?:[\w.-]+:)?{tag}>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(rf"</(?:[\w.-]+:)?{tag}>\s*", "", cleaned, flags=re.IGNORECASE)
     for tc_tag in _TOOL_CALL_TAGS:
         cleaned = re.sub(
             rf"<(?:[\w.-]+:)?{tc_tag}\b[^>]*>.*?</(?:[\w.-]+:)?{tc_tag}>\s*",

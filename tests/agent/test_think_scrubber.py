@@ -203,3 +203,32 @@ class TestChineseReasoningTags:
         from cli import _strip_reasoning_tags
 
         assert _strip_reasoning_tags("<思考>secret</思考>答案") == "答案"
+
+
+class TestNamespacedReasoningTags:
+    """Models also serialize the same reasoning tags with an XML namespace prefix
+    (<mm:think> from MiniMax-M3, #124705). The reasoning-tag patterns upstream of
+    the tool-call patterns already carry the optional ns prefix; the reasoning side
+    did not, so the raw tag leaked into delivered messages."""
+
+    def test_namespaced_closed_pair_hidden_in_stream(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["<mm:think>reasoning</mm:think>Hello"]) == "Hello"
+
+    def test_namespaced_unterminated_block_dropped_in_stream(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ["<mm:think>leaked reasoning with no close"]) == ""
+
+    def test_final_response_strip_hides_namespaced_tags(self) -> None:
+        from agent.agent_runtime_helpers import strip_think_blocks
+
+        out = strip_think_blocks(
+            None, "Let me craft a clean, evidence-backed report.</mm:think>Done."
+        )
+        assert "mm:think" not in out
+        assert "Done." in out
+
+    def test_cli_replay_strip_hides_namespaced_tags(self) -> None:
+        from cli import _strip_reasoning_tags
+
+        assert _strip_reasoning_tags("<mm:think>secret</mm:think>answer") == "answer"

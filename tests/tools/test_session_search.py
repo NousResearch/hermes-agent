@@ -1057,6 +1057,40 @@ class TestNewResetLineageDiscovery:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_night" in sids
 
+    def test_shared_term_yields_one_hit_per_reset_generation(self, db):
+        """/new chains are distinct conversations: a term present in three generations must
+        surface three hits, each labelled with its own title — never one row wearing the
+        oldest ancestor's title (#121831). A compression continuation still folds into its root."""
+        now = int(time.time())
+        prev = None
+        for i, sid in enumerate(("s_r1", "s_r2", "s_r3"), start=1):
+            kw = {"parent_session_id": prev, "model_config": {"_reset_from": prev}} if prev else {}
+            db.create_session(sid, source="telegram", session_key="tg:user:1", **kw)
+            db._conn.execute("UPDATE sessions SET title = ?, started_at = ? WHERE id = ?",
+                             (f"{sid} title", now - (4 - i) * 86400, sid))
+            db.append_message(sid, role="user", content=f"zyzzyvas in {sid}")
+            db.end_session(sid, "session_reset")
+            prev = sid
+        db.create_session("s_now", source="telegram", session_key="tg:user:1",
+                          parent_session_id="s_r3", model_config={"_reset_from": "s_r3"})
+        db.create_session("s_c1", source="cli")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 3000, "s_c1"))
+        db.append_message("s_c1", role="user", content="quokka pipeline design")
+        db.end_session("s_c1", "compression")
+        db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", (now - 2000, "s_c1"))
+        db.create_session("s_c2", source="cli", parent_session_id="s_c1")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 1000, "s_c2"))
+        db.append_message("s_c2", role="user", content="quokka pipeline design continued")
+
+        result = json.loads(session_search(query="zyzzyvas", limit=10, db=db, current_session_id="s_now"))
+        assert {(r["session_id"], r["title"]) for r in result["results"]} == {
+            ("s_r1", "s_r1 title"), ("s_r2", "s_r2 title"), ("s_r3", "s_r3 title")}
+        # Title match on a mid-chain generation is labelled with that generation, not its ancestor.
+        by_title = json.loads(session_search(query="s_r2 title", db=db, current_session_id="s_now"))
+        assert (by_title["results"][0]["session_id"], by_title["results"][0]["title"]) == ("s_r2", "s_r2 title")
+        folded = json.loads(session_search(query="quokka", limit=10, db=db, current_session_id="s_now"))
+        assert [r["session_id"] for r in folded["results"]] == ["s_c1"]
+
     def test_scroll_into_reset_parent_is_allowed(self, db):
         _seed_gateway_new_reset_chain(db)
         disc = json.loads(session_search(

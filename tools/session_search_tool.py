@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_state_common import _BOUNDARY_END_REASONS
+from hermes_state_common import _BOUNDARY_END_REASONS, is_compression_edge
 from hermes_time import safe_strftime
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
@@ -122,6 +122,22 @@ def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
 
 def _resolve_lineage(db, session_id: str) -> str:
     return _resolve_to_parent(db, session_id)[0]
+
+
+def _compression_root(db, session_id: str) -> str:
+    """Walk ``parent_session_id`` only across compression edges: the id under which a hit is
+    deduped and labelled. Unlike ``_resolve_lineage`` (every edge — the live-context test), a
+    ``/new`` predecessor, branch or delegation parent is a different conversation with its own
+    title and date, so the walk stops there; same rule as ``/api/sessions/search``."""
+    cur, visited = session_id, set()
+    while cur and cur not in visited:
+        visited.add(cur)
+        s = _get_session_meta(db, cur)
+        parent = s.get("parent_session_id")
+        if not parent or not is_compression_edge(s, _get_session_meta(db, parent)):
+            break
+        cur = parent
+    return cur
 
 
 def _parse_iso_bound(value: Optional[str]) -> Optional[int]:
@@ -285,6 +301,7 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     # /new-reset and compression-ended parents are not.
     if current_lineage_root and lineage_root == current_lineage_root and not _session_left_live_context(db, session_id):
         return None
+    lineage_root = _compression_root(db, session_id)  # label + dedup key: this conversation, not its /new ancestor
     session_meta = _quiet(lambda: db.get_session(lineage_root) or db.get_session(session_id), None,
                           "get_session failed for title match %s", session_id) or {}
     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
@@ -413,7 +430,10 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
             continue
-        seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
+        # Dedup/label key stops at non-compression edges: each /new generation is its own hit,
+        # with its own title and date, while a compression continuation still folds into its root.
+        dedup_root = _compression_root(db, raw_sid)
+        seen_sessions.setdefault(dedup_root, {**r, "_lineage_root": dedup_root})
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):
             continue

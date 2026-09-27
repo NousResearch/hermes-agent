@@ -803,6 +803,20 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha, *, rollback_branch=N
     sys.exit(1)
 
 
+def _update_movement_baseline(git_cmd, pre_pull_sha, pre_sync_sha, rollback_branch, target_sha):
+    """Distinguish a branch awaiting repair from an already-applied early sync."""
+    if rollback_branch is not None and pre_pull_sha and target_sha:
+        # A target already contained in the branch cannot advance it. In that
+        # case checkout/early sync supplied the movement, even if pushing the
+        # sync back to origin failed. Otherwise verify the pending repair from
+        # the stale/diverged branch tip, not the original detached checkout.
+        contains_target = _git_run(
+            git_cmd, ["merge-base", "--is-ancestor", target_sha, pre_pull_sha])
+        if contains_target.returncode == 1:
+            return pre_pull_sha
+    return pre_sync_sha or pre_pull_sha
+
+
 def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
     keep_stash, target_ref=None, pre_sync_sha=None, rollback_branch=None, sync_upstream=False, assume_yes=False,
@@ -821,14 +835,8 @@ def _pull_updates(
     # A release update moves the tree to its tag, not the branch tip: the marker names what git writes.
     merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
     target_sha = (_git_run(git_cmd, ["rev-parse", f"{merge_ref}^{{commit}}"]).stdout or "").strip()
-    movement_baseline = pre_sync_sha or pre_pull_sha
-    if rollback_branch is not None and pre_pull_sha != target_sha:
-        # The switched-to branch still needs repair. Verify movement from its
-        # immediate tip through both origin and optional upstream sync; the
-        # final upstream tip may legitimately equal the original detached SHA.
-        # Keep the original SHA separately for syntax rollback. If checkout
-        # already landed at the target, it remains the movement being verified.
-        movement_baseline = pre_pull_sha
+    movement_baseline = _update_movement_baseline(
+        git_cmd, pre_pull_sha, pre_sync_sha, rollback_branch, target_sha)
     with _best_effort('Could not write the interrupted-pull marker: %s'):
         pull_marker.write_text(
             f"pid={os.getpid()}\npre={pre_pull_sha}\ntarget={target_sha}\nstash={auto_stash_ref or ''}\n",
@@ -1287,10 +1295,8 @@ def _apply_pulled_update(
     movement_baseline = _plan.pre_sync_sha or pre_pull_sha
     if getattr(_plan, "rollback_branch", None) is not None:
         target_sha = (_git_run(git_cmd, ["rev-parse", f"origin/{branch}^{{commit}}"]).stdout or "").strip()
-        if pre_pull_sha != target_sha:
-            # Preserve the repair baseline used by _pull_updates, including a
-            # fork sync that returned to the original detached checkout SHA.
-            movement_baseline = pre_pull_sha
+        movement_baseline = _update_movement_baseline(
+            git_cmd, pre_pull_sha, _plan.pre_sync_sha, _plan.rollback_branch, target_sha)
     post_pull_sha = _verify_head_after_pull(
         git_cmd, branch, movement_baseline, in_place_update=_plan.in_place_update,
         _windows_gateway_resume=_windows_gateway_resume)

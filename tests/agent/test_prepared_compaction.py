@@ -5,9 +5,11 @@ Behaviour contracts, with the summariser stubbed at its model boundary:
 * flag off (the default) leaves the whole compression path as it was: no state, no pass, inline summary;
 * a pass never changes the live transcript or compressor, and runs under the caller's profile scope;
 * append-only growth keeps a candidate, which splices at its own boundary with newer messages kept as tail;
-* a rewritten prefix, a moved head or another session's transcript never splices;
+* a rewritten prefix, a moved head, another session's transcript or more than a tail budget of growth past
+  the candidate never splices;
 * a completed candidate splices while an extension pass runs; a pass that has not finished is never
-  waited on, and a pass overtaken by compaction or a session boundary cannot publish;
+  waited on, and a pass overtaken by compaction or a session boundary cannot publish (a same-session
+  rebind keeps the candidate);
 * manual, focus, overflow-recovery and memory-context compactions summarise fresh;
 * the no-LLM prune and blank-echo drop between pass and splice do not invalidate the candidate.
 """
@@ -23,6 +25,7 @@ import pytest
 
 from agent import prepared_compaction as pc
 from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor
+from agent.model_metadata import estimate_messages_tokens_rough
 from agent.prepared_compaction import PreparedCompaction
 
 
@@ -146,7 +149,10 @@ def test_pass_leaves_live_transcript_and_compressor_untouched():
 
 
 @pytest.mark.parametrize("setup", [
-    lambda a, cc: setattr(cc, "last_prompt_tokens", 20000 - int(40960 * pc.PREPARE_BAND_RATIO) - 1),
+    lambda a, cc: setattr(cc, "last_prompt_tokens", int(20000 * (1 - pc.PREPARE_BAND_RATIO)) - 1),
+    # A small absolute trigger on a large window: the band is sized from the trigger, not the window.
+    lambda a, cc: (setattr(cc, "context_length", 200_000), setattr(cc, "threshold_tokens", 20000),
+                   setattr(cc, "last_prompt_tokens", 1000)),
     lambda a, cc: setattr(cc, "awaiting_real_usage_after_compression", True),
     lambda a, cc: setattr(a, "compression_enabled", False),
     lambda a, cc: setattr(a, "_persist_disabled", True),  # background-review fork
@@ -154,11 +160,13 @@ def test_pass_leaves_live_transcript_and_compressor_untouched():
     lambda a, cc: setattr(a, "codex_responses_native_compaction", True),
     lambda a, cc: setattr(cc, "_micro_compact_enabled", True),
     lambda a, cc: setattr(cc, "_summary_failure_cooldown_until", time.monotonic() + 60),
-], ids=["below-band", "awaiting-usage", "disabled", "fork", "app-server", "native", "micro", "cooldown"])
+], ids=["below-band", "small-trigger-large-window", "awaiting-usage", "disabled", "fork", "app-server", "native",
+        "micro", "cooldown"])
 def test_gates_start_no_pass(setup):
     cc = _compressor()
     agent = _agent(cc)
     setup(agent, cc)
+    assert cc.threshold_tokens == 20000
     assert pc.maybe_prepare(agent, _messages(30), origin="test") is None
     assert cc.calls == []
 
@@ -198,6 +206,21 @@ def test_append_only_growth_splices_at_the_candidate_boundary_keeping_newer_mess
         assert original["content"] in row["content"]
     assert cc._previous_summary == entry.body
     assert cc.prepared_compaction._entry is None
+
+
+def test_growth_past_the_candidate_beyond_the_tail_budget_summarises_inline():
+    cc = _compressor()
+    msgs = _messages(30)
+    entry = _prepare(cc, msgs)
+    later = _grow(msgs, 24)
+    _, _, start, end = cc._plan_compaction_window(later)
+    assert start == entry.compress_start and end > entry.compress_end
+    assert estimate_messages_tokens_rough(later[entry.compress_end:end]) > cc.tail_token_budget
+
+    compressed = cc.compress(later, current_tokens=cc.threshold_tokens + 1)
+
+    assert [c["worker"] for c in cc.calls] == [True, False], "stale candidate: inline summary expected"
+    assert "Summary v2" in _summary_row(compressed)["content"]
 
 
 @pytest.mark.parametrize("change", ["middle rewritten", "head moved", "other session"])
@@ -277,9 +300,13 @@ def test_fingerprint_survives_a_session_db_round_trip(tmp_path):
 
 def test_completed_candidate_splices_while_an_extension_pass_runs():
     cc = _compressor()
-    msgs = _messages(30)
+    cc.tail_token_budget = 12_000  # room for a gap that starts an extension yet still splices
+    msgs = _messages(80)
     first = _prepare(cc, msgs)
-    grown = _grow(msgs, 14, size=2600)  # clears MIN_EXTENSION_DELTA_TOKENS
+    grown = _grow(msgs, 14, size=2600)
+    _, _, _, end = cc._plan_compaction_window(grown)
+    gap = estimate_messages_tokens_rough(grown[first.compress_end:end])
+    assert pc.MIN_EXTENSION_DELTA_TOKENS <= gap <= cc.tail_token_budget
     cc.gate = threading.Event()
     running = pc.maybe_prepare(_agent(cc), grown, origin="test")
     assert running is not None
@@ -312,7 +339,7 @@ def test_unfinished_pass_is_not_waited_on_and_cannot_publish_later():
     assert cc.prepared_compaction._entry is None
 
 
-@pytest.mark.parametrize("boundary", ["reset", "end"])
+@pytest.mark.parametrize("boundary", ["reset", "end", "rebind"])
 def test_session_boundary_discards_candidate_and_running_pass(boundary):
     cc = _compressor()
     msgs = _messages(30)
@@ -322,11 +349,23 @@ def test_session_boundary_discards_candidate_and_running_pass(boundary):
     assert running is not None
     if boundary == "reset":
         cc.on_session_reset()
-    else:
+    elif boundary == "end":
         cc.on_session_end("S1", msgs)
+    else:  # /resume or /branch onto another session
+        cc.bind_session_state(None, "S2")
     cc.gate.set()
     running.join(5.0)
     assert cc.prepared_compaction._entry is None and cc.prepared_compaction._pending is None
+
+
+def test_same_session_rebind_keeps_the_candidate():
+    cc = _compressor()
+    msgs = _messages(30)
+    entry = _prepare(cc, msgs)
+    cc.bind_session_state(None, "S1")  # e.g. on_session_start after construction already bound S1
+    assert cc.prepared_compaction._entry is entry
+    cc.compress(_grow(msgs, 4), current_tokens=cc.threshold_tokens + 1)
+    assert [c["worker"] for c in cc.calls] == [True]
 
 
 # --------------------------------------------------------------------------- extension, failures
@@ -439,7 +478,7 @@ def test_turn_that_crosses_the_trigger_splices_the_summary_prepared_during_its_t
     cc = agent.context_compressor
     assert (cc.prepared_compaction is not None) is prepare_ahead
     cc.context_length, cc.threshold_tokens, cc.tail_token_budget = 40960, 20000, 2500
-    band_floor = cc.threshold_tokens - int(cc.context_length * pc.PREPARE_BAND_RATIO)
+    band_floor = int(cc.threshold_tokens * (1 - pc.PREPARE_BAND_RATIO))
 
     summaries, tool_started = [], threading.Event()
 

@@ -178,7 +178,7 @@ def test_save_over_corrupt_store_fails_closed(hermes_env):
     jobs_file = jobs._current_cron_store().jobs_file
     corrupt = b'{"jobs": [{"id": "ccc'
     jobs_file.write_bytes(corrupt)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
         save_jobs([{"id": "aaaaaaaaaaaa", "name": "a"}])
     assert jobs_file.read_bytes() == corrupt
 

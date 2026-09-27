@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
+from utils import atomic_write_text
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
@@ -1121,6 +1122,83 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
     return serve
 
 
+def _read_cloned_bundled_manifest(manifest_file: Path) -> Dict[str, str]:
+    """Read a profile's ``skills/.bundled_manifest`` into ``{name: origin_hash}``.
+
+    Mirrors ``tools.skills_sync._read_manifest`` for an arbitrary path, including
+    both the v1 (plain names) and v2 (``name:hash``) formats.
+    """
+    try:
+        raw = manifest_file.read_text(encoding="utf-8-sig")
+    except (OSError, IOError):
+        return {}
+    entries: Dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if ":" in line:
+            # v2 format: name:hash
+            name, _, hash_val = line.partition(":")
+            entries[name.strip()] = hash_val.strip()
+        else:
+            # v1 format: plain name - empty hash triggers migration on next sync.
+            entries[line] = ""
+    return entries
+
+
+def _prune_cloned_bundled_manifest(skills_dir: Path) -> int:
+    """Drop bundled-provenance entries whose skill did not survive a profile clone.
+
+    ``profile create --clone`` / ``--clone-all`` copies the source profile's whole
+    skills tree, including its ``.bundled_manifest``. Entries are keyed by skill
+    name, so an entry whose skill was stripped by ``_CLONE_ALL_STRIP`` (or deleted
+    from the source afterwards) keeps reporting phantom bundled provenance in the
+    clone forever: ``skills list`` shows a skill that is not there, and the entry
+    can never be restored. Rewrite the manifest to match what actually landed on
+    disk. Returns the number of dropped entries (0 when nothing changed).
+    """
+    from tools.skills_sync import _discover_bundled_skills
+
+    manifest_file = skills_dir / ".bundled_manifest"
+    if not manifest_file.is_file():
+        return 0
+    entries = _read_cloned_bundled_manifest(manifest_file)
+    if not entries:
+        return 0
+
+    # Manifest keys are the skills' frontmatter names, so match on those (the
+    # directory basename may differ) and honour the same exclusions sync uses.
+    live = {skill_name for skill_name, _path in _discover_bundled_skills(skills_dir)}
+    stale = sorted(set(entries) - live)
+    if not stale:
+        return 0
+
+    # Keep each surviving entry in the format it arrived in: a v1 plain name stays
+    # a plain name so the next sync still migrates it.
+    kept_lines = [
+        name if not entries[name] else f"{name}:{entries[name]}"
+        for name in sorted(set(entries) & live)
+    ]
+    try:
+        atomic_write_text(
+            manifest_file,
+            "\n".join(kept_lines) + "\n",
+            tmp_prefix=".bundled_manifest_",
+            preserve_mode=True,
+        )
+    except OSError as e:
+        logger.debug("Failed to rewrite cloned manifest %s: %s", manifest_file, e)
+        return 0
+    logger.debug(
+        "Pruned %d stale bundled-manifest entr%s from cloned skills (%s)",
+        len(stale),
+        "y" if len(stale) == 1 else "ies",
+        ", ".join(stale),
+    )
+    return len(stale)
+
+
 def _resolve_clone_source(clone_from: Optional[str]) -> Path:
     """Directory to clone from: the named profile, or the active profile when ``None``."""
     if clone_from is None:
@@ -1248,6 +1326,9 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
             "profile %s: dropped cloned single-use OAuth grants %s "
             "(inherits the root grant instead)", canon, stripped,
         )
+    # --clone-all strips paths listed in _CLONE_ALL_STRIP and skips excluded
+    # trees, so the copied manifest can name bundled skills that never landed.
+    _prune_cloned_bundled_manifest(profile_dir / "skills")
 
 
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
@@ -1271,6 +1352,8 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
+        # Drop manifest entries whose bundled skill did not survive the copy.
+        _prune_cloned_bundled_manifest(profile_dir / "skills")
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
     from hermes_cli.profile_memory_config import active_memory_provider, clone_memory_provider_config

@@ -73,12 +73,20 @@ HISTORY_UNREADABLE = ("⚠️ I can't read this conversation's history right now
                       "to start fresh.")
 
 
-def _configured_provider() -> str:
-    """``model.provider`` from the gateway config ("" when unset)."""
+def _configured_model_route() -> tuple[str, str]:
+    """``model.provider`` and ``model.base_url`` from the gateway config ("" when unset).
+
+    Both halves, because the account-usage fetch needs them together: a configured provider
+    served off a non-default host (an OpenAI-compatible endpoint, a self-hosted route) resolves
+    no account API from its name alone, so returning the provider without its base_url would
+    make ``/usage`` query the wrong host for a fresh topic.
+    """
     from gateway.run import _load_gateway_config
     user_config = _load_gateway_config()
     model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-    return _clean_str(model_cfg.get("provider")) if isinstance(model_cfg, dict) else ""
+    if not isinstance(model_cfg, dict):
+        return "", ""
+    return _clean_str(model_cfg.get("provider")), _clean_str(model_cfg.get("base_url"))
 
 
 def _quiet_sync(call, default=None):
@@ -585,7 +593,12 @@ class GatewayStatusCommandsMixin:
             # Fresh or evicted session with no persisted route (e.g. /usage right after login):
             # fall back to the configured provider, as /status does, so account limits such as
             # Codex subscription windows still render from on-disk credentials (#15167).
-            provider = await _quiet(lambda: asyncio.to_thread(_configured_provider)) or None
+            # The live/persisted route stays authoritative — this only fills a genuine blank.
+            configured_provider, configured_base_url = await _quiet(
+                lambda: asyncio.to_thread(_configured_model_route), ("", ""),
+            ) or ("", "")
+            if configured_provider:
+                provider, base_url = configured_provider, configured_base_url or None
         if wants_reset:
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")
@@ -595,9 +608,16 @@ class GatewayStatusCommandsMixin:
             )
             return result.message
 
+        # Nothing selected a route and configuration names no provider: report the Codex
+        # account, the one built-in whose limits resolve from on-disk credentials alone, so
+        # /usage still renders limits instead of an empty block. Deliberately AFTER the
+        # `/usage reset` gate above — a reset must only ever run against an explicitly
+        # selected Codex route, never against this last-resort default.
+        provider = provider or "openai-codex"
+
         # Account usage off the event loop so slow provider APIs don't block the gateway;
-        # failures are non-fatal (account_lines stays []).
-        account_snapshot = provider and await _quiet(
+        # failures are non-fatal (account_lines stays []). The route resolved above is authoritative.
+        account_snapshot = await _quiet(
             lambda: asyncio.to_thread(fetch_account_usage, provider, base_url=base_url, api_key=api_key)
         )
         account_lines = (

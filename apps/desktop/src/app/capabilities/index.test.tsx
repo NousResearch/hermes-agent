@@ -495,7 +495,17 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    const install = await screen.findByRole('switch', { name: 'Add gif-search' })
+    // The first commit renders while the installed-list query is still in
+    // flight: Add switches sit disabled and the feed is not yet deduped. The
+    // settled tree can swap the node, so re-query by role and click only once
+    // the switch is actionable.
+    const install = await waitFor(() => {
+      const el = screen.getByRole('switch', { name: 'Add gif-search' }) as HTMLButtonElement
+
+      expect(el.disabled).toBe(false)
+
+      return el
+    })
     expect(screen.getByRole('switch', { name: 'web-research' })).toBeTruthy()
     expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
     expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Added ascii-art' }).disabled).toBe(true)

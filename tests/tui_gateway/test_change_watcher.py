@@ -65,6 +65,49 @@ def test_state_db_move_broadcasts_sessions_changed(watcher_home):
     assert ("sessions.changed", {}) in events
 
 
+def test_projects_db_move_broadcasts_projects_changed(watcher_home):
+    """#53046 / #56757: the CLI and other windows write projects.db directly, in
+    processes that never touch this gateway's transports. Without a watch, a
+    `hermes projects create` (or a set_primary / folder edit from another
+    window) leaves the Desktop's project tree stale until an unrelated refresh."""
+    home, events = watcher_home
+    server._broadcast_watched_changes(now=0.0)
+
+    (home / "projects.db").write_text("x")
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("projects.changed", {}) in events
+
+
+def test_served_profile_projects_db_move_broadcasts_projects_changed(watcher_home, monkeypatch):
+    """A backend serving a sibling profile watches that profile's projects.db too —
+    the sibling-home half of the sessions.changed contract (#53046)."""
+    home, events = watcher_home
+    coder_home = home / "profiles" / "coder"
+    coder_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_served_profile_homes", set())
+    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: home / "profiles" / name)
+    assert server._profile_home("coder") == coder_home
+    server._broadcast_watched_changes(now=0.0)
+
+    (coder_home / "projects.db").write_text("x")
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("projects.changed", {}) in events
+
+
+def test_projects_sig_does_not_track_state_db_writes(watcher_home):
+    """A state.db move must not fire projects.changed — the two stores are
+    independent and their consumers refetch different surfaces."""
+    home, events = watcher_home
+    server._broadcast_watched_changes(now=0.0)
+
+    (home / "state.db").write_text("x")
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("projects.changed", {}) not in events
+
+
 def test_served_profile_store_move_broadcasts_sessions_changed(watcher_home, monkeypatch):
     """A backend serving a sibling profile must see that profile's state.db
     move too — otherwise a routed profile's Bot Chat never refreshes (#99333)."""

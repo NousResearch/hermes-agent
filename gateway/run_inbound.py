@@ -642,6 +642,7 @@ class GatewayInboundMixin:
             except Exception as exc:
                 logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
         if steered:
+            self._fold_into_running_turn(running_agent, _quick_key, event)
             logger.debug("PRIORITY steer for session %s", _quick_key)
             return
         logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)

@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import re
 import threading
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 import pm
 from pm.downloader import ProgressFn
+
+logger = logging.getLogger(__name__)
 
 BACKEND_PACKAGES = {
     "cuda": "llamacpp-cuda",
@@ -98,18 +105,135 @@ def resolve_backend(requested: str = "auto", *, gpu_vendor: str | None = None,
     raise BinaryResolutionError("; ".join(reasons))
 
 
+def _installed(candidates: tuple[str, ...], allow_outdated: bool) -> Engine | None:
+    for candidate in candidates:
+        found = pm.installed_package(BACKEND_PACKAGES[candidate], allow_outdated=allow_outdated)
+        if found is not None and found.binary is not None:
+            return Engine(candidate, f"b{found.version}", found.binary)
+    return None
+
+
 def installed_engine(backend: str = "auto", *, allow_outdated: bool = True) -> Engine | None:
-    """Boot may retain a prior PM pin, but never installs or adopts unmanaged bytes."""
+    """Boot may retain a prior PM pin and moves a pre-PM engine into PM's store once; it never downloads."""
     vendor = None
     if backend == "auto":
         from hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor
 
         vendor = _detect_gpu_vendor()
-    for candidate in _candidates(backend, vendor, pm.current_target()):
-        found = pm.installed_package(BACKEND_PACKAGES[candidate], allow_outdated=allow_outdated)
-        if found is not None and found.binary is not None:
-            return Engine(candidate, f"b{found.version}", found.binary)
-    return None
+    candidates = _candidates(backend, vendor, pm.current_target())
+    engine = _installed(candidates, allow_outdated)
+    if engine is None and any(adopt_legacy_engine(candidate) for candidate in candidates):
+        engine = _installed(candidates, allow_outdated)
+    return engine
+
+
+# Before PM owned binaries, Hermes installed each engine to runtimes/llamacpp/b<tag>/<backend>/
+# and wrote a manifest.json with the archive digests and the llama-server --version it saw.
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_ADOPTION_LOCK = threading.Lock()
+# Installs that failed to move stay put for this process; the pane polls status every few seconds.
+_LEFT_IN_PLACE: set[Path] = set()
+
+
+def _legacy_installs(backend: str) -> list[tuple[str, Path, dict]]:
+    """Verified pre-PM installs of ``backend`` as (version, dir, manifest), newest first."""
+    found = []
+    for manifest_path in runtimes_root().glob(f"b*/{backend}/manifest.json"):
+        tag = manifest_path.parent.parent.name
+        try:
+            number = int(tag.removeprefix("b"))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if (isinstance(manifest, dict) and manifest.get("tag") == tag and manifest.get("backend") == backend
+                and manifest.get("verified_version") and isinstance(manifest.get("assets"), dict)
+                and manifest_path.parent not in _LEFT_IN_PLACE):
+            found.append((number, str(number), manifest_path.parent, manifest))
+    return [(version, path, manifest) for _, version, path, manifest in sorted(found, reverse=True)]
+
+
+def _legacy_artifacts(package, version: str, target: str, assets: dict) -> list[str] | None:
+    """The manifest's archive digests in PM's archive order, or None when one is missing."""
+    shas = [assets.get(url.rsplit("/", 1)[-1]) for url in package.fetch_urls(version, target)]
+    if not shas or not all(isinstance(sha, str) and _SHA256.fullmatch(sha) for sha in shas):
+        return None
+    return shas
+
+
+@contextmanager
+def _store_lock(root: Path) -> Iterator[bool]:
+    """PM's store lock, or False when another PM operation holds it (a download can take minutes)."""
+    from pm.filesystem import lock_fd
+
+    root.mkdir(parents=True, exist_ok=True)
+    fd = os.open(root / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        yield lock_fd(fd, wait=True, timeout=2)
+    finally:
+        os.close(fd)
+
+
+def adopt_legacy_engine(backend: str) -> bool:
+    """Move the newest pre-PM install of ``backend`` into PM's store and record it as installed.
+
+    A machine that already ran a Hermes-installed engine keeps it across the update to PM. The
+    manifest's archive digests become the PM identity, so a tag that matches the pin counts as
+    current and an older tag counts as outdated, which offers the update. ``os.rename`` only:
+    instant on one volume, and a store on another volume leaves the engine where it is. Never
+    raises; returns whether an engine was moved.
+    """
+    try:
+        candidates = _legacy_installs(backend)
+        if not candidates:
+            return False
+        from pm import paths as pm_paths
+
+        name = BACKEND_PACKAGES[backend]
+        package = pm.get_package(name)
+        target = pm.current_target()
+        root = pm_paths.writable_store_root()
+        facts_path = pm_paths.facts_path() if root == pm_paths.store_root() else root / "facts.json"
+        with _ADOPTION_LOCK, _store_lock(root) as held:
+            if not held or pm.installed_package(name, allow_outdated=True) is not None:
+                return False
+            for version, source, manifest in candidates:
+                if _adopt(package, version, target, source, manifest, root, facts_path):
+                    return True
+                _LEFT_IN_PLACE.add(source)
+    except Exception as exc:  # noqa: BLE001 - a failed move must not break the callers that ask
+        logger.warning("could not move the pre-PM llama.cpp %s engine into the PM store: %s", backend, exc)
+    return False
+
+
+def _adopt(package, version: str, target: str, source: Path, manifest: dict, root: Path,
+           facts_path: Path) -> bool:
+    from pm.store import tree_digest
+
+    artifacts = _legacy_artifacts(package, version, target, manifest["assets"])
+    entry_name = package.store_entry(version, target)
+    entry = root / entry_name
+    if artifacts is None or entry.exists() or entry.is_symlink():
+        return False
+    reason = package.verify(source, target)
+    if reason:
+        logger.warning("pre-PM llama.cpp at %s left in place: %s", source, reason)
+        return False
+    try:
+        os.rename(source, entry)
+    except OSError as exc:
+        logger.warning("pre-PM llama.cpp at %s left in place: %s", source, exc)
+        return False
+    try:
+        pm.Facts(facts_path).record(package.name, version, entry_name, package.env(entry, target), root,
+                                    target=target, artifacts=artifacts, digest=tree_digest(entry))
+    except BaseException:
+        with suppress(OSError):
+            os.rename(entry, source)
+        raise
+    with suppress(OSError):
+        source.parent.rmdir()
+    logger.info("moved llama.cpp b%s (%s) from %s into the PM store", version, package.name, source)
+    return True
 
 
 def ensure_engine(backend: str, *, progress: Callable[[str, int, int, str], None] | None = None,

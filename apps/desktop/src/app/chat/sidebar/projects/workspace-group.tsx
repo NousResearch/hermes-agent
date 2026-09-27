@@ -103,8 +103,11 @@ export function SidebarWorkspaceGroup({
 
     // Main-checkout lanes are branch-labeled views over the same repo root path.
     // Clicking "+" on `main` should open on `main`, not whatever branch the root
-    // currently sits on (`test0`, etc.), so explicitly switch first.
-    if (group.isMain && group.path && group.label) {
+    // currently sits on (`test0`, etc.), so explicitly switch first. A NON-GIT
+    // lane (the backend heuristic's folder lane) has no branch to switch — `git
+    // switch` there dies with "fatal: not a git repository" (#61362) — so the
+    // new session just lands in the folder as-is.
+    if (group.isMain && group.isGit !== false && group.path && group.label) {
       try {
         await switchBranchInRepo(group.path, group.label)
       } catch (err) {

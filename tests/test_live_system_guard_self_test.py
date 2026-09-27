@@ -297,6 +297,19 @@ def test_subprocess_popen_real_gateway_restart_blocked():
         )
 
 
+def test_subprocess_popen_inline_source_restart_watcher_blocked():
+    """``gateway._spawn_gateway_restart_watcher`` hides the real gateway argv behind
+    ``python -c <src> <old_pid> …``. The identity matcher must ignore that trailing argv (#107002),
+    but the guard reads it as SPAWN INTENT — otherwise the watcher sails through, waits out its
+    120s deadline and leaves a real detached gateway squatting the webhook port."""
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(1)", "4242",
+             sys.executable, "-m", "hermes_cli.main", "gateway", "run"],
+            start_new_session=True,
+        )
+
+
 def test_subprocess_run_gateway_status_passes_through():
     """Only lifecycle verbs are blocked: ``gateway status`` (and every other
     read-only subcommand) must still spawn — via the canonical matcher, not an

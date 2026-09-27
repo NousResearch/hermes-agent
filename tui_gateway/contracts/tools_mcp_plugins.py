@@ -637,6 +637,7 @@ class PluginSettingField(Result):
 class PluginServerState(WireEnum):
     connected = "connected"
     app_not_running = "app_not_running"
+    hermes_not_connected = "hermes_not_connected"
     endpoint_unavailable = "endpoint_unavailable"
     no_interactive_session = "no_interactive_session"
     version_too_old = "version_too_old"

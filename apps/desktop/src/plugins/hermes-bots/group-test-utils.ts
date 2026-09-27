@@ -447,6 +447,8 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
 
   return {
+    // Real value: approval.respond forwards it as its client deadline (#60654).
+    APPROVAL_RESPOND_TIMEOUT_MS: 300_000,
     atom: nanostores.atom,
     // Feature-detected SDK members: the modules read them off the namespace
     // and fall back when absent, but vitest rejects a namespace access with

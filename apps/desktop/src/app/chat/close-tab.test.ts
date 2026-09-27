@@ -14,6 +14,9 @@ vi.mock('@/app/right-sidebar/terminal/terminals', () => ({
 }))
 
 vi.mock('@/components/pane-shell/tree/store', () => ({
+  // preview.ts stamps explicit opens against the focused tree group.
+  $activeTreeGroup: atom(null),
+  $layoutTree: atom(null),
   closeFocusedSessionTab: () => closeFocusedSessionTab(),
   closeFocusedToolTab: () => closeFocusedToolTab()
 }))

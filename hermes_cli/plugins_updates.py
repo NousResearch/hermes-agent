@@ -393,7 +393,7 @@ def default_ls_remote(source: str) -> str:
     proc = subprocess.run(
         [_resolve_git_executable() or "git", "ls-remote", source, "HEAD"],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         timeout=30,
     )
     if proc.returncode != 0:

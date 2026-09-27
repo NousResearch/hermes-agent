@@ -279,7 +279,7 @@ def test_the_multiplexer_restart_names_the_root_even_under_a_sticky_active_profi
     action log says restarted and the multiplexer never was."""
     from pathlib import Path
 
-    from hermes_cli.main import _apply_profile_override
+    from hermes_cli._startup_profile import _apply_profile_override
     from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment
     monkeypatch.setenv("HERMES_HOME", str(served_root))  # the dashboard runs as the default profile
     (served_root / "active_profile").write_text("coder")

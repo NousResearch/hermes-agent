@@ -18,6 +18,8 @@ BOOT_FILES = (
     "pm/environments.py", "pm/filesystem.py", "pm/paths.py", "hermes_cli/runtime_state.py",
     "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py",
     "hermes_cli/venv_sync.py", "hermes_cli/steward.py",
+    "hermes_cli/_startup_profile.py", "hermes_cli/_startup_fast.py", "hermes_cli/profiles.py",
+    "hermes_cli/archive_safe.py", "hermes_cli/home_data_layout.py", "hermes_cli/service_manager.py",
     "hermes_cli/stderr_timestamp.py",
     "scripts/hermes-gateway",
 )
@@ -32,6 +34,8 @@ def fixture_tree(tmp_path, monkeypatch):
     (repo / "acp_adapter").mkdir()
     (repo / "acp_adapter" / "__init__.py").write_text("", encoding="utf-8")
     entry = (
+        # Production entry points own bootstrap as their first import.
+        "import hermes_bootstrap\n"
         "import json, os, sys\n"
         "def main():\n"
         "    import selected_probe\n"

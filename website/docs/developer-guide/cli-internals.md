@@ -72,7 +72,8 @@ User skins are `~/.hermes/skins/<name>.yaml` with the same keys, activated with 
 
 Hermes supports profiles — fully isolated instances, each with its own `HERMES_HOME` (config, API
 keys, memory, sessions, skills, gateway). For single-profile commands (`hermes -p x <cmd>`),
-`_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module imports, so
+`_apply_profile_override()` in `hermes_cli/_startup_profile.py` sets `HERMES_HOME` before PM
+prepares dependencies or the CLI imports application modules, so
 every `get_hermes_home()` reference scopes to the active profile. The multiplex gateway and the
 Desktop/dashboard `serve` backend serve several profiles from one process instead: the active
 profile is a contextvar override bound per activity, `os.environ["HERMES_HOME"]` stays the launch

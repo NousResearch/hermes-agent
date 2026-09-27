@@ -454,7 +454,7 @@ class S6ServiceManager:
         # `gateway run --replace` → `gateway start` … (see the matching guard there).
         lines.append("export HERMES_S6_SUPERVISED_CHILD=1")
         # Generalized supervisor marker — same meaning for the profile-redirect guard in
-        # hermes_cli.main._apply_profile_override; kept alongside the s6 one for back-compat.
+        # hermes_cli._startup_profile._apply_profile_override; kept alongside the s6 one for back-compat.
         lines.append("export HERMES_SUPERVISED_CHILD=1")
         # ``--replace`` makes the supervised gateway authoritative for its HERMES_HOME. Without it
         # a gateway started OUTSIDE s6 (stray ``hermes gateway run``, an agent action, the Open

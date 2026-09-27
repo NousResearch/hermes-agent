@@ -482,6 +482,8 @@ function Invoke-RefInstaller {
     # directory, so give it one that is not a project.
     $runDir = Join-Path $WorkRoot "install-cwd"
     New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    $hangLog = Join-Path $WorkRoot "logs\install-$Label-hang-processes.txt"
+    $watchdog = Start-HangWatchdog -Minutes $InstallDeadlineMinutes -EvidencePath $hangLog
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     Push-Location $runDir
     try {
@@ -489,9 +491,14 @@ function Invoke-RefInstaller {
         $installExit = $LASTEXITCODE
     } finally {
         Pop-Location
+        Stop-HangWatchdog $watchdog
     }
     $ErrorActionPreference = $prevEap
     Write-LogGroup "install.ps1 ($Label) transcript" $log
+    if (Test-Path -LiteralPath $hangLog) {
+        Write-LogGroup "install.ps1 ($Label) hang evidence (process table, Python stacks)" $hangLog
+        throw "E2E ASSERTION FAILED: install.ps1 ($Label) was still running after $InstallDeadlineMinutes minutes; the process table and stacks above show where"
+    }
     Assert-True ($installExit -eq 0) "install.ps1 ($Label) exited 0"
 }
 
@@ -527,17 +534,19 @@ function Invoke-HermesUpdate {
     }
     Write-LogGroup "hermes update transcript" $log
     if (Test-Path -LiteralPath $hangLog) {
-        Write-LogGroup "hermes update hang evidence (process table)" $hangLog
+        Write-LogGroup "hermes update hang evidence (process table, Python stacks)" $hangLog
         throw "E2E ASSERTION FAILED: hermes update was still running after $UpdateDeadlineMinutes minutes (its output pipe never closed); the process table above shows which process held it"
     }
     Assert-True ($updateExit -eq 0) "hermes update exited $updateExit (expected 0)"
 }
 
-# `hermes update` normally finishes in under 25 minutes. Past this deadline
-# the watchdog records every process (pid, parent, start time, command line)
-# and stops this leg's processes, so a hang fails with evidence -- whether
-# the updater itself is stuck or a detached child still holds its output
-# pipe -- instead of being cancelled blind at the job cap.
+# install.ps1 (with -IncludeDesktop) and `hermes update` normally finish in
+# under 25 minutes. Past these deadlines the watchdog records every process
+# (pid, parent, start time, command line) plus a py-spy stack of each Python
+# process, then stops this leg's processes, so a hang fails with evidence --
+# whether the product itself is stuck or a detached child still holds its
+# output pipe -- instead of being cancelled blind at the job cap.
+$InstallDeadlineMinutes = 40
 $UpdateDeadlineMinutes = 45
 
 function Start-HangWatchdog([int]$Minutes, [string]$EvidencePath) {
@@ -545,8 +554,10 @@ function Start-HangWatchdog([int]$Minutes, [string]$EvidencePath) {
     $exclude = @()
     if ($script:ChatMock) { $exclude += $script:ChatMock.Id }
     $homes = @($HermesHome, [System.IO.Path]::GetFullPath($HermesHome)) | Select-Object -Unique
-    Start-Job -ArgumentList $PID, $Minutes, $EvidencePath, $homes, $exclude -ScriptBlock {
-        param($driverPid, $minutes, $out, $homes, $exclude)
+    # py-spy is installed next to the driver's Python by the workflow.
+    $pyspy = Join-Path (Split-Path $DriverPython) 'py-spy.exe'
+    Start-Job -ArgumentList $PID, $Minutes, $EvidencePath, $homes, $exclude, $pyspy -ScriptBlock {
+        param($driverPid, $minutes, $out, $homes, $exclude, $pyspy)
         Start-Sleep -Seconds ($minutes * 60)
         $all = @(Get-CimInstance Win32_Process)
         $row = { param($p) '{0,7} <- {1,7}  {2:yyyy-MM-ddTHH:mm:ss}  {3}' -f $p.ProcessId, $p.ParentProcessId, $p.CreationDate, $(if ($p.CommandLine) { $p.CommandLine } else { $p.Name }) }
@@ -567,6 +578,14 @@ function Start-HangWatchdog([int]$Minutes, [string]$EvidencePath) {
         $lines += @($leg | ForEach-Object { & $row $_ })
         $lines += @('', '== every process, oldest first ==')
         $lines += @($all | Sort-Object CreationDate | ForEach-Object { & $row $_ })
+        if (Test-Path -LiteralPath $pyspy) {
+            foreach ($p in (@($tree) + @($leg) | Where-Object { $_.Name -match '^(python|pythonw|hermes)' } | Sort-Object ProcessId -Unique)) {
+                $lines += @('', "== py-spy dump --pid $($p.ProcessId) ($($p.Name)) ==")
+                $lines += @(& $pyspy dump --pid $p.ProcessId --nonblocking 2>&1 | ForEach-Object { "$_" })
+            }
+        } else {
+            $lines += @('', "(no Python stacks: $pyspy is missing)")
+        }
         Set-Content -LiteralPath $out -Value $lines -Encoding UTF8
         foreach ($victim in (@($tree) + @($leg))) {
             Stop-Process -Id $victim.ProcessId -Force -ErrorAction SilentlyContinue

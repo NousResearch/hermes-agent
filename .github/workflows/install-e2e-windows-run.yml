@@ -217,14 +217,18 @@ jobs:
       # version pyproject.toml requires. Install it with uv (the toolchain python ships
       # without pip) out of HERMES_RUNTIME_DIR, which is the tools directory itself and
       # is not on PATH for workflow steps; the import check proves it landed.
+      # py-spy lands beside it: the driver's hang watchdog dumps the stack of
+      # every Python process of a stuck install or update before stopping it.
       - name: Install the pseudoconsole runner's dependency
         shell: pwsh
         run: |
           $uvDir = Get-ChildItem $env:HERMES_RUNTIME_DIR -Filter 'uv-*' -Directory | Select-Object -First 1
           if (-not $uvDir) { throw "uv not found under $env:HERMES_RUNTIME_DIR" }
-          & (Join-Path $uvDir.FullName 'uv.exe') pip install --system --python $env:HERMES_PYTHON --quiet "pywinpty==3.0.5"
+          & (Join-Path $uvDir.FullName 'uv.exe') pip install --system --python $env:HERMES_PYTHON --quiet "pywinpty==3.0.5" "py-spy==0.4.2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -c "import winpty; print('pty-run dependency ready')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path (Split-Path $env:HERMES_PYTHON) 'py-spy.exe') --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # One recording mechanism on every OS: the composite action verifies

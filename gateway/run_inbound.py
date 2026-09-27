@@ -1599,9 +1599,22 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             # it's disambiguation (*which* prior message), not deduplication.
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
-            reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+            from gateway.session import neutralize_untrusted_inline_text
+
+            reply_text = (
+                neutralize_untrusted_inline_text(event.reply_to_text[:500], max_chars=0)
+                if source.platform == Platform.MATRIX else event.reply_to_text
+            )
+            if event.reply_to_is_own_message:
+                message_text = f'[Replying to your previous message: "{reply_text}"]\n\n{message_text}'
+            else:
+                author = event.reply_to_author_name or event.reply_to_author_id
+                author_label = neutralize_untrusted_inline_text(author) if author else ""
+                trust_label = "[unverified] " if event.reply_to_author_authorized is False else ""
+                if author_label:
+                    message_text = f'[Replying to {trust_label}{author_label}: "{reply_text}"]\n\n{message_text}'
+                else:
+                    message_text = f'[Replying to: {trust_label}"{reply_text}"]\n\n{message_text}'
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is

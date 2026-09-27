@@ -73,7 +73,11 @@ def is_shallow_repository(git_cmd: list[str], root: Path) -> bool:
 
 def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, branch: str):
     print(f"→ Fetching from {remote}...")
-    return _git(git_cmd, root, ["fetch", *depth_args, remote, branch], **_uc()._no_prompt_git_kwargs())
+    # Fetch by explicit refspec: on narrow clones (tag-pinned --single-branch, #125112) the
+    # configured remote.<remote>.fetch maps only the tag, so a branch-name fetch writes
+    # FETCH_HEAD and never creates the tracking ref the compare step resolves.
+    refspec = f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+    return _git(git_cmd, root, ["fetch", *depth_args, remote, refspec], **_uc()._no_prompt_git_kwargs())
 
 
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):

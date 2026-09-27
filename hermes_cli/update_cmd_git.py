@@ -341,7 +341,9 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
         return False
     print("\n→ Fetching upstream...")
     try:
-        subprocess.run(git_cmd + ["fetch", "upstream", "main", "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
+        # Explicit refspec (#125112): tag-pinned narrow clones never build upstream/main
+        # from a branch-name fetch, and the comparison below resolves it.
+        subprocess.run(git_cmd + ["fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main", "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return False

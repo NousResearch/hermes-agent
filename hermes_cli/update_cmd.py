@@ -1384,7 +1384,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if release_sha:
             fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
         else:
-            fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+            # Explicit refspec so the tracking ref lands even on narrow clones whose only
+            # configured refspec is a tag (#125112): a branch-name fetch would leave the
+            # target unresolvable and the checkout/compare below would fail.
+            fetch_result = _git_run(
+                git_cmd, ["fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], network=True)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

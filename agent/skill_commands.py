@@ -18,6 +18,11 @@ _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
 _skill_commands_home: Optional[str] = None
 _skill_commands_project: Optional[str] = None
+# Mtime fingerprint of the scanned skills roots at publish time (see ``_skills_tree_signature``).
+# The three tags above cover scope changes; the signature covers CONTENT changes — a skill
+# installed/edited/removed outside this process (skills-hub CLI subprocess, dashboard spawn,
+# plain editor) moves no tag, only mtimes (#125487).
+_skill_commands_sig: Optional[tuple] = None
 # Guards the (map, platform-tag, home-tag, project-tag) tuple so publication and the
 # freshness lookup always see a consistent snapshot. Scanning stays outside.
 _publish_lock = threading.Lock()
@@ -390,15 +395,56 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
                          "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}
 
 
+def _skills_tree_signature() -> tuple:
+    """Cheap freshness fingerprint of every skills root the scan reads: one
+    ``(path, mtime_ns)`` pair per directory, pruned exactly like the scan's own
+    walk (``EXCLUDED_SKILL_DIRS`` + support dirs under skill roots), plus each
+    SKILL.md's mtime.
+
+    ``get_skill_commands`` compares this against the fingerprint stored at
+    publish time, so an out-of-process install/edit/delete (skills-hub CLI
+    subprocess, dashboard spawn, plain editor — none of which can call an
+    in-process invalidation hook) is caught on the next lookup for the cost of
+    a stat-only walk (~10 ms on a 174-dir tree vs ~4 s for the full scan).
+    Modeled on ``agent.skill_bundles._max_mtime``, which already plays this
+    role for bundles. Failure to stat a root yields ``(path, None)`` — any
+    later success then differs and forces a rescan (fail-open to fresh).
+    """
+    sig: list = []
+    try:
+        from tools.skills_tool import _skills_dir
+        from agent.skill_utils import (
+            get_external_skills_dirs, get_project_skills_dirs, iter_skill_index_files,
+        )
+        roots = [d for d in [*get_project_skills_dirs(), _skills_dir(), *get_external_skills_dirs()] if d]
+        for root in roots:
+            for skill_md in iter_skill_index_files(Path(root), "SKILL.md"):
+                # A directory-level prune (iter_skill_index_files mirrors the scan's own
+                # pruning, so the walk cost matches the scan's traversal shape) plus the
+                # file's own mtime: in-place SKILL.md edits change no directory mtime.
+                try:
+                    sig.append((str(skill_md.parent), skill_md.stat().st_mtime_ns))
+                except OSError:
+                    sig.append((str(skill_md.parent), None))
+    except Exception:
+        return ()  # rescan on the next lookup rather than trust a partial fingerprint
+    return tuple(sig)
+
+
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Scan skill dirs and return {"/skill-name": {name, description, skill_md_path, skill_dir}}.
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
-    global _skill_commands, _skill_commands_platform, _skill_commands_home, _skill_commands_project
+    global _skill_commands, _skill_commands_platform, _skill_commands_home, _skill_commands_project, _skill_commands_sig
     platform = _resolve_skill_commands_platform()
     home = _resolve_skill_commands_home()
     project = _resolve_skill_commands_project()
+    # Fingerprint BEFORE building the map: a skill mutating mid-scan then makes the
+    # published pair (map, sig) stale on the next lookup (harmless extra rescan) —
+    # computing it after could publish a sig describing a tree the map never saw
+    # and mask that change instead (stale map served as fresh).
+    sig = _skills_tree_signature()
     # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
     # partial results visible to everything else in the process: a second, overlapping scan deduped against
     # its own (empty) ``seen_names`` but collided against the first scan's already- published slugs, logging
@@ -431,6 +477,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     # Publish map + tags as ONE step: a reader landing between bare assignments
     # could accept the new map under a stale platform tag and serve another
     # platform's disabled-skill view.
+    global _skill_commands_sig
     with _publish_lock:
         # Bare assignments are not atomic together: a reader landing between them sees the NEW map still
         # carrying the OLD platform tag, and if that stale tag happens to match its own platform it accepts
@@ -441,6 +488,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         _skill_commands_platform = platform
         _skill_commands_home = home
         _skill_commands_project = project
+        _skill_commands_sig = sig
     return commands
 
 
@@ -450,15 +498,27 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     active profile's home (Desktop profile switch) or the session's project root (two sessions in two
     repos) changes, so each sees its own ``platform_disabled`` / ``external_dirs`` / project-skill view.
 
-    See #14536, #88023, #114359.
+    Also rescans when the skills tree changed on disk since the last scan — installing or
+    editing a skill from a subprocess (skills-hub CLI, dashboard spawn) cannot call an
+    in-process invalidation hook, so the freshness check fingerprints the tree's
+    mtimes instead (#125487: ``complete.slash`` served the pre-install skill set
+    until an unrelated project-scope change incidentally forced a rescan).
+
+    See #14536, #88023, #114359, #125487.
     """
     current = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
         commands = _skill_commands
         is_fresh = bool(commands) and (_skill_commands_platform, _skill_commands_home, _skill_commands_project) == current
+        published_sig = _skill_commands_sig
+    # Stat-walk OUTSIDE the lock: it is pure filesystem I/O (~10 ms), and the publish
+    # lock is otherwise held only for two dict/tuple reads. A concurrent publish
+    # either matches the map we already grabbed or makes the comparison stale —
+    # both safe (worst case one redundant rescan).
+    stale_sig = published_sig is not None and _skills_tree_signature() != published_sig
     # Scan outside the lock — file I/O and deferred imports; concurrent scans
     # are safe since each builds its own map.
-    return commands if is_fresh else scan_skill_commands()
+    return commands if (is_fresh and not stale_sig) else scan_skill_commands()
 
 
 def diff_command_snapshots(before: Dict[str, str], after: Dict[str, str]) -> Dict[str, Any]:

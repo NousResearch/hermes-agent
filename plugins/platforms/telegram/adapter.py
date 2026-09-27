@@ -5371,7 +5371,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a document/file natively as a Telegram file attachment."""
         return await self._send_local_file(
             "File", file_path, chat_id, reply_to, metadata, "document",
-            lambda f: {"document": f, "filename": file_name or os.path.basename(file_path), "caption": self._caption_1024(caption)},
+            lambda f: {"document": f, "filename": file_name or os.path.basename(file_path),
+                       "caption": self._caption_1024(caption), "disable_content_type_detection": True},
             lambda e: self._warn_then(
                 "document", e, super(
                     TelegramAdapter, self,

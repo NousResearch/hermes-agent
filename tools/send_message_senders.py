@@ -157,11 +157,17 @@ def _adapter_media_method(ext, voice, force_document=False):
 
 
 async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **kwargs):
-    """Bot API media method by extension: photo (unless forced document), video, voice note,
+    """Bot API media method by extension: photo/video (unless forced document), voice note,
     sendAudio (MP3/M4A only), else document."""
-    kind = next((k for exts, k in ((() if force_document else _IMAGE_EXTS, "photo"), (_VIDEO_EXTS, "video"),
+    kind = next((k for exts, k in ((() if force_document else _IMAGE_EXTS, "photo"),
+                                    (() if force_document else _VIDEO_EXTS, "video"),
                                     (_VOICE_EXTS if is_voice else (), "voice"), (_TELEGRAM_SEND_AUDIO_EXTS, "audio"))
                  if ext in exts), "document")
+    if kind == "document":
+        # Server-side content-type detection reclassifies an uploaded mp4 document as a video
+        # message (seen with the local Bot API server); disable it so [[as_document]] delivers
+        # a real file attachment (official sendDocument parameter, Bot API reference).
+        kwargs.setdefault("disable_content_type_detection", True)
     return await getattr(bot, f"send_{kind}")(chat_id=chat_id, **{kind: f}, **kwargs)
 
 
@@ -205,11 +211,11 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
             if duration is not None:
                 media_kwargs["duration"] = duration
     thumb_path = None
-    if ext in _VIDEO_EXTS:
+    if ext in _VIDEO_EXTS and not force_document:
         # Telegram processes only small video uploads itself; past that the message carries no
         # geometry and no thumbnail, so clients draw a square tile (see the adapter helpers).
-        # Keyed on the extension because ``_telegram_send_media`` routes every video extension to
-        # ``sendVideo`` regardless of ``force_document`` (which only forces images to documents).
+        # Video extensions only: ``[[as_document]]`` (``force_document``) routes to ``sendDocument``
+        # instead, where no ``sendVideo`` geometry/thumbnail applies.
         with contextlib.suppress(Exception):
             from plugins.platforms.telegram.adapter import _probe_video_geometry, _video_thumbnail_jpeg
             geometry = await asyncio.to_thread(_probe_video_geometry, media_path)

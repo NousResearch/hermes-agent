@@ -409,7 +409,7 @@ class GatewayNotificationsMixin:
                         await adapter.send_voice(
                             chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
                         )
-                    elif ext in _VIDEO_EXTS:
+                    elif ext in _VIDEO_EXTS and not force_document_attachments:
                         await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
                         await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)

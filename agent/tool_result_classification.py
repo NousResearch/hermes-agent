@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 
-FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
+FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch", "skill_manage"})
 
 
 # Tools whose interrupted/dangling execution is safe to discard because they

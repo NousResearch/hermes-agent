@@ -63,7 +63,11 @@ def install(root: Path) -> None:
     # installed checkout, not a treeless one.
     I.git("config", "uploadpack.allowFilter", "false", cwd=origin)
     sb = I.new_sandbox(p["sb"], origin)
-    cp = I.run_installer(sb)
+    # The installer's treeless clone still marks the checkout as a promisor, and on the CI
+    # runner's git every missing-object probe then starts a lazy fetch whose own probe starts
+    # another one (a chain of 78+ nested `fetch --filter=blob:none --stdin`). The clone is full, so
+    # there is nothing to lazily fetch; stop the chain for the installer run only.
+    cp = I.run_installer(I.Sandbox(root=sb.root, env={**sb.env, "GIT_NO_LAZY_FETCH": "1"}))
     if cp.returncode != 0:
         _fail("scripts/install.sh --non-interactive", cp)
     # The real way a CLI install gets the Desktop app on Linux: build + package into

@@ -77,6 +77,7 @@ jobs:
       - name: Run the update suite under xvfb
         working-directory: apps/desktop
         run: |
+          git --version
           # Resource trail in the log, so a runner that dies mid-run leaves its last state behind.
           ( while sleep 10; do
               echo "::group::resources $(date -u +%T)"

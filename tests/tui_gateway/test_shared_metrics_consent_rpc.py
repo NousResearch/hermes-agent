@@ -67,3 +67,16 @@ def test_status_is_undecided_until_a_key_is_written(tmp_path, monkeypatch):
     (worker / "config.yaml").write_text(
         yaml.safe_dump({"telemetry": {"shared_metrics": {"enabled": False}}}), encoding="utf-8")
     assert _call("shared_metrics.status", {"profile": "code"}) == {"enabled": False, "send": False, "decided": True}
+
+
+def test_only_the_first_run_answer_records_desktop_setup_completed(tmp_path, monkeypatch):
+    _launch, _worker = _bind_homes(monkeypatch, tmp_path)
+    import hermes_cli.observability.shared_metrics_events as events
+
+    calls: list[dict] = []
+    monkeypatch.setattr(events, "record_setup_completed", lambda **kw: calls.append(kw))
+
+    _call("shared_metrics.set", {"profile": "code", "enabled": True, "send": False, "first_run": True})
+    _call("shared_metrics.set", {"profile": "code", "enabled": True, "send": True})
+
+    assert calls == [{"surface": "desktop", "provider": "nous"}]

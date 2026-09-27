@@ -36,11 +36,10 @@ def _shared_metrics_consent(cfg) -> dict:
 
 
 def _shared_metrics_record_setup_completed(cfg) -> None:
-    """Desktop's setup ends at this first-run answer. A no-op unless collection is on."""
-    try:
-        from hermes_cli.observability.shared_metrics_events import record_setup_completed
-    except ImportError:  # the events module lands with the shared-metrics v3 PR
-        return
+    """Desktop has no setup-finish RPC; this first-run answer is the one backend call made once,
+    right after onboarding settles. A no-op (inside the events API) unless collection is on."""
+    from hermes_cli.observability.shared_metrics_events import record_setup_completed
+
     model = cfg.get("model") if isinstance(cfg, dict) else None
     provider = model.get("provider") if isinstance(model, dict) else None
     record_setup_completed(surface="desktop", provider=provider if isinstance(provider, str) and provider else None)

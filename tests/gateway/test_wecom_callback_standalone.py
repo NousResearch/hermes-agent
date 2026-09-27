@@ -11,7 +11,7 @@ from hermes_cli.plugins_manifest import parse_manifest_file
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['success', 'api_error', 'exception', 'refresh', 'scoped'])
+@pytest.mark.parametrize('mode', ['success', 'api_error', 'exception', 'refresh', 'scoped', 'long'])
 async def test_fresh_callback_delivery(monkeypatch, mode):
     from plugins.platforms.wecom import callback_adapter as cb
     from tools.send_message_tool import _send_to_platform
@@ -58,15 +58,22 @@ async def test_fresh_callback_delivery(monkeypatch, mode):
         }
         if mode == 'scoped':
             extra = {'apps': [dict(extra, name='other', corp_id='other', agent_id='999'), dict(extra, name='selected')]}
-        result = await _send_to_platform(Platform.WECOM_CALLBACK, PlatformConfig(enabled=True, extra=extra), target, 'hello')
+        message = 'x' * 3000 if mode == 'long' else 'hello'
+        result = await _send_to_platform(Platform.WECOM_CALLBACK, PlatformConfig(enabled=True, extra=extra), target, message)
         if mode in {'api_error', 'exception'}:
             assert result.get('error'), result
         else:
             assert result.get('success') is True, result
             assert result.get('message_id') == 'fixture-message'
-            assert len(calls) == (4 if mode == 'refresh' else 2)
+            assert len(calls) == (4 if mode in {'refresh', 'long'} else 2)
             import json
             assert json.loads(calls[-1].content)['agentid'] == 123
+            if mode == 'long':
+                import re
+                payloads = [json.loads(r.content)['text']['content'] for r in calls if r.method == 'POST']
+                delivered = ''.join(re.sub(r' \(\d+/\d+\)$', '', text) for text in payloads)
+                assert all(len(text) <= 2048 for text in payloads)
+                assert delivered == message
         assert clients and all(c.is_closed for c in clients)
     finally:
         manager.unload(manifest)

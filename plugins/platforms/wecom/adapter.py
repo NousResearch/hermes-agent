@@ -913,7 +913,7 @@ def register(ctx) -> None:
         check_fn=check_wecom_callback_requirements, ensure_deps_fn=ensure_wecom_callback_requirements,
         is_connected=_callback_is_connected, validate_config=_callback_is_connected,
         required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],
-        standalone_sender_fn=_callback_standalone_send,
+        standalone_sender_fn=_callback_standalone_send, max_message_length=2048,
         parse_target_ref_fn=lambda target: (target.strip(), None) if target.strip() else None,
         allowed_users_env="WECOM_CALLBACK_ALLOWED_USERS", allow_all_env="WECOM_CALLBACK_ALLOW_ALL_USERS", **common,
     )

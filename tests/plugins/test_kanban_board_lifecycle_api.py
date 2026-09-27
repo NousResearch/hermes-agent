@@ -85,3 +85,17 @@ def test_delete_default_board_is_refused(client):
     r = client.delete("/api/plugins/kanban/boards/default")
     assert r.status_code == 400
     assert "default" in r.json()["detail"]
+
+
+def test_decision_log_toggle_persists_and_other_edits_keep_it(client):
+    client.post("/api/plugins/kanban/boards", json={"slug": "widget", "name": "Widget"})
+
+    r = client.patch("/api/plugins/kanban/boards/widget", json={"decision_log": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["board"]["decision_log"] is True
+
+    # A rename leaves the flag alone; an explicit false turns it off.
+    client.patch("/api/plugins/kanban/boards/widget", json={"name": "Gadget"})
+    assert kb.read_board_metadata("widget")["decision_log"] is True
+    client.patch("/api/plugins/kanban/boards/widget", json={"decision_log": False})
+    assert kb.read_board_metadata("widget")["decision_log"] is False

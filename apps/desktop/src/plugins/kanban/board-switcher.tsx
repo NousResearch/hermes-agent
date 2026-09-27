@@ -25,6 +25,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Switch,
   Tip,
   useI18n,
   useMutation,
@@ -253,6 +254,7 @@ function RenameBoardDialog({ board, onClose }: { board: BoardMeta | null; onClos
 function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onClose: () => void }) {
   const k = useKanban()
   const [project, setProject] = useState('')
+  const [decisionLog, setDecisionLog] = useState(false)
   // Null while closed — see RenameBoardDialog on why this can't live inside
   // the mutation callback.
   const slug = board?.slug ?? ''
@@ -260,12 +262,13 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
   useEffect(() => {
     if (board) {
       setProject(board.project_id || '')
+      setDecisionLog(Boolean(board.decision_log))
     }
   }, [board])
 
   // The name lives in the rename dialog; '' clears the scope, which also
   // drops the mirrored default_workdir on the backend.
-  const save = useBoardWrite(() => updateBoard(slug, { project_id: project }), onClose)
+  const save = useBoardWrite(() => updateBoard(slug, { decision_log: decisionLog, project_id: project }), onClose)
 
   return (
     <BoardDialog
@@ -277,6 +280,13 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
       title={board ? k.boardSettingsFor(board.name || board.slug) : k.settingsDots}
     >
       <ProjectPicker onChange={setProject} value={project} />
+      <label className="flex flex-col gap-1">
+        <span className="flex cursor-pointer items-center gap-2 text-[0.75rem] text-(--ui-text-secondary)">
+          <Switch aria-label={k.decisionLog} checked={decisionLog} onCheckedChange={setDecisionLog} size="xs" />
+          {k.decisionLog}
+        </span>
+        <span className="text-[0.6875rem] leading-relaxed text-(--ui-text-quaternary)">{k.decisionLogHint}</span>
+      </label>
     </BoardDialog>
   )
 }

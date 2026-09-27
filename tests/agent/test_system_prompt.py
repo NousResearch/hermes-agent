@@ -82,6 +82,33 @@ def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id
     assert (agent._kanban_worker_guidance == KANBAN_GUIDANCE) is expected
 
 
+@pytest.mark.parametrize("decision_log", [False, True])
+def test_kanban_worker_guidance_follows_board_decision_log(tmp_path, monkeypatch, decision_log):
+    """The decision-log addendum reaches the worker prompt only on a board that enables it."""
+    from agent.agent_init import _load_tools
+    from agent.prompt_builder import KANBAN_DECISION_LOG_GUIDANCE, KANBAN_GUIDANCE
+    from hermes_cli import kanban_db as kb
+    import model_tools
+
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+    kb.create_board("widget")
+    kb.write_board_metadata("widget", decision_log=decision_log)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "widget")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **_kwargs: [{"function": {"name": "kanban_show"}}],
+    )
+    agent = SimpleNamespace(quiet_mode=True)
+
+    _load_tools(agent, enabled_toolsets=["kanban"], disabled_toolsets=None)
+
+    expected = KANBAN_GUIDANCE + KANBAN_DECISION_LOG_GUIDANCE if decision_log else KANBAN_GUIDANCE
+    assert agent._kanban_worker_guidance == expected
+
+
 @pytest.mark.parametrize("task_id, owner, expected", [
     (None, True, False),        # interactive session with the kanban toolset enabled
     ("t_worker", True, True),   # the dispatcher-owned worker

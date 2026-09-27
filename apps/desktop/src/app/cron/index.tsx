@@ -68,7 +68,6 @@ import {
   type PanelMenuItem,
   PanelMeta,
   PanelPill,
-  type PanelPillTone,
   PanelSectionLabel
 } from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -111,16 +110,6 @@ const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
   { expr: '*/15 * * * *', value: 'every-15-minutes' },
   { value: 'custom' }
 ]
-
-const STATE_TONE: Record<string, PanelPillTone> = {
-  enabled: 'good',
-  scheduled: 'good',
-  running: 'good',
-  paused: 'warn',
-  disabled: 'muted',
-  error: 'bad',
-  completed: 'muted'
-}
 
 const truncate = (value: string, max = 80): string => (value.length > max ? `${value.slice(0, max)}…` : value)
 

@@ -238,7 +238,7 @@ def build_proposals(
         # wildcards, so when redaction touches the tokens the glob embeds, the
         # command is proposed under its class key instead.
         raw = normalize_command(command)
-        normalized = redact_sensitive_text(raw, force=True)
+        normalized = redact_sensitive_text(raw, force=True, redact_url_credentials=True)
         glob = derive_glob(raw)
         if glob is not None and derive_glob(normalized) != glob:
             glob = None

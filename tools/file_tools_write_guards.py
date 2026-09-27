@@ -425,12 +425,55 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     return get_container_mirror_warning(resolved, mirror_prefix=_get_container_mirror_prefix_for_task(task_id))
 
 
+def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
+    """Is a REGULAR file at *filepath* present where the write will execute
+    (the task's backend, not the controller's disk — #122662)?
+
+    Returns ``"exists"``, ``"absent"`` or ``"unavailable"``. Host-backed envs
+    keep ``Path.is_file`` semantics; anything not proven absent is
+    ``"unavailable"`` and callers must fail closed.
+    """
+    from tools.file_tools import _file_ops_uses_host_paths, _get_file_ops
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except Exception:
+        resolved = None
+    try:
+        file_ops = _get_file_ops(task_id)
+    except Exception:
+        return "unavailable"
+    if _file_ops_uses_host_paths(file_ops):
+        # Host writes land on the resolved path, else today's HOST
+        # ``_expand_tilde`` fallback — probe exactly that string.
+        probe = _expand_tilde(filepath) if resolved is None else resolved
+        try:
+            return "exists" if Path(probe).is_file() else "absent"
+        except OSError:
+            return "absent"
+    try:
+        # Backend writes land on ``_expand_path(_resolved or path)``: the
+        # backend's own home for a tilde fallback, never the host's.
+        _size, status = file_ops._probe_regular_file(file_ops._expand_path(resolved or filepath))
+    except Exception:
+        return "unavailable"
+    if status in ("ok", "bad_size"):
+        # bad_size: ``[ -f ]`` succeeded, only ``wc`` was unparseable.
+        return "exists"
+    if status in ("missing", "not_regular"):
+        # not_regular: no REGULAR file at the path (dir/FIFO/dangling link) —
+        # the same answer Path.is_file gives on the host.
+        return "absent"
+    return "unavailable"
+
+
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
     """Reject text-tool writes that would corrupt a binary document (read_file showed
     EXTRACTED text, so the model may write it back). Opaque document formats and
     SQLite sidecars (-wal/-shm/-journal) are always rejected; .pdf and every other
     BINARY_EXTENSIONS suffix only when OVERWRITING an existing file (raw PDF syntax
-    is text-authorable and text fixtures named ``*.db`` exist).
+    is text-authorable and text fixtures named ``*.db`` exist). "Existing" is asked
+    of the filesystem the write will hit — the task's backend, via
+    ``_target_regular_file_state`` — never the controller's disk alone (#122662).
 
     ``read_file`` auto-extracts .docx/.xlsx/.pptx (and PDF, via anydoc) to readable text, so the model
     plausibly believes it holds the file's contents and tries to write the edited text back with
@@ -462,28 +505,31 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     # syntax is text-authorable and text fixtures named ``*.db`` exist.
     pdf = is_pdf_path(filepath)
     if pdf or has_binary_extension(filepath):
-        try:
-            resolved = Path(_resolve_path_for_task(filepath, task_id))
-        except Exception:
-            resolved = Path(_expand_tilde(filepath))
-        try:
-            if resolved.is_file():
-                if pdf:
-                    return (
-                        f"Refusing to overwrite existing PDF '{filepath}' with plain text. "
-                        "read_file showed you EXTRACTED text, not the real bytes — writing "
-                        "text back would destroy the document. Use the pdf skill or a PDF "
-                        "library via the terminal to modify it. (Creating a NEW .pdf file "
-                        "is allowed.)")
+        state = _target_regular_file_state(filepath, task_id)
+        if state == "exists":
+            if pdf:
                 return (
-                    f"Refusing to overwrite existing binary file '{filepath}' ({ext}) "
-                    "with plain text — read_file showed you extracted or mojibake "
-                    "text, not the real bytes, and writing text back would destroy "
-                    "the file. Use a binary-aware tool via the terminal to modify it "
-                    "(for SQLite databases, the sqlite3 CLI or a SQLite library). "
-                    "(Creating a NEW file with this extension is allowed.)")
-        except OSError:
-            pass
+                    f"Refusing to overwrite existing PDF '{filepath}' with plain text. "
+                    "read_file showed you EXTRACTED text, not the real bytes — writing "
+                    "text back would destroy the document. Use the pdf skill or a PDF "
+                    "library via the terminal to modify it. (Creating a NEW .pdf file "
+                    "is allowed.)")
+            return (
+                f"Refusing to overwrite existing binary file '{filepath}' ({ext}) "
+                "with plain text — read_file showed you extracted or mojibake "
+                "text, not the real bytes, and writing text back would destroy "
+                "the file. Use a binary-aware tool via the terminal to modify it "
+                "(for SQLite databases, the sqlite3 CLI or a SQLite library). "
+                "(Creating a NEW file with this extension is allowed.)")
+        if state == "unavailable":
+            # Fail closed: absence not proven on the filesystem the write would
+            # hit, so proceeding could destroy a binary the guard never saw.
+            return (
+                f"Refusing to write to '{filepath}': could not establish whether "
+                "the target file already exists where this write would execute "
+                "(the terminal environment may be starting, unreachable, or was "
+                "removed). The file was NOT modified — retry once the environment "
+                "is reachable.")
     return None
 
 

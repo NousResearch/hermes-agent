@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
 
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from './model-options'
+import { catalogProviderMatches, moaPickRemoved, modelOptionsQueryKey, requestModelOptions } from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 
@@ -220,5 +220,40 @@ describe('catalogProviderMatches', () => {
     expect(catalogProviderMatches(cloudflare, 'Cloudflare')).toBe(true)
     expect(catalogProviderMatches(cloudflare, 'custom:cloudflare')).toBe(true)
     expect(catalogProviderMatches(cloudflare, 'openrouter')).toBe(false)
+  })
+})
+
+describe('moaPickRemoved', () => {
+  const providers = [
+    { models: ['deepseek-v4-pro'], name: 'DeepSeek', slug: 'deepseek' },
+    { models: ['default', 'balanced'], name: 'Mixture of Agents', slug: 'moa' }
+  ]
+
+  it('flags a manual moa pick when the populated catalog has no moa row (#90244)', () => {
+    const noMoa = [providers[0]]
+    expect(moaPickRemoved({ providers: noMoa }, 'moa', 'default')).toBe(true)
+  })
+
+  it('flags a manual moa pick whose preset the moa row no longer lists', () => {
+    expect(moaPickRemoved({ providers }, 'moa', 'retired-preset')).toBe(true)
+  })
+
+  it('keeps a manual moa pick while the catalog still offers the preset', () => {
+    expect(moaPickRemoved({ providers }, 'moa', 'default')).toBe(false)
+    expect(moaPickRemoved({ providers }, 'MOA', 'balanced')).toBe(false)
+  })
+
+  it('never clobbers while the catalog is unavailable or loading', () => {
+    expect(moaPickRemoved(undefined, 'moa', 'default')).toBe(false)
+    expect(moaPickRemoved({ providers: [] }, 'moa', 'default')).toBe(false)
+    expect(moaPickRemoved({ providers: undefined }, 'moa', 'default')).toBe(false)
+  })
+
+  it('leaves every non-moa provider to the sticky-pick design', () => {
+    // A custom slug the catalog lacks is the user's choice, not a removal
+    // (d595e636c83: picks are never retargeted from catalog membership).
+    expect(moaPickRemoved({ providers: [providers[0]] }, 'deepseek', 'deepseek-v4.1-flash')).toBe(false)
+    expect(moaPickRemoved({ providers: [providers[0]] }, 'custom', 'my-own-slug')).toBe(false)
+    expect(moaPickRemoved({ providers: [providers[0]] }, '', 'default')).toBe(false)
   })
 })

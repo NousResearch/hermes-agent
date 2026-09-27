@@ -1532,7 +1532,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.complete': {
-        const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
+        const { finalMessages, finalText, interruptedReply, wasInterrupted } = turnController.recordMessageComplete(
+          ev.payload ?? {}
+        )
+
+        // Ctrl+C sealed the reply before the agent stopped streaming: take the
+        // persisted partial so the screen shows what state.db (and the next
+        // request) holds.
+        if (interruptedReply?.from === null) {
+          appendMessage({ role: 'assistant', text: interruptedReply.to })
+        } else if (interruptedReply) {
+          const { from, to } = interruptedReply
+
+          setHistoryItems(prev => {
+            const at = prev.findLastIndex(m => m.role === 'assistant' && m.text === from)
+
+            return at < 0 ? prev : prev.map((m, i) => (i === at ? { ...m, text: to } : m))
+          })
+        }
 
         if (!wasInterrupted) {
           const payload = ev.payload ?? {}

@@ -191,7 +191,9 @@ def _cfg_get_provider(params):
 
 def _cfg_get_project(params):
     raw = str(params.get("cwd", "") or (_load_cfg().get("terminal") or {}).get("cwd", "") or "").strip()
-    cwd = _completion_cwd({"cwd": raw} if raw else {})
+    # A picked path is explicit (the profile's terminal.cwd must not replace it); the profile picks the backend,
+    # so a remote project dir is kept instead of being dropped to the launch cwd by the host isdir check.
+    cwd = _completion_cwd({"cwd": raw, "cwd_explicit": bool(params.get("cwd")), "profile": params.get("profile")})
     return {"cwd": cwd, "branch": git_probe.branch(cwd)}
 
 

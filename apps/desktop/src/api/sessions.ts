@@ -174,6 +174,12 @@ export interface SidebarSessionSlice {
   /** Per-profile tokens and spend over every session, not just this window.
    *  Absent from the legacy per-slice endpoint, which has no aggregate. */
   profiles_usage?: Record<string, { cost_usd: number; tokens: number }>
+  /** This slice is a failed load, not a successful empty session list. */
+  failed?: boolean
+  /** Ask the sidebar to offer Retry instead of rendering "No sessions yet". */
+  retry?: boolean
+  /** Profiles whose scan failed while a sibling profile still returned rows. */
+  profiles_failed?: Record<string, { failed?: boolean; retry?: boolean; error?: string }>
   /** Profiles whose scan for THIS slice failed. Batched `/sidebar` stamps the
    *  same profile errors on every slice (one DB open). Legacy per-slice calls
    *  stamp only the slice that actually failed, so a cron I/O error cannot
@@ -204,6 +210,8 @@ export interface SidebarSessionsResponse {
   cron: SidebarSessionSlice
   messaging: SidebarSessionSlice
   errors?: Array<{ profile: string; error: string }>
+  /** Profiles that failed while another profile's rows are still in the slices. */
+  profiles_failed?: Record<string, { failed?: boolean; retry?: boolean; error?: string }>
   /** `{profile: 'corrupt'}` for each profile whose state.db the backend has found
    *  structurally damaged. Absent from older backends. */
   storage?: Record<string, 'corrupt'>
@@ -355,6 +363,7 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
     errors: result.errors,
+    profiles_failed: result.profiles_failed,
     storage: result.storage
   }
 }

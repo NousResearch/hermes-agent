@@ -220,7 +220,9 @@ pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Opti
             ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
         ]
     } else {
-        &[("linux-unpacked", "hermes")]
+        // electron-builder names the x64 dir `linux-unpacked` and every other
+        // arch `linux-<arch>-unpacked` (#94703).
+        &[("linux-unpacked", "hermes"), ("linux-arm64-unpacked", "hermes")]
     };
     for (subdir, exe) in candidates {
         let p = release_dir.join(subdir).join(exe);
@@ -1133,6 +1135,21 @@ mod tests {
         {
             assert_eq!(resolved, expected);
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // electron-builder writes ARM64 Linux builds to `linux-arm64-unpacked`; only
+    // x64 uses the bare `linux-unpacked` name (#94703).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_hermes_desktop_exe_finds_arm64_linux_build() {
+        let root = unique_tmp_dir("app-linux-arm64");
+        let dir = root.join("apps/desktop/release/linux-arm64-unpacked");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("hermes");
+        std::fs::write(&exe, b"stub").unwrap();
+
+        assert_eq!(resolve_hermes_desktop_exe(&root), Some(exe));
         let _ = std::fs::remove_dir_all(&root);
     }
 

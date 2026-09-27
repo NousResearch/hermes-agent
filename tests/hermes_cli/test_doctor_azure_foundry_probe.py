@@ -17,12 +17,13 @@ _AZURE_BASE = "https://res.services.ai.azure.com/anthropic"
 def _run_probe(monkeypatch, status: int, base_url_in_env: bool):
     calls: list = []
 
-    def _post(url, headers=None, params=None, json=None, timeout=None):
+    def _post(url, headers=None, params=None, json=None, timeout=None, **kwargs):
+        assert kwargs["trust_env"] is False
         calls.append(("POST", url, headers, params, json))
         return httpx.Response(status, json={"type": "error", "error": {"type": "invalid_request_error", "message": "x"}}
                               if status == 400 else {"id": "msg_1"})
 
-    def _get(url, headers=None, timeout=None):
+    def _get(url, headers=None, timeout=None, **kwargs):
         calls.append(("GET", url, headers, None, None))
         return httpx.Response(404)
 

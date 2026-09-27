@@ -11,7 +11,8 @@ Capabilities:
 - Make outbound AI voice calls via Bland.ai or Vapi
 
 This file intentionally uses Python stdlib HTTP clients so the skill can run in a
-minimal environment with no extra pip installs.
+minimal environment with no extra pip installs. Reading Hermes config.yaml is
+optional and requires ruamel.yaml (standalone install: ruamel.yaml==0.18.17).
 """
 
 from __future__ import annotations
@@ -89,12 +90,14 @@ def _load_root_config() -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        import yaml  # optional dependency; Hermes already ships PyYAML
+        from ruamel.yaml import YAML  # optional dependency; Hermes ships ruamel.yaml
     except Exception:
         return {}
     try:
+        reader = YAML(typ="safe")
+        reader.version = (1, 1)
         with path.open("r", encoding="utf-8") as handle:
-            data = yaml.safe_load(handle) or {}
+            data = reader.load(handle) or {}
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}

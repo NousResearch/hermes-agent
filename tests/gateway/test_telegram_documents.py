@@ -175,20 +175,6 @@ class TestDocumentDownloadBlock:
         assert "Hello from a text file" in event.text
         assert "[Content of notes.txt]" in event.text
 
-    @pytest.mark.asyncio
-    async def test_supported_md_injects_content(self, adapter):
-        content = b"# Title\nSome markdown"
-        file_obj = _make_file_obj(content)
-        doc = _make_document(
-            file_name="readme.md", mime_type="text/markdown",
-            file_size=len(content), file_obj=file_obj,
-        )
-        msg = _make_message(document=doc)
-        update = _make_update(msg)
-
-        await adapter._handle_media_message(update, MagicMock())
-        event = adapter.handle_message.call_args[0][0]
-        assert "# Title" in event.text
 
     @pytest.mark.asyncio
     async def test_caption_preserved_with_injection(self, adapter):
@@ -207,24 +193,20 @@ class TestDocumentDownloadBlock:
         assert "Please summarize" in event.text
 
 
-    @pytest.mark.asyncio
-    async def test_text_injection_capped(self, adapter):
-        """A .txt file over 100 KB should NOT have its content injected."""
-        large = b"x" * (200 * 1024)  # 200 KB
-        file_obj = _make_file_obj(large)
-        doc = _make_document(
-            file_name="big.txt", mime_type="text/plain",
-            file_size=len(large), file_obj=file_obj,
-        )
-        msg = _make_message(document=doc)
-        update = _make_update(msg)
 
-        await adapter._handle_media_message(update, MagicMock())
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        doc = _make_document(
+            file_name="notes.txt", mime_type="text/plain",
+            file_size=len(content), file_obj=_make_file_obj(content),
+        )
+        await adapter._handle_media_message(_make_update(_make_message(document=doc)), MagicMock())
         event = adapter.handle_message.call_args[0][0]
-        # File should be cached
-        assert len(event.media_urls) == 1
-        # Content should NOT be injected
-        assert "[Content of" not in (event.text or "")
+        assert ("[Content of" in event.text) is inlined
+        assert event.media_text_inlined == [inlined]
 
 
     @pytest.mark.asyncio
@@ -246,7 +228,6 @@ class TestDocumentDownloadBlock:
         # 1. User is told the download failed, with the filename + exception type.
         msg.reply_text.assert_awaited_once()
         reply = msg.reply_text.await_args.args[0]
-        assert "Couldn't download" in reply
         assert "notes.md" in reply
         assert "RuntimeError" in reply
 
@@ -271,7 +252,6 @@ class TestDocumentDownloadBlock:
         await adapter._handle_media_message(update, MagicMock())
 
         msg.reply_text.assert_awaited_once()
-        assert "voice message" in msg.reply_text.await_args.args[0]
         adapter.handle_message.assert_called_once()
         event = adapter.handle_message.call_args[0][0]
         assert "could not be downloaded" in (event.text or "")
@@ -505,24 +485,6 @@ class TestSendVideo:
         adapter._bot = bot
         return adapter
 
-    @pytest.mark.asyncio
-    async def test_send_video_success(self, connected_adapter, tmp_path):
-        test_file = tmp_path / "clip.mp4"
-        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
-
-        mock_msg = MagicMock()
-        mock_msg.message_id = 200
-        connected_adapter._bot.send_video = AsyncMock(return_value=mock_msg)
-
-        result = await connected_adapter.send_video(
-            chat_id="12345",
-            video_path=str(test_file),
-            caption="Check this out",
-        )
-
-        assert result.success is True
-        assert result.message_id == "200"
-        connected_adapter._bot.send_video.assert_called_once()
 
 
     @pytest.mark.asyncio

@@ -12,7 +12,9 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.run import GatewayRunner
+from gateway.status import flush_runtime_status
 
 
 class _FakeAdapter:
@@ -165,7 +167,7 @@ class TestProfileRuntimeStatus:
         adapter._runtime_status_platform_key = "reviewer:discord"
         writes = []
         monkeypatch.setattr(
-            "gateway.status.write_runtime_status",
+            "gateway.status.publish_runtime_status",
             lambda **kwargs: writes.append(kwargs),
         )
 
@@ -185,6 +187,7 @@ class _SecondaryRecoveryAdapter:
         self.fatal_error_message = "Gateway transport stale"
         self.connected = False
         self.disconnected = False
+        self._dedup = MessageDeduplicator()
 
     async def disconnect(self):
         self.disconnected = True
@@ -301,7 +304,7 @@ class TestSecondaryProfileFatalRecovery:
         )
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
         if entry == "startup":
@@ -335,7 +338,7 @@ class TestSecondaryProfileFatalRecovery:
         synced = []
         runner._sync_voice_mode_state_to_adapter = synced.append
         monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
 
@@ -394,6 +397,23 @@ class TestSecondaryProfileFatalRecovery:
         assert redelivery_homes
         assert all(path != Path("/profiles/reviewer") for path in redelivery_homes)
 
+
+    @pytest.mark.asyncio
+    async def test_secondary_reconnect_keeps_inbound_dedup(self, monkeypatch):
+        """A secondary profile's rebuilt adapter still drops an inbound ID the stale one admitted."""
+        runner = _secondary_recovery_runner()
+        stale, replacement = _SecondaryRecoveryAdapter(), _SecondaryRecoveryAdapter()
+        runner._profile_adapters["reviewer"] = {Platform.DISCORD: stale}
+        _install_secondary_reconnect_context(monkeypatch, runner, replacement)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", AsyncMock(return_value=True))
+        assert stale._dedup.is_duplicate("m1") is False
+
+        await runner._handle_profile_adapter_fatal_error("reviewer", Platform.DISCORD, stale)
+        await asyncio.gather(*runner._background_tasks)
+
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+        assert replacement._dedup.is_duplicate("m1") is True
+        assert replacement._dedup.is_duplicate("m2") is False
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("connect_result", [True, False], ids=["success", "failure"])
@@ -833,7 +853,7 @@ class TestSecondaryProfileConfigHandling:
             runner._profile_adapters[profile_name] = {}
             return 2
 
-        def fake_profiles_to_serve(multiplex):
+        def fake_profiles_to_serve(multiplex, **kw):
             assert multiplex is True
             return [
                 ("default", Path("/tmp/default")),
@@ -852,7 +872,7 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
         status = {}
         monkeypatch.setattr(
-            "gateway.status.write_runtime_status",
+            "gateway.status.publish_runtime_status",
             lambda **kwargs: status.update(kwargs),
         )
 
@@ -864,6 +884,24 @@ class TestSecondaryProfileConfigHandling:
         assert "good" in runner._profile_adapters
         assert "bad" not in runner._profile_adapters
         assert "Failed to start adapters for profile 'bad'" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_single_profile_start_clears_inherited_served_profiles(self, monkeypatch, tmp_path):
+        """Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
+        ``served_profiles`` survived into a later single-profile run and every `hermes -p X` surface
+        kept treating X as served (exit 78 on start, "running via multiplexer" on status)."""
+        import json
+        from gateway.status import read_runtime_status
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(json.dumps(
+            {"pid": 1, "gateway_state": "stopped", "served_profiles": ["default", "coder"]}))
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=False)
+
+        assert await runner._start_secondary_profile_adapters() == 0
+        flush_runtime_status()
+        assert read_runtime_status(tmp_path / "gateway_state.json")["served_profiles"] == []
 
     @pytest.mark.asyncio
     async def test_multiplexer_propagates_security_config_error(self, monkeypatch):
@@ -883,7 +921,7 @@ class TestSecondaryProfileConfigHandling:
 
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [
+            lambda multiplex, **kw: [
                 ("default", Path("/tmp/default")),
                 ("unsafe", Path("/tmp/unsafe")),
             ],

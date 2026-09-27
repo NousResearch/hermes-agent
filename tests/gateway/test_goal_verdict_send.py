@@ -84,7 +84,7 @@ def _make_runner_with_adapter(session_id: str = None):
     runner._queued_events = {}
 
     src = _make_source()
-    # Default to a unique session_id so xdist parallel runs on the same worker
+    # Default to a unique session_id so parallel runs
     # don't see each other's GoalManager state (DEFAULT_DB_PATH gets frozen at
     # module-import time, defeating per-test HERMES_HOME monkeypatches).
     session_entry = SessionEntry(
@@ -197,7 +197,7 @@ def _blocked_goal(session_id: str):
 async def test_user_turn_revives_blocked_goal_before_gateway_run(hermes_home, monkeypatch, tmp_path, outcome):
     """Admission, not successful delivery, owns recovery; a new in-run pause wins."""
     from hermes_cli.goals import GoalManager
-    from tests.gateway.test_42039_duplicate_user_message import _bootstrap, _event
+    from tests.gateway.test_duplicate_user_message import _bootstrap, _event
 
     runner = _bootstrap(monkeypatch, tmp_path)
     event = _event()
@@ -266,7 +266,7 @@ async def test_gateway_non_user_or_rejected_input_cannot_revive(hermes_home, mon
     from unittest.mock import AsyncMock
     from hermes_cli.goals import GoalManager
     from gateway.turn_lease import TurnLeaseTimeoutError
-    from tests.gateway.test_42039_duplicate_user_message import _bootstrap, _event
+    from tests.gateway.test_duplicate_user_message import _bootstrap, _event
 
     runner = _bootstrap(monkeypatch, tmp_path)
     event = _event()

@@ -8,12 +8,13 @@ import json
 import os
 import re
 import sys
-import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from stat import S_ISREG
 from typing import Any, Dict, List, Optional, Tuple
+
+from hermes_state_ids import new_session_id
 
 # User-message texts that are really injected context wrappers, not typed input.
 _WRAPPER_TAG_RE = re.compile(
@@ -46,14 +47,20 @@ class ForeignSession:
 
 def _read_json_lines(path: Path):
     """Yield parsed JSON objects, silently skipping unparseable lines."""
-    with contextlib.suppress(OSError), open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(obj, dict):
-                yield obj
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+    except OSError:
+        return
 
 
 def _block_text(block: Any) -> str:
@@ -241,10 +248,10 @@ def import_foreign_session(source: str, path, db=None) -> str:
     tool = _SOURCE_DB_NAMES[source]
     owns_db = db is None
     if owns_db:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        from hermes_state_registry import acquire
+        db = acquire()  # the CLI resume that follows acquires this same handle
     try:
-        session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        session_id = new_session_id()
         origin = {"imported_from": {"tool": tool, "path": str(path), "foreign_session_id": parsed.get("session_id")}}
         db.create_session(session_id, source=tool, cwd=parsed.get("cwd"), origin_json=json.dumps(origin))
         for turn in turns:

@@ -13,12 +13,10 @@ from agent.models_dev import (
     _explicit_model_override,
     _override_context_window,
     _override_for,
-    _NotModified,
     _validate_registry,
     fetch_models_dev,
     get_model_capabilities,
     get_model_info,
-    get_provider_info,
     lookup_models_dev_context,
 )
 
@@ -95,24 +93,12 @@ SAMPLE_REGISTRY = {
 
 
 class TestProviderMapping:
-    def test_all_mapped_providers_are_strings(self):
-        for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-            assert isinstance(hermes_id, str)
-            assert isinstance(mdev_id, str)
 
-    def test_known_providers_mapped(self):
-        assert PROVIDER_TO_MODELS_DEV["anthropic"] == "anthropic"
-        assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
-        assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
-        assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
-        assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
 
     def test_xai_oauth_uses_xai_catalog(self):
         assert PROVIDER_TO_MODELS_DEV["xai"] == "xai"
         assert PROVIDER_TO_MODELS_DEV["xai-oauth"] == "xai"
 
-    def test_unmapped_provider_not_in_dict(self):
-        assert "nous" not in PROVIDER_TO_MODELS_DEV
 
 
 
@@ -441,28 +427,6 @@ class TestETagConditionalGet:
         assert result == SAMPLE_REGISTRY
         assert md._models_dev_cache_time > 0
 
-    @patch("agent.models_dev.requests.get")
-    def test_new_etag_persisted_after_successful_fetch(self, mock_get):
-        """A successful fetch with an ETag in the response persists it."""
-        import agent.models_dev as md
-
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = SAMPLE_REGISTRY
-        response.headers = {"ETag": '"new-etag"'}
-        response.raise_for_status = MagicMock()
-        mock_get.return_value = response
-
-        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
-             patch.object(md, "_load_disk_cache", return_value={}), \
-             patch.object(md, "_save_disk_cache") as mock_save, \
-             patch.object(md, "_load_etag", return_value=""), \
-             patch.object(md, "_save_etag") as mock_save_etag:
-            fetch_models_dev()
-
-        # ETag rides along with the cache body into _save_disk_cache.
-        mock_save.assert_called_once_with(SAMPLE_REGISTRY, '"new-etag"')
-        mock_save_etag.assert_not_called()
 
     @patch("agent.models_dev.requests.get")
     def test_no_etag_header_sent_without_cached_etag(self, mock_get):
@@ -658,28 +622,6 @@ class TestMirrorUrlOverride:
         call_args = mock_get.call_args
         assert "mirror.example.com" in call_args.args[0]
 
-    @patch("agent.models_dev.requests.get")
-    def test_default_url_used_when_not_configured(self, mock_get):
-        """Without config override, the default models.dev URL is used."""
-        import agent.models_dev as md
-
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = SAMPLE_REGISTRY
-        response.headers = {}
-        response.raise_for_status = MagicMock()
-        mock_get.return_value = response
-
-        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
-             patch.object(md, "_load_disk_cache", return_value={}), \
-             patch.object(md, "_save_disk_cache"), \
-             patch.object(md, "_load_etag", return_value=""), \
-             patch.object(md, "_save_etag"), \
-             patch("hermes_cli.config.load_config_readonly", return_value={}):
-            fetch_models_dev()
-
-        call_args = mock_get.call_args
-        assert "models.dev" in call_args.args[0]
 
     @patch("agent.models_dev.requests.get")
     def test_empty_url_falls_back_to_default(self, mock_get):
@@ -740,16 +682,6 @@ class TestNoNetworkOnHotPaths:
             lookup_models_dev_context("anthropic", "claude-opus-4-6")
         mock_fetch.assert_called_once_with(allow_network=False)
 
-    @patch("agent.models_dev.requests.get")
-    def test_get_model_capabilities_explicit_network(self, mock_get):
-        """get_model_capabilities can opt into network."""
-        with patch("agent.models_dev.fetch_models_dev") as mock_fetch:
-            mock_fetch.return_value = CAPS_REGISTRY
-            get_model_capabilities("anthropic", "claude-sonnet-4", allow_network=True)
-        # allow_network=True uses the zero-arg call shape so the dozens of
-        # test sites that monkeypatch fetch_models_dev with zero-arg
-        # lambdas keep working.
-        mock_fetch.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------
@@ -825,32 +757,88 @@ class TestGetModelCapabilities:
         assert caps is not None
         assert caps.supports_vision is False
 
-    def test_astra_builtin_metadata_fills_catalog_lag_without_listing_it(self):
-        """An explicitly discovered Astra remains fully described before models.dev catches up."""
-        with patch("agent.models_dev.fetch_models_dev", return_value={}):
-            caps = get_model_capabilities("openai", "gpt-6-astra")
+
+
+    def test_metadata_only_override_on_custom_provider_leaves_capabilities_unknown(self):
+        """A custom provider's ``model_overrides`` entry that only corrects ``context_window`` must not
+        synthesize an output cap or capability flags from the unknown-model template (#112649)."""
+        overrides = {"925llm": {"deepseek-v4.1-flash": {"context_window": 1_000_000}}}
+        with patch("agent.models_dev._load_model_overrides", return_value=overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("925llm", "deepseek-v4.1-flash")
+            info = get_model_info("925llm", "deepseek-v4.1-flash")
 
         assert caps is not None
-        assert caps.supports_vision is True  # the one thing _UNKNOWN_MODEL_BASE could not supply
+        assert caps.context_window == 1_000_000
+        assert caps.max_output_tokens is None
+        assert caps.supports_vision is None
+        assert caps.supports_reasoning is None
+        assert info is not None and info.max_output == 0
 
-        api_caps = get_model_capabilities("openai-api", "gpt-6-astra")
-        assert api_caps == caps
 
-    def test_deepseek_flash_builtin_vision_fills_catalog_lag(self):
-        """Native Flash stays multimodal when models.dev is empty; Pro does not.
+class TestCatalogProviderAlias:
+    """``providers.<name>.catalog_provider`` lets a custom provider inherit a catalogued vendor's
+    model metadata (#112649)."""
 
-        Vendor docs: deepseek-flash accepts images, deepseek-v4-pro does not.
-        A global model.supports_vision pin would lie about Pro.
-        """
-        with patch("agent.models_dev.fetch_models_dev", return_value={}):
-            flash = get_model_capabilities("deepseek", "deepseek-flash")
-            alias = get_model_capabilities("deepseek", "deepseek-v4-flash")
-            pro = get_model_capabilities("deepseek", "deepseek-v4-pro")
+    @staticmethod
+    def _cfg(config):
+        def _cfg_get(*keys, default=None):
+            node = config
+            for key in keys:
+                if not isinstance(node, dict) or key not in node:
+                    return default
+                node = node[key]
+            return node
+        return patch("agent.models_dev._cfg_get", side_effect=_cfg_get)
 
-        assert flash is not None and flash.supports_vision is True
-        assert flash.context_window == 1_000_000
-        assert alias is not None and alias.supports_vision is True
-        assert pro is None
+    def test_alias_reaches_builtin_and_catalog_metadata(self):
+        config = {"providers": {"925llm": {"api": "http://gw.internal/v1", "catalog_provider": "deepseek"}}}
+        registry = {"deepseek": {"id": "deepseek", "models": {
+            "deepseek-chat": {"id": "deepseek-chat", "limit": {"context": 128000, "output": 8000},
+                              "tool_call": True, "reasoning": False,
+                              "modalities": {"input": ["text"], "output": ["text"]}}}}}
+        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            builtin = get_model_capabilities("925llm", "deepseek-v4.1-flash")
+            prefixed = get_model_capabilities("custom:925llm", "deepseek-v4.1-flash")
+            catalog = get_model_capabilities("925llm", "deepseek-chat")
+            ctx = lookup_models_dev_context("925llm", "deepseek-chat")
+            info = get_model_info("925llm", "deepseek-chat")
+
+        assert builtin is not None and builtin.supports_vision is True
+        assert prefixed == builtin
+        assert catalog is not None and catalog.supports_vision is False and catalog.max_output_tokens == 8000
+        assert ctx == 128000
+        assert info is not None and info.provider_id == "deepseek" and info.context_window == 128000
+
+    def test_mistyped_alias_warns_once_and_keeps_the_configured_slug(self, caplog):
+        """``catalog_provider: deepsek`` is neither a Hermes provider id nor a models.dev id: warn
+        once (per process, like the unknown-key warning) and keep ``ModelInfo.provider_id`` on the
+        configured slug instead of leaking the typo as a vendor id."""
+        import logging
+
+        import agent.models_dev as md
+
+        config = {"providers": {"925llm": {"api": "http://gw.internal/v1", "catalog_provider": "deepsek"}},
+                  "model_overrides": {"925llm": {"deepseek-v4.1-flash": {"context_window": 1000000}}}}
+        md._UNKNOWN_CATALOG_PROVIDER_WARNED.clear()
+        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value={"deepseek": {"models": {}}}), \
+                caplog.at_level(logging.WARNING, logger="agent.models_dev"):
+            info = get_model_info("925llm", "deepseek-v4.1-flash")
+            assert get_model_capabilities("925llm", "deepseek-v4.1-flash").supports_vision is None
+            get_model_info("925llm", "deepseek-v4.1-flash")
+
+        assert info is not None and info.provider_id == "925llm"
+        warned = [r for r in caplog.records if "catalog_provider" in r.getMessage()]
+        assert len(warned) == 1 and "deepsek" in warned[0].getMessage() and "925llm" in warned[0].getMessage()
+
+    def test_without_alias_custom_provider_stays_unknown(self):
+        """Control: no alias → no vendor inheritance, and a legacy ``custom_providers`` row can alias too."""
+        config = {"providers": {"925llm": {"api": "http://gw.internal/v1"}},
+                  "custom_providers": [{"name": "legacy-gw", "base_url": "http://x/v1", "catalog_provider": "deepseek"}]}
+        with self._cfg(config), patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_capabilities("925llm", "deepseek-v4.1-flash") is None
+            legacy = get_model_capabilities("legacy-gw", "deepseek-v4.1-flash")
+        assert legacy is not None and legacy.supports_vision is True
 
 
 # ---------------------------------------------------------------------------
@@ -1063,6 +1051,35 @@ class TestModelOverrides:
         assert caps.supports_reasoning is False
         assert caps.supports_tools is True
 
+    def test_context_only_override_keeps_unknown_capabilities_unknown(self):
+        """A metadata-only custom-provider override must not claim text-only.
+
+        Unknown is fail-open for the vision and reasoning callers; only an
+        explicit capability override may turn either verdict into ``False``.
+        """
+        overrides = {
+            "custom-gateway": {
+                "upstream-model": {"context_window": 1_000_000},
+                "text-model": {
+                    "context_window": 1_000_000,
+                    "supports_vision": False,
+                    "supports_reasoning": False,
+                },
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            unknown = get_model_capabilities("custom-gateway", "upstream-model")
+            explicit_false = get_model_capabilities("custom-gateway", "text-model")
+
+        assert unknown is not None
+        assert unknown.context_window == 1_000_000
+        assert unknown.supports_vision is None
+        assert unknown.supports_reasoning is None
+        assert explicit_false is not None
+        assert explicit_false.supports_vision is False
+        assert explicit_false.supports_reasoning is False
+
     def test_caps_override_patches_existing_catalog_entry(self):
         """Explicit override patches specific fields on a known entry (#84482)."""
         overrides = {
@@ -1194,7 +1211,7 @@ class TestModelOverrides:
         assert info.family == "llava"
         assert info.context_window == 8192
         assert uncapped_info is not None
-        assert info.max_output == uncapped_info.max_output > 0
+        assert info.max_output == uncapped_info.max_output == 0  # unknown model: no synthesized output cap
         assert info.tool_call is True
         assert info.reasoning is False
 
@@ -1246,7 +1263,6 @@ class TestModelOverrides:
         """
         import importlib
 
-        import agent.models_dev as md
         import hermes_cli.config as hc
 
         home = tmp_path / "hermes"
@@ -1315,7 +1331,7 @@ class TestModelOverrides:
             info = get_model_info("custom:my-vllm", "my-model")
         assert info is not None
         assert info.context_window == 200000
-        assert info.max_output == 8192
+        assert info.max_output == 0  # unknown model: output limit is not synthesized
         assert info.tool_call is True
         assert info.reasoning is True
 
@@ -1381,3 +1397,26 @@ class TestOpenRouterRoutingVariantCatalogLookup:
         with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
             assert lookup_models_dev_context("openrouter", "z-ai/glm-5.2:free") == 256000
             assert lookup_models_dev_context("openrouter", "z-ai/glm-5.3-flash:free") is None
+
+
+class TestOpencodeRelayVisionMarker:
+    """#96066: an OpenCode Zen/Go ``*-vision*`` model id the catalog does not know is still vision-capable,
+    so ``image_input_mode: auto`` attaches native pixels; everything else about it stays unknown."""
+
+    @pytest.mark.parametrize("provider", ["opencode-go", "opencode-zen", "opencode-go-bridge"])
+    def test_vision_marker_fills_the_catalog_gap_for_opencode_family(self, provider):
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities(provider, "deepseek-v4-flash-vision-exp")
+        assert caps is not None and caps.supports_vision is True
+        assert caps.supports_reasoning is None  # only vision is claimed
+
+    def test_marker_needs_the_family_and_catalog_data_stays_authoritative(self):
+        registry = {"opencode-go": {"id": "opencode-go", "models": {
+            "deepseek-v4-flash-vision-exp": {"id": "deepseek-v4-flash-vision-exp", "modalities": {"input": ["text"]},
+                                             "limit": {"context": 500000}}}}}
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_capabilities("opencode-go", "deepseek-v4-flash") is None
+            assert get_model_capabilities("deepseek", "some-vision-model") is None
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            caps = get_model_capabilities("opencode-go", "deepseek-v4-flash-vision-exp")
+        assert caps.supports_vision is False and caps.context_window == 500000

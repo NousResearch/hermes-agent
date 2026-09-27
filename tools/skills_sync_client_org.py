@@ -111,7 +111,7 @@ def _sidecar_path(org_id: Optional[str], const: str) -> Path:
 def _read_org_baseline(org_id: str) -> Dict[str, Any]:
     """The baseline sidecar: upstream fingerprint + tree of each mirrored skill ({} if absent)."""
     try:
-        return json.loads(_sidecar_path(org_id, "ORG_BASELINE_FILE").read_text(encoding="utf-8"))
+        return json.loads(_sidecar_path(org_id, "ORG_BASELINE_FILE").read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
 

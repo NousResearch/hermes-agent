@@ -56,20 +56,37 @@ def run_lsp_command(args: argparse.Namespace) -> int:
         return 130
 
 
+def _all_servers() -> list:
+    """Config-declared servers (``lsp.servers.<id>.extensions``) ahead of the built-in registry."""
+    from agent.lsp.servers import SERVERS, custom_servers
+    from hermes_cli.config import load_config_readonly
+    try:
+        lsp_cfg = load_config_readonly().get("lsp") or {}
+    except Exception:  # noqa: BLE001 — a broken config still lists the built-ins
+        lsp_cfg = {}
+    return [*custom_servers(lsp_cfg.get("servers") if isinstance(lsp_cfg, dict) else None), *SERVERS]
+
+
 def _status_for(server_id: str) -> str:
+    import os
     from agent.lsp.install import detect_status
+    from agent.lsp.servers import SERVERS, ServerContext
+    custom = next((s for s in _all_servers() if s.server_id == server_id and s not in SERVERS), None)
+    if custom is not None:  # no install recipe: installed iff the configured command resolves
+        cwd = os.getcwd()
+        return "installed" if custom.build_spawn(cwd, ServerContext(cwd, install_strategy="manual")) else "manual-only"
     return detect_status(_recipe_pkg_for(server_id))
 
 
 def _cmd_status(emit_json: bool) -> int:
     from agent.lsp import get_service
-    from agent.lsp.servers import SERVERS
+    servers = _all_servers()
     svc = get_service()
     info = svc.get_status() if svc is not None else {"enabled": False}
     if emit_json:
         import json
         registry = [{"server_id": s.server_id, "extensions": list(s.extensions), "description": s.description,
-                     "binary_status": _status_for(s.server_id)} for s in SERVERS]
+                     "binary_status": _status_for(s.server_id)} for s in servers]
         sys.stdout.write(json.dumps({"service": info, "registry": registry}, indent=2) + "\n")
         return 0
 
@@ -91,7 +108,7 @@ def _cmd_status(emit_json: bool) -> int:
     if backend_warnings := _backend_warnings():
         out += ["", "Backend warnings", "================"] + [f"  ! {line}" for line in backend_warnings]
     out += ["", "Registered Servers", "=================="]
-    for s in SERVERS:
+    for s in servers:
         status = _status_for(s.server_id)
         ext_summary = ", ".join(list(s.extensions)[:5])
         if len(s.extensions) > 5:
@@ -104,8 +121,7 @@ def _cmd_status(emit_json: bool) -> int:
 
 
 def _cmd_list(installed_only: bool) -> int:
-    from agent.lsp.servers import SERVERS
-    for s in SERVERS:
+    for s in _all_servers():
         status = _status_for(s.server_id)
         if not (installed_only and status != "installed"):
             sys.stdout.write(f"{s.server_id:24s} [{status:11s}] {','.join(s.extensions)}\n")

@@ -22,6 +22,7 @@ _DEFAULT_ENV = {
     "MATRIX_ALLOWED_USERS": "@default-admin:example.org", "MATRIX_IGNORE_USER_PATTERNS": r"^@spam:.*",
     "WHATSAPP_ALLOWED_USERS": "+15550001111", "SLACK_ALLOW_BOTS": "all", "SLACK_API_HUMAN_USERS": "U0DEFAULT",
     "LINE_ALLOW_ALL_USERS": "true", "LINE_ALLOWED_USERS": "Udefault", "DINGTALK_ALLOWED_USERS": "default-admin",
+    "EMAIL_ALLOWED_USERS": "bot2-admin@example.org",
 }
 
 
@@ -52,8 +53,9 @@ def _matrix(extra=None):
 def _whatsapp():
     from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 
-    return SimpleNamespace(_dm_allowlist_source="WHATSAPP_ALLOWED_USERS", _allow_from=set(),
-                           _coerce_allow_list=WhatsAppBehaviorMixin._coerce_allow_list)
+    host = WhatsAppBehaviorMixin()
+    host._dm_allowlist_source, host._allow_from = "WHATSAPP_ALLOWED_USERS", set()
+    return host
 
 
 def _slack():
@@ -72,6 +74,12 @@ def _dingtalk():
     return adapter
 
 
+def _email():
+    from plugins.platforms.email.adapter import EmailAdapter
+
+    return EmailAdapter(PlatformConfig(enabled=True, extra={"address": "bot2@example.org"}))
+
+
 def _line():
     from plugins.platforms.line.adapter import LineAdapter
 
@@ -83,11 +91,14 @@ _GATES = [
     ("email.allow_all", {"GATEWAY_ALLOW_ALL_USERS": "true"},
      lambda: __import__("plugins.platforms.email.adapter", fromlist=["EmailAdapter"]).EmailAdapter._allow_all_senders(),
      False, True),
-    ("email.allowlist", {"GATEWAY_ALLOWED_USERS": "bot2-admin"},
-     lambda: __import__("plugins.platforms.email.adapter", fromlist=["EmailAdapter"]).EmailAdapter._allowlist_in_effect(),
+    ("email.allowlist", {"EMAIL_ALLOWED_USERS": "bot2-admin@example.org"},
+     lambda: _email()._sender_accepted("bot2-admin@example.org", {"sender_authenticated": True}),
+     False, True),
+    ("email.gateway_allowlist", {"GATEWAY_ALLOWED_USERS": "bot2-admin@example.org"},
+     lambda: _email()._sender_accepted("bot2-admin@example.org", {"sender_authenticated": True}),
      False, True),
     ("qqbot.open_dm", {"QQ_ALLOW_ALL_USERS": "true"},
-     lambda: __import__("gateway.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter._open_dm_opted_in(SimpleNamespace()),
+     lambda: __import__("gateway.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter._open_dm_opted_in(object.__new__(__import__("gateway.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter)),
      False, True),
     ("whatsapp.open_dm", {"GATEWAY_ALLOW_ALL_USERS": "true"},
      lambda: __import__("gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._open_dm_opted_in(_whatsapp()),

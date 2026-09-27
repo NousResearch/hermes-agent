@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.auth_constants import _decode_jwt_claims
+from utils import file_signature
 
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
 logger = logging.getLogger("hermes_cli.auth")
@@ -22,14 +23,32 @@ logger = logging.getLogger("hermes_cli.auth")
 # ``refresh_token_reused``.
 # Profiles must never receive a copy: ONE grant lives at the global root and named profiles read
 # it through the ``read_credential_pool`` root fallback.
-SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({"anthropic", "openai-codex", "xai-oauth"})
+SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({"anthropic", "openai-codex", "xai-oauth", "nous"})
 
 # Singleton credential files holding the same single-use grants outside ``auth.json``. Copying one
 # into a profile re-seeds a forked pool row on the profile's next ``load_pool()``.
 SINGLE_USE_OAUTH_SINGLETON_FILES = (".anthropic_oauth.json",)
 
 # Providers whose device-code grants live under ``providers.<id>`` (not only the pool).
-_DEVICE_CODE_BLOCK_PROVIDERS = ("openai-codex", "xai-oauth")
+# Only a block carrying a refresh token is a forkable grant: an agent_key-only ``nous`` block is
+# not single-use and must survive.
+_DEVICE_CODE_BLOCK_PROVIDERS = ("openai-codex", "xai-oauth", "nous")
+
+
+def _block_tokens(block: Dict[str, Any]) -> Dict[str, Any]:
+    # Codex/xAI nest the pair under ``tokens``; Nous stores it flat on the block.
+    tokens = block.get("tokens")
+    return tokens if isinstance(tokens, dict) else block
+
+
+def _is_forkable_pool_row(provider_id: str, entry: Any) -> bool:
+    # An agent_key-only nous row carries no single-use refresh token: it is not a fork, and
+    # stripping it while its providers block survives lets the profile's next load_pool('nous')
+    # write that block over root's shared row. Same refresh_token gate the block strip uses.
+    if not _is_oauth_pool_payload(entry):
+        return False
+    # Pool rows are flat (no ``tokens`` nesting), so read refresh_token directly.
+    return provider_id != "nous" or bool(str(entry.get("refresh_token") or "").strip())
 
 
 def _is_oauth_pool_payload(entry: Any) -> bool:
@@ -97,7 +116,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
             if (provider_id not in SINGLE_USE_REFRESH_POOL_PROVIDERS
                     or not isinstance(entries, list)):
                 continue
-            kept = [e for e in entries if not _is_oauth_pool_payload(e)]
+            kept = [e for e in entries if not _is_forkable_pool_row(provider_id, e)]
             if len(kept) != len(entries):
                 changed = True
                 stripped["pool"].append(provider_id)
@@ -112,7 +131,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
         # profile working while removing the fork.
         for provider_id in _DEVICE_CODE_BLOCK_PROVIDERS:
             block = providers.get(provider_id)
-            if isinstance(block, dict) and block:
+            if isinstance(block, dict) and _block_tokens(block).get("refresh_token"):
                 del providers[provider_id]
                 stripped["providers"].append(provider_id)
                 changed = True
@@ -171,7 +190,7 @@ def _persisted_oauth_heal_fingerprint(provider_id: str) -> Optional[list]:
     if path is None:
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(data, dict):
@@ -193,7 +212,7 @@ def _persist_oauth_heal_clean_mark(provider_id: str, fingerprint: tuple) -> None
         from utils import atomic_json_write
 
         try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
+            existing = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             existing = {}
         if not isinstance(existing, dict):
@@ -206,7 +225,8 @@ def _persist_oauth_heal_clean_mark(provider_id: str, fingerprint: tuple) -> None
         if marks.get(provider_id) == new_mark:
             return  # already recorded; skip the rewrite
         marks[provider_id] = new_mark
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)
         # 0o600 like the MCP schema cache: this names credential-store paths.
         atomic_json_write(path, marks, mode=0o600)
     except Exception:
@@ -308,7 +328,7 @@ def _adopt_oauth_material(target: Dict[str, Any], winner: Dict[str, Any]) -> Dic
 def _singleton_as_row(path: Path) -> Optional[Dict[str, Any]]:
     """Read a ``.anthropic_oauth.json`` as a pool-row-shaped dict, or None."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict) or not str(data.get("accessToken") or "").strip():
@@ -359,12 +379,12 @@ def _heal_forked_provider_block(
     if not (isinstance(p_providers, dict) and isinstance(r_providers, dict)):
         return None
     p_block, r_block = p_providers.get(provider_id), r_providers.get(provider_id)
-    if not (isinstance(p_block, dict) and p_block and isinstance(r_block, dict) and r_block):
+    if not (isinstance(p_block, dict) and _block_tokens(p_block).get("refresh_token")
+            and isinstance(r_block, dict) and r_block):
         return None
 
     def _flat(block: Dict[str, Any]) -> Dict[str, Any]:
-        tokens = block.get("tokens") if isinstance(block.get("tokens"), dict) else {}
-        return {**tokens, "last_refresh": block.get("last_refresh")}
+        return {**_block_tokens(block), "last_refresh": block.get("last_refresh")}
 
     p_flat, r_flat = _flat(p_block), _flat(r_block)
     # Provider blocks have no stable pool-row ID. Without a shared token pair
@@ -382,14 +402,14 @@ def _heal_forked_provider_block(
     return adopted
 
 
-def _stat_sig(p: Optional[Path]) -> Optional[Tuple[int, int]]:
-    """``(mtime_ns, size)`` from ONE stat, or None when absent — a torn pair from two stats could
+def _stat_sig(p: Optional[Path]) -> Optional[Tuple[int, int, int, int]]:
+    """File signature from ONE stat, or None when absent — a torn pair from two stats could
     leave a persisted clean mark matching a store rewritten between them."""
     try:
         st = p.stat() if p is not None else None
     except OSError:
         return None
-    return (st.st_mtime_ns, st.st_size) if st is not None else None
+    return file_signature(st) if st is not None else None
 
 
 def _pool_rows(store: Dict[str, Any], provider_id: str) -> Tuple[Any, List[Any]]:
@@ -439,8 +459,9 @@ class _HealPass:
     def heal_pool_rows(self) -> None:
         kept_rows: List[Any] = []
         for row in self.p_rows:
-            if not _is_oauth_pool_payload(row):
-                kept_rows.append(row)  # API keys are safe to duplicate
+            if not _is_forkable_pool_row(self.provider_id, row):
+                # API keys (and agent_key-only nous rows) are safe to duplicate
+                kept_rows.append(row)
                 continue
             match_idx = _find_root_counterpart(row, self.r_rows)
             if match_idx is not None:
@@ -573,9 +594,9 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
     # this heal consolidates root -> profile, so a new forked grant appearing in ROOT must
     # invalidate the mark. The in-memory mark omitted it and got away with it because it died
     # with the process; a persisted mark would otherwise keep skipping a heal that has become
-    # necessary. Sizes ride along with the mtimes for the same reason: a metadata-preserving
-    # rewrite (``rsync -t``, ``tar -p``, a restore) would otherwise leave a stale mark looking
-    # current indefinitely rather than for one process.
+    # necessary. Sizes, inodes and ctimes ride along with the mtimes for the same reason:
+    # a metadata-preserving rewrite (``rsync -t``, ``tar -p``, a restore) would otherwise leave
+    # a stale mark looking current indefinitely rather than for one process.
     fingerprint = (
         str(profile_path), _stat_sig(profile_path), _stat_sig(profile_singleton),
         str(root_path), _stat_sig(root_path), _stat_sig(root_singleton),

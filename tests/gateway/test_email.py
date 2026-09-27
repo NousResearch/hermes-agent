@@ -160,7 +160,7 @@ class TestDispatchMessage(unittest.TestCase):
         else:
             os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
 
-    def _make_adapter(self, extra=None):
+    def _make_adapter(self):
         """Create an EmailAdapter with mocked env vars."""
         from gateway.config import PlatformConfig
         with patch.dict(os.environ, {
@@ -173,7 +173,7 @@ class TestDispatchMessage(unittest.TestCase):
             "EMAIL_POLL_INTERVAL": "15",
         }):
             from plugins.platforms.email.adapter import EmailAdapter
-            adapter = EmailAdapter(PlatformConfig(enabled=True, extra=dict(extra or {})))
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
     def test_self_message_filtered(self):
@@ -323,47 +323,6 @@ class TestDispatchMessage(unittest.TestCase):
             adapter._message_handler.assert_not_called()
 
 
-    def _dispatch_under_allow_all(self, allow_all_env, *, authenticated, extra=None, env=None):
-        """Dispatch one mail from a stranger with open access on (no allowlist); return the events handed on."""
-        import asyncio
-        with patch.dict(os.environ, {allow_all_env: "true", **(env or {})}):
-            for key in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"):
-                os.environ.pop(key, None)
-            if allow_all_env != "EMAIL_ALLOW_ALL_USERS":
-                os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
-            adapter = self._make_adapter(extra)
-            captured = []
-
-            async def capture_handle(event):
-                captured.append(event)
-
-            adapter.handle_message = capture_handle
-            asyncio.run(adapter._dispatch_message({
-                "uid": b"203", "sender_addr": "victim@elsewhere.com", "sender_name": "Victim", "subject": "Hi",
-                "message_id": "<s@elsewhere.com>", "in_reply_to": "", "body": "Hello", "attachments": [], "date": "",
-                "sender_authenticated": authenticated,
-                "auth_reason": "dmarc=pass" if authenticated else "no Authentication-Results header"}))
-        return captured
-
-    def test_open_access_refuses_unauthenticated_from(self):
-        """Open access admits any sender, not any From: — a forged one would land in that address's session and
-        make the agent mail it, so require_authenticated_sender still applies."""
-        for env in ("EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"):
-            with self.subTest(env):
-                self.assertEqual(self._dispatch_under_allow_all(env, authenticated=False), [])
-
-    def test_open_access_admits_authenticated_or_opted_out_sender(self):
-        cases = {
-            "authenticated From": {"authenticated": True},
-            "require_authenticated_sender: false": {"authenticated": False,
-                                                    "extra": {"require_authenticated_sender": False}},
-            "EMAIL_TRUST_FROM_HEADER=true": {"authenticated": False, "env": {"EMAIL_TRUST_FROM_HEADER": "true"}},
-        }
-        for label, kwargs in cases.items():
-            with self.subTest(label):
-                self.assertEqual(len(self._dispatch_under_allow_all("EMAIL_ALLOW_ALL_USERS", **kwargs)), 1)
-
-
 class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
     """The pre-dispatch gate must not drop mail the gateway would authorize (GATEWAY_ALLOWED_USERS,
     an approved pairing) or answer itself (an explicit pair/decline unauthorized_dm_behavior)."""
@@ -436,6 +395,13 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
             "GATEWAY_ALLOWED_USERS": {"env": {"GATEWAY_ALLOWED_USERS": self.STRANGER}},
             "EMAIL_ALLOWED_USERS JSON list literal": {"env": {"EMAIL_ALLOWED_USERS": f'["{self.STRANGER}"]'}},
             "approved pairing": {"paired": True},
+            # Open access admits any sender whose From: authenticates, or any From: once the operator opts out.
+            "allow-all, authenticated From": {"env": {"EMAIL_ALLOW_ALL_USERS": "true"}},
+            "allow-all, EMAIL_TRUST_FROM_HEADER=true, unauthenticated From": {
+                "authenticated": False, "env": {"EMAIL_ALLOW_ALL_USERS": "true", "EMAIL_TRUST_FROM_HEADER": "true"}},
+            "allow-all, require_authenticated_sender: false, unauthenticated From": {
+                "authenticated": False, "env": {"EMAIL_ALLOW_ALL_USERS": "true"},
+                "extra": {"require_authenticated_sender": False}},
         }
         for label, kwargs in cases.items():
             with self.subTest(label):
@@ -446,6 +412,10 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
             "default ignore": {},
             "pair opt-in, unauthenticated From": {"extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False},
             "approved pairing, unauthenticated From": {"paired": True, "authenticated": False},
+            # Open access admits any sender, not any From:: a forged one would land in that address's session.
+            "EMAIL_ALLOW_ALL_USERS, unauthenticated From": {"authenticated": False, "env": {"EMAIL_ALLOW_ALL_USERS": "true"}},
+            "GATEWAY_ALLOW_ALL_USERS, unauthenticated From": {
+                "authenticated": False, "env": {"GATEWAY_ALLOW_ALL_USERS": "true"}},
             # Open access grants a stranger nothing beside a list, so a pairing code must not go to a forged From:.
             "pair opt-in, allow-all beside EMAIL list, unauthenticated From": {
                 "extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False,

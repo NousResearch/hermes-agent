@@ -614,11 +614,43 @@ def _session_home_scope(session, cwd: str | None = None):
             hc.reset_hermes_home_override(token)
 
 
-def _is_profile_skill_command(session: dict, base: str) -> bool:
-    """True when ``/base`` is a skill command of the session's profile. False on failure."""
+def _profile_skill_command(session: dict, base: str) -> bool | None:
+    """True when ``/base`` is a skill of the session profile.
+
+    False when the scan succeeded and it is not. None when the scan raised —
+    callers must not treat that as "not a skill". Fail-open sends the command to
+    the slash worker, which ok-replies the loading banner and drops the prompt.
+    """
     try:
         with _session_home_scope(session):
             return f"/{base}" in _tools_mod("agent.skill_commands").get_skill_commands()
+    except Exception:
+        return None
+
+
+_SKILL_WORKER_REFUSED = "skill command refused before process: /"
+
+
+def _skill_dispatch_or_refuse(rid, sid, base, arg):
+    """Return command.dispatch's directive, or a hard error. Never an ok banner."""
+    dispatched = _methods["command.dispatch"](rid, {"name": base, "arg": arg, "session_id": sid})
+    if "error" in dispatched or (dispatched.get("result") or {}).get("type"):
+        return dispatched
+    return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
+
+
+def _worker_refused_skill(exc: BaseException) -> bool:
+    return _SKILL_WORKER_REFUSED in str(exc)
+
+
+def _is_registry_command(base: str) -> bool:
+    """True when ``base`` is a built-in the slash worker may still run.
+
+    Skill auto-registration skips names that collide with the registry, so a
+    built-in cannot be the skill whose prompt the worker would drop.
+    """
+    try:
+        return _tools_mod("hermes_cli.commands").resolve_command(base) is not None
     except Exception:
         return False
 
@@ -923,7 +955,7 @@ def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
 
     # Stage order is load-bearing: quick > plugin > bundle > skill > built-in. One home binding
-    # around the whole loop: the routing guard (``_is_profile_skill_command``) and the stages
+    # around the whole loop: the routing guard (``_profile_skill_command``) and the stages
     # must resolve against the SAME profile or a secondary-only skill is routed here and then
     # not found (#110695).
     stages = (_dispatch_quick, _dispatch_plugin, _dispatch_bundle, _dispatch_skill, _SLASH_BUILTINS.get(name))
@@ -962,8 +994,18 @@ def _(rid, params: dict) -> dict:
         target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
     if target is not None:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
-    if _is_profile_skill_command(session, base):
+    # Recognized skills keep the 4018 gate so clients command.dispatch. A scan
+    # exception must not fail open into the worker: return the dispatch payload
+    # (or a hard error) here, or the loading banner swallows the prompt.
+    skill_hit = _profile_skill_command(session, base)
+    if skill_hit is True:
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
+    if skill_hit is None:
+        dispatched = _skill_dispatch_or_refuse(rid, sid, base, arg)
+        # A built-in cannot collide with a skill slug, so the worker may still
+        # run it. Anything else might be the skill the scan failed to see.
+        if (dispatched.get("result") or {}).get("type") or not _is_registry_command(base):
+            return dispatched
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
             return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
@@ -994,6 +1036,9 @@ def _(rid, params: dict) -> dict:
             _publish_session_control_snapshot(sid, session)
         return _ok(rid, payload)
     except Exception as e:
+        if _worker_refused_skill(e):
+            # Refused before process_command; the worker is still healthy.
+            return _skill_dispatch_or_refuse(rid, sid, base, arg)
         with contextlib.suppress(Exception):
             worker.close()
         session["slash_worker"] = None

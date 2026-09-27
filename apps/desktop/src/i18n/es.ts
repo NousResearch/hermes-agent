@@ -711,6 +711,15 @@ export const esOverrides = {
       'view.findInPage': 'Buscar en la página',
       'view.findNext': 'Siguiente coincidencia',
       'view.findPrevious': 'Coincidencia anterior',
+      'view.tabSlot.1': 'Cambiar a la pestaña 1',
+      'view.tabSlot.2': 'Cambiar a la pestaña 2',
+      'view.tabSlot.3': 'Cambiar a la pestaña 3',
+      'view.tabSlot.4': 'Cambiar a la pestaña 4',
+      'view.tabSlot.5': 'Cambiar a la pestaña 5',
+      'view.tabSlot.6': 'Cambiar a la pestaña 6',
+      'view.tabSlot.7': 'Cambiar a la pestaña 7',
+      'view.tabSlot.8': 'Cambiar a la pestaña 8',
+      'view.tabSlot.9': 'Cambiar a la pestaña 9',
       'appearance.toggleMode': 'Alternar claro / oscuro',
       'profile.default': 'Cambiar al perfil predeterminado',
       'profile.switch.1': 'Cambiar al perfil 1',
@@ -1173,7 +1182,10 @@ export const esOverrides = {
         'Deja que Hermes resalte cada paso mientras te guía por la app. Se desactiva automáticamente tras tus primeros 30 días; puedes volver a activarlo.',
       composerPopoutTitle: 'Compositor flotante',
       composerPopoutDesc:
-        'Permite arrastrar el compositor fuera de su posición fija. Desactívalo para mantenerlo anclado abajo.',
+        'Permite arrastrar el compositor fuera de su posición fija. Si está desactivado, permanece anclado abajo.',
+      fileBrowserTitle: 'Explorador de archivos',
+      fileBrowserDesc:
+        'Muestra el explorador de archivos junto al chat cuando hay un espacio de trabajo abierto. El botón de la barra de título también cambia este ajuste.',
       vibeHeartsTitle: 'Corazones de vibra',
       vibeHeartsDesc:
         'Corazones flotantes cuando dices gracias, te quiero, buen bot o envías un corazón. Independiente de las reacciones a mensajes de arriba.',
@@ -2779,6 +2791,10 @@ export const esOverrides = {
       emptyHint: 'Explora el catálogo de abajo e instala un plugin revisado con un clic.',
       loadFailed: 'No se pudieron cargar los plugins del agente',
       toggleFailed: (name: string) => `No se pudo cambiar ${name}`,
+      toolsetOn: (name: string, profile: string) => `Herramientas de agente de ${name} activadas para ${profile}`,
+      toolsetOff: (name: string, profile: string) => `Herramientas de agente de ${name} desactivadas para ${profile}`,
+      toolsetToggleFailed: (name: string) =>
+        `No se pudieron cambiar las herramientas de agente de ${name}; el panel de Escritorio no se modificó`,
       legacyBackend:
         'Este backend es anterior a los interruptores de plugins por clave: actualiza Hermes para gestionarlo aquí.',
       portableBadge: 'portátil',
@@ -3763,6 +3779,8 @@ export const esOverrides = {
     nameLabel: 'Nombre',
     namePlaceholder: 'Resumen matutino',
     promptLabel: 'Prompt',
+    scriptLabel: 'Script',
+    scriptBadge: 'script',
     promptPlaceholder: 'Resume mis hilos de Slack sin leer y envíame por email los 5 principales...',
     frequencyLabel: 'Frecuencia',
     deliverLabel: 'Entregar a',
@@ -4051,6 +4069,7 @@ export const esOverrides = {
       backgroundRunning: 'Tarea en segundo plano en ejecución',
       draftSession: 'Borrador — aún no se ha enviado nada',
       handoffOrigin: platform => `Transferido desde ${platform}`,
+      continuationOrigin: 'Continuación automática: esta conversación fue comprimida y continuada',
       ownedByProfile: profile => `Perfil: ${profile}`,
       renamed: 'Renombrada',
       renameFailed: 'No se pudo renombrar',
@@ -4259,6 +4278,9 @@ export const esOverrides = {
     queueResumeTip: 'La cola se pausó al detener; reanuda el envío de los turnos en cola',
     queueStuckTitle: 'Mensaje en cola no enviado',
     queueStuckBody: 'Un turno en cola no llegó a enviarse. Sigue en la cola; vuelve a intentarlo.',
+    queueDroppedTitle: 'Entrada en cola descartada',
+    queueDroppedBody:
+      'Se descartó esta entrada en segundo plano porque su sesión no se pudo reanudar tras varios intentos. El resto de la cola no se ha visto afectado.',
     previewUnavailable: 'Vista previa no disponible',
     previewLabel: label => `Vista previa de ${label}`,
     couldNotPreview: label => `No se pudo previsualizar ${label}`,
@@ -5570,6 +5592,8 @@ export const esOverrides = {
       preparingAudio: 'Preparando audio...',
       stopReading: 'Detener lectura',
       readAloud: 'Leer en voz alta',
+      copyFullResponse: 'Copiar la respuesta completa',
+      readAloudFullResponseHint: 'Mayús+clic: leer la respuesta completa',
       editMessage: 'Editar mensaje',
       expandMessage: 'Expandir mensaje',
       scrollToBottom: 'Desplazarse hacia abajo',
@@ -5622,7 +5646,9 @@ export const esOverrides = {
       lateAnswer: (question, choice) => `Con respecto a “${question}”: mi respuesta es ${choice}`,
       lateAnswerTip: 'Redactar esta respuesta como mensaje de seguimiento',
       lateAnswerHint:
-        'Este prompt ya no espera una respuesta. Elige una opción para redactarla como mensaje de seguimiento.'
+        'Este prompt ya no espera una respuesta. Elige una opción para redactarla como mensaje de seguimiento.',
+      notDelivered:
+        'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
     },
     catalogInstall: {
       preparing: 'Preparando la instalación…',

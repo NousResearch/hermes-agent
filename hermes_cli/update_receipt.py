@@ -682,8 +682,8 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
             print(f"      {line}")
     if RESTART_PENDING_STATE in states:
         print()
-        print("  ℹ A restart-pending gateway picks up the new code as soon as this update exits;")
-        print("    verify afterwards with `hermes gateway status`.")
+        print("  ℹ A restart-pending gateway has not yet been verified on the new code;")
+        print("    check after this update exits with `hermes gateway status`.")
     stale_or_down = sum(1 for entry in fleet if entry.get("state") in ("stale", "down"))
     if stale_or_down:
         print()

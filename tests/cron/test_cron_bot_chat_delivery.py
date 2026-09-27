@@ -12,6 +12,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -199,6 +200,55 @@ def test_deliver_timeout_returns_error_string():
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
     assert err is not None
     assert "timed out" in err
+
+
+def _fake_store_layout(tmp_path, monkeypatch):
+    """Point the install's PM store at a directory whose Python is this interpreter."""
+    runtime = tmp_path / "pm-store"
+    entry = runtime / "python-3.14.7+fake"
+    exe = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.symlink_to(Path(sys.executable))
+    (runtime / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-3.14.7+fake"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+    return exe
+
+
+def test_deliver_on_store_python_uses_launcher_prelude(tmp_path, monkeypatch):
+    """The scheduler's bot-chat lane is the third argv consumer of the trust
+    order (kanban worker spawn, gateway /restart, this): on the PM store
+    interpreter the bare module form would re-exec into ModuleNotFoundError
+    (#122620), so the child must be built through the launcher prelude —
+    while a venv interpreter keeps the module form (#111569)."""
+    calls = {}
+
+    def fake_run(argv, env, report_path, timeout):
+        calls["argv"] = argv
+        return _completed()
+
+    exe = _fake_store_layout(tmp_path, monkeypatch)
+    with mock.patch.object(sched_delivery, "_run_bot_chat_turn", side_effect=fake_run):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+    assert err is None
+    argv = calls["argv"]
+    assert argv[0] == str(exe)
+    assert argv[1:3] == ["-I", "-c"]
+    assert "import hermes_bootstrap" in argv[3]
+    assert "runpy.run_module('hermes_cli.main'" in argv[3]
+    # The CLI tail rides AFTER the prelude, same shape as the module form.
+    assert argv[4:6] == ["-p", "default"]
+    assert "chat" in argv and "Bot Chat" in argv
+
+    # Venv interpreter (no store record): module form must still win.
+    (Path(os.environ["HERMES_RUNTIME_DIR"]) / "facts.json").unlink()
+    with mock.patch.object(sched_delivery, "_run_bot_chat_turn", side_effect=fake_run), \
+         mock.patch.object(sched_delivery.shutil, "which", return_value="/tmp/planted/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+    assert err is None
+    assert calls["argv"][:3] == [sys.executable, "-m", "hermes_cli.main"]
 
 
 def test_deliver_message_carries_cron_attribution(tmp_path):

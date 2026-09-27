@@ -22,13 +22,28 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.platforms("posix", "windows")
+
+
+def _store_python_rel() -> str:
+    """The relative path of the store interpreter inside its package entry.
+
+    Mirrors ``hermes_cli._launchers.resolve_store_python``: Windows stores the
+    interpreter at ``<entry>/python.exe``, POSIX at ``<entry>/bin/python3`` —
+    a fixture that hardcodes ``bin/`` resolves to None on win32 and the
+    detector collapses to False there.
+    """
+    return "python.exe" if os.name == "nt" else "bin/python3"
+
 
 def _fake_store_layout(tmp_path, monkeypatch) -> Path:
     """Point the install's PM store at a directory whose Python is this interpreter."""
     runtime = tmp_path / "pm-store"
     entry = runtime / "python-3.14.7+fake"
-    (entry / "bin").mkdir(parents=True)
-    exe = entry / "bin" / ("python.exe" if os.name == "nt" else "python3")
+    exe = entry / _store_python_rel()
+    exe.parent.mkdir(parents=True, exist_ok=True)
     exe.symlink_to(Path(sys.executable))
     (runtime / "facts.json").write_text(
         json.dumps({"packages": {"python": {"entry": "python-3.14.7+fake"}}}),
@@ -107,3 +122,56 @@ def test_store_python_worker_argv_keeps_task_tail(tmp_path, monkeypatch):
         "--accept-hooks",
         "chat", "-q", "work kanban task t_store_spawn",
     ]
+
+
+def test_corrupt_store_manifest_fails_closed_not_crashes(tmp_path, monkeypatch):
+    """A manifest/store the resolver cannot parse must not crash every caller
+    of the detector: ``store_root`` parses ``<repo_root>.parent/manifest.json``
+    unguarded (a truncated file raises JSONDecodeError; an escaping ``store``
+    path raises RuntimeError) and ``resolve_store_python`` catches neither.
+    "Cannot prove we are on the store interpreter" keeps the module-form argv
+    (pre-fix behavior), and ``running_on_store_python`` returns False instead
+    of propagating.
+
+    The unguarded parsing is driven through the REAL ``pm.environments.store_root``
+    on a staged payload layout: ``running_on_store_python`` derives the repo root
+    from ``__file__`` (not controllable from a test), so ``_launchers.store_root``
+    — the module-level name ``resolve_store_python`` calls — is repointed at the
+    real function bound to the staged root. The exceptions themselves come from
+    production code, and removing the guard in ``running_on_store_python``
+    repropagates them here (red).
+    """
+    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import _launchers
+    from pm import environments as _env
+    import json as _json
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+
+    payload_root = tmp_path / "payload"
+    repo_root = payload_root / "repo"
+    repo_root.mkdir(parents=True)
+    manifest_path = payload_root / "manifest.json"
+
+    monkeypatch.setattr(_launchers, "store_root", lambda _root: _env.store_root(repo_root))
+
+    def _assert_module_form():
+        assert _launchers.running_on_store_python() is False
+        assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+    # Sanity: the identity check passes for this layout, so parsing proceeds
+    # to the unguarded store resolution (a well-formed store does not raise).
+    manifest_path.write_text(_json.dumps({"repo": "repo", "store": "store"}), encoding="utf-8")
+    assert _env.store_root(repo_root) == (payload_root / "store").resolve()
+
+    # Truncated manifest.json → JSONDecodeError out of store_root().
+    manifest_path.write_text('{"repo": "hermes', encoding="utf-8")
+    with pytest.raises(ValueError):
+        _env.store_root(repo_root)
+    _assert_module_form()
+
+    # A store path that escapes its root → RuntimeError out of store_root().
+    manifest_path.write_text(_json.dumps({"repo": "repo", "store": "../../escape"}), encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        _env.store_root(repo_root)
+    _assert_module_form()

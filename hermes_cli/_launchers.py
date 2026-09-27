@@ -126,7 +126,15 @@ def running_on_store_python() -> bool:
     instead. A venv/dev interpreter keeps the module form.
     """
     root = Path(__file__).resolve().parents[1]
-    store = resolve_store_python(root)
+    try:
+        store = resolve_store_python(root)
+    except Exception:
+        # store_root() parses manifest.json / install stamps unguarded; a
+        # corrupt manifest or a stamp whose runtimeDir entry is malformed must
+        # not crash every caller of this detector (spawn, /update, /restart) —
+        # "cannot prove we are on the store interpreter" keeps the module form,
+        # the pre-fix behavior for such installs.
+        return False
     if store is None:
         return False
     try:

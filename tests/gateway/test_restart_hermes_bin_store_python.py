@@ -16,12 +16,16 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.platforms("posix", "windows")
+
 
 def test_store_python_reexec_uses_launcher_prelude(tmp_path, monkeypatch):
     runtime = tmp_path / "pm-store"
     entry = runtime / "python-3.14.7+fake"
-    (entry / "bin").mkdir(parents=True)
-    exe = entry / "bin" / ("python.exe" if os.name == "nt" else "python3")
+    exe = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+    exe.parent.mkdir(parents=True, exist_ok=True)
     exe.symlink_to(Path(sys.executable))
     (runtime / "facts.json").write_text(
         json.dumps({"packages": {"python": {"entry": "python-3.14.7+fake"}}}),

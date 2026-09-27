@@ -350,6 +350,38 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
     assert "notify_on_complete" in hint, (
         "Hint must name the corrective flag so the agent can self-correct"
     )
+    assert "process_manage(action='poll')" in hint, (
+        "Hint must name the real tool — a bare process(...) call is a "
+        "tool-not-found dead end for the agent following it"
+    )
+
+
+def test_background_hint_constants_name_the_real_process_tool():
+    """Every background-path note that points the agent at polling/waiting
+    must call the tool by its registered name, process_manage (#124583) —
+    the schemas advertise only the new name, so copy teaching the legacy
+    alias misleads fresh agents into leaning on a deprecated spelling.
+    _HOMEBREW_CI_POLLER_HINT is exempt for now: #85984 rewrites that whole
+    constant and keeps its own wording, so canonicalizing it here would
+    collide with this hunk."""
+    from tools.terminal_tool_background import (
+        _ASYNC_UNSUPPORTED_NOTE,
+        _SILENT_BACKGROUND_HINT,
+        _YIELDED_NOTE,
+    )
+
+    for text in (
+        _SILENT_BACKGROUND_HINT,
+        _ASYNC_UNSUPPORTED_NOTE,
+        _YIELDED_NOTE,
+    ):
+        assert "process(action" not in text, (
+            f"note references the non-existent process tool: {text[:60]!r}"
+        )
+        if "action=" in text:
+            assert "process_manage(action" in text, (
+                f"note fails to name process_manage: {text[:60]!r}"
+            )
 
 
 def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):

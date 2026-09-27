@@ -335,15 +335,14 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     See #97052.
     """
     from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
+    from hermes_cli.update_cmd_check import tracking_refspec
     if not _has_upstream_remote(git_cmd, cwd) and (
         _should_skip_upstream_prompt() or not _offer_upstream_remote(git_cmd, cwd, assume_yes=assume_yes, input_fn=input_fn)
     ):
         return False
     print("\n→ Fetching upstream...")
     try:
-        # Explicit refspec (#125112): tag-pinned narrow clones never build upstream/main
-        # from a branch-name fetch, and the comparison below resolves it.
-        subprocess.run(git_cmd + ["fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main", "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
+        subprocess.run(git_cmd + ["fetch", "upstream", tracking_refspec("upstream", "main"), "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return False

@@ -1045,6 +1045,28 @@ def test_specify_happy_path(client, monkeypatch):
 # Touch drag-vs-tap threshold (#115568)
 # ---------------------------------------------------------------------------
 
+def test_drawer_inline_editors_commit_on_blur():
+    """The drawer meta-row inline editors (#125714) must commit a click-away blur:
+    typing an assignee and clicking elsewhere used to silently discard the edit —
+    no PATCH, no error — because only `Enter` was wired to save(). The probe drives
+    the real editor functions (extracted verbatim from the shipped bundle, which
+    has no build step) through change/blur/key sequences with a minimal hooks
+    runtime, and also pins the guard rails: unchanged or empty fields close
+    without a PATCH, and Escape keeps cancel semantics after the blur path exists.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    probe = Path(__file__).parent / "fixtures" / "kanban_inline_edit_probe.js"
+    result = subprocess.run(
+        [node, str(probe), str(bundle)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "PASS" in result.stdout
+
+
 def test_touch_card_tap_opens_instead_of_dragging():
     """attachTouchDrag() must not claim a stationary tap: without a movement threshold,
     every touch pointerdown called preventDefault() immediately, which suppresses the

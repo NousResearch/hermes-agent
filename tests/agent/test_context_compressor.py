@@ -2295,6 +2295,13 @@ class TestHistoricalToolCallArgumentsStayCanonical:
         }
         assert seen == originals
 
+        # Full args are redacted before the summarizer cut: a long PEM straddling any pre-redaction
+        # window (behind a shorter one that redaction shrinks) must not leak key body into the summary.
+        pem = "-----BEGIN RSA PRIVATE KEY-----\n{}\n-----END RSA PRIVATE KEY-----"
+        leak_args = json.dumps({"a": pem.format("K" * 3200), "b": pem.format("L" * 6500)})
+        rendered = c._render_tool_call_for_summary({"function": {"name": "write_file", "arguments": leak_args}})
+        assert "KKKK" not in rendered and "LLLL" not in rendered and "BEGIN RSA" not in rendered
+
 
 class TestLazyContextResolution:
     """Verify that ContextCompressor defers get_model_context_length until

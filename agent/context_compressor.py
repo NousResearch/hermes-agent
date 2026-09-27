@@ -3390,10 +3390,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             fn = getattr(tc, "function", None)
             return f"  {getattr(fn, 'name', '?') if fn else '?'}(...)"
         fn = tc.get("function", {})
-        raw = fn.get("arguments", "") or ""
-        # Args are byte-exact now, so they can be huge: cut before the (costly) redaction pass, keeping
-        # slack past the head so a secret straddling the cut still matches and length checks stay honest.
-        args = _redact_compaction_text(raw[:self._TOOL_ARGS_HEAD + 4096] if len(raw) > self._TOOL_ARGS_HEAD + 4096 else raw)
+        # Redact the FULL args before cutting: delimited secrets (PEM BEGIN…END) only match whole, so a
+        # pre-redaction cut would leave a key body straddling the cut unredacted in the persisted summary.
+        args = _redact_compaction_text(fn.get("arguments", "") or "")
         if len(args) > self._TOOL_ARGS_MAX:
             args = args[:self._TOOL_ARGS_HEAD] + "..."
         return f"  {fn.get('name', '?')}({args})"
@@ -5470,14 +5469,11 @@ Write only the summary body. Do not include any preamble or prefix."""
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
             )
         # Phase 4: Assemble compressed message list
-        compressed = self._assemble_compressed(
-            messages, compress_start, compress_end, scan, summary,
-        )
+        compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
         return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images)
 
     def _assemble_compressed(
-        self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int,
-        scan: "_HandoffScan", summary: str,
+        self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,
     ) -> List[Dict[str, Any]]:
         """Head + summary + tail from the pruned copy: its tool-result demotions are what let an oversized
         head/tail compress at all (#61932); tool-call arguments are never rewritten by pruning."""

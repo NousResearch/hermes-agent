@@ -544,6 +544,53 @@ class TestMatrixDmDetection:
         )
 
 
+@pytest.mark.asyncio
+async def test_unnamed_room_uses_member_names_without_changing_classification():
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.get_members = AsyncMock(
+        return_value=["@bot:example.org", "@alice:example.org", "@bob:example.org"]
+    )
+    adapter._client.state_store.get_member_profiles = AsyncMock(
+        return_value={
+            "@bot:example.org": types.SimpleNamespace(displayname="Hermes"),
+            "@alice:example.org": types.SimpleNamespace(displayname="Alice"),
+            "@bob:example.org": types.SimpleNamespace(displayname="Bob"),
+        }
+    )
+
+    identity = await adapter._resolve_room_identity("!room:example.org")
+
+    assert (identity.display_name, identity.has_explicit_name, identity.chat_type) == (
+        "Alice and Bob", False, "room"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unnamed_room_fetches_profiles_when_state_store_is_empty():
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.get_members = AsyncMock(return_value=None)
+    adapter._client.state_store.get_member_profiles = AsyncMock(return_value={})
+    adapter._client.joined_members = AsyncMock(
+        return_value=types.SimpleNamespace(members={"@bot:example.org": {}, "@alice:example.org": {}})
+    )
+    adapter._client.get_joined_members = AsyncMock(
+        return_value={
+            "@bot:example.org": types.SimpleNamespace(displayname="Hermes"),
+            "@alice:example.org": types.SimpleNamespace(displayname=None),
+        }
+    )
+
+    identity = await adapter._resolve_room_identity("!room:example.org")
+
+    assert (identity.display_name, identity.has_explicit_name, identity.chat_type) == (
+        "alice", False, "dm"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Reply fallback stripping
 # ---------------------------------------------------------------------------

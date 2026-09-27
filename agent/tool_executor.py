@@ -1801,6 +1801,13 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
         return False
     function_result, display_function_result, risk_metadata = committed
 
+    # Terminal approval batching (#113158): once this slot's failure is
+    # published, the informed consent collected for later slots describes a
+    # batch state that no longer holds — flag it so consume_prepared_guard
+    # drops their pre-made decisions and the live guard flow re-runs.
+    from agent.terminal_approval_batch import mark_batch_outcome
+    mark_batch_outcome(_is_error_result or bool(managed.blocked))
+
     _emit_tool_complete_and_risk(agent, ref, display_function_result, risk_metadata, managed.blocked)
     if _tool_progress_enabled(agent):
         _print_tool_completed(agent, index, tool_duration, function_result)

@@ -269,6 +269,11 @@ _HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _SHELL_COMMAND_FLAGS = {"-c", "--command"}
+# Shell spellings of no-exec parsing (`bash -n`, `bash --noexec`, `bash -o noexec`): commands are
+# read and syntax-checked but never executed, so the script named after the options cannot run
+# anything — including a lifecycle command (#124700). Recognised only in the option area: past the
+# first operand a `-n` is the script's positional parameter (`bash script.sh -n` still executes).
+_SHELL_NOEXEC_FLAGS = frozenset({"-n", "--noexec"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
@@ -871,6 +876,31 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
+def _shell_invocation_is_noexec(arguments: list[str]) -> bool:
+    """True when a shell's option area turns on no-exec parsing: the script (or ``-c`` payload)
+    named afterwards is only syntax-checked, never run, so its contents cannot execute a lifecycle
+    command (#124700). Walks the same option grammar `_references_at` uses — a value option skips
+    its operand, the first non-option token ends the option area — so a ``-n`` arriving as a
+    script argument (`bash script.sh -n`) is not read as the shell's own flag."""
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return False
+        if argument in _SHELL_NOEXEC_FLAGS:
+            return True
+        if argument in _SHELL_OPTIONS_WITH_VALUES:
+            if index + 1 < len(arguments) and arguments[index + 1] == "noexec":
+                return True
+            index += 2
+            continue
+        if argument.startswith("-"):
+            index += 1
+            continue
+        return False
+    return False
+
+
 def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
     """Yield the scripts the token at *index* executes, if any."""
     if index >= len(segment):
@@ -885,6 +915,11 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     if executable_name in _SHELL_EXECUTABLES:
         arguments = segment[index + 1 :]
+        if _shell_invocation_is_noexec(arguments):
+            # Parse-only invocation (`bash -n script.sh`): the shell checks syntax and runs
+            # nothing, so the named script is not executed — reading it here would block static
+            # analysis of exactly the risky scripts that most need checking (#124700).
+            return
         arg_index = 0
         while arg_index < len(arguments):
             argument = arguments[arg_index]
@@ -938,6 +973,9 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
         if index is None or _executable_name(segment[index]) not in _SHELL_EXECUTABLES:
             continue
         arguments = segment[index + 1 :]
+        if _shell_invocation_is_noexec(arguments):
+            # `bash -n -c '…'` syntax-checks the payload without executing it (#124700).
+            continue
         for arg_index, argument in enumerate(arguments[:-1]):
             if argument in _SHELL_COMMAND_FLAGS:
                 yield arguments[arg_index + 1]

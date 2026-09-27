@@ -266,6 +266,22 @@ function resolvePersistedRemoteToken({
   return encryptSecret(incomingToken, { allowPlainText: allowPlainText === true })
 }
 
+// The renderer-facing "the saved token is in plain text" warning signal for the
+// connection-config IPC path. Plain text is the CHOSEN mode while keychain
+// encryption is opted out — probeSecureTokenStorage reports availability in
+// that mode on purpose — so the warning fires only for the genuinely degraded
+// state: the token is plain AND the machine cannot secure it (the keyring-less
+// opt-in path). The env override supplies its token from the environment, not
+// the saved block, so it never warns; `secureTokenStorage === false` is matched
+// strictly so an absent signal never manufactures a warning.
+function resolveRemoteTokenPlainText({ envOverride, token, secureTokenStorage }: any = {}) {
+  if (envOverride) {
+    return false
+  }
+
+  return token?.encoding === 'plain' && secureTokenStorage === false
+}
+
 function sensitiveFileBlockReason(filePath) {
   const normalized = String(filePath || '')
     .replace(/\\/g, '/')
@@ -352,6 +368,34 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
   }
 
   return raw
+}
+
+/**
+ * Stat a resolved path before handing an `open` to the OS. The OS gives the
+ * miss and the unclaimable file the SAME answer (macOS LaunchServices returns
+ * `kLSApplicationNotFoundErr` for a non-existent path, so a deleted file is
+ * reported as "No application found to open URL"; Electron's `shell.openPath`
+ * resolves with an error for a miss and the caller then "reveals in folder" a
+ * folder that isn't there). Only ENOENT/ENOTDIR count as missing — a path that
+ * stats-fails for any other reason (EACCES on an existing file, root-owned
+ * trees) must still reach the OS, so a stat failure here never fabricates a
+ * miss.
+ */
+function assertExistingPathForOpen(resolvedPath: string, purpose = 'Open file') {
+  try {
+    fs.statSync(resolvedPath)
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: string }).code : undefined
+
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw ipcPathError(
+        'missing-file',
+        `${purpose} failed: the file does not exist — it may have been deleted or moved, or it lives on another machine.`
+      )
+    }
+
+    throw error
+  }
 }
 
 function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseDir?: fs.PathOrFileDescriptor } = {}) {
@@ -552,6 +596,7 @@ async function readFileDataUrlForIpc(
 }
 
 export {
+  assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
@@ -567,6 +612,7 @@ export {
   resolveDirectoryForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
+  resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   SAFE_STORAGE_ENCODING,

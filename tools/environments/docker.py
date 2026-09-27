@@ -22,6 +22,9 @@ from pathlib import Path
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE
+from tools.terminal_tool_config import (
+    _host_path_key, _is_windows_drive_path, cwd_follows_host_mount,
+)
 from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
     _EGRESS_LABEL_KEY, _critical_egress_env_names, _egress_enforce_on_docker, _egress_proxy_args_for_docker,
@@ -510,6 +513,57 @@ def _host_user_args(run_as_host_user: bool) -> list[str]:
     return []
 
 
+_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+)(?::[^:]*)?$")
+# Second mount when a user volume already owns /workspace. Not a username.
+_HOST_CWD_FALLBACK_MOUNTS = ("/host-cwd", "/host-cwd-2", "/host-cwd-3")
+
+
+def _split_volume_spec(spec: str) -> tuple[str, str] | None:
+    """``host:container[:mode]`` → ``(host, container)``. Drive-letter hosts keep their colon."""
+    if not isinstance(spec, str):
+        return None
+    match = _VOLUME_SPEC_RE.match(spec.strip())
+    if not match:
+        return None
+    return match.group("host"), match.group("container")
+
+
+def _container_mount_taken(volume_args: list[str], mount: str) -> bool:
+    target = mount.rstrip("/") or "/"
+    for arg in volume_args:
+        parsed = _split_volume_spec(arg)
+        if parsed and (parsed[1].rstrip("/") or "/") == target:
+            return True
+    return False
+
+
+def _existing_host_mount(volume_args: list[str], host_cwd_abs: str) -> str | None:
+    """Container path if a user volume already bind-mounts this host directory."""
+    want = _host_path_key(host_cwd_abs)
+    if not want:
+        return None
+    for arg in volume_args:
+        parsed = _split_volume_spec(arg)
+        if parsed and _host_path_key(parsed[0]) == want:
+            return parsed[1]
+    return None
+
+
+def _free_host_cwd_mount(volume_args: list[str]) -> str:
+    for candidate in _HOST_CWD_FALLBACK_MOUNTS:
+        if not _container_mount_taken(volume_args, candidate):
+            return candidate
+    return _HOST_CWD_FALLBACK_MOUNTS[-1]
+
+
+def _abs_host_cwd(host_cwd: str) -> str:
+    """Absolute host path. A Windows drive path is not prefixed with the POSIX process cwd."""
+    expanded = os.path.expanduser(host_cwd)
+    if _is_windows_drive_path(expanded) and os.name != "nt":
+        return expanded
+    return os.path.abspath(expanded)
+
+
 class DockerEnvironment(BaseEnvironment):
     """Hardened Docker container execution (caps dropped, no-new-privileges, PID limits,
     size-limited tmpfs). The container is the security boundary — its filesystem stays
@@ -569,6 +623,13 @@ class DockerEnvironment(BaseEnvironment):
 
         resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
         volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
+        mount = getattr(self, "host_cwd_mount", None)
+        if mount and cwd_follows_host_mount(cwd, mount):
+            logger.info(
+                "Container cwd follows configured host workspace at %s (requested %s)",
+                mount, cwd)
+            cwd = mount
+            self.cwd = mount
         volume_args.extend(_readonly_skill_mount_args())
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
@@ -696,7 +757,15 @@ class DockerEnvironment(BaseEnvironment):
 
     def _mount_args(self, volumes, host_cwd, auto_mount_cwd, task_id) -> tuple[list[str], list[str]]:
         """``(volume_args, writable_args)`` for user volumes, host cwd and /workspace,/root.
-        Persistent mode bind-mounts from TERMINAL_SANDBOX_DIR (default ~/.hermes/sandboxes/)."""
+
+        Persistent mode bind-mounts from TERMINAL_SANDBOX_DIR (default ~/.hermes/sandboxes/).
+        A configured host working directory is bound even when another volume already
+        claims ``/workspace``: at ``/workspace`` when that path is free, otherwise at
+        a second mount. ``host_cwd`` / ``host_cwd_mount`` tell tools which container
+        path is that directory. A Windows drive path is bound whenever it exists on
+        the host — it can never be a path inside the Linux container, and the check
+        is the drive shape, not a username.
+        """
         volume_args: list[str] = []
         for vol in (volumes or []):
             if not isinstance(vol, str):
@@ -711,17 +780,33 @@ class DockerEnvironment(BaseEnvironment):
             volume_args.extend(["-v", vol])
         workspace_explicitly_mounted = any(":/workspace" in v for v in volume_args)
 
-        host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
-        bind_host_cwd = (
-            auto_mount_cwd and bool(host_cwd_abs) and os.path.isdir(host_cwd_abs)
-            and not workspace_explicitly_mounted)
-        if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
+        host_cwd_abs = _abs_host_cwd(host_cwd) if host_cwd else ""
+        windows_cwd = _is_windows_drive_path(host_cwd or "") or _is_windows_drive_path(host_cwd_abs)
+        host_dir_exists = bool(host_cwd_abs) and os.path.isdir(host_cwd_abs)
+        should_bind = host_dir_exists and (auto_mount_cwd or windows_cwd)
+        if (auto_mount_cwd or windows_cwd) and host_cwd and not host_dir_exists:
             logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
-        # The host directory actually bound at /workspace, if any. Readers that
-        # only hold the env instance (cwd remapping on live envs) use it to
-        # recognize a session workspace registered as a raw host path.
-        self.host_cwd = host_cwd_abs if bind_host_cwd else None
-        mount_workspace = not bind_host_cwd and not workspace_explicitly_mounted
+
+        existing_mount = _existing_host_mount(volume_args, host_cwd_abs) if should_bind else None
+        if existing_mount:
+            # Already bind-mounted (often the volume that claimed /workspace). Point
+            # tools at that container path instead of adding a second -v.
+            self.host_cwd = host_cwd_abs
+            self.host_cwd_mount = existing_mount
+            bind_target = None
+        elif should_bind:
+            bind_target = (
+                "/workspace" if not workspace_explicitly_mounted
+                else _free_host_cwd_mount(volume_args))
+            self.host_cwd = host_cwd_abs
+            self.host_cwd_mount = bind_target
+        else:
+            self.host_cwd = None
+            self.host_cwd_mount = None
+            bind_target = None
+
+        bind_at_workspace = bind_target == "/workspace"
+        mount_workspace = not bind_at_workspace and not workspace_explicitly_mounted
 
         writable_args: list[str] = []
         if self._persistent:
@@ -740,10 +825,10 @@ class DockerEnvironment(BaseEnvironment):
             writable_args += ["--tmpfs", "/workspace:rw,exec,size=10g"] if mount_workspace else []
             writable_args += ["--tmpfs", "/home:rw,exec,size=1g", "--tmpfs", "/root:rw,exec,size=1g"]
 
-        if bind_host_cwd:
-            logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)
-            volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
-        elif workspace_explicitly_mounted:
+        if bind_target:
+            logger.info("Mounting configured host cwd to %s: %s", bind_target, host_cwd_abs)
+            volume_args = ["-v", f"{host_cwd_abs}:{bind_target}", *volume_args]
+        elif workspace_explicitly_mounted and not existing_mount:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
         return volume_args, writable_args
 

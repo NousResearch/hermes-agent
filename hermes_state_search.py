@@ -106,6 +106,30 @@ def _like_params(term: str) -> List[str]:
     return [f"%{_escape_like(term)}%"] * 3
 
 
+def _strip_cjk_wildcards(raw_query: str) -> str:
+    """Drop the trailing prefix wildcard callers append for ASCII ("nimb" -> "nimb*").
+
+    None of the CJK routes can honour that star: the bigram and trigram routes
+    quote every token before MATCH (so ``*`` matches a literal asterisk) and
+    LIKE has no ``*`` wildcard at all (only ``%``/``_``). Left in place, every
+    CJK search arriving from the web/desktop search box — which appends the
+    star to each unquoted token so partial English words match — searches for
+    a term ending in a literal ``*`` and returns nothing (#90636). Only
+    TRAILING stars go: a star written inside a quoted phrase is the user's
+    own text, and a token that is ALL stars keeps its original form so it
+    cannot degrade to a match-everything empty term.
+    """
+    if "*" not in raw_query:
+        return raw_query
+    stripped: List[str] = []
+    for token in raw_query.split():
+        if token.upper() in _FTS_OPERATORS:
+            stripped.append(token)
+        else:
+            stripped.append(token.rstrip("*") or token)
+    return " ".join(stripped) or raw_query
+
+
 def _flatten_text(decoded: Any) -> str:
     """Multimodal part list -> joined text (or the placeholder); str passes through; else ''."""
     if isinstance(decoded, list):
@@ -1171,7 +1195,7 @@ class SessionSearchMixin:
         1-char CJK runs (bigrams only exist for runs >=2 — LIKE is broader); then trigram
         (>=3 CJK chars per token); then a LIKE substring scan with one clause per
         non-operator token so "广西 OR 桂林 OR 漓江" matches each term."""
-        raw_query = query.strip('"').strip()
+        raw_query = _strip_cjk_wildcards(query).strip('"').strip()
         match_query = _quote_fts_tokens(raw_query)
         if self._fts_cjk_available and not wants_unindexed_rows and not self._has_lone_cjk_run(raw_query):
             matches = self._match_rows(

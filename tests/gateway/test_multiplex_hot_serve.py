@@ -81,6 +81,113 @@ def _served_record(home):
 
 
 @pytest.mark.asyncio
+async def test_opt_out_rescans_and_opt_in_waits_for_own_gateway_to_stop(tmp_path, monkeypatch, caplog):
+    runner, home = _runner(tmp_path, monkeypatch)
+    solo = _mkprofile(home, "solo", "DISCORD_BOT_TOKEN=solo-token\n")
+    own_pids = {}
+    monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda h: own_pids.get(h))
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        adapter = runner._profile_adapters["solo"][Platform.DISCORD]
+        (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        result = await runner.reconcile_served_profiles()
+        assert result["removed"] == ["solo"]
+        assert adapter.disconnected
+        assert _served_record(home) == ["default"]
+
+        own_pids[solo] = 12345
+        (solo / "config.yaml").write_text("gateway:\n  standalone: false\n")
+        for _ in range(2):
+            result = await runner.reconcile_served_profiles()
+            assert result["added"] == []
+            assert result["served_profiles"] == ["default"]
+        assert runner._started.count("solo") == 1
+        assert len([r for r in caplog.records if "still runs its own gateway" in r.message]) == 1
+
+        own_pids.clear()
+        result = await runner.reconcile_served_profiles()
+        assert result["added"] == ["solo"]
+        assert _served_record(home) == ["default", "solo"]
+        assert runner._started.count("solo") == 2
+
+
+@pytest.mark.asyncio
+async def test_parked_profile_boot_and_reconcile(tmp_path, monkeypatch, caplog):
+    runner, home = _runner(tmp_path, monkeypatch)
+    secondary = _mkprofile(home, "worker")
+    marker = secondary / "gateway.parked"
+    marker.touch()
+    # Boot uses the real directory enumerator and config loaders, no bot/network.
+    del runner._start_one_profile_adapters
+    runner._register_config_hooks = lambda *a, **kw: None
+    caplog.set_level("INFO")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        assert _served_record(home) == ["default"]
+        assert "profile 'worker' is parked (gateway.parked); not served by this gateway" in caplog.text
+        marker.unlink()
+        assert (await runner.reconcile_served_profiles())["added"] == ["worker"]
+        assert _served_record(home) == ["default", "worker"]
+        marker.touch()
+        assert (await runner.reconcile_served_profiles())["removed"] == ["worker"]
+        assert _served_record(home) == ["default"]
+
+
+@pytest.mark.asyncio
+async def test_profile_control_verbs_round_trip_and_refusals(tmp_path, monkeypatch):
+    from gateway import run_profile_reconcile as verbs
+    runner, home = _runner(tmp_path, monkeypatch)
+    secondary = _mkprofile(home, "worker", "DISCORD_BOT_TOKEN=worker-token\n")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        stop = verbs.unserve_profile_verb(runner)
+        start = verbs.serve_profile_verb(runner)
+        for handler, name in [(stop, "default"), (stop, "missing"), (start, "missing"),
+                              (start, "worker"), (start, "default")]:
+            assert (await asyncio.to_thread(handler, {"name": name}))["error"]
+        old = runner._profile_adapters["worker"][Platform.DISCORD]
+        answer = await asyncio.to_thread(stop, {"name": "worker"})
+        assert answer["unserved"] == "worker"
+        assert answer["served_profiles"] == _served_record(home) == ["default"]
+        assert old.disconnected
+        marker = secondary / "gateway.parked"
+        marker.touch()
+        assert (await asyncio.to_thread(start, {"name": "worker"}))["error"]
+        marker.unlink()
+        (secondary / ".env").write_text("DISCORD_BOT_TOKEN=new-worker-token\n")
+        answer = await asyncio.to_thread(start, {"name": "worker"})
+        assert answer["served"] == "worker"
+        assert answer["served_profiles"] == _served_record(home) == ["default", "worker"]
+        assert runner._profile_adapters["worker"][Platform.DISCORD].token.endswith("new-worker-token\n")
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.asyncio
+async def test_profile_lifecycle_over_real_control_socket(tmp_path, monkeypatch):
+    from gateway.run import _start_gateway_start_control_socket
+    from gateway import control_socket
+    runner, home = _runner(tmp_path, monkeypatch)
+    secondary = _mkprofile(home, "worker")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        server = await _start_gateway_start_control_socket(runner)
+        assert server is not None
+        try:
+            (secondary / "gateway.parked").touch()
+            stopped = await asyncio.to_thread(control_socket.request_unserve_profile, home, "worker")
+            assert stopped["unserved"] == "worker"
+            assert _served_record(home) == ["default"]
+            refused = await asyncio.to_thread(control_socket.request_serve_profile_hot, home, "worker")
+            assert "parked" in refused["error"]
+            (secondary / "gateway.parked").unlink()
+            started = await asyncio.to_thread(control_socket.request_serve_profile_hot, home, "worker")
+            assert started["served"] == "worker"
+            assert _served_record(home) == ["default", "worker"]
+        finally:
+            await server.stop()
+
+
+@pytest.mark.asyncio
 async def test_created_then_credentialed_profile_is_served_without_restart(tmp_path, monkeypatch):
     runner, home = _runner(tmp_path, monkeypatch)
     alpha_dir = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")

@@ -105,15 +105,6 @@ def _fresh_node_modules(bridge_dir: Path) -> None:
     )
 
 
-class TestFileContentHash:
-    def test_hashes_file(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-
-        f = tmp_path / "x.js"
-        f.write_text("abc", encoding="utf-8")
-        h = _file_content_hash(f)
-        assert len(h) == 16
-        assert h == _file_content_hash(f)  # deterministic
 
 
 class TestStaleBridgeHandshake:

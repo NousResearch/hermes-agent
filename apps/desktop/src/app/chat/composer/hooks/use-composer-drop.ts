@@ -1,8 +1,10 @@
 import { type DragEvent as ReactDragEvent, useRef, useState } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
+import { $terminalBackend } from '@/store/session'
+import { isSessionRemote } from '@/store/session-states'
 
-import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../../hooks/use-composer-actions'
+import { extractDroppedFiles, HERMES_PATHS_MIME, type OsDropStagingContext, partitionDroppedFiles } from '../../hooks/use-composer-actions'
 import { dragHasAttachments, droppedFileInlineRefs, type InlineRefInput } from '../inline-refs'
 import type { ChatBarProps } from '../types'
 
@@ -12,6 +14,7 @@ interface UseComposerDropArgs {
   onAttachDroppedItems: ChatBarProps['onAttachDroppedItems']
   recordUndoPoint: () => void
   requestMainFocus: () => void
+  sessionId?: string | null
 }
 
 /**
@@ -26,7 +29,8 @@ export function useComposerDrop({
   insertInlineRefs,
   onAttachDroppedItems,
   recordUndoPoint,
-  requestMainFocus
+  requestMainFocus,
+  sessionId
 }: UseComposerDropArgs) {
   const [dragActive, setDragActive] = useState(false)
   const dragDepthRef = useRef(0)
@@ -35,6 +39,16 @@ export function useComposerDrop({
     dragDepthRef.current = 0
     setDragActive(false)
   }
+
+  // Staging inputs for OS drops, read at drop time (#52427): a local
+  // connection on a shared filesystem keeps non-image OS drops as
+  // original-path inline refs; remote / container / cross-filesystem
+  // backends still stage. Mirrors uploadComposerAttachment's byte decision.
+  const osDropStaging = (): OsDropStagingContext => ({
+    backendCwd: cwd,
+    remote: isSessionRemote(sessionId),
+    terminalBackend: $terminalBackend.get()
+  })
 
   const handleDragEnter = (event: ReactDragEvent<HTMLFormElement>) => {
     if (!onAttachDroppedItems || !dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
@@ -88,8 +102,9 @@ export function useComposerDrop({
     // In-app drags (project tree / gutter) are workspace-relative paths the
     // gateway resolves directly, so they stay inline @file:/@line: refs. OS
     // drops are absolute local paths a remote gateway can't read (and images
-    // need byte upload for vision), so route them through the upload pipeline.
-    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    // need byte upload for vision), so route them through the upload pipeline
+    // — unless the backend resolves this machine's paths as-is (#52427).
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates, osDropStaging())
     const refs = droppedFileInlineRefs(inAppRefs, cwd)
 
     if (refs.length && insertInlineRefs(refs)) {
@@ -142,7 +157,7 @@ export function useComposerDrop({
     // in-app drags stay inline refs; OS drops go through the upload pipeline.
     // (When no upload handler is wired, fall back to inline refs for all.)
     const attach = onAttachDroppedItems
-    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates, osDropStaging())
     const refs = droppedFileInlineRefs(attach ? inAppRefs : candidates, cwd)
 
     if (refs.length && insertInlineRefs(refs)) {

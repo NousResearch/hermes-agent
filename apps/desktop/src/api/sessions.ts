@@ -42,6 +42,18 @@ function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?:
   return scoped
 }
 
+/**
+ * The profile a session WRITE must name in its body. The PATCH handler reads
+ * its target DB from `body.profile` alone (`_with_db(body.profile, ...)`), and
+ * under multiplex-only there is no per-profile backend whose HERMES_HOME could
+ * stand in for it: an unnamed owner lands the rename/pin/archive/mark-read on
+ * the shared backend's own state.db. "Unnamed" therefore means "the profile I
+ * am looking at", not "whatever home the backend was launched in".
+ */
+function sessionWriteProfile(profile?: null | string): string | undefined {
+  return String(profile ?? '').trim() || getApiRequestProfile() || undefined
+}
+
 function sessionScopeQuery(scope?: ProfileScope): string {
   const profile = sessionScoped(scope).profile
 
@@ -162,6 +174,12 @@ export interface SidebarSessionSlice {
   /** Per-profile tokens and spend over every session, not just this window.
    *  Absent from the legacy per-slice endpoint, which has no aggregate. */
   profiles_usage?: Record<string, { cost_usd: number; tokens: number }>
+  /** This slice is a failed load, not a successful empty session list. */
+  failed?: boolean
+  /** Ask the sidebar to offer Retry instead of rendering "No sessions yet". */
+  retry?: boolean
+  /** Profiles whose scan failed while a sibling profile still returned rows. */
+  profiles_failed?: Record<string, { failed?: boolean; retry?: boolean; error?: string }>
   /** Profiles whose scan for THIS slice failed. Batched `/sidebar` stamps the
    *  same profile errors on every slice (one DB open). Legacy per-slice calls
    *  stamp only the slice that actually failed, so a cron I/O error cannot
@@ -192,6 +210,11 @@ export interface SidebarSessionsResponse {
   cron: SidebarSessionSlice
   messaging: SidebarSessionSlice
   errors?: Array<{ profile: string; error: string }>
+  /** Profiles that failed while another profile's rows are still in the slices. */
+  profiles_failed?: Record<string, { failed?: boolean; retry?: boolean; error?: string }>
+  /** `{profile: 'corrupt'}` for each profile whose state.db the backend has found
+   *  structurally damaged. Absent from older backends. */
+  storage?: Record<string, 'corrupt'>
 }
 
 export interface SidebarSessionsRequest {
@@ -240,7 +263,9 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
   const cronErrors = cron.errors ?? []
   const messagingErrors = messaging.errors ?? []
 
-  return {
+  const storage = { ...recents.storage, ...cron.storage, ...messaging.storage }
+
+  const response: SidebarSessionsResponse = {
     recents: {
       profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
       sessions: recents.sessions,
@@ -255,6 +280,12 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
       ...(messagingErrors.length ? { errors: messagingErrors } : {})
     }
   }
+
+  if (Object.keys(storage).length > 0) {
+    response.storage = storage
+  }
+
+  return response
 }
 
 /** The PR each of these sessions opened, recovered from its own transcript —
@@ -331,7 +362,9 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
       sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
-    errors: result.errors
+    errors: result.errors,
+    profiles_failed: result.profiles_failed,
+    storage: result.storage
   }
 }
 
@@ -344,11 +377,13 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
   // remote gateway with no remoteProfile alias: the archive lands on the wrong
   // (default) state.db, no-ops on a missing row, and the archived/unarchived
   // state silently fails to stick — the same class as the unscoped DELETE.
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived, ...(profile ? { profile } : {}) }
+    body: { archived, ...(owner ? { profile: owner } : {}) }
   })
 }
 
@@ -360,11 +395,13 @@ export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: st
   // Owning profile in the PATCH body (see setSessionArchived / renameSession):
   // the handler reads its target DB from body.profile, so a remote/foreign
   // profile's pin must travel in the body or it no-ops on the wrong state.db.
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { pinned, ...(profile ? { profile } : {}) }
+    body: { pinned, ...(owner ? { profile: owner } : {}) }
   })
 }
 
@@ -377,11 +414,13 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   // the handler reads its target DB from body.profile, so a remote/foreign
   // profile's unread toggle must travel in the body or it no-ops on the wrong
   // state.db.
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { unread, ...(profile ? { profile } : {}) }
+    body: { unread, ...(owner ? { profile: owner } : {}) }
   })
 }
 
@@ -633,10 +672,12 @@ export function renameSession(
   title: string,
   profile?: string | null
 ): Promise<{ ok: boolean; title: string }> {
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean; title: string }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { title, ...(profile ? { profile } : {}) }
+    body: { title, ...(owner ? { profile: owner } : {}) }
   })
 }

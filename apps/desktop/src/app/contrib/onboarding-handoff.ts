@@ -15,8 +15,7 @@ import {
   firstTaskTitle,
   guideSourceConnectionId,
   readGuideHandoffReceipt,
-  retrySetupHandoff,
-  SETUP_PROFILE
+  retrySetupHandoff
 } from '@/components/onboarding-chat/setup-profile'
 import { showHandoffTour } from '@/components/onboarding-chat/signpost'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
@@ -28,7 +27,8 @@ import { requestGatewayForAgent } from '@/store/gateway'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $onboardingAnswers } from '@/store/onboarding-answers'
 import { beginOnboardingHandoff, completeOnboardingFlow } from '@/store/onboarding-gate'
-import { $activeGatewayProfile, $newChatProfile, $newChatRoute, ensureGatewayAgent } from '@/store/profile'
+import { watchPluginOutcomes } from '@/store/onboarding-plugin-outcomes'
+import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayAgent } from '@/store/profile'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
@@ -68,6 +68,10 @@ export function useOnboardingHandoff({
   const setupHandoff = useStore($setupHandoff)
   const selectedStoredId = useStore($selectedStoredSessionId)
 
+  // The guide's install card settles before its handoff card; its per-plugin result rides the answers into the
+  // build session's runbook.
+  useEffect(() => watchPluginOutcomes(() => $setupSession.get()?.runtimeId), [])
+
   // Resume an existing receipt when the welcome chat is reopened after a relaunch. Recovery reads the saved
   // receipt only; it never creates a new build session.
   useEffect(() => {
@@ -75,7 +79,7 @@ export function useOnboardingHandoff({
       !isOnboardingEnabled() ||
       $setupHandoff.get() ||
       !selectedStoredId ||
-      $activeGatewayProfile.get() !== SETUP_PROFILE
+      $profiles.get().find(p => p.name === $activeGatewayProfile.get())?.role !== 'setup'
     ) {
       return
     }
@@ -104,7 +108,7 @@ export function useOnboardingHandoff({
 
       $setupSession.set({
         connectionId,
-        profile: SETUP_PROFILE,
+        profile: $activeGatewayProfile.get(),
         runtimeId: $activeSessionId.get() ?? '',
         storedId: selectedStoredId
       })
@@ -164,7 +168,9 @@ export function useOnboardingHandoff({
               const result = await request<{ saved?: boolean; profile?: string; target?: string }>(
                 owner,
                 'profiles.remember_onboarding',
-                { answers: { ...answers, connectors: answers.connectors.map(connectorTitle) } }
+                {
+                  answers: { ...answers, connectors: answers.connectors.map(connectorTitle), plugins: answers.plugins }
+                }
               )
 
               if (!result.saved || result.profile !== BUILD_PROFILE || result.target !== 'user') {
@@ -182,8 +188,7 @@ export function useOnboardingHandoff({
               const seed = await buildFirstTaskSeedMessages(
                 setupHandoff.task,
                 $onboardingAnswers.get(),
-                setupHandoff.plan,
-                owner
+                setupHandoff.plan
               )
 
               const runtimeId = await runCreatePinnedTo(BUILD_PROFILE, () =>

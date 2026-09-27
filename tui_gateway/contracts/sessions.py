@@ -119,6 +119,9 @@ class SessionCreateParams(ProfileParams):
     cols: int | None = None
     source: str | None = None
     cwd: str | None = None
+    # #52589: provenance for ``cwd`` — true only for a deliberate workspace pick;
+    # an inherited app-global workspace must yield to a named profile's terminal.cwd.
+    cwd_explicit: bool | None = None
     messages: list[SeedMessage] | None = None
     parent_session_id: str | None = None
     title: str | None = None
@@ -142,6 +145,27 @@ class SessionCreateResult(Result):
 
 method("session.create", params=SessionCreateParams, result=SessionCreateResult,
        doc="Mint a live session (agent builds after the reply); a DB row appears on the first prompt unless seeded.")
+
+
+class SessionBranchStoredParams(ProfileParams):
+    parent_session_id: str = Field(min_length=1)
+    cols: int | None = None
+    source: str | None = None
+    cwd: str | None = None
+
+
+class SessionBranchStoredResult(Result):
+    session_id: str
+    stored_session_id: str
+    message_count: int
+    messages_omitted: bool
+    info: SessionLiveInfo
+
+
+method("session.branch_stored", params=SessionBranchStoredParams, result=SessionBranchStoredResult,
+       doc="Whole-session branch of a stored parent: the owning backend reads and copies the transcript, "
+           "which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty "
+           "branch).")
 
 
 # ── session.resume / activate ─────────────────────────────────────────────────────────────────
@@ -357,6 +381,24 @@ class SessionBranchResult(Result):
 
 method("session.branch", params=SessionBranchParams, result=SessionBranchResult,
        doc="Fork a live session into a new stored child that shares the parent's history so far.")
+
+
+class SessionBranchWholeParams(SessionParams):
+    name: str | None = None
+
+
+class SessionBranchWholeResult(Result):
+    session_id: str
+    stored_session_id: str
+    title: str
+    parent: str
+    message_count: int
+    messages_omitted: bool
+    info: SessionLiveInfo
+
+
+method("session.branch_whole", params=SessionBranchWholeParams, result=SessionBranchWholeResult,
+       doc="session.branch of the whole history without echoing the copied transcript back.")
 
 
 class SessionUndoParams(SessionParams):

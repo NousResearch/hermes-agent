@@ -13,6 +13,8 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { translateBots } from './i18n-test-helper'
+
 const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
 
 const mocks = vi.hoisted(() => ({
@@ -27,6 +29,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 
   return {
     ...original,
+    usePluginI18n: () => translateBots,
     host: {
       ...original.host,
       notify: mocks.notify,
@@ -49,7 +52,7 @@ interface PickMessage {
 function openHubBrowser() {
   const { container } = render(<HubSkillsSection />)
 
-  fireEvent.click(screen.getByRole('button', { name: /browse the full hub/ }))
+  fireEvent.click(screen.getByRole('button', { name: /browse the full hub/i }))
 
   const frame = container.querySelector('iframe')
 
@@ -115,7 +118,7 @@ describe('hub pick messages', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /browse the full hub/ }))
+    fireEvent.click(screen.getByRole('button', { name: /browse the full hub/i }))
     const frame = container.querySelector('iframe') as HTMLIFrameElement
 
     postPick(
@@ -195,7 +198,7 @@ describe('hub pick messages', () => {
   it('stops listening once the hub browser is closed', () => {
     const frame = openHubBrowser()
 
-    fireEvent.click(screen.getByRole('button', { name: /hide the hub browser/ }))
+    fireEvent.click(screen.getByRole('button', { name: /hide the hub browser/i }))
     postPick(
       { identifier: 'nous/web-research', name: 'Web Research', type: 'hermes-skill-pick' },
       {

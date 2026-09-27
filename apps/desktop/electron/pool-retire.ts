@@ -47,8 +47,8 @@ export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDe
     return result
   }
 
-  const needsCapacity = () => !disposed && deps.coordinator.foregroundWaiters.size > 0 &&
-    deps.coordinator.activeCount >= deps.coordinator.limit
+  const needsCapacity = () =>
+    !disposed && deps.coordinator.foregroundWaiters.size > 0 && deps.coordinator.activeCount >= deps.coordinator.limit
 
   async function retire(key: string, entry: E, needed: () => boolean): Promise<boolean> {
     const eligible = () => !disposed && deps.pool.get(key) === entry && entry.activeTurn !== true && needed()
@@ -122,16 +122,18 @@ export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDe
 
     clearTimeout(retry)
     scheduled = true
-    void enqueue(reclaim).catch(report).finally(() => {
-      scheduled = false
+    void enqueue(reclaim)
+      .catch(report)
+      .finally(() => {
+        scheduled = false
 
-      // Busy work may finish without a renderer touch (cron / side agents).
-      // The coordinator's existing ticket deadline bounds these retries.
-      if (needsCapacity()) {
-        retry = setTimeout(wake, 1000)
-        retry.unref?.()
-      }
-    })
+        // Busy work may finish without a renderer touch (cron / side agents).
+        // The coordinator's existing ticket deadline bounds these retries.
+        if (needsCapacity()) {
+          retry = setTimeout(wake, 1000)
+          retry.unref?.()
+        }
+      })
   }
 
   const unsubscribe = deps.coordinator.onChange(wake)
@@ -145,27 +147,29 @@ export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDe
         throw new Error(`Backend for "${key}" was retired; open it explicitly to reconnect.`)
       }
     },
-    retireIdle: (key: string, idleMs: number) => enqueue(async () => {
-      const entry = deps.pool.get(key)
+    retireIdle: (key: string, idleMs: number) =>
+      enqueue(async () => {
+        const entry = deps.pool.get(key)
 
-      return entry ? retire(key, entry, () => Date.now() - (entry.lastActiveAt || 0) > idleMs) : false
-    }),
-    evictTo: (keep: number, freshMs: number) => enqueue(async () => {
-      const retired: string[] = []
-      const overCap = () => [...deps.pool.values()].filter(entry => entry.process).length > Math.max(0, keep)
+        return entry ? retire(key, entry, () => Date.now() - (entry.lastActiveAt || 0) > idleMs) : false
+      }),
+    evictTo: (keep: number, freshMs: number) =>
+      enqueue(async () => {
+        const retired: string[] = []
+        const overCap = () => [...deps.pool.values()].filter(entry => entry.process).length > Math.max(0, keep)
 
-      for (const [key, entry] of selectRetirementCandidates(deps.pool, deps.coordinator.foregroundWaiters)) {
-        if (await retire(key, entry, () => overCap() && Date.now() - (entry.lastActiveAt || 0) > freshMs)) {
-          retired.push(key)
+        for (const [key, entry] of selectRetirementCandidates(deps.pool, deps.coordinator.foregroundWaiters)) {
+          if (await retire(key, entry, () => overCap() && Date.now() - (entry.lastActiveAt || 0) > freshMs)) {
+            retired.push(key)
+          }
         }
-      }
 
-      return retired
-    }),
+        return retired
+      }),
     dispose: () => {
       disposed = true
       clearTimeout(retry)
       unsubscribe()
-    },
+    }
   }
 }

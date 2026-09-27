@@ -13,7 +13,10 @@ const composerFillTransition = 'transition-[background-color] duration-150 ease-
  *  off this hot path so typing does not re-blur the transcript each frame. */
 export const composerInputSurface = cn(composerFill, composerFillTransition)
 // The `-z-10` paint layer behind the editable surface; hydrated and fallback composers share it.
-export const composerInputBacking = cn('pointer-events-none absolute inset-0 -z-10 rounded-[inherit]', composerInputSurface)
+export const composerInputBacking = cn(
+  'pointer-events-none absolute inset-0 -z-10 rounded-[inherit]',
+  composerInputSurface
+)
 
 /** Backdrop treatment for non-input composer chrome. Harmless when the fill
  *  goes opaque (drawer open) — nothing shows through to blur. */

@@ -1,0 +1,47 @@
+name: hermes-lcm-x
+title: LCM-X
+repo: https://github.com/electricsheephq/lcm-x
+sha: 2f3a96623d351649a0714eb42d98ff5b945337f2
+description: 'Lossless context memory engine: instead of lossy compaction, LCM-X keeps every turn in a local SQLite store (lcm.db)
+  and builds a recoverable DAG of summaries over it, with 15 lcm_* tools to search, recall and expand earlier context. Select it
+  with context.engine: lcm-x. Upgrading from hermes-lcm (breaking in v0.24.0): stop Hermes, then in plugins.enabled replace
+  hermes-lcm with hermes-lcm-x and run exactly one LCM copy (the install script prints the steps; the old engine name lcm
+  still resolves with a deprecation warning); lcm.db and the lcm: config block are unchanged.
+  Summaries use the model Hermes is configured with. Disclosure — optional semantic recall (embeddings_enabled, off by
+  default) sends message text to the embedding provider you configure (Voyage via VOYAGE_API_KEY, or an OpenAI-compatible
+  endpoint, or a local Ollama); for known cloud providers the provider-bound copy is privacy-transformed by default
+  (LCM_EMBEDDING_PRIVACY_ENABLED=false opts out), while lcm.db keeps the raw text. Every turn (user, assistant and tool
+  output) is stored in plaintext in lcm.db (secret redaction at rest is opt-in). The engine also reads Hermes'' state.db
+  read-only for session lineage, reads private AIAgent attributes via the call stack on Hermes builds without subagent
+  hooks, and runs git on its own install directory for lcm_status/lcm_doctor; tiktoken may fetch its BPE file on first use.'
+maintainer: electricsheephq
+tier: community
+category: memory
+requires_hermes: '>=0.21.3'
+docs_url: https://github.com/electricsheephq/lcm-x#readme
+version: "0.24.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - lcm_grep
+    - lcm_recall
+    - lcm_query_state
+    - lcm_compute
+    - lcm_compile_evidence
+    - lcm_evidence_pack
+    - lcm_retrieve
+    - lcm_recent
+    - lcm_load_session
+    - lcm_describe
+    - lcm_expand
+    - lcm_expand_query
+    - lcm_status
+    - lcm_inspect
+    - lcm_doctor
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

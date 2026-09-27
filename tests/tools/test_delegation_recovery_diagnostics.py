@@ -93,5 +93,13 @@ print(json.dumps([{"event": event, "message": format_process_notification(event)
             by_index[index] = path
         for path in transcripts:
             assert (path in item['message']) == (path in paths.values())
+        # #116000: the event itself carries what the parent needs to continue — the verbatim
+        # transcript tail per task and the owner's git state — on both renderers (single/batch).
+        tails = event.get("transcript_tails") or {}
+        assert set(tails) == set(paths)
+        for index, tail in tails.items():
+            assert "kickoff" in tail and tail in item["message"]
+        assert "uncommitted file(s)" in event["git_state_hint"]
+        assert event["git_state_hint"] in item["message"]
     assert set(by_index) == ({'1'} if missing_writer else {'0', '1'} if split else {'0'})
     assert set(by_index.values()) == set(transcripts)

@@ -21,6 +21,7 @@ import {
   setDataUrlReadMaxMb
 } from '@/store/data-url-read-max'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
+import { $alwaysExternalLinks, setAlwaysExternalLinks } from '@/store/external-links'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
@@ -51,6 +52,8 @@ import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 export function ConfigSettings({
   activeSectionId,
@@ -99,11 +102,19 @@ function ConfigSettingsInner({
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
   const disableF12 = useStore($disableF12)
+  const alwaysExternalLinks = useStore($alwaysExternalLinks)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const { data: loadedConfig, isError: configLoadFailed, refetch: refetchConfig } = useHermesConfigRecord(scopeProfile)
+
+  const {
+    data: loadedConfig,
+    isError: configLoadFailed,
+    refetch: refetchConfig,
+    writeScope
+  } = useHermesConfigRecord(scopeProfile)
+
   // Writes land on the same cache key the query above reads (base key when
   // following the active profile, suffixed when a scope override is set).
   const writeConfigCache = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
@@ -205,7 +216,7 @@ function ConfigSettingsInner({
       saveQueueRef.current = saveQueueRef.current.then(async () => {
         try {
           const patch = diffConfig(configBaselineRef.current ?? {}, snapshot)
-          const result = await saveHermesConfig(patch, scopeProfile)
+          const result = await saveHermesConfig(patch, writeScope ?? scopeProfile)
 
           if (!result.ok) {
             throw new Error(c.autosaveFailed)
@@ -245,7 +256,7 @@ function ConfigSettingsInner({
 
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
-  }, [config, onConfigSaved, saveVersion])
+  }, [config, onConfigSaved, saveVersion, writeScope, scopeProfile])
 
   const applyConfig = (next: HermesConfigRecord) => {
     saveVersionRef.current += 1
@@ -294,6 +305,8 @@ function ConfigSettingsInner({
   // into view and flash it, then drop the param so it doesn't re-fire.
   const [searchParams, setSearchParams] = useSearchParams()
   const targetField = searchParams.get('field')
+
+  useSettingDeepLink(`config:${activeSectionId}`, page => subpage === undefined || page === subpage)
 
   useEffect(() => {
     if (!targetField || !config || !schema) {
@@ -359,11 +372,7 @@ function ConfigSettingsInner({
       <SettingsProfileScope className="mb-5" />
       {activeSectionId === 'model' && (
         <div className={showModelSettings ? 'mb-6' : undefined}>
-          <ModelSettings
-            onMainModelChanged={onMainModelChanged}
-            scopeProfile={scopeProfile}
-            subpage={subpage}
-          />
+          <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} subpage={subpage} />
         </div>
       )}
       {children}
@@ -421,7 +430,9 @@ function ConfigSettingsInner({
 
   const showEmptyState =
     visibleFields.length === 0 &&
-    (subpage === undefined ? activeSectionId !== 'chat' : !showModelSettings && !showDesktopSettings && !showAttachments)
+    (subpage === undefined
+      ? activeSectionId !== 'chat'
+      : !showModelSettings && !showDesktopSettings && !showAttachments)
 
   return renderPage(
     <>
@@ -433,14 +444,22 @@ function ConfigSettingsInner({
           <ToggleRow
             checked={keepAwake}
             description={c.keepAwakeDesc}
+            id={settingElementId(SETTING_IDS.advanced.keepAwake)}
             label={c.keepAwakeTitle}
             onChange={setKeepAwake}
           />
           <ToggleRow
             checked={disableF12}
             description={c.disableF12Desc}
+            id={settingElementId(SETTING_IDS.advanced.disableF12)}
             label={c.disableF12Title}
             onChange={setDisableF12}
+          />
+          <ToggleRow
+            checked={alwaysExternalLinks}
+            description={c.alwaysExternalLinksDesc}
+            label={c.alwaysExternalLinksTitle}
+            onChange={setAlwaysExternalLinks}
           />
           <PoolLimitsSetting />
           <QuickEntrySettings />
@@ -450,6 +469,9 @@ function ConfigSettingsInner({
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
       {showAttachments ? <AttachmentSizeSetting /> : null}
+      {activeSectionId === 'voice' ? (
+        <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+      ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (
@@ -553,6 +575,7 @@ function AttachmentSizeSetting() {
         </div>
       }
       description={c.attachmentSizeDesc}
+      id={settingElementId(SETTING_IDS.chat.attachmentSize)}
       title={c.attachmentSizeTitle}
     />
   )

@@ -133,6 +133,23 @@ async def test_whoami_non_admin_lists_runnable_commands():
     assert "/model" in result
 
 
+@pytest.mark.asyncio
+async def test_help_non_admin_lists_only_runnable_commands():
+    """/help for a gated non-admin renders the floor + user_allowed_commands, never the
+    admin-only catalog the dispatcher would then refuse; admins keep the full list."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["status"],
+        }
+    )
+    user = await runner._handle_message(_make_event("/help", _make_source(user_id="999")))
+    assert "`/help" in user and "`/whoami" in user and "`/status" in user
+    assert "`/model" not in user and "`/restart" not in user
+    admin = await runner._handle_message(_make_event("/help", _make_source(user_id="111")))
+    assert "`/model" in admin and "`/restart" in admin
+
+
 # ---------------------------------------------------------------------------
 # Gate denial — admin-only command attempted by non-admin
 # ---------------------------------------------------------------------------

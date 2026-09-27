@@ -6,11 +6,14 @@ import { isReauthRequiredError, makeUnsignedOauthError } from './backend-health'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
+  isSshAuthFailedBootFailure,
   shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
-  shouldLatchRemoteReauthFailure
+  shouldLatchRemoteReauthFailure,
+  shouldLatchSshAuthFailure
 } from './backend-start-failure'
+import { SshConnection } from './ssh-connection'
 
 test('latches a LOCAL backend failure so the install-retry loop is broken', () => {
   assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false }), true)
@@ -23,11 +26,11 @@ test('never latches a REMOTE failure so recovery stays retryable without a resta
   assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: true }), false)
 })
 
-test('the two branches are mutually exclusive (a failure either latches or stays retryable)', () => {
-  for (const attemptedRemote of [true, false]) {
-    const latched = shouldLatchBackendStartFailure({ attemptedRemote })
-    assert.equal(latched, !attemptedRemote)
-  }
+test('never latches a supervisor-owned respawn failure (it has its own bounded crash-loop budget)', () => {
+  // A pre-ready child exit during a supervisor respawn must be able to spend
+  // the remaining crash-loop slots instead of becoming a permanent local latch.
+  assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false, supervisorRecovery: true }), false)
+  assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false, supervisorRecovery: false }), true)
 })
 
 test('latches a CONFIRMED remote reauth failure so the overlay stays clickable', () => {
@@ -150,6 +153,41 @@ test('every remote failure picks exactly one path: retry, reauth latch, or host-
       assert.ok(picked >= 1, `remote failure reauth=${isReauth} hostKey=${isHostKeyChanged} fell through every path`)
     }
   }
+})
+
+test('FIX #72698: a rejected SSH key latches the boot failure and is never auto-retried', () => {
+  // The error exactly as SshConnection.open() rejects it, and as the SSH
+  // bootstrap re-wraps a lifecycle failure (message + sshError tag).
+  const fromOpen = new SshConnection({ host: '127.0.0.1', user: 'me' }, {})._fail(
+    'me@127.0.0.1: Permission denied (publickey,password,keyboard-interactive).'
+  )
+
+  const rewrapped = Object.assign(new Error(fromOpen.message), { sshError: fromOpen.kind, isSshBootstrap: true })
+
+  for (const error of [fromOpen, rewrapped, new Error(fromOpen.message)]) {
+    const isSshAuthFailed = isSshAuthFailedBootFailure(error)
+    const context = { attemptedRemote: true, isReauth: false, isHostKeyChanged: false, isSshAuthFailed }
+
+    assert.equal(shouldLatchSshAuthFailure(context), true)
+    assert.equal(isRetryableRemoteBootFailure(context), false)
+  }
+
+  // Connectivity faults keep self-healing; local boots use the local latch.
+  const unreachable = new SshConnection({ host: '127.0.0.1', user: 'me' }, {})._fail(
+    'ssh: connect to host 127.0.0.1 port 22: Connection refused'
+  )
+
+  const transient = {
+    attemptedRemote: true,
+    isReauth: false,
+    isSshAuthFailed: isSshAuthFailedBootFailure(unreachable)
+  }
+
+  assert.equal(shouldLatchSshAuthFailure(transient), false)
+  assert.equal(isRetryableRemoteBootFailure(transient), true)
+  assert.equal(shouldLatchSshAuthFailure({ attemptedRemote: false, isReauth: false, isSshAuthFailed: true }), false)
+  // A remote lifecycle's filesystem "Permission denied" is not a credential rejection.
+  assert.equal(isSshAuthFailedBootFailure(new Error('mkdir: /opt/hermes: Permission denied')), false)
 })
 
 test('FIX #95701: while a reauth rejection is latched, only re-emits of that failure reach the renderer', () => {

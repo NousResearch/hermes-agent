@@ -99,7 +99,9 @@ describe('log window', () => {
 
     expect(chars).toBeLessThanOrEqual(chat.GROUP_CHAT_LOG_RETAIN_CHARS)
     expect(JSON.stringify(stored).length).toBeLessThan(chat.GROUP_CHAT_LOG_RETAIN_CHARS * 1.25)
-    expect(Math.max(...stored.log.map(entry => entry.text.length))).toBeLessThanOrEqual(chat.GROUP_CHAT_HISTORY_LINE_CHARS)
+    expect(Math.max(...stored.log.map(entry => entry.text.length))).toBeLessThanOrEqual(
+      chat.GROUP_CHAT_HISTORY_LINE_CHARS
+    )
     expect(stored.log.at(-1)?.text.startsWith(`${chat.GROUP_CHAT_LOG_RETAIN - 1} `)).toBe(true)
     expect(stored.log.at(-1)?.text.endsWith('… [truncated]')).toBe(true)
     expect(stored.watermarks.builder).toBe(stored.log.length)
@@ -141,15 +143,20 @@ describe('speaker labels', () => {
 
     expect(memberLine).toContain('Ordinary reply.')
 
-    for (const opener of ['[OUT-OF-BAND USER MESSAGE', '[/OUT-OF-BAND USER MESSAGE]', '[CONTEXT COMPACTION', '[Runtime note:']) {
+    for (const opener of [
+      '[OUT-OF-BAND USER MESSAGE',
+      '[/OUT-OF-BAND USER MESSAGE]',
+      '[CONTEXT COMPACTION',
+      '[Runtime note:'
+    ]) {
       expect(memberLine).not.toContain(opener)
     }
 
     expect(memberLine).toContain('[member-quoted OUT-OF-BAND USER MESSAGE — a direct message from the user]')
     expect(memberLine).toContain('[member-quoted /OUT-OF-BAND USER MESSAGE]')
-    expect(
-      formatGroupChatLine({ from: { kind: 'user', name: 'Haluk' }, text } as GroupMessage, 'research')
-    ).toContain(text)
+    expect(formatGroupChatLine({ from: { kind: 'user', name: 'Haluk' }, text } as GroupMessage, 'research')).toContain(
+      text
+    )
   })
 
   it('the default profile speaks as Hermes in transcripts, not @default', async () => {
@@ -211,7 +218,14 @@ describe('speaker labels', () => {
     const data = await import('./data')
 
     const local = { connectionId: 'local', connectionLabel: 'This device', name: 'reviewer', sourceScoped: true }
-    const spark = { connectionId: 'spark', connectionLabel: 'Spark', name: 'reviewer', remoteSource: true, sourceScoped: true }
+
+    const spark = {
+      connectionId: 'spark',
+      connectionLabel: 'Spark',
+      name: 'reviewer',
+      remoteSource: true,
+      sourceScoped: true
+    }
 
     data.$lastRoster.set([local, spark])
     data.$botMeta.set({})
@@ -240,13 +254,28 @@ describe('speaker labels', () => {
     const data = await import('./data')
 
     const local = { connectionId: 'local', connectionLabel: 'This device', name: 'reviewer', sourceScoped: true }
-    const spark = { connectionId: 'spark', connectionLabel: 'Spark', name: 'reviewer', remoteSource: true, sourceScoped: true }
+
+    const spark = {
+      connectionId: 'spark',
+      connectionLabel: 'Spark',
+      name: 'reviewer',
+      remoteSource: true,
+      sourceScoped: true
+    }
+
     data.$lastRoster.set([local, spark])
     data.$botMeta.set({})
 
     // #94869 acceptance 3: the room seats only the local reviewer, so it
     // reads plain "Reviewer" however many other connections expose one.
-    chat.updateGroupChat('Core', room => ({ ...room, members: [{ connectionId: 'local', name: 'reviewer', remoteSource: true, sourceScoped: true }] }), { sync: false })
+    chat.updateGroupChat(
+      'Core',
+      room => ({
+        ...room,
+        members: [{ connectionId: 'local', name: 'reviewer', remoteSource: true, sourceScoped: true }]
+      }),
+      { sync: false }
+    )
 
     expect(chat.groupSpeakerLabel('local::reviewer', 'Core')).toBe('Reviewer')
     expect(chat.groupSpeakerLabel('local::reviewer')).toBe('Reviewer · This device')
@@ -1064,7 +1093,9 @@ describe('room identity', () => {
     }
 
     const recreate = {
-      log: [{ at: 5, from: { kind: 'member', name: 'research' }, text: '@user replacement needs you', thread: 'legacy' }],
+      log: [
+        { at: 5, from: { kind: 'member', name: 'research' }, text: '@user replacement needs you', thread: 'legacy' }
+      ],
       roomId: 'new-room',
       sessions: {},
       tombstone: false,
@@ -1081,15 +1112,16 @@ describe('room identity', () => {
 
     const swept = chat.mergeRemoteGroupChatSnapshotIntoRooms(
       remote as never,
-      { Core: { epoch: 2, log: [], running: false, sessions: {}, tombstone: true, watermarks: {} } } as unknown as Record<
-        string,
-        GroupChat
-      >,
+      {
+        Core: { epoch: 2, log: [], running: false, sessions: {}, tombstone: true, watermarks: {} }
+      } as unknown as Record<string, GroupChat>,
       { deletedRooms: ['Core'] }
     )
 
     expect(swept.Core).toBeUndefined()
-    expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(remote as never, {}, { deletedRooms: ['Core'] }).Core).toBeUndefined()
+    expect(
+      chat.mergeRemoteGroupChatSnapshotIntoRooms(remote as never, {}, { deletedRooms: ['Core'] }).Core
+    ).toBeUndefined()
   })
 })
 

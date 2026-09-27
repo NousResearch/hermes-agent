@@ -650,11 +650,13 @@ class CLIAgentSetupMixin:
             effective_model = model_override or self.model
             # -q never builds the prompt_toolkit app, so the clarify modal can't be
             # answered — answer headless instead of polling until clarify_timeout.
+            single_query_mode = getattr(self, "_single_query_mode", False)
             clarify_callback = (
                 # See #94943.
                 _single_query_clarify_callback
-                if getattr(self, "_single_query_mode", False)
+                if single_query_mode
                 else self._clarify_callback)
+            connection_callback = None if single_query_mode else self._connection_callback
             self.agent = AIAgent(
                 model=effective_model, api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"), provider=runtime.get("provider"),
@@ -676,7 +678,7 @@ class CLIAgentSetupMixin:
                 provider_data_collection=self._provider_data_collection,
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
-                clarify_callback=clarify_callback,
+                clarify_callback=clarify_callback, connection_callback=connection_callback,
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,

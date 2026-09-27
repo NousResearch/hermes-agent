@@ -246,8 +246,12 @@ def build_write_approval_paths(home: str) -> set[str]:
 _HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
 
 
-def _classify_write_denial(path: str) -> Optional[str]:
-    """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed."""
+def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
+    """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed.
+
+    ``entry=True`` is for ops that unlink/rename the directory entry itself (a
+    symlink, not its target): the entry — parent realpath'd, final component
+    kept — is vetted as well as the target it resolves to."""
     # NT/device-namespace check runs on the RAW string, before realpath():
     # resolving such a path is itself the NTLM-leak trigger, and namespace
     # prefixes defeat string-prefix denylist comparison after normalization.
@@ -255,6 +259,23 @@ def _classify_write_denial(path: str) -> Optional[str]:
         return "nt_namespace"
     homes, resolved = _homes_and_resolved(path)
 
+    # The runtime's own interpreter/venv is never agent-writable (an overwrite
+    # bricks the next start exactly like a delete, #58748) — and this must fire
+    # BEFORE the approval-gated allow so ~/.ssh-style gating cannot re-open it.
+    from agent.runtime_self_protection import is_protected_path, split_entry
+
+    if is_protected_path(path) or (entry and is_protected_path(path, follow=False)):
+        return "credential"
+    denial = _classify_resolved_write_denial(homes, resolved)
+    if denial or not entry:
+        return denial
+    parent, leaf = split_entry(os.path.expanduser(str(path)))
+    entry_path = os.path.join(os.path.realpath(parent or "."), leaf)
+    return _classify_resolved_write_denial(homes, entry_path)
+
+
+def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[str]:
+    """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
     if any(resolved in build_write_approval_paths(home) for home in homes):
@@ -285,9 +306,10 @@ def is_write_denied(path: str) -> bool:
     return _classify_write_denial(path) is not None
 
 
-def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
-    """Return a user/model-facing error when writes to ``path`` are blocked."""
-    denial = _classify_write_denial(path)
+def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = False) -> Optional[str]:
+    """Return a user/model-facing error when writes to ``path`` are blocked
+    (``entry``: see :func:`_classify_write_denial`)."""
+    denial = _classify_write_denial(path, entry=entry)
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
         return (

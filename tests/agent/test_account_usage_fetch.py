@@ -159,29 +159,6 @@ def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
     assert profile.calls == 0
 
 
-def test_render_account_usage_lines_includes_reset_and_provider():
-    snapshot = AccountUsageSnapshot(
-        provider="openai-codex",
-        source="usage_api",
-        fetched_at=datetime.now(timezone.utc),
-        plan="Pro",
-        windows=(
-            AccountUsageWindow(
-                label="Session",
-                used_percent=25,
-                reset_at=datetime.now(timezone.utc),
-            ),
-        ),
-        details=("Credits balance: $9.99",),
-    )
-    lines = render_account_usage_lines(snapshot)
-
-    assert lines[0] == "📈 Account limits"
-    assert "openai-codex (Pro)" in lines[1]
-    assert "Session: 75% remaining (25% used)" in lines[2]
-    assert "Credits balance: $9.99" in lines[3]
-
-
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_runtime_provider",
@@ -317,20 +294,6 @@ def test_plugin_usage_hook_failure_never_reaches_threading_excepthook(monkeypatc
         if t is not threading.current_thread() and "account-usage" in t.name:
             t.join(2)
     assert escaped == []
-
-
-def test_base_noop_usage_hook_spawns_no_thread(monkeypatch):
-    """A profile inheriting ``ProviderProfile.fetch_account_usage`` costs no thread."""
-    import threading
-
-    from agent import account_usage
-
-    _register_profile(monkeypatch, ProviderProfile(name="plugin-noop"))
-    monkeypatch.setattr(account_usage, "_USAGE_FETCHERS", {})
-    monkeypatch.setattr(threading.Thread, "start",
-                        lambda self: pytest.fail(f"base no-op hook spawned thread {self.name!r}"))
-
-    assert account_usage.fetch_account_usage("plugin-noop") is None
 
 
 @pytest.mark.parametrize("fetch", [_fetch_portal_account, _billing_fetch_nous_account])

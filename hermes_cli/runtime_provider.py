@@ -26,7 +26,7 @@ from hermes_cli.auth import (  # resolve_external_process_provider_credentials i
     resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,  # noqa: F401
-    has_usable_secret, is_actual_local_base_url, normalize_actual_base_url,
+    has_usable_secret, is_actual_local_base_url, looks_like_openrouter_key, normalize_actual_base_url,
 )
 from hermes_cli import config as _config_mod
 from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
@@ -317,6 +317,20 @@ def _config_base_url_for_provider(model_cfg: Dict[str, Any], provider: str) -> s
     return str(model_cfg.get("base_url") or "").strip().rstrip("/") if _same_registered_provider(provider, configured_provider) else ""
 
 
+def is_foreign_provider_endpoint(provider: Optional[str], base_url: Optional[str]) -> bool:
+    """True when ``base_url`` is another built-in provider's canonical endpoint, not ``provider``'s.
+
+    A persisted session route that pairs one provider with another's endpoint is left over from a
+    switch that kept the old URL (openai-codex + the Nous Portal URL sent the Codex slug to the Portal).
+    Only registered providers are judged: a custom or proxy URL is never another provider's canonical one.
+    """
+    pconfig = PROVIDER_REGISTRY.get(str(provider or "").strip().lower())
+    url = str(base_url or "").strip().rstrip("/")
+    if pconfig is None or not url or url == (pconfig.inference_base_url or "").rstrip("/"):
+        return False
+    return any(url == (other.inference_base_url or "").rstrip("/") for other in PROVIDER_REGISTRY.values())
+
+
 def _anthropic_base_url_override_ok(base_url: str) -> bool:
     """Whether a configured ``model.base_url`` plausibly speaks the Anthropic Messages protocol:
     official Anthropic/Claude hosts, Azure Foundry, or ``/anthropic`` / Kimi ``/coding`` proxies
@@ -519,6 +533,13 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
             # model.base_url is the secondary proxy override (same rule as the generic tail below:
             # only when the pool row still carries the canonical URL).
             if base_url in ("", default_url):
+                base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
+        if provider == "xai":
+            # Env-seeded rows keep the registry host. model.base_url is the relay
+            # override, and only while the row is still that host — an explicit
+            # per-credential endpoint stays authoritative (#121347).
+            canonical = (PROVIDER_REGISTRY["xai"].inference_base_url or "").rstrip("/")
+            if base_url.rstrip("/") in ("", canonical):
                 base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":

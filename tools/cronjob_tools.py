@@ -376,8 +376,12 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
     block (parent sees what the job produced). Never raises."""
     try:
         from cron.jobs import get_cron_output_dir
-        files = sorted((get_cron_output_dir() / job_id).glob("*.md"))
-        text = files[-1].read_text(encoding="utf-8", errors="replace").strip() if files else ""
+
+        out_dir = get_cron_output_dir() / job_id
+        files = sorted(out_dir.glob("*.md"))
+        if not files:
+            return None
+        text = files[-1].read_text(encoding="utf-8-sig", errors="replace").strip()
         if not text:
             return None
         if len(text) > max_chars:
@@ -478,10 +482,11 @@ def _try_dispatch_background_run(
         return None
 
     # Early dedupe so a mid-run job reports in THIS response, not as a delayed error completion
-    # (authoritative check: try_register_running_job).
+    # (authoritative check: try_register_running_job). Home-scoped: one process ticks every
+    # profile, so the bare-id union would report another profile's same-named job as running.
     try:
-        from cron.scheduler import get_running_job_ids
-        if job_id in get_running_job_ids():
+        from cron.scheduler import is_job_running
+        if is_job_running(job_id):
             return {"claimed": False, "success": False, "error": _ALREADY_RUNNING_ERROR}
     except Exception:
         pass
@@ -611,7 +616,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
-            reasoning_effort=a["reasoning_effort"],
+            reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
@@ -767,6 +772,9 @@ def _update_core_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[st
     if a["reasoning_effort"] is not None:
         # CLI-only lane; update_job validates, empty string clears the pin.
         updates["reasoning_effort"] = a["reasoning_effort"]
+    if a["interpreter"] is not None:
+        # CLI-only lane like reasoning_effort; update_job trims, empty string clears.
+        updates["interpreter"] = a["interpreter"]
     # Re-validate the EFFECTIVE provider/base_url on EVERY update: a job persisted before
     # this guard may hold an unsafe pair, and editing an unrelated field must not leave it
     # schedulable. Merging this update over the stored job lets an operator remediate.
@@ -921,7 +929,8 @@ def cronjob(
     session_id: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
-    pinned: Optional[bool] = None) -> str:
+    pinned: Optional[bool] = None,
+    interpreter: Optional[str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility

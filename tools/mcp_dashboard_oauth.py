@@ -51,6 +51,7 @@ class DashboardOAuthFlow:
     authorization_url: str | None = None
     error: str | None = None
     tools: list[dict] = field(default_factory=list)
+    discovery_error: str = ""
     # The user abandoned this flow: terminal for good, never re-minted (see publish_authorization_url).
     cancelled: bool = field(default=False, init=False)
     expected_state: str | None = field(default=None, init=False)

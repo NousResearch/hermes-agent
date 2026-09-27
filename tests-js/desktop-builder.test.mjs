@@ -18,7 +18,8 @@ test('desktop development composition reuses prepared icon pixels instead of pro
     run: (command, args) => commands.push([command, ...args]),
   })
   expect(readFileSync(join(input.source, 'apps/desktop/assets/icon.ico'), 'utf8')).toBe('prepared packaging icon')
-  const compile = commands.find(command => command.some(arg => arg.endsWith('/scripts/build/desktop.mjs')))
+  const isDesktopCompiler = arg => arg.replace(/\\/g, '/').endsWith('/scripts/build/desktop.mjs')
+  const compile = commands.find(command => command.some(isDesktopCompiler))
   expect(compile[compile.indexOf('--icons') + 1]).toBe(input.icons)
 })
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })

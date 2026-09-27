@@ -158,16 +158,26 @@ def test_resolution_reuses_successful_responses_but_refreshes_next_operation(ups
         failures.clear()
         monkeypatch.setattr(package, "gaps", {**package.gaps, "linux-arm64-bionic": "separate supplier"})
         body = b"advertised ffmpeg artifact"
+        digest = hashlib.sha256(body).hexdigest()
+        downloaded = set()
         for urls in decision.artifact_updates.values():
             RangeHandler.payloads[urlsplit(urls[0]).path] = body
+            if "/autobuild-" in urls[0]:
+                continue
+            downloaded.add(urlsplit(urls[0]).path)
+        # BtbN's release API attests every asset: one call, no download to hash.
+        btbn_release = f"/repos/BtbN/FFmpeg-Builds/releases/tags/autobuild-{generation}"
+        RangeHandler.payloads[btbn_release] = json.dumps({"assets": [
+            {"name": asset["name"], "digest": f"sha256:{digest}"} for asset in btbn_assets
+        ]}).encode()
         lock = Lockfile(tmp_path / "lock.json")
         monkeypatch.setattr(cli, "_lockfile", lambda: lock)
         assert cli.cmd_lock(Namespace(name=name, version=version)) == 0
         pinned = Lockfile(lock.path)
         assert pinned.version(name) == version
         for target, urls in decision.artifact_updates.items():
-            assert pinned.artifacts(name, target) == [{"url": urls[0], "sha256": hashlib.sha256(body).hexdigest()}]
-        assert Counter(path for path, _ in calls) == dict.fromkeys(RangeHandler.payloads, 1)
+            assert pinned.artifacts(name, target) == [{"url": urls[0], "sha256": digest}]
+        assert Counter(path for path, _ in calls) == dict.fromkeys({*payloads, *downloaded, btbn_release}, 1)
 
 
 @pytest.mark.parametrize("pointer, tree, expected", [

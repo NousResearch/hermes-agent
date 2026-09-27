@@ -18,6 +18,67 @@ from tools.approval_context import _normalize_approval_mode
 from tools.approval_smart import _smart_approve
 
 
+class TestContainerAndVmDestructionApproval:
+    """Destruction verbs of the container/VM hypervisors were not covered at all (#100532).
+
+    `pct destroy`, `qm destroy`, `virsh undefine`, `lxc delete`, `docker rm` and `zfs destroy`
+    matched no rule, so they ran with no approval card -- including the remote spelling agents
+    actually use (`ssh host 'pct destroy 101'`), which is the silent fail-open that matters.
+    """
+
+    @pytest.mark.parametrize("command", [
+        "pct destroy 101",
+        "pct destroy 101 --purge",
+        "qm destroy 107",
+        "qm destroy 107 --purge --destroy-unreferenced-disks",
+        "sudo pct destroy 101",
+        "ssh root@pve2 'pct destroy 101'",
+        'ssh root@pve2 "qm destroy 107"',
+        "ssh -o BatchMode=yes pve2 'pct destroy 101'",
+        "bash -c 'pct destroy 101'",
+        "virsh undefine prod-vm",
+        "virsh undefine prod-vm --remove-all-storage",
+        "virsh vol-delete --pool default disk.qcow2",
+        "lxc delete prod",
+        "incus delete prod",
+        "lxc-destroy -n prod",
+        "docker rm web",
+        "docker rm -f web",
+        "podman rm web",
+        "docker compose rm web",
+        "docker volume rm appdata",
+        "docker volume prune -f",
+        "zfs destroy tank/data",
+        "zpool destroy tank",
+    ])
+    def test_destruction_requires_approval(self, command):
+        dangerous, key, desc = detect_dangerous_command(command)
+        assert dangerous is True, command
+        assert key and desc, command
+
+    @pytest.mark.parametrize("command", [
+        "pct list",
+        "pct status 101",
+        "qm status 107",
+        "qm config 107",
+        "pct stop 101",
+        "lxc list",
+        "virsh list --all",
+        "docker ps -a",
+        "docker images",
+        "docker volume ls",
+        "zfs list",
+        "zpool status",
+    ])
+    def test_read_and_stop_verbs_stay_allowed(self, command):
+        assert detect_dangerous_command(command) == (False, None, None), command
+
+    def test_quoted_mention_is_an_accepted_over_match(self):
+        """A command-position anchor would miss the remote payload, so a quoted mention is
+        accepted as an over-match: one extra card, versus a silently destroyed container."""
+        assert detect_dangerous_command("echo 'never run pct destroy'")[0] is True
+
+
 class TestPackageManagerUninstallApproval:
     """Package-manager removal verbs remove software outside the project (#10199)."""
 

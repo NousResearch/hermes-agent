@@ -1591,8 +1591,7 @@ class TestFlushPendingSync:
 
 
 @pytest.mark.parametrize("done_on_first_tick", [True, False], ids=["done", "interim"])
-@pytest.mark.parametrize("lost_ack", [False, pytest.param(True, marks=pytest.mark.xfail(
-    strict=True, reason="B2 inherited first-overflow failed-head replay; broader repair needs scope approval"))],
+@pytest.mark.parametrize("lost_ack", [False, True],
     ids=["acknowledged", "empty_timeout"])
 @pytest.mark.asyncio
 async def test_mattermost_run_first_overflow_preserves_failed_head(lost_ack, done_on_first_tick):
@@ -1647,3 +1646,83 @@ async def test_mattermost_run_first_overflow_preserves_failed_head(lost_ack, don
         assert consumer._preview_message_ids == {"head-1", "head-2", "head-3"}
         assert consumer.final_content_delivered
         assert sum("a" * 350 in payload["message"] for payload in posts) == 1
+
+
+@pytest.mark.parametrize("done_on_first_tick", [True, False], ids=["done", "interim"])
+@pytest.mark.parametrize("lost_post", [1, 2], ids=["first-head", "confirmed-head"])
+@pytest.mark.asyncio
+async def test_initial_overflow_receipt_suppresses_final_replay(lost_post, done_on_first_tick):
+    """Start oversized, lose a head receipt, then use the gateway's final-send owner."""
+    from gateway.config import PlatformConfig
+    from gateway.session import SessionSource
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from tests.gateway.test_stale_finalize_suppression import _make_runner
+
+    adapter = MattermostAdapter(PlatformConfig(extra={
+        "url": "https://mattermost.example", "max_post_length": 500, "reply_mode": "thread",
+    }))
+    posts = []
+
+    def post(url, **kwargs):
+        assert url.endswith("/api/v4/posts")
+        posts.append(kwargs["json"])
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.__aexit__.return_value = False
+        response.status = 201
+        response.json.return_value = {"id": f"post-{len(posts)}"}
+        if len(posts) == lost_post:
+            response.json.side_effect = TimeoutError()
+            if not done_on_first_tick:
+                consumer.finish()
+        return response
+
+    adapter._session = MagicMock()
+    adapter._session.post.side_effect = post
+    root_response = AsyncMock()
+    root_response.__aenter__.return_value = root_response
+    root_response.status = 200
+    root_response.json.return_value = {"id": "root", "root_id": ""}
+    adapter._session.get.return_value = root_response
+    consumer = GatewayStreamConsumer(adapter, "channel", metadata={"thread_id": "root"},
+        config=StreamConsumerConfig(cursor="", edit_interval=0.01, buffer_threshold=1))
+    # Rendering shortens the first head; cleaning removes the voice marker and
+    # contracts newlines in the as-yet-unattempted suffix. Neither moves its receipt.
+    first = "![diagram](https://example.com/image) " + "a" * 300
+    second = "b" * 350
+    initial = "[[audio_as_voice]]" + first + "\n" + second + "\n\n\n" + "c" * 100
+    final = initial + " later tail"
+    consumer.on_delta(initial)
+    if done_on_first_tick:
+        consumer.finish()
+    await asyncio.wait_for(consumer.run(), timeout=2)
+    receipt = consumer._source_receipt
+    preview_ids = set(consumer._preview_message_ids)
+    confirmed_final = consumer.final_content_delivered
+
+    runner = _make_runner(adapter)
+    turn = SimpleNamespace(stream_consumer_holder=[consumer], session_key="initial-overflow",
+        source=SessionSource(platform=adapter.platform, chat_id="channel", chat_type="group", thread_id="root"))
+    response = {"final_response": final, "messages": [{"role": "assistant", "content": final}]}
+    await runner._run_agent_mark_streamed_delivery(response, turn)
+    post_count = len(posts)
+    await runner._run_agent_mark_streamed_delivery(response, turn)
+
+    assert receipt is not None and receipt["uncertain"], "initial overflow lost its source receipt"
+    protected = first if lost_post == 1 else first + "\n" + second
+    assert receipt["source"][:receipt["attempted_end"]] == protected
+    assert receipt["confirmed_end"] == (0 if lost_post == 1 else len(first + "\n"))
+    assert preview_ids == ({"post-1"} if lost_post == 2 else set())
+    assert not confirmed_final, "an unacknowledged head cannot confirm the final response"
+    assert response.get("already_sent") is True
+    assert response["final_response"] == response["messages"][0]["content"] == final
+    assert len(posts) == post_count, "repeated finalization replayed an uncertain span"
+    # Native head sealing retains boundary newlines on the wire; the source
+    # snapshot above independently proves the protected content's exact offset.
+    assert [p["message"] for p in posts[:lost_post]] == [
+        adapter.format_message(first), second + "\n\n",
+    ][:lost_post]
+    expected_suffix = consumer._clean_for_display(final)[len(protected):]
+    assert "".join(p["message"] for p in posts[lost_post:]) == adapter.format_message(expected_suffix)
+    assert all(len(p["message"]) <= 500 and p["root_id"] == "root"
+               and p["props"]["disable_mentions"] for p in posts)

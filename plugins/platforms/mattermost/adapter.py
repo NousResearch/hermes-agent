@@ -170,6 +170,7 @@ class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
     splits_long_messages = True  # send() chunks at the profile-local limit
+    source_delivery_receipts = True  # preserve raw source spans during initial stream overflow
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)

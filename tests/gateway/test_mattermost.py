@@ -495,6 +495,49 @@ class TestMattermostSend:
         assert payload["root_id"] == "bad_root"
 
 
+@pytest.mark.asyncio
+async def test_later_image_batch_uncertainty_retains_partial_delivery_without_replay(tmp_path):
+    """Native aggregate success retains earlier delivery without hiding the later error."""
+    adapter = _make_adapter()
+    adapter._reply_mode = "off"
+    path = tmp_path / "image.png"
+    path.write_bytes(b"fixture-image")
+    posts, uploads = [], []
+
+    def post(url, **kwargs):
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.__aexit__.return_value = False
+        response.status = 201
+        if url.endswith("/api/v4/files"):
+            uploads.append(kwargs["data"])
+            response.json.return_value = {"file_infos": [{"id": f"file-{len(uploads)}"}]}
+        else:
+            assert url.endswith("/api/v4/posts")
+            posts.append(kwargs["json"])
+            response.json.return_value = {"id": "first-batch"}
+            if len(posts) == 2:
+                response.json.side_effect = TimeoutError()
+        return response
+
+    adapter._session = MagicMock()
+    adapter._session.post.side_effect = post
+    result = await adapter.send_multiple_images(
+        "channel", [(path.as_uri(), f"image {i}") for i in range(6)])
+
+    assert len(uploads) == 6 and len(posts) == 2, "an uncertain batch must not fall back per image"
+    assert [p["file_ids"] for p in posts] == [
+        [f"file-{i}" for i in range(1, 6)], ["file-6"]]
+    assert result.message_id == "first-batch" and result.continuation_message_ids == ()
+    assert result.success is True  # Native gateway aggregate: at least one image delivered.
+    assert result.error == "Mattermost image post was not acknowledged"
+    assert result.raw_response["success"] is False
+    assert result.raw_response["partial_failure"] is True
+    assert result.raw_response["total_media"] == 6
+    assert result.raw_response["delivered_media"] == 5
+    assert result.raw_response["failed_media"] == 1
+
+
 class TestMattermostTextReceipts:
     @staticmethod
     def transport(adapter, outcome):

@@ -843,12 +843,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return self._message_id is None and self._overflows()
 
     async def _seal_overflow_heads(self) -> None:
-        """Existing message overflowing: seal it with the head, start a new message for the rest."""
+        """Seal overflowing heads, including first sends on source-aware adapters."""
         # Source-aware continuations must retain raw offsets and classify lost
         # acknowledgements through _send_or_edit, including fresh sealed heads.
         # The generic numbered-chunk sender does not carry that receipt contract.
         while (self._overflows() and self._edit_supported
-               and (self._message_id is not None or self._source_receipt is not None)):
+               and (self._message_id is not None or self._source_receipt is not None
+                    or getattr(self.adapter, "source_delivery_receipts", False) is True)):
             cp_budget = _custom_unit_to_cp(self._accumulated, self._safe_limit, self._len_fn)
             split_at = self._accumulated.rfind("\n", 0, cp_budget)
             if split_at < cp_budget // 2:

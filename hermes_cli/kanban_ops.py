@@ -329,17 +329,14 @@ def _cmd_gc(args: argparse.Namespace) -> int:
         if row["workspace_kind"] != "scratch":
             continue
         path = Path(row["workspace_path"] or (scratch_root / row["id"]))
-        try:
-            path = path.resolve()
-        except OSError:
+        # Same containment predicate as completion cleanup (#28818): strictly below a
+        # managed root, never the root itself (which holds every task's scratch dir).
+        # Cheap existence/symlink check first: most rows were already cleaned at
+        # completion, and rmtree refuses a symlink (so it must not be counted).
+        if not path.is_dir() or path.is_symlink() or not kbw._is_managed_scratch_path(path):
             continue
-        try:
-            path.relative_to(scratch_root.resolve())
-        except ValueError:
-            # Safety: never delete outside the scratch root.
-            continue
-        if path.exists() and path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
             removed_ws += 1
 
     removed_events = 0

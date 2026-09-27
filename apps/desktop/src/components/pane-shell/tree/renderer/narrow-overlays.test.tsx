@@ -167,6 +167,8 @@ describe('narrow overlay of a stacked zone', () => {
 
     // And the seamless fallback: without a tree the declared width still
     // sizes the overlay.
-    expect(narrowOverlayWidth({ paneFor: () => undefined, paneGone: () => false, overrides: {} }, null, bots)).toBe('260px')
+    expect(narrowOverlayWidth({ paneFor: () => undefined, paneGone: () => false, overrides: {} }, null, bots)).toBe(
+      '260px'
+    )
   })
 })

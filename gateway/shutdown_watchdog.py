@@ -135,7 +135,7 @@ def start_loop_liveness_watchdog(
             if stop_event.is_set():
                 return
             _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
-            os._exit(exit_code)
+            _hard_exit(exit_code)
     thread = threading.Thread(target=_watchdog, daemon=True, name="gateway-loop-liveness-watchdog")
     try:
         thread.start()
@@ -143,6 +143,15 @@ def start_loop_liveness_watchdog(
         logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
         return None
     return _LoopLivenessWatchdogHandle(stop_event, thread)
+
+
+def _hard_exit(exit_code: int) -> None:
+    """``os._exit`` skips every cleanup: SIGKILL in-flight foreground commands first, they run in their
+    own process group and would outlive the gateway, reparented to init."""
+    with contextlib.suppress(Exception):
+        from tools.environments.base import kill_live_foreground_processes
+        kill_live_foreground_processes(now=True)
+    os._exit(exit_code)
 
 
 def _mark_exited_quietly(exit_code: int, reason: str) -> None:
@@ -293,7 +302,7 @@ def arm_shutdown_watchdog(
             from hermes_logging import drain_log_queue
             drain_log_queue(timeout=1.0)
         _mark_exited_quietly(exit_code, "shutdown_watchdog")
-        os._exit(exit_code)
+        _hard_exit(exit_code)
     try:
         threading.Thread(target=_watchdog, daemon=True, name=name).start()
     except Exception:

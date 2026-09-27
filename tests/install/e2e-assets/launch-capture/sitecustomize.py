@@ -1,8 +1,9 @@
 """Driver-side spawn interception for hermes desktop E2E legs.
 
-The installed ``hermes`` is a venv console script, so its interpreter
-imports ``sitecustomize`` at startup when this directory is on
-``PYTHONPATH``. Behind an explicit env-var opt-in the module wraps
+Pre-PM ``hermes`` is a venv console script that imports this module at
+startup via ``PYTHONPATH``. PM launchers use -I and instead load it via
+the driver-side pm-launch.py before the installed bootstrap. With an
+explicit env-var opt-in the module wraps
 ``subprocess.run`` so the FINAL electron launch call of ``hermes
 desktop`` is captured -- argv, cwd, and the fully-constructed ``env``
 kwarg written to a JSON spec -- and replaced with a fake success instead
@@ -29,9 +30,14 @@ tag's own hermes_cli/main.py):
                where launch_command[0] is the packaged app executable
                under apps/desktop/release/
 
-Both go through ``subprocess.run`` with an explicit ``env=`` kwarg. npm
-BUILD calls (``npm run build`` / ``npm run pack``) carry no ``electron``
-token in argv and pass through untouched -- they must run for real.
+  3ddf82fe249+ on Windows: the packaged launch is a detached
+               subprocess.Popen(launch_command, creationflags=...) and
+               ``hermes desktop`` exits without waiting for it
+
+Every shape passes an explicit ``env=`` kwarg, so both ``subprocess.run``
+and ``subprocess.Popen`` are intercepted. npm BUILD calls (``npm run
+build`` / ``npm run pack``) carry no ``electron`` token in argv and pass
+through untouched -- they must run for real.
 """
 
 import os
@@ -73,14 +79,14 @@ if _SPEC_PATH:
             return "packaged"
         return ""
 
-    def _capturing_run(*args, **kwargs):
+    def _launch_shape(args, kwargs) -> "tuple[list[str], str]":
         argv = args[0] if args else kwargs.get("args")
         if not isinstance(argv, (list, tuple)):
-            return _real_run(*args, **kwargs)
+            return [], ""
         tokens = [str(t) for t in argv]
-        shape = _match_shape(tokens)
-        if not shape:
-            return _real_run(*args, **kwargs)
+        return tokens, _match_shape(tokens)
+
+    def _capture(tokens: "list[str]", kwargs: dict, shape: str) -> None:
         env = kwargs.get("env")
         spec = {
             "argv": tokens,
@@ -97,6 +103,54 @@ if _SPEC_PATH:
         with open(_SPEC + ".captured", "w", encoding="utf-8") as fh:
             fh.write(shape)
         print(f"[e2e launch-capture] captured {shape} launch -> {_SPEC} (not spawning)")
+
+    def _capturing_run(*args, **kwargs):
+        tokens, shape = _launch_shape(args, kwargs)
+        if not shape:
+            return _real_run(*args, **kwargs)
+        _capture(tokens, kwargs, shape)
         return subprocess.CompletedProcess(tokens, 0, stdout=None, stderr=None)
 
+    _RealPopen = subprocess.Popen
+
+    class _CapturingPopen(_RealPopen):  # type: ignore[misc, valid-type]
+        """A launch-shaped Popen records the spec and stands in for an exited child."""
+
+        _e2e_stub = False
+
+        def __init__(self, *args, **kwargs):
+            tokens, shape = _launch_shape(args, kwargs)
+            if not shape:
+                super().__init__(*args, **kwargs)
+                return
+            _capture(tokens, kwargs, shape)
+            self._e2e_stub = True
+            self._child_created = False  # Popen.__del__ must not reap a pid we never made.
+            self.args = tokens
+            self.stdin = self.stdout = self.stderr = None
+            self.pid = 0
+            self.returncode = 0
+
+        def poll(self):
+            return 0 if self._e2e_stub else super().poll()
+
+        def wait(self, timeout=None):
+            return 0 if self._e2e_stub else super().wait(timeout)
+
+        def communicate(self, input=None, timeout=None):
+            return (None, None) if self._e2e_stub else super().communicate(input, timeout)
+
+        def send_signal(self, sig):
+            if not self._e2e_stub:
+                super().send_signal(sig)
+
+        def terminate(self):
+            if not self._e2e_stub:
+                super().terminate()
+
+        def kill(self):
+            if not self._e2e_stub:
+                super().kill()
+
     subprocess.run = _capturing_run
+    subprocess.Popen = _CapturingPopen  # type: ignore[misc]

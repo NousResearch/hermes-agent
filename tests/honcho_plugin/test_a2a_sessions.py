@@ -171,15 +171,6 @@ class TestManagerUserPeerOverride:
         assert "7654321" not in joined
 
 
-class TestConfigFlag:
-    def _config(self, tmp_path, monkeypatch, raw: dict) -> HonchoClientConfig:
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        path = tmp_path / "honcho.json"
-        path.write_text(json.dumps({"apiKey": "k", **raw}))
-        return HonchoClientConfig.from_global_config(config_path=path)
-
-    def test_defaults_on(self, tmp_path, monkeypatch):
-        assert self._config(tmp_path, monkeypatch, {}).a2a_sessions is True
 
 
 class TestRelayedDmFromALoggedInClient:

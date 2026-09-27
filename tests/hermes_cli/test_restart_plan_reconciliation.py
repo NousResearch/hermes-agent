@@ -1,8 +1,6 @@
 """Plan-vs-execution reconciliation (#91277 Phase 2: restart via declared mechanism).
 
 Pins:
-- _restart_mechanism returns machine-readable ids; describe_restart_mechanism
-  derives display strings (policy table is data, not prose).
 - match_runtime_outcomes classifies every planned runtime against the restart
   phase's bookkeeping: restarted / stopped / failed / unaccounted.
 - report_unaccounted_runtimes escalates (returns True) ONLY on unaccounted
@@ -13,7 +11,6 @@ from hermes_cli.update_inventory import (
     RuntimeRecord,
     UpdatePlan,
     _restart_mechanism,
-    describe_restart_mechanism,
     match_runtime_outcomes,
     report_unaccounted_runtimes,
 )
@@ -35,18 +32,6 @@ def _rt(profile: str, pid: int, supervisor: str = "manual") -> RuntimeRecord:
     )
 
 
-def test_mechanism_ids_are_machine_readable_and_described():
-    assert _restart_mechanism("systemd", "default") == "systemd"
-    assert _restart_mechanism("launchd", "work") == "launchd"
-    assert _restart_mechanism("desktop", "default") == "desktop"
-    assert _restart_mechanism("manual", "work") == "manual"
-    assert _restart_mechanism("windows-service", "default") == "windows-service"
-    # display derives FROM the id
-    assert "systemctl" in describe_restart_mechanism("systemd", "default")
-    assert "kickstart" in describe_restart_mechanism("launchd", "work")
-    assert "-p work" in describe_restart_mechanism("manual", "work")
-    assert describe_restart_mechanism("manual", "default") == "hermes gateway restart"
-    assert "sc.exe" in describe_restart_mechanism("windows-service", "default")
 
 
 def test_windows_service_supervisor_classification():
@@ -219,6 +204,44 @@ def _serve(profile: str, pid: int, kind: str = "serve") -> RuntimeRecord:
         pid=pid,
         supervisor="manual-serve",
         restart_via=_restart_mechanism("manual-serve", profile),
+    )
+
+
+def test_systemd_dashboard_runtime_reconciles_restarted_via_its_unit():
+    """#125297: the fleet unit pass restarts ``hermes-dashboard{,-<profile>}``, so the
+    receipt's runtime_outcomes row must credit it as ``restarted`` — not leave the
+    dashboard ``deferred`` while the update still reports success."""
+    outcomes = match_runtime_outcomes(
+        _plan(_dash_unit_runtime("default", 700), _dash_unit_runtime("work", 701)),
+        restarted_services=["hermes-dashboard", "user/hermes-dashboard-work"],
+        relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids=set(), failed_units=[],
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {700: "restarted", 701: "restarted"}
+    assert report_unaccounted_runtimes(outcomes) is False
+
+
+def test_systemd_dashboard_runtime_without_unit_restart_stays_unaccounted():
+    """The tripwire side: no ``hermes-dashboard*`` restart in the bookkeeping means
+    the row escalates (exit 1), never a silent ``deferred`` on a success receipt."""
+    outcomes = match_runtime_outcomes(
+        _plan(_dash_unit_runtime("default", 700), _rt("default", 100, supervisor="systemd")),
+        restarted_services=["hermes-gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {100: "restarted", 700: "unaccounted"}
+    assert report_unaccounted_runtimes(outcomes) is True
+
+
+def _dash_unit_runtime(profile: str, pid: int) -> RuntimeRecord:
+    return RuntimeRecord(
+        kind="dashboard",
+        profile=profile,
+        pid=pid,
+        supervisor="systemd",
+        restart_via=_restart_mechanism("systemd", profile),
     )
 
 

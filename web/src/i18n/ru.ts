@@ -162,9 +162,14 @@ export const ru: Translations = {
     deleteSelectedConfirmMessage:
       "Это безвозвратно удалит {count} выбранных сессий и все их сообщения. Это действие нельзя отменить.",
     selectedSessionsDeleted: "Удалено сессий: {count}",
+    selectedSessionsSkippedActive: "Удалено: {deleted}; сохранено: {count}, так как ход ещё выполняется",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
     newChat: "Новый чат",
+    workspace: "рабочая папка",
+    workspaceDefault: "По умолчанию",
+    workspaceRescan: "Пересканировать репозитории",
+    workspaceCustom: "Другой путь…",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
     roles: {

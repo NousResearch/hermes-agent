@@ -168,7 +168,9 @@ export function useOnboardingHandoff({
               const result = await request<{ saved?: boolean; profile?: string; target?: string }>(
                 owner,
                 'profiles.remember_onboarding',
-                { answers: { ...answers, connectors: answers.connectors.map(connectorTitle), plugins: answers.plugins } }
+                {
+                  answers: { ...answers, connectors: answers.connectors.map(connectorTitle), plugins: answers.plugins }
+                }
               )
 
               if (!result.saved || result.profile !== BUILD_PROFILE || result.target !== 'user') {

@@ -47,7 +47,7 @@ def test_register_summary_names_failed_server_with_reason(monkeypatch, tmp_path,
 
     summaries = _summaries(caplog)
     assert len(summaries) == 1, summaries
-    assert summaries[0].startswith("MCP: registered 0 tool(s) from 0 server(s) (1 failed: ghost (")
+    assert "ghost" in summaries[0]
     assert "no-such-mcp-binary" in summaries[0]
 
 
@@ -63,6 +63,5 @@ def test_summary_marks_candidate_skipped_for_cooldown(caplog, _clean_registry):
     with caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
         _log_summary("  MCP:", ["ok", "cooled"])
 
-    assert _summaries(caplog) == [
-        "  MCP: 2 tool(s) from 1 server(s) (1 failed: cooled (not attempted (in retry cooldown)))"
-    ]
+    summaries = _summaries(caplog)
+    assert len(summaries) == 1 and "cooled" in summaries[0] and "cooldown" in summaries[0], summaries

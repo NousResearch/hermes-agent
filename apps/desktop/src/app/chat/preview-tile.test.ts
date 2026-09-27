@@ -51,7 +51,7 @@ describe('browserTabLabel', () => {
 
 describe('browserTabExternalUrl', () => {
   const openBrowser = (url: string) => {
-    openPreview({ kind: 'url', label: 'Browser', source: url, url }, 'explicit-link')
+    openPreview({ kind: 'url', label: 'Browser', source: url, url })
 
     return $previewTabs.get().find(tab => tab.target.kind === 'url')!.id
   }
@@ -73,7 +73,7 @@ describe('browserTabExternalUrl', () => {
   })
 
   it('is null for a file peek', () => {
-    openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
+    openPreview(fileTarget('/tmp/a.ts'))
 
     expect(browserTabExternalUrl('file:/tmp/a.ts')).toBeNull()
   })
@@ -97,11 +97,8 @@ const fileTarget = (path: string) =>
 // just be declared on the tile.
 describe('preview tiles keep a live page alive across Hide', () => {
   it('registers a Browser tab with lifecycleKeepAlive while a text peek stays evictable', () => {
-    openPreview(
-      { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' },
-      'explicit-link'
-    )
-    openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
+    openPreview({ kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' })
+    openPreview(fileTarget('/tmp/a.ts'))
 
     const browserId = $previewTabs.get().find(tab => tab.target.kind === 'url')!.id
 
@@ -112,13 +109,13 @@ describe('preview tiles keep a live page alive across Hide', () => {
 
 describe('preview tiles stack, not split (#93610)', () => {
   it('docks the first preview right and stacks the second as a center tab in the same zone', () => {
-    openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
+    openPreview(fileTarget('/tmp/a.ts'))
 
     const first = dockOf('preview-tile:file:/tmp/a.ts')
 
     expect(first?.pos).toBe('right')
 
-    openPreview(fileTarget('/tmp/b.ts'), 'file-browser')
+    openPreview(fileTarget('/tmp/b.ts'))
 
     const second = dockOf('preview-tile:file:/tmp/b.ts')
 
@@ -130,8 +127,8 @@ describe('preview tiles stack, not split (#93610)', () => {
   })
 
   it('stacks an artifact opened after a file into the same preview zone', () => {
-    openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
-    openPreview({ kind: 'artifact', label: 'Chart', source: 'artifact-1', url: 'artifact-1' }, 'explicit-link')
+    openPreview(fileTarget('/tmp/a.ts'))
+    openPreview({ kind: 'artifact', label: 'Chart', source: 'artifact-1', url: 'artifact-1' })
 
     const artifact = dockOf('preview-tile:artifact:artifact-1')
 
@@ -140,11 +137,11 @@ describe('preview tiles stack, not split (#93610)', () => {
   })
 
   it('lets a lone preview open its own right-docked zone again after all tabs closed', () => {
-    openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
-    openPreview(fileTarget('/tmp/b.ts'), 'file-browser')
+    openPreview(fileTarget('/tmp/a.ts'))
+    openPreview(fileTarget('/tmp/b.ts'))
     closeRightRail()
 
-    openPreview(fileTarget('/tmp/c.ts'), 'file-browser')
+    openPreview(fileTarget('/tmp/c.ts'))
 
     expect(dockOf('preview-tile:file:/tmp/c.ts')?.pos).toBe('right')
   })

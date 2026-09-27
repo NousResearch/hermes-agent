@@ -1,0 +1,16 @@
+name: next-prompt
+repo: https://github.com/soymarketing/hermes-plugin-next-prompt
+sha: 2fe6dc9f8fec7c3d4e1a870d4b4bc298186fbc09
+description: Suggests the next prompt after each turn as a pill under the Desktop composer; it stays until you use it or dismiss it.
+maintainer: soymarketing
+tier: community
+category: desktop
+version: "0.2.1"
+requires_hermes: ">=0.21"
+docs_url: https://github.com/soymarketing/hermes-plugin-next-prompt#readme
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, post_llm_call]
+  provides_middleware: []
+  requires_env: []

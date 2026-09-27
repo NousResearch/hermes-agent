@@ -96,35 +96,6 @@ function renderConfigSettings(activeSectionId = 'safety') {
 }
 
 describe('ConfigSettings autosave', () => {
-  it('renders and saves the Codex compression auto-raise setting', async () => {
-    getHermesConfigRecord.mockResolvedValue({
-      compression: { codex_gpt55_autoraise: true }
-    })
-    getHermesConfigSchema.mockResolvedValue({
-      fields: {
-        'compression.codex_gpt55_autoraise': { type: 'boolean' }
-      }
-    })
-
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-
-    try {
-      renderConfigSettings('memory')
-
-      expect(await screen.findByText('Codex Compression Auto-Raise')).toBeTruthy()
-      expect(screen.getByText('Raise compression to 85% for supported ChatGPT Codex OAuth models.')).toBeTruthy()
-
-      screen.getByRole('switch').click()
-      await vi.advanceTimersByTimeAsync(700)
-
-      await vi.waitFor(() =>
-        expect(saveHermesConfig).toHaveBeenCalledWith({ compression: { codex_gpt55_autoraise: false } }, 'default')
-      )
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

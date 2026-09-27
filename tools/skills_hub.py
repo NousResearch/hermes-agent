@@ -239,7 +239,7 @@ def _read_json_if_fresh(path: Path, ttl: float) -> Optional[Any]:
     try:
         if time.time() - path.stat().st_mtime > ttl:
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -283,7 +283,7 @@ class _JsonStateFile:
 
     def _read(self) -> dict:
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            return json.loads(self.path.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError):
             return json.loads(json.dumps(self.EMPTY))
 
@@ -438,7 +438,7 @@ from urllib.parse import unquote  # noqa: F401,E402
 from urllib.parse import urlparse  # noqa: F401,E402
 from urllib.parse import urlsplit  # noqa: F401,E402
 from urllib.parse import urlunparse  # noqa: F401,E402
-import yaml  # noqa: F401,E402
+import hermes_yaml as yaml  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
@@ -475,10 +475,8 @@ _PLUGIN_COMPAT_LAZY = {
     'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
 }
 
-_plugin_compat_prev_getattr = __getattr__
 
-
-def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
+def _plugin_compat_getattr(name):
     target = _PLUGIN_COMPAT_LAZY.get(name)
     if target is None:
         return _plugin_compat_prev_getattr(name)
@@ -486,4 +484,20 @@ def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
     from hermes_cli.plugin_compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
+
+
+setattr(_plugin_compat_getattr, "_plugin_compat_wrapper", True)
+
+
+def _install_plugin_compat_getattr():
+    """Chain the compat resolver once, including across retained-module reloads."""
+    global __getattr__, _plugin_compat_prev_getattr
+    current = __getattr__
+    if getattr(current, "_plugin_compat_wrapper", False):
+        return
+    _plugin_compat_prev_getattr = current
+    __getattr__ = _plugin_compat_getattr
+
+
+_install_plugin_compat_getattr()
 # ---- END PLUGIN-COMPAT ----

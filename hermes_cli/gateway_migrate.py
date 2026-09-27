@@ -89,7 +89,15 @@ def _service_label(service: tuple[str, bool]) -> str:
     kind, system = service
     if kind == "systemd":
         return f"systemd ({'system' if system else 'user'})"
+    if kind == "s6":
+        return "s6 slot"
     return "Windows scheduled task" if kind == "windows" else kind
+
+
+def _remove_verb(service: tuple[str, bool]) -> str:
+    """An s6 slot is parked down (it stays registered as the `hermes -p X gateway start` target), every
+    other unit is uninstalled."""
+    return "park" if service[0] == "s6" else "uninstall"
 
 
 def _service_dict(service: tuple[str, bool]) -> dict:
@@ -141,6 +149,11 @@ class MigrationPlan:
     @property
     def standalone_secondaries(self) -> list[ProfileGateway]:
         return [p for p in self.secondaries if p.has_gateway]
+
+    @property
+    def expected_served_names(self) -> set[str]:
+        from hermes_cli.profiles import profile_is_parked
+        return {p.name for p in self.profiles if p.is_default or not profile_is_parked(p.home)}
 
     @property
     def blocked(self) -> bool:
@@ -216,7 +229,7 @@ def _default_home() -> Path:
 
 def _profile_homes() -> list[tuple[str, Path]]:
     from hermes_cli.profiles import profiles_to_serve
-    return list(profiles_to_serve(multiplex=True))
+    return list(profiles_to_serve(multiplex=True, include_parked=True))
 
 
 def _live_gateway_pid(home: Path) -> Optional[int]:
@@ -267,9 +280,22 @@ def _gateway_identity(home: Path, pid: Optional[int], services: list[tuple[str, 
 
 
 def _installed_services(home: Path) -> list[tuple[str, bool]]:
-    """Every installed service for ``home``'s gateway (units / plist / scheduled task), user scope first."""
+    """Every installed service for ``home``'s gateway (units / plist / scheduled task), user scope first.
+
+    Under s6 the footprint is the SLOT: the root slot always (it is what a restart goes through),
+    a named profile's slot only while it is UP — a registered-down slot is what the container's
+    boot leaves behind for every named profile and is not a gateway."""
     from hermes_cli import gateway as gw
     found: list[tuple[str, bool]] = []
+    if gw._running_under_s6():
+        from hermes_cli.gateway_multiplex_s6 import named_slot_name, slot_is_up
+        from hermes_cli.service_manager import S6ServiceManager
+        from hermes_constants import profile_name_for_home
+        name = profile_name_for_home(home) or "default"
+        slot_dir = S6ServiceManager().scandir / named_slot_name(name)
+        if slot_dir.is_dir() and (name == "default" or slot_is_up(name)):
+            found.append(("s6", False))
+        return found
     with _home_env(home):
         if gw.supports_systemd_services():
             found.extend(("systemd", system) for system in (False, True) if gw.get_systemd_unit_path(system=system).exists())
@@ -305,6 +331,8 @@ def _systemd_service_user(home: Path, services: list[tuple[str, bool]]) -> Optio
 
 def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: Optional[str] = None) -> None:
     """``stop`` / ``uninstall`` / ``start`` / ``restart`` / ``install`` on ``home``'s service."""
+    if kind == "s6":
+        return _s6_slot_op(verb, home)
     from hermes_cli import gateway as gw
     with _home_env(home):
         if verb == "install":
@@ -324,6 +352,21 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
 def _stop_gateway_process(home: Path) -> None:
     from hermes_cli.profiles import _stop_gateway_process
     _stop_gateway_process(home)
+
+
+def _s6_slot_op(verb: str, home: Path) -> None:
+    """The s6 leg of :func:`_service_op`. A named profile's slot is never uninstalled: it stays
+    registered DOWN (``down`` file) as the target of a later ``hermes -p X gateway start``, exactly
+    the shape the container's boot produces. The root slot is (re)started so it re-reads its config."""
+    from hermes_cli.gateway_multiplex_s6 import bring_root_slot_up, park_named_slot
+    from hermes_constants import profile_name_for_home
+    name = profile_name_for_home(home) or "default"
+    if name == "default":
+        if verb in ("start", "restart"):
+            bring_root_slot_up()
+        return  # install/uninstall/stop of the root slot are not migration steps
+    if verb == "stop":
+        park_named_slot(name)
 
 
 def _spawn_detached_gateway(home: Path) -> bool:
@@ -637,7 +680,7 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     steps = []
     signalled = _signalled_gateways(plan)
     for p in plan.standalone_secondaries:
-        what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", f"uninstall {p.service_label()}" if p.services else "") if x)
+        what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", " + ".join(f"{_remove_verb(s)} {_service_label(s)}" for s in p.services)) if x)
         steps.append(f"  - {p.name}: {what}")
     if len(plan.profiles) < 2:  # the notice already says "only one profile exists"
         return lines + _plan_tail(plan)
@@ -650,7 +693,7 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     # which is the mechanism ``apply_migration`` picks — printing this plan's guess contradicted it.
     target = _resume_target(plan)[0] if plan.manifest is not None else plan.target_service_kind()
     lines.append(f"  - default: {'restart' if plan.default.has_gateway else 'start'} the gateway"
-                 + (f" via {target[0]}" if target else " (detached)") + f", verify it serves {len(plan.profiles)} profiles")
+                 + (f" via {target[0]}" if target else " (detached)") + f", verify it serves {len(plan.expected_served_names)} profiles")
     lines.append(f"  - record the previous state in {plan.default_home / MANIFEST_NAME} "
                  f"(used to undo a FAILED apply, and to resume this command after a crash)")
     if signalled:
@@ -747,7 +790,7 @@ def _read_manifest(default_home: Path) -> Optional[dict]:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -755,14 +798,16 @@ def _read_manifest(default_home: Path) -> Optional[dict]:
 
 def _manifest_not_yet_served(manifest: Optional[dict], live_served: Optional[list[str]]) -> bool:
     """The postcondition ``apply_migration`` waits for, re-derived from live state: a LIVE default that
-    recorded serving every profile the manifest migrated. Anything less — no live gateway, an
+    recorded serving every unparked profile the manifest migrated. Anything less — no live gateway, an
     installed-but-dead unit (``systemd_install`` writes the unit before the start that can still fail),
     a standalone default never restarted — is a half-applied migration, not "already multiplexed".
     Profiles created after the migration are not in the manifest, so they cannot flag it as interrupted."""
     if manifest is None:
         return False
+    from hermes_cli.profiles import profile_is_parked
     recs = [r for r in (manifest.get("default"), *(_manifest_secondaries(manifest) or [])) if isinstance(r, dict)]
-    migrated = {str(r.get("profile") or "default") for r in recs} | {"default"}
+    migrated = {str(r.get("profile") or "default") for r in recs
+                if not r.get("home") or not profile_is_parked(Path(r["home"]))} | {"default"}
     return not migrated <= set(live_served or [])
 
 
@@ -836,7 +881,8 @@ def _remove_secondary_gateways(plan: MigrationPlan) -> None:
         for kind, system in p.services:
             _service_op(kind, system, "stop", p.home)
             _service_op(kind, system, "uninstall", p.home)
-            print(f"  ✓ {p.name}: stopped and removed its {_service_label((kind, system))} service")
+            done = "parked (down file)" if kind == "s6" else "removed"
+            print(f"  ✓ {p.name}: stopped and {done} its {_service_label((kind, system))}")
         if p.pid is not None:
             _stop_gateway_process(p.home)
             print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")
@@ -964,7 +1010,7 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
             print(f"  Re-run {MIGRATE_COMMAND} to resume from the manifest.")
         return False
 
-    expected = {p.name for p in plan.profiles}
+    expected = plan.expected_served_names
     served = _wait_for_served(plan.default_home, expected, served_wait)
     if served is not None and expected <= set(served):
         # Manifest present == migration UNFINISHED. That is the whole resume/half-migrated signal
@@ -1098,19 +1144,23 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
 
 
 def _host_supports_migration() -> Optional[str]:
-    """Reason the host cannot be converged by this command (s6 slots), else None.
+    """Reason the host cannot be converged by this command, else None.
 
-    Windows IS handled now: per-profile Scheduled Tasks (and the Startup-folder fallback) are
-    detected and removed like any other unit. s6 is not, and cannot be from here: the per-profile
-    gateways are slots the container image registers at boot
-    (``hermes_cli/container_boot.py::reconcile_profile_gateways``), so the convergence belongs to
-    the container's own boot, not to a process inside it.
+    Windows IS handled (per-profile Scheduled Tasks and the Startup-folder fallback are removed
+    like any other unit). s6 IS handled too, in-process: a named profile's slot that is UP is
+    parked (``s6-svc -d`` + ``down`` file) and its autostart intent folded into the root slot the
+    same way the container's boot does it (``hermes_cli.gateway_multiplex_s6``). What cannot be
+    done from here is register a slot the boot never created — that is the one refusal left.
     """
     from hermes_cli import gateway as gw
-    if gw._running_under_s6():
-        return ("s6-supervised container: per-profile gateways are s6 slots registered by the "
-                "container's boot, not by this process. Restart the container so its boot "
-                "reconciles them; nothing on this host was changed.")
+    if not gw._running_under_s6():
+        return None
+    from hermes_cli.gateway_multiplex_s6 import named_slot_name
+    from hermes_cli.service_manager import S6ServiceManager
+    scandir = S6ServiceManager().scandir
+    if not (scandir / named_slot_name("default")).is_dir():
+        return (f"s6-supervised container without a root gateway slot ({scandir / named_slot_name('default')}); "
+                "the container's boot registers it — restart the container.")
     return None
 
 

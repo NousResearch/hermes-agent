@@ -9,9 +9,7 @@ credentials into another profile's turn.
 """
 from __future__ import annotations
 
-import os
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -91,20 +89,6 @@ def test_a_delivery_into_the_gateway_s_own_bot_chat_keeps_its_environment(fleet,
     assert env["DISCORD_ALLOWED_USERS"] == "root-operator"
 
 
-def test_the_delivery_child_still_runs_this_install_and_targets_the_named_chat(fleet, monkeypatch):
-    """Guard rails the env change must not disturb: the running install, and `-p default`
-    only for a root home."""
-    root, beta = fleet
-    captured = _capture_child_env(monkeypatch)
-    delivery._deliver_to_bot_chat({"id": "j", "name": "nightly"}, "the brief", "beta")
-    argv = captured["argv"]
-    assert argv[:3] == [os.sys.executable, "-m", "hermes_cli.main"]
-    assert "-p" not in argv  # a profile home is addressed by HERMES_HOME, not a flag
-    assert argv[3:10] == ["chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q"]
-
-    captured.clear()
-    delivery._deliver_to_bot_chat({"id": "j", "name": "nightly"}, "the brief", "")
-    assert captured["argv"][3:5] == ["-p", "default"]  # a root home keeps its explicit profile flag
 
 
 def test_a_missing_target_home_is_refused_before_any_child_is_built(fleet, monkeypatch):

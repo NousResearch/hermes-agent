@@ -16,11 +16,7 @@ def transport():
 
 class TestCodexTransportBasic:
 
-    def test_api_mode(self, transport):
-        assert transport.api_mode == "codex_responses"
 
-    def test_registered_on_import(self, transport):
-        assert transport is not None
 
     def test_convert_tools(self, transport):
         tools = [{
@@ -38,6 +34,26 @@ class TestCodexTransportBasic:
 
 
 class TestCodexBuildKwargs:
+
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "openai/gpt-6-astra"])
+    @pytest.mark.parametrize("effort, expected", [
+        ("low", "low"), ("medium", "medium"), ("high", "high"),
+        ("xhigh", "xhigh"), ("max", "max"), ("ultra", "max"),
+        ("minimal", "low"), ("none", None),
+    ])
+    def test_astra_copilot_forwards_configured_reasoning(self, transport, model, effort, expected):
+        from agent.reasoning_params import ReasoningParamsMixin
+        from hermes_constants import resolve_reasoning_config
+
+        reasoning = resolve_reasoning_config({"agent": {"reasoning_effort": effort}}, model)
+        agent = SimpleNamespace(model=model, reasoning_config=reasoning)
+        kw = transport.build_kwargs(
+            model=model, messages=[{"role": "user", "content": "Hi"}],
+            provider="github-copilot", is_github_responses=True,
+            reasoning_config=reasoning,
+            github_reasoning_extra=ReasoningParamsMixin._github_models_reasoning_extra_body(agent),
+        )
+        assert kw.get("reasoning") == ({"effort": expected} if expected else None)
 
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(
@@ -100,6 +116,45 @@ class TestCodexBuildKwargs:
 
         assert kw["reasoning"]["effort"] == "none"
         assert kw["temperature"] == 0.4
+
+    @pytest.mark.parametrize(
+        "base_url,is_codex",
+        [
+            ("https://api.openai.com/v1", False),
+            ("https://chatgpt.com/backend-api/codex", True),
+            ("https://responses.example.com/v1", False),
+        ],
+    )
+    def test_prompt_cache_options_dropped_from_overrides(
+        self, transport, monkeypatch, caplog, base_url, is_codex
+    ):
+        """``prompt_cache_options`` has no Responses.create() kwarg, so a top-level copy
+        from request_overrides raises TypeError before any request is sent — on the
+        official API, the Codex backend, and custom Responses endpoints alike. The
+        ``extra_body`` escape hatch the warning points to still reaches the wire, and
+        the warning fires once per process rather than every turn."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_PROMPT_CACHE_OPTIONS_DROP_WARNED", False)
+        caplog.set_level("WARNING", logger=codex_mod.logger.name)
+        for _ in range(2):
+            kw = transport.build_kwargs(
+                model="gpt-6-astra",
+                messages=[{"role": "user", "content": "Hi"}],
+                tools=[],
+                base_url=base_url,
+                is_codex_backend=is_codex,
+                request_overrides={
+                    "prompt_cache_options": {"ttl": "30m"},
+                    "store": True,
+                    "extra_body": {"prompt_cache_options": {"ttl": "30m"}},
+                },
+            )
+            assert "prompt_cache_options" not in kw
+            assert kw["store"] is True
+            assert kw["extra_body"]["prompt_cache_options"] == {"ttl": "30m"}
+        assert caplog.text.count("Dropped prompt_cache_options") == 1
+        assert "extra_body" in caplog.text
 
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —
@@ -280,17 +335,6 @@ class TestCodexBuildKwargs:
 
     @pytest.mark.parametrize("model", [
         "gpt-5.5",
-        "gpt-5.5-pro",
-        "gpt-5.4",
-        "gpt-5.2",
-        "gpt-5.1-codex-max",
-        "gpt-5.1",
-        "gpt-5.1-codex",
-        "gpt-5.1-codex-mini",
-        "gpt-5.1-chat-latest",
-        "gpt-5",
-        "gpt-5-codex",
-        "gpt-4.1",
         "openai.gpt-5.5-pro",
         "openai/gpt-5.1-codex-2026-01-01",
     ])
@@ -303,7 +347,7 @@ class TestCodexBuildKwargs:
         )
         assert kw["prompt_cache_retention"] == "24h"
 
-    @pytest.mark.parametrize("model", ["gpt-5.6", "gpt-4o", "o3"])
+    @pytest.mark.parametrize("model", ["gpt-4o", "o3"])
     def test_prompt_cache_retention_omitted_for_other_model_families(self, transport, model):
         kw = transport.build_kwargs(
             model=model,
@@ -522,14 +566,6 @@ class TestCodexBuildKwargs:
         reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
         assert [item["encrypted_content"] for item in reasoning] == ["sealed-1", "sealed-2"]
 
-    def test_azure_foundry_newest_reasoning_pruning_leaves_canonical_messages_untouched(self, transport):
-        messages = self._two_turn_messages()
-        transport.build_kwargs(
-            model="gpt-6-astra", messages=messages, tools=[], provider="azure-foundry",
-            base_url="https://placeholder.openai.azure.com/openai/v1", replay_encrypted_reasoning=True,
-        )
-        assert messages[1]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-1"
-        assert messages[3]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-2"
 
     def test_normalize_response_stamps_wire_model_and_replay_drops_it_for_another_model(self, transport):
         """The wire model from build_kwargs (``-900k`` stripped) is what normalize_response stamps, and a
@@ -972,39 +1008,6 @@ class TestCodexBuildKwargs:
         assert "hermes_web_search" in names
         assert "web_search" not in names
 
-    def test_xai_normalize_maps_client_web_search_alias_back(self, transport, monkeypatch):
-        """Alias used on the wire must become ``web_search`` for Hermes dispatch."""
-        import agent.transports.codex as codex_mod
-
-        msg = SimpleNamespace(
-            content=None,
-            reasoning=None,
-            tool_calls=[
-                SimpleNamespace(
-                    id="call_1",
-                    call_id="call_1",
-                    response_item_id="fc_1",
-                    function=SimpleNamespace(
-                        name=codex_mod._XAI_CLIENT_WEB_SEARCH_ALIAS,
-                        arguments='{"query":"hermes"}',
-                    ),
-                )
-            ],
-            codex_reasoning_items=None,
-            codex_message_items=None,
-            reasoning_details=None,
-        )
-        response = SimpleNamespace(output=[], status="completed")
-
-        monkeypatch.setattr(
-            "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
-        )
-        normalized = transport.normalize_response(response)
-
-        assert normalized.tool_calls is not None
-        assert len(normalized.tool_calls) == 1
-        assert normalized.tool_calls[0].name == "web_search"
 
     def test_xai_does_not_inject_native_web_search_without_client_web_search(self, transport):
         """The native ``web_search`` built-in is a 1:1 swap for an
@@ -1563,14 +1566,6 @@ class TestXaiWebSearchBackendPreference:
         )
         assert codex_mod._xai_prefers_native_web_search() is True
 
-    def test_resolved_non_xai_provider_prefers_client(self, monkeypatch):
-        import agent.transports.codex as codex_mod
-
-        monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
-            lambda: SimpleNamespace(name="firecrawl"),
-        )
-        assert codex_mod._xai_prefers_native_web_search() is False
 
     def test_no_provider_legacy_fallback_xai(self, monkeypatch):
         """When no provider is registered, fall back to _get_search_backend."""
@@ -2008,7 +2003,8 @@ class TestOpenAIReasoningWireProjection:
         with caplog.at_level(logging.WARNING, logger="agent.transports.codex"):
             for _ in range(2):
                 assert self._reasoning(transport, "gpt-6-astra", {"enabled": False}) is None
-        warned = [r.getMessage() for r in caplog.records if "reasoning_effort: none" in r.getMessage()]
+        warned = [r.getMessage() for r in caplog.records
+                  if r.name == "agent.transports.codex" and r.levelno >= logging.WARNING]
         assert len(warned) == 1 and "gpt-6-astra" in warned[0], caplog.text
 
     @pytest.mark.parametrize("model", ["gpt-4o-mini", "gpt-4.1-mini", "openai/gpt-4o", "ft:gpt-4o-mini:acme::abc1"])

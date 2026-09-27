@@ -1,6 +1,7 @@
 import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } from '@hermes/shared'
 
 import { applyAccountConnectionUpdate } from '@/app/capabilities/connectors/data/account-operations'
+import { abortPreviewTyping } from '@/app/chat/right-rail/preview-typing-abort'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
@@ -98,6 +99,10 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  // preview.act has no card. A timeout or interrupt still has to stop keystrokes
+  // already queued for that type.
+  abortPreviewTyping(id, typeof payload?.reason === 'string' ? payload.reason : 'interrupted')
+
   forgetServerRequest(id)
 
   const key = sessionId ?? ''
@@ -160,6 +165,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     }
   } else if ($sudoRequests.get()[key]?.requestId === id) {
     clearSudoRequest(sessionId, id)
+  } else if ($sudoRequests.get()['']?.requestId === id) {
+    clearSudoRequest(null, id) // the app-level Bot Screen install card: not owned by any chat
   } else if ($secretRequests.get()[key]?.requestId === id) {
     clearSecretRequest(sessionId, id)
   } else if ($vaultCodeRequests.get()[key]?.requestId === id) {

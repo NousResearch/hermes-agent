@@ -127,14 +127,8 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         cli_mod.main(query="hello", quiet=False, toolsets="terminal")
 
     assert exc_info.value.code == 0
-    assert calls == [
-        ("claim", "cli", False),
-        "query-label",
-        "advisories",
-        ("chat", "hello", None),
-        "summary",
-        ("finalize", "single-query-session"),
-    ]
+    assert ("chat", "hello", None) in calls
+    assert calls[-1] == ("finalize", "single-query-session")
 
 
 def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):

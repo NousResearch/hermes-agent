@@ -162,9 +162,14 @@ export const af: Translations = {
     deleteSelectedConfirmMessage:
       "Dit verwyder {count} gekose sessies en al hul boodskappe permanent. Dit kan nie ongedaan gemaak word nie.",
     selectedSessionsDeleted: "{count} sessies geskrap",
+    selectedSessionsSkippedActive: "{deleted} geskrap; {count} behou omdat 'n beurt nog loop",
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
     newChat: "Nuwe klets",
+    workspace: "werkruimte",
+    workspaceDefault: "Verstek",
+    workspaceRescan: "Herskandeer bewaarplekke",
+    workspaceCustom: "Ander pad…",
     previousPage: "Vorige bladsy",
     nextPage: "Volgende bladsy",
     roles: {

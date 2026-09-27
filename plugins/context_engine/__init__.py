@@ -23,7 +23,7 @@ def _is_context_engine_dir(path: Path) -> bool:
     """Cheap text heuristic: ``__init__.py`` mentions the context engine contract."""
     init_file = path / "__init__.py"
     try:
-        source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+        source = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
     except OSError:
         return False
     return "register_context_engine" in source or "ContextEngine" in source

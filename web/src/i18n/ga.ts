@@ -162,9 +162,14 @@ export const ga: Translations = {
     deleteSelectedConfirmMessage:
       "Bainfear {count} seisiún roghnaithe agus a dteachtaireachtaí go léir go buan. Ní féidir é seo a chur ar ais.",
     selectedSessionsDeleted: "Scriosadh {count} seisiún",
+    selectedSessionsSkippedActive: "Scriosadh {deleted}; coinníodh {count} mar go bhfuil seal ar siúl",
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
     newChat: "Comhrá nua",
+    workspace: "spás oibre",
+    workspaceDefault: "Réamhshocrú",
+    workspaceRescan: "Athscan na stórtha",
+    workspaceCustom: "Cosán eile…",
     previousPage: "Leathanach roimhe seo",
     nextPage: "An chéad leathanach eile",
     roles: {

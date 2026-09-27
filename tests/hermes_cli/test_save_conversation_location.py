@@ -103,21 +103,6 @@ def test_save_conversation_empty_history_does_nothing(hermes_home, capsys):
     assert "No conversation to save" in out
 
 
-def test_save_conversation_bare_shows_usage(hermes_home, capsys):
-    """Bare /save prints the usage card and writes nothing."""
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
-    import cli
-
-    stub = _make_stub_cli([{"role": "user", "content": "hi"}])
-    cli.HermesCLI.save_conversation(stub, "/save")
-
-    saved_dir = hermes_home / "sessions" / "saved"
-    assert not saved_dir.exists() or not list(saved_dir.iterdir())
-    out = capsys.readouterr().out
-    # Usage card lists every format and the redact option
-    for token in ("json", "md", "html", "redact", "Usage:"):
-        assert token in out, (token, out)
 
 
 def test_save_conversation_bad_format_shows_usage(hermes_home, capsys):

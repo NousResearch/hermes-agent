@@ -119,7 +119,7 @@ def scan_directory(
     try:
         children = sorted(path.iterdir())
     except OSError as exc:
-        logger.warning("Failed to scan plugin directory %s: %s", path, exc)
+        logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
         return manifests
     for child in children:
         # Cache/dunder dirs (__pycache__, __MACOSX__, …) are never

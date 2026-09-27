@@ -46,7 +46,7 @@ def legacy_launcher_artifacts() -> list[tuple[str, str, Path | str]]:
         (startup / f"{bare}.cmd", "legacy pre-suffix Windows login item"),
     ):
         try:
-            if _targets_this_home(path.read_text(encoding="utf-8", errors="replace")):
+            if _targets_this_home(path.read_text(encoding="utf-8-sig", errors="replace")):
                 found.append(("file", label, path))
         except OSError:
             continue

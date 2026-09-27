@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 from hermes_cli.cli_output import line_input
+from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
 
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
 
@@ -173,7 +174,7 @@ def _pid_unified_cgroup_entries(pid: int):
         cgroup_path = Path(f"/proc/{pid}/cgroup")
         if not cgroup_path.is_file():
             return
-        text = cgroup_path.read_text(encoding="utf-8", errors="replace")
+        text = cgroup_path.read_text(encoding="utf-8-sig", errors="replace")
     except (OSError, PermissionError):
         return
     for line in text.splitlines():
@@ -183,16 +184,36 @@ def _pid_unified_cgroup_entries(pid: int):
 
 
 def _get_systemd_service_for_pid(pid: int) -> str | None:
-    """The systemd service unit name *pid* belongs to (``hermes-serve.service``), or None.
+    """The systemd service unit that supervises *pid* (``hermes-serve.service``), or None.
 
-    None when the PID isn't part of a service, the file is unreadable, or off Linux.
+    A ``.service`` cgroup alone only says where the process was started: a dashboard launched by
+    hand from a shell that itself runs under some unit (a CI runner agent, ``cron.service``, a
+    tmux or IDE user service, the gateway's own terminal tool) sits in THAT unit's cgroup. The
+    unit owns the backend only when its live ``MainPID`` is this PID; otherwise restarting it
+    restarts an unrelated service and leaves the dashboard down. None when the PID isn't part of
+    a service, ownership can't be proved, the file is unreadable, or off Linux.
     """
     for cg_path in _pid_unified_cgroup_entries(pid):
         if cg_path.endswith(".service"):
             svc_name = cg_path.rsplit("/", 1)[-1]
-            if svc_name:
+            if svc_name and _unit_main_pid_is(svc_name, cg_path, pid):
                 return svc_name
     return None
+
+
+def _unit_main_pid_is(svc_name: str, cgroup_path: str, pid: int) -> bool:
+    """True when *svc_name*'s live ``MainPID`` is *pid* (read-only ``systemctl show``)."""
+    scope = _extract_scope_from_cgroup(cgroup_path)
+    scopes = {"user": [["--user"]], "system": [[]]}.get(scope or "", [[], ["--user"]])
+    for scope_args in scopes:
+        try:
+            result = _run_probe(
+                ["systemctl", *scope_args, "show", svc_name, "--property=MainPID", "--value"], timeout=10)
+        except _SYSTEMCTL_ERRORS:
+            continue
+        if result.returncode == 0 and (result.stdout or "").strip() == str(pid):
+            return True
+    return False
 
 
 def _extract_scope_from_cgroup(cgroup_entry: str) -> str | None:
@@ -502,16 +523,21 @@ def _report_dashboard_status() -> int:
     ``--status`` let an operator kill what they couldn't see.
 
     Ledger-registered serves (profiled launches the argv scan can't match) surface via the spawn-ledger
-    augmentation in _scan_dashboard_processes. See #81564.
+    augmentation in _scan_dashboard_processes, and the ledger's recorded bind replaces the argv port so
+    ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
     """
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
+    from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
     from gateway.status import _pid_exists
+    binds = _ledger_serve_binds()
     live: list[tuple[int, str, str]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
+        if pid in binds:
+            ledger_host, port = binds[pid]
+            host = ledger_host or host
         if port <= 0 or not _pid_exists(pid) or not _dashboard_listening(host, port):
             continue
         live.append((pid, command, mode))
@@ -722,7 +748,7 @@ def _read_ssh_session_token_file(path: str) -> str:
         if uid is not None and (file_stat.st_mode & 0o777) & ~0o600:
             raise SystemExit("--ssh-session-token-file has unsafe permissions")
 
-        with os.fdopen(file_fd, "r", encoding="utf-8") as token_stream:
+        with os.fdopen(file_fd, "r", encoding="utf-8-sig") as token_stream:
             file_fd = -1
             token = token_stream.read(65)
 
@@ -820,19 +846,22 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
       graceful-shutdown window or a foreign listener that inherited the port) — a supervisor or
       `hermes update` relaunch landing in that window would otherwise exit 0 with NOTHING
       listening, reporting success for a dead service;
-    * an explicitly typed ``--port``/``--host`` the owner cannot serve is a non-zero REFUSAL
-      naming the owner, never a silent redirect;
+    * an explicitly typed ``--port``/``--host`` the owner cannot serve is a REFUSAL naming the
+      owner, never a silent redirect. It exits 78 (EX_CONFIG), the deliberate-refusal code
+      ``RestartPreventExitStatus=78`` parks on: exit 1 under ``Restart=always`` was an infinite
+      restart loop with nothing listening on the ingress port (#119824);
     * a `hermes dashboard` user is never handed a headless backend's URL (no SPA behind it).
 
     Returns normally — leaving the caller to BIND — when no owner answers.
     """
-    if getattr(args, "isolated", False) or os.environ.get("HERMES_DESKTOP") == "1":
+    if getattr(args, "isolated", False) or _is_desktop_owned_backend():
         return
     record = _host_backend_attachment()
     if record is None:
         return
 
     from gateway import host_rendezvous as hr
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
     identity = hr.probe_owner(record)
     if identity is None:
@@ -846,13 +875,13 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         print(f"Refusing to start: this host is already served by {hr.describe(record)}.")
         print(f"  You asked for {conflict}.")
         print("  Stop that backend, or drop the flag to use the running one.")
-        sys.exit(1)
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     if not headless_backend and not identity.get("servesSpa"):
         print(f"Refusing to start: this host is already served by {hr.describe(record)}, "
               "which is a headless `hermes serve` backend with no dashboard UI.")
         print("  Stop it and run `hermes dashboard`, or use --isolated for a dedicated server.")
-        sys.exit(1)
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     try:
         from hermes_cli.profiles import get_active_profile_name
@@ -893,7 +922,7 @@ def _route_named_profile_dashboard(
         _launch_profile in ("default", "custom")
         or getattr(args, "isolated", False)
         or getattr(args, "open_profile", "")
-        or os.environ.get("HERMES_DESKTOP") == "1"
+        or _is_desktop_owned_backend()
     ):
         return
 

@@ -1,4 +1,8 @@
-import { PROVIDER_FAILURE_TRIGGER } from '../../../tests-js/scripts/mock-server'
+import {
+  PROVIDER_FAILURE_TRIGGER,
+  TOOL_THEN_FAILURE_TEXT,
+  TOOL_THEN_FAILURE_TRIGGER
+} from '../../../tests-js/scripts/mock-server'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
@@ -106,4 +110,39 @@ test('a member whose backend fails the turn is reported at once, not read as bus
   expect(room.stranded).toEqual([])
   console.log('RETAINED FAILURE: activity =', await activity.textContent(), 'room =', JSON.stringify(room))
   await page.screenshot({ path: test.info().outputPath('retained-failure-after.png') })
+})
+
+// The member spoke and called a tool before the provider failed. The session
+// ends on the tool row (no failed-turn boundary behind it) and only the
+// retained 401 says the turn died: the text written before the tool call must
+// not be posted into the room as the member's reply.
+test('a member that fails after pre-tool text is reported, and that text is not its reply', async () => {
+  test.setTimeout(240_000)
+  const page = fixture!.page
+  const groupComposer = await createRoom(page)
+
+  await groupComposer.fill(`@programmer ${TOOL_THEN_FAILURE_TRIGGER}`)
+  await groupComposer.press('Enter')
+
+  const activity = page.getByRole('button', { name: /^Activity/ })
+  const groupTab = page.getByRole('tab', { name: new RegExp(`${ROOM} Close`) })
+
+  await expect(async () => {
+    if ((await groupTab.getAttribute('aria-selected')) !== 'true') {
+      await groupTab.click()
+    }
+
+    await expect(activity).toContainText('Programmer hit an error', { timeout: 5_000 })
+  }).toPass({ timeout: 150_000 })
+
+  const room = await page.evaluate(name => {
+    const rooms = JSON.parse(localStorage.getItem('hermes.plugin.hermes-bots.group-chats') || '{}')
+
+    return { log: (rooms[name]?.log || []).map((entry: { text?: string }) => entry.text || ''), stranded: Object.keys(rooms[name]?.stranded || {}) }
+  }, ROOM)
+
+  expect(room.log.some((text: string) => text.includes(TOOL_THEN_FAILURE_TEXT))).toBe(false)
+  expect(room.stranded).toEqual([])
+  console.log('TOOL THEN FAILURE: activity =', await activity.textContent(), 'log =', JSON.stringify(room.log))
+  await page.screenshot({ path: test.info().outputPath('tool-then-failure-after.png') })
 })

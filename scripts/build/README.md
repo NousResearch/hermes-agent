@@ -128,10 +128,17 @@ It records product/host identity, content hashes of workspace/shared sources and
 build inputs, and the exact supplied icon directory, desktop install stamp, and
 native-dependency tree. The desktop stamp is hashed as its provenance identity
 rather than its raw bytes: `write-build-stamp.mjs` rewrites the `builtAt` clock on
-every build, so hashing it byte-for-byte let the build's own first step invalidate
-the receipt it was about to write (#123308). Inputs are checked again before
-publication: a concurrent input change fails the build and preserves the previous
-output. Output validation
+every build, so hashing it byte-for-byte let a second build racing this one kill
+it with "inputs changed" for a difference the build machinery itself made
+(#123308). The clock is not dropped, only excluded from that comparison: the
+receipt records it as `stampClock`, the value the bake actually embedded, because
+packaging copies the live stamp file into the bundle *after* the receipt is
+written. A product whose packaged clock disagrees with the clock baked into its
+main process must not be reported current — `detectBundleSwap` would otherwise
+offer a relaunch for a bundle that was never replaced. A receipt predating the
+field is compared by hash alone until the next build rewrites it. Inputs are
+checked again before publication: a concurrent provenance change fails the build
+and preserves the previous output. Output validation
 checks renderer/main/preload/public bytes and the native file inventory; native
 bytes may change through signing after compilation. Native ABI verification remains
 with the native provider and desktop compiler.

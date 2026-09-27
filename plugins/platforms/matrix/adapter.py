@@ -485,10 +485,11 @@ def _is_bare_media_filename(msgtype: str, body: str) -> bool:
 
 
 def _inbound_media_caption(msgtype: str, body: str, source_content: dict) -> str:
+    wire_body = str(source_content.get("body") or "")
     declared_filename = str(source_content.get("filename") or "").strip()
     if declared_filename:
-        return "" if body.strip() == declared_filename else body
-    return "" if _is_bare_media_filename(msgtype, body) else body
+        return "" if wire_body.strip() == declared_filename else body
+    return "" if _is_bare_media_filename(msgtype, wire_body) else body
 
 
 def _matrix_event_timestamp_seconds(event: Any) -> float:

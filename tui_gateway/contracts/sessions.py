@@ -181,6 +181,9 @@ class SessionResumeParams(SessionParams):
     omit_messages: bool = False
     eager_build: bool = False
     close_on_disconnect: bool = False
+    # False: render image parts as "[image]" instead of their data URIs — a remote client reads a
+    # transcript in kilobytes instead of re-transmitting every stored attachment (#116511).
+    inline_images: bool = True
 
 
 class SessionResumeResult(LiveSessionSnapshot):

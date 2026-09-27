@@ -247,15 +247,26 @@ class InterruptControlMixin:
                 self._pending_steer = None
         return True
 
-    def steer(self, text: str) -> bool:
-        """Queue user text for delivery as its own user row after the current tool batch finishes (no
-        interrupt); multiple calls concatenate with newlines. Returns False for empty text."""
+    def steer(self, text: str, *, _notify: bool = True) -> bool:
+        """Queue user text for delivery after the current tool batch finishes.
+
+        Multiple calls concatenate with newlines. Accepted user/external steers may notify an
+        observer; internal recovery requeues pass ``_notify=False``. Observer failure never
+        rolls back the already-accepted steer.
+        """
         if not text or not text.strip():
             return False
         cleaned = text.strip()
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+        if _notify:
+            callback = getattr(self, "_steer_accepted_callback", None)
+            if callable(callback):
+                try:
+                    callback(cleaned)
+                except Exception:
+                    logger.debug("steer acceptance observer failed", exc_info=True)
         return True
 
     def redirect(self, text: str) -> bool:

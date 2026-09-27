@@ -16,7 +16,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -243,9 +243,24 @@ def _strip_html(html: str) -> str:
 
 
 def _extract_email_address(raw: str) -> str:
-    """Extract bare email address from 'Name <addr>' format."""
-    match = re.search(r"<([^>]+)>", raw)
-    return (match.group(1) if match else raw).strip().lower()
+    """Bare address from a From: value, via the stdlib address parser.
+
+    A regex taking the FIRST ``<...>`` pair reads
+    ``"Victim <victim@example.com>" <attacker@evil.test>`` as the victim,
+    causing allowlist, pairing, and session-identity decisions to use an
+    address the sender does not control (GHSA-rxqh-5572-8m77).
+
+    ``parseaddr`` keeps the quoted text as the display name and returns the
+    actual addr-spec (``attacker@evil.test``), so authorization is evaluated
+    against the real sender identity.
+
+    RFC 5322 header folding is unfolded before parsing. Without that step,
+    ``parseaddr`` can mistake a folded quoted display name for the mailbox
+    itself, dropping legitimate allowlisted mail or polluting session identity.
+    """
+    value = re.sub(r"\r?\n[ \t]+", " ", str(raw or ""))
+    _, addr = parseaddr(value)
+    return addr.strip().lower()
 
 
 def _domain_of(address: str) -> str:

@@ -444,13 +444,15 @@ def _raise_minimax_api_error(result: Dict[str, Any]) -> None:
 
 
 def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    from tools.tts_tool_instructions import _MINIMAX_TTS_EMOTIONS, _tts_instructions_channel
     """Generate audio via MiniMax: ``t2a_v2`` (nested payload, JSON reply with hex audio) or the legacy
     ``text_to_speech`` endpoint (flat payload, raw ``audio/*`` body), detected from the URL."""
+    from tools.tts_tool_instructions import _MINIMAX_TTS_EMOTIONS, _tts_instructions_channel
+
     runtime = _resolve_minimax_tts_runtime(tts_config)
     mm_config = _section(tts_config, "minimax")
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
+    style = _tts_instructions_channel(tts_config).lower()
     base_url = runtime.endpoint
     # MiniMax scopes TTS requests by GroupId (``?GroupId=<id>`` on the t2a_v2 URL): config or
     # MINIMAX_GROUP_ID, attached only when absent from the URL.
@@ -465,11 +467,8 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
             "model": model, "text": text,
             "voice_setting": {
                 "voice_id": voice_id, "speed": mm_config.get("speed", 1.0), "vol": mm_config.get("vol", 1.0),
-                "pitch": mm_config.get("pitch", 0), "emotion": (
-                    _tts_instructions_channel(tts_config).lower()
-                    if _tts_instructions_channel(tts_config).lower() in _MINIMAX_TTS_EMOTIONS
-                    else mm_config.get("emotion", "neutral")
-                ),
+                "pitch": mm_config.get("pitch", 0),
+                "emotion": style if style in _MINIMAX_TTS_EMOTIONS else mm_config.get("emotion", "neutral"),
             },
             "audio_setting": {
                 "sample_rate": mm_config.get("sample_rate", 32000), "bitrate": mm_config.get("bitrate", 128000),

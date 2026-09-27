@@ -8,6 +8,8 @@ import contextlib
 import json
 import logging
 import os
+import stat
+import urllib.parse
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -47,7 +49,27 @@ def _resolve_peer(agent: str) -> Optional[dict]:
 
 
 def _auth_header(auth: dict) -> dict:
-    return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
+    if not auth or auth.get("type") != "bearer":
+        return {}
+    token = auth.get("token", "")
+    if auth.get("token_file"):
+        # Open once, validate the descriptor, and never expose the path/value in errors.
+        try:
+            path = os.path.expanduser(auth["token_file"])
+            if os.path.islink(path):
+                raise ValueError
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            with os.fdopen(os.open(path, flags), "rb") as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode) or (os.name != "nt" and info.st_mode & 0o077):
+                    raise ValueError
+                raw = handle.read(4099)
+            token = raw.decode("ascii").strip()
+            if len(raw) > 4098 or not 32 <= len(token) <= 4096 or any(c.isspace() for c in token):
+                raise ValueError
+        except (OSError, ValueError, TypeError):
+            raise ValueError("Configured A2A bearer file is unreadable, insecure, or invalid") from None
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:
@@ -67,13 +89,16 @@ def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
 
 def _fetch_card(base_url: str, headers: dict, timeout: int) -> dict:
     """GET the v1.0 agent-card.json; on 404 fall back to the v0.2 agent.json alias."""
-    base = base_url.rstrip("/")
+    parsed = urllib.parse.urlsplit(base_url)
+    def card_url(name: str) -> str:
+        return urllib.parse.urlunsplit(parsed._replace(
+            path=parsed.path.rstrip("/") + "/.well-known/" + name, fragment=""))
     try:
-        return _http_get_json(base + "/.well-known/agent-card.json", headers, timeout)
+        return _http_get_json(card_url("agent-card.json"), headers, timeout)
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
-    return _http_get_json(base + "/.well-known/agent.json", headers, timeout)
+    return _http_get_json(card_url("agent.json"), headers, timeout)
 
 
 def _select_jsonrpc_interface(card: Optional[dict]) -> Optional[dict]:
@@ -85,7 +110,9 @@ def _select_jsonrpc_interface(card: Optional[dict]) -> Optional[dict]:
 
 
 def _rpc_url(base_url: str, card: Optional[dict]) -> str:
-    """Card's JSONRPC interface (v1.0 supportedInterfaces) > card's legacy top-level url > base."""
+    """Keep explicit query-bearing routes; otherwise prefer the advertised interface."""
+    if urllib.parse.urlsplit(base_url).query:
+        return base_url
     if iface := _select_jsonrpc_interface(card):
         return str(iface["url"])
     if isinstance(card, dict) and isinstance(card.get("url"), str) and card["url"]:

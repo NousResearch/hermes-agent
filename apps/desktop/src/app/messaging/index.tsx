@@ -933,45 +933,11 @@ function PlatformActionBar({
   )
 }
 
-const PLATFORM_INTRO: Record<string, string> = {
-  telegram:
-    'In Telegram, talk to @BotFather, run /newbot, and copy the token it gives you. Then grab your numeric user ID from @userinfobot.',
-  discord:
-    'Open the Discord Developer Portal, create an application, add a Bot, then copy its token. Invite the bot to your server with the right scopes.',
-  slack:
-    'Create a Slack app, enable Socket Mode, install it to your workspace, then copy the bot token and app-level token.',
-  mattermost:
-    'On your Mattermost server, create a bot account or personal access token, then paste the server URL and token here.',
-  matrix: 'Sign in to your homeserver with the bot account, then copy the access token, user ID, and homeserver URL.',
-  signal:
-    'Run a signal-cli REST bridge somewhere reachable, then point Hermes at the URL and the registered phone number.',
-  whatsapp:
-    'Start the WhatsApp bridge that ships with Hermes, scan the QR code on first run, then enable the platform.',
-  bluebubbles:
-    'Run BlueBubbles Server on a Mac with iMessage, expose its API, then point Hermes at the URL with the server password.',
-  homeassistant:
-    'In Home Assistant, open your profile and create a long-lived access token. Paste it here along with your HA URL.',
-  email:
-    'Use a dedicated mailbox. For Gmail/Workspace, create an app password and use imap.gmail.com / smtp.gmail.com.',
-  sms: 'Get your Twilio Account SID and Auth Token from the Twilio console, plus a phone number that can send SMS.',
-  dingtalk: 'Create a DingTalk app in the developer console, then copy the Client ID (App key) and Client Secret here.',
-  feishu:
-    'Create a Feishu / Lark app, configure the bot capability, and copy the App ID, App secret, and event encryption keys.',
-  wecom:
-    'Add a group robot in WeCom and copy its webhook key as WECOM_BOT_ID. Send-only — use the WeCom (app) option for two-way.',
-  wecom_callback:
-    'Set up a WeCom self-built app, expose its callback URL, and provide the corp ID, secret, agent ID, and AES key.',
-  weixin:
-    "Run `hermes gateway setup`, select Weixin, then scan and confirm the QR code with a personal WeChat account. Hermes connects through Tencent's iLink Bot API and saves the credentials.",
-  qqbot: 'Register an app on the QQ Open Platform (q.qq.com) and copy the App ID and Client Secret.',
-  api_server:
-    'Expose Hermes as an OpenAI-compatible API. Set an auth key, then point Open WebUI / LobeChat / etc. at the host:port.',
-  webhook:
-    'Run an HTTP server that other tools (GitHub, GitLab, custom apps) can POST to. Use the secret to verify signatures.'
-}
-
+// Per-platform credential intros live in the i18n catalogs
+// (`messaging.platformIntro`, en + fa); `platform.description` is the
+// server-provided fallback for unknown platform ids.
 const introCopy = (platform: MessagingPlatformInfo, m: Translations['messaging']) =>
-  m.platformIntro[platform.id] || PLATFORM_INTRO[platform.id] || platform.description
+  m.platformIntro[platform.id] || platform.description
 
 function MessagingField({
   edits,

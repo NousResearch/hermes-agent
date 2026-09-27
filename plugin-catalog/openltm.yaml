@@ -1,10 +1,8 @@
-# Hermes Plugin Catalog entry for OpenLTM.
+# OpenLTM — long-term memory for Hermes agents.
 #
-# This file is NOT read at runtime. It is the artifact submitted to
-# NousResearch/hermes-agent as plugin-catalog/openltm.yaml via a pull request.
-# Validate with `bun run catalog:check`; refresh the pin with `bun run catalog:sync`.
-#
-# Schema reference: https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog
+# Source of truth: https://github.com/RohiRIK/OpenLtm
+# Plugin lives in the `hermes/openltm_hermes` subdirectory of that repository.
+# The `sha` above is the exact reviewed commit; the version label matches it.
 name: openltm
 repo: https://github.com/RohiRIK/OpenLtm
 sha: 3c0560c87ebdc5049575ce98054c684ea7f30638

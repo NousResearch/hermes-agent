@@ -143,25 +143,38 @@ async def test_requeued_busy_event_does_not_hot_loop(rewrite_hook):
 
 @pytest.mark.asyncio
 async def test_requeued_event_runs_once_the_agent_finishes():
-    """The back-off must defer, not drop: once the running agent is gone the event is processed."""
+    """The back-off must defer, not drop: once the running agent is gone the event is processed.
+    And it must key on the runner's demotion, not on ``None``: every streamed turn returns None,
+    so chained genuine follow-ups after it must each dispatch immediately."""
     adapter = _Adapter()
     runner, agent, sk = _runner_with_running_agent(adapter, compression_in_flight=True)
-    handled = []
+    handled, starts, ends = [], [], []
     real_handle = runner._handle_message
 
     async def handler(event):
         if sk not in runner._running_agents:
             handled.append(event.text)
-            return "done"
+            starts.append(time.monotonic())
+            await asyncio.sleep(0.05)
+            ends.append(time.monotonic())
+            return None  # streamed turn: the body was already delivered
         return await real_handle(event)
 
     adapter.set_message_handler(handler)
     await adapter.handle_message(MessageEvent(text="queued msg", source=_source(), message_id="m2"))
     await asyncio.sleep(0.6)
     runner._running_agents.pop(sk)  # the long turn finishes
-    for _ in range(100):
+    for _ in range(1000):
         if handled:
             break
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.01)
+    for i in range(1, 4):  # a genuine follow-up queued during each (None-returning) turn
+        await adapter.handle_message(MessageEvent(text=f"f{i}", source=_source(), message_id=f"f{i}"))
+        for _ in range(100):
+            if len(handled) > i:
+                break
+            await asyncio.sleep(0.01)
     await adapter.cancel_background_tasks()
-    assert handled == ["queued msg"]
+    assert handled == ["queued msg", "f1", "f2", "f3"]
+    gaps = [starts[i] - ends[i - 1] for i in range(1, len(starts))]
+    assert all(g < 0.1 for g in gaps), f"genuine follow-ups backed off: {gaps}"

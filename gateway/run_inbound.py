@@ -708,9 +708,11 @@ class GatewayInboundMixin:
         if effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
             self._queue_or_replace_pending_event(_quick_key, event)
+            self._hm_tag_busy_requeue(source, _quick_key)
             return None
         if effective_busy_input_mode == "steer":
             self._hm_busy_steer(event, running_agent, _quick_key)
+            self._hm_tag_busy_requeue(source, _quick_key)
             return None
         # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).
@@ -725,7 +727,20 @@ class GatewayInboundMixin:
             return None
         logger.info("PRIORITY interrupt demoted to queue for session %s %s", _quick_key, _demote)
         self._queue_or_replace_pending_event(_quick_key, event)
+        self._hm_tag_busy_requeue(source, _quick_key)
         return None
+
+    def _hm_tag_busy_requeue(self, source: SessionSource, _quick_key: str) -> None:
+        """Mark the adapter's pending head as DEMOTED by this busy fast-path (the same inbound event,
+        or its rewrite-hook copy / merge, went back into the queue while an agent runs). Only tagged
+        events make the adapter drain back off (#123229); genuine follow-ups after a normal turn
+        stay immediate. A steer that was absorbed leaves nothing new pending; the head, if any, is
+        still blocked on the same running agent, so tagging it only defers it."""
+        adapter = self._delivery_adapter_for(source)
+        pending = getattr(adapter, "_pending_messages", None) if adapter else None
+        head = pending.get(_quick_key) if isinstance(pending, dict) else None
+        if head is not None:
+            head._busy_requeued = True
 
     def _hm_quick_commands(self) -> dict:
         """User-defined ``quick_commands`` mapping from config (empty dict when unset/malformed)."""

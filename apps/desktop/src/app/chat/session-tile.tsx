@@ -630,6 +630,7 @@ export function startUnrestoredTileTitleBackfill(lookup = probeStoredSession): (
   // Only tiles present at startup can be retired: a newly created unbound
   // draft may legitimately have no durable row yet.
   const restored = new Set($sessionTiles.get().filter(tile => !tile.runtimeId))
+  const pendingCleanups = new Set<() => void>()
   let cancelled = false
   const run = () => {
     if ($gatewayState.get() !== 'open') {
@@ -653,6 +654,10 @@ export function startUnrestoredTileTitleBackfill(lookup = probeStoredSession): (
           $gatewaySwitching.listen(invalidate),
           $gatewaySwapTarget.listen(invalidate)
         ]
+        const cleanup = () => {
+          if (pendingCleanups.delete(cleanup)) unlisten.forEach(off => off())
+        }
+        pendingCleanups.add(cleanup)
         const hasInventory = Boolean(tile.ownerRoute) || $profiles.get().length > 0
 
         void lookup(tile.storedSessionId, tile.ownerRoute)
@@ -676,7 +681,7 @@ export function startUnrestoredTileTitleBackfill(lookup = probeStoredSession): (
             }
           })
           .catch(() => undefined)
-          .finally(() => unlisten.forEach(off => off()))
+          .finally(cleanup)
       }
     }
   }
@@ -687,6 +692,7 @@ export function startUnrestoredTileTitleBackfill(lookup = probeStoredSession): (
   return () => {
     cancelled = true
     off()
+    pendingCleanups.forEach(cleanup => cleanup())
   }
 }
 

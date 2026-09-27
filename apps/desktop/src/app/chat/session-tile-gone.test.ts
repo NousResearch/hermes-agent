@@ -42,6 +42,52 @@ afterEach(() => {
 })
 
 describe('restored dead tile backfill', () => {
+  it('releases scope subscriptions on cancellation even while lookup is pending', async () => {
+    openSessionTile('deleted-chat')
+    const released = vi.fn()
+    const listen = $connection.listen.bind($connection)
+    const spy = vi.spyOn($connection, 'listen').mockImplementation(listener => {
+      const off = listen(listener)
+      return () => { released(); off() }
+    })
+    let resolve!: (result: { status: 'gone' }) => void
+    const pending = new Promise<{ status: 'gone' }>(yes => { resolve = yes })
+    try {
+      stop = startUnrestoredTileTitleBackfill(() => pending)
+      $gatewayState.set('open')
+      expect(spy).toHaveBeenCalledTimes(1)
+      stop()
+      expect(released).toHaveBeenCalledTimes(1)
+      resolve({ status: 'gone' })
+      await pending
+      await new Promise(yes => setTimeout(yes, 0))
+      expect(released).toHaveBeenCalledTimes(1)
+      expect($sessionTiles.get()).toHaveLength(1)
+    } finally {
+      resolve({ status: 'gone' })
+      spy.mockRestore()
+    }
+  })
+
+  it('persists each dead tile removal without dropping a surviving owned tile', async () => {
+    openSessionTile('gone-one')
+    openSessionTile('gone-two')
+    openSessionTile('survivor', 'right', undefined, undefined, {
+      workspaceMode: 'sessions', ownerRoute: { connectionId: 'local', profile: 'writer' }
+    })
+    get.mockImplementation(async (id: string) => {
+      if (id === 'survivor') return { id, title: 'Still here' } as never
+      throw new Error('404: Session not found')
+    })
+    stop = startUnrestoredTileTitleBackfill()
+    $gatewayState.set('open')
+    await vi.waitFor(() => expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['survivor']))
+    const persisted = window.localStorage.getItem('hermes.desktop.sessionTiles.v2') ?? ''
+    expect(persisted).toContain('survivor')
+    expect(persisted).not.toContain('gone-one')
+    expect(persisted).not.toContain('gone-two')
+    expect($sessionTiles.get()[0].ownerRoute).toEqual({ connectionId: 'local', profile: 'writer' })
+  })
   it('uses the real REST scope ladder and preserves caller-selected ownership', async () => {
     const actual = await vi.importActual<typeof import('@/hermes')>('@/hermes')
     const previous = window.hermesDesktop

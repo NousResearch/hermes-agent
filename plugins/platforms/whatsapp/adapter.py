@@ -534,9 +534,23 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
-            self._bridge_process = subprocess.Popen(
-                [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+            bridge_argv = [node, str(bridge_path), "--port", str(self._bridge_port),
+                           "--session", str(self._session_path),
+                           "--mode", _wenv("WHATSAPP_MODE", "self-chat")]
+            try:
+                self._bridge_process = subprocess.Popen(
+                    bridge_argv, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(),
+                    **windows_detach_popen_kwargs())
+            except OSError as exc:
+                # CREATE_BREAKAWAY_FROM_JOB is rejected with access denied when the parent's
+                # job object forbids breakaway (a gateway launched via Task Scheduler runs in
+                # one); retry without it, mirroring hermes_cli.gateway_windows._spawn_detached.
+                if getattr(exc, "winerror", None) != 5:
+                    raise
+                from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+                self._bridge_process = subprocess.Popen(
+                    bridge_argv, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(),
+                    creationflags=windows_detach_flags_without_breakaway())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():
                 return False

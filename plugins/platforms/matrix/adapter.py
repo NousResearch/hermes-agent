@@ -1510,19 +1510,22 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         result, delivery_adapter = await super().send_final_ledgered(
             event, session_key, text_content, metadata, reply_to=reply_to,
             is_ephemeral_response=is_ephemeral_response)
+        if result.success and result.message_id:
+            ids = (*result.continuation_message_ids, result.message_id)
+            self.on_streamed_final_delivery(event.source, session_key, ids, text_content)
+        return result, delivery_adapter
+
+    def on_streamed_final_delivery(
+        self, source: SessionSource, session_key: str, ids: tuple[str, ...], text_content: str,
+    ) -> None:
         action = self._reaction_followup_actions.get(session_key)
-        if not action or not text_content or not result.success or not result.message_id:
-            return result, delivery_adapter
-        source = event.source
-        if not source.user_id:
-            return result, delivery_adapter
-        ids = (*result.continuation_message_ids, result.message_id)
+        if not action or not text_content or not ids or not source.user_id:
+            return
         self._followup_store().arm(
             action[0], ids, profile=source.profile or "", room_id=source.chat_id,
             thread_id=source.thread_id or "", session_key=session_key,
             requester=source.user_id, source=source.to_dict(), emoji_filter=action[1],
         )
-        return result, delivery_adapter
 
     async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
@@ -2882,15 +2885,20 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             reaction_time=reaction_time)
         if claimed is None:
             return
+        target = await self._event_context_cache.resolve(
+            getattr(self, "_client", None), room_id, target_event_id)
         context = (f"Matrix reaction by {sender}: {emoji} on reply {target_event_id} "
                    f"(reaction event {reaction_event_id}).")
-        await self.handle_message(MessageEvent(
+        followup = MessageEvent(
             text=context, source=source, message_id=reaction_event_id,
             raw_message={"m.relates_to": {"rel_type": "m.annotation",
                                           "event_id": target_event_id, "key": emoji}},
             reply_to_message_id=target_event_id, channel_context=context,
-            user_id=sender, allow_gateway_control=False,
-        ))
+            reply_to_text=target.text[:500] if target and target.text else None,
+            reply_to_is_own_message=True,
+            user_id=sender, allow_gateway_control=False, defer_until_idle=True,
+        )
+        await self.handle_message(followup)
 
     async def _claim_reaction_prompt(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,

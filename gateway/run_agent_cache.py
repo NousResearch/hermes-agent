@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
-from gateway.session import SessionSource, build_session_context_prompt
+from gateway.session import (
+    PINNED_MODEL_DEFAULT_METADATA_KEY,
+    SessionSource,
+    build_session_context_prompt,
+    read_model_default_snapshot,
+)
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
@@ -146,10 +151,20 @@ class GatewayAgentCacheMixin:
     def _rehydrate_session_model_override(self, session_key: str) -> None:
         """Lazily restore a persisted /model override after a gateway restart: non-secret parts
         (model/provider/base_url) are written through on /model and read back on first use; api_key
-        is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
+        is never persisted and is re-resolved. No-op when an in-memory override or nothing exists.
+
+        Both branches (live in-memory pin and persisted rehydrate) run the
+        stale-pin drop, so a long-lived session follows a default-model change
+        on its next turn with no gateway restart (#102658)."""
         from gateway.run import _resolve_runtime_agent_kwargs_for_provider
         store = getattr(self, "session_store", None)
-        if self._session_model_override(session_key) is not None or store is None:
+        if self._session_model_override(session_key) is not None:
+            # Live in-memory override: still subject to the stale-pin drop
+            # below, so long-lived sessions follow default-model changes
+            # without waiting for a gateway restart (#102658).
+            self._drop_stale_session_model_override(session_key)
+            return
+        if store is None:
             return
         try:
             persisted = store.get_model_override(session_key)
@@ -192,6 +207,81 @@ class GatewayAgentCacheMixin:
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
             session_key, override.get("model"), provider or "",
         )
+        # A just-rehydrated pin may already be stale (default migrated while the
+        # gateway was down) -- same drop as the live path above (#102658).
+        self._drop_stale_session_model_override(session_key)
+
+    def _drop_stale_session_model_override(self, session_key: str) -> bool:
+        """Drop a session override that went stale after a default-model change.
+
+        ``SessionStore.set_model_override`` snapshots the config
+        ``(model.default, model.provider)`` each pin was taken against.  A pin
+        that merely *echoed* that default is redundant: once the operator
+        migrates the fleet default, the stale pin is cleared (in-memory +
+        persisted) so the session follows the new default on its next turn --
+        live sessions included, with no restart or per-session ``/new``
+        required.  An explicit *divergent* pin (override != pin-time default)
+        still wins, as do legacy pins that predate the snapshot (no snapshot
+        -> keep).
+
+        Never raises: staleness hygiene must not break turn resolution.
+        """
+        try:
+            state = self._peek_session_state(session_key)
+            override = state.conversation.model_override if state else None
+            if not override:
+                return False
+            store = getattr(self, "session_store", None)
+            if store is None:
+                return False
+            pinned = store.get_model_override_pinned_default(session_key)
+            if not pinned:
+                return False
+            current = read_model_default_snapshot()
+            if not current:
+                return False
+            if (
+                str(override.get("model") or "")
+                != str(pinned.get("model") or "")
+                or str(override.get("provider") or "")
+                != str(pinned.get("provider") or "")
+            ):
+                return False
+            if (
+                str(pinned.get("model") or "")
+                == str(current.get("model") or "")
+                and str(pinned.get("provider") or "")
+                == str(current.get("provider") or "")
+            ):
+                return False
+            state.conversation.model_override = None
+            try:
+                store.set_model_override(session_key, None)
+            except Exception:
+                logger.debug(
+                    "Failed to clear stale session model override",
+                    exc_info=True,
+                )
+            try:
+                self._evict_cached_agent(session_key)
+            except Exception:
+                logger.debug(
+                    "Failed to evict agent after stale-override drop",
+                    exc_info=True,
+                )
+            logger.info(
+                "Dropped stale /model override for session=%s: "
+                "pinned=%s/%s now follows default=%s/%s (#102658)",
+                session_key,
+                pinned.get("model"), pinned.get("provider"),
+                current.get("model"), current.get("provider"),
+            )
+            return True
+        except Exception:
+            logger.debug(
+                "Stale session-model-override check failed", exc_info=True
+            )
+            return False
 
     def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict) -> tuple:
         """Apply /model session overrides (precedence over config.yaml defaults; ``None`` fields skipped

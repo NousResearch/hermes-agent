@@ -232,3 +232,32 @@ def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_contex
     assert (messages[-1]["role"], messages[-1]["content"]) == ("assistant", PARTIAL_FAILED_TURN_NOTICE)  # a tool ran: hedge
     assert db.latest_conversation_role(sid) == "assistant"
     db.close()
+
+
+def test_prompt_after_cancel_keeps_the_unanswered_request(acp):
+    """An unanswered request survives the next ACP prompt and its replay prefix."""
+    provider, prompt, _rows, _db, sid, _conn, server = acp
+    state = server.session_manager.get_session(sid)
+    before, real = list(state.history), state.agent.run_conversation
+    state.agent.run_conversation = lambda **kw: {
+        "final_response": None, "interrupted": True, "completed": False,
+        "messages": before + [{"role": "user", "content": "deploy build 42"}],
+    }
+    try:
+        prompt("deploy build 42")
+    finally:
+        state.agent.run_conversation = real
+
+    provider.script = [
+        {"finish_reason": "stop", "content": "done"},
+        {"finish_reason": "stop", "content": "ok"},
+    ]
+    prompt("also run the smoke tests")
+    prompt("third")
+    turn2 = provider.requests[-2]["messages"]
+    turn3 = provider.requests[-1]["messages"]
+    assert turn3[:len(turn2)] == turn2
+    assert any(
+        msg["role"] == "user" and msg["content"] == "deploy build 42\n\nalso run the smoke tests"
+        for msg in turn2
+    )

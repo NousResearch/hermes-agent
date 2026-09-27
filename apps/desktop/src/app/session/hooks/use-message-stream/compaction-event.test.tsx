@@ -3,7 +3,12 @@ import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $compactingSessions, markCompressDeferred, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
+import {
+  $compactingSessions,
+  markCompressDeferred,
+  setSessionCompacting,
+  takeCompressDeferred
+} from '@/store/compaction'
 import { $notifications, clearNotifications } from '@/store/notifications'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'

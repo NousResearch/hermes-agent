@@ -36,6 +36,34 @@ export function currentModelCapabilities(
 // `deepseek-v4.1-flash` for the row's `-0731` sibling. The only authority on a
 // pick's validity is the gateway's switch result.
 
+/** The single, deliberate exception to the sticky-pick rule above: the virtual
+ *  `moa` provider. Its catalog row vanishes entirely once no MoA preset is
+ *  enabled (`hermes_cli/inventory.py` filters it out of explicit-only
+ *  catalogs), so a persisted manual pick pointing at it leaves the composer
+ *  pill reading `Model · moa: default` forever (#90244). For this one provider
+ *  — and only with a populated catalog in hand — row absence is authoritative:
+ *  the pick reseeds from the profile default. Every other provider keeps the
+ *  sticky behavior; an unloaded/empty catalog never clobbers anything. */
+export function moaPickRemoved(
+  options: { providers?: ModelOptionProvider[] | null } | null | undefined,
+  provider: string,
+  model: string
+): boolean {
+  if (!model.trim() || provider.trim().toLowerCase() !== 'moa') {
+    return false
+  }
+
+  const providers = options?.providers
+
+  if (!providers || providers.length === 0) {
+    return false
+  }
+
+  const row = providers.find(p => (p.slug || p.name || '').toLowerCase() === 'moa')
+
+  return !(row?.models ?? []).includes(model)
+}
+
 interface ModelOptionsRequest {
   /** When false, include ambient/unconfigured providers (onboarding/setup
    *  surfaces). Chat pickers default to true so only explicitly configured

@@ -156,10 +156,7 @@ function profileStatusLabel(p: Translations['profiles'], summary: ProfileDotSumm
  *  (gateway, profile) the square names. `connectionId` is null for this
  *  machine's primary. The interned summaries keep the selector's bail-out
  *  intact: a square re-renders only when its own counts change. */
-function useProfileStatus(
-  profile: null | string,
-  connectionId: null | string | undefined
-): ProfileDotSummary | null {
+function useProfileStatus(profile: null | string, connectionId: null | string | undefined): ProfileDotSummary | null {
   return useStoreSelector($profileDotStateByScope, byScope =>
     profile ? (profileDotSummaryFor(byScope, connectionId, profile) ?? null) : null
   )

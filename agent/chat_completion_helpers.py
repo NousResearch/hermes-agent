@@ -43,8 +43,8 @@ from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.message_sanitization import (
-    _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
-    sanitize_outbound_kwargs, strip_images_for_rejecting_model,
+    _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
+    normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
 from agent.repetition_guard import is_repetition_dominated
@@ -1734,19 +1734,24 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     has_replayable_native_compaction_checkpoint,
                 )
 
-                note_checkpoint = getattr(
-                    agent.context_compressor, "note_native_compaction_checkpoint", None
-                )
-                if (
-                    callable(note_checkpoint)
-                    and has_replayable_native_compaction_checkpoint(agent, [msg])
-                ):
-                    note_checkpoint()
-                    # The response priced the pre-checkpoint input, not the next
-                    # compacted request. A matching durable prefix is now stale.
-                    from agent.usage_anchor import set_usage_anchor
+                if has_replayable_native_compaction_checkpoint(agent, [msg]):
+                    note_checkpoint = getattr(
+                        agent.context_compressor, "note_native_compaction_checkpoint", None
+                    )
+                    if callable(note_checkpoint):
+                        note_checkpoint()
+                        # The response priced the pre-checkpoint input, not the next
+                        # compacted request. A matching durable prefix is now stale.
+                        from agent.usage_anchor import set_usage_anchor
 
-                    set_usage_anchor(agent, None)
+                        set_usage_anchor(agent, None)
+                    # The next request drops every item before this checkpoint, so a repeat
+                    # read must serve content again, not an "unchanged" stub (#32106).
+                    # Without a task id the reset would clear every task's caches.
+                    if task_id := getattr(agent, "_current_task_id", None):
+                        from agent.conversation_compression import _reset_read_dedup_caches
+
+                        _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]
@@ -2259,6 +2264,18 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         if isinstance(api_msg, dict):
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 del api_msg[internal_key]
+    # Same closing normalization as assemble_api_request so the summary's prefix stays
+    # bit-identical to the main loop's (a diverging early row defeats prefix caching).
+    for api_msg in api_messages:
+        if isinstance(api_msg.get("content"), str):
+            api_msg["content"] = api_msg["content"].strip()
+    from agent.conversation_loop import _canonicalize_api_tool_calls, _clone_message_for_send
+    _canonicalize_api_tool_calls(api_messages)
+    # Third closing pass of the main path: lone surrogates -> U+FFFD (else the SDK's utf-8
+    # wire encode raises and burns the summary retries). The sanitizer is in-place and these
+    # rows still share nested dicts with history, so clone first like the main path does.
+    api_messages = [_clone_message_for_send(m) for m in api_messages]
+    _sanitize_messages_surrogates(api_messages)
     return api_messages
 
 
@@ -2308,7 +2325,8 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
-        response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
+        response = _managed_summary_call(
+            agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
@@ -2324,10 +2342,10 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     sanitize_outbound_kwargs(agent, summary_kwargs)
 
     def _attempt(retry_count: int) -> str:
-        summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
+        # Use the ordinary request-local lifecycle: a summary can be interrupted
+        # during a long prefill without closing the shared primary client.
         response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs,
-            lambda request: summary_client.chat.completions.create(**bypass_chat_sdk_request_transform(request, summary_client)),
+            agent, api_request_id, summary_kwargs, agent._interruptible_api_call,
             retry_count=retry_count)
         return _summary_text(agent, response)
     return _attempt
@@ -2354,7 +2372,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     # Shared constant so compaction recognizers can identify this runtime nudge by its stable
     # content after SessionDB projection strips metadata flags.
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-    append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
+    nudge = append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
@@ -2375,6 +2393,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = text
             break
 
+    except InterruptedError:
+        # Cancellation is not a summary failure: drop the unanswered nudge and let the
+        # finalizer end the turn as interrupted so the pending message is requeued.
+        summary_call_outcome = "cancelled"
+        if messages and messages[-1] is nudge:
+            messages.pop()
+        raise
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
         from agent.turn_failure_copy import site_copy
@@ -2413,7 +2438,7 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
-    dropped_tool_names=None, overflow_terminal=False, api_mode=None):
+    dropped_tool_names=None, overflow_terminal=False, api_mode=None, clean_eof=False):
     """Stub for an SSE stream that ended without ``finish_reason`` after
     delivering content. Tagged ``PARTIAL_STREAM_STUB_ID`` + ``FINISH_REASON_LENGTH``
     so the loop enters its continuation/retry path instead of accepting
@@ -2429,6 +2454,12 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
     and the loop continues instead of entering the invalid-response retry ladder
     (#45908). Empty content keeps one empty text block: validate_response rejects
     an empty list for ``max_tokens``.
+
+    ``clean_eof``: the stream ended with no transport exception and no
+    ``finish_reason`` (server/intermediary closed cleanly). Only the two
+    clean-EOF sites in ``_finish_chat_stream`` pass True; the stub built after a
+    real transport exception keeps False so the loop can word the two failure
+    modes differently (#102766).
     """
     if api_mode == "anthropic_messages":
         return SimpleNamespace(
@@ -2442,6 +2473,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
             usage=usage_obj,
             _dropped_tool_names=dropped_tool_names or None,
             _overflow_terminal=overflow_terminal,
+            _clean_eof=clean_eof,
         )
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,
@@ -2455,6 +2487,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
         usage=usage_obj,
         _dropped_tool_names=dropped_tool_names or None,
         _overflow_terminal=overflow_terminal,
+        _clean_eof=clean_eof,
     )
 
 
@@ -2835,6 +2868,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self._stream_stale_timeout = None
         self.stream_attempt_lock = threading.Lock()
         self.stream_attempt_state = {"current": 0, "cancelled": set(), "discarded_chunks": 0, "discarded_bytes": 0}
+        self._stale_counted_attempts: set[int] = set()  # breaker counts each attempt once
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
@@ -2973,6 +3007,12 @@ class _StreamingCall(StreamingWaitMonitor):
                 diag["first_chunk_at"] = self.last_chunk_time["t"]
             # Delta-length estimate: ~3x cheaper than repr() per chunk.
             diag["bytes"] = int(diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
+
+    @staticmethod
+    def _mark_finish_seen(diag, finish_reason) -> None:
+        """Record that this attempt saw a terminal finish/stop reason (#102766)."""
+        if finish_reason and isinstance(diag, dict) and not diag.get("finish_reason_seen"):
+            diag["finish_reason_seen"] = True
 
     # ── chat_completions wire ───────────────────────────────────────────
 
@@ -3168,6 +3208,7 @@ class _StreamingCall(StreamingWaitMonitor):
             if not chunk.choices:
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
+                self._mark_finish_seen(_diag, finish_reason)
                 continue
 
             choice = chunk.choices[0]
@@ -3175,6 +3216,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # Read finish_reason/usage BEFORE any content-shape `continue`: the SSE-echo
             # guard can swallow a merged finish chunk (vLLM standalone ':' tokens).
             finish_reason = _normalize_finish_reason(getattr(choice, "finish_reason", None)) or finish_reason
+            self._mark_finish_seen(_diag, finish_reason)
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
@@ -3284,12 +3326,17 @@ class _StreamingCall(StreamingWaitMonitor):
                 try:
                     json.loads(arguments)
                 except json.JSONDecodeError:
-                    # Repair before flagging (GLM via Ollama); "{}" = unrepairable.
-                    repaired = _repair_tool_call_arguments(arguments, tc["function"]["name"] or "?")
-                    if repaired != "{}":
-                        arguments = repaired
-                    else:
+                    # A dropped stream is never repaired: closing its prefix yields valid
+                    # JSON that silently lacks every key and digit not yet streamed.
+                    if finish_reason is None:
                         has_truncated_tool_args = True
+                    else:
+                        # Repair before flagging (GLM via Ollama); "{}" = unrepairable.
+                        repaired = _repair_tool_call_arguments(arguments, tc["function"]["name"] or "?")
+                        if repaired != "{}":
+                            arguments = repaired
+                        else:
+                            has_truncated_tool_args = True
                 # Parseable JSON does not prove that a dropped stream completed its
                 # action. Treat degenerate argument loops as partial calls too.
                 # A provider-confirmed call may legitimately write repetitive data.
@@ -3332,19 +3379,22 @@ class _StreamingCall(StreamingWaitMonitor):
             # upstream dropped mid tool-call, and stamping "length" burns 3 useless retries.
             _dropped_names = [(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)]
             logger.warning(
-                "Stream ended with no finish_reason while a tool call's arguments were still incomplete "
-                "(tools=%s); treating as a mid-tool-call stream drop, not an output-length truncation.",
+                "Clean EOF, no finish_reason: server ended the stream (no transport exception) while a tool "
+                "call's arguments were still incomplete (tools=%s). The server or a proxy closed the stream "
+                "cleanly; not an output-length truncation.",
                 _dropped_names)
             return _build_partial_stream_stub(
-                role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None)
+                role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None,
+                clean_eof=True)
         if finish_reason is None and (content_parts or reasoning_parts) and not tool_calls_acc and usage_obj is None:
             # Text-only (or reasoning-only) drop: otherwise the partial text is stamped "stop"
             # and the next step is lost — for reasoning-only, the clean-stop promotion in
             # finish_text_response would then surface a truncated thought as the answer.
             # A usage object proves the provider finished (include_usage's final chunk).
             logger.warning(
-                "Stream ended with no finish_reason after delivering text with no tool calls; treating as a mid-stream drop.")
-            return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj)
+                "Clean EOF, no finish_reason: server ended the stream (no transport exception) after delivering "
+                "text with no tool calls. The server or a proxy closed the stream cleanly.")
+            return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, clean_eof=True)
         effective_finish_reason = "length" if has_truncated_tool_args else (finish_reason or "stop")
         provider_stream_error = _provider_stream_error_from_text(
             full_content or "", effective_finish_reason, response=getattr(stream, "response", None))
@@ -3439,7 +3489,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 event_type = getattr(event, "type", None)
                 if event_type == "message_stop":
                     saw_message_stop = True
-                if event_type == "content_block_start":
+                elif event_type == "message_delta":
+                    self._mark_finish_seen(_diag, getattr(getattr(event, "delta", None), "stop_reason", None))
+                elif event_type == "content_block_start":
                     block = getattr(event, "content_block", None)
                     if block and getattr(block, "type", None) == "tool_use":
                         has_tool_use = True
@@ -3493,7 +3545,7 @@ class _StreamingCall(StreamingWaitMonitor):
         clients are never closed from inside a request (FD-recycle hazard); the
         OpenAI primary is replaced lazily."""
         self.agent._emit_stream_drop(
-            error=e, attempt=attempt + 2, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
+            error=e, attempt=attempt + 1, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
         if self.agent._is_provider_stream_parse_error(e):
             from agent.anthropic_adapter import buffer_anthropic_tool_input
             buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None))
@@ -3804,6 +3856,21 @@ class _StreamingCall(StreamingWaitMonitor):
         except Exception:
             logger.debug("Stale stream socket shutdown failed", exc_info=True)
 
+    def _uncounted_stale_attempt(self) -> int:
+        """The started attempt the circuit breaker (see ``_stale_streak()``) has not counted
+        yet, else 0. Like the non-streaming and inline watchdogs, each attempt counts once:
+        the stale timer re-fires every window while the worker has not dispatched yet or is
+        still unwinding a kill, and none of those re-kills is another unresponsive attempt."""
+        with self.stream_attempt_lock:
+            attempt = int(self.stream_attempt_state["current"])
+        return 0 if attempt in self._stale_counted_attempts else attempt
+
+    def _count_stale_attempt(self) -> None:
+        attempt = self._uncounted_stale_attempt()
+        if attempt:
+            self._stale_counted_attempts.add(attempt)
+            _bump_stale_streak(self.agent)
+
     def _kill_stale_stream(self, elapsed: float) -> None:
         """SSE pings but no chunks: cancel the attempt and abort the request-local
         client so the retry loop opens a fresh one. The shared client is never
@@ -3826,7 +3893,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self._cancel_current_stream_attempt("stale_stream_kill")
             self.clients.close_once("stale_stream_kill")
         self._shutdown_stale_attempt_socket(_killed_response)
-        _bump_stale_streak(self.agent)  # circuit breaker, see ``_stale_streak()``
+        self._count_stale_attempt()
         # Reset the timer so we don't kill repeatedly while the worker unwinds.
         self.last_chunk_time["t"] = time.time()
         self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
@@ -3835,9 +3902,11 @@ class _StreamingCall(StreamingWaitMonitor):
     def _abort_for_interrupt(self, stale_elapsed: float) -> None:
         """/stop seen by the monitor: mark cancelled, abort the request-local
         socket, wait for the worker, flag the interrupt."""
-        # The stale branch already counted this iteration if its deadline won the race.
-        if stale_elapsed <= self._stream_stale_timeout:
-            _record_interrupted_provider_wait(self.agent, stale_elapsed, response_started=self.deltas_were_sent["yes"])
+        # Once per attempt: a stale kill that already counted this attempt wins.
+        attempt = self._uncounted_stale_attempt()
+        if attempt and stale_elapsed <= self._stream_stale_timeout and _record_interrupted_provider_wait(
+                self.agent, stale_elapsed, response_started=self.deltas_were_sent["yes"]):
+            self._stale_counted_attempts.add(attempt)
         # Mark cancelled BEFORE force-closing so the worker treats the forced
         # transport error as a cancel, not a network error (#6600).
         self._request_cancelled["value"] = True

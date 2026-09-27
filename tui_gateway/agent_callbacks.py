@@ -202,7 +202,24 @@ def _wire_callbacks(sid: str):
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
-        val = _ask("secret", sid, pl)
+        # One process-global callback, so the closure sid is just the last session wired,
+        # not the owner. Ask the UI session bound by _set_session_context: the same
+        # record whose profile scope the value is saved into. No bound owner: skip.
+        from gateway.session_context import get_session_env
+
+        owner_sid = get_session_env("HERMES_UI_SESSION_ID")
+        # Credential admission is fenced to a live runtime. owner_sid is a ContextVar copied onto
+        # the worker's thread at spawn: a background/btw/preview worker outlives its session, and
+        # the close path's `_clear_pending` cancels only requests ALREADY open — it cannot fence
+        # one created afterward. Without a session here the request would register, wait 300s for
+        # a client that never reconnects, and any late answer would settle into the saver with no
+        # owner to revalidate (andrexibiza P2, #121471). A parked reconnectable record also keeps
+        # `write_json` off the stdio fallback — there is no `session.resume` for a closed sid.
+        if owner_sid and _sessions.get(owner_sid) is None:
+            logger.info("secret prompt for %s refused: its UI session is closed", owner_sid)
+            val = ""
+        else:
+            val = _ask("secret", owner_sid, pl) if owner_sid else ""
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
         from hermes_cli.config import save_env_value_secure
@@ -311,6 +328,15 @@ def _load_fallback_model():
     HermesCLI/gateway: ``fallback_providers`` first, legacy ``fallback_model`` merged after)."""
     from hermes_cli.fallback_config import get_fallback_chain
     return get_fallback_chain(_load_cfg())
+
+
+def _load_prefill_messages() -> list:
+    """Configured prefill messages, resolved like the CLI (env > ``prefill_messages_file`` > legacy
+    ``agent.*``). Desktop/TUI agents never run the CLI bootstrap, so without this the setting was
+    ignored there (#60456). Relative paths resolve against the active profile home, per call."""
+    from hermes_cli.cli_config_load import _load_prefill_messages as _load, _resolve_prefill_messages_file
+    from hermes_constants import get_hermes_home
+    return _load(_resolve_prefill_messages_file(_load_cfg()), get_hermes_home())
 
 
 def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:

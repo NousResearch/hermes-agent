@@ -201,6 +201,17 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
         f"            AND {alias}.session_key != ''            AND {alias}.session_key = p.session_key)")
 
 
+def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
+    """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
+    (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
+    inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
+    ``child`` is the column prefix (``""``, ``"c."``); single owner so prune and compression agree."""
+    return "".join(
+        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
+        for marker in ("_branched_from", "_delegate_from", "_reset_from")
+    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
+
+
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
 # Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
 _RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
@@ -400,6 +411,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
     compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     compression_recovery_deadline REAL,
+    compression_overload_streak INTEGER NOT NULL DEFAULT 0,
     profile_name TEXT,
     transport_profile TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,

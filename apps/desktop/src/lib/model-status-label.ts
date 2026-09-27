@@ -72,6 +72,40 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
+// Vendors write their own names in casing the model id does not carry, and
+// title-casing the id overrides it: `glm-5.2` reads as "Glm 5.2" instead of
+// "GLM 5.2" (#85849). Applied AFTER title-casing so the rule is one pass over
+// a normalized string, and only ever to whole words — `Minimax` never touches
+// a longer token that merely contains it.
+const VENDOR_CASING: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bDeepseek\b/g, 'DeepSeek'],
+  [/\bGlm\b/g, 'GLM'],
+  [/\bMinimax\b/g, 'MiniMax'],
+  [/\bOpenai\b/g, 'OpenAI'],
+  [/\bErnie\b/g, 'ERNIE'],
+  [/\bMimo\b/g, 'MiMo'],
+  [/\bBge\b/g, 'BGE'],
+  [/\bVl\b/g, 'VL'],
+  [/\bIt\b/g, 'IT'],
+  [/\bFp8\b/g, 'FP8'],
+  [/\bAi\b/g, 'AI']
+]
+
+// Parameter counts and active-parameter counts: vendors write 8B, 235B, A22B —
+// never 8b. Matched after title-casing (so the token reads "8b" or "A3b"),
+// case-insensitively so the title-cased "A" of "A3b" is still a prefix.
+const PARAMETER_COUNT = /\b(a?)(\d+(?:\.\d+)?)b\b/gi
+
+const applyVendorCasing = (text: string): string => {
+  let cased = text.replace(PARAMETER_COUNT, (_match, prefix: string, size: string) => `${prefix.toUpperCase()}${size}B`)
+
+  for (const [pattern, replacement] of VENDOR_CASING) {
+    cased = cased.replace(pattern, replacement)
+  }
+
+  return cased
+}
+
 function prettifyBase(base: string): string {
   if (/^deepseek-flash$/i.test(base)) {
     return 'DeepSeek V4.1 Flash'
@@ -80,11 +114,13 @@ function prettifyBase(base: string): string {
   if (/^claude-/i.test(base)) {
     // Anthropic ids spell the version with hyphens (`haiku-4-5`, `fable-5-1`);
     // the human name is dotted ("Haiku 4.5"), not "Haiku 4 5".
-    return titleCase(
-      base
-        .replace(/^claude-/i, '')
-        .replace(/(\d)-(?=\d)/g, '$1.')
-        .replace(/-/g, ' ')
+    return applyVendorCasing(
+      titleCase(
+        base
+          .replace(/^claude-/i, '')
+          .replace(/(\d)-(?=\d)/g, '$1.')
+          .replace(/-/g, ' ')
+      )
     )
   }
 
@@ -92,11 +128,13 @@ function prettifyBase(base: string): string {
     return base.replace(/^gpt-/i, 'GPT-')
   }
 
+  // Title-case this branch too: without it `gemini-2.5-pro` rendered as
+  // "Gemini 2.5 pro" — the only branch that left its words lowercase.
   if (/^gemini-/i.test(base)) {
-    return base.replace(/^gemini-/i, 'Gemini ').replace(/-/g, ' ')
+    return applyVendorCasing(titleCase(base.replace(/^gemini-/i, 'Gemini ').replace(/-/g, ' ')))
   }
 
-  return titleCase(base.replace(/-/g, ' '))
+  return applyVendorCasing(titleCase(base.replace(/-/g, ' ')))
 }
 
 /** Split a model id into a clean display name plus an optional grayed variant
@@ -144,22 +182,28 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   return { name: prettifyBase(base) || model.trim() || 'No model', tag }
 }
 
-/** Friendly one-line model name for menus and the status bar. */
+/** Friendly one-line model name for menus and the status bar. The variant
+ *  tag is part of the name: `…-4.8` vs `…-4.8-thinking` must never collapse
+ *  to the same label on any surface (#88597). */
 export function displayModelName(model: string): string {
-  return modelDisplayParts(model).name
+  const { name, tag } = modelDisplayParts(model)
+
+  return tag ? `${name} ${tag}` : name
 }
 
 /** Composer model-pill label — model name plus Fast when it applies. The
  *  reasoning level is NOT here: it has its own pill (`ReasoningPill`), so a
  *  long model name can no longer push the effort out of the truncating span. */
 export function formatModelPillLabel(model: string, options?: { fastMode?: boolean }): string {
-  const name = displayModelName(model)
+  const label = displayModelName(model)
 
   // Fast is shown when the speed=fast param is on (options.fastMode) OR the
-  // active model is a `…-fast` variant (fast via a separate model id).
-  if (model.trim() && (options?.fastMode || /-fast$/i.test(modelBaseId(model)))) {
-    return `${name} · Fast`
+  // active model is a `…-fast` variant (fast via a separate model id). The
+  // variant's tag already reads Fast in the label above, so only the
+  // param-driven case appends it — never both (#88597).
+  if (model.trim() && options?.fastMode && !/-fast$/i.test(modelBaseId(model))) {
+    return `${label} · Fast`
   }
 
-  return name
+  return label
 }

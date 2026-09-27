@@ -145,9 +145,47 @@ describe('desktop slash command curation', () => {
     }
   })
 
+  it('still routes commands without dedicated RPCs through exec()', () => {
+    // /background deliberately NOT here — it has the dedicated
+    // prompt.background RPC since #97635 (the slash worker's completion
+    // print lands after the capture window closes, so the result never
+    // reached the originating conversation).
+    const execNames = [
+      '/debug',
+      '/goal',
+      '/personality',
+      '/queue',
+      '/retry',
+      '/rollback',
+      '/tools',
+      '/undo',
+      '/version'
+    ]
+
+    for (const name of execNames) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
+  it('distinguishes free prose from finite slash option lists', () => {
+    expect(desktopSlashCommandArgumentMode('/goal')).toBe('mixed')
+    expect(desktopSlashCommandArgumentMode('/steer')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/queue')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/background')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/personality')).toBe('options')
+    expect(desktopSlashCommandArgumentMode('/handoff')).toBe('options')
+    expect(desktopSlashCommandArgumentMode('/version')).toBeNull()
+  })
+
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
     expect(isDesktopSlashCommand('/reset')).toBe(true)
+    // Help advertises `/clear` as "start a new session". On the TUI that
+    // also clears the terminal screen; on desktop it must take the same
+    // path as `/new` instead of being marked terminal-only (#95779).
+    expect(isDesktopSlashSuggestion('/clear')).toBe(false)
+    expect(isDesktopSlashCommand('/clear')).toBe(true)
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'action', action: 'new' })
   })
 
   it('surfaces an alias the user typed exactly, gated on desktop availability (#57641)', () => {
@@ -265,9 +303,10 @@ describe('desktop slash command curation', () => {
   it('resolves commands and aliases to their declared surface', () => {
     expect(resolveDesktopCommand('/new')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
     expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
-    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
+    expect(desktopSlashUnavailableMessage('/clear')).toBeNull()
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()
   })

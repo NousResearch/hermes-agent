@@ -1543,19 +1543,82 @@ def cmd_gui(args: argparse.Namespace):
         launch_command.extend(config_electron_flags)
     if getattr(args, "local", False):
         launch_command.append("--local")
+    launch_command.extend(_explicit_profile_args())
     if not source_mode:
         desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
     pass_fds: tuple[int, ...] = ()
     if deferred_entry is not None:
         env = deferred_entry.child_env(env)
         pass_fds = deferred_entry.pass_fds
-    with desktop_console_output(source_mode=source_mode) as streams:
-        launch_result = subprocess.run(
-            launch_command, cwd=desktop_dir, env=env, check=False, pass_fds=pass_fds, **streams
+    if not source_mode and sys.platform == "win32":
+        # Windows: detach the packaged Desktop from the parent console + process
+        # group, then return immediately (#58275). A console-inheriting
+        # subprocess.run dies with the launching shell (CTRL_CLOSE_EVENT fans
+        # out to the process group) and floods the parent terminal — under
+        # cp936, mojibake — with Electron/Node stdout. Mirrors the bundled
+        # launcher (_launch_bundled_desktop) and gateway_windows._spawn_detached.
+        # macOS/Linux keep the foreground run below: those launches are
+        # expected to stay attached to the terminal, and the desktop_console
+        # drain is a Windows-only concern.
+        from hermes_cli._subprocess_compat import (
+            windows_detach_flags,
+            windows_detach_flags_without_breakaway,
         )
+
+        popen_kwargs = dict(
+            cwd=desktop_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        try:
+            subprocess.Popen(launch_command, creationflags=windows_detach_flags(), **popen_kwargs)
+        except OSError as exc:
+            # Only recover from a denied job breakaway (the parent's job object
+            # lacks JOB_OBJECT_LIMIT_BREAKAWAY_OK), which surfaces as
+            # ERROR_ACCESS_DENIED (winerror == 5). Re-raise every other spawn
+            # failure (bad argv/env, missing exe) so it stays a clear, single
+            # error instead of being masked by a doomed second attempt.
+            if getattr(exc, "winerror", None) != 5:
+                raise
+            subprocess.Popen(
+                launch_command,
+                creationflags=windows_detach_flags_without_breakaway(),
+                **popen_kwargs,
+            )
+        if deferred_entry is not None:
+            deferred_entry.finish()
+        desktop_launch_notice("✓ Hermes Desktop launched in a detached window; you can close this shell.")
+        sys.exit(0)
+    with desktop_console_output(source_mode=source_mode) as streams:
+        try:
+            launch_result = subprocess.run(
+                launch_command, cwd=desktop_dir, env=env, check=False, pass_fds=pass_fds, **streams
+            )
+        except KeyboardInterrupt:
+            # Ctrl-C in the terminal the launcher is attached to is the user
+            # closing the Desktop, not a launcher crash. Exit cleanly instead
+            # of dumping a KeyboardInterrupt traceback from subprocess.run
+            # (#59848).
+            print("\n✓ Hermes Desktop closed.")
+            sys.exit(0)
     if deferred_entry is not None:
         deferred_entry.finish()
     sys.exit(launch_result.returncode)
+
+
+def _explicit_profile_args() -> list[str]:
+    """``--profile <name>`` for Electron when ``-p``/``--profile`` was on argv.
+
+    Explicit flag only. A bare `hermes desktop` must not forward the sticky CLI
+    profile — Electron would persist it over the stored desktop one.
+    """
+    from hermes_cli.main import explicit_cli_profile
+
+    profile = explicit_cli_profile()
+    return ["--profile", profile] if profile else []
 
 
 def _launch_bundled_desktop(
@@ -1613,6 +1676,7 @@ def _launch_bundled_desktop(
             sys.exit(1)
 
     launch_command.extend(electron_flags)
+    launch_command.extend(_explicit_profile_args())
     pid = launch_detached(launch_command, env=env, cwd=layout.app_root)
     print(f"→ Launched Hermes Desktop: {' '.join(launch_command)} (pid {pid})")
     sys.exit(0)

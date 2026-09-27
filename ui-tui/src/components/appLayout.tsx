@@ -191,54 +191,52 @@ const TranscriptPane = memo(function TranscriptPane({
     <Box flexDirection="column" paddingX={1}>
       {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
-      {transcript.virtualRows
-        .slice(transcript.virtualHistory.start, transcript.virtualHistory.end)
-        .map(row => (
-          <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
-            {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
-              <Box marginTop={1}>
-                <Text color={ui.theme.color.border}>───</Text>
+      {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
+        <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
+          {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
+            <Box marginTop={1}>
+              <Text color={ui.theme.color.border}>───</Text>
+            </Box>
+          )}
+
+          {row.msg.kind === 'intro' ? (
+            nativeMode ? null : (
+              <Box flexDirection="column" paddingTop={1}>
+                <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
+
+                {row.msg.info && (
+                  <SessionPanel
+                    info={row.msg.info}
+                    maxWidth={Math.max(1, composer.cols - 2)}
+                    sid={ui.sid}
+                    t={ui.theme}
+                  />
+                )}
               </Box>
-            )}
+            )
+          ) : row.msg.kind === 'panel' && row.msg.panelData ? (
+            <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
+          ) : (
+            <MessageLine
+              cols={bodyCols}
+              compact={ui.compact}
+              detailsMode={ui.detailsMode}
+              detailsModeCommandOverride={ui.detailsModeCommandOverride}
+              msg={row.msg}
+              prev={prevRenderedMsg(i => transcript.virtualRows[i]?.msg, row.index, {
+                commandOverride: ui.detailsModeCommandOverride,
+                detailsMode: ui.detailsMode,
+                sections: ui.sections
+              })}
+              sections={ui.sections}
+              t={ui.theme}
+              timestamps={ui.timestamps}
+            />
+          )}
 
-            {row.msg.kind === 'intro' ? (
-              nativeMode ? null : (
-                <Box flexDirection="column" paddingTop={1}>
-                  <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
-
-                  {row.msg.info && (
-                    <SessionPanel
-                      info={row.msg.info}
-                      maxWidth={Math.max(1, composer.cols - 2)}
-                      sid={ui.sid}
-                      t={ui.theme}
-                    />
-                  )}
-                </Box>
-              )
-            ) : row.msg.kind === 'panel' && row.msg.panelData ? (
-              <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
-            ) : (
-              <MessageLine
-                cols={bodyCols}
-                compact={ui.compact}
-                detailsMode={ui.detailsMode}
-                detailsModeCommandOverride={ui.detailsModeCommandOverride}
-                msg={row.msg}
-                prev={prevRenderedMsg(i => transcript.virtualRows[i]?.msg, row.index, {
-                  commandOverride: ui.detailsModeCommandOverride,
-                  detailsMode: ui.detailsMode,
-                  sections: ui.sections
-                })}
-                sections={ui.sections}
-                t={ui.theme}
-                timestamps={ui.timestamps}
-              />
-            )}
-
-            {row.index === lastUserIdx && <LiveTodoPanel />}
-          </Box>
-        ))}
+          {row.index === lastUserIdx && <LiveTodoPanel />}
+        </Box>
+      ))}
 
       {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
@@ -542,7 +540,7 @@ const StatusRulePane = memo(function StatusRulePane({
         lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
-        modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
+        modelFast={ui.info?.fast}
         modelReasoningEffort={ui.info?.reasoning_effort}
         modelReasoningEffortWire={ui.info?.reasoning_effort_wire}
         notice={ui.notice}

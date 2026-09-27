@@ -851,10 +851,13 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 
     if (!started.ok) {
       const message = (started as { message?: string }).message || translateNow('updates.applyStatus.notAvailable')
-      const command = (started as { update_command?: string }).update_command || 'hermes update'
+      // An empty update_command is the backend saying "there is no command to
+      // run here" (managed container, commit build) — render the message-only
+      // view. Only a field absent from an older backend falls back.
+      const command = ((started as { update_command?: string | null }).update_command ?? 'hermes update') || null
       $backendUpdateApply.set({ ...IDLE, applying: false, stage: 'manual', message, command })
 
-      return { ok: false, error: 'manual', manual: true, message, command }
+      return { ok: false, error: 'manual', manual: true, message, command: command ?? undefined }
     }
 
     $backendUpdateApply.set({
@@ -1169,6 +1172,7 @@ function connectionKey(conn: HermesConnection | null): string {
   if (conn?.mode !== 'remote') {
     return String(conn?.mode)
   }
+
   return conn.profile ? `remote:${conn.baseUrl}:${conn.profile}` : `remote:${conn.baseUrl}`
 }
 

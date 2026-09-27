@@ -1,0 +1,22 @@
+name: sigrex
+repo: https://github.com/sigrexio/agent-plugin
+sha: b21e9fd4e2cc1ddbb76cd1032bf0123b9a646ea8
+description: 'Build, run and manage sigrex.io trading automation (code and AI strategies, trading
+  bots, webhooks and signals across crypto exchanges, DEXs and prediction markets) through the
+  official Sigrex MCP server (Streamable HTTP at https://mcp.sigrex.io, OAuth sign-in, no keys in
+  config), with the sigrex workflow skill bundled. Portable Agent Plugins v1 package (mcp.json +
+  skills/), no Python or executables; needs a free Sigrex account. The connection has full account
+  access, including actions that can place live trades. Disclosure — the tool set is served by the remote MCP server at
+  runtime and is not covered by the pinned sha; the bundled skill instructs the agent to confirm before any
+  action that moves money or changes data.'
+maintainer: sigrexio
+tier: community
+category: tools
+docs_url: https://docs.sigrex.io/more/mcp-server
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1156,7 +1156,10 @@ def _spawn_side_agent(
     extra = extra or {}
 
     def run():
-        session_tokens = _set_session_context(task_id, cwd=(cwd or _session_cwd(session)))
+        # ``parent`` is the caller's live sid (``_sess`` admitted it): bind it as the UI owner so
+        # prompts this worker raises (skill secrets) reach the session whose profile it runs under.
+        session_tokens = _set_session_context(
+            task_id, cwd=(cwd or _session_cwd(session)), ui_session_id=parent)
         # Bug #50233: ephemeral agent threads don't inherit the session's ContextVar scopes (set on the
         # session-create thread), so a side turn under a non-default profile ran against the wrong home.
         # Bind the profile's home + secrets + terminal policy for the whole body, exactly as a prompt turn

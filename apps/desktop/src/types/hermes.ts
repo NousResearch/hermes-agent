@@ -191,8 +191,23 @@ export interface EnvVarInfo {
   // desktop-only env-var prefix guesses. Empty for non-provider env vars.
   provider?: string
   provider_label?: string
+  // A credential env var can be shared by multiple built-in routes. The
+  // singular fields above remain for compatibility; this list lets the Keys
+  // tab render every provider card without duplicating credential storage.
+  provider_profiles?: EnvProviderProfile[]
+  // Frontend-only hint copied from a provider profile while grouping a shared
+  // credential. It keeps the provider's first credential ahead of aliases.
+  provider_primary?: boolean
   redacted_value: null | string
   tools: string[]
+  url: null | string
+}
+
+export interface EnvProviderProfile {
+  description: string
+  primary: boolean
+  provider: string
+  provider_label: string
   url: null | string
 }
 
@@ -547,8 +562,15 @@ export interface SessionInfo {
   message_count: number
   model: null | string
   output_tokens: number
-  /** Parent conversation when this row is a /branch fork. */
+  /** Parent conversation id. Written for genuine /branch forks *and* for
+   *  /new / idle / daily resets (durable lineage). Nesting uses
+   *  {@link _branched_from} vs {@link _reset_from}, not this field alone. */
   parent_session_id?: null | string
+  /** Predecessor of a /new or idle/daily reset. Not a fork — the sidebar
+   *  renders these as siblings of the previous topic. */
+  _reset_from?: null | string
+  /** Parent of a genuine /branch fork. The sidebar nests only these. */
+  _branched_from?: null | string
   /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
    *  back-fill pinned conversations past their LIMIT, so a pinned row is
    *  always present in a page — which makes this authoritative for the

@@ -1016,6 +1016,150 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# #58275: the Windows packaged launch must detach from the parent console
+# (Popen + windows_detach_flags, DEVNULL stdio, immediate exit 0) instead of
+# a console-inheriting subprocess.run that dies with the launching shell.
+# #59848: on the foreground platforms, Ctrl-C in the attached terminal must
+# exit cleanly instead of raising a KeyboardInterrupt traceback.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.platforms("windows")
+def test_gui_win32_launches_detached_and_returns(tmp_path, monkeypatch):
+    import hermes_cli._subprocess_compat as _subproc_compat
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.main.subprocess.Popen") as mock_popen, \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    # Parent returns cleanly so the user can close the launching shell.
+    assert exc.value.code == 0
+    # The blocking, console-inheriting run() path must NOT be used for launch.
+    mock_run.assert_not_called()
+    # Detached spawn happened exactly once, targeting the packaged exe with the
+    # Windows detach creationflags and fully severed stdio.
+    mock_popen.assert_called_once()
+    call = mock_popen.call_args
+    assert call.args[0][0] == str(packaged_exe)
+    assert call.kwargs["creationflags"] == _subproc_compat.windows_detach_flags()
+    assert call.kwargs["stdin"] is subprocess.DEVNULL
+    assert call.kwargs["stdout"] is subprocess.DEVNULL
+    assert call.kwargs["stderr"] is subprocess.DEVNULL
+
+
+@pytest.mark.platforms("windows")
+def test_gui_win32_detach_falls_back_without_breakaway(tmp_path, monkeypatch):
+    import hermes_cli._subprocess_compat as _subproc_compat
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+    ok = subprocess.CompletedProcess([], 0)
+
+    breakaway_denied = PermissionError("breakaway denied")
+    breakaway_denied.winerror = 5
+
+    with patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.main.subprocess.Popen",
+               side_effect=[breakaway_denied, None]) as mock_popen, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    assert mock_popen.call_count == 2
+    assert (
+        mock_popen.call_args_list[0].kwargs["creationflags"]
+        == _subproc_compat.windows_detach_flags()
+    )
+    assert (
+        mock_popen.call_args_list[1].kwargs["creationflags"]
+        == _subproc_compat.windows_detach_flags_without_breakaway()
+    )
+
+
+@pytest.mark.platforms("windows")
+def test_gui_win32_detach_reraises_non_breakaway_oserror(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+    ok = subprocess.CompletedProcess([], 0)
+
+    spawn_error = OSError("The system cannot find the file specified")
+    spawn_error.winerror = 2  # ERROR_FILE_NOT_FOUND — unrelated to breakaway.
+
+    with patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.main.subprocess.Popen",
+               side_effect=[spawn_error, None]) as mock_popen, \
+         pytest.raises(OSError) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.winerror == 2
+    # Only the first (breakaway) attempt ran; no doomed retry masked the error.
+    assert mock_popen.call_count == 1
+
+
+@pytest.mark.platforms("macos", "linux")
+def test_gui_foreground_launch_ctrl_c_exits_cleanly(tmp_path, monkeypatch, capsys):
+    """Ctrl-C during the attached launch is a clean close, not a traceback (#59848).
+
+    On the foreground platforms the launcher intentionally stays attached to the
+    Electron child; a KeyboardInterrupt raised through subprocess.run must exit
+    0 with a short message instead of the raw traceback the reporter saw (which,
+    unhandled, aborts the whole CLI process).
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    # Patching hermes_cli.main.subprocess.run swaps the shared stdlib module's
+    # attribute, so EVERY subprocess.run in the process raises. Three
+    # best-effort pre-launch paths call it BEFORE the attached launch — outside
+    # the KeyboardInterrupt handler under test — so neutralize each the way the
+    # other foreground tests do: the Linux password-store detection (its
+    # org.freedesktop.secrets D-Bus ping — contextlib.suppress(Exception)
+    # cannot swallow the KeyboardInterrupt, which then aborts the whole pytest
+    # session), the Linux desktop-entry install (its refresh_desktop_databases
+    # probe) and the sandbox fixup's `unshare` user-namespace probe.
+    monkeypatch.setattr(main_desktop, "_detect_linux_password_store", lambda: None)
+    monkeypatch.setattr(main_desktop, "_register_linux_desktop_entry", lambda **kw: None)
+    monkeypatch.setattr(main_desktop, "_desktop_linux_userns_sandbox_available", lambda: True)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    ok = subprocess.CompletedProcess([], 0)
+
+    def _interrupted_launch(*call_args, **kwargs):
+        raise KeyboardInterrupt()
+
+    with patch("hermes_cli.source_build.prepare_source_dependencies", return_value=ok), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_desktop._desktop_exe_integrity_error", return_value=None), \
+         patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.main.subprocess.run", side_effect=_interrupted_launch) as mock_run, \
+         patch("hermes_cli.main.subprocess.Popen") as mock_popen, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    mock_popen.assert_not_called()
+    assert mock_run.call_count == 1
+    assert mock_run.call_args.args[0][0] == str(packaged_exe)
+    assert "closed" in capsys.readouterr().out.lower()
+
+
+# ---------------------------------------------------------------------------
 # #86443: stage-and-swap — a failed Desktop rebuild must never remove the
 # working app. electron-builder packs IN PLACE (before-pack.mjs wipes
 # release/<unpacked> first), so cmd_gui now packs into a staging dir and only

@@ -113,13 +113,76 @@ const DIRECTIVE_LINE_ONLY_RE = /^[ \t]*::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\}
 const HTML_TAG_RE = /<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s+[^<>]*?)?\/?>/g
 
 const SAFE_HTML_TAG_NAMES = new Set([
-  'a', 'abbr', 'b', 'blockquote', 'br', 'cite', 'code', 'data', 'del', 'details',
-  'div', 'em', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
-  'i', 'img', 'ins', 'kbd', 'li', 'mark', 'ol', 'p', 'pre', 'q', 'rp', 'rt',
-  'ruby', 's', 'samp', 'small', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
-  'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul', 'var', 'wbr'
+  'a',
+  'abbr',
+  'b',
+  'blockquote',
+  'br',
+  'cite',
+  'code',
+  'data',
+  'del',
+  'details',
+  'div',
+  'em',
+  'figcaption',
+  'figure',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'i',
+  'img',
+  'ins',
+  'kbd',
+  'li',
+  'mark',
+  'ol',
+  'p',
+  'pre',
+  'q',
+  'rp',
+  'rt',
+  'ruby',
+  's',
+  'samp',
+  'small',
+  'span',
+  'strong',
+  'sub',
+  'summary',
+  'sup',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'u',
+  'ul',
+  'var',
+  'wbr'
 ])
+
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+
+// Web-citation transport markers (Gemini-style grounding): private-use
+// delimiters U+E200/U+E201 wrap a `citeturn<n>search<m>` id list, with U+E202
+// separating ids — `\uE200citeturn0search11\uE202turn2search0\uE201`, or the
+// single-id `\uE200citeturn0search0\uE201`. The delimiters paint as
+// replacement glyphs (the reported "triple bars") and the ids are protocol
+// noise a reader cannot follow to a source (#120587). Strip the whole marker;
+// a marker that cannot be resolved is dropped, never invented into a link.
+// The bare no-delimiter alternative only fires with the `cite` head, so plain
+// prose can't trip it. Scoped to this shape: stray private-use characters
+// (icon fonts, user content) are left alone.
+const CITATION_TRANSPORT_MARKER_RE =
+  /\uE200(?:cite)?(?:\uE202?turn\d+search\d+)+\uE201?|citeturn\d+search\d+(?:turn\d+search\d+)*/gu
+
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
@@ -345,6 +408,7 @@ function escapeUnknownHtmlLikeTags(text: string): string {
     return tag.replace(/</g, '&lt;').replace(/>/g, '&gt;')
   })
 }
+
 // Rewrite filesystem-path links to the renderer's hash-href door (#82140).
 // A plain path/file: href names a file on the AGENT's machine: Streamdown's
 // URL hardening blocks `file:`/`~/` outright, and an absolute path renders
@@ -371,7 +435,11 @@ function rewriteProseSegment(segment: string): string {
       autoLinkRawUrls(
         routeFileLinksToPreview(
           escapeUnknownHtmlLikeTags(
-            segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            segment
+              .replace(/`{3,}/g, '')
+              .replace(LOCAL_PREVIEW_URL_RE, '$1')
+              .replace(CITATION_TRANSPORT_MARKER_RE, '')
+              .replace(CITATION_MARKER_RE, '')
           )
         )
       )

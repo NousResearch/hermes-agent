@@ -194,7 +194,6 @@ describe('statusbar session timer — focused since (#103123)', () => {
   })
 })
 
-
 describe('useStatusbarItems session timer — runtime cache anchor', () => {
   it("anchors a focused branch tile to its runtime cache instead of the parent's stored age", () => {
     const parentRowStartedAt = 1_600_000_000

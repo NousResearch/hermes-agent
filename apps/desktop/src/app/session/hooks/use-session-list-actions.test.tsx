@@ -176,6 +176,23 @@ describe('refreshSessions cold-start load error', () => {
     expect($sessionsLoadError.get()).toBe(true)
   })
 
+  it('flags a failed load that carries retry and omits the session list', async () => {
+    listSidebarSessions.mockResolvedValueOnce({
+      cron: { errors: [{ error: 'schema heal exhausted', profile: 'default' }], failed: true, retry: true },
+      errors: [{ error: 'schema heal exhausted', profile: 'default' }],
+      messaging: { errors: [{ error: 'schema heal exhausted', profile: 'default' }], failed: true, retry: true },
+      recents: { errors: [{ error: 'schema heal exhausted', profile: 'default' }], failed: true, retry: true }
+    })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toBe(true)
+    expect($sessions.get()).toEqual([])
+  })
+
   it('leaves a corrupt store to its own notice instead of offering retry', async () => {
     listSidebarSessions.mockResolvedValueOnce(failedScan({ default: 'corrupt' }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))

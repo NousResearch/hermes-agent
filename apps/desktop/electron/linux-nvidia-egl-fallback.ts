@@ -16,7 +16,10 @@
  * Skipped when a remote display already forced software rendering (the
  * `--disable-gpu-compositing` path covers it), under WSLg (vGPU is healthy
  * there), or when `HERMES_DESKTOP_DISABLE_GPU=0` keeps the GPU on.
- * `HERMES_DESKTOP_NVIDIA_SWIFTSHADER` overrides detection both ways.
+ * `HERMES_DESKTOP_NVIDIA_SWIFTSHADER=1` can force the fallback back on on an
+ * affected series that this closed set does not yet list (e.g. a future
+ * series that reintroduces the #40077 crash); it cannot force it on where an
+ * earlier gate already returned (remote display, WSLg, `DISABLE_GPU=0`).
  *
  * Pure + dependency-free so it can be unit-tested and called before app ready.
  */
@@ -100,8 +103,7 @@ export function decideNvidiaEglFallback(options: {
     return { enable: false, reason: null }
   }
 
-  const detected =
-    driverMajor !== null && NVIDIA_BROKEN_EGL_MAJORS.has(driverMajor)
+  const detected = driverMajor !== null && NVIDIA_BROKEN_EGL_MAJORS.has(driverMajor)
 
   if (!detected && !OVERRIDE_ON.has(nvidiaOverride)) {
     return { enable: false, reason: null }

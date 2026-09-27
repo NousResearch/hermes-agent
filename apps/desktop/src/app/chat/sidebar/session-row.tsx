@@ -300,7 +300,21 @@ function SidebarSessionRowImpl({
   // shell column would span the card's full height and shave every line,
   // when only the header shares its line with the age and kebab.
   const actionsNode = (
-    <div className="relative z-2 flex shrink-0 items-center justify-end gap-1" data-row-actions>
+    <div
+      className="relative z-2 flex shrink-0 items-center justify-end gap-1"
+      data-row-actions
+      // Radix renders the menu content in a portal, but React still bubbles its
+      // events through this logical parent (#85163): in card (Inbox) mode this
+      // cluster renders INSIDE the row body whose onClick resumes, so an
+      // Archive menu click also fired the row's resume. This container-level
+      // gate is deliberate: every action owns its gesture instead of inheriting
+      // row resume/drag semantics. A future child that needs row semantics must
+      // move outside this boundary rather than weakening it for every menu
+      // action. Flat rows already achieve this structurally (actions render
+      // outside the row button via the shell's `actions` column).
+      onClick={event => event.stopPropagation()}
+      onPointerDown={event => event.stopPropagation()}
+    >
       {trailing.map(({ key, node }, index) => (
         <span
           className={

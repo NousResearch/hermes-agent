@@ -76,6 +76,50 @@ def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]
     return out
 
 
+def adopt_legacy_models() -> "list[Path]":
+    """Move GGUFs left in the old per-profile ``<profile home>/models`` layout (and its assets/)
+    into the machine-scoped dirs, so everything downstream keeps reading one directory.
+
+    ``os.rename`` only: within one filesystem it is instant even for a 20 GB model, while
+    ``shutil.move`` silently degrades to a copy across devices. A cross-device profile dir is left
+    in place with a warning rather than copying tens of GB at session start. A name that already
+    exists in the destination is left alone (check-then-rename: the only window is two processes
+    adopting two profiles' same-named file at once, and a same name is the same catalog variant).
+    Two processes racing on one file are harmless: the loser's rename finds the source gone and
+    skips it. Returns the new paths of the moved files."""
+    from hermes_constants import get_default_hermes_root, named_profile_has_identity
+
+    profiles_root = get_default_hermes_root() / "profiles"
+    if not profiles_root.is_dir():
+        return []
+    moved: list[Path] = []
+    for home in sorted(profiles_root.iterdir()):
+        old = home / "models"
+        if home.name.startswith(".") or not old.is_dir() or not named_profile_has_identity(home):
+            continue
+        for src_dir, dest_dir in ((old, models_dir()), (old / "assets", assets_dir())):
+            for src in sorted(src_dir.glob("*.gguf")):
+                dest = dest_dir / src.name
+                if dest.exists():
+                    logger.warning("legacy model %s not moved: %s already exists", src, dest)
+                    continue
+                try:
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    os.rename(src, dest)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    logger.warning("legacy model %s not moved to %s: %s", src, dest_dir, exc)
+                    continue
+                moved.append(dest)
+        for emptied in (old / "assets", old):
+            with suppress(OSError):
+                emptied.rmdir()
+    if moved:
+        logger.info("moved %d legacy model file(s) into %s", len(moved), models_dir())
+    return moved
+
+
 def staged_models() -> "list[Path]":
     """Servable staged models (continuation parts, incomplete splits and assets/ never count)."""
     return staged_in(models_dir())
@@ -275,6 +319,10 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     if _SUPERVISOR is not None:
         return _SUPERVISOR
 
+    try:
+        adopt_legacy_models()
+    except OSError as exc:  # an unreadable profiles dir must not block serving what's staged
+        logger.warning("legacy model adoption failed: %s", exc)
     # Residency: no staged models means nothing to serve — don't boot an empty server (delete
     # your last model and boots stop). force boots as ever.
     if not force and not staged_models():

@@ -469,7 +469,7 @@ def _on_event_loop() -> bool:
 
 
 @pytest.mark.parametrize("route", [
-    "delete", "read", "list", "fs-list", "fs-read-data-url", "fs-default-cwd", "system-stats"])
+    "delete", "read", "list", "fs-list", "fs-read-data-url", "fs-default-cwd", "system-stats", "upload-stream"])
 def test_blocking_route_work_never_runs_on_the_event_loop(forced_files_client, monkeypatch, route):
     """An ``async def`` route runs ON the event loop that also serves /api/ws chat streaming and the PTY: a recursive
     delete, a multi-MB read, a directory scan, a git subprocess or psutil's 100 ms CPU sample there froze every other
@@ -510,6 +510,33 @@ def test_blocking_route_work_never_runs_on_the_event_loop(forced_files_client, m
     elif route == "fs-default-cwd":
         spy(_rt_files, "_fs_git_branch")
         response = client.get("/api/fs/default-cwd")
+    elif route == "upload-stream":
+        # Up to 100 MB written chunk by chunk, then renamed into place.
+        target = seeded.parent / "streamed.bin"
+        real_fdopen = _rt_files.os.fdopen
+
+        class _SpiedOut:
+            def __init__(self, f):
+                self._f = f
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return self._f.__exit__(*exc)
+
+            def __getattr__(self, name):
+                return getattr(self._f, name)
+
+            def write(self, data):
+                seen.append(_on_event_loop())
+                return self._f.write(data)
+
+        monkeypatch.setattr(_rt_files.os, "fdopen", lambda *a, **k: _SpiedOut(real_fdopen(*a, **k)))
+        spy(_rt_files.os, "replace", lambda src, dst, *a, **k: Path(dst) == target)
+        response = client.post(
+            "/api/files/upload-stream", data={"path": str(target)}, files={"file": ("streamed.bin", b"x" * 4096)})
+        assert target.read_bytes() == b"x" * 4096
     else:
         psutil = pytest.importorskip("psutil")
         spy(psutil, "cpu_percent")

@@ -618,8 +618,9 @@ async def stream_upload_to_path(
                 total += len(chunk)
                 if total > _MANAGED_FILE_MAX_BYTES:
                     raise HTTPException(status_code=413, detail=too_large)
-                out.write(chunk)
-        os.replace(tmp_path, target)
+                # Only the read stays on the event loop, so an abort still reaches the cleanup below.
+                await asyncio.to_thread(out.write, chunk)
+        await asyncio.to_thread(os.replace, tmp_path, target)
         renamed = True
     except PermissionError:
         raise HTTPException(status_code=403, detail=not_writable)

@@ -37,6 +37,15 @@ def _scratch_paths():
     return glob.glob(str(_get_scratch_dir() / "hermes-*"))
 
 
+def _persistent_scratch_roots() -> tuple:
+    """Scratch subtrees backends declare as outliving any single process (today:
+    Singularity's persistent overlays). The exit-time orphan sweep must never delete
+    them — they are backend-owned persistent state, not orphans of the exiting
+    process. Derived from the backends' own declarations, never a hand-copied name."""
+    from tools.environments.singularity import persistent_overlays_root
+    return (persistent_overlays_root().resolve(),)
+
+
 def _check_disk_usage_warning():
     """True when hermes scratch dirs exceed the warning threshold (cached, advisory)."""
     from tools.terminal_tool import DISK_USAGE_WARNING_THRESHOLD_GB
@@ -276,8 +285,13 @@ def cleanup_all_environments():
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
 
-    # Also clean any orphaned directories
+    # Also clean any orphaned directories — but never backend-declared persistent
+    # roots (Singularity overlays survive process exit by design; a name-only glob
+    # cannot tell them from orphans, so the declaration, not the name, decides).
+    persistent_roots = frozenset(_persistent_scratch_roots())
     for path in _scratch_paths():
+        if Path(path).resolve() in persistent_roots:
+            continue
         with _quiet("Failed to remove orphaned path %s", path, exc=OSError):
             shutil.rmtree(path, ignore_errors=True)
             logger.info("Removed orphaned: %s", path)

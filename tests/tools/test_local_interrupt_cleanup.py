@@ -316,3 +316,45 @@ def test_hard_exit_kill_never_blocks_on_a_slow_remote_cancel(monkeypatch):
     base.kill_live_foreground_processes(now=True)
     elapsed = time.monotonic() - t0
     assert cancelled.is_set() and elapsed < 1.0, f"blocked {elapsed:.2f}s"
+
+
+def test_exit_sweep_preserves_backend_persistent_roots(tmp_path, monkeypatch):
+    """The exit-time orphan sweep must never delete backend-declared persistent roots.
+
+    Singularity overlays (persistent_filesystem=True) are designed to survive process
+    exit: SingularityEnvironment.cleanup() preserves the overlay dir and registers it
+    in the snapshots map for reuse. A name-only ``hermes-*`` rmtree destroyed that
+    live persistent state on EVERY process exit — no concurrency required — and let a
+    lingering predecessor delete a successor's overlay mid-turn. The declaration, not
+    the name, must decide.
+
+    The destructive boundary is real here: actual directories on disk, the real
+    ``_scratch_paths`` glob, the real ``shutil.rmtree``. Red without the guard: the
+    overlays tree is deleted and the sentinel assertion fails.
+    """
+    from tools import terminal_tool_lifecycle
+    from tools import terminal_tool
+    from tools.environments import base as env_base
+    from tools.environments import singularity
+
+    scratch = tmp_path / "scratch"
+    overlay = scratch / "hermes-overlays" / "overlay-task1"
+    overlay.mkdir(parents=True)
+    sentinel = overlay / "work.txt"
+    sentinel.write_text("persistent work", encoding="utf-8")
+    stray = scratch / "hermes-stray-orphan"
+    stray.mkdir()
+
+    # Both modules resolve the same scratch root; patch each module's own binding so
+    # the real glob and the real declaration meet over the same tree.
+    monkeypatch.setattr(terminal_tool_lifecycle, "_get_scratch_dir", lambda: scratch)
+    monkeypatch.setattr(singularity, "_get_scratch_dir", lambda: scratch)
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(env_base, "kill_live_foreground_processes", lambda: None)
+
+    terminal_tool_lifecycle.cleanup_all_environments()
+
+    assert sentinel.read_text(encoding="utf-8") == "persistent work", (
+        "exit sweep deleted a backend-declared persistent root"
+    )
+    assert not stray.exists(), "true orphans must still be collected"

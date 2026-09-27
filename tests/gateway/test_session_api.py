@@ -1726,3 +1726,268 @@ async def test_session_chat_stream_completion_clears_active_run(adapter, session
 
     assert payload["session"].get("active_run_id") is None
     assert payload["session"].get("active_run_status") is None
+# ---------------------------------------------------------------------------
+# Review follow-ups on the rebased head: (a) full-stream monotonic seq (the
+# rebase briefly emitted 1,2,1,3,... from two sequencers); (b) an explicit
+# Idempotency-Key run that COMPLETES must replay on same-key retry instead of
+# executing twice (the session-row slot only guards live runs); (c) same key
+# with a changed body is a conflict; (d) a real approval round-trip (actual
+# waiting_for_approval transition, approve releases the wait).
+# ---------------------------------------------------------------------------
+
+import uuid as _uuid
+
+_KEY1 = f"k-receipt-{_uuid.uuid4().hex[:8]}"
+_KEY2 = f"k-conflict-{_uuid.uuid4().hex[:8]}"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_seq_monotonic_across_lifecycle_and_callbacks(adapter, session_db):
+    """seq must be monotonic over the WHOLE stream: lifecycle events and agent
+    callbacks (deltas/tool progress) share one sequencer."""
+    session_id = session_db.create_session("seq-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("part one ")
+        kwargs["tool_progress_callback"]("tool.started", tool_name="terminal")
+        kwargs["stream_delta_callback"]("part two")
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "go"})
+            assert resp.status == 200
+            body = await resp.text()
+
+    seqs = []
+    for block in body.split("\n\n"):
+        for ln in block.splitlines():
+            if ln.startswith("data: "):
+                try:
+                    payload = json.loads(ln[6:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and "seq" in payload:
+                    seqs.append(payload["seq"])
+    assert seqs, "no seq-bearing events captured"
+    assert seqs == sorted(seqs), f"seq not monotonic: {seqs}"
+    assert len(set(seqs)) == len(seqs), f"duplicate seq values: {seqs}"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_completed_run_same_key_replays_not_reexecutes(adapter, session_db):
+    """Reviewer scenario: first SSE write fails -> detached turn completes ->
+    SAME-key retry -> exactly one execution (202 replay), and the replayed
+    status points at the ORIGINAL run."""
+    session_id = session_db.create_session("receipt-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    agents_created = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            pass
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "receipt answer", "session_id": session_id}
+
+    class _FailFirstWriteStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            raise ConnectionResetError("simulated first-write failure")
+
+    def _create_agent(**kwargs):
+        agents_created["count"] += 1
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    from contextlib import ExitStack
+
+    async def _start(headers, stack):
+        request = MagicMock()
+        request.headers = headers
+        request.match_info = {"session_id": session_id}
+        stack.enter_context(patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)))
+        stack.enter_context(patch.object(adapter, "_read_json_body", return_value=({"message": "with key"}, None)))
+        stack.enter_context(patch.object(adapter, "_create_agent", side_effect=_create_agent))
+        stack.enter_context(patch("gateway.platforms.api_server.web.StreamResponse", return_value=_FailFirstWriteStreamResponse()))
+        task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+        await asyncio.wait_for(task, timeout=5)
+
+    with ExitStack() as stack:
+        await _start({"Idempotency-Key": _KEY1}, stack)
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert run_started.is_set()
+
+        # Let the detached turn finish and clear the live slot.
+        allow_finish.set()
+        for _ in range(60):
+            if not any(s.get("status") in ("queued", "running") for s in adapter._run_statuses.values()):
+                break
+            await asyncio.sleep(0.05)
+
+    # Let the detached turn finish and clear the live slot.
+    allow_finish.set()
+    for _ in range(60):
+        if not any(s.get("status") in ("queued", "running") for s in adapter._run_statuses.values()):
+            break
+        await asyncio.sleep(0.05)
+
+    # Same key + same body AFTER completion: replay, not a second execution.
+    retry = MagicMock()
+    retry.headers = {"Idempotency-Key": _KEY1}
+    retry.match_info = {"session_id": session_id}
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "with key"}, None)):
+        resp = await adapter._handle_session_chat_stream(retry)
+    assert resp.status == 202
+    payload = json.loads(resp.text)
+    assert payload["replayed"] is True
+    assert agents_created["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_session_stream_same_key_changed_body_conflicts(adapter, session_db):
+    session_id = session_db.create_session("conflict-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            pass
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    class _FailFirstWriteStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            raise ConnectionResetError("simulated first-write failure")
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": _KEY2}
+        request.match_info = {"session_id": session_id}
+        stack.enter_context(patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)))
+        stack.enter_context(patch.object(adapter, "_read_json_body", return_value=({"message": "original body"}, None)))
+        stack.enter_context(patch.object(adapter, "_create_agent", side_effect=_create_agent))
+        stack.enter_context(patch("gateway.platforms.api_server.web.StreamResponse", return_value=_FailFirstWriteStreamResponse()))
+        await asyncio.wait_for(adapter._handle_session_chat_stream(request), timeout=5)
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert run_started.is_set()
+        allow_finish.set()
+        for _ in range(60):
+            if not any(s.get("status") in ("queued", "running") for s in adapter._run_statuses.values()):
+                break
+            await asyncio.sleep(0.05)
+
+    # Same key, DIFFERENT body: typed conflict, no execution.
+    retry = MagicMock()
+    retry.headers = {"Idempotency-Key": _KEY2}
+    retry.match_info = {"session_id": session_id}
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "changed body"}, None)):
+        resp = await adapter._handle_session_chat_stream(retry)
+    assert resp.status == 409
+    payload = json.loads(resp.text)
+    assert payload["error"]["code"] == "idempotency_key_conflict"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_real_approval_round_trip_releases_wait(adapter, session_db):
+    """Real approval round-trip: the agent thread hits an approval gate, the
+    run flips to waiting_for_approval, the approval.request event reaches the
+    SSE stream, and POST /v1/runs/{run_id}/approval actually releases the
+    waiting turn (no faked status writes)."""
+    session_id = session_db.create_session("approval-session", "api_server")
+    run_started = threading.Event()
+    turn_finished = threading.Event()
+
+    async def _approval_gate(**kwargs):
+        # REAL gate: _await_gateway_decision enqueues the entry, fires the
+        # registered notify (which flips the run to waiting_for_approval and
+        # streams approval.request), then blocks the agent thread until
+        # resolve_gateway_approval (POST /v1/runs/{run_id}/approval) sets it.
+        # The turn must NOT complete until the approval resolves. The blocking
+        # wait runs in the executor (to_thread) so the event loop stays free
+        # to serve the approval endpoint and the test's polling.
+        from tools.approval_gateway_wait import _await_gateway_decision
+
+        notify = kwargs.get("approval_notify_callback")
+        approval_session_key = kwargs.get("approval_session_key")
+        run_started.set()
+        decision = await asyncio.to_thread(
+            _await_gateway_decision, approval_session_key, notify,
+            {"command": "rm -rf /tmp/x", "description": "dangerous test"})
+        assert decision.get("resolved") and decision.get("choice") == "once", decision
+        turn_finished.set()
+        return {"final_response": "approved and done", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
+    with patch.object(adapter, "_run_agent", side_effect=_approval_gate):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "needs approval"})
+            assert resp.status == 200
+            body_task = asyncio.create_task(resp.text())
+
+            for _ in range(400):
+                statuses = [s.get("status") for s in adapter._run_statuses.values()]
+                if "waiting_for_approval" in statuses:
+                    break
+                await asyncio.sleep(0.05)
+            assert "waiting_for_approval" in [s.get("status") for s in adapter._run_statuses.values()]
+
+            run_id = next(iter(adapter._run_statuses))
+            approve = await cli.post(f"/v1/runs/{run_id}/approval", json={"choice": "once"})
+            assert approve.status == 200
+
+            body = await asyncio.wait_for(body_task, timeout=10)
+
+    assert "approval.request" in body
+    assert turn_finished.is_set()
+    final = [s for s in adapter._run_statuses.values()][0]
+    assert final["status"] == "completed"

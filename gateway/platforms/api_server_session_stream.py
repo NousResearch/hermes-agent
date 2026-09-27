@@ -17,7 +17,10 @@ are ``queued``/``running``/``completed``/``failed``/``cancelled``.
 import asyncio
 from contextlib import suppress
 from hashlib import sha256
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
+    from aiohttp import web
 
 
 async def drain_session_stream_task_on_disconnect(
@@ -98,6 +101,82 @@ def session_run_key(
         return f"idem-{sha256(idempotency_header.encode('utf-8')).hexdigest()}"
     seed = repr((session_id, system_prompt or "", user_message))
     return f"fp-{sha256(seed.encode('utf-8')).hexdigest()}"
+
+
+def session_request_fingerprint(
+    session_id: str,
+    user_message: Any,
+    system_prompt: Optional[str],
+) -> str:
+    """Fingerprint of the request BODY for an explicit-idempotency session run.
+
+    Key vs fingerprint mirrors POST /v1/runs: the idempotency KEY identifies
+    the client's retry token, the FINGERPRINT identifies what was asked. A
+    replayed key with a changed body is a conflict, not a replay.
+    """
+    seed = repr((session_id, system_prompt or "", user_message))
+    return f"fp-{sha256(seed.encode('utf-8')).hexdigest()}"
+
+
+def replayed_session_run_payload(run_id: str, status: Dict[str, Any]) -> Dict[str, Any]:
+    """202 replay BODY for a session-stream retry that already landed.
+
+    The run already executed (or is executing) under this key: point the
+    caller at the original run id instead of starting a second execution.
+    The caller wraps this with its own json_response (transport stays out
+    of this module).
+    """
+    return {
+        "run_id": run_id,
+        "status": str(status.get("status") or "queued"),
+        "replayed": True,
+        "session_stream": True,
+    }
+
+
+async def replay_or_reserve_header_run(
+    adapter: Any,
+    request: "web.Request",
+    run_key: str,
+    fingerprint: str,
+    run_id: str,
+    initial_status: Dict[str, Any],
+) -> Optional["web.Response"]:
+    """Idempotency receipt for an explicit-key session-stream run.
+
+    Composed with the /v1/runs RunIdempotencyStore (same store, same scope
+    resolution, same retention) so a retry AFTER the turn completed also
+    replays instead of minting a second execution — the session-row active
+    slot only guards live runs. Returns a replay/conflict response when the
+    key is already spoken for, or None after reserving it for ``run_id``
+    (which registers terminal-status persistence — the durable receipt).
+    """
+    scope = adapter._run_idempotency_scope(request)
+    store = adapter._run_idempotency_store
+    outcome, record = store.lookup(scope, run_key, fingerprint)
+    if outcome == "reused" and record is not None:
+        original = str(record["run_id"])
+        status = adapter._durable_run_status(request, original) or record["status"]
+        return ("replay", replayed_session_run_payload(original, status))
+    if outcome == "conflict":
+        return ("conflict", {
+            "error": {
+                "message": "Idempotency-Key was already used with a different request payload",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "idempotency_key_conflict",
+                "run_id": str(record["run_id"]) if record else None,
+            },
+        })
+    outcome, record = store.reserve(
+        scope, run_key, fingerprint, run_id, initial_status,
+        owner_pid=adapter._run_owner_pid, owner_started=adapter._run_owner_started)
+    if outcome != "created":
+        original = str(record["run_id"])
+        status = adapter._durable_run_status(request, original) or record["status"]
+        return ("replay", replayed_session_run_payload(original, status))
+    adapter._run_idempotency_ids.add(run_id)
+    return None
 
 
 def run_already_active_error(run_id: str) -> Dict[str, Any]:

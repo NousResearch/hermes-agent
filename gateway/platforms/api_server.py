@@ -37,7 +37,9 @@ from gateway.platforms.api_server_session_stream import (
     claim_session_run_or_conflict,
     detach_session_stream_task_on_disconnect,
     drain_session_stream_task_on_disconnect,
+    replay_or_reserve_header_run,
     run_already_active_error,
+    session_request_fingerprint,
     session_run_key,
 )
 
@@ -3674,6 +3676,28 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             system_prompt=ctx["body"].get("system_message") or ctx["body"].get("instructions"),
             idempotency_header=request.headers.get("Idempotency-Key"),
         )
+        idempotency_header = request.headers.get("Idempotency-Key")
+        if idempotency_header:
+            # Durable receipt (review P1): the session-row active slot only
+            # guards LIVE runs — a same-key retry AFTER completion must replay
+            # the original run, not mint a second execution. Explicit-key runs
+            # compose with the /v1/runs RunIdempotencyStore (24h retention,
+            # terminal-status persistence) so the receipt survives the active
+            # slot being cleared.
+            receipt = await replay_or_reserve_header_run(
+                self, request, run_key,
+                session_request_fingerprint(
+                    session_id=session_id,
+                    user_message=user_message,
+                    system_prompt=ctx["body"].get("system_message") or ctx["body"].get("instructions"),
+                ),
+                run_id,
+                self._run_statuses[run_id],
+            )
+            if receipt is not None:
+                kind, payload = receipt
+                return web.json_response(
+                    payload, status=409 if kind == "conflict" else 202)
         conflict_run_id = await claim_session_run_or_conflict(
             self, session_id, run_id, run_key
         )
@@ -3681,30 +3705,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return web.json_response(
                 run_already_active_error(conflict_run_id), status=409
             )
-        seq = 0
-
-        def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
-            nonlocal seq
-            seq += 1
-            payload.setdefault("session_id", session_id)
-            payload.setdefault("run_id", run_id)
-            payload.setdefault("seq", seq)
-            payload.setdefault("ts", time.time())
-            return name, payload
-
-        def _enqueue(name: str, payload: Dict[str, Any]) -> None:
-            event = _event_payload(name, payload)
-            try:
-                running_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                running_loop = None
-            try:
-                if running_loop is loop:
-                    queue.put_nowait(event)
-                else:
-                    loop.call_soon_threadsafe(queue.put_nowait, event)
-            except RuntimeError:
-                pass
+        # Single sequence owner: every event (lifecycle AND callbacks) goes
+        # through the _SessionEventQueue sequencer. The rebase briefly left a
+        # second local counter here, which emitted 1,2,1,3,... — clients that
+        # order/dedupe by seq broke (review: "two seq counters now coexist").
+        async def _emit(name: str, payload: Dict[str, Any]) -> None:
+            await queue.put(events.payload(name, payload))
 
         def _delta(delta: str) -> None:
             if delta:
@@ -3732,12 +3738,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         async def _run_and_signal() -> None:
             try:
-                await queue.put(_event_payload("run.started", {
+                await _emit("run.started", {
                     "user_message": {"role": "user", "content": user_message},
-                    "runtime": runtime_meta}))
+                    "runtime": runtime_meta})
                 self._set_run_status(run_id, "running", last_event="run.started")
                 await self._set_session_active_run_status_async(session_id, run_id, "running")
-                await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
+                await _emit("message.started", {"message": {"id": message_id, "role": "assistant"}})
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
@@ -3752,12 +3758,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # Terminal status and flags come from the result (interrupted -> cancelled,
                 # unfinished -> failed); a late steer rides along as ``pending_steer`` for replay.
                 status, fields = _api_runs.terminal_run_status(result if is_dict else {})
-                await queue.put(_event_payload("assistant.completed", {
+                await _emit("assistant.completed", {
                     "session_id": effective_session_id, "message_id": message_id,
-                    "content": final_response, **fields, "runtime": effective_runtime}))
-                await queue.put(_event_payload(f"run.{status}", {
+                    "content": final_response, **fields, "runtime": effective_runtime})
+                await _emit(f"run.{status}", {
                     "session_id": effective_session_id, "message_id": message_id, **fields,
-                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime}))
+                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime})
                 self._set_run_status(
                     run_id, status, session_id=effective_session_id,
                     # The reply text, so a caller whose stream died can still read it from
@@ -3771,7 +3777,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 logger.exception("[api_server] session chat stream failed")
                 self._set_run_status(
                     run_id, "failed", error=_redact_api_error_text(exc), last_event="run.failed")
-                await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
+                await _emit("error", {"message": _redact_api_error_text(exc)})
             finally:
                 self._active_run_agents.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
@@ -3784,7 +3790,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     await self._clear_session_active_run_async(
                         session_id, expected_run_id=run_id
                     )
-                await queue.put(_event_payload("done", {}))
+                await _emit("done", {})
                 await queue.put(None)
 
         # NOT in _active_run_tasks: _run_agent already counts this turn for the shutdown drain.

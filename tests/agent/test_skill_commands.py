@@ -489,6 +489,97 @@ class TestScanSkillCommands:
             assert resolve_skill_command_key("小说拆条") == "/小说拆条"
 
 
+    # -- post-install freshness (#125487) ------------------------------------
+
+
+class TestPostInstallFreshness:
+    """``get_skill_commands`` must observe skills installed/edited/removed by
+    ANOTHER process (skills-hub CLI subprocess, dashboard spawn, editor).
+
+    None of those can call an in-process invalidation hook, and none of them
+    moves the (platform, home, project) freshness tags — the cache used to
+    serve the pre-install snapshot until an unrelated scope change forced a
+    rescan (#125487: a new skill was missing from the slash popover until a
+    message was sent). The mtime fingerprint closes that hole."""
+
+    def _warm(self, tmp_path):
+        """Populate the cache for *tmp_path* and return the module."""
+        import agent.skill_commands as sc_mod
+        _make_skill(tmp_path, "warm-skill")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            sc_mod.scan_skill_commands()
+        return sc_mod
+
+    def test_out_of_process_install_surfaces_without_scope_change(self, tmp_path):
+        sc_mod = self._warm(tmp_path)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            before = sc_mod.get_skill_commands()
+            assert "/warm-skill" in before
+            assert "/late-skill" not in before
+            # The repro: a skill lands on disk with NO scope change and NO
+            # message turn in between.
+            _make_skill(tmp_path, "late-skill", body="Installed out of band.")
+            after = sc_mod.get_skill_commands()
+        assert "/late-skill" in after, (
+            "skill installed after cache warm is missing — stale cache served"
+        )
+
+    def test_in_place_description_edit_surfaces(self, tmp_path):
+        """In-place SKILL.md edits change no directory mtime; the fingerprint
+        must include the file's own mtime or edited descriptions stay stale."""
+        sc_mod = self._warm(tmp_path)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            edited = sc_mod.get_skill_commands()
+            assert edited["/warm-skill"]["description"] == "Description for warm-skill."
+            (tmp_path / "warm-skill" / "SKILL.md").write_text(
+                "---\nname: warm-skill\ndescription: EDITED DESCRIPTION.\n---\nBody.\n",
+                encoding="utf-8",
+            )
+            after = sc_mod.get_skill_commands()
+        assert after["/warm-skill"]["description"] == "EDITED DESCRIPTION."
+
+    def test_removed_skill_disappears(self, tmp_path):
+        import shutil
+
+        sc_mod = self._warm(tmp_path)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            assert "/warm-skill" in sc_mod.get_skill_commands()
+            shutil.rmtree(tmp_path / "warm-skill")
+            assert "/warm-skill" not in sc_mod.get_skill_commands()
+
+    def test_unchanged_tree_serves_the_cached_map(self, tmp_path):
+        """No mutation, no scope change: the cached map object itself must be
+        served (identity), so the freshness probe causes no spurious rescans."""
+        sc_mod = self._warm(tmp_path)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            first = sc_mod.get_skill_commands()
+            second = sc_mod.get_skill_commands()
+        assert first is second
+
+    def test_absent_fingerprint_falls_back_to_tag_freshness(self, tmp_path):
+        """A map published without a fingerprint (monkeypatched state, older
+        callers) keeps the tag-only contract: tags match → served as-is."""
+        import agent.skill_commands as sc_mod
+
+        fake = {"/fake": {"name": "fake", "description": "d", "skill_md_path": "p", "skill_dir": "d"}}
+        # Tags must equal what the live resolvers return NOW, or the tag check
+        # itself forces the rescan this test asserts does not happen.
+        live_tags = (
+            sc_mod._resolve_skill_commands_platform(),
+            sc_mod._resolve_skill_commands_home(),
+            sc_mod._resolve_skill_commands_project(),
+        )
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.object(sc_mod, "_skill_commands", fake),
+            patch.object(sc_mod, "_skill_commands_platform", live_tags[0]),
+            patch.object(sc_mod, "_skill_commands_home", live_tags[1]),
+            patch.object(sc_mod, "_skill_commands_project", live_tags[2]),
+            patch.object(sc_mod, "_skill_commands_sig", None),
+        ):
+            assert sc_mod.get_skill_commands() is fake
+
+
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers
     skills with hyphens swapped for underscores. When Telegram autocomplete

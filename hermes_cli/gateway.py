@@ -1765,22 +1765,6 @@ def _reaper_candidate_is_supervisor_owned(pid: int) -> bool:
     return False
 
 
-def _gateway_process_age_s(pid: int) -> float:
-    """Seconds since ``pid`` started, or ``0.0`` when undeterminable (never negative).
-
-    Delegates to the shared dashboard reaper probe instead of re-deriving the
-    psutil/epoch math, and swallows its failure: an unknown age must never widen
-    a reap, so it reads as "too young to touch" under a positive grace (and is
-    irrelevant when the grace is 0).
-    """
-    try:
-        from hermes_cli.dashboard_procs import _process_age_seconds
-
-        return max(0.0, _process_age_seconds(pid))
-    except Exception:
-        return 0.0
-
-
 def _reap_unsupervised_gateway_orphans(
     extra_exclude: set | None = None, *, min_age_s: float = 0.0,
 ) -> bool:
@@ -1829,7 +1813,15 @@ def _reap_unsupervised_gateway_orphans(
     except Exception:
         return False
     if min_age_s > 0:
-        orphans = [p for p in orphans if _gateway_process_age_s(p) >= min_age_s]
+        from hermes_cli.dashboard_procs import _process_age_seconds
+
+        def _old_enough(pid: int) -> bool:
+            try:  # an undeterminable age must never widen the reap
+                return _process_age_seconds(pid) >= min_age_s
+            except Exception:
+                return False
+
+        orphans = [p for p in orphans if _old_enough(p)]
     if not orphans:
         return False
 

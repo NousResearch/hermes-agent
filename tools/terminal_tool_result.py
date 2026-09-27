@@ -138,8 +138,12 @@ def _apply_output_transform_hook(command, output, returncode, task_id, env_type)
     Replacements are still subject to the output limit applied afterwards."""
     with _quiet("transform_terminal_output hook"):
         from hermes_cli.lifecycle import invoke_hook
+        from tools.approval_context import _approval_tool_call_id
+        # Concurrent terminal calls in one turn must gate per call, not collapse into one;
+        # an empty id is treated as "no identity" by the hook gate.
         results = invoke_hook("transform_terminal_output", command=command, output=output,
-                              returncode=returncode, task_id=task_id or "", env_type=env_type)
+                              returncode=returncode, task_id=task_id or "", env_type=env_type,
+                              tool_call_id=_approval_tool_call_id.get())
         output = next((r for r in results if isinstance(r, str)), output)
     return output
 
@@ -173,7 +177,7 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
         from tools.spill_safety import write_text_exclusive
-        raw_spill = Path(path).read_text(encoding="utf-8", errors="replace")
+        raw_spill = Path(path).read_text(encoding="utf-8-sig", errors="replace")
         # lstat-checked unlink + exclusive create: the redacted copy can't
         # be diverted through a symlink planted since the collector's write.
         write_text_exclusive(Path(path), redact_terminal_output(strip_ansi(raw_spill), command),

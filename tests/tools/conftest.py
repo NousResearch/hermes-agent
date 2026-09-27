@@ -15,10 +15,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_host_browser_use_cli():
-    """Keep the host's browser-use/uvx install out of tests.
+    """Keep the host's PM-managed browser-use install out of tests.
 
     Browser Use mode is default-on when the CLI is runnable, so a developer
-    machine with uvx on PATH would silently flip every built-in-browser test
+    machine with the CLI installed would silently flip every built-in-browser test
     into CLI mode. Pin discovery to "not installed"; tests that exercise the
     CLI path monkeypatch ``bu_cli._find_cli`` themselves.
     """
@@ -28,10 +28,28 @@ def _no_host_browser_use_cli():
         yield
         return
     # Keep a handle to the real discovery function so TestFindCli (and any
-    # test that wants genuine PATH probing) can restore it explicitly.
+    # test that wants genuine PM discovery) can restore it explicitly.
     if not hasattr(bu_cli, "_find_cli_unpatched"):
         bu_cli._find_cli_unpatched = bu_cli._find_cli
     with patch.object(bu_cli, "_find_cli", lambda: None):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_host_bot_desktop_autostart():
+    """Keep the host's TigerVNC/Xfce install out of tests.
+
+    ``computer_use`` auto-starts the profile's Bot Desktop on a headless Linux
+    host with the packages installed, so a developer box that has them would
+    launch a real Xvnc + Xfce session per test. Pin the binaries to "missing";
+    tests that exercise the desktop path monkeypatch ``runtime`` themselves.
+    """
+    try:
+        from tools.bot_desktop import runtime as bd_runtime
+    except Exception:
+        yield
+        return
+    with patch.object(bd_runtime, "missing_binaries", lambda: ["Xvnc"]):
         yield
 
 

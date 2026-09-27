@@ -53,6 +53,15 @@ class TestStripBackgroundReviewHarness:
         contents = [m["content"] for m in out]
         assert contents == ["What's the weather?", "It's sunny.", "Thanks, now book a flight."]
 
+    def test_preserves_assistant_after_consecutive_harness_prompts(self):
+        messages = [
+            {"role": "user", "content": "Review the conversation above and update the skill library."},
+            {"role": "user", "content": "Review the conversation above and consider saving to memory."},
+            {"role": "assistant", "content": "The user's real reply."},
+        ]
+
+        assert _strip_background_review_harness(messages) == [messages[-1]]
+
 
 
 

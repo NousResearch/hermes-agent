@@ -18,6 +18,7 @@ Cron 任务可以：
 - 将结果回传到来源会话、本地文件或已配置的平台目标
 - 在全新的 agent 会话中运行，使用正常的静态工具列表
 - 以**无 agent 模式**运行——按计划执行脚本，其 stdout 原样投递，零 LLM 参与（参见下方[无 agent 模式](#no-agent-mode-script-only-jobs)章节）
+- 由**外部事件触发**——设置了 `cron_job` 的 webhook 路由会在事情发生的那一刻（PR 收到反馈、服务发出告警）立即触发任务，而不是等待下一次定时 tick。参见[事件触发的 Cron 任务](../messaging/webhooks.md#event-triggered-cron-jobs)。
 
 所有这些功能均可通过 `cronjob` 工具由 Hermes 自身使用，因此你可以用自然语言创建、暂停、编辑和删除任务——无需 CLI。
 
@@ -343,7 +344,7 @@ cron:
 
 行为为**优先使用话题**，范围限定在任务的来源聊天：
 
-- **支持话题的平台**（Telegram 话题、Discord/Slack 话题）：每次投递都会新建
+- **支持话题的平台**（Telegram 话题、Discord/Slack/Matrix 话题）：每次投递都会新建
   专用话题，并将简报植入该话题的会话中，因此在话题内回复即可带完整上下文继续。
 - **仅 DM 的平台**（WhatsApp、Signal、SMS）：不存在话题，因此简报会被镜像进
   来源 DM 会话——DM 本身就是继续的载体。
@@ -462,7 +463,7 @@ cronjob(action="create", schedule="every 5m",
 
 当消息内容完全由脚本决定时（看门狗、阈值告警、心跳），它会自动选择 `no_agent=True`。同一工具也让 agent 可以暂停、恢复、编辑和删除任务——整个生命周期都通过聊天驱动，无需任何人接触 CLI。
 
-参见[纯脚本 Cron 任务指南](/guides/cron-script-only)获取实际示例。
+参见[纯脚本 Cron 任务指南](../../guides/cron-script-only.md)获取实际示例。
 
 ## 通过 `context_from` 串联任务
 
@@ -524,7 +525,7 @@ cronjob(
 Cron 任务继承你配置的回退 provider 和凭证池轮换。如果主 API key 被限速或 provider 返回错误，cron agent 可以：
 
 - **回退到备用 provider**，前提是你在 `config.yaml` 中配置了 `fallback_providers`（或旧版 `fallback_model`）
-- **轮换到下一个凭证**，即同一 provider 的[凭证池](/user-guide/configuration#credential-pool-strategies)中的下一个
+- **轮换到下一个凭证**，即同一 provider 的[凭证池](../configuration.md#credential-pool-strategies)中的下一个
 
 这意味着高频运行或在高峰时段运行的 cron 任务更具弹性——单个被限速的 key 不会导致整次运行失败。
 
@@ -651,7 +652,7 @@ print(json.dumps({"wakeAgent": True, "context": {"new_issues": latest - prev}}))
 **文件变更门控**——仅在被监视文件自上次成功 tick 以来有新内容时运行。调度器记录每个任务的 `last_run_at`；将其与文件的 mtime 比较。
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.hermes/scripts/feed-changed.sh
 FEED="$HOME/data/feed.json"
 STATE="$HOME/.hermes/scripts/.feed-changed.last"
@@ -676,7 +677,7 @@ cronjob(action="create", name="process-feed",
 **外部标志门控**——仅在其他进程发出就绪信号时运行（例如，部署 hook 落下一个文件，CI 任务在状态存储中设置一个值）。
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.hermes/scripts/flag-ready.sh
 if test -f /tmp/new-data-ready; then
   rm -f /tmp/new-data-ready
@@ -740,6 +741,8 @@ cronjob(action="create", name="daily-digest",
 ## 任务存储
 
 任务存储在 `~/.hermes/cron/jobs.json`。任务运行的输出保存到 `~/.hermes/cron/output/{job_id}/{timestamp}.md`。
+
+如果手动编辑使 `jobs.json` 格式出错，调度器会在下次加载时修复它，而不是停止运行：`jobs` 列表中不是 JSON 对象的条目会被丢弃，不是非负整数的 `repeat.completed` 会被规范化为非负整数（无法解析时为 0）。每次修复都会记录一条警告（只记录值的类型，不记录内容）。
 
 任务可能将 `model` 和 `provider` 存储为 `null`。省略这些字段时，Hermes 在执行时从全局配置中解析它们。只有设置了单任务覆盖时，这些字段才会出现在任务记录中。
 

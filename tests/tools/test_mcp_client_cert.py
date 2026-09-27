@@ -6,10 +6,12 @@ Covers:
    errors, missing-file errors.
 
 2. HTTP (new SDK ``streamable_http_client``) path forwards ``cert=`` into the
-   user-owned ``httpx.AsyncClient``.
+   inner ``AsyncHTTPTransport`` wrapped by the wire-body-cap transport that
+   the user-owned ``httpx.AsyncClient`` is built on.
 
 3. SSE path forwards ``cert`` and ``ssl_verify`` via an ``httpx_client_factory``
-   without breaking the OAuth/headers/timeout passthrough.
+   (always injected — it also installs the wire-body cap) without breaking the
+   OAuth/headers/timeout passthrough.
 """
 
 from __future__ import annotations
@@ -32,6 +34,33 @@ def _patch_sdk_async_client(dummy):
     from tools.mcp_tool import sdk_httpx
 
     return patch.object(sdk_httpx(), "AsyncClient", dummy)
+
+
+def _patch_sdk_transport(dummy):
+    """Patch ``AsyncHTTPTransport`` on the SDK's httpx module.
+
+    Since the wire-body cap (_make_mcp_body_cap_transport), verify/cert are
+    applied to an inner ``AsyncHTTPTransport`` rather than as AsyncClient
+    kwargs — a custom ``transport=`` makes client-level TLS kwargs inert.
+    """
+    from tools.mcp_tool import sdk_httpx
+
+    return patch.object(sdk_httpx(), "AsyncHTTPTransport", dummy)
+
+
+class _DummyTransport:
+    """Capture-only stand-in for AsyncHTTPTransport."""
+
+    captured: dict = {}
+
+    def __init__(self, **kwargs):
+        type(self).captured = dict(kwargs)
+
+    async def handle_async_request(self, request):  # pragma: no cover
+        raise AssertionError("not dispatched in these tests")
+
+    async def aclose(self):  # pragma: no cover
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +121,7 @@ class TestResolveClientCert:
 class TestHTTPClientCert:
     def test_cert_forwarded_to_async_client(self, tmp_path):
         """When client_cert is set, the new-SDK HTTP path passes ``cert=``
-        into ``httpx.AsyncClient``."""
+        into the inner AsyncHTTPTransport under the body-cap wrapper."""
         from tools.mcp_tool import MCPServerTask
 
         cert = tmp_path / "client.pem"
@@ -138,6 +167,7 @@ class TestHTTPClientCert:
             with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
                  patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
                  _patch_sdk_async_client(DummyAsyncClient), \
+                 _patch_sdk_transport(_DummyTransport), \
                  patch("tools.mcp_tool.streamable_http_client",
                        return_value=DummyTransportCtx()), \
                  patch("tools.mcp_tool.ClientSession", DummySession), \
@@ -148,7 +178,13 @@ class TestHTTPClientCert:
                 })
 
         asyncio.run(_drive())
-        assert captured.get("cert") == str(cert)
+        # cert/verify live on the inner transport (client-level TLS kwargs
+        # are inert once a custom transport is passed); the client itself
+        # receives the body-cap transport.
+        assert _DummyTransport.captured.get("cert") == str(cert)
+        assert _DummyTransport.captured.get("verify") is True
+        assert "cert" not in captured
+        assert "transport" in captured
 
 
     def test_missing_cert_file_surfaces_clear_error(self, tmp_path):
@@ -217,9 +253,10 @@ def patch_sse_client():
 
 
 class TestSSEClientCert:
-    def test_no_factory_when_defaults(self, patch_sse_client):
-        """With no cert and ssl_verify=True (default), the SDK's own factory is
-        used — we don't inject one."""
+    def test_factory_always_injected_with_default_tls(self, patch_sse_client):
+        """The factory is always injected (it installs the wire-body cap);
+        with no cert and ssl_verify=True the inner transport keeps default
+        TLS settings."""
         from tools.mcp_tool import MCPServerTask
 
         server = MCPServerTask("sse-test")
@@ -242,7 +279,22 @@ class TestSSEClientCert:
                     pass
 
         asyncio.run(drive())
-        assert "httpx_client_factory" not in patch_sse_client
+        factory = patch_sse_client.get("httpx_client_factory")
+        assert factory is not None, "body-cap factory must always be injected"
+
+        captured_client_kwargs: dict = {}
+
+        class DummyAsyncClient:
+            def __init__(self, **kwargs):
+                captured_client_kwargs.update(kwargs)
+
+        with _patch_sdk_async_client(DummyAsyncClient), \
+             _patch_sdk_transport(_DummyTransport):
+            factory(headers=None, timeout=None, auth=None)
+
+        assert _DummyTransport.captured.get("verify") is True
+        assert "cert" not in _DummyTransport.captured
+        assert "transport" in captured_client_kwargs
 
     def test_factory_injected_when_cert_set(self, patch_sse_client, tmp_path):
         """With client_cert set, an httpx_client_factory is injected that
@@ -286,13 +338,15 @@ class TestSSEClientCert:
                 captured_client_kwargs.update(kwargs)
 
         from tools.mcp_tool import sdk_httpx
-        with _patch_sdk_async_client(DummyAsyncClient):
+        with _patch_sdk_async_client(DummyAsyncClient), \
+             _patch_sdk_transport(_DummyTransport):
             factory(headers={"x": "y"}, timeout=sdk_httpx().Timeout(30.0), auth=None)
 
-        assert captured_client_kwargs["cert"] == str(cert)
-        assert captured_client_kwargs["verify"] is True
+        assert _DummyTransport.captured["cert"] == str(cert)
+        assert _DummyTransport.captured["verify"] is True
         assert captured_client_kwargs["follow_redirects"] is True
         assert captured_client_kwargs["headers"] == {"x": "y"}
+        assert "transport" in captured_client_kwargs
 
     def test_factory_forwards_custom_ca_bundle(self, patch_sse_client, tmp_path):
         """ssl_verify as a path is forwarded to the factory's httpx client."""
@@ -332,8 +386,9 @@ class TestSSEClientCert:
             def __init__(self, **kwargs):
                 captured_client_kwargs.update(kwargs)
 
-        with _patch_sdk_async_client(DummyAsyncClient):
+        with _patch_sdk_async_client(DummyAsyncClient), \
+             _patch_sdk_transport(_DummyTransport):
             factory(headers=None, timeout=None, auth=None)
 
-        assert captured_client_kwargs["verify"] == str(ca_bundle)
-        assert "cert" not in captured_client_kwargs
+        assert _DummyTransport.captured["verify"] == str(ca_bundle)
+        assert "cert" not in _DummyTransport.captured

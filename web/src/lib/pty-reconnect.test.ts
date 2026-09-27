@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import {
   PTY_RECONNECT_BASE_MS,
-  PTY_RECONNECT_MAX_ATTEMPTS,
   PTY_RECONNECT_MAX_MS,
   ptyReconnectDelayMs,
   shouldBlockPtyInput,
@@ -34,6 +33,19 @@ describe('shouldReconnectPtyOnPageResume', () => {
         })
       ).toBe(true)
     }
+  })
+
+  it('does not restart the ladder on focus/online after it gave up; only the Reconnect button does', () => {
+    expect(
+      shouldReconnectPtyOnPageResume({
+        isActive: true,
+        visibilityState: 'visible',
+        online: true,
+        socketReadyState: 3,
+        ptyState: 'closed',
+        reconnectGaveUp: true
+      })
+    ).toBe(false)
   })
 
   it('does not reconnect an open socket on visible resume', () => {
@@ -128,10 +140,8 @@ describe('shouldBlockPtyInput', () => {
 
 describe('ptyReconnectDelayMs', () => {
   it('doubles from the base on each attempt and clamps at the cap', () => {
-    expect(Array.from({ length: PTY_RECONNECT_MAX_ATTEMPTS }, (_, i) => ptyReconnectDelayMs(i + 1))).toEqual([
-      250, 500, 1000, 2000, 3000
-    ])
     expect(ptyReconnectDelayMs(1)).toBe(PTY_RECONNECT_BASE_MS)
+    expect(ptyReconnectDelayMs(2)).toBe(Math.min(PTY_RECONNECT_BASE_MS * 2, PTY_RECONNECT_MAX_MS))
     expect(ptyReconnectDelayMs(99)).toBe(PTY_RECONNECT_MAX_MS)
   })
 })

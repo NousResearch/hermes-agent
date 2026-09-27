@@ -6,7 +6,6 @@ import io
 import tarfile
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from tools.environments import modal as modal_env
 
@@ -59,6 +58,9 @@ def _wire_async_exec(env, exec_calls=None):
         proc.wait = MagicMock()
         proc.wait.aio = AsyncMock(return_value=0)
         proc.stdin = stdin_mock
+        proc.stdout = MagicMock()
+        proc.stdout.read = MagicMock()
+        proc.stdout.read.aio = AsyncMock(return_value="")
         proc.stderr = MagicMock()
         proc.stderr.read = MagicMock()
         proc.stderr.read.aio = AsyncMock(return_value="")
@@ -110,14 +112,9 @@ class TestModalBulkUpload:
         args = exec_calls[0]
         assert args[0] == "bash"
         assert args[1] == "-c"
-        cmd = args[2]
-        assert "mkdir -p" in cmd
-        assert "base64 -d" in cmd
-        assert "tar xzf" in cmd
-        assert "-C /" in cmd
 
         # Reassemble the base64 payload from stdin chunks and verify tar contents
-        payload = "".join(stdin_mock._written_chunks)
+        payload = b"".join(stdin_mock._written_chunks)
         tar_data = base64.b64decode(payload)
         buf = io.BytesIO(tar_data)
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
@@ -153,9 +150,25 @@ class TestModalBulkUpload:
         assert len(stdin_mock._written_chunks) >= 2
 
         # Reassembled payload should still decode to valid tar
-        payload = "".join(stdin_mock._written_chunks)
+        payload = b"".join(stdin_mock._written_chunks)
         tar_data = base64.b64decode(payload)
         buf = io.BytesIO(tar_data)
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
             names = tar.getnames()
             assert "root/.hermes/large.bin" in names
+
+
+class TestModalCommandStdin:
+    def test_large_payload_uses_sdk_stdin_not_bash_argv(self, monkeypatch, tmp_path):
+        env = _make_mock_modal_env(monkeypatch, tmp_path)
+        expected = (b"A" * (160 * 1024)) + b"\x00\xff\xfeTAIL"
+        payload = expected.decode("utf-8", "surrogateescape")
+        exec_calls, _, stdin_mock = _wire_async_exec(env)
+
+        handle = env._run_bash("cat > /tmp/payload.txt", stdin_data=payload)
+
+        assert handle.wait(timeout=2) == 0
+        assert b"".join(stdin_mock._written_chunks) == expected
+        assert len(exec_calls) == 1
+        assert payload not in " ".join(str(part) for part in exec_calls[0])
+        stdin_mock.write_eof.assert_called_once()

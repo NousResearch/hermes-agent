@@ -15,6 +15,6 @@ def prepare_chat_messages(client, kwargs: dict) -> dict:
     if not isinstance(client, (OpenAI, AsyncOpenAI)) or "messages" not in kwargs:
         return kwargs
     messages = ChatCompletionsTransport().convert_messages(
-        kwargs["messages"], model=kwargs.get("model")
+        kwargs["messages"], model=kwargs.get("model"), base_url=str(getattr(client, "base_url", "") or ""),
     )
     return {**kwargs, "messages": messages}

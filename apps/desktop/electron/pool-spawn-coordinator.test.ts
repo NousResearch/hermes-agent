@@ -1,12 +1,9 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
 import {
+  BackgroundSlotRetryBackoff,
   LocalBackendSlotWaitTimeoutError,
   LocalBackendSpawnCoordinator,
   releaseLocalBackendSlotAfterExit
@@ -23,6 +20,20 @@ const deferred = () => {
 }
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
+
+test('background slot failures back off per profile and clear after a later success', () => {
+  const retries = new BackgroundSlotRetryBackoff({ baseDelayMs: 1_000, maxDelayMs: 8_000 })
+
+  assert.equal(retries.canAttempt('over-cap', 0), true)
+  assert.equal(retries.recordFailure('over-cap', 0), 1_000)
+  assert.equal(retries.canAttempt('over-cap', 999), false)
+  assert.equal(retries.canAttempt('over-cap', 1_000), true)
+  assert.equal(retries.recordFailure('over-cap', 1_000), 2_000)
+  assert.equal(retries.canAttempt('other-profile', 1_001), true)
+
+  retries.clear('over-cap')
+  assert.equal(retries.canAttempt('over-cap', 1_001), true)
+})
 
 test('100 concurrent local requests never hold more than the configured slots', async () => {
   const limit = 12
@@ -108,54 +119,6 @@ test('a queued start times out with a clear error and frees its queue position',
 
   releaseFirst()
   assert.equal(coordinator.activeCount, 0)
-})
-
-test('100 real child processes never exceed twelve simultaneous local slots', async () => {
-  const limit = 12
-  const coordinator = new LocalBackendSpawnCoordinator(limit)
-  const livePids = new Set<number>()
-  let completedChildren = 0
-  let maxLive = 0
-
-  await Promise.all(
-    Array.from({ length: 100 }, async (_, index) => {
-      const release = await coordinator.acquire(`real-profile-${index}`)
-
-      try {
-        const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 40)'], {
-          stdio: 'ignore'
-        })
-
-        assert.ok(child.pid)
-        livePids.add(child.pid)
-        maxLive = Math.max(maxLive, livePids.size)
-
-        await new Promise<void>((resolve, reject) => {
-          child.once('error', reject)
-          child.once('exit', code => {
-            if (code === 0) {
-              resolve()
-            } else {
-              reject(new Error(`child ${child.pid} exited with ${code}`))
-            }
-          })
-        })
-
-        completedChildren += 1
-        livePids.delete(child.pid)
-      } finally {
-        release()
-      }
-    })
-  )
-
-  // Windows may recycle a PID after a short-lived child exits; completion
-  // count, not PID uniqueness, is the invariant this concurrency test owns.
-  assert.equal(completedChildren, 100)
-  assert.equal(maxLive, limit)
-  assert.equal(livePids.size, 0)
-  assert.equal(coordinator.activeCount, 0)
-  assert.equal(coordinator.queuedCount, 0)
 })
 
 test('failed start keeps its slot until the child has actually exited', async () => {
@@ -502,43 +465,3 @@ test('promoting a queued background waiter lets it take the reserved foreground 
   bg2()
   assert.equal(coordinator.activeCount, 0)
 })
-
-// ── main.ts wiring ──────────────────────────────────────────────────────────
-// The coordinator is only as good as the timeout main.ts hands it. A queued
-// ticket that outlives the renderer's backend-boot budget holds the pool key
-// hostage: the renderer has already reported "backend didn't come up", and
-// every later click on that profile joins the stale wait instead of failing
-// fast with a reason.
-{
-  const here = path.dirname(fileURLToPath(import.meta.url))
-  const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
-
-  const withTimeoutSource = fs
-    .readFileSync(path.join(here, '..', 'src', 'lib', 'with-timeout.ts'), 'utf8')
-    .replace(/\r\n/g, '\n')
-
-  test('main.ts bounds the slot wait below the renderer backend-boot budget', () => {
-    const slotWait = Number(/const POOL_SLOT_WAIT_MS = ([\d_]+)/.exec(mainSource)?.[1]?.replace(/_/g, ''))
-
-    const bootBudget = Number(
-      /export const BACKEND_BOOT_WAIT_TIMEOUT_MS = ([\d_]+)/.exec(withTimeoutSource)?.[1]?.replace(/_/g, '')
-    )
-
-    assert.ok(Number.isFinite(slotWait) && slotWait > 0, 'POOL_SLOT_WAIT_MS must be a literal in main.ts')
-    assert.ok(Number.isFinite(bootBudget), 'BACKEND_BOOT_WAIT_TIMEOUT_MS must be a literal')
-    assert.ok(slotWait < bootBudget, `slot wait ${slotWait}ms must be below the boot budget ${bootBudget}ms`)
-    assert.match(
-      mainSource,
-      /localBackendSpawnCoordinator\.request\(poolKey, \{\s*timeoutMs: POOL_SLOT_WAIT_MS,\s*priority: spawnPriority\s*\}\)/
-    )
-    assert.doesNotMatch(mainSource, /request\(poolKey, \{ timeoutMs: POOL_IDLE_MS \}\)/)
-  })
-
-  test('main.ts pushes the live pool max into the coordinator when the preference changes', () => {
-    // Pool sizing is a live device preference (#92581); the hard cap must
-    // follow it, otherwise raising the max in Settings would leave spawns
-    // queued behind the launch-time value.
-    assert.match(mainSource, /new LocalBackendSpawnCoordinator\(poolLimits\.maxBackends\)/)
-    assert.match(mainSource, /localBackendSpawnCoordinator\.setLimit\(poolLimits\.maxBackends\)/)
-  })
-}

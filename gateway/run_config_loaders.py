@@ -21,7 +21,8 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT, parse_cron_drain_timeout,
     parse_restart_after_turn_timeout, parse_restart_drain_timeout,
-    parse_signal_interrupt_grace_timeout,
+    launchd_service_label, parse_signal_interrupt_grace_timeout, read_launchd_exit_timeout_s,
+    resolve_launchd_capped_drain,
 )
 from gateway.session import SessionSource
 from gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
@@ -35,6 +36,8 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
 
@@ -76,7 +79,7 @@ class GatewayConfigLoadersMixin:
             logger.warning("Prefill messages file not found: %s", path)
             return []
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             if not isinstance(data, list):
                 logger.warning("Prefill messages file must contain a JSON array: %s", path)
@@ -270,14 +273,72 @@ class GatewayConfigLoadersMixin:
             text_mode = fallback_text
         return input_mode, text_mode
 
+    @staticmethod
+    def _busy_text_timing_from_config(config: dict) -> tuple[float, float]:
+        """``display.busy_text_debounce_seconds`` / ``display.busy_text_hard_cap_seconds`` for one
+        profile, without consulting process env (#116893). A non-numeric or negative value is
+        rejected with a warning naming the key, never silently coerced."""
+        from gateway.platforms.base import DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS, DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS
+        out = []
+        for key, default in (("busy_text_debounce_seconds", DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS),
+                             ("busy_text_hard_cap_seconds", DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS)):
+            raw = cfg_get(config, "display", key, default=None)
+            if raw is None or raw == "":
+                out.append(default)
+                continue
+            try:
+                value = float(raw)
+                if value < 0 or value != value:
+                    raise ValueError(raw)
+            except (TypeError, ValueError):
+                logger.warning("display.%s=%r is not a non-negative number; using %s", key, raw, default)
+                value = default
+            out.append(value)
+        return out[0], out[1]
+
+    @staticmethod
+    def _human_delay_from_config(config: dict) -> Optional[tuple[int, int]]:
+        """``human_delay.{mode,min_ms,max_ms}`` for one profile as a ``(lo_ms, hi_ms)`` range, or
+        ``None`` when off (#116895). ``natural`` is the fixed 800-2500 range; ``custom`` reads the
+        bounds and rejects non-integer, negative or inverted values with a warning naming the key,
+        falling back to the natural range instead of letting ``random.uniform`` raise at send."""
+        mode = str(cfg_get(config, "human_delay", "mode", default="off") or "off").strip().lower()
+        if mode == "off":
+            return None
+        lo, hi = DEFAULT_HUMAN_DELAY_RANGE_MS
+        if mode != "natural":
+            if mode != "custom":
+                logger.warning("human_delay.mode=%r is not off/natural/custom; using natural", mode)
+                return DEFAULT_HUMAN_DELAY_RANGE_MS
+            bounds = []
+            for key, default in (("min_ms", lo), ("max_ms", hi)):
+                raw = cfg_get(config, "human_delay", key, default=None)
+                try:
+                    value = default if raw is None or raw == "" else int(raw)
+                    if value < 0:
+                        raise ValueError(raw)
+                except (TypeError, ValueError):
+                    logger.warning("human_delay.%s=%r is not a non-negative integer; using %s", key, raw, default)
+                    value = default
+                bounds.append(value)
+            lo, hi = bounds
+            if lo > hi:
+                logger.warning("human_delay.min_ms=%s exceeds human_delay.max_ms=%s; using natural range", lo, hi)
+                lo, hi = DEFAULT_HUMAN_DELAY_RANGE_MS
+        return lo, hi
+
     def _snapshot_profile_busy_modes(self, profile_name: str, config: dict) -> None:
-        """Cache a routed profile's busy policy for this gateway lifetime."""
+        """Cache a routed profile's busy policy and pacing for this gateway lifetime."""
         input_mode, text_mode = self._busy_modes_from_config(
             config, fallback_input=getattr(self, "_busy_input_mode", "interrupt"),
             fallback_text=getattr(self, "_busy_text_mode", "interrupt"),
         )
         self.__dict__.setdefault("_busy_input_modes_by_profile", {})[profile_name] = input_mode
         self.__dict__.setdefault("_busy_text_modes_by_profile", {})[profile_name] = text_mode
+        self.__dict__.setdefault("_busy_text_timing_by_profile", {})[profile_name] = (
+            self._busy_text_timing_from_config(config))
+        self.__dict__.setdefault("_human_delay_by_profile", {})[profile_name] = (
+            self._human_delay_from_config(config))
 
     def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Return the routed profile whose busy policy applies, if any."""
@@ -324,6 +385,39 @@ class GatewayConfigLoadersMixin:
         if raw and value == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT:
             cls._warn_unparsable_timeout("restart_drain_timeout", raw, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
         return value
+
+    @staticmethod
+    def _load_launchd_exit_timeout(drain_timeout: float) -> Optional[float]:
+        """Read the live launchd ``ExitTimeOut`` this job runs under, if any.
+
+        launchd is the one supervisor the gateway cannot size from config: the per-user (gui)
+        domain clamps ``ExitTimeOut`` (measured 60s on macOS 26), and any signal-driven stop that
+        drains past it is SIGKILLed mid-teardown — the unclean-exit half of the state.db
+        corruption class. Returns ``None`` (fail-open, drain unchanged) when not launchd-owned or
+        when ``launchctl print`` is unavailable. Logs a WARNING when the configured drain exceeds
+        the live budget so the misconfiguration is visible at boot, not at the next SIGKILL.
+        """
+        label = launchd_service_label()
+        if label is None:
+            return None
+        # read_launchd_exit_timeout_s is already fail-open (returns None on any probe failure).
+        exit_timeout = read_launchd_exit_timeout_s(label)
+        if exit_timeout is None:
+            return None
+        effective = resolve_launchd_capped_drain(drain_timeout, exit_timeout)
+        if effective < drain_timeout:
+            logger.warning(
+                "restart_drain_timeout=%.0fs exceeds the live launchd exit timeout (%.0fs) for %s; "
+                "signal-driven stops will drain at most %.0fs so teardown finishes before launchd "
+                "SIGKILLs (launchd clamps ExitTimeOut in the per-user domain).",
+                drain_timeout, exit_timeout, label, effective,
+            )
+        else:
+            logger.info(
+                "launchd exit timeout for %s is %.0fs (drain %.0fs fits)",
+                label, exit_timeout, drain_timeout,
+            )
+        return exit_timeout
 
     @classmethod
     def _load_env_or_agent_cfg_timeout(cls, env_var: str, cfg_key: str, parse, default: float) -> float:

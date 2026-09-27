@@ -13,11 +13,6 @@ from acp_adapter.session import SessionState, _expand_acp_enabled_toolsets
 
 logger = logging.getLogger("acp_adapter.server")
 
-try:
-    from hermes_cli import __version__ as HERMES_VERSION
-except Exception:
-    HERMES_VERSION = "0.0.0"
-
 
 def _estimate_tokens(history: list, agent: Any, system_prompt: str | None = None, tools: Any = None) -> int:
     """Rough request-token estimate over history + system prompt + tool schemas."""
@@ -34,6 +29,15 @@ def _queue_prompt(state: SessionState, text: str) -> int:
     with state.runtime_lock:
         state.queued_prompts.append(text)
         return len(state.queued_prompts)
+
+
+# Commands that mutate shared turn state must not run beside a live turn or beside each
+# other: slash dispatch happens on a worker thread while the turn iterates state.history and
+# reads agent._session_db, so clearing, rebinding, or swapping state.agent underneath
+# run_conversation tears the running turn. Gateway parity: all three are idle-only there.
+# The command_op flag is held for the whole handler so a turn cannot claim the session in
+# the check-then-act window (the /compress LLM call and /model agent rebuild take seconds).
+_MID_TURN_BLOCKED_COMMANDS = frozenset({"reset", "compress", "model"})
 
 
 class SlashCommandsMixin:
@@ -93,6 +97,13 @@ class SlashCommandsMixin:
 
         if cmd not in self._COMMANDS:
             return None
+        mutating = cmd in _MID_TURN_BLOCKED_COMMANDS
+        if mutating:
+            with state.runtime_lock:
+                if state.is_running or state.command_op:
+                    return (f"⏳ Session is busy; /{cmd} only works while the session is "
+                            "idle. Wait for the current response or cancel first.")
+                state.command_op = True
         handler = getattr(self, f"_cmd_{cmd}")
 
         # Handlers run outside the per-turn cwd-pinning context. ``/compress``
@@ -112,6 +123,10 @@ class SlashCommandsMixin:
         except Exception as e:
             logger.error("Slash command /%s error: %s", cmd, e, exc_info=True)
             return f"Error executing /{cmd}: {e}"
+        finally:
+            if mutating:
+                with state.runtime_lock:
+                    state.command_op = False
 
     def _cmd_help(self, args: str, state: SessionState) -> str:
         lines = ["Available commands:", ""]
@@ -136,12 +151,18 @@ class SlashCommandsMixin:
             from types import SimpleNamespace
             from agent.memory_manager import inject_memory_provider_tools
 
-            toolsets = _expand_acp_enabled_toolsets(getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"])
-            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            toolsets = _expand_acp_enabled_toolsets(getattr(state.agent, "enabled_toolsets", None))
+            tools = get_tool_definitions(
+                enabled_toolsets=toolsets,
+                disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
+                quiet_mode=True,
+            )
             tool_view = SimpleNamespace(
                 tools=list(tools or []),
                 valid_tool_names={t.get("function", {}).get("name") for t in tools or [] if isinstance(t, dict)},
-                enabled_toolsets=toolsets, _memory_manager=getattr(state.agent, "_memory_manager", None),
+                enabled_toolsets=toolsets,
+                disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
+                _memory_manager=getattr(state.agent, "_memory_manager", None),
             )
             inject_memory_provider_tools(tool_view)
             tools = tool_view.tools
@@ -284,4 +305,6 @@ class SlashCommandsMixin:
         return f"Queued for the next turn. ({_queue_prompt(state, queued_text)} queued)"
 
     def _cmd_version(self, args: str, state: SessionState) -> str:
-        return f"Hermes Agent v{HERMES_VERSION}"
+        from hermes_cli.version_info import get_version_info
+
+        return f"Hermes Agent v{get_version_info().derived_version}"

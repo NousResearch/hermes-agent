@@ -5,6 +5,7 @@ import os
 import queue
 import socket
 import threading
+import time
 from contextlib import ExitStack, suppress
 
 import pytest
@@ -12,6 +13,47 @@ import pytest
 from tui_gateway import server
 from tui_gateway.transport import FanoutTransport, StdioTransport
 from tui_gateway.ws import WSTransport
+
+
+class RecordingTransport:
+    """In-process Transport: optional write gate lets one peer overflow without a kernel pipe."""
+
+    def __init__(self, *, delay=0.0):
+        self.frames, self.closed, self.write_delay = [], False, delay
+        self._released = threading.Event()
+
+    def write(self, obj):
+        if self.write_delay:
+            self._released.wait(timeout=self.write_delay)
+        self.frames.append(obj)
+        return True
+
+    def close(self):
+        self.closed = True
+        self._released.set()
+
+    def release(self):
+        self._released.set()
+
+
+def _await_frame_count(transport, count, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if len(transport.frames) >= count:
+            return
+        time.sleep(0.001)
+    raise AssertionError(f"expected {count} frames, got {len(transport.frames)}")
+
+
+def _overflow_slow_peer(fan, healthy, slow):
+    """Emit non-streaming frames (a WS peer blocks on each) until the slow mailbox overflows."""
+    for n in range(FanoutTransport._MAX_PENDING_FRAMES + 64):
+        frame = {"params": {"type": "tool.progress", "n": n}}
+        assert fan.write(frame)
+        _await_frame_count(healthy, n + 1)
+        if not fan.contains(slow):
+            return n
+    raise AssertionError("slow peer never overflowed")
 
 
 class PipeClient:
@@ -50,13 +92,28 @@ class PipeClient:
         return self.frames.get(timeout=5)
 
 
+class _SocketWS:
+    """ASGI-ws stand-in: send goes to the socketpair (or never completes when client is None);
+    close records its code."""
+    def __init__(self, client=None):
+        self.client, self.close_codes = client, []
+
+    async def send_text(self, payload):
+        if self.client is None:
+            await asyncio.Event().wait()
+        await self.client.send_text(payload)
+
+    async def close(self, code=1000):
+        self.close_codes.append(code)
+
+
 class SocketClient(WSTransport):
     """Real WSTransport with its ASGI send backed by a kernel socketpair."""
     def __init__(self, stack, *, reading=True):
         self.reader, self.writer = socket.socketpair()
         self.writer.setblocking(False)
         loop = asyncio.new_event_loop()
-        super().__init__(self, loop)
+        super().__init__(_SocketWS(self), loop)
         self.writes = 0
         self.loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
         self.loop_thread.start()
@@ -112,7 +169,7 @@ def test_membership_preserves_terminal_delivery_and_revokes_departed_peers(monke
         newcomer = b if attachment == "direct" else FanoutTransport(a, b)
         assert server._attach_session_transport(session, newcomer)
         assert server._attach_session_transport(session, b)
-        for kind in ("message.start", "message.delta", "message.complete"):
+        for kind in ("message.delta", "reasoning.delta", "message.complete"):
             server._emit(kind, "fanout-invariant", {"text": "α"})
             first, second = a.receive(), b.receive()
             assert first == second
@@ -172,7 +229,7 @@ def test_membership_preserves_terminal_delivery_and_revokes_departed_peers(monke
         assert session["transport"] is server._detached_ws_transport
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("client_type", [PipeClient, SocketClient])
 @pytest.mark.parametrize("slow_first", [True, False])
 @pytest.mark.parametrize("on_loop", [True, False])
@@ -239,3 +296,43 @@ def test_backpressure_never_blocks_later_frames_or_other_subscribers(slow_first,
             fan.close()
         assert not worker.is_alive()
         assert not fan.write({"after": "close"})
+
+
+def test_overflow_closes_only_the_slow_peer_and_healthy_keeps_streaming():
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+    loop_thread.start()
+    stalled_ws = _SocketWS()  # send_text never completes: the real slow WS peer
+    slow = WSTransport(stalled_ws, loop, peer="slow")
+    healthy = RecordingTransport()
+    fan = FanoutTransport(healthy, slow)
+    try:
+        last_n = _overflow_slow_peer(fan, healthy, slow)
+        deadline = time.monotonic() + 2.0
+        while not stalled_ws.close_codes and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert stalled_ws.close_codes == [1011]  # the overflow itself aborted the socket
+        slow.abort()  # a second overflow signal must not schedule a second socket close
+        time.sleep(0.05)
+        assert stalled_ws.close_codes == [1011]
+        assert slow.closed is True
+        assert healthy.closed is False
+        assert fan.contains(healthy)
+        after = {"params": {"type": "message.complete", "n": last_n + 1}}
+        assert fan.write(after)
+        _await_frame_count(healthy, last_n + 2)
+        assert healthy.frames[-1] == after
+    finally:
+        fan.close()
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        loop.close()
+
+
+def test_fanout_close_and_detach_leave_peer_sockets_open():
+    kept, detached = RecordingTransport(), RecordingTransport()
+    fan = FanoutTransport(kept, detached)
+    assert fan.detach(detached)
+    fan.close()
+    assert kept.closed is False and detached.closed is False
+    assert not fan.contains(kept) and not fan.contains(detached)

@@ -1,13 +1,13 @@
 name: parrotnotes
 repo: https://github.com/ascetx/parrot-notes-hermes-plugin
-sha: 873cea60ea96228f1f09dc3c856b6ff07a067ec1
+sha: bf3d6fcaa8bc3fe8373b530ac4a0e71c6af53dd2
 description: 'Find, search, summarize and save insights for your ParrotNotes in-person meeting notes
   through the hosted ParrotNotes MCP server (Streamable HTTP, OAuth 2.0 + DCR), with the parrotnotes
   workflow skill bundled. Portable Agent Plugins v1 package (mcp.json + skills/).'
 maintainer: ParrotNotes
 tier: community
 category: tools
-version: "1.2.0"
+version: "1.2.1"
 docs_url: https://parrotnotes.app/docs/mcp
 platforms: []
 capabilities:

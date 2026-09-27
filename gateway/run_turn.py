@@ -1519,6 +1519,7 @@ class GatewayTurnMixin:
         logging, resume-pending clear, empty-response normalization, and identity-guarded
         post-compression session_id propagation. Returns
         ``(response, _intentional_silence, agent_messages)``."""
+        from agent.claim_gate import apply_claim_gate
         from gateway.run import (
             _is_gateway_hidden_reasoning_incomplete_turn, _normalize_empty_agent_response,
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
@@ -1576,6 +1577,9 @@ class GatewayTurnMixin:
         if not _intentional_silence:
             response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
             response = _sanitize_gateway_final_response(source.platform, response)
+            # Claim gate (#124657): an outcome assertion with no tool result in the
+            # turn gets a visible unverified caveat instead of reading as proven.
+            response = apply_claim_gate(response, agent_result.get("messages"))
 
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
         # if the binding still points at the session this run was launched against.

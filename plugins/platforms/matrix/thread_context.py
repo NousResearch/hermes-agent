@@ -94,11 +94,12 @@ async def fetch_thread_entries(
         body = body.strip()
         if edited and body.startswith("* "):
             body = body[2:].strip()
-        text = _label_body(str(content.get("msgtype") or ""), _own_text(body))
+        msgtype = str(content.get("msgtype") or "")
+        text = _label_body(msgtype, _own_text(body))
         if not text:
             continue
         sender = str(raw.get("sender") or "")
-        entry = MatrixEventContext(sender, text)
+        entry = MatrixEventContext(sender, text, is_image=msgtype == "m.image")
         cache.store(room_id, event_id, entry)
         entries.append(entry)
 

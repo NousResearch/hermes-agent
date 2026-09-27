@@ -1,23 +1,29 @@
 // @vitest-environment jsdom
+import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
+import { $settingsOwner } from '@/store/settings-scope'
 import { $chatFontFamily, resolveChatFontFamily } from '@/themes/chat-font'
 
 import { ChatFontSetting } from './chat-font-setting'
+
+const $configRevision = atom(0)
 
 const mocks = vi.hoisted(() => ({
   cache: vi.fn(),
   configUpdatedAt: 1,
   loadedConfig: {} as Record<string, unknown>,
   notifyError: vi.fn(),
-  profileSwitch: null as null | (() => void),
-  save: vi.fn(),
-  writeScope: { connectionId: 'connection-a', profile: 'default' }
+  save: vi.fn()
 }))
 
 vi.mock('@/hermes', () => ({
-  saveHermesConfig: (config: Record<string, unknown>, scope?: unknown) => mocks.save(config, scope)
+  saveHermesConfig: (...args: unknown[]) => mocks.save(...args),
+  setApiRequestProfile: vi.fn()
 }))
 
 vi.mock('@/i18n', () => ({
@@ -43,17 +49,11 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('../hooks/use-config-record', () => ({
-  setHermesConfigCache: (config: Record<string, unknown>) => mocks.cache(config),
-  useHermesConfigRecord: () => ({
-    data: mocks.loadedConfig,
-    dataUpdatedAt: mocks.configUpdatedAt,
-    writeScope: mocks.writeScope
-  })
-}))
+  hermesConfigCacheWriter: (scope: unknown) => (config: Record<string, unknown>) => mocks.cache(config, scope),
+  useHermesConfigRecord: () => {
+    useStore($configRevision)
 
-vi.mock('../hooks/use-on-profile-switch', () => ({
-  useOnProfileSwitch: (callback: () => void) => {
-    mocks.profileSwitch = callback
+    return { data: mocks.loadedConfig, dataUpdatedAt: mocks.configUpdatedAt }
   }
 }))
 
@@ -68,10 +68,11 @@ async function flushAutosave() {
 describe('ChatFontSetting', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    $activeGatewayProfile.set('default')
     mocks.configUpdatedAt = 1
     mocks.loadedConfig = { desktop: { font_family: '', repo_scan_enabled: true } }
     mocks.save.mockResolvedValue({ ok: true })
-    mocks.profileSwitch = null
+    $connection.set({ baseUrl: 'http://127.0.0.1:3000', connectionId: 'local', mode: 'local' } as never)
     $chatFontFamily.set('')
   })
 
@@ -79,6 +80,7 @@ describe('ChatFontSetting', () => {
     cleanup()
     vi.clearAllMocks()
     vi.useRealTimers()
+    $connection.set(null)
   })
 
   it('publishes the live family and persists only desktop.font_family, keeping sibling keys', async () => {
@@ -89,11 +91,12 @@ describe('ChatFontSetting', () => {
 
     await flushAutosave()
 
-    expect(mocks.save).toHaveBeenCalledWith(
-      { desktop: { font_family: 'OpenDyslexic' } },
-      { connectionId: 'connection-a', profile: 'default' }
+    const owner = $settingsOwner.get()
+    expect(mocks.save).toHaveBeenCalledWith({ desktop: { font_family: 'OpenDyslexic' } }, owner)
+    expect(mocks.cache).toHaveBeenCalledWith(
+      { desktop: { font_family: 'OpenDyslexic', repo_scan_enabled: true } },
+      owner
     )
-    expect(mocks.cache).toHaveBeenCalledWith({ desktop: { font_family: 'OpenDyslexic', repo_scan_enabled: true } })
   })
 
   it('rolls back the optimistic family when autosave fails', async () => {
@@ -110,17 +113,44 @@ describe('ChatFontSetting', () => {
     expect(mocks.notifyError).toHaveBeenCalledWith(expect.any(Error), 'Autosave failed')
   })
 
+  it('cancels a pending autosave when its settings owner is replaced', async () => {
+    render(<ChatFontSetting />)
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Chat Font' }), { target: { value: 'OpenDyslexic' } })
+    act(() => {
+      $connection.set({
+        baseUrl: 'https://replacement.example',
+        connectionId: 'replacement',
+        mode: 'remote'
+      } as never)
+    })
+    await flushAutosave()
+
+    expect(mocks.save).not.toHaveBeenCalled()
+  })
+
   it('reseeds after a profile refetch reuses the cached config record', () => {
     const sharedConfig = { desktop: { font_family: 'Avenir' } }
     mocks.loadedConfig = sharedConfig
     const view = render(<ChatFontSetting />)
 
     expect($chatFontFamily.get()).toBe('Avenir')
-    act(() => mocks.profileSwitch?.())
+    act(() => {
+      mocks.loadedConfig = undefined as never
+      $activeGatewayProfile.set('research')
+      $connection.set({
+        baseUrl: 'http://127.0.0.1:3001',
+        connectionId: 'local',
+        mode: 'local',
+        profile: 'research'
+      } as never)
+    })
     expect($chatFontFamily.get()).toBe('')
     expect((screen.getByRole('combobox', { name: 'Chat Font' }) as HTMLInputElement).disabled).toBe(true)
 
     mocks.configUpdatedAt = 2
+    mocks.loadedConfig = sharedConfig
+    act(() => $configRevision.set($configRevision.get() + 1))
     view.rerender(<ChatFontSetting />)
 
     expect((screen.getByRole('combobox', { name: 'Chat Font' }) as HTMLInputElement).value).toBe('Avenir')

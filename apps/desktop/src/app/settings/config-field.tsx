@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -37,7 +38,8 @@ export function ConfigField({
   enumOptions,
   optionLabels,
   onChange,
-  descriptionExtra
+  descriptionExtra,
+  scope
 }: {
   schemaKey: string
   schema: ConfigFieldSchema
@@ -46,6 +48,7 @@ export function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
   descriptionExtra?: ReactNode
+  scope?: ProfileScope
 }) {
   const { t } = useI18n()
   const c = t.settings.config
@@ -109,7 +112,7 @@ export function ConfigField({
   // `list` branch below would stringify them to "[object Object]". Render the
   // dedicated structured editor instead.
   if (schemaKey === 'fallback_providers') {
-    return wideRow(<FallbackModelsField onChange={onChange} value={value} />)
+    return wideRow(<FallbackModelsField onChange={onChange} scope={scope} value={value} />)
   }
 
   if (schema.type === 'boolean') {

@@ -84,7 +84,7 @@ import {
 } from './backend-ownership'
 import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
-import { recycleOwnedBackend } from './backend-recycle'
+import { recycleOwnedBackend, recyclePinnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import { createInstalledRuntimeGate } from './backend-resolution'
 import { createBackendServeSupportResolver } from './backend-serve-support'
@@ -146,12 +146,15 @@ import {
 } from './connection-caches'
 import {
   apiRequestRegistryConnectionId,
+  assertConnectionOwner,
   authModeFromStatus,
+  bindSessionRowsToRoute,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHaveSession,
+  dispatchLegacySessionRequest,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
   isGatewayAuthRejection,
@@ -170,9 +173,12 @@ import {
   profileSshOverride,
   type RegistryBackendRequestScope,
   resolveAuthMode,
+  resolveLegacyApiConnection,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRegistryApiConnection,
   resolveRemoteSshDashboardProfile,
+  resolveSettingsProfileConnection,
   resolveTestWsUrl,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
@@ -496,6 +502,7 @@ import {
   hasPinnedRegistrySessionSource,
   isAllProfilesSessionListRequest,
   pathWithRemoteOwnerScope,
+  pinnedRegistrySessionDescriptor,
   type RegistrySessionSource,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
@@ -15586,11 +15593,14 @@ ipcMain.handle('hermes:connection:for', async (event, payload) => {
   const id = registryDialConnectionId(connectionId, registry.primary)
   const spawnPriority = spawnPriorityFrom(priority)
 
-  return connectDesktopProfileRoute(
-    { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
-    spawnPriority,
-    event.sender
-  )
+  const resolve = (targetProfile: string) =>
+    connectDesktopProfileRoute({ connectionId: id, profile: targetProfile }, spawnPriority, event.sender)
+
+  const targetProfile = String(profile ?? '').trim() || 'default'
+
+  return payload && Object.hasOwn(payload, 'expectedOwner')
+    ? resolveSettingsProfileConnection(targetProfile, payload.expectedOwner, resolve)
+    : resolve(targetProfile)
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
@@ -15900,6 +15910,26 @@ const hudIpc = registerHudIpc({
 })
 
 ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
+  if (profile && typeof profile === 'object') {
+    const primaryProfile = primaryProfileKey()
+    const config = readDesktopConnectionConfig()
+    await recyclePinnedBackend(profile, {
+      registry: readDesktopConnectionsRegistry(),
+      routeOptions: profileRouteOptions(profile.profile),
+      primarySshKey: profileSshOverride(config, primaryProfile) ? sshScopeKey(primaryProfile) : sshScopeKey(null),
+      effectiveSshFingerprint: source => effectiveSshConfigFingerprint(managedSshConfig(source, profile.profile)),
+      primaryPromise: () => backendConnectionState.getPromise(),
+      pool: backendPool,
+      sshState: key => sshConnections.get(key),
+      teardownSsh: key => teardownSshConnection(key),
+      teardownPool: stopPoolBackend,
+      teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+      notifyApplied: sendConnectionApplied
+    })
+
+    return { ok: true }
+  }
+
   // Models-page recovery after a code-skew 503 (#97046): kill the owned
   // SSH serve (if any) before the local child so reconnect cannot reuse a
   // stale lockfile. Soft primary teardown keeps the renderer shell mounted.
@@ -17172,6 +17202,21 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
 
   const { pathname, searchParams } = parsed
 
+  const dispatchLegacySession = (dispatch: (connection?: any) => Promise<any>, profile = request?.profile) =>
+    dispatchLegacySessionRequest(request, profile, ensureBackend, dispatch, {
+      request: { method: request?.method, path: request?.path },
+      spawnPriority: spawnPriorityFrom(request?.priority)
+    })
+
+  const assertPinnedRegistryOwner = (sources: RegistrySessionSource[]) => {
+    if (registryConnectionId && Object.hasOwn(request, 'connectionOwner')) {
+      assertConnectionOwner(
+        request.connectionOwner,
+        pinnedRegistrySessionDescriptor(registryConnectionId, request?.profile, sources)
+      )
+    }
+  }
+
   if (method === 'GET' && pathname === '/api/profiles/sessions') {
     const remoteProfiles = configuredRemoteProfileNames()
 
@@ -17193,13 +17238,19 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       return undefined
     }
 
+    assertPinnedRegistryOwner(registrySources)
+
     const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
     if (requested !== 'all') {
-      return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
+      if (!profileHasRemoteOverride(requested)) {
+        return undefined
+      }
+
+      return dispatchLegacySession(() => remoteSessionList(requested, searchParams), requested)
     }
 
-    return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources)
+    return dispatchLegacySession(() => mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources))
   }
 
   // Batched sidebar slices. With no remote profiles the local batched endpoint
@@ -17225,15 +17276,20 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       return undefined
     }
 
-    const { recents: recentsSp, cron: cronSp, messaging: messagingSp } = buildSidebarSessionSliceParams(searchParams)
+    assertPinnedRegistryOwner(registrySources)
 
-    const [recents, cron, messaging] = await Promise.all([
-      fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources),
-      fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources),
-      fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources)
-    ])
+    return dispatchLegacySession(async () => {
+      const { recents: recentsSp, cron: cronSp, messaging: messagingSp } =
+        buildSidebarSessionSliceParams(searchParams)
 
-    return assembleSidebarSessionSlices(recents, cron, messaging)
+      const [recents, cron, messaging] = await Promise.all([
+        fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources),
+        fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources),
+        fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources)
+      ])
+
+      return assembleSidebarSessionSlices(recents, cron, messaging)
+    })
   }
 
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile
@@ -17278,9 +17334,13 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
         profile
 
       if (method === 'GET') {
-        return fetchJsonForProfile(
-          profile,
-          pathWithRemoteOwnerScope(passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname, ownerScope)
+        return dispatchLegacySession(
+          () =>
+            fetchJsonForProfile(
+              profile,
+              pathWithRemoteOwnerScope(passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname, ownerScope)
+            ),
+          profile
         )
       }
 
@@ -17290,7 +17350,13 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
         ;(body as Record<string, unknown>).profile = ownerScope
       }
 
-      return requestJsonForProfile(profile, pathname, method, body)
+      return dispatchLegacySession(
+        connection =>
+          connection
+            ? fetchJsonForBackend(connection, pathname, { body, method, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+            : requestJsonForProfile(profile, pathname, method, body),
+        profile
+      )
     }
 
     if (globalRemoteActive()) {
@@ -17299,12 +17365,18 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       const path = `${pathname}?${passthroughParams.toString()}`
 
       if (method === 'GET') {
-        return fetchJsonForProfile(null, path)
+        return dispatchLegacySession(() => fetchJsonForProfile(null, path), profile)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
 
-      return requestJsonForProfile(null, path, method, body)
+      return dispatchLegacySession(
+        connection =>
+          connection
+            ? fetchJsonForBackend(connection, path, { body, method, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
+            : requestJsonForProfile(null, path, method, body),
+        profile
+      )
     }
 
     return undefined
@@ -17320,14 +17392,18 @@ const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
 // authoritative identity — never relabel rows with the Desktop scope name.
 async function remoteSessionList(profile, searchParams) {
   const sshOverride = profileSshOverride(readDesktopConnectionConfig(), profile)
+  const connection = await ensureBackend(profile)
 
-  const data = await fetchRemoteProfileSessions(profile, searchParams, fetchJsonForProfile, {
-    remoteProfileAlias: sshOverride?.remoteProfile
-  })
+  const data = await fetchRemoteProfileSessions(
+    profile,
+    searchParams,
+    (_profile, path) => fetchJsonForBackend(connection, path, { timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }),
+    { remoteProfileAlias: sshOverride?.remoteProfile }
+  )
 
-  const rows = tagRemoteSessionRows(
-    rowsOf(data),
-    remoteProfileQueryScope(profile, sshOverride?.remoteProfile) || profile
+  const rows = bindSessionRowsToRoute(
+    tagRemoteSessionRows(rowsOf(data), remoteProfileQueryScope(profile, sshOverride?.remoteProfile) || profile),
+    connection
   )
 
   return { ...(data as any), sessions: rows }
@@ -17438,8 +17514,11 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const registrySources = registrySourcesOverride || (await pooledRegistrySessionSources())
 
   if (registrySources.length) {
-    const registryRows = await fetchRegistrySessionRows(registrySources, remoteParams, (descriptor, path) =>
-      getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
+    const registryRows = await fetchRegistrySessionRows(
+      registrySources,
+      remoteParams,
+      (descriptor, path) => getJsonForBackend(descriptor, path, { timeoutMs: 10_000 }),
+      bindSessionRowsToRoute
     )
 
     const { added } = spliceRegistrySessionRows(merged, registryRows, profileTotals)
@@ -17522,11 +17601,17 @@ async function dispatchRegistryApiRequest(
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
 
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
-      )
+  const connection: any = await resolveRegistryApiConnection(
+    request,
+    registryConnectionId,
+    (_connectionId, profile) =>
+      request?.passive
+        ? ensureRegistryBackend(registryConnectionId, profile, '', { passive: true })
+        : backendDialClaims.run(backendScopeKey(registryConnectionId, profile), () =>
+            ensureRegistryBackend(registryConnectionId, profile, '', { spawnPriority })
+          ),
+    routeProfile
+  )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
@@ -17540,7 +17625,16 @@ async function dispatchRegistryApiRequest(
   desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode)
 
   return (request?.method || 'GET').toUpperCase() === 'GET'
-    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
+    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId, rows =>
+        bindSessionRowsToRoute(
+          rows.map(row =>
+            row && typeof row === 'object' && !(row as Record<string, unknown>).profile
+              ? { ...(row as Record<string, unknown>), profile: routeProfile || 'default' }
+              : row
+          ),
+          connection
+        )
+      )
     : response
 }
 
@@ -17632,8 +17726,7 @@ async function handleHermesApiRequest(request) {
   let connection
 
   try {
-    connection = await ensureBackend(routeProfile, {
-      passive: request?.passive,
+    connection = await resolveLegacyApiConnection(request, routeProfile, ensureBackend, {
       request: { method: request?.method, path: request?.path },
       spawnPriority
     })

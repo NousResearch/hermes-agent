@@ -5,9 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPluginContext } from '@/contrib/plugin'
 import { $pluginRecords, dropPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { pluginSettingsHref } from '@/contrib/settings-pages'
-import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store/agent-plugins'
+import {
+  $agentPlugins,
+  $agentPluginsErrorOwner,
+  $agentPluginsOwner,
+  $agentPluginsProfile,
+  $agentPluginsStatus,
+  type AgentPluginRow
+} from '@/store/agent-plugins'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
-import { $settingsScopeOverride } from '@/store/settings-scope'
+import { $connection } from '@/store/session'
+import { $settingsOwner, $settingsScopeOverride } from '@/store/settings-scope'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { PluginsTab } from '../capabilities/plugins/plugins-tab'
@@ -66,7 +74,7 @@ const deferred = (): Deferred => {
 let lists: Record<string, AgentPluginRow[]> = {}
 let held: Record<string, Deferred> = {}
 
-const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+const requestGatewayImpl = async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
   const profile = String(params?.profile ?? 'default')
 
   if (method === 'plugins.manage' && params?.action === 'list') {
@@ -82,7 +90,9 @@ const requestGateway = vi.fn(async (method: string, params?: Record<string, unkn
   }
 
   return {}
-})
+}
+
+const requestGateway = vi.fn(requestGatewayImpl)
 
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
@@ -149,11 +159,22 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
   beforeEach(() => {
     lists = { default: [row('DEFAULT-ready')], 'review-b': [row('B-original')], 'review-empty': [] }
     held = {}
-    requestGateway.mockClear()
+    requestGateway.mockReset().mockImplementation(requestGatewayImpl)
     setEnvVar.mockClear()
     $agentPlugins.set([])
+    $agentPluginsErrorOwner.set(undefined)
+    $agentPluginsOwner.set(undefined)
+    $agentPluginsProfile.set(undefined)
     $agentPluginsStatus.set('idle')
     $activeGatewayProfile.set('default')
+    $connection.set({ connectionId: 'gateway-a', mode: 'local' } as never)
+    vi.stubGlobal('hermesDesktop', {
+      getConnectionFor: vi.fn(async ({ profile: targetProfile }: { profile: string }) => ({
+        connectionId: 'gateway-a',
+        mode: 'local',
+        profile: targetProfile
+      }))
+    })
     $settingsScopeOverride.set(null)
     $profiles.set([profile('default', true), profile('review-b'), profile('review-empty')])
   })
@@ -162,6 +183,8 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
     cleanup()
     disposers.splice(0).forEach(dispose => dispose())
     $settingsScopeOverride.set(null)
+    $connection.set(null)
+    vi.unstubAllGlobals()
     window.location.hash = ''
   })
 
@@ -169,8 +192,8 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
   // the user switched to while that profile's list was still loading.
   it('drops the old profile’s draft on a profile switch and never saves it into the new profile', async () => {
     renderSettings(pluginSettingsHref())
-    await waitFor(() => expect(document.querySelector('[data-tour$="review-notes"]')).toBeTruthy())
-    fireEvent.click(document.querySelector<HTMLButtonElement>('[data-tour$="review-notes"]')!)
+    await waitFor(() => expect(globalThis.document.querySelector('[data-tour$="review-notes"]')).toBeTruthy())
+    fireEvent.click(globalThis.document.querySelector<HTMLButtonElement>('[data-tour$="review-notes"]')!)
 
     const destination = await screen.findByLabelText(/Destination/)
 
@@ -209,6 +232,100 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
     expect(settingsCalls()[0]![1]).toMatchObject({ profile: 'review-b', values: { destination: 'B-EDIT' } })
   })
 
+  it('drops a draft when the exact gateway owner changes under the same profile name', async () => {
+    const ownerB = deferred()
+
+    requestGateway.mockImplementation(async (method, params) => {
+      if (method === 'plugins.manage' && params?.action === 'list') {
+        const baseUrl = ($connection.get() as { baseUrl?: string } | null)?.baseUrl
+
+        if (baseUrl === 'https://gateway-b.example') {
+          await ownerB.promise
+
+          return { plugins: [row('B-ready')] }
+        }
+
+        return { plugins: [row('A-ready')] }
+      }
+
+      return method === 'plugins.manage' && params?.action === 'settings' ? { ok: true, plugin: null } : {}
+    })
+    $connection.set({
+      baseUrl: 'https://gateway-a.example',
+      connectionId: 'same-id',
+      mode: 'remote',
+      token: 'synthetic-a'
+    } as never)
+    renderSettings(pluginSettingsHref())
+    await waitFor(() => expect(globalThis.document.querySelector('[data-tour$="review-notes"]')).toBeTruthy())
+    fireEvent.click(globalThis.document.querySelector<HTMLButtonElement>('[data-tour$="review-notes"]')!)
+    await waitFor(() => expect((screen.getByLabelText(/Destination/) as HTMLInputElement).value).toBe('A-ready'))
+    fireEvent.change(screen.getByLabelText(/Destination/), { target: { value: 'A-UNSAVED' } })
+    fireEvent.change(screen.getByLabelText('Token'), { target: { value: 'A-SECRET' } })
+
+    act(() => {
+      $connection.set({
+        baseUrl: 'https://gateway-b.example',
+        connectionId: 'same-id',
+        mode: 'remote',
+        token: 'synthetic-b'
+      } as never)
+    })
+
+    expect((screen.queryByLabelText(/Destination/) as HTMLInputElement | null)?.value ?? '').not.toBe('A-UNSAVED')
+    expect((screen.queryByLabelText('Token') as HTMLInputElement | null)?.value ?? '').toBe('')
+
+    await act(async () => {
+      ownerB.resolve(undefined)
+      await ownerB.promise
+    })
+    await waitFor(() => expect((screen.getByLabelText(/Destination/) as HTMLInputElement).value).toBe('B-ready'))
+    expect(settingsCalls()).toEqual([])
+    expect(setEnvVar).not.toHaveBeenCalled()
+  })
+
+  it('never continues an in-flight save on a replacement gateway with the same profile name', async () => {
+    const secretWrite = deferred()
+
+    requestGateway.mockImplementation(async (method, params) =>
+      method === 'plugins.manage' && params?.action === 'list'
+        ? { plugins: [row('A-ready')] }
+        : { ok: true, plugin: null }
+    )
+    setEnvVar.mockImplementationOnce(() => secretWrite.promise as Promise<{ ok: boolean }>)
+    $connection.set({
+      baseUrl: 'https://gateway-a.example',
+      connectionId: 'same-id',
+      mode: 'remote',
+      token: 'synthetic-a'
+    } as never)
+    renderSettings(pluginSettingsHref())
+    await waitFor(() => expect(globalThis.document.querySelector('[data-tour$="review-notes"]')).toBeTruthy())
+    fireEvent.click(globalThis.document.querySelector<HTMLButtonElement>('[data-tour$="review-notes"]')!)
+    await screen.findByLabelText(/Destination/)
+    const ownerA = $settingsOwner.get()
+
+    fireEvent.change(screen.getByLabelText(/Destination/), { target: { value: 'A-EDIT' } })
+    fireEvent.change(screen.getByLabelText('Token'), { target: { value: 'A-SECRET' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+    await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('REVIEW_TOKEN', 'A-SECRET', ownerA))
+
+    act(() => {
+      $connection.set({
+        baseUrl: 'https://gateway-b.example',
+        connectionId: 'same-id',
+        mode: 'remote',
+        token: 'synthetic-b'
+      } as never)
+    })
+    await act(async () => {
+      secretWrite.resolve({ ok: true })
+      await secretWrite.promise
+    })
+    await waitFor(() => expect(screen.queryByDisplayValue('A-EDIT')).toBeNull())
+    expect(settingsCalls()).toEqual([])
+  })
+
   // P1: the Capabilities gear carries the profile Capabilities had selected,
   // and Settings opens (and saves) THAT profile — not its own scope.
   it('opens the gear’s page for the profile selected in Capabilities', async () => {
@@ -239,8 +356,8 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
   // user can switch back.
   it('keeps the profile selector on the overview when the selected profile lacks the plugin', async () => {
     renderSettings(pluginSettingsHref())
-    await waitFor(() => expect(document.querySelector('[data-tour$="review-notes"]')).toBeTruthy())
-    fireEvent.click(document.querySelector<HTMLButtonElement>('[data-tour$="review-notes"]')!)
+    await waitFor(() => expect(globalThis.document.querySelector('[data-tour$="review-notes"]')).toBeTruthy())
+    fireEvent.click(globalThis.document.querySelector<HTMLButtonElement>('[data-tour$="review-notes"]')!)
     await screen.findByLabelText(/Destination/)
 
     fireEvent.click(chip('review-empty')!)
@@ -249,7 +366,7 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
 
     expect(chip('default')).toBeTruthy()
     fireEvent.click(chip('default')!)
-    await waitFor(() => expect(document.querySelector('[data-tour$="review-notes"]')).toBeTruthy())
+    await waitFor(() => expect(globalThis.document.querySelector('[data-tour$="review-notes"]')).toBeTruthy())
   })
 
   // P2: desktop plugin `agent` registering page `notes` must not share an
@@ -273,7 +390,7 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
     renderSettings(pluginSettingsHref())
     await waitFor(() => expect(screen.getAllByRole('button', { name: /notes/ }).length).toBeGreaterThan(1))
 
-    const ids = [...document.querySelectorAll('[data-tour^="nav-plugins:"]')].map(el => el.getAttribute('data-tour'))
+    const ids = [...globalThis.document.querySelectorAll('[data-tour^="nav-plugins:"]')].map(el => el.getAttribute('data-tour'))
 
     expect(new Set(ids).size).toBe(ids.length)
 

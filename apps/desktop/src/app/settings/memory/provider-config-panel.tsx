@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/hermes'
+import { getMemoryProviderConfig, profileScopeKey, saveMemoryProviderConfig } from '@/hermes'
+import type { ProfileScope } from '@/hermes'
 import { SlidersHorizontal } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
@@ -20,27 +21,47 @@ function seedValues(config: MemoryProviderConfig): Record<string, string> {
   )
 }
 
-export function ProviderConfigPanel({ profile, provider }: { profile?: string; provider: string }) {
+export function ProviderConfigPanel({ profile, provider }: { profile?: ProfileScope; provider: string }) {
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
   const [loadError, setLoadError] = useState<null | string>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [saved, setSaved] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState(true)
   const [showModal, setShowModal] = useState(false)
+  const ownerKey = profileScopeKey(profile)
+  const ownerKeyRef = useRef(ownerKey)
+  const mountedRef = useRef(true)
+  ownerKeyRef.current = ownerKey
+
+  // React StrictMode replays effects after cleanup; reopen this lifecycle.
+  // eslint-disable-next-line no-restricted-syntax -- mount state is not reactive routing state
+  useEffect(() => {
+    mountedRef.current = true
+
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   const refresh = useCallback(async () => {
+    const capturedOwnerKey = ownerKey
+
     try {
       const next = await getMemoryProviderConfig(provider, profile)
+
+      if (!mountedRef.current || ownerKeyRef.current !== capturedOwnerKey) {return}
       const seed = seedValues(next)
       setConfig(next)
       setValues(seed)
       setSaved(seed)
       setLoadError(null)
     } catch (err) {
-      setConfig(null)
-      setLoadError(err instanceof Error ? err.message : 'Memory provider settings failed to load')
+      if (mountedRef.current && ownerKeyRef.current === capturedOwnerKey) {
+        setConfig(null)
+        setLoadError(err instanceof Error ? err.message : 'Memory provider settings failed to load')
+      }
     }
-  }, [profile, provider])
+  }, [ownerKey, profile, provider])
 
   useEffect(() => {
     setConfig(null)
@@ -55,8 +76,12 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
         return
       }
 
+      const capturedOwnerKey = ownerKey
+
       try {
         await saveMemoryProviderConfig(provider, { [field.key]: value }, profile)
+
+        if (!mountedRef.current || ownerKeyRef.current !== capturedOwnerKey) {return}
 
         if (field.kind === 'secret') {
           setValues(current => ({ ...current, [field.key]: '' }))
@@ -71,10 +96,12 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
           setSaved(current => ({ ...current, [field.key]: value }))
         }
       } catch (err) {
-        notifyError(err, `Failed to save ${field.label}`)
+        if (mountedRef.current && ownerKeyRef.current === capturedOwnerKey) {
+          notifyError(err, `Failed to save ${field.label}`)
+        }
       }
     },
-    [profile, provider, saved]
+    [ownerKey, profile, provider, saved]
   )
 
   // Providers without a declared config surface (e.g. builtin) render nothing.

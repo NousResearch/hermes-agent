@@ -4,12 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopBootstrapEvent, DesktopBootstrapState, DesktopConnectionProbeResult } from '@/global'
 
-import { FirstRunRemoteForm } from './first-run-remote-form'
-
 import { DesktopInstallOverlay } from './desktop-install-overlay'
+import { FirstRunRemoteForm } from './first-run-remote-form'
 
 vi.mock('@/i18n', async () => {
   const { en } = await import('@/i18n/en')
+
   return { useI18n: () => ({ t: en, locale: 'en' }) }
 })
 

@@ -27,10 +27,12 @@ export function bundledRuntimeBackend({
   if (!isPackaged || platform !== 'win32') {
     return null
   }
+
   const bundle = path.join(resourcesPath, 'runtime')
   const root = path.join(bundle, 'agent')
   const command = path.join(bundle, 'python', 'python.exe')
   const manifestPath = path.join(bundle, 'manifest.json')
+
   if (
     ![
       manifestPath,
@@ -42,14 +44,19 @@ export function bundledRuntimeBackend({
   ) {
     throw new Error('Brakuje plików silnika Agenta Cześka. Zainstaluj ponownie pełny pakiet aplikacji.')
   }
+
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+
   if (manifest.schemaVersion !== 1 || manifest.platform !== platform || manifest.arch !== arch) {
     throw new Error('Pakiet silnika Agenta Cześka nie pasuje do tej wersji aplikacji.')
   }
+
   const environment = buildDesktopBackendEnv({ hermesHome, currentEnv })
+
   for (const key of Object.keys(environment)) {
-    if (key.toUpperCase() === 'PATH') delete environment[key]
+    if (key.toUpperCase() === 'PATH') {delete environment[key]}
   }
+
   return {
     kind: 'python',
     label: 'wbudowany silnik Agenta Cześka',

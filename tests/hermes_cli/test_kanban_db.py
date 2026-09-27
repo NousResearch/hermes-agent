@@ -1114,6 +1114,10 @@ class TestSharedBoardPaths:
                 self.pid = 4242
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        # _default_spawn registers the fake in the module-global live-worker
+        # registry; on Windows a later dispatch_once's reap polls every entry
+        # and dies on the missing poll(). Scope the registry to this test.
+        monkeypatch.setattr(kbd, "_live_worker_procs", {})
 
         task = kb.Task(
             id="t_dispatch_env",

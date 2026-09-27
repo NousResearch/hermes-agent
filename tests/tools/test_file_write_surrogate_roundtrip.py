@@ -5,9 +5,9 @@ subprocess — no mocks. They pin the round-trip byte contract (utf-8 +
 surrogateescape is the inverse of the decode that produced the content) and
 the always-close / error-capture guarantees of the writer thread.
 """
-import shlex
 import subprocess
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,8 +19,15 @@ from tools.file_operations import ShellFileOperations
 
 def _cat_to_file_proc(out_path):
     """A real child that copies its stdin to a file, byte for byte."""
+    out = Path(out_path)
+    # The target is a bare relative filename with the child cwd'd to its
+    # parent: a Windows path inside the -c string is parsed by bash as a
+    # relative POSIX path (the file lands mangled in the caller's cwd), and
+    # -c positional args are dropped when a native Windows parent spawns
+    # MSYS bash.
     return subprocess.Popen(
-        ["bash", "-c", f"cat > {shlex.quote(str(out_path))}"],
+        ["bash", "-c", f"cat > {out.name}"],
+        cwd=str(out.parent),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -190,12 +197,7 @@ class TestPipeStdinRemainingBranches:
 
     def test_bytes_input_passes_through_untouched(self, tmp_path):
         out = tmp_path / "out.bin"
-        proc = subprocess.Popen(
-            ["bash", "-c", f"cat > {shlex.quote(str(out))}"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True,
-            encoding="utf-8", errors="replace",
-        )
+        proc = _cat_to_file_proc(out)
         try:
             _pipe_stdin(proc, b"\x00\x01\xfe")
             _wait_or_kill(proc)

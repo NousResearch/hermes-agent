@@ -47,6 +47,10 @@ def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = is_tty
     monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+    # On Windows interactivity is confirmed by GetConsoleMode on the real
+    # stdin handle, which a MagicMock can never satisfy — pin the console
+    # check to agree with the faked TTY.
+    monkeypatch.setattr("tools.mcp_oauth._stdin_is_console", lambda: is_tty)
 
 
 def _hit_callback_when_ready(url: str, timeout: float = 15.0) -> None:
@@ -692,9 +696,7 @@ class TestIsInteractive:
     def test_suppress_interactive_oauth_disables_stdin_prompts(self, monkeypatch):
         import tools.mcp_oauth as mod
 
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        _set_interactive_stdin(monkeypatch)
 
         assert _is_interactive() is True
         with mod.suppress_interactive_oauth():
@@ -711,9 +713,7 @@ class TestIsInteractive:
         import threading
         import tools.mcp_oauth as mod
 
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        _set_interactive_stdin(monkeypatch)
 
         loop = asyncio.new_event_loop()
         loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -966,6 +966,9 @@ class TestWaitForCallbackPasteIntegration:
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = True
         monkeypatch.setattr(mod.sys, "stdin", mock_stdin)
+        # Pin the Windows console check too, so the raise below is exercised
+        # by the suppression and not by an already-non-interactive stdin.
+        monkeypatch.setattr("tools.mcp_oauth._stdin_is_console", lambda: True)
 
         async def instant_sleep(_):
             pass

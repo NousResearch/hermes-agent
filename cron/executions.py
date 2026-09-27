@@ -280,6 +280,26 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
     return record
 
 
+def discard_unstarted_execution(execution_id: str) -> bool:
+    """Delete only this process's exact never-started claimed placeholder.
+
+    A built-in scheduler tick creates an audit row before attempting the durable
+    fire claim. When another live invocation already owns that claim, no work
+    started and the loser is expected single-flight contention, not a failed
+    execution. The owner/status/start fences make this compare-and-delete safe:
+    anything foreign, handed off, started, or terminal remains immutable
+    diagnostic evidence.
+    """
+    with _transaction() as conn:
+        cur = conn.execute(
+            """DELETE FROM executions
+               WHERE id=? AND status='claimed' AND started_at IS NULL
+                 AND handoff_pending=0 AND process_id=? AND pid=?""",
+            (execution_id, _PROCESS_ID, os.getpid()),
+        )
+        return cur.rowcount == 1
+
+
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
     delivery_outcome: Optional[str] = None,

@@ -2,6 +2,7 @@
 explicit resets and the dynamic "Current Session Context" system prompt section."""
 
 import asyncio
+import dataclasses
 import hashlib
 import logging
 import os
@@ -1304,6 +1305,12 @@ def build_session_context(
     source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None
 ) -> SessionContext:
     """Build a full session context (for system prompt injection)."""
+    origin = session_entry.origin if session_entry else None
+    if source.platform == Platform.MATRIX and origin is not None:
+        pinned_user_name = origin.user_name if source.user_id == origin.user_id else source.user_name
+        source = dataclasses.replace(
+            source, chat_name=origin.chat_name, chat_topic=origin.chat_topic, user_name=pinned_user_name,
+        )
     connected = config.get_connected_platforms()
     shared = is_shared_multi_user_session(
         source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),

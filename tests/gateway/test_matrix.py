@@ -596,6 +596,97 @@ async def test_unnamed_room_excludes_invited_member_from_display_name():
     )
 
 
+@pytest.mark.asyncio
+async def test_room_metadata_changes_keep_prompt_and_agent_signature():
+    from dataclasses import replace
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, build_session_context, build_session_context_prompt
+
+    adapter = _make_adapter()
+    room_id = "!room:example.org"
+    adapter._user_id = "@bot:example.org"
+    adapter._joined_rooms = {room_id}
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
+    members = [
+        "@bot:example.org", "@alice:example.org", "@bob:example.org",
+    ]
+    adapter._client.state_store.get_members = AsyncMock(side_effect=lambda room, **kwargs: members)
+    names = {"@bot:example.org": "Hermes", "@alice:example.org": "Alice", "@bob:example.org": "Bob"}
+    adapter._client.state_store.get_member_profiles = AsyncMock(side_effect=lambda room, **kwargs: {
+        user_id: types.SimpleNamespace(displayname=name) for user_id, name in names.items()
+    })
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._background_read_receipt = MagicMock()
+    adapter._require_mention = False
+    adapter._matrix_session_scope = "room"
+
+    first = await adapter._resolve_message_context(
+        room_id, "@alice:example.org", "$first", "hello", {"body": "hello"}, {},
+    )
+    first_source = first[-1]
+    session = types.SimpleNamespace(
+        origin=SessionSource.from_dict(first_source.to_dict()),
+        session_key="matrix-room", session_id="session-1",
+        created_at=None, updated_at=None,
+    )
+
+    names["@bob:example.org"] = "Robert"
+    await adapter._on_room_state(types.SimpleNamespace(
+        room_id=room_id, sender="@bob:example.org", state_key="@bob:example.org",
+        type="m.room.member", content={"membership": "join", "displayname": "Robert"}, timestamp=0,
+    ))
+    second = await adapter._resolve_message_context(
+        room_id, "@alice:example.org", "$second", "again", {"body": "again"}, {},
+    )
+    second_source = second[-1]
+
+    def prompt_and_signature(source):
+        context = build_session_context(source, GatewayConfig(), session)
+        prompt = build_session_context_prompt(context)
+        signature = GatewayRunner._agent_config_signature("fake-model", {}, [], prompt)
+        change_key = GatewayRunner._ephemeral_change_key(context, False)
+        return prompt, change_key, signature
+
+    first_prompt, first_change_key, first_signature = prompt_and_signature(first_source)
+    assert prompt_and_signature(second_source) == (first_prompt, first_change_key, first_signature)
+    assert "Robert" in adapter._pending_room_notes.take(room_id)
+
+    members.append("@cara:example.org")
+    names["@cara:example.org"] = "Cara"
+    await adapter._on_room_state(types.SimpleNamespace(
+        room_id=room_id, sender="@cara:example.org", state_key="@cara:example.org",
+        type="m.room.member", content={"membership": "join", "displayname": "Cara"}, timestamp=0,
+    ))
+    third = await adapter._resolve_message_context(
+        room_id, "@alice:example.org", "$third", "again", {"body": "again"}, {},
+    )
+
+    assert prompt_and_signature(third[-1]) == (first_prompt, first_change_key, first_signature)
+    assert "Cara" in adapter._pending_room_notes.take(room_id)
+
+    explicit = replace(
+        first_source, chat_name="Initial name", chat_topic="Initial topic",
+    )
+    session.origin = explicit
+    renamed = replace(explicit, chat_name="New name", chat_topic="New topic")
+    assert prompt_and_signature(renamed) == prompt_and_signature(explicit)
+
+    for event_type, content in (
+        ("m.room.name", {"name": "New name"}),
+        ("m.room.topic", {"topic": "New topic"}),
+    ):
+        await adapter._on_room_state(types.SimpleNamespace(
+            room_id=room_id, sender="@bob:example.org", type=event_type,
+            content=content, timestamp=0,
+        ))
+    note = adapter._pending_room_notes.take(room_id)
+    assert "New name" in note and "New topic" in note
+
+
 def test_pending_room_notes_coalesce_changes_and_bound_rooms():
     from plugins.platforms.matrix.room_context import PendingRoomNotes, RoomStateNote
 

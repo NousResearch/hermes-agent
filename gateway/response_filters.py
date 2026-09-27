@@ -110,6 +110,12 @@ def display_kind_for_event(event: Any) -> str | None:
     """
     if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
         return INTERNAL_NOTIFICATION_DISPLAY_KIND
+    if getattr(event, "_goal_continuation", False):
+        # A /goal continuation prompt is self-injected machinery like a scheduled heartbeat, but
+        # it must never persist (or render) as an authored user turn: ``hidden`` keeps the row out
+        # of every surface's user column and out of authored-turn counting (#125477), while the
+        # model still sees role/content unchanged on the wire.
+        return "hidden"
     return None
 
 

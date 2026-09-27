@@ -311,7 +311,13 @@ class GatewayGoalsMixin:
             adapter = self._delivery_adapter_for(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
-                self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
+                event = self._synthetic_prompt_event(source, prompt)
+                # Persisted-provenance flag, read by display_kind_for_event exactly like the
+                # heartbeat's ``_heartbeat_session_id``: the continuation is self-injected
+                # machinery, never an authored user turn (#125477). The event itself stays
+                # non-internal so authorization and the emergency stop still apply.
+                event._goal_continuation = True
+                self._enqueue_fifo(_quick_key, event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 

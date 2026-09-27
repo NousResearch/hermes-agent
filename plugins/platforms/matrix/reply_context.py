@@ -193,22 +193,25 @@ class MatrixEventContextCache:
         if client is None:
             return cached
 
+        def current_cached() -> MatrixEventContext | None:
+            current = self._entries.get(key)
+            return current if current is not None and not current.redacted else None
+
         try:
             path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(event_id, safe='')}"
             raw = await asyncio.wait_for(client.api.request(Method.GET, path), self.timeout_seconds)
             if not isinstance(raw, dict) or raw.get("event_id") != event_id or raw.get("room_id", room_id) != room_id:
-                return cached
+                return current_cached()
             state = await effective_event(client, raw)
             if state.redacted:
                 self.redact(room_id, event_id)
                 return None
             if state.content is None:
-                return cached
+                return current_cached()
             content = state.content
         except Exception as exc:
             logger.debug("Matrix: could not resolve reply target %s in %s: %s", event_id, room_id, exc)
-            current = self._entries.get(key)
-            return current if current is not None and not current.redacted else None
+            return current_cached()
 
         sender = str(raw.get("sender") or "")
         body = content.get("body")

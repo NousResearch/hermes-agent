@@ -1,5 +1,6 @@
 """Matrix history exposes the current event state without changing event identity."""
 
+import asyncio
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -389,3 +390,58 @@ async def test_reply_target_uses_raw_aggregated_state_and_blocks_redacted_origin
 
     assert (edited, redacted) == (MatrixEventContext(SENDER, "after"), None)
     client.get_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reply_refetch_does_not_restore_text_redacted_during_decryption():
+    started = asyncio.Event()
+    release = asyncio.Event()
+    cache = MatrixEventContextCache()
+    cache.store(ROOM, "$image", MatrixEventContext(SENDER, "[Image]", is_image=True))
+
+    async def decrypt(_client, _raw):
+        started.set()
+        await release.wait()
+        return None, {"event_id": "$image", "error": "missing decryption keys"}
+
+    encrypted = {
+        "room_id": ROOM, "event_id": "$image", "sender": SENDER,
+        "type": "m.room.encrypted", "content": {"ciphertext": "encrypted"},
+    }
+    client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value=encrypted)), crypto=None)
+    with patch("plugins.platforms.matrix.effective_event._decrypt", side_effect=decrypt):
+        pending = asyncio.create_task(cache.resolve(client, ROOM, "$image", AsyncMock(return_value=None)))
+        await started.wait()
+        cache.redact(ROOM, "$image")
+        release.set()
+        result = await pending
+
+    assert result is None
+    assert cache.history_entry(ROOM, "$image") == MatrixEventContext(SENDER, "", redacted=True)
+
+
+@pytest.mark.asyncio
+async def test_thread_root_fetch_failure_uses_redaction_received_during_request():
+    started = asyncio.Event()
+    release = asyncio.Event()
+    cache = MatrixEventContextCache()
+    cache.store(ROOM, "$root", MatrixEventContext(SENDER, "Before redaction"))
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"events_before": []}
+        if "/event/" in path:
+            started.set()
+            await release.wait()
+            raise RuntimeError("root fetch failed")
+        raise AssertionError(path)
+
+    client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)))
+    pending = asyncio.create_task(fetch_thread_entries(
+        client, cache, ROOM, "$root", limit=1, before_event_id="$current",
+    ))
+    await started.wait()
+    cache.redact(ROOM, "$root")
+    release.set()
+
+    assert await pending == [MatrixEventContext(SENDER, "", redacted=True)]

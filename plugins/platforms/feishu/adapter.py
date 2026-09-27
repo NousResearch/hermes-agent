@@ -22,6 +22,7 @@ from pm import install_hint
 import asyncio
 import collections
 import concurrent.futures
+import contextlib
 import contextvars
 import hashlib
 import hmac
@@ -318,6 +319,7 @@ class FeishuAdapterSettings:
     default_group_policy: str = ""
     group_rules: dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
+    bot_mention_map: Dict[str, str] = field(default_factory=dict)  # name -> open_id, outbound "@name"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
 
@@ -438,14 +440,92 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     return default if parsed is None else parsed
 
 
+# --- Outbound mentions ---
+#
+# A plain-text "@Name" is just characters to Feishu: the platform pushes a group message to another
+# bot only when it carries a real mention, and a peer bot admitting bots only on mention
+# (``FEISHU_ALLOW_BOTS=mentions``) drops it otherwise. So outbound text cannot address a peer bot by
+# name. The adapter rewrites "@<configured name>" into a placeholder before chunking, and the post
+# builder resolves each placeholder into an ``at`` element carrying the mapped open_id. With no map
+# configured the rendered payload is unchanged.
+
+_MENTION_PLACEHOLDER_RE_OUT = re.compile(r"@_mention_(\d+)")
+
+
+def _parse_bot_mention_map(raw: Any) -> Dict[str, str]:
+    """Parse ``{name: open_id}`` out of the YAML mapping, the env string, or that string as JSON.
+
+    The env spelling is ``FEISHU_BOT_MENTION_MAP="Name=ou_x,Other=ou_y"``; ``feishu.bot_mention_map``
+    in ``config.yaml`` is a plain mapping. Malformed entries are dropped with a warning: one typo must
+    not disable the rest of the map.
+    """
+    if isinstance(raw, dict):
+        entries = [(str(name), str(open_id)) for name, open_id in raw.items()]
+    else:
+        text = str(raw or "").strip()
+        if not text:
+            return {}
+        decoded: Any = None
+        if text.startswith("{"):
+            with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
+                decoded = json.loads(text)
+        if isinstance(decoded, dict):
+            entries = [(str(name), str(open_id)) for name, open_id in decoded.items()]
+        else:
+            entries = []
+            for pair in text.split(","):
+                pair = pair.strip()
+                if not pair:
+                    continue
+                if "=" not in pair:
+                    logger.warning("[Feishu] Ignoring malformed bot_mention_map entry: %r", pair)
+                    continue
+                name, open_id = (part.strip() for part in pair.split("=", 1))
+                entries.append((name, open_id))
+    mapping: Dict[str, str] = {}
+    for name, open_id in entries:
+        name, open_id = name.strip(), open_id.strip()
+        if not name or not open_id:
+            logger.warning("[Feishu] Ignoring bot_mention_map entry without both name and open_id: %r", (name, open_id))
+            continue
+        mapping[name] = open_id
+    return mapping
+
+
+def _split_mention_row(
+    segment: str, mention_ids: Optional[List[str]] = None
+) -> List[Dict[str, str]]:
+    """Split a post row at outbound mention placeholders into mixed elements.
+
+    A real mention must be an ``at`` element (``{"tag": "at", "user_id": <open_id>}``); the
+    surrounding markdown stays in ``md`` elements so rendering is preserved.
+    """
+    if not mention_ids:
+        return [{"tag": "md", "text": segment}]
+    parts: List[Dict[str, str]] = []
+    pos = 0
+    for match in _MENTION_PLACEHOLDER_RE_OUT.finditer(segment):
+        if match.start() > pos:
+            parts.append({"tag": "md", "text": segment[pos : match.start()]})
+        idx = int(match.group(1))
+        if 0 <= idx < len(mention_ids):
+            parts.append({"tag": "at", "user_id": mention_ids[idx]})
+        pos = match.end()
+    if pos < len(segment):
+        parts.append({"tag": "md", "text": segment[pos:]})
+    return parts or [{"tag": "md", "text": segment}]
+
+
 # --- Post payload builders and parsers ---
 
-def _build_markdown_post_payload(content: str) -> str:
-    rows = _build_markdown_post_rows(content)
+def _build_markdown_post_payload(content: str, *, mention_ids: Optional[List[str]] = None) -> str:
+    rows = _build_markdown_post_rows(content, mention_ids=mention_ids)
     return json.dumps({"zh_cn": {"content": rows}}, ensure_ascii=False)
 
 
-def _build_markdown_post_rows(content: str) -> list[list[dict[str, str]]]:
+def _build_markdown_post_rows(
+    content: str, *, mention_ids: Optional[List[str]] = None
+) -> list[list[dict[str, str]]]:
     """Build Feishu post rows, giving each fenced code block its own row.
 
     Feishu's `md` renderer can swallow trailing content when a fence sits inside one
@@ -454,7 +534,7 @@ def _build_markdown_post_rows(content: str) -> list[list[dict[str, str]]]:
     if not content:
         return [[{"tag": "md", "text": ""}]]
     if "```" not in content:
-        return [[{"tag": "md", "text": content}]]
+        return [_split_mention_row(content, mention_ids)]
 
     rows: list[list[dict[str, str]]] = []
     current: list[str] = []
@@ -464,7 +544,7 @@ def _build_markdown_post_rows(content: str) -> list[list[dict[str, str]]]:
         nonlocal current
         segment = "\n".join(current)
         if segment.strip():
-            rows.append([{"tag": "md", "text": segment}])
+            rows.append(_split_mention_row(segment, mention_ids))
         current = []
 
     for raw_line in content.splitlines():
@@ -1384,6 +1464,17 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             allow_bots = "none"
 
+        # Scoped read: the map is structured, so the YAML mapping reaches a multiplexed secondary
+        # profile through ``extra`` and an explicit env var is read in that profile's own scope.
+        bot_mention_map = _parse_bot_mention_map(
+            _shared_extra_or_secret(extra, "bot_mention_map", "FEISHU_BOT_MENTION_MAP", "")
+        )
+        if bot_mention_map:
+            logger.info(
+                "[Feishu] bot_mention_map: %d name(s) -> %s",
+                len(bot_mention_map), ", ".join(sorted(bot_mention_map)),
+            )
+
         allow_all_dm = any(
             _secret(var).lower() in {"true", "1", "yes"} for var in ("FEISHU_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
         )
@@ -1414,7 +1505,8 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
             admins=frozenset(_id_set(extra.get("admins", []))),
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
-            group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
+            group_rules=group_rules, allow_bots=allow_bots, bot_mention_map=bot_mention_map,
+            allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
         )
 
@@ -1666,18 +1758,21 @@ class FeishuAdapter(BasePlatformAdapter):
         prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
         last_response = None
 
-        async def _send_plain(chunk: str) -> Any:
+        async def _send_plain(chunk: str, mention_ids: List[str], mention_names: List[str]) -> Any:
             return await self._feishu_send_with_retry(
                 chat_id=chat_id,
                 msg_type="text",
-                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                payload=json.dumps({"text": self._restore_mention_text(chunk, mention_ids, mention_names)}, ensure_ascii=False),
                 reply_to=reply_to,
                 metadata=metadata,
             )
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
+                # Per chunk, not per message: a placeholder split across the truncation boundary
+                # would ship verbatim, so each chunk re-resolves the "@Name" spans it still holds.
+                chunk, mention_ids, mention_names = self._extract_mentions(chunk)
+                msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post, mention_ids=mention_ids)
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
@@ -1686,14 +1781,14 @@ class FeishuAdapter(BasePlatformAdapter):
                     if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
                     logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await _send_plain(chunk)
+                    response = await _send_plain(chunk, mention_ids, mention_names)
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await _send_plain(chunk)
+                    response = await _send_plain(chunk, mention_ids, mention_names)
                 last_response = response
 
             return self._finalize_send_result(last_response, "send failed")
@@ -3617,7 +3712,53 @@ class FeishuAdapter(BasePlatformAdapter):
         return lock
 
     # --- Outbound payload construction and send pipeline ---
-    def _build_outbound_payload(self, content: str, *, prefer_post: bool = False) -> tuple[str, str]:
+    def _extract_mentions(self, content: str) -> tuple[str, List[str], List[str]]:
+        """Upgrade outbound "@<configured name>" text into real Feishu mentions.
+
+        Feishu only pushes a group message to another bot when the message carries a real mention —
+        plain text "@Name" is just characters, and a peer bot that admits bots on mention only
+        (``FEISHU_ALLOW_BOTS=mentions``) would reject it. Names come from ``feishu.bot_mention_map``
+        / ``FEISHU_BOT_MENTION_MAP``; each matched span is replaced with an ``@_mention_N``
+        placeholder that ``_build_outbound_payload`` resolves into an ``at`` post element.
+
+        Returns ``(content, open_ids, names)``.
+        """
+        mentions = getattr(self, "_bot_mention_map", None) or {}
+        if not mentions or "@" not in content:
+            return content, [], []
+        names = sorted(mentions, key=len, reverse=True)  # longest first: "@Default Hermes" beats "@Default"
+        pattern = re.compile(
+            r"@(" + "|".join(re.escape(name) for name in names) + r")(?![\w\u4e00-\u9fff])"
+        )
+        mention_ids: List[str] = []
+        mention_names: List[str] = []
+
+        def _sub(match: "re.Match[str]") -> str:
+            idx = len(mention_ids)
+            name = match.group(1)
+            mention_ids.append(mentions[name])
+            mention_names.append(name)
+            return f"@_mention_{idx}"
+
+        return pattern.sub(_sub, content), mention_ids, mention_names
+
+    @staticmethod
+    def _restore_mention_text(
+        chunk: str, mention_ids: List[str], mention_names: List[str]
+    ) -> str:
+        """Reverse ``_extract_mentions`` placeholders for the text fallback path.
+
+        Plain text cannot carry mentions, so a payload the API rejected degrades to the original
+        ``@Name`` spelling rather than shipping a raw ``@_mention_0``.
+        """
+        text = _strip_markdown_to_plain_text(chunk)
+        for idx, name in enumerate(mention_names):
+            text = text.replace(f"@_mention_{idx}", f"@{name}")
+        return text
+
+    def _build_outbound_payload(
+        self, content: str, *, prefer_post: bool = False, mention_ids: Optional[List[str]] = None,
+    ) -> tuple[str, str]:
         # Feishu clients render markdown tables inside ``post`` ``md`` elements natively, so tables
         # take the common markdown path (no text downgrade). ``prefer_post`` lets ``send`` keep every
         # chunk of a split markdown reply as ``post`` even when a chunk alone looks like prose.
@@ -3626,8 +3767,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # lets ``send`` treat the chunk as part of a larger markdown document: when a long markdown reply is
         # split at MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise mis-classify a plain-prose chunk
         # as ``text``. See #26841.
-        if prefer_post or _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
+        if mention_ids or prefer_post or _MARKDOWN_HINT_RE.search(content):
+            return "post", _build_markdown_post_payload(content, mention_ids=mention_ids)
         return "text", json.dumps({"text": content}, ensure_ascii=False)
 
     @staticmethod
@@ -4467,7 +4608,13 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins) and
     seed ``extra.allow_bots`` so a multiplexed secondary profile's adapter reads its own value."""
     seeded = _apply_yaml_bridge(feishu_cfg, (("allow_bots", "FEISHU_ALLOW_BOTS", "lower"),))
-    return {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else None
+    extra = {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else {}
+    # ``bot_mention_map`` is structured (name -> open_id) and has no env spelling of equal fidelity, so
+    # it is seeded into ``extra`` only: every profile's adapter reads its own mapping, and no
+    # process-wide env value can leak one profile's map into another's outbound mentions.
+    if isinstance(feishu_cfg.get("bot_mention_map"), dict):
+        extra["bot_mention_map"] = feishu_cfg["bot_mention_map"]
+    return extra or None
 
 
 

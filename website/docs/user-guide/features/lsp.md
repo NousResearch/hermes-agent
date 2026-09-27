@@ -259,6 +259,9 @@ lsp:
 * `command: [bin, ...args]` — pin a custom binary path. Bypasses
   auto-install.
 * `env: {KEY: value}` — extra env vars passed to the spawned process.
+  Servers and the npm / `go install` auto-installers start from Hermes'
+  scrubbed child environment (no gateway tokens or provider API keys),
+  so a server that needs one of those gets it only through this key.
 * `initialization_options: {...}` — merged into the LSP
   `initializationOptions` payload sent in the `initialize`
   handshake. Server-specific; consult the language server's docs.

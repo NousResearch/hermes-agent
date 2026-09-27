@@ -3448,15 +3448,22 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
-    command = [
-        sys.executable,
-        "-m",
-        "cron.scheduler",
-        "--external-worker-file",
-        str(payload_path),
-        "--ack-file",
-        str(ack_path),
-    ]
+    # `-m cron.scheduler` skipped hermes_bootstrap entirely, so the worker never ran
+    # `activate_dependencies()` (PM's dependency-generation activation) the way every other
+    # entry point does. On a host where the gateway's own third-party deps (e.g. `ruamel.yaml`)
+    # live in a PM-managed generation rather than the interpreter's own site-packages, the worker
+    # died importing `cron` with `ModuleNotFoundError`. `runtime_command()` is the same
+    # bootstrapped launcher every other Hermes entry point uses (store Python + `hermes_bootstrap`
+    # + PM activation before the target module runs), so build the worker's argv from it instead
+    # of a bare `-m` invocation.
+    from hermes_cli._launchers import runtime_command
+
+    worker_repo_root = Path(__file__).resolve().parent.parent
+    command = runtime_command(
+        worker_repo_root,
+        ["--external-worker-file", str(payload_path), "--ack-file", str(ack_path)],
+        module="cron.scheduler",
+    )
 
     from agent.secret_scope import (
         build_profile_secret_scope,
@@ -3536,10 +3543,13 @@ def _launch_external_cron_worker(job: dict) -> bool:
         "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
-    # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
-    # (PYTHONSAFEPATH / stale editable mapping, #112729). See cron/scheduler_worker_env.py.
+    # `command` now runs under `runtime_command()`'s `-I` bootstrap (see above), which ignores
+    # PYTHONPATH entirely and inserts the checkout root into sys.path itself. Keep the explicit
+    # pin anyway as a defense-in-depth fallback for any code path that ends up launching the
+    # worker without that bootstrap (PYTHONSAFEPATH / stale editable mapping, #112729). See
+    # cron/scheduler_worker_env.py.
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = worker_repo_root
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

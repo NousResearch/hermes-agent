@@ -16,6 +16,17 @@ from unittest.mock import Mock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _skip_store_python_resolution(monkeypatch):
+    """`_launch_external_cron_worker` now builds its argv via `runtime_command()`, which probes
+    PM's store for a canonical interpreter. That probe walks up from the real hermes-agent
+    checkout looking for `manifest.json` and trips `home_io_guard` under this real, unfixtured
+    repo root. These tests exercise dispatch/env-sanitization, not PM's store resolution, so
+    force the `Path(sys.executable)` fallback `runtime_command()` already has for a store miss.
+    """
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _repo_root: None)
+
+
 @pytest.fixture
 def execution_ledger(tmp_path, monkeypatch):
     import cron.executions as executions

@@ -323,7 +323,7 @@ def _remove_launchd_gateway() -> bool:
     job whose plist is gone.
     """
     plists = _launchd_gateway_plists()
-    uid = os.getuid()
+    uid = os.getuid()  # windows-footgun: ok — darwin-only (called from the macOS branch)
     for plist_path in plists:
         label = plist_path.stem
         for domain in (f"gui/{uid}", f"user/{uid}"):

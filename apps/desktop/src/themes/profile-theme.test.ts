@@ -18,7 +18,7 @@ const cases = [
     b: 'catppuccin',
     junk: 'nope'
   },
-  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'system', a: 'dark', b: 'light', junk: 'dusk' }
+  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'light', a: 'dark', b: 'light', junk: 'dusk' }
 ]
 
 describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
@@ -47,16 +47,12 @@ describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
   })
 })
 
-// A fresh profile follows the OS. This defaulted to `light`, so a dark-mode
-// desktop got a white window on first launch — and, once translucency became
-// per-appearance, light's much heavier tint along with it. Main already
-// defaulted its own themeSource to 'system', so the two disagreed at boot.
 describe('a profile that has never chosen a mode', () => {
   beforeEach(() => window.localStorage.clear())
 
-  it('follows the OS rather than forcing light', () => {
-    expect(modePref.resolve('default')).toBe('system')
-    expect(modePref.resolve('work')).toBe('system')
+  it('starts in light mode', () => {
+    expect(modePref.resolve('default')).toBe('light')
+    expect(modePref.resolve('work')).toBe('light')
   })
 
   it('still honours an explicit choice', () => {

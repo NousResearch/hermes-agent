@@ -5,8 +5,9 @@ Instalacja składa się z dwóch etapów:
 
 1. Instalator Windows NSIS instaluje okno aplikacji, tworzy skrót **Agent Czesiek**
    na pulpicie i w menu Start, a po zakończeniu pozwala uruchomić program.
-2. Przy pierwszym starcie Czesiek pobiera instalator silnika przypięty do commita
-   wydania z `aievolutionpl/AGENT_CZESIEK`. Kreator przeprowadza instalację
+2. Przy pierwszym starcie Czesiek uruchamia skrypt instalacyjny dołączony do
+   aplikacji. Silnik pobiera z `aievolutionpl/AGENT_CZESIEK`, przypięty do commita
+   wydania. Kreator przeprowadza instalację
    potrzebnych narzędzi, Pythona, środowiska i zależności. Następnie użytkownik
    wybiera model i podaje własny klucz API.
 
@@ -93,3 +94,14 @@ To była próba izolowanego runtime na istniejącym Windows, nie pełny przebieg
 instalatora na czystej maszynie. Utworzony lokalnie instalator jest **niepodpisany**
 i służy do testu; nie został opublikowany w Releases. Nie sprawdzano płatnego API
 ani rzeczywistego mikrofonu w tej próbie.
+
+
+### Poprawka pierwszego startu po próbie instalacji
+
+- Skrypty instalacji są w `resources/bootstrap`, więc ich uruchomienie nie wymaga
+  pobierania z raw.githubusercontent.com (zgłoszony HTTP 429).
+- Ekran pierwszej instalacji oferuje instalację lokalną z logo Cześka.
+- Nowe profile zaczynają w jasnym motywie; zapisany wybór pozostaje zachowany.
+- Przycisk zakończenia NSIS uruchamia EXE bezpośrednio, bez zależności od skrótu
+  w menu Start. Skróty nadal są tworzone przez instalator.
+- Internet nadal jest wymagany do pobrania silnika i zależności.

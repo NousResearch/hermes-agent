@@ -335,7 +335,8 @@ async function resolveInstallScript({
   hermesHome,
   emit,
   abortSignal = null,
-  _download = downloadInstallScript
+  _download = downloadInstallScript,
+  resourcesPath = process.resourcesPath
 }) {
   if (abortSignal?.aborted) {throw new Error('bootstrap cancelled by user')}
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
@@ -347,6 +348,13 @@ async function resolveInstallScript({
     emit({ type: 'log', line: `[bootstrap] using local ${installScriptName()} at ${localScript}` })
 
     return { path: localScript, source: 'local', kind: installScriptKind() }
+  }
+
+  // Ship the installer with the app: first launch must not depend on GitHub raw limits.
+  const bundled = resourcesPath && path.join(resourcesPath, 'bootstrap', installScriptName())
+  if (bundled && fs.existsSync(bundled)) {
+    emit({ type: 'log', line: `[bootstrap] using bundled ${installScriptName()}` })
+    return { path: bundled, source: 'bundled', kind: installScriptKind() }
   }
 
   // 2. Packaged path: download from GitHub at the install stamp's ref.

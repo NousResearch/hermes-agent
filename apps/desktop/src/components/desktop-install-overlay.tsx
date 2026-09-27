@@ -408,19 +408,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             </div>
           </div>
 
-          <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            <button
-              className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover)"
-              onClick={() => setRemoteOpen(true)}
-              type="button"
-            >
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <Globe className="size-4 text-muted-foreground" />
-                <span>{copy.connectExistingTitle}</span>
-              </div>
-              <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy.connectExistingDesc}</p>
-            </button>
-
+          <div className="mt-6 grid gap-3">
             <button
               className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-wait disabled:opacity-60"
               disabled={localStarting}

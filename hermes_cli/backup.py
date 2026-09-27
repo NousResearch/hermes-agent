@@ -459,13 +459,15 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
 
 def _vanished_since_scan(abs_path: Path, exc: BaseException) -> bool:
-    """True when *exc* is ENOENT for *abs_path* and the path is really gone now.
+    """True when *exc* is ENOENT for plain file *abs_path* and the path is really gone now.
 
     A file deleted between the scan and the archive write (a pruned cron output, a finished
     process record) no longer exists to recover, so it is not an archive failure. Any other
-    error — permission, I/O, a path that still exists — stays a real failure.
+    error — permission, I/O, a path that still exists — stays a real failure, and a SQLite
+    ``*.db`` never qualifies: a missing database is an incomplete backup on every archive path.
     """
-    return isinstance(exc, FileNotFoundError) and not os.path.lexists(abs_path)
+    return (abs_path.suffix != ".db" and isinstance(exc, FileNotFoundError)
+            and not os.path.lexists(abs_path))
 
 
 def _write_zip_entries(
@@ -494,7 +496,7 @@ def _write_zip_entries(
                     # Size of what was archived: the source may be deleted right after the write.
                     total_bytes += zf.infolist()[-1].file_size
         except (PermissionError, OSError, ValueError) as exc:
-            if on_vanished is not None and abs_path.suffix != ".db" and _vanished_since_scan(abs_path, exc):
+            if on_vanished is not None and _vanished_since_scan(abs_path, exc):
                 on_vanished(rel_path)
             else:
                 on_error(rel_path, exc)
@@ -614,8 +616,8 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
             on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
             on_vanished=lambda rel: vanished.append(str(rel)))
-        # External memory-provider state never includes ``.db`` files in practice, so a
-        # straight zf.write is fine.
+        # External memory-provider files are written directly; _vanished_since_scan still
+        # refuses to excuse a missing provider-declared ``*.db``.
         for abs_path, arcname in external_to_add:
             try:
                 zf.write(abs_path, arcname=arcname)

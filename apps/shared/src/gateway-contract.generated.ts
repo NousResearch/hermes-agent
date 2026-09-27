@@ -3644,6 +3644,7 @@ export interface SessionStatusResult {
 export interface SessionHistoryParams {
   session_id: string
   profile?: string | null
+  limit?: number | null
 }
 export interface SessionHistoryResult {
   count: number

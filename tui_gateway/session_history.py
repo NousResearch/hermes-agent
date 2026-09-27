@@ -294,9 +294,13 @@ def _remember_tool_call_args(tool_calls: list, tool_call_args: dict) -> None:
             tool_call_args[tc_id] = (fn["name"], args)
 
 
-def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: bool = True) -> list[dict]:
+def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: bool = True, limit: int = 0) -> list[dict]:
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
-    so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
+    so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment.
+
+    A positive ``limit`` keeps the newest N projected messages. It windows the projection, never the input
+    rows: a tool row is labelled from the assistant row that issued the call, so cutting rows first would
+    strip ``args`` from a tool row whose call fell just outside the window."""
     from agent.history_commentary import project_history_commentary
     from session_rules.turns import withheld_prompt_text
 
@@ -370,7 +374,8 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if m.get("display_metadata"):
             msg["display_metadata"] = m["display_metadata"]
         messages.append(msg)
-    return project_history_commentary(messages, home=profile_home)
+    projected = project_history_commentary(messages, home=profile_home)
+    return projected[-limit:] if limit > 0 else projected
 
 
 def _coerce_seed_history(value: Any) -> list[dict]:

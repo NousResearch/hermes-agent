@@ -1901,7 +1901,7 @@ def _(rid, params: dict, session: dict) -> dict:
                     # use. See #87059.
                     history = [m.as_openai_message() for m in persistence.messages.read_conversation(
                         row_session, ConversationRequest(include_lineage=True, include_row_ids=True))]
-    return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
+    return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"), limit=_int_param(params, "limit", 0))})
 
 
 @_session_method("session.undo", live=True)

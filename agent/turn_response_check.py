@@ -168,6 +168,23 @@ def check_api_response(
         compression_attempts = 0
         return _verdict("break")
 
+    # Fold provider usage into compressor / anchors / session counters / state.db
+    # (agent/turn_usage.py). A rearmed budget also clears the preflight-block latch.
+    # This runs BEFORE the truncation branch (#125492): a length-stopped response is a
+    # completed, billable call even when recover_from_truncation ends the turn, and those
+    # exits never reach finalize_turn — without recording here, the most expensive
+    # failures (a call that burned the whole output budget) left no "API call #N" line
+    # and no session counters. Continuation calls re-enter this seam and count separately.
+    _usage_outcome = record_response_usage(
+        agent, response, messages=messages, api_call_count=api_call_count,
+        api_duration=api_duration, compression_attempts=compression_attempts,
+        max_compression_attempts=max_compression_attempts,
+    )
+    compression_attempts = _usage_outcome.compression_attempts
+    if _usage_outcome.rearmed:
+        _preflight_compression_blocked = False
+        _last_preflight_pressure = None
+
     if finish_reason == "length":
         _tv = recover_from_truncation(
             agent, response, finish_reason, _retry, messages=messages,
@@ -187,18 +204,6 @@ def check_api_response(
         compression_attempts = _tv.compression_attempts
         if _tv.action in ("return", "break", "continue"):
             return _verdict(_tv.action, _tv.result)
-
-    # Fold provider usage into compressor / anchors / session counters / state.db
-    # (agent/turn_usage.py). A rearmed budget also clears the preflight-block latch.
-    _usage_outcome = record_response_usage(
-        agent, response, messages=messages, api_call_count=api_call_count,
-        api_duration=api_duration, compression_attempts=compression_attempts,
-        max_compression_attempts=max_compression_attempts,
-    )
-    compression_attempts = _usage_outcome.compression_attempts
-    if _usage_outcome.rearmed:
-        _preflight_compression_blocked = False
-        _last_preflight_pressure = None
 
     _retry.has_retried_429 = False
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.

@@ -491,16 +491,15 @@ class _RunLaunch:
     declared_selected: bool
     user_message: str
     conversation_history: List[Dict[str, str]]
-    # #98619: only continuation paths that reload session history may grant wake authority —
-    # a previous_response_id continuation consumes its ResponseStore snapshot instead, and a
-    # caller-supplied conversation_history is authoritative for the turn; neither consumes a
-    # SessionDB delivery row, so both stay default-denied.
+    # #98619: wake authority only for paths that consume the SessionDB delivery row — session
+    # history reloads, or caller history that folds unconsumed rows at run start (below).
     session_history_delivery: bool
     agent_kwargs: dict  # ``_create_agent`` keyword arguments (prompt, model overrides, route, room policy)
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    fold_deliveries: bool = False  # caller history + session id: fold unconsumed delivery rows at start
 
     @property
     def approval_session_key(self) -> str:
@@ -704,12 +703,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # History loads for the session the request actually selected — including one resolved from
     # a declared X-Hermes-Session-Key, whose persisted delivery rows must reach the next
     # same-key run's context (#98619).  previous_response_id continuations keep their
-    # ResponseStore snapshot as history (they cannot consume a SessionDB delivery row and are
-    # accordingly denied wake capability in _run_agent_sync); the fresh run_id fallback has
-    # nothing persisted to load yet.  Wake authority is fixed here, before the load can
-    # overwrite ``conversation_history``: a caller-supplied history is authoritative for this
-    # turn, never consumes the SessionDB delivery row, and is denied on the same contract.
-    session_history_delivery = not previous_response_id and not conversation_history
+    # ResponseStore snapshot (they cannot consume a SessionDB delivery row and stay denied wake
+    # capability); the fresh run_id fallback has nothing persisted to load yet.  A caller-supplied
+    # history with a selected session consumes delivery rows by folding the unconsumed ones in at
+    # run start (_fold_caller_history_deliveries), so it is granted delivery too.
+    fold_deliveries = bool(conversation_history and selected_session_id and not previous_response_id)
+    session_history_delivery = not previous_response_id and (not conversation_history or fold_deliveries)
     if not conversation_history and selected_session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
     q = self._run_streams[run_id] = _RunStream()
@@ -738,7 +737,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author, fold_deliveries=fold_deliveries)
     self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
@@ -806,15 +805,9 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 profile=run.request_profile or "",
                 browser_control_principal=run.browser_control_principal,
                 browser_control_transport_family=run.browser_control_transport_family,
-                # #98619 audited opt-in: the /v1/runs session id is wake-capable only when its
-                # own continuation path reloads session history — an explicit body/chained
-                # session id or a declared X-Hermes-Session-Key conversation (both load
-                # SessionDB in _handle_runs), or the run_id fallback the client can post back
-                # as body.session_id.  A previous_response_id continuation consumes its
-                # ResponseStore snapshot instead and can never see a SessionDB delivery row,
-                # so it stays default-denied until a merge contract exists for that chain;
-                # likewise a caller-supplied conversation_history is authoritative for the
-                # turn and never reads the delivery row, so it is denied the same way.
+                # #98619: wake-capable only when the next same-id turn consumes the delivery
+                # row (session-history reload, or caller history folded at run start); a
+                # previous_response_id continuation never sees it and stays default-denied.
                 session_history_delivery="1" if run.session_history_delivery else "")
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
@@ -912,6 +905,28 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
         _retire_live_run(self, run_id)
 
 
+async def _fold_caller_history_deliveries(self, run: _RunLaunch) -> None:
+    """Fold detached delegation rows this session has not handed a caller-history run yet into
+    ``run.conversation_history`` (claimed exactly once; rows the caller already carries are
+    claimed without re-adding). Consecutive user turns are merged by the shared repair pass."""
+    db = await self._ensure_session_db_async()
+    if db is None:
+        return
+    try:
+        rows = await asyncio.to_thread(db.claim_caller_history_deliveries, run.session_id)
+    except Exception as exc:
+        logger.warning("Failed to claim delegation deliveries for %s: %s", run.session_id, exc)
+        return
+    carried = {m.get("content") for m in run.conversation_history if m.get("role") == "user"}
+    folded = [{"role": "user", "content": row["content"]} for row in rows
+              if isinstance(row["content"], str) and row["content"] not in carried]
+    if folded:
+        from agent.agent_runtime_helpers import repair_message_sequence
+        history = [*run.conversation_history, *folded]
+        repair_message_sequence(None, history)
+        run.conversation_history = history
+
+
 async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
     _redact_api_error_text = _api_server._redact_api_error_text
@@ -957,6 +972,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
             return
+        if run.fold_deliveries:
+            await _fold_caller_history_deliveries(self, run)
         with self._profile_scope(run.request_profile):
             agent = self._create_agent(
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),

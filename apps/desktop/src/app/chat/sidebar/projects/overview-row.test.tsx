@@ -180,4 +180,26 @@ describe('ProjectOverviewRow', () => {
 
     expect(onNewSession).toHaveBeenCalledWith(null)
   })
+
+  // #124808: a real project whose primary_path was never set (multi-folder /
+  // path-less explicit project) still carries repo roots. Its trunk "+" must
+  // anchor the new session at the first repo root, not pass the null wire
+  // path through — null is the reserved Home/detached signal downstream, so
+  // the click silently created a global detached session.
+  it('anchors the trunk "+" at the first repo root when the project has no primary path', () => {
+    const multi = {
+      id: 'p_multi',
+      label: 'Multi',
+      path: null,
+      repos: [{ id: 'r1', label: 'app', path: '/work/app', groups: [], sessionCount: 0 }],
+      sessionCount: 0
+    } as unknown as SidebarProjectTree
+
+    const onNewSession = vi.fn()
+
+    render(<ProjectOverviewRow onNewSession={onNewSession} project={multi} />)
+    fireEvent.click(screen.getByRole('button', { name: 'New session in Multi' }))
+
+    expect(onNewSession).toHaveBeenCalledWith('/work/app')
+  })
 })

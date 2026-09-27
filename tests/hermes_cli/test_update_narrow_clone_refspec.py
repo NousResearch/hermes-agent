@@ -94,7 +94,7 @@ def test_check_fetch_materialises_tracking_ref_on_narrow_clone(
     assert _git(clone, "rev-parse", "origin/main") == tip_sha
     assert "not found on origin" not in out
     assert "Update available" in out
-    # Widening is additive: the tag refspec the clone was pinned to survives.
+    # The fix fetches by refspec and never rewrites the remote's fetch config.
     assert any(
         line.strip().startswith("+refs/tags/v9.9.9")
         for line in _git(

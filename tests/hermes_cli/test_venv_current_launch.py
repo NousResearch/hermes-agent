@@ -1,9 +1,9 @@
-"""A launch through the venv's symlinked interpreter is current, not stale.
+"""prepare_launch() recognizes the store interpreter it would re-exec into (#122513).
 
-PM-managed venvs expose ``bin/python`` as a symlink into the store, so
-``sys.executable`` never string-equals the store path even when both point
-at the same binary. The identity check must follow symlinks, or every venv
-launch pays a pointless ``os.execv`` into isolated mode (#122513).
+PM spells the store Python through HERMES_HOME, which may contain '..', while
+the OS reports ``sys.executable`` normalized. The identity check must be
+lexical: comparing the raw spellings relaunched every child forever, and
+following symlinks would treat a venv interpreter as the store interpreter.
 """
 
 from __future__ import annotations
@@ -16,68 +16,49 @@ import pytest
 from hermes_cli import venv_sync
 
 
-def _self_checkout(tmp_path, monkeypatch):
-    root = tmp_path / "checkout"
-    root.mkdir()
-    (root / ".git").mkdir()
-    (root / "pyproject.toml").write_text("[project]\nname='example'\n")
-    (root / "install-stamp.json").write_text('{"updateMechanism": "self"}')
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
-    return root
-
-
 @pytest.fixture
-def publication(monkeypatch):
-    calls = []
-    monkeypatch.setattr(venv_sync, "publish_launchers", lambda root: calls.append(root))
-    return calls
-
-
-def test_symlinked_venv_python_is_current_and_never_relaunches(
-    tmp_path, monkeypatch, publication
-):
-    """``venv/bin/python -> store/…/bin/python3``: same binary, no re-exec."""
+def launch(tmp_path, monkeypatch):
     import pm
     from hermes_cli import _launchers
 
-    root = _self_checkout(tmp_path, monkeypatch)
-    store = tmp_path / "store" / "cpython-3.14"
-    (store / "bin").mkdir(parents=True)
-    store_python = store / "bin" / "python3"
-    store_python.write_text("#!/bin/sh\n")
-    venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    venv_python = venv_bin / "python"
+    root = tmp_path / "checkout"
+    (root / ".git").mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\nname='example'\n", encoding="utf-8")
+    (root / "install-stamp.json").write_text('{"updateMechanism": "self"}', encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    store_python = tmp_path / "store" / "cpython-3.14" / "bin" / "python3"
+    store_python.parent.mkdir(parents=True)
+    store_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    published = []
+    monkeypatch.setattr(venv_sync, "publish_launchers", published.append)
+
+    def run(*, store_spelling: Path, executable: Path):
+        monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: store_spelling)
+        monkeypatch.setattr(sys, "executable", str(executable))
+        return venv_sync.prepare_launch(root, []), published
+
+    return tmp_path, store_python, run
+
+
+def test_store_python_spelled_through_dotdot_home_is_current(launch):
+    """HERMES_HOME=<x>/work/../store...: the normalized sys.executable is the same interpreter."""
+    tmp_path, store_python, run = launch
+    dotted = tmp_path / "work" / ".." / store_python.relative_to(tmp_path)
+    (tmp_path / "work").mkdir()
+
+    assert run(store_spelling=dotted, executable=store_python) == (None, [])
+
+
+@pytest.mark.platforms("posix")
+def test_venv_python_symlinked_to_the_store_binary_still_relaunches(launch):
+    """Same binary, different interpreter: the venv carries its own sys.prefix."""
+    tmp_path, store_python, run = launch
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
     venv_python.symlink_to(store_python)
 
-    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: store_python)
-    monkeypatch.setattr(sys, "executable", str(venv_python))
-
-    assert venv_sync.prepare_launch(root, []) is None
-    assert publication == [], (
-        "a current symlinked venv launch must not republish launchers"
-    )
-
-
-def test_stale_interpreter_still_relaunches(tmp_path, monkeypatch, publication):
-    """A different binary behind the venv symlink must still re-exec into the store."""
-    import pm
-    from hermes_cli import _launchers
-
-    root = _self_checkout(tmp_path, monkeypatch)
-    store = tmp_path / "store" / "cpython-3.14"
-    (store / "bin").mkdir(parents=True)
-    store_python = store / "bin" / "python3"
-    store_python.write_text("#!/bin/sh\n")
-    other = tmp_path / "other-python"
-    other.write_text("#!/bin/sh\n")
-
-    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: store_python)
-    monkeypatch.setattr(sys, "executable", str(other))
-
-    assert venv_sync.prepare_launch(root, []) == store_python
-    assert publication == [root]
+    target, published = run(store_spelling=store_python, executable=venv_python)
+    assert target == store_python
+    assert published == [(tmp_path / "checkout").resolve()]

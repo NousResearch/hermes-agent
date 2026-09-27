@@ -2569,6 +2569,10 @@ When the cap is reached, Hermes returns a direct limit message naming which
 surfaces hold the slots. Existing active sessions keep their normal behavior.
 Run `hermes status` to see the current slot usage and every holder.
 
+This is the only cap on concurrent gateway turns: the gateway runs each turn body
+on its own thread, so with the default (unset) every accepted turn starts
+immediately instead of queuing behind other running turns.
+
 The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
 `gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when
 both are set.

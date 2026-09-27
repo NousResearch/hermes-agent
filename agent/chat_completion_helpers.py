@@ -43,8 +43,8 @@ from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.message_sanitization import (
-    _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
-    sanitize_outbound_kwargs, strip_images_for_rejecting_model,
+    _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
+    normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
 from agent.repetition_guard import is_repetition_dominated
@@ -1734,19 +1734,24 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     has_replayable_native_compaction_checkpoint,
                 )
 
-                note_checkpoint = getattr(
-                    agent.context_compressor, "note_native_compaction_checkpoint", None
-                )
-                if (
-                    callable(note_checkpoint)
-                    and has_replayable_native_compaction_checkpoint(agent, [msg])
-                ):
-                    note_checkpoint()
-                    # The response priced the pre-checkpoint input, not the next
-                    # compacted request. A matching durable prefix is now stale.
-                    from agent.usage_anchor import set_usage_anchor
+                if has_replayable_native_compaction_checkpoint(agent, [msg]):
+                    note_checkpoint = getattr(
+                        agent.context_compressor, "note_native_compaction_checkpoint", None
+                    )
+                    if callable(note_checkpoint):
+                        note_checkpoint()
+                        # The response priced the pre-checkpoint input, not the next
+                        # compacted request. A matching durable prefix is now stale.
+                        from agent.usage_anchor import set_usage_anchor
 
-                    set_usage_anchor(agent, None)
+                        set_usage_anchor(agent, None)
+                    # The next request drops every item before this checkpoint, so a repeat
+                    # read must serve content again, not an "unchanged" stub (#32106).
+                    # Without a task id the reset would clear every task's caches.
+                    if task_id := getattr(agent, "_current_task_id", None):
+                        from agent.conversation_compression import _reset_read_dedup_caches
+
+                        _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]
@@ -2259,6 +2264,18 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         if isinstance(api_msg, dict):
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 del api_msg[internal_key]
+    # Same closing normalization as assemble_api_request so the summary's prefix stays
+    # bit-identical to the main loop's (a diverging early row defeats prefix caching).
+    for api_msg in api_messages:
+        if isinstance(api_msg.get("content"), str):
+            api_msg["content"] = api_msg["content"].strip()
+    from agent.conversation_loop import _canonicalize_api_tool_calls, _clone_message_for_send
+    _canonicalize_api_tool_calls(api_messages)
+    # Third closing pass of the main path: lone surrogates -> U+FFFD (else the SDK's utf-8
+    # wire encode raises and burns the summary retries). The sanitizer is in-place and these
+    # rows still share nested dicts with history, so clone first like the main path does.
+    api_messages = [_clone_message_for_send(m) for m in api_messages]
+    _sanitize_messages_surrogates(api_messages)
     return api_messages
 
 
@@ -2308,7 +2325,8 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
-        response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
+        response = _managed_summary_call(
+            agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
@@ -2324,10 +2342,10 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     sanitize_outbound_kwargs(agent, summary_kwargs)
 
     def _attempt(retry_count: int) -> str:
-        summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
+        # Use the ordinary request-local lifecycle: a summary can be interrupted
+        # during a long prefill without closing the shared primary client.
         response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs,
-            lambda request: summary_client.chat.completions.create(**bypass_chat_sdk_request_transform(request, summary_client)),
+            agent, api_request_id, summary_kwargs, agent._interruptible_api_call,
             retry_count=retry_count)
         return _summary_text(agent, response)
     return _attempt
@@ -2354,7 +2372,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     # Shared constant so compaction recognizers can identify this runtime nudge by its stable
     # content after SessionDB projection strips metadata flags.
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-    append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
+    nudge = append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
@@ -2375,6 +2393,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = text
             break
 
+    except InterruptedError:
+        # Cancellation is not a summary failure: drop the unanswered nudge and let the
+        # finalizer end the turn as interrupted so the pending message is requeued.
+        summary_call_outcome = "cancelled"
+        if messages and messages[-1] is nudge:
+            messages.pop()
+        raise
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
         from agent.turn_failure_copy import site_copy
@@ -3301,12 +3326,17 @@ class _StreamingCall(StreamingWaitMonitor):
                 try:
                     json.loads(arguments)
                 except json.JSONDecodeError:
-                    # Repair before flagging (GLM via Ollama); "{}" = unrepairable.
-                    repaired = _repair_tool_call_arguments(arguments, tc["function"]["name"] or "?")
-                    if repaired != "{}":
-                        arguments = repaired
-                    else:
+                    # A dropped stream is never repaired: closing its prefix yields valid
+                    # JSON that silently lacks every key and digit not yet streamed.
+                    if finish_reason is None:
                         has_truncated_tool_args = True
+                    else:
+                        # Repair before flagging (GLM via Ollama); "{}" = unrepairable.
+                        repaired = _repair_tool_call_arguments(arguments, tc["function"]["name"] or "?")
+                        if repaired != "{}":
+                            arguments = repaired
+                        else:
+                            has_truncated_tool_args = True
                 # Parseable JSON does not prove that a dropped stream completed its
                 # action. Treat degenerate argument loops as partial calls too.
                 # A provider-confirmed call may legitimately write repetitive data.

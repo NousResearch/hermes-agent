@@ -98,7 +98,7 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 # Every classify_persistence_error bucket; consumers enumerate this tuple.
 PERSISTENCE_ERROR_CAUSES = (
     "locked", "compression", "compression_closed", "turn_lease", "corrupt", "fts_index",
-    "replaced", "deleted_wal", "disk", "unknown",
+    "replaced", "deleted_wal", "disk", "session_row_missing", "unknown",
 )
 
 
@@ -260,6 +260,8 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("was replaced underneath",), "replaced"),
     (_DB_CORRUPTION_MARKERS, "corrupt"),
     (("locked", "busy"), "locked"),
+    # A flush rejected by the session-row FK: the row was removed under a live agent (#123583).
+    (("foreign key constraint failed",), "session_row_missing"),
 )
 
 
@@ -271,7 +273,8 @@ def classify_persistence_error(exc_or_str) -> str:
     file damage (repair path, not disk space); "fts_index" = SQLite scoped the
     corruption to the FTS index (the transcript store is not damaged); "replaced" =
     main-file replacement; "deleted_wal" = a retired sidecar generation requiring
-    capture inspection."""
+    capture inspection; "session_row_missing" = the session row was deleted under a
+    live agent (FK rejection; the flush recreates it)."""
     if exc_or_str is None:
         return "unknown"
     # Lease refusals contain neither "locked" nor "busy": match by type first,
@@ -287,6 +290,8 @@ def classify_persistence_error(exc_or_str) -> str:
         return "fts_index"
     if _sqlite_primary_code(exc_or_str) in _SQLITE_LOCK_CODES:
         return "locked"
+    if getattr(exc_or_str, "sqlite_errorcode", None) == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
+        return "session_row_missing"
     text = str(exc_or_str).lower()
     for markers, cause in _PERSISTENCE_CAUSE_BY_PHRASE:
         if any(marker in text for marker in markers):

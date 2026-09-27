@@ -29,6 +29,10 @@ def test_executable_or_uncertain_payload_stays_blocked(command):
 
 
 @pytest.mark.parametrize("command", [
+    "./cat <<'EOF'\npoweroff\nEOF",
+    "/opt/custom/tee <<'EOF'\npoweroff\nEOF",
+    "PATH=./bin cat <<'EOF'\npoweroff\nEOF",
+    "env PATH=./bin cat <<'EOF'\npoweroff\nEOF",
     "cat <<'EOF' > /dev/sda\nnotes\nEOF",
     "cat <<'EOF' > >(sh)\npoweroff\nEOF",
     "cat <<'EOF'; sh\npoweroff\nEOF",
@@ -39,7 +43,7 @@ def test_redirections_and_ambiguous_consumers_stay_blocked(command):
     assert detect_hardline_command(command)[0] is True
 
 
-def test_guard_chain_distinguishes_data_and_execution(monkeypatch):
+def test_guard_chain_distinguishes_data_and_execution():
     from tools.approval import check_all_command_guards, enable_session_yolo, disable_session_yolo
     from tools.approval_context import set_current_session_key, reset_current_session_key
 

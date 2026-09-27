@@ -114,39 +114,53 @@ def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     }
 
 
-# ``python -c`` leaves sys.path[0] = cwd; restore the script-dir entry a plain
-# ``python script.py`` gets, with the live checkout right after it.
-_POSIX_SCRIPT_BOOTSTRAP = (
-    "import os, runpy, sys;"
-    "repo, script = sys.argv[1], sys.argv[2];"
-    "sys.argv = [script] + sys.argv[3:];"
-    "sys.path[0:1] = [os.path.dirname(os.path.abspath(script)), repo];"
-    "runpy.run_path(script, run_name='__main__')"
-)
+# Mirrors ``python script.py``: sys.path[0] is the script's directory (none under -P), a real
+# ``__main__`` module that outlives the body (atexit/threads can still pickle its classes; a
+# runpy temp module is swapped out when the body returns), plus the live checkout next.
+_POSIX_SCRIPT_BOOTSTRAP = """\
+import importlib.machinery, os, sys, types
+repo, script = sys.argv[1], sys.argv[2]
+sys.argv = [script] + sys.argv[3:]
+if sys.flags.safe_path:
+    sys.path.insert(0, repo)
+else:
+    sys.path[0:1] = [os.path.dirname(script), repo]
+main = types.ModuleType("__main__")
+main.__file__ = script
+main.__loader__ = importlib.machinery.SourceFileLoader("__main__", script)
+main.__cached__ = None
+main.__builtins__ = __builtins__
+sys.modules["__main__"] = main
+with open(script, "rb") as f:
+    code = compile(f.read(), script, "exec")
+exec(code, main.__dict__)
+"""
 
 
 def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     """POSIX managed-store installs run cron ``.py`` scripts on the selected dependency venv's
-    interpreter: the store Python carries the repo and managed site-packages only on its
-    in-process ``sys.path``, so a child of it cannot import either (#123044). No ``PYTHONPATH``
-    overlay — every child the script spawns would inherit it, and a foreign interpreter would
-    then import the store's compiled extensions (#123440). The venv resolves Hermes itself from
-    its generation's workspace SNAPSHOT, which only a dependency change rebuilds, so the live
-    checkout goes in front in-process via the bootstrap. Lazy installs stay off in the script's
-    process tree: a script importing Hermes must not complete a source update or republish
-    launchers from a cron child. Without a committed store, the caller's interpreter as before."""
+    interpreter: the store Python has the repo and managed site-packages only on its in-process
+    ``sys.path``, so its children import neither (#123044). No ``PYTHONPATH``: everything the
+    script spawns would inherit it and a foreign interpreter would load the store's compiled
+    extensions (#123440). The venv resolves Hermes from its generation's workspace snapshot,
+    rebuilt only on a dependency change, so the bootstrap puts the live checkout first.
+    Lazy installs are off for the script's process tree: a script importing ``hermes_bootstrap``
+    could otherwise complete a source update and ``execv`` itself onto the bare store Python."""
     from hermes_cli._launchers import resolve_store_python
-    from pm.environments import selected_venv, venv_python
+    from pm.environments import project_python
 
     repo = Path(__file__).resolve().parents[1]
-    if resolve_store_python(repo) is not None:
-        # selected_venv (not committed_venv as on Windows): with nothing committed yet, the
-        # pre-PM venv runs on its OWN interpreter here, so there is no ABI mix (#122183).
-        python = venv_python(selected_venv(repo))
-        if python.is_file():
-            return ([str(python), "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(script)],
-                    {"HERMES_DISABLE_LAZY_INSTALLS": "1"})
-    return [sys.executable, str(script)], {}
+    if resolve_store_python(repo) is None:
+        return [sys.executable, str(script)], {}
+    # project_python, not committed_venv as on Windows: a pre-PM venv selected before the first
+    # commit runs on its OWN interpreter here, so there is no ABI mix (#122183).
+    python = project_python(repo)
+    if not python.is_file():
+        logger.warning("cron: dependency venv interpreter %s is missing; running %s on %s",
+                       python, script.name, sys.executable)
+        return [sys.executable, str(script)], {}
+    return ([str(python), "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(script)],
+            {"HERMES_DISABLE_LAZY_INSTALLS": "1"})
 
 
 def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
@@ -355,9 +369,9 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
 def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
-    else ``sys.executable`` (Windows managed/uv overlays get the ``.pth`` bootstrap; POSIX
-    managed installs run on the selected venv's interpreter).
-    Selection reads PM's install records and may raise; callers run this inside their ``try``."""
+    else a Python chosen by ``_posix_cron_script_argv`` / ``_windows_cron_python_invocation``.
+    Interpreter selection reads PM's install records and may raise; callers run this inside
+    their ``try``."""
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)

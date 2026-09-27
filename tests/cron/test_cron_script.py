@@ -311,8 +311,8 @@ class TestRunJobScript:
     ):
         """#123044/#123440: on a POSIX managed-store install a cron ``.py`` script imports the
         selected venv's packages, resolves Hermes from the LIVE checkout ahead of the venv's
-        workspace snapshot, keeps ``python script.py`` path semantics, and leaves no
-        ``PYTHONPATH`` for its own children to inherit."""
+        workspace snapshot, keeps ``python script.py`` path and ``__main__`` semantics, and
+        leaves no ``PYTHONPATH`` for its own children to inherit."""
         from cron import scheduler_script
         from pm.environments import site_packages
 
@@ -339,7 +339,9 @@ class TestRunJobScript:
 
         script = cron_env / "scripts" / "probe.py"
         script.write_text(
-            "import os, sys, probe_pkg, hermes_constants\n"
+            "import atexit, os, pickle, sys, probe_pkg, hermes_constants\n"
+            "class Probe: pass\n"
+            "atexit.register(lambda: print('pickled', bool(pickle.dumps(Probe()))))\n"
             "print(probe_pkg.VALUE)\n"
             "print(hermes_constants.__file__)\n"
             "print(sys.path[0])\n"
@@ -349,12 +351,13 @@ class TestRunJobScript:
 
         success, output = scheduler_script._run_job_script("probe.py")
         assert success is True, output
-        value, constants_file, path0, pythonpath = output.splitlines()
+        value, constants_file, path0, pythonpath, pickled = output.splitlines()
         assert value == "42"
         repo = Path(scheduler_script.__file__).resolve().parents[1]
         assert Path(constants_file).resolve() == repo / "hermes_constants.py"
         assert Path(path0).resolve() == script.parent.resolve()
         assert pythonpath == "PYTHONPATH="
+        assert pickled == "pickled True"  # __main__ outlives the body, as in a plain run
 
     @pytest.mark.platforms("posix")
     def test_posix_unusable_store_selection_fails_the_run_not_the_tick(

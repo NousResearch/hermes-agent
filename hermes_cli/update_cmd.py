@@ -1309,6 +1309,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     target_repository = None
     selected_channel = _source_update_channel(args)
     if not getattr(args, "branch", None):
+        from hermes_cli.release_channels import retrying_reads
         from hermes_cli.source_releases import resolve_source_target
 
         from copy import deepcopy
@@ -1319,8 +1320,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             Path(completion_request["home"]) / "config.yaml"), _m().PROJECT_ROOT))
         print(f"→ Update channel: {selected_channel}")
         try:
-            target = resolve_source_target(
-                selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
+            with retrying_reads():
+                target = resolve_source_target(
+                    selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             print(f"✗ Could not resolve the {selected_channel} source channel: {exc}. No update was applied.")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

@@ -72,10 +72,10 @@ def test_names_are_validated_without_normalizing(name):
         validate_name(name)
 
 
-def test_reader_retries_transient_http_and_honors_retry_after(monkeypatch):
+def test_update_reads_retry_transient_http_and_honor_retry_after(monkeypatch):
     from email.message import Message
     from urllib.error import HTTPError
-    from hermes_cli.release_channels import ChannelReader
+    from hermes_cli.release_channels import ChannelReader, retrying_reads
 
     url = "http://127.0.0.1:12345/releases/fixture.json"
     headers = Message()
@@ -105,34 +105,40 @@ def test_reader_retries_transient_http_and_honors_retry_after(monkeypatch):
 
     monkeypatch.setattr("pm.network.time.sleep", waits.append)
     reader = ChannelReader("http://127.0.0.1:12345", opener=opener)
-    assert reader.read_bytes("releases/fixture.json") == b"fixture"
+    with retrying_reads():
+        assert reader.read_bytes("releases/fixture.json") == b"fixture"
     assert attempts == [url, url]
     assert waits == [7.0]
 
 
-def test_reader_exhausts_transient_retry_budget_before_channel_error(monkeypatch):
+def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):
+    """Offline looks transient (ENETUNREACH); a passive check must not back off on it."""
+    import errno
     from email.message import Message
-    from urllib.error import HTTPError
-    from hermes_cli.release_channels import ChannelError, ChannelReader
-    from pm import network
+    from urllib.error import HTTPError, URLError
+    from hermes_cli.release_channels import ChannelError, ChannelNotFound, ChannelReader, retrying_reads
 
-    url = "http://127.0.0.1:12345/releases/fixture.json"
-    headers = Message()
-    headers["Retry-After"] = "1"
-    attempts = []
     waits = []
+    monkeypatch.setattr("pm.network.time.sleep", waits.append)
 
-    def opener(request, timeout):
-        assert timeout == 30
-        attempts.append(request.full_url)
-        raise HTTPError(url, 503, "unavailable", headers, None)
+    def reader(fault, calls):
+        def opener(request, timeout):
+            calls.append(request.full_url)
+            raise fault
+        return ChannelReader("https://releases.example", opener=opener)
 
-    monkeypatch.setattr(network.time, "sleep", waits.append)
-    reader = ChannelReader("http://127.0.0.1:12345", opener=opener)
-    with pytest.raises(ChannelError, match="HTTP 503"):
-        reader.read_bytes("releases/fixture.json")
-    assert len(attempts) == network._ATTEMPTS
-    assert len(waits) == network._ATTEMPTS - 1
+    calls = []
+    offline = URLError(OSError(errno.ENETUNREACH, "Network is unreachable"))
+    with pytest.raises(ChannelError, match="unavailable"):
+        reader(offline, calls).read_bytes("releases/channels/main.json")
+    assert len(calls) == 1
+
+    calls.clear()
+    missing = HTTPError("https://releases.example/x", 404, "missing", Message(), None)
+    with retrying_reads(), pytest.raises(ChannelNotFound):
+        reader(missing, calls).read_bytes("releases/channels/stable.json")
+    assert len(calls) == 1
+    assert waits == []
 
 
 def test_reader_rejects_cycles_identity_substitution_and_cross_authority():

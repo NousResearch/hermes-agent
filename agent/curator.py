@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from collections import Counter
+from contextvars import copy_context
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
@@ -983,7 +984,16 @@ def run_curator_review(
     if synchronous:
         _llm_pass()
     else:
-        threading.Thread(target=_llm_pass, daemon=True, name="curator-review").start()
+        # The curator tick runs inside profile_scoped_chore() on a multiplexed gateway, which
+        # installs the home override and secret scope as contextvars. A bare thread starts with
+        # an EMPTY context, so _llm_pass used to lose the profile scope: provider resolution hit
+        # UnscopedSecretError and every home lookup (skill snapshot, run.json/REPORT.md,
+        # .curator_state) fell back to the process home — the root home's library was read,
+        # reported and overwritten under another profile's run. Copy the caller's context into
+        # the thread, the same way the gateway already carries scope into executor work
+        # (_run_in_executor_with_context, MCP discovery #95518).
+        ctx = copy_context()
+        threading.Thread(target=ctx.run, args=(_llm_pass,), daemon=True, name="curator-review").start()
     return {"started_at": start.isoformat(), "auto_transitions": counts, "summary_so_far": auto_summary}
 
 

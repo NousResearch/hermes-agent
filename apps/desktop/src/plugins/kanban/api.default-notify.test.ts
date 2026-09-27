@@ -44,16 +44,20 @@ describe('default board event notifications', () => {
       { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() },
       (_path, callback) => {
         frame = callback
+
         return vi.fn()
       }
     )
     let revision = 1
+
     const observer = new QueryObserver(queryClient, {
       queryKey: taskKey('local', '', 'task'),
       queryFn: async () => ({ revision }),
       staleTime: Infinity
     })
+
     const unsubscribe = observer.subscribe(() => undefined)
+
     try {
       await vi.waitFor(() => expect(observer.getCurrentResult().data).toEqual({ revision: 1 }))
       await vi.waitFor(() => expect(frame).toBeTypeOf('function'))
@@ -68,11 +72,14 @@ describe('default board event notifications', () => {
   it.each(['empty', 'rejected'])('preserves the live alias socket when board resolution is %s', async mode => {
     const rest = vi.fn(async (path: string) => {
       if (path === '/boards') {
-        if (mode === 'rejected') throw new Error('offline')
+        if (mode === 'rejected') {throw new Error('offline')}
+
         return { current: '' }
       }
+
       return { latest_event_id: 20 }
     })
+
     const socket = vi.fn(() => vi.fn())
     dispose = bindApi(rest as never, { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() }, socket)
     await vi.waitFor(() => expect(socket).toHaveBeenCalledWith('/events?since=20', expect.any(Function)))
@@ -81,12 +88,15 @@ describe('default board event notifications', () => {
 
   it.each(['selection', 'dispose'])('ignores alias resolution after %s', async change => {
     let resolveBoards!: (value: unknown) => void
+
     const boards = new Promise(resolve => {
       resolveBoards = resolve
     })
+
     const rest = vi.fn(async (path: string) => (path === '/boards' ? boards : { latest_event_id: 30 }))
     const socket = vi.fn(() => vi.fn())
     dispose = bindApi(rest as never, { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() }, socket)
+
     if (change === 'selection') {
       $boardSlug.set('chosen')
       await vi.waitFor(() => expect(socket).toHaveBeenCalledWith('/events?board=chosen&since=30', expect.any(Function)))
@@ -94,6 +104,7 @@ describe('default board event notifications', () => {
       dispose()
       dispose = undefined
     }
+
     resolveBoards({ current: 'late' })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(socket).toHaveBeenCalledTimes(change === 'selection' ? 1 : 0)
@@ -118,16 +129,22 @@ describe('default board event notifications', () => {
 
   it('pins the socket to the resolved board and notifies a post-baseline blocked event once', async () => {
     const callbacks: Array<(data: unknown) => void> = []
+
     const socket = vi.fn((_path: string, cb: (data: unknown) => void) => {
       callbacks.push(cb)
+
       return vi.fn()
     })
+
     let latest = 100
+
     const rest = vi.fn(async (path: string) => {
-      if (path === '/boards') return { current: 'default', boards: [{ slug: 'default' }] }
-      if (path === '/board?board=default' || path === '/board') return { latest_event_id: latest }
+      if (path === '/boards') {return { current: 'default', boards: [{ slug: 'default' }] }}
+
+      if (path === '/board?board=default' || path === '/board') {return { latest_event_id: latest }}
       throw new Error(`Unexpected REST call: ${path}`)
     })
+
     const storage = { get: <T>(_key: string, fallback: T) => fallback, set: vi.fn(), remove: vi.fn() }
     dispose = bindApi(rest as never, storage, socket)
     await vi.waitFor(() => expect(callbacks).toHaveLength(1))

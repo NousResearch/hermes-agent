@@ -179,6 +179,7 @@ function onEventsFrame(scope: string, slug: string, data: unknown, selectedSlug 
 
   for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
     void queryClient.invalidateQueries({ queryKey: taskKey(scope, slug, taskId!) })
+
     if (selectedSlug !== slug) {
       void queryClient.invalidateQueries({ queryKey: taskKey(scope, selectedSlug, taskId!) })
     }
@@ -235,7 +236,7 @@ export function bindApi(
     const selectedSlug = $boardSlug.get()
 
     return socket(eventsUrl(slug, since), data => {
-      if (generation === socketGeneration) onEventsFrame(scope, slug, data, selectedSlug)
+      if (generation === socketGeneration) {onEventsFrame(scope, slug, data, selectedSlug)}
     })
   }
 
@@ -288,6 +289,7 @@ export function bindApi(
 
     if (selectedSlug) {
       openResolved(selectedSlug)
+
       return
     }
 

@@ -766,6 +766,20 @@ class TestStrictUrlCredentialRedaction:
         assert redact_sensitive_text(text, redact_url_credentials=True) == text
 
 
+    def test_strict_userinfo_uses_last_at_as_authority_boundary(self):
+        text = "git clone https://deploy:p@ssw0rd@git.example.com/org/repo.git"
+        result = redact_sensitive_text(text, redact_url_credentials=True)
+        assert "p@ssw0rd" not in result
+        assert result == "git clone https://deploy:***@git.example.com/org/repo.git"
+
+    def test_strict_masks_canonicalized_amz_signature(self):
+        text = "https://bucket.example/file?X-Amz-Signature=s3cr3tK9x&X-Amz-Expires=900"
+        result = redact_sensitive_text(text, redact_url_credentials=True)
+        assert "s3cr3tK9x" not in result
+        assert "X-Amz-Signature=***" in result
+        assert "X-Amz-Expires=900" in result
+
+
 class TestBareTokenUserinfoRedaction:
     """Regression tests for #6396 — a bare credential in URL userinfo
     (``scheme://TOKEN@host``, no ``user:pass`` colon) is redacted. This is the

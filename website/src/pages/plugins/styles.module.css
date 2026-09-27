@@ -750,12 +750,15 @@
   flex: 1;
 }
 
-/* Tool chips squeeze (ellipsis each) before the row overflows, so the "+N" tail stays visible
-   even when three long tool names cannot fit side by side. */
-.chipList .envChip {
+/* Tool names as one comma-separated run that ellipsizes as a whole, so the "+N" tail stays
+   visible and same-prefix names never degrade into three identical stubs. */
+.toolList {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  color: rgba(255, 215, 0, 0.6);
   white-space: nowrap;
   flex: 0 1 auto;
-  min-width: 4rem;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1354,6 +1357,10 @@ a.pickBtn {
 }
 
 [data-theme="light"] .capChip,
+[data-theme="light"] .toolList {
+  color: var(--ifm-color-primary-darker);
+}
+
 [data-theme="light"] .envChip {
   border-color: rgba(110, 79, 0, 0.28);
   background: rgba(110, 79, 0, 0.06);

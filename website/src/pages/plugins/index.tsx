@@ -141,21 +141,6 @@ function PluginCard({
                 {highlightMatch(plugin.name, query)}
               </Link>
             </h3>
-            <span
-              className={styles.tierPill}
-              style={{
-                color: tier.color,
-                background: tier.bg,
-                borderColor: tier.border,
-              }}
-            >
-              {tier.icon} {tier.label}
-            </span>
-            {plugin.version && (
-              <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
-                v{plugin.version.replace(/^v/i, "")}
-              </span>
-            )}
             {typeof plugin.stars === "number" && (
               <a
                 className={styles.starPill}
@@ -176,6 +161,21 @@ function PluginCard({
         </p>
 
         <div className={styles.cardMeta}>
+          <span
+            className={styles.tierPill}
+            style={{
+              color: tier.color,
+              background: tier.bg,
+              borderColor: tier.border,
+            }}
+          >
+            {tier.icon} {tier.label}
+          </span>
+          {plugin.version && (
+            <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
+              v{plugin.version.replace(/^v/i, "")}
+            </span>
+          )}
           <button
             className={styles.categoryChip}
             onClick={(e) => {
@@ -295,11 +295,7 @@ function PluginCard({
               <span className={styles.metaLabel}>Tools</span>
               {toolChips.shown.length ? (
                 <span className={styles.chipList} title={caps.providesTools?.join(", ")}>
-                  {toolChips.shown.map((t) => (
-                    <code key={t} className={styles.envChip}>
-                      {t}
-                    </code>
-                  ))}
+                  <code className={styles.toolList}>{toolChips.shown.join(", ")}</code>
                   {toolChips.hidden > 0 && (
                     <code className={`${styles.envChip} ${styles.moreChip}`}>+{toolChips.hidden}</code>
                   )}

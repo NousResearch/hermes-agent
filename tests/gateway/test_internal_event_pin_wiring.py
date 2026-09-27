@@ -207,3 +207,48 @@ async def test_internal_event_keeps_channel_prompt_and_parent_override(monkeypat
     eph = [_effective_ephemeral(runner, kw) for kw in calls]
     assert "Channel hint." in eph[0] and "Parent persona." in eph[0]
     assert eph[0] == eph[1] == eph[2], "internal event toggled the channel ephemeral components"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leftover", ["pending_steer", "interrupt_message"])
+@pytest.mark.parametrize("channel_prompt", ["Channel hint.", "", None])
+async def test_eventless_followup_preserves_current_turn_inputs(monkeypatch, leftover, channel_prompt):
+    """A late steer/interrupt must not remove and then restore system bytes."""
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    adapter = MagicMock()
+    adapter.get_pending_message.return_value = None
+    adapter._active_sessions = {}
+
+    # Establish the real human-turn inputs, including the parent channel override.
+    await _drive(runner, ((False, _human_thread_source()),), channel_prompt=channel_prompt)
+    original = calls.pop()
+    turn = TurnContext(
+        source=original["source"], session_key=original["session_key"],
+        session_id=original["session_id"], run_generation=1, history=[],
+        context_prompt=original["context_prompt"], channel_prompt=original["channel_prompt"],
+    )
+    result = {
+        "final_response": "done", "messages": [], leftover: "one more thing",
+        "interrupted": leftover == "interrupt_message",
+    }
+    event, text = await runner._run_agent_drain_pending(result, adapter, turn.source, turn.session_key)
+    assert event is None and text == "one more thing"
+    await runner._run_agent_queued_followup(turn, adapter, text, event, "done", result, None)
+    await _drive(runner, ((False, _human_thread_source()),), channel_prompt=channel_prompt)
+
+    followup, next_human = calls
+    assert followup["source"] is original["source"]
+    assert followup["session_key"] == original["session_key"]
+    assert followup["channel_prompt"] == channel_prompt
+    before = _effective_ephemeral(runner, original)
+    assert "Parent persona." in before
+    assert before == _effective_ephemeral(runner, followup) == _effective_ephemeral(runner, next_human)

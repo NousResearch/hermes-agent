@@ -86,12 +86,14 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
   // Only a child that reported its own session id has somewhere to go.
   const open = sessionId ? () => void openSessionInNewWindow(sessionId, { watch: true }) : undefined
 
+  // The scaffold mark goes on the goal row, NEVER on this wrapper: it fades to
+  // 0.67, and opacity opens a stacking context around the ticker's transformed
+  // reel, which is how old activity lines painted through the one-line window
+  // and the whole card read as stacked ghosts (#105579). styles.css's own
+  // invariant: the mark is per surface and never on a container.
   return (
-    <div
-      className="grid min-w-0 max-w-full gap-0.5 rounded-xl border border-(--ui-stroke-tertiary) px-3 py-2"
-      data-conversation-scaffold=""
-    >
-      <div className="flex min-w-0 max-w-full items-center gap-1.5">
+    <div className="grid min-w-0 max-w-full gap-0.5 rounded-xl border border-(--ui-stroke-tertiary) px-3 py-2">
+      <div className="flex min-w-0 max-w-full items-center gap-1.5" data-conversation-scaffold="">
         <span className={SCAFFOLD_GLYPH_CLASS}>{statusGlyph(row.status, statusLabel)}</span>
         <button
           className={cn(

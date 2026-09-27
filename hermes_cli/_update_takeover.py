@@ -21,7 +21,7 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     from pm.client import ensure_tools_for_sync, sync_venv, venv_is_current
     from pm.environments import activation_environment, install_state_dir, runtime_facts_path
     from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.venv_sync import publish_launchers
+    from hermes_cli.venv_sync import collect_superseded_generations, publish_launchers
 
     correlation = request["update_id"]
     with receipt.worker_context(correlation):
@@ -38,6 +38,7 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
         # An update never fails because of a plugin: misfits are disabled and reported.
         sync_venv(None if repair else extras, explicit=True, project_root=root, repair=repair,
                   evict_incompatible_plugins=not repair)
+        collect_superseded_generations(root)
         request["pm_receipt"] = receipt.last_for_update(correlation)
     publish_launchers(root)
     repair_marker.unlink(missing_ok=True)

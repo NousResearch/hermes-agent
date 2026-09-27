@@ -77,6 +77,21 @@ async function queuedAttachmentPreview(filePath: string): Promise<{ previewUrl: 
   return task
 }
 
+/**
+ * Prefer a cheap object-URL preview when the drop/paste still has a Blob/File
+ * handle. `readFileDataUrl` base64-loads the whole file over IPC (capped at
+ * 16 MB) and was freezing Desktop on Windows Explorer image drops (#63682).
+ * Object URLs skip that read; path-only attaches (paperclip) still fall back
+ * to the IPC data-URL path.
+ */
+export async function resolveImageAttachmentPreview(filePath: string, previewSource?: Blob | null): Promise<string> {
+  if (previewSource && previewSource.size > 0) {
+    return URL.createObjectURL(previewSource)
+  }
+
+  return attachmentPreviewDataUrl(filePath)
+}
+
 export interface DroppedFile {
   /** Browser-native File handle. Absent for in-app drags (e.g. project tree). */
   file?: File
@@ -465,7 +480,7 @@ export function useComposerActions({
   )
 
   const attachImagePath = useCallback(
-    async (filePath: string) => {
+    async (filePath: string, previewSource?: Blob | null) => {
       if (!filePath) {
         return false
       }
@@ -482,6 +497,18 @@ export function useComposerActions({
       attachToMain(baseAttachment)
 
       try {
+        // OS drops / clipboard blobs pass their File/Blob so preview never
+        // base64-loads the full image over IPC (Windows freeze on Explorer
+        // drag-drop — #63682). Path-only picks keep the queued IPC thumbnail
+        // path; blob previews skip the read entirely.
+        if (previewSource && previewSource.size > 0) {
+          const previewUrl = URL.createObjectURL(previewSource)
+
+          scope.updateIfCurrent(baseAttachment, { previewUrl })
+
+          return true
+        }
+
         const { previewUrl, thumbnailUrl } = await queuedAttachmentPreview(filePath)
 
         if (previewUrl) {
@@ -532,7 +559,10 @@ export function useComposerActions({
           return false
         }
 
-        return isCurrent() ? attachImagePath(savedPath) : false
+        // Reuse the in-hand blob for the chip preview — do not re-read the
+        // just-written temp file as a data URL. A late component unmount must
+        // not leak the attach: attach only while still current.
+        return isCurrent() ? attachImagePath(savedPath, blob) : false
       } catch (err) {
         notifyError(err, copy.imageAttachFailed)
 
@@ -715,14 +745,15 @@ export function useComposerActions({
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
-          // Finder may expose a dropped screenshot through a short-lived
-          // TemporaryItems/NSIRD_screencaptureui path even when the visible
-          // file has already landed on Desktop. Reading that path for the
-          // preview can succeed, then image.attach fails after macOS removes
-          // it before submit. Persist the File bytes into Desktop's durable
-          // composer-image cache first; keep the native path as a compatibility
-          // fallback for older shells that cannot save the buffer.
-          if ((await attachImageBlob(file)) || (filePath && (await attachImagePath(filePath)))) {
+          // Persist the File bytes into Desktop's durable composer-image cache
+          // FIRST: Finder may expose a dropped screenshot through a short-lived
+          // TemporaryItems/NSIRD_screencaptureui path even when the visible file
+          // has already landed on Desktop — reading that path for the preview
+          // can succeed, then image.attach fails after macOS removes it before
+          // submit. attachImageBlob also hands the in-hand blob through for a
+          // non-blocking object-URL chip preview (#63682); the native path stays
+          // the fallback for shells that cannot save the buffer.
+          if ((await attachImageBlob(file)) || (filePath && (await attachImagePath(filePath, file)))) {
             attached = true
 
             continue

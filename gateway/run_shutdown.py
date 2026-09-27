@@ -1380,10 +1380,53 @@ class GatewayShutdownMixin:
     # Restart orchestration
     @staticmethod
     def _restart_watcher_env() -> dict:
-        """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down)."""
+        """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down).
+
+        The host multiplexer is respawned with ``host_gateway_child_env`` (default-root
+        secrets via ``served_profile_child_env``, not ``os.environ.copy()``). A standalone
+        named-profile gateway keeps that profile's home — only a multiplexer, or a process
+        already on the default root, is the host.
+        """
         from gateway.config_loader import drop_bridged_env
-        from tools.environments.local import build_subprocess_env
-        watcher_env = drop_bridged_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=True))
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+        from tools.environments.local import host_gateway_child_env, served_profile_child_env
+
+        home = get_hermes_home()
+        try:
+            on_default = home.resolve() == get_default_hermes_root().resolve()
+        except Exception:
+            on_default = False
+        # ``resolve_multiplex_mode`` settles the default-on/unset decision before
+        # restart. Carry that runtime identity instead of re-reading raw config:
+        # ``None`` is the normal pre-resolution value for a named launcher.
+        from agent.secret_scope import is_multiplex_active
+        settled_multiplex = is_multiplex_active()
+        multiplex = False
+        if not on_default and not settled_multiplex:
+            # Second settled source: the live host gateway's OWN published record
+            # (its settled served set). Only when NO settled identity exists may the
+            # raw config re-read stand — it reads the UNSET flag as False, which is
+            # wrong exactly when this process IS the default-on host (#120305).
+            try:
+                from gateway import host_rendezvous as hr
+                record = hr.read_record(hr.ROLE_GATEWAY)
+                if record is not None and hr.liveness_is_proven(record) and len(record.profiles) > 1:
+                    multiplex = True
+            except Exception:
+                multiplex = False
+        if not on_default and not settled_multiplex and not multiplex:
+            try:
+                from gateway.config import load_gateway_config
+                multiplex = bool(load_gateway_config().multiplex_profiles)
+            except Exception:
+                multiplex = False
+        if on_default or settled_multiplex or multiplex:
+            watcher_env = host_gateway_child_env()
+        else:
+            watcher_env = served_profile_child_env(
+                target_home=home, inherit_credentials=True,
+            )
+        watcher_env = drop_bridged_env(watcher_env)
         watcher_env.pop("_HERMES_GATEWAY", None)
         return watcher_env
 
@@ -1395,6 +1438,13 @@ class GatewayShutdownMixin:
             windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
         )
         watcher_env = GatewayShutdownMixin._restart_watcher_env()
+        # host_gateway_child_env does not copy the parent dotenv. The watcher
+        # still has to run inside the venv this process is using, or the
+        # respawn cannot import hermes.
+        if not watcher_env.get("VIRTUAL_ENV"):
+            inherited = os.environ.get("VIRTUAL_ENV")
+            if inherited:
+                watcher_env["VIRTUAL_ENV"] = inherited
         project_root = Path(__file__).resolve().parent.parent
         # Console python under CREATE_NO_WINDOW: nothing flashes. NOT pythonw.exe — a console-less
         # watcher makes every console-subsystem descendant allocate a visible conhost (#54220/#56747).
@@ -1687,7 +1737,11 @@ class GatewayShutdownMixin:
 
         def _kill_processes() -> None:
             from tools.process_registry import process_registry
-            _count_step("Shutdown (%s): killed %d tool subprocess(es)", process_registry.kill_all)
+            # Host shutdown: kill even persist_on_release jobs or they become
+            # PPID=1 orphans (#41225/#46778); an explicit source reaches them.
+            _count_step(
+                "Shutdown (%s): killed %d tool subprocess(es)",
+                lambda: process_registry.kill_all(source="gateway_shutdown"))
 
         def _mark_cron_interrupted() -> list:
             # kill_all() is global: a cron job mid-dispatch lost its tool subprocess and its agent thread may

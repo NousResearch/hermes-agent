@@ -343,7 +343,8 @@ def _setup_tui_worktree() -> dict:
 
 
 def _launch_tui(
-    resume_session_id: Optional[str] = None, tui_dev: bool = False, model: Optional[str] = None,
+    resume_session_id: Optional[str] = None, tui_dev: bool = False, native_mode: Optional[bool] = None,
+    model: Optional[str] = None,
     provider: Optional[str] = None, toolsets: object = None, skills: object = None,
     verbose: Optional[bool] = None, quiet: bool = False, query: Optional[str] = None,
     image: Optional[str] = None, worktree: bool = False, checkpoints: bool = False,
@@ -373,6 +374,15 @@ def _launch_tui(
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
+    if native_mode is None:
+        try:
+            from hermes_cli.config import load_config
+            from utils import is_truthy_value
+            display = load_config().get("display", {})
+            native_mode = is_truthy_value(display.get("tui_native", False)) if isinstance(display, dict) else False
+        except Exception:
+            native_mode = False
+    env["HERMES_TUI_NATIVE"] = "1" if native_mode else "0"
 
     wt_info = None
     if worktree:
@@ -479,7 +489,7 @@ def _resolve_use_tui(args) -> bool:
     """
     if getattr(args, "cli", False):
         return False
-    if getattr(args, "tui", False):
+    if getattr(args, "tui", False) or getattr(args, "tui_native", False):
         return True
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):

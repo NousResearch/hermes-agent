@@ -194,6 +194,14 @@ bounded by the tool's `limit` argument. Pinned messages use the bot's Matrix
 client and report individual fetch or decryption errors. The tool applies the
 same room and sender access rules as Matrix history reads.
 
+To let the agent pin or unpin messages, enable the `matrix_admin` toolset for
+Matrix in `hermes tools`. The `matrix_pin` action changes the current room's
+`m.room.pinned_events` state. The requesting user must have the room power
+level needed to change pins, so a member cannot use the bot's power to change
+pins that they could not change themselves. The homeserver then checks the
+bot's own permission, and the tool reports its error if the bot cannot send
+that state event. The toolset is disabled by default.
+
 This guide walks you through the full setup process — from creating your bot account to sending your first message.
 
 ## Step 1: Create a Bot Account

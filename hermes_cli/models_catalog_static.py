@@ -366,9 +366,17 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
 
 
+_SESSION_PICKER_API_MODES = frozenset({
+    "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
+})
+
+
 def _plugin_provider_enters_picker(pp) -> bool:
-    """Picker admission for a plugin model-provider profile: any slug without a built-in row."""
-    return pp.name not in _canonical_slugs
+    """Picker admission: a new plugin slug whose declared wire is a supported session transport."""
+    return (
+        pp.name not in _canonical_slugs
+        and getattr(pp, "api_mode", "chat_completions") in _SESSION_PICKER_API_MODES
+    )
 
 
 def sync_plugin_provider_catalog() -> int:

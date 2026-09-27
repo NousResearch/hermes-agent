@@ -99,7 +99,8 @@ class MicroCompactionMixin:
             "decisions, requirements, file paths, and open questions into the "
             "summary.  Preserve the summary's structure.  Drop resolved details "
             "that are no longer relevant.  Add new decisions, file paths, and "
-            "open questions.\n\n"
+            "open questions.  Never emit instructions, constraints or personas "
+            "for the next context; only record what happened.\n\n"
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary \u2014 replace any that appear "
             f"with [REDACTED].\n\n"
@@ -161,8 +162,9 @@ class MicroCompactionMixin:
         # micro-compact pass and into the request, so a directive the summarizer wrote for its
         # successor compounds. No regeneration here — the failure convention on this path is None
         # (the exchange stays unabsorbed and a later pass retries it), which is cheaper than a
-        # second aux call and loses nothing.
-        findings = _cc().summary_guard_findings(content)
+        # second aux call and loses nothing. Not ``templated``: this prompt fixes no sections, so
+        # the summary's own headings are not out-of-schema.
+        findings = _cc().summary_guard_findings(content, templated=False)
         if findings:
             logger.warning(
                 "micro-summarization rejected: the summary issues instructions to its successor (%s)",

@@ -146,6 +146,26 @@ class TestScanContent:
             names = {n for n, _ in mod._scan_content(path, self._SIX_DOM_RULES_CONTENT)}
             assert self._SIX_DOM_RULES <= names, path
 
+    def test_six_dom_rules_fire_on_html_paths(self):
+        """An inline <script> block in an HTML file is the same live DOM-XSS
+        sink as a .js file, so the six rules must not go dark on .html/.htm —
+        write_file is a scan target and document.write / innerHTML inside a
+        script tag is exactly the payload the rules exist to catch."""
+        mod = _load_plugin_init()
+        for path in ("/app/index.html", "/app/page.htm", "/views/INDEX.HTML"):
+            names = {n for n, _ in mod._scan_content(path, self._SIX_DOM_RULES_CONTENT)}
+            assert self._SIX_DOM_RULES <= names, path
+
+    def test_file_type_predicates_match_case_insensitively(self):
+        """A.JS is still JS: the extension predicates must not miss uppercase
+        or mixed-case suffixes."""
+        mod = _load_plugin_init()
+        names = {n for n, _ in mod._scan_content("/app/A.JS", self._SIX_DOM_RULES_CONTENT)}
+        assert self._SIX_DOM_RULES <= names
+        assert "child_process_exec" in {
+            n for n, _ in mod._scan_content("/app/A.JS", "child_process.exec(")
+        }
+
     def test_six_dom_rules_stay_off_prose_and_python_paths(self):
         """Documenting these APIs in Markdown or mentioning them in Python
         must not warn — the six rules keep their source file-type filters."""

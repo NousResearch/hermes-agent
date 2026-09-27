@@ -354,6 +354,21 @@ def role_agent(a: dict, out: Out) -> int:
     return 0
 
 
+def role_fdprobe(a: dict, out: Out) -> int:
+    """Monitor-semantics probe (#125591): open ``a["target"]``, unlink it while holding the fd — the exact
+    kernel state a process is in both inside SQLite's final-close window (unlink before fd close) and as a
+    live holder whose generation was unlinked beneath it — report ``held``, then close the fd only when the
+    stop file appears, so a test can drive the fd monitor scan by scan."""
+    fd = os.open(str(a["target"]), os.O_RDWR)
+    os.unlink(str(a["target"]))
+    out.report(event="held", fd=fd)
+    while not _stopping(Path(a["stop"])):
+        time.sleep(0.01)
+    os.close(fd)
+    out.report(event="closed")
+    return 0
+
+
 def role_cli(a: dict, out: Out) -> int:
     """``hermes <argv>``: ``hermes_cli.main`` run as ``__main__``, i.e. ``python -m hermes_cli.main <argv>``."""
     import runpy
@@ -369,7 +384,7 @@ def role_cli(a: dict, out: Out) -> int:
 ROLES = {
     "agent": role_agent, "cli": role_cli,
     "writer": role_writer, "reader": role_reader, "churn": role_churn, "opener": role_opener,
-    "fts": role_fts, "repair": role_repair,
+    "fts": role_fts, "repair": role_repair, "fdprobe": role_fdprobe,
 }
 
 

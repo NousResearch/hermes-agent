@@ -12,8 +12,10 @@ protocol). This module owns:
 
 * process lifecycle (spawn / ready / stop / SIGTERM / SIGKILL, PIDs recorded, nothing else touched);
 * a background ``/proc/<pid>/fd`` monitor over OUR children that records any ``(deleted)`` main-file descriptor
-  (a store swapped under a live holder) and, in WAL mode, any ``(deleted)`` ``-wal``/``-shm`` — the
-  kernel-level signature of a WAL generation unlinked under a live holder;
+  (a store swapped under a live holder — SQLite never unlinks the main file itself) and, in WAL mode, a
+  ``(deleted)`` ``-wal``/``-shm`` descriptor only once it survives several consecutive scans — the
+  kernel-level signature of a WAL generation unlinked under a live holder, as opposed to SQLite's own
+  final close, which unlinks a sidecar *before* closing its fd (#125591);
 * the invariant checks, done in the test process with short-lived bare ``sqlite3`` connections only (the
   test process never imports ``hermes_state``, so it never becomes a foreign holder of the file).
 
@@ -48,6 +50,15 @@ VULNERABLE_SQLITE = "3.50.4"  # bundled by uv's CPython 3.11.14 (the unit CI job
 # DELETE mode holds an EXCLUSIVE lock for every commit's journal+db fsyncs and has no writer fairness: an unpaced
 # append loop starves every other writer and reader. Gateway/TUI writers are paced by turns in the field.
 DELETE_WRITER_PACE = 0.02
+
+# A deleted ``-wal``/``-shm`` descriptor only counts as a hit after surviving this many consecutive scans.
+# SQLite's own final close unlinks the sidecar *before* closing its fd (os_unix.c ``unixShmUnmap`` →
+# ``unixShmPurge``), so a scan that lands inside that interval — the final-close window of #125591 —
+# legitimately observes a ``(deleted)`` sidecar the process is about to drop. A live holder whose
+# generation was unlinked beneath it (#121433) keeps the descriptor for as long as its connection stays
+# open, which spans many scans. The main ``state.db`` file is never unlinked by SQLite itself, so a
+# deleted main-file descriptor stays an immediate hit.
+DELETED_SIDECAR_CONFIRM_SCANS = 6
 
 
 def linked_sqlite_is_wal_capable() -> bool:
@@ -89,7 +100,7 @@ def child_env(home: Path, hermes_home: Path) -> dict:
 class Chamber:
     """A private HERMES_HOME + state.db plus the processes playing roles against it."""
 
-    def __init__(self, root: Path, *, journal: str = "wal"):
+    def __init__(self, root: Path, *, journal: str = "wal", monitor: bool = True):
         assert journal in JOURNAL_MODES, journal
         self.root = root
         self.mode = journal
@@ -111,10 +122,15 @@ class Chamber:
         self.reader_name: str | None = None
         self.deleted_hits: list[tuple[str, int, str]] = []
         self.fd_samples: dict[str, list[int]] = {}
+        # (pid, fd) -> (name, link, consecutive scans) for deleted sidecar descriptors not yet a hit;
+        # touched only by the monitor thread (or by the test driving _scan_once with monitor=False).
+        self._pending_sidecars: dict[tuple[int, str], tuple[str, str, int]] = {}
         self._lock = threading.Lock()
         self._monitor_stop = threading.Event()
-        self._monitor = threading.Thread(target=self._scan_loop, name="deleted-fd-monitor", daemon=True)
-        self._monitor.start()
+        self._monitor: threading.Thread | None = None
+        if monitor:
+            self._monitor = threading.Thread(target=self._scan_loop, name="deleted-fd-monitor", daemon=True)
+            self._monitor.start()
 
     # -- lifecycle ---------------------------------------------------------------------------------
     def spawn(self, role: str, name: str, *, env: dict | None = None, **args) -> subprocess.Popen:
@@ -218,45 +234,60 @@ class Chamber:
             if f is not None and not f.closed:
                 f.close()
         self._monitor_stop.set()
-        self._monitor.join(timeout=5)
+        if self._monitor is not None:
+            self._monitor.join(timeout=5)
 
     # -- kernel truth: (deleted) sidecars held by our children --------------------------------------
     def _scan_loop(self) -> None:
-        targets = {str(self.db)}
-        if self.mode == "wal":
-            targets |= {f"{self.db}-wal", f"{self.db}-shm"}
         while not self._monitor_stop.is_set():
-            for name, proc in self.live():
-                fd_dir = f"/proc/{proc.pid}/fd"
-                try:
-                    fds = os.listdir(fd_dir)
-                except OSError:
-                    continue
-                for fd in fds:
-                    try:
-                        link = os.readlink(f"{fd_dir}/{fd}")
-                    except OSError:
-                        continue
-                    if link.endswith(" (deleted)") and link[: -len(" (deleted)")] in targets:
-                        if not self._still_held(fd_dir, fd, link):
-                            continue
-                        with self._lock:
-                            self.deleted_hits.append((name, proc.pid, link))
+            self._scan_once()
             self._monitor_stop.wait(0.02)
 
-    @staticmethod
-    def _still_held(fd_dir: str, fd: str, link: str) -> bool:
-        """A leak holds the unlinked sidecar for good; SQLite's own WAL last-close does not.
+    def _scan_once(self) -> None:
+        """One monitor pass. A deleted main-file descriptor is recorded immediately (a store swapped under a
+        live holder: SQLite never unlinks the main file itself). A deleted ``-wal``/``-shm`` descriptor only
+        counts once it has survived ``DELETED_SIDECAR_CONFIRM_SCANS`` consecutive passes: SQLite's own final
+        close unlinks a sidecar *before* closing its fd (``unixShmUnmap`` → ``unixShmPurge``), so a pass that
+        lands inside that interval observes a descriptor the process is about to drop (#125591); when the fd
+        disappears the pending observation ends without a hit. A live holder robbed of its generation
+        (#121433) keeps the descriptor for as long as its connection stays open, which spans many passes."""
+        main = str(self.db)
+        sidecars = {f"{self.db}-wal", f"{self.db}-shm"} if self.mode == "wal" else set()
+        observed: dict[tuple[int, str], tuple[str, str]] = {}
+        hits: list[tuple[str, int, str]] = []
+        for name, proc in self.live():
+            fd_dir = f"/proc/{proc.pid}/fd"
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    link = os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if not link.endswith(" (deleted)"):
+                    continue
+                target = link[: -len(" (deleted)")]
+                if target == main:
+                    hits.append((name, proc.pid, link))
+                elif target in sidecars:
+                    observed[(proc.pid, fd)] = (name, link)
+        for key, (name, link, scans) in list(self._pending_sidecars.items()):
+            if key not in observed:
+                del self._pending_sidecars[key]  # fd gone: the final close finished (or the process exited)
+            elif scans + 1 >= DELETED_SIDECAR_CONFIRM_SCANS:
+                if scans + 1 == DELETED_SIDECAR_CONFIRM_SCANS:
+                    hits.append((name, key[0], link))
+                self._pending_sidecars[key] = (name, link, scans + 1)
+            else:
+                self._pending_sidecars[key] = (name, link, scans + 1)
+        for key, (name, link) in observed.items():
+            self._pending_sidecars.setdefault(key, (name, link, 1))
+        if hits:
+            with self._lock:
+                self.deleted_hits.extend(hits)
 
-        ``unixShmUnmap`` unlinks ``-shm`` and only then ``unixShmPurge`` closes its descriptor, so a
-        healthy close shows a ``(deleted)`` ``-shm`` for microseconds.  The 20ms poll occasionally
-        lands in that window on a short-lived role (the opener) and would report a phantom leak.  A
-        descriptor still pointing at the unlinked inode after a grace period is the real thing."""
-        time.sleep(0.05)
-        try:
-            return os.readlink(f"{fd_dir}/{fd}") == link
-        except OSError:
-            return False
 
     def deleted_hits_mark(self) -> int:
         """Position to pass to :meth:`deleted_hits_snapshot` so an episode sees only its own hits."""

@@ -685,3 +685,23 @@ class TestSessionScopedToolDiagnosis:
             "tool_describe", {"names": ["read_file"]}, None, None,
             session_tool_names=["read_file"])
         assert "Call it directly" in r
+
+    def test_handle_function_call_surface_reaches_the_diagnosis(self):
+        """The agent's real surface travels as enabled_tools through
+        handle_function_call into the bridge: the pre-assembly catalog cannot
+        see pruned/dropped names, so this channel is what actually kills the
+        retry loop in live sessions."""
+        import model_tools
+
+        r = model_tools.handle_function_call(
+            "tool_call",
+            {"calls": [{"name": "read_file", "arguments": {"path": "/etc/hostname"}}]},
+            enabled_tools=["tool_search"],  # = agent.valid_tool_names without file tools
+            enabled_toolsets=None, disabled_toolsets=["file"])
+        assert "not available in this session" in r
+        assert "do not retry" in r.lower()
+
+        r = model_tools.handle_function_call(
+            "tool_describe", {"names": ["read_file"]},
+            enabled_tools=["read_file"], enabled_toolsets=None, disabled_toolsets=None)
+        assert "Call it directly" in r

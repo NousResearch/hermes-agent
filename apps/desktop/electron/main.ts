@@ -3726,9 +3726,7 @@ function killHermesOwnedVenvDaemons(updateRoot) {
   let holders = []
 
   try {
-    holders = scanWindowsProcesses().filter(p =>
-      isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir)
-    )
+    holders = scanWindowsProcesses().filter(p => isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir))
   } catch {
     // Best-effort: the uninstall lock probe remains the backstop.
     return
@@ -3772,9 +3770,7 @@ function killExternalVenvHolders(updateRoot) {
   let holders = []
 
   try {
-    holders = scanWindowsProcesses().filter(p =>
-      isExternalVenvHolder(p?.ExecutablePath, p?.CommandLine, scriptsDir)
-    )
+    holders = scanWindowsProcesses().filter(p => isExternalVenvHolder(p?.ExecutablePath, p?.CommandLine, scriptsDir))
   } catch {
     // Best-effort: the shim-lock probe remains the backstop.
     return
@@ -3784,7 +3780,9 @@ function killExternalVenvHolders(updateRoot) {
     const pid = Number(holder?.ProcessId)
 
     if (Number.isInteger(pid) && pid > 0) {
-      rememberLog(`[updates] stopping external Hermes venv holder (autostart gateway/dashboard) PID ${pid} before hand-off`)
+      rememberLog(
+        `[updates] stopping external Hermes venv holder (autostart gateway/dashboard) PID ${pid} before hand-off`
+      )
 
       try {
         forceKillProcessTree(pid)

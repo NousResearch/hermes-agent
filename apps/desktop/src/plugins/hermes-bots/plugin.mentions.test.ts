@@ -388,7 +388,7 @@ describe('@-mention completions', () => {
     expect(eva?.handles).toEqual(['@eva-2'])
   })
 
-  it('never claims a remote row\'s name — the local gateway\'s twin is a different bot', async () => {
+  it("never claims a remote row's name — the local gateway's twin is a different bot", async () => {
     const { provide } = await contributions({ profiles: [{ name: 'default' }, REMOTE_DEFAULTS[0]] })
 
     const contributed = provide('cos').find(item => item.insert === '@cos-bot')

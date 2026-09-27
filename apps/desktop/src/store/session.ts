@@ -714,6 +714,7 @@ export function mergeSessionPage(
   // rows; a failed RPC untombstones immediately, so the filter is only ever
   // as sticky as the removal itself.
   const tombstones = $removedSessionIds.get()
+
   const tombstoned = (session: SessionInfo): boolean =>
     tombstones.size > 0 &&
     (tombstones.has(session.id) || (session._lineage_root_id != null && tombstones.has(session._lineage_root_id)))

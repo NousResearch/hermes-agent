@@ -27,6 +27,7 @@ describe('SearchField', () => {
 
   it('keeps clear wired to the value reset', () => {
     const onChange = vi.fn()
+
     const { getByRole } = render(
       <SearchField aria-label="find" onChange={onChange} placeholder="Search" value="query" />
     )

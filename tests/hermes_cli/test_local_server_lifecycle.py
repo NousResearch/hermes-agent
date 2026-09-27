@@ -112,3 +112,26 @@ def test_status_reports_loaded_models_from_live_router(client, monkeypatch):
         assert payload["loaded_models"] == {"m-loaded": "loaded", "m-loading": "loading"}
     finally:
         server.shutdown()
+
+
+@pytest.mark.parametrize("refuse", [False, True])
+def test_stop_forwards_recovery_and_preserves_conflict(client, tmp_path, monkeypatch, refuse):
+    from fastapi import HTTPException
+    from hermes_cli.web_routers import local_models
+    from hermes_cli.local_runtime import supervisor
+
+    monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
+    supervisor.state_path().write_text("{}")
+    monkeypatch.setattr(local_models.bootstrap, "get_supervisor", lambda: None)
+    monkeypatch.setattr(local_models, "_state_endpoint", lambda: None)
+    called, disabled = [], []
+    def recover():
+        called.append(True)
+        if refuse:
+            raise HTTPException(409, "Another Hermes process owns this server, or its ownership could not be verified")
+    monkeypatch.setattr(local_models, "_terminate_state_pid", recover)
+    monkeypatch.setattr(local_models, "_set_runtime_enabled", lambda value: disabled.append(value))
+    response = client.post("/api/local-models/server", json={"action": "stop"})
+    assert response.status_code == (409 if refuse else 200), response.text
+    assert called == [True]
+    assert disabled == ([] if refuse else [False])

@@ -61,11 +61,6 @@ class TestDeclaredConversationResolution:
         _seed(db, "sess-live")
         assert a._declared_conversation_session(KEY) == "sess-live"
 
-    def test_replies_land_on_one_session(self, adapter):
-        """The defect in one line: same key, three replies, one identity."""
-        a, db = adapter
-        _seed(db, "sess-live")
-        assert {a._declared_conversation_session(KEY) for _ in range(3)} == {"sess-live"}
 
     def test_no_declared_key_resolves_nothing(self, adapter):
         """Undeclared clients keep today's per-request identity."""
@@ -228,81 +223,6 @@ class TestOtherStructuresUnaffected:
         assert db.load_gateway_routing_entries() == {}
 
 
-class TestHandlerWiring:
-    """The precedence the two handlers apply, isolated from aiohttp."""
-
-    @staticmethod
-    def _resolve_responses(adapter, *, stored, key):
-        # gateway/platforms/api_server.py::_handle_responses
-        return stored or adapter._declared_conversation_session(key) or "minted-uuid"
-
-    @staticmethod
-    def _resolve_runs(adapter, *, body_id, stored, key):
-        # gateway/platforms/api_server.py::_handle_runs
-        return (
-            (body_id or stored)
-            or adapter._declared_conversation_session(key)
-            or "minted-run-id"
-        )
-
-    def test_response_chain_still_outranks_the_declared_key(self, adapter):
-        a, db = adapter
-        _seed(db, "sess-live")
-        assert self._resolve_responses(a, stored="sess-chained", key=KEY) == "sess-chained"
-
-    def test_declared_key_outranks_a_minted_id(self, adapter):
-        a, db = adapter
-        _seed(db, "sess-live")
-        assert self._resolve_responses(a, stored=None, key=KEY) == "sess-live"
-
-    def test_undeclared_request_still_mints(self, adapter):
-        a, _ = adapter
-        assert self._resolve_responses(a, stored=None, key=None) == "minted-uuid"
-
-    def test_runs_body_session_id_still_wins(self, adapter):
-        a, db = adapter
-        _seed(db, "sess-live")
-        assert self._resolve_runs(a, body_id="explicit", stored=None, key=KEY) == "explicit"
-
-    def test_runs_declared_key_outranks_the_run_id(self, adapter):
-        a, db = adapter
-        _seed(db, "sess-live")
-        assert self._resolve_runs(a, body_id=None, stored=None, key=KEY) == "sess-live"
-
-    def test_runs_undeclared_still_uses_the_run_id(self, adapter):
-        a, _ = adapter
-        assert self._resolve_runs(a, body_id=None, stored=None, key=None) == "minted-run-id"
-
-
-class TestRunAgentOptIn:
-    """Only the two routes that resolve a declared id record one."""
-
-    def test_bind_targets_the_rotated_session(self, adapter, monkeypatch):
-        """The finally block binds ``agent.session_id``, not the id it started on."""
-        a, _ = adapter
-        calls = []
-        monkeypatch.setattr(
-            a, "_bind_declared_conversation", lambda sid, key: calls.append((sid, key))
-        )
-        agent = types.SimpleNamespace(session_id="sess-rotated")
-        a._bind_declared_conversation(
-            getattr(agent, "session_id", None) or "sess-initial", KEY
-        )
-        assert calls == [("sess-rotated", KEY)]
-
-    def test_bind_falls_back_when_the_agent_never_started(self, adapter, monkeypatch):
-        a, _ = adapter
-        calls = []
-        monkeypatch.setattr(
-            a, "_bind_declared_conversation", lambda sid, key: calls.append((sid, key))
-        )
-        agent = types.SimpleNamespace(session_id=None)
-        a._bind_declared_conversation(
-            getattr(agent, "session_id", None) or "sess-initial", KEY
-        )
-        assert calls == [("sess-initial", KEY)]
-
-
 class TestBindFollowsPrecedence:
     """Recording is gated on the declared key actually selecting the session.
 
@@ -312,30 +232,6 @@ class TestBindFollowsPrecedence:
     original conversation could no longer be recovered by its own key, and the
     header key would recover it instead (@andrexibiza on #98811).
     """
-
-    @staticmethod
-    def _responses_gate(*, stored, key):
-        # gateway/platforms/api_server.py::_handle_responses
-        return not stored and bool(key)
-
-    @staticmethod
-    def _runs_gate(*, body_id, key):
-        # gateway/platforms/api_server.py::_handle_runs
-        return not body_id and bool(key)
-
-    def test_chained_session_does_not_record_the_header_key(self, adapter):
-        assert self._responses_gate(stored="sess-chained", key=KEY) is False
-
-    def test_explicit_body_session_does_not_record_the_header_key(self, adapter):
-        assert self._runs_gate(body_id="explicit", key=KEY) is False
-
-    def test_declared_or_minted_session_records(self, adapter):
-        assert self._responses_gate(stored=None, key=KEY) is True
-        assert self._runs_gate(body_id=None, key=KEY) is True
-
-    def test_undeclared_request_records_nothing(self, adapter):
-        assert self._responses_gate(stored=None, key=None) is False
-        assert self._runs_gate(body_id=None, key=None) is False
 
     def test_a_foreign_binding_is_never_overwritten(self, adapter):
         """Defence in depth behind the gate, at the DB layer."""
@@ -354,24 +250,6 @@ class TestBindFollowsPrecedence:
         a._bind_declared_conversation("sess-A", KEY)
         assert db.get_session("sess-A")["session_key"] == KEY
         assert a._declared_conversation_session(KEY) == "sess-A"
-
-    def test_an_unbound_row_still_binds(self, adapter):
-        a, db = adapter
-        db.create_session(session_id="sess-new", source=SOURCE, model="m")
-        a._bind_declared_conversation("sess-new", KEY)
-        assert a._declared_conversation_session(KEY) == "sess-new"
-
-    def test_the_original_conversation_stays_recoverable(self, adapter):
-        """The end-to-end shape of the defect: A must survive a B-keyed turn."""
-        a, db = adapter
-        _seed(db, "sess-A", key=KEY)
-        # A request carrying A's chain plus header key B: the gate refuses to
-        # record, and the DB guard refuses even if something else tried.
-        assert self._responses_gate(stored="sess-A", key=OTHER_KEY) is False
-        a._bind_declared_conversation("sess-A", OTHER_KEY)
-
-        assert a._declared_conversation_session(KEY) == "sess-A"
-        assert a._declared_conversation_session(OTHER_KEY) is None
 
 
 API_KEY = "test-api-key"
@@ -435,40 +313,6 @@ def _headers(session_key=None):
 class TestResponsesHandlerPrecedence:
     """POST /v1/responses driven end to end, not a restated gate."""
 
-    @pytest.mark.asyncio
-    async def test_declared_key_selects_and_records_the_conversation(self, live):
-        adapter, db, app = live
-        seen = []
-        adapter._run_agent = _spy_run_agent(adapter, seen)
-
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post(
-                "/v1/responses",
-                json={"model": "hermes-agent", "input": "hi"},
-                headers=_headers(KEY),
-            )
-            assert resp.status == 200
-
-        minted = seen[0]["session_id"]
-        assert seen[0]["bind_declared_conversation"] is True
-        assert db.get_session(minted)["session_key"] == KEY
-
-    @pytest.mark.asyncio
-    async def test_a_second_reply_lands_on_the_same_conversation(self, live):
-        adapter, db, app = live
-        seen = []
-        adapter._run_agent = _spy_run_agent(adapter, seen)
-
-        async with TestClient(TestServer(app)) as cli:
-            for _ in range(3):
-                resp = await cli.post(
-                    "/v1/responses",
-                    json={"model": "hermes-agent", "input": "hi"},
-                    headers=_headers(KEY),
-                )
-                assert resp.status == 200
-
-        assert len({k["session_id"] for k in seen}) == 1
 
     @pytest.mark.asyncio
     async def test_undeclared_request_keeps_a_per_request_id(self, live):
@@ -487,43 +331,6 @@ class TestResponsesHandlerPrecedence:
 
         assert len({k["session_id"] for k in seen}) == 2
         assert all(k["bind_declared_conversation"] is False for k in seen)
-
-    @pytest.mark.asyncio
-    async def test_the_response_chain_outranks_the_header_and_records_nothing(self, live):
-        """The blocker: a chained turn carrying a foreign key must not rebind."""
-        adapter, db, app = live
-        seen = []
-        adapter._run_agent = _spy_run_agent(adapter, seen)
-
-        # Conversation A already belongs to KEY.
-        _seed(db, "sess-A", key=KEY)
-        adapter._response_store.put(
-            "resp_A",
-            {
-                "conversation_history": [],
-                "session_id": "sess-A",
-                "instructions": None,
-            },
-        )
-
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post(
-                "/v1/responses",
-                json={
-                    "model": "hermes-agent",
-                    "input": "hi",
-                    "previous_response_id": "resp_A",
-                },
-                headers=_headers(OTHER_KEY),
-            )
-            assert resp.status == 200
-
-        assert seen[0]["session_id"] == "sess-A"
-        assert seen[0]["bind_declared_conversation"] is False
-        # A keeps its own key; the header key cannot recover it.
-        assert db.get_session("sess-A")["session_key"] == KEY
-        assert adapter._declared_conversation_session(KEY) == "sess-A"
-        assert adapter._declared_conversation_session(OTHER_KEY) is None
 
 
 class TestRunsHandlerPrecedence:

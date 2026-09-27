@@ -193,7 +193,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
     }
 
     for (const member of members) {
-      const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+      const handle = String(botHandle(member.name, member) || '').trim()
       const display = displayName(member, botRosterMeta(member, allMeta))
       // Renamed members complete on their friendly tag; parser resolves both.
       const tag = String(botMentionTag(member) || handle).trim()
@@ -258,7 +258,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
   return (
     <div className="relative min-w-0 flex-1">
       {open ? (
-        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-48 w-64 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) py-1 shadow-lg">
+        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-48 w-64 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) py-1 shadow-lg">
           {options.map((option, index) => (
             <RowButton
               className={cn(
@@ -283,7 +283,13 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
         // Input whose form submitted on every Enter — newlines were
         // impossible. Enter (no Shift) still submits via onSubmitDraft;
         // Shift+Enter falls through to the textarea's native newline.
-        className={cn('max-h-40 min-h-9 resize-none', inputProps.className)}
+        // Grow with wrapped text/newlines so long briefs stay reviewable
+        // (#95300), then scroll internally before the composer takes over
+        // the room — same field-sizing idiom as the Kanban drawer.
+        className={cn(
+          'field-sizing-content max-h-[min(50vh,24rem)] min-h-9 resize-none overflow-y-auto',
+          inputProps.className
+        )}
         onBlur={() => setToken(null)}
         onChange={event => {
           onChange(event.target.value)
@@ -410,8 +416,13 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
 
   const allAnswered = questions.every(q => answerFor(q))
 
-  const submit = async () => {
-    if (!member || sending || !allAnswered) {
+  /** `chosen` short-circuits the staged answer: approval choices submit on
+   *  click (#91706), so the value travels with the click instead of waiting
+   *  for a re-render of `picked` and a second Respond click. */
+  const submit = async (chosen?: string) => {
+    const resolve = (q: GroupClarifyQuestion) => chosen ?? answerFor(q)
+
+    if (!member || sending || !questions.every(q => resolve(q))) {
       return
     }
 
@@ -419,12 +430,12 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
 
     try {
       if (isApproval || !(entry.questions && entry.questions.length)) {
-        await answerGroupClarify(entry, member, answerFor(questions[0]))
+        await answerGroupClarify(entry, member, resolve(questions[0]))
       } else {
         const answers: Record<string, string> = {}
 
         for (const q of questions) {
-          answers[q.qid] = answerFor(q)
+          answers[q.qid] = resolve(q)
         }
 
         await answerGroupClarify(entry, member, answers)
@@ -432,8 +443,8 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
 
       // Echo the exchange into the room log so the thread reads complete.
       const summary = isApproval
-        ? `${answerFor(questions[0])} — ${entry.command || entry.question || b.group.commandApproval}`
-        : questions.map(q => (questions.length > 1 ? `${q.question}: ${answerFor(q)}` : answerFor(q))).join('\n')
+        ? `${resolve(questions[0])} — ${entry.command || entry.question || b.group.commandApproval}`
+        : questions.map(q => (questions.length > 1 ? `${q.question}: ${resolve(q)}` : resolve(q))).join('\n')
 
       appendGroupChatEntry(
         group,
@@ -481,8 +492,22 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
                       'h-6 px-2 text-[0.7rem]',
                       isApproval && choice === 'deny' && !chosen && 'text-destructive'
                     )}
+                    disabled={sending || !member}
                     key={`choice:${q.qid}:${choice}`}
                     onClick={() => {
+                      // Approvals are a closed choice set: the click IS the
+                      // answer (#91706). Staging it behind a footer button
+                      // left users with a highlighted choice and no way to
+                      // send it when the footer was clipped or covered.
+                      if (isApproval) {
+                        setPicked({
+                          [q.qid]: [choice]
+                        })
+                        void submit(choice)
+
+                        return
+                      }
+
                       setDrafts(prev => ({
                         ...prev,
                         [q.qid]: ''
@@ -547,11 +572,14 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
           )}
         </div>
       ))}
-      <div className="flex justify-end">
-        <Button disabled={sending || !allAnswered || !member} onClick={() => void submit()} size="sm">
-          {sending ? 'Sending…' : isApproval ? 'Respond' : 'Answer'}
-        </Button>
-      </div>
+      {/* Approval choices submit on click; only clarify answers need a footer. */}
+      {isApproval ? null : (
+        <div className="flex justify-end">
+          <Button disabled={sending || !allAnswered || !member} onClick={() => void submit()} size="sm">
+            {sending ? 'Sending…' : 'Answer'}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

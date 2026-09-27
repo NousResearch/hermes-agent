@@ -608,3 +608,109 @@ def test_image_only_assistant_reply_keeps_roles_alternating_on_the_wire(tmp_path
     wire = agent._build_api_kwargs(api_messages)["messages"]
     assert [m["role"] for m in wire] == ["system", "user", "assistant", "user"]
     assert "image_url" not in str(wire)
+
+
+def _strict_text_only_server(rejection: str):
+    """A text-only OpenAI-compatible endpoint with a strict-alternation chat template: 400s any
+    request carrying an image part with ``rejection``, and any request whose non-system turns do
+    not alternate or do not open and end on a user turn (Gemma/Mistral templates on vLLM)."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    requests: list = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, payload):
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+
+        def do_GET(self):
+            self._send(200, {"object": "list", "data": [{"id": "m", "object": "model"}]})
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            msgs = body.get("messages") or []
+            if not msgs:  # not a chat turn (capability probe)
+                return self._send(200, {"object": "list", "data": []})
+            requests.append(msgs)
+            if "image_url" in json.dumps(msgs):
+                return self._send(400, {"error": {"message": rejection, "type": "invalid_request_error"}})
+            roles = [m["role"] for m in msgs if m["role"] != "system"]
+            if roles[0] != "user" or roles[-1] != "user" or any(a == b for a, b in zip(roles, roles[1:])):
+                return self._send(400, {"error": {
+                    "message": "Conversation roles must alternate user/assistant/user/assistant/...",
+                    "type": "invalid_request_error"}})
+            chunk = {"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                     "choices": [{"index": 0, "delta": {"role": "assistant", "content": "OK-REPLY"},
+                                  "finish_reason": None}]}
+            done = {**chunk, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+            if body.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: {json.dumps(done)}\n\ndata: [DONE]\n\n".encode())
+                return None
+            return self._send(200, {
+                "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK-REPLY"},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, requests
+
+
+_PASTED_IMAGE = {"type": "image_url", "image_url": {
+    "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}}
+
+
+@pytest.mark.parametrize("rejection", [
+    "image content is not supported",  # text-only model: recorded, stripped on every request
+    # vision model, corrupt bytes: stripped for the attempt only (_strip_request_images_and_retry)
+    "Invalid request: prepare image failed: failed to decode image: invalid or unsupported image format",
+], ids=["text-only-model", "corrupt-image"])
+@pytest.mark.parametrize("image_turn", ["earlier", "current"])
+def test_api_server_image_only_turn_recovers_end_to_end(rejection, image_turn, monkeypatch):
+    """An API-server client (e.g. Open WebUI) sends a pasted image with an empty caption; the
+    server normalizes it to an image-only user turn. With the model believed vision-capable
+    (``model.supports_vision: true``) the image reaches an endpoint that rejects it, and the
+    text-only retry must still alternate user/assistant and end on a user turn — dropping the
+    emptied turn left two replies adjacent (or the request ending on the previous reply) and a
+    strict chat template failed the turn."""
+    import os
+    from pathlib import Path
+
+    from gateway.platforms.api_server import _normalize_multimodal_content
+    from run_agent import AIAgent
+
+    Path(os.environ["HERMES_HOME"], "config.yaml").write_text("model:\n  supports_vision: true\n", encoding="utf-8")
+    srv, requests = _strict_text_only_server(rejection)
+    try:
+        raw = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "A"},
+               {"role": "user", "content": [{"type": "text", "text": ""}, _PASTED_IMAGE]}]
+        if image_turn == "earlier":
+            raw += [{"role": "assistant", "content": "B"}, {"role": "user", "content": "and now?"}]
+        conv = [{"role": m["role"], "content": _normalize_multimodal_content(m["content"])} for m in raw]
+        agent = AIAgent(api_key="k", base_url=f"http://127.0.0.1:{srv.server_address[1]}/v1",
+                        provider="custom", model="m", quiet_mode=True, skip_context_files=True,
+                        skip_memory=True, max_iterations=3, enabled_toolsets=[])
+        assert agent._model_supports_vision(), "precondition: images must reach the model"
+
+        result = agent.run_conversation(conv[-1]["content"], conversation_history=conv[:-1])
+    finally:
+        srv.shutdown()
+
+    assert "image_url" in str(requests[0]), "precondition: the first request carries the image"
+    assert result.get("final_response") == "OK-REPLY", result.get("error")
+    text_only = requests[-1]
+    assert "image_url" not in str(text_only)
+    assert [m["role"] for m in text_only if m["role"] != "system"] == (
+        ["user", "assistant", "user", "assistant", "user"] if image_turn == "earlier"
+        else ["user", "assistant", "user"])

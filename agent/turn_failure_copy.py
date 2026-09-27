@@ -18,7 +18,7 @@ from hermes_constants import display_hermes_home
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
 SITE_FAILURE_CODES = frozenset({
     "context_overflow", "truncated", "invalid_response", "empty_response", "loop_error",
-    "interpreter_shutdown", "session_busy",
+    "interpreter_shutdown", "session_busy", "malformed_tool_call",
 })
 
 
@@ -108,6 +108,10 @@ _EXIT_REASON_FAILURES: Tuple[Tuple[str, str, bool, bool], ...] = (
     # Advisory: the loop ends these as an incomplete (not failed) turn with an explainer.
     ("redirect_restart_limit_exceeded", "loop_error", True, False),
     ("rebuilt_restart_limit_exceeded", "loop_error", True, False),
+    # The model repeatedly emitted tool calls whose arguments were not a JSON object (#125368):
+    # not retryable in-turn — the same model will keep producing them — and distinct from
+    # iteration-budget exhaustion so dispatchers can tell the two apart.
+    ("malformed_tool_call_streak", "malformed_tool_call", False, True),
 )
 
 
@@ -286,6 +290,12 @@ _FAILURE_CODE_COPY: Dict[str, str] = {
     "interpreter_shutdown": (
         "Hermes was shutting down and stopped this turn. Your conversation is saved — reopen "
         "it{resume} and send your message again."
+    ),
+    "malformed_tool_call": (
+        "{model} tried to call a tool {attempts} times in a row, but the arguments it sent "
+        "were never valid JSON, so nothing was run. This is a model limitation, not a problem "
+        "with your request — switch to a different model with /model, or ask for the work in "
+        "smaller steps."
     ),
 }
 

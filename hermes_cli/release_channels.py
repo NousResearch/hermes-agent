@@ -263,11 +263,19 @@ class ChannelReader:
         url = self.base_url + "/" + artifact_key(key)
         if sha256 is not None:
             require_sha256(sha256)
-        try:
+
+        # Channel reads are idempotent and precede the PM download path, so use the same bounded
+        # transient-failure policy instead of maintaining a second retry classifier here.
+        from pm.network import retry_network
+
+        def read() -> bytes:
             with self.opener(Request(url, headers={"Cache-Control": "no-cache"}), timeout=30) as response:
                 if response.geturl() != url:
                     raise ChannelError("Channel archive redirects are not permitted")
-                body = response.read(MAX_METADATA + 1)
+                return response.read(MAX_METADATA + 1)
+
+        try:
+            body = retry_network(read)
         except HTTPError as exc:
             if exc.code == 404:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc

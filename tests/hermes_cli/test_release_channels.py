@@ -72,6 +72,69 @@ def test_names_are_validated_without_normalizing(name):
         validate_name(name)
 
 
+def test_reader_retries_transient_http_and_honors_retry_after(monkeypatch):
+    from email.message import Message
+    from urllib.error import HTTPError
+    from hermes_cli.release_channels import ChannelReader
+
+    url = "http://127.0.0.1:12345/releases/fixture.json"
+    headers = Message()
+    headers["Retry-After"] = "7"
+    attempts = []
+    waits = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def geturl(self):
+            return url
+
+        def read(self, _limit):
+            return b"fixture"
+
+    def opener(request, timeout):
+        assert timeout == 30
+        attempts.append(request.full_url)
+        if len(attempts) == 1:
+            raise HTTPError(url, 503, "unavailable", headers, None)
+        return Response()
+
+    monkeypatch.setattr("pm.network.time.sleep", waits.append)
+    reader = ChannelReader("http://127.0.0.1:12345", opener=opener)
+    assert reader.read_bytes("releases/fixture.json") == b"fixture"
+    assert attempts == [url, url]
+    assert waits == [7.0]
+
+
+def test_reader_exhausts_transient_retry_budget_before_channel_error(monkeypatch):
+    from email.message import Message
+    from urllib.error import HTTPError
+    from hermes_cli.release_channels import ChannelError, ChannelReader
+    from pm import network
+
+    url = "http://127.0.0.1:12345/releases/fixture.json"
+    headers = Message()
+    headers["Retry-After"] = "1"
+    attempts = []
+    waits = []
+
+    def opener(request, timeout):
+        assert timeout == 30
+        attempts.append(request.full_url)
+        raise HTTPError(url, 503, "unavailable", headers, None)
+
+    monkeypatch.setattr(network.time, "sleep", waits.append)
+    reader = ChannelReader("http://127.0.0.1:12345", opener=opener)
+    with pytest.raises(ChannelError, match="HTTP 503"):
+        reader.read_bytes("releases/fixture.json")
+    assert len(attempts) == network._ATTEMPTS
+    assert len(waits) == network._ATTEMPTS - 1
+
+
 def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
     from hermes_cli.release_channels import ChannelReader, ChannelError, canonical_json
     with object_server() as (url, objects, headers, requests, faults):

@@ -6735,8 +6735,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             pending[key] = event
             return
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
+        existing.absorb_media(event)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
 

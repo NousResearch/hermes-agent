@@ -282,6 +282,25 @@ Peer bots do not need to be added to `FEISHU_ALLOWED_USERS` — that allowlist a
 
 Grant the `application:bot.basic_info:read` scope to display peer bot names; without it, peer bots still route correctly but appear as their `open_id`.
 
+### Mentioning another bot by name
+
+Feishu pushes a group message to another bot only when the message carries a real mention, so plain text `@Name` never reaches the peer — and a receiving instance that admits bots on mention only (`FEISHU_ALLOW_BOTS=mentions`) rejects it. Map the names you want to address to their open_ids and Hermes renders `@Name` in outbound text as a real mention:
+
+```bash
+FEISHU_BOT_MENTION_MAP="GameDev=ou_xxx,Ops Bot=ou_yyy"
+```
+
+```yaml
+feishu:
+  bot_mention_map:
+    GameDev: ou_xxx
+    Ops Bot: ou_yyy
+```
+
+A name is matched longest-first and has to end at a word boundary: with `GameDev` mapped, `@GameDev 请确认` becomes a mention while `@GameDevX` and any unmapped name stay plain text. Only the configured names are upgraded, so no other `@` in your output changes behavior. With no map configured, payloads render exactly as before.
+
+In `config.yaml` the mapping is per profile, so a multiplexed secondary instance addresses peer bots with its own names.
+
 ## Interactive Card Actions
 
 When users click buttons or interact with interactive cards sent by the bot, the adapter routes these as synthetic `/card` command events:
@@ -558,6 +577,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_CONNECTION_MODE` | — | `websocket` | `websocket` or `webhook` |
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
 | `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
+| `FEISHU_BOT_MENTION_MAP` | — | _(empty)_ | Name → open_id pairs (e.g. `Name=ou_x,Other=ou_y`) so an outbound `@Name` is sent as a real mention |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |

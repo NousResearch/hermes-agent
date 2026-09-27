@@ -4569,6 +4569,108 @@ class TestMatrixImageOnlyMediaNormalization:
         ]
         assert captured_event.message_type == MessageType.PHOTO
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "msgtype, filename, mime_type, expected_type, expected_cache, expected_path",
+        [
+            ("m.image", "image.png", "image/png", MessageType.PHOTO, "image", "/cache/image.png"),
+            ("m.audio", "recording.mp3", "audio/mpeg", MessageType.AUDIO, "audio", "/cache/recording.mp3"),
+            ("m.file", "report.pdf", "application/pdf", MessageType.DOCUMENT, "document", "/cache/document"),
+            ("m.video", "clip.mp4", "video/mp4", MessageType.VIDEO, "document", "/cache/document"),
+        ],
+    )
+    async def test_declared_filename_preserves_filename_looking_caption_and_names_cache(
+        self, msgtype, filename, mime_type, expected_type, expected_cache, expected_path,
+    ):
+        from gateway.platforms import base
+
+        self.adapter._client.download_media = AsyncMock(return_value=b"media")
+        self.adapter.handle_message = AsyncMock()
+
+        with (
+            patch.object(base, "cache_image_from_bytes_async", new_callable=AsyncMock, return_value="/cache/image.png") as image_cache,
+            patch.object(base, "cache_audio_from_bytes_async", new_callable=AsyncMock, return_value="/cache/recording.mp3") as audio_cache,
+            patch.object(base, "cache_document_from_bytes_async", new_callable=AsyncMock, return_value="/cache/document") as document_cache,
+        ):
+            await self.adapter._handle_media_message(
+                room_id="!room:example.org",
+                sender="@alice:example.org",
+                event_id="$caption",
+                event_ts=0.0,
+                source_content={
+                    "msgtype": msgtype,
+                    "body": "screenshot.png",
+                    "filename": filename,
+                    "url": "mxc://example/media",
+                    "info": {"mimetype": mime_type},
+                },
+                relates_to={},
+                msgtype=msgtype,
+            )
+
+        cache_calls = {
+            "image": image_cache.await_args_list,
+            "audio": audio_cache.await_args_list,
+            "document": document_cache.await_args_list,
+        }
+        assert {kind: len(calls) for kind, calls in cache_calls.items()} == {
+            kind: int(kind == expected_cache) for kind in cache_calls
+        }
+        if expected_cache == "audio":
+            audio_cache.assert_awaited_once_with(b"media", ext=".mp3")
+        if expected_cache == "document":
+            document_cache.assert_awaited_once_with(b"media", filename)
+
+        (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        assert (event.text, event.message_type, event.media_urls) == (
+            "screenshot.png", expected_type, [expected_path],
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body, expected_text", [
+        ("report.pdf", ""),
+        ("a useful caption", "a useful caption"),
+    ])
+    async def test_declared_filename_controls_caption_even_without_download(self, body, expected_text):
+        self.adapter.handle_message = AsyncMock()
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$file-caption",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.file", "body": body, "filename": "report.pdf",
+                "url": "mxc://example/report", "info": {"mimetype": "application/pdf"},
+            },
+            relates_to={},
+            msgtype="m.file",
+        )
+
+        (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        assert event.text == expected_text
+
+    @pytest.mark.asyncio
+    async def test_other_client_media_event_keeps_declared_filename_and_caption(self):
+        self.adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        self.adapter._is_duplicate_event = MagicMock(return_value=False)
+        self.adapter.handle_message = AsyncMock()
+        content = {
+            "msgtype": "m.file", "body": "notes.pdf", "filename": "original.pdf",
+            "url": "mxc://example/original", "info": {"mimetype": "application/pdf"},
+        }
+        event = types.SimpleNamespace(
+            room_id="!room:example.org", sender="@alice:example.org",
+            event_id="$other-client-file", timestamp=0, content=content,
+        )
+
+        await self.adapter._on_room_message(event)
+
+        (message,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        assert (message.text, message.message_type, message.raw_message) == (
+            "notes.pdf", MessageType.DOCUMENT, content,
+        )
+
 
     @pytest.mark.asyncio
     async def test_inbound_oversized_media_is_rejected(self):
@@ -4588,7 +4690,8 @@ class TestMatrixImageOnlyMediaNormalization:
             event_ts=0.0,
             source_content={
                 "msgtype": "m.image",
-                "body": "huge.png",
+                "body": "caption.png",
+                "filename": "huge.png",
                 "url": "mxc://example/huge.png",
                 "info": {"mimetype": "image/png", "size": 11},
             },

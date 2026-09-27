@@ -461,6 +461,13 @@ def _is_bare_media_filename(msgtype: str, body: str) -> bool:
     return msgtype in ("m.audio", "m.file", "m.video") and _looks_like_matrix_media_filename(body)
 
 
+def _inbound_media_caption(msgtype: str, body: str, source_content: dict) -> str:
+    declared_filename = str(source_content.get("filename") or "").strip()
+    if declared_filename:
+        return "" if body.strip() == declared_filename else body
+    return "" if _is_bare_media_filename(msgtype, body) else body
+
+
 def _matrix_event_timestamp_seconds(event: Any) -> float:
     """Return a Matrix event timestamp in seconds, accepting ms or sec values."""
     try:
@@ -2313,8 +2320,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             # Re-normalize after reply stripping so ``> quoted\n\n!model`` is still a command.
             body = _normalize_matrix_bang_command(body)
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
-        elif _is_bare_media_filename(media_msgtype, body):
-            body = ""  # transport filename, not user text
+        else:
+            body = _inbound_media_caption(media_msgtype, body, source_content)
         event = MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply.event_id, reply_to_text=reply.text, reply_to_author_id=reply.author_id,
@@ -2410,6 +2417,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         relates_to: dict, msgtype: str, mention_claimed: bool = False, *,
         reply_parent: MatrixEventContext | None = None) -> None:
         body = source_content.get("body", "") or ""
+        declared_filename = str(source_content.get("filename") or "").strip()
+        transport_filename = declared_filename or body
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
             logger.warning("[Matrix] Rejecting inbound media %s with non-MXC URL", event_id)
@@ -2457,7 +2466,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             try:
                 cached_path = await self._download_and_cache_media(
                     url, event_id, file_content if is_encrypted_media else None, msg_type, media_type,
-                    is_voice_message, body)
+                    is_voice_message, transport_filename)
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
         # Unencrypted media may fall back to the HTTP download URL when caching failed.
@@ -2486,7 +2495,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     async def _download_and_cache_media(
         self, url: str, event_id: str, encrypted_file: Optional[dict], msg_type: MessageType, media_type: str,
-        is_voice_message: bool, body: str) -> Optional[str]:
+        is_voice_message: bool, transport_filename: str) -> Optional[str]:
         """Download (and decrypt, when *encrypted_file* is given) media into the local cache."""
         file_bytes = await self._client.download_media(ContentURI(url))
         if file_bytes is None:
@@ -2512,9 +2521,9 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             logger.info("[Matrix] Cached user image at %s", cached_path)
             return cached_path
         if msg_type in {MessageType.AUDIO, MessageType.VOICE}:
-            ext = Path(body or ("voice.ogg" if is_voice_message else "audio.ogg")).suffix or ".ogg"
+            ext = Path(transport_filename or ("voice.ogg" if is_voice_message else "audio.ogg")).suffix or ".ogg"
             return await cache_audio_from_bytes_async(file_bytes, ext=ext)
-        filename = body or ("video.mp4" if msg_type == MessageType.VIDEO else "document")
+        filename = transport_filename or ("video.mp4" if msg_type == MessageType.VIDEO else "document")
         return await cache_document_from_bytes_async(file_bytes, filename)
 
     async def _on_room_state(self, event: Any) -> None:

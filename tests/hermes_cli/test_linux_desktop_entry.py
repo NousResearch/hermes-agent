@@ -653,8 +653,16 @@ def test_installed_entry_carries_the_window_app_id(tmp_path, xdg_home, monkeypat
     assert values["Name"] == "Hermes"  # the menu label is not part of the identity
 
 
-def test_install_retires_the_legacy_entry_name(tmp_path, xdg_home, monkeypatch):
-    """A leftover hermes.desktop would surface as a second Hermes in the app grid."""
+def test_install_keeps_the_legacy_entry_as_a_hidden_alias(tmp_path, xdg_home, monkeypatch):
+    """A pin resolves by the entry file name it was pinned against (#124492).
+
+    Deleting ``hermes.desktop`` silently kills existing taskbar pins (GNOME drops
+    the favourite, Plasma leaves an inert item) and the shell has no mechanism to
+    re-point the association for the user. The pre-rename entry must survive as a
+    ``NoDisplay=true`` alias of the app-id entry: out of the app grid, still
+    launchable, and window-matched through the same ``StartupWMClass`` and
+    ``Exec`` as the app-id entry.
+    """
     _stub_install(tmp_path, monkeypatch)
     root = _make_project(tmp_path)
     legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
@@ -667,11 +675,30 @@ def test_install_retires_the_legacy_entry_name(tmp_path, xdg_home, monkeypatch):
     entry = lde.install_desktop_entry(root)
 
     assert entry is not None and entry.is_file()
-    assert not legacy.exists()
+    assert legacy.is_file(), "an existing pin resolves through this file — it must survive"
+    alias = _parse(legacy.read_text(encoding="utf-8"))
+    assert alias["NoDisplay"] == "true"  # no second Hermes in the app grid
+    assert alias["StartupWMClass"] == lde.APP_ID  # still groups with the window
+    entry_values = _parse(entry.read_text(encoding="utf-8"))
+    assert alias["Exec"] == entry_values["Exec"]  # launches the same command
+    assert alias["Icon"] == entry_values["Icon"]
+
+
+def test_unchanged_entry_still_aliases_a_legacy_entry(tmp_path, xdg_home, monkeypatch):
+    """An up-to-date app-id entry must not skip converting a legacy file found beside it."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    assert lde.install_desktop_entry(root) is not None
+    legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    legacy.write_text("[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n", encoding="utf-8")
+
+    lde.install_desktop_entry(root)
+
+    assert _parse(legacy.read_text(encoding="utf-8"))["NoDisplay"] == "true"
 
 
 def test_install_keeps_foreign_files_at_the_legacy_path(tmp_path, xdg_home, monkeypatch):
-    """Only our own entry retires; another app's file at that name is not ours to delete."""
+    """Only our own entry is converted to an alias; another app's file is not ours to rewrite."""
     _stub_install(tmp_path, monkeypatch)
     root = _make_project(tmp_path)
     foreign = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
@@ -688,9 +715,9 @@ def test_install_keeps_foreign_files_at_the_legacy_path(tmp_path, xdg_home, monk
 
 
 def test_install_opt_out_preserves_the_legacy_entry(tmp_path, xdg_home, monkeypatch):
-    """The opt-out protects user edits, so it also stops the legacy retirement.
+    """The opt-out protects user edits, so it also stops the legacy alias conversion.
 
-    The missing-entry path still creates the app-id entry; the deletion is
+    The missing-entry path still creates the app-id entry; the rewrite is
     management too and must not run when the user asked to be left alone.
     """
     hermes_home = tmp_path / "hermes-home"
@@ -711,7 +738,9 @@ def test_install_opt_out_preserves_the_legacy_entry(tmp_path, xdg_home, monkeypa
     entry = lde.install_desktop_entry(root)
 
     assert entry == xdg_home / "applications" / lde.DESKTOP_ENTRY_NAME
-    assert legacy.is_file(), "the opt-out must keep the legacy entry in place"
+    assert legacy.read_text(encoding="utf-8") == (
+        "[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n"
+    ), "the opt-out must leave the legacy entry byte-for-byte untouched"
 
 
 def test_app_id_matches_the_desktop_build_identity():

@@ -282,6 +282,46 @@ def test_bidi_monitor_output_is_sanitized_before_agent(hermes_env, monkeypatch):
     assert "Alice Work" in observed["prompts"][0]
 
 
+def test_monitor_script_uses_configured_interpreter(hermes_env, monkeypatch):
+    """A monitor script uses the same job-level interpreter as `script`."""
+    import stat
+
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    wrapper = hermes_env / "venv" / "bin" / "python3"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "env = os.environ.copy()\n"
+        'env["CRON_MONITOR_WRAPPER_USED"] = "1"\n'
+        "os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    _write_script(
+        hermes_env,
+        "mon.py",
+        'import os\nprint(os.environ.get("CRON_MONITOR_WRAPPER_USED", "0"))\n',
+    )
+    job = create_job(
+        prompt="React to the change",
+        schedule="every 5m",
+        monitor_script="mon.py",
+        interpreter=str(wrapper),
+        deliver="local",
+    )
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    success, _, _, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert "1" in observed["prompts"][0]
+
+
 def test_unchanged_output_suppresses_agent_run(hermes_env, monkeypatch):
     from cron.jobs import get_job
     from cron.scheduler import SILENT_MARKER, run_job

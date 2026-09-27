@@ -261,3 +261,24 @@ def test_member_uv_lock_travels_with_its_member(tmp_path):
 
     assert (destination / "pm/uv.lock").read_text(encoding="utf-8") == "version = 1\n# member lock\n"
     assert not (destination / "uv.lock").exists(), "the root lock is seeded by lock_and_sync, not copied"
+
+
+def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
+    """Bundled dashboard plugins ship a tracked dashboard/dist/ the snapshot's code serves."""
+    core = tmp_path / "core"
+    bundle = core / "plugins" / "kanban" / "dashboard" / "dist"
+    bundle.mkdir(parents=True)
+    (core / "dist").mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["*"]\n',
+        encoding="utf-8",
+    )
+    (bundle / "index.js").write_text("ENTRY\n", encoding="utf-8")
+    (core / "dist" / "core-1.whl").write_text("OUTPUT\n", encoding="utf-8")
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
+    assert not (destination / "dist").exists(), "root build output never enters the snapshot"

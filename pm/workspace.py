@@ -85,8 +85,11 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     # uv.lock is not excluded: the root lock is never copied (only ``files`` are; lock_and_sync
     # seeds or resolves it), and pm/uv.lock is the PM runtime's input (pm/runtime.py::_inputs).
     excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release"}
+    # A root dist/ is build output, but below a package root it is shipped: the managed
+    # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
+    nested_excluded = excluded - {"dist"}
     def ignore(directory, names):
-        return [name for name in names if name in excluded or name.startswith(".")
+        return [name for name in names if name in nested_excluded or name.startswith(".")
                 or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
     for entry in source.iterdir():

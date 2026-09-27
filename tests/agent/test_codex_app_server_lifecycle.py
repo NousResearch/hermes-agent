@@ -80,3 +80,19 @@ def test_close_without_codex_session_is_a_noop(monkeypatch):
     agent.close()
 
     assert getattr(agent, "_codex_session", None) is None
+
+
+def test_release_clients_releases_codex_app_server_session():
+    """Gateway cache eviction (#72548, #66671) pops the agent and soft-releases it via release_clients();
+    a rebuilt agent spawns its own app-server child, so the evicted one must be closed here too — and
+    repeated release/close must not re-close it."""
+    agent = _bare_agent("test-codex-evict")
+    codex_session = _FakeCodexSession(raises=True)
+    agent._codex_session = codex_session
+    agent._session_messages = []
+
+    agent.release_clients()
+    agent.release_clients()
+
+    assert codex_session.close_calls == 1
+    assert agent._codex_session is None

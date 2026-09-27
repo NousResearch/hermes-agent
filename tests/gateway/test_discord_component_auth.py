@@ -190,6 +190,17 @@ def test_model_picker_view_empty_allowlists_reject_by_default(monkeypatch):
     assert view.allowed_role_ids == set()
     assert view._check_auth(_interaction(99999)) is False
 
+    # Cancel is gated too: a stranger cannot close the owner's picker.
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    stranger = _interaction(99999)
+    stranger.response = SimpleNamespace(send_message=AsyncMock())
+    asyncio.run(view._on_cancel(stranger))
+    assert view.resolved is False
+    stranger.response.send_message.assert_awaited_once()
+    assert stranger.response.send_message.await_args.kwargs.get("ephemeral") is True
+
 
 def test_view_empty_allowlists_allow_with_explicit_allow_all(monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")

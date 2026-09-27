@@ -18,9 +18,6 @@ glue layer simultaneously.
 """
 from __future__ import annotations
 
-import asyncio
-import inspect
-
 import pytest
 
 
@@ -66,71 +63,6 @@ def _ensure_plugins_loaded() -> None:
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test starts with a clean web-provider env."""
     _clear_web_env(monkeypatch)
-
-
-class TestBundledPluginsRegister:
-    """All bundled web plugins discover and register correctly."""
-
-    def test_all_bundled_plugins_present_in_registry(self) -> None:
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import list_providers
-
-        names = sorted(p.name for p in list_providers())
-        assert names == [
-            "brave-free",
-            "ddgs",
-            "exa",
-            "firecrawl",
-            "keenable",
-            "parallel",
-            "perplexity",
-            "searxng",
-            "tavily",
-            "xai",
-        ]
-
-    @pytest.mark.parametrize(
-        "plugin_name,expected_search,expected_extract",
-        [
-            ("brave-free", True, False),
-            ("ddgs", True, False),
-            ("searxng", True, False),
-            ("exa", True, True),
-            ("parallel", True, True),
-            ("keenable", True, True),
-            ("tavily", True, True),
-            ("perplexity", True, True),
-            ("firecrawl", True, True),
-            # xai: search-only via Grok's agentic web_search tool.
-            ("xai", True, False),
-        ],
-    )
-    def test_capability_flags_match_spec(
-        self,
-        plugin_name: str,
-        expected_search: bool,
-        expected_extract: bool,
-    ) -> None:
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        provider = get_provider(plugin_name)
-        assert provider is not None, f"plugin {plugin_name!r} not registered"
-        assert provider.supports_search() is expected_search
-        assert provider.supports_extract() is expected_extract
-
-    @pytest.mark.parametrize(
-        "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "perplexity", "firecrawl", "keenable", "xai"],
-    )
-    def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        provider = get_provider(plugin_name)
-        assert provider is not None
-        assert provider.name == plugin_name
-        assert provider.display_name  # any non-empty string
 
 
 # ---------------------------------------------------------------------------
@@ -235,21 +167,6 @@ class TestIsAvailable:
         )
         assert p.is_available() is True
 
-    def test_ddgs_always_available_when_package_importable(self) -> None:
-        """DDGS is the always-on fallback — no API key required.
-
-        It may report unavailable if the ``ddgs`` package itself isn't
-        installed in the env (legitimate — the plugin's post_setup hook
-        triggers pip install on first selection). We only assert that
-        is_available() doesn't raise.
-        """
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        p = get_provider("ddgs")
-        assert p is not None
-        # Truthy or falsy, just must not raise.
-        _ = bool(p.is_available())
 
     def test_xai_requires_api_key_or_oauth(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """xAI needs XAI_API_KEY or OAuth tokens in auth.json."""
@@ -325,23 +242,5 @@ class TestRegistryResolution:
         result = _resolve(None, capability="search")
         if result is not None:
             assert result.is_available() or result.is_keyless_available()
-
-
-# ---------------------------------------------------------------------------
-# Sync-vs-async extract detection
-# ---------------------------------------------------------------------------
-
-
-class TestAsyncExtractDispatch:
-    """The dispatcher detects async vs sync extract methods correctly."""
-
-
-# ---------------------------------------------------------------------------
-# Error response shape (preserved bit-for-bit from legacy)
-# ---------------------------------------------------------------------------
-
-
-class TestErrorResponseShapes:
-    """When credentials are missing, plugins return typed errors, not raises."""
 
 

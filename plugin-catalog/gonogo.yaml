@@ -1,0 +1,23 @@
+# Submitted to NousResearch/hermes-agent as plugin-catalog/gonogo.yaml.
+# Kept here so the reviewed pin sits next to the code it pins; the copy in
+# plugin-catalog/ is the one that installs.
+name: gonogo
+repo: https://github.com/keppy/hermes-plugin-gonogo
+sha: 1a1d00966065e30686a948eca6f06cda607a5135
+description: Turn a pilot-scale eval score into a deployment decision — Wilson intervals, a
+  confidence threshold that routes uncertain cases to a human, and an honest INSUFFICIENT
+  EVIDENCE verdict when the sample cannot support the claim.
+maintainer: keppy
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+version: "0.1.0"
+docs_url: https://github.com/keppy/hermes-plugin-gonogo#readme
+capabilities:
+  provides_tools:
+    - gonogo_decide
+    - gonogo_report
+    - gonogo_compare
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

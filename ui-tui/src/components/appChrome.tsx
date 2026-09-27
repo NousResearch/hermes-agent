@@ -438,12 +438,23 @@ function IdleSince({ endedAt }: { endedAt: number }) {
   return `✓ ${fmtDuration(now - endedAt)}`
 }
 
-const effortLabel = (effort?: string) => {
+// `wire` is the level the route actually sends (session.info.reasoning_effort_wire):
+// a clamped Hermes step such as `ultra` reads `ultra→max`, like the CLI's
+// "ultra (sends max on this route)", never as a distinct wire level (#61634).
+const effortLabel = (effort?: string, wire?: string) => {
   const value = String(effort ?? '')
     .trim()
     .toLowerCase()
 
-  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
+  const sent = String(wire ?? '')
+    .trim()
+    .toLowerCase()
+
+  if (!value || value === 'medium' || value === 'normal' || value === 'default') {
+    return ''
+  }
+
+  return sent && sent !== value ? `${value}→${sent}` : value
 }
 
 const shortModelLabel = (model: string) =>
@@ -456,8 +467,8 @@ const shortModelLabel = (model: string) =>
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+const modelLabel = (model: string, effort?: string, fast?: boolean, effortWire?: string) =>
+  [shortModelLabel(model), effortLabel(effort, effortWire), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -497,6 +508,7 @@ export function StatusRule({
   model,
   modelFast,
   modelReasoningEffort,
+  modelReasoningEffortWire,
   indicatorStyle = 'kaomoji',
   notice,
   usage,
@@ -510,7 +522,7 @@ export function StatusRule({
   onSessionCountClick,
   t
 }: StatusRuleProps) {
-  const pct = usage.context_percent
+  const pct = usage.context_percent ?? undefined
   const contextMark = usage.context_estimated ? '~' : ''
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
@@ -526,14 +538,14 @@ export function StatusRule({
       ? usage.context_max
         ? segs.compactCtx
           ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
-          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
-        : usage.total > 0
+          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
+        : (usage.total ?? 0) > 0
           ? `${compactNumber(usage.total)} tok`
           : ''
       : ''
 
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
@@ -948,6 +960,7 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  modelReasoningEffortWire?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number

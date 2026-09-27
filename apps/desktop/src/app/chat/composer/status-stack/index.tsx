@@ -3,6 +3,8 @@ import { type ReactNode, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
+import { useComposerSurfaceId } from '@/app/chat/composer/scope'
+import { useSessionView } from '@/app/chat/session-view'
 import { AGENTS_ROUTE } from '@/app/routes'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { BillingBanner } from '@/components/billing-banner'
@@ -15,7 +17,8 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { useSessionSlice } from '@/lib/use-session-slice'
+import { todoTree } from '@/lib/todos'
+import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
 import {
@@ -28,9 +31,11 @@ import {
   stopBackgroundProcess
 } from '@/store/composer-status'
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
+import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
-import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $threadScrolledUpBySession } from '@/store/thread-scroll'
+import { $retainedTodosBySession } from '@/store/todos'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
@@ -56,6 +61,15 @@ const GROUP_ICON: Record<StatusGroup['type'], string> = {
   todo: 'checklist',
   subagent: 'agent',
   background: 'server-process'
+}
+
+// Goals and todos are the plan the user is following; subagents and background
+// processes are how Hermes is executing it. Simple mode shows the plan only.
+const GROUP_TIER: Record<StatusGroup['type'], Tiered> = {
+  goal: {},
+  todo: {},
+  subagent: { tier: 'advanced' },
+  background: { tier: 'advanced' }
 }
 
 const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
@@ -96,7 +110,12 @@ interface ComposerStatusStackProps {
 export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
-  useSubagentSnapshot(sessionId)
+  const storedSessionId = useStore(useSessionView().$storedId)
+  const interfaceMode = useStore($interfaceMode)
+  const shown = useMemo(() => shownInMode(interfaceMode), [interfaceMode])
+  // Hydrate always (delegate cards and session dots read the same store after
+  // a reload); keep POLLING only while the subagent group is on the shelf.
+  useSubagentSnapshot(sessionId, shown(GROUP_TIER.subagent))
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
   // any tile); a whole-map `useStore` re-rendered every mounted stack — one
@@ -104,10 +123,18 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // across unrelated writes, so the slice hook bails out unless OUR session's
   // items actually changed.
   const items = useSessionSlice($statusItemsBySession, sessionId)
+  const retainedTodos = useSessionSlice($retainedTodosBySession, sessionId)
+  const busy = useStore(useSessionView().$busy)
   const previews = useSessionSlice($previewStatusBySession, sessionId)
   const controlEntry = useSessionValue($sessionControlBySession, sessionId)
 
-  const scrolledUp = useStore($threadScrolledUp)
+  const surfaceId = useComposerSurfaceId()
+  const scrollSessionId = sessionId ?? surfaceId
+
+  const scrolledUp = useStoreSelector($threadScrolledUpBySession, map =>
+    Boolean(scrollSessionId && map[scrollSessionId])
+  )
+
   const billing = useStore($billingBlock)
   const freeTierStatus = useStore($freeTierStatus)
   const freeTierRoute = useStore($freeTierRoute)
@@ -118,15 +145,17 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
 
   const isStructuredSupported = controlEntry?.capability === 'supported'
 
-  const groups = useMemo(() => {
-    const raw = groupStatusItems(items)
+  // Every group, before the shelf decides what to SHOW: whether a dev server is
+  // running is a fact about the session (it keeps its localhost preview chip
+  // alive) even when Simple keeps the background group itself off screen.
+  const allGroups = useMemo(() => groupStatusItems(items), [items])
 
-    if (isStructuredSupported) {
-      return raw.filter(g => g.type !== 'goal')
-    }
+  const hasRunningBackground = allGroups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
 
-    return raw
-  }, [items, isStructuredSupported])
+  const groups = useMemo(
+    () => allGroups.filter(group => shown(GROUP_TIER[group.type]) && (group.type !== 'goal' || !isStructuredSupported)),
+    [allGroups, isStructuredSupported, shown]
+  )
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream. This must NOT reset
@@ -142,8 +171,6 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       void refreshSessionControl(sessionId)
     }
   }, [sessionId])
-
-  const hasRunningBackground = groups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
 
   // Drop localhost previews once no dev server is left running — that's what made
   // dead `localhost:5174` chips stick around. On-disk file previews are kept.
@@ -178,7 +205,11 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const previewRows =
     visiblePreviews.length > 0 && sessionId
       ? visiblePreviews.map(item => (
-          <PreviewStatusRow item={item} key={item.id} onDismiss={id => dismissPreviewArtifact(sessionId, id)} />
+          <PreviewStatusRow
+            item={item}
+            key={item.id}
+            onDismiss={id => dismissPreviewArtifact(sessionId, id, storedSessionId ?? sessionId)}
+          />
         ))
       : []
 
@@ -266,6 +297,37 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
     })
   }
 
+  // A settled snapshot is reviewable but never re-enters the live progress
+  // feed. Only show this disclosure once the live Todo section has retired.
+  if (!busy && retainedTodos.length > 0 && !groups.some(group => group.type === 'todo')) {
+    const done = retainedTodos.filter(todo => todo.status === 'completed').length
+    sections.push({
+      key: 'retained-todo',
+      node: (
+        <StatusSection
+          defaultCollapsed
+          icon={<Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />}
+          label={t.statusStack.previousTodos(done, retainedTodos.length)}
+        >
+          {todoTree(retainedTodos).map(([todo, depth]) => (
+            <StatusItemRow
+              historical
+              item={{
+                depth,
+                id: `retained-todo:${todo.id}`,
+                state: 'done',
+                title: todo.content,
+                todoStatus: todo.status,
+                type: 'todo'
+              }}
+              key={todo.id}
+            />
+          ))}
+        </StatusSection>
+      )
+    })
+  }
+
   if (queue) {
     sections.push({ key: 'queue', node: queue })
   }
@@ -273,7 +335,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // Artifact links stay visible at the bottom, nearest the composer, even when
   // the queue or background group expands.
   if (previewRows.length > 0) {
-    sections.push({ key: 'preview', node: <div className="px-1 py-0.5">{previewRows}</div> })
+    sections.push({ key: 'preview', node: <div className="status-artifacts">{previewRows}</div> })
   }
 
   // Micro actions are the TOP-MOST thing in the whole overlay lane — above the
@@ -295,7 +357,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       // In flow in the dock column, directly above the composer. The dock is
       // bottom-anchored, so this grows upward over the thread without needing
       // to be positioned — and it shares the dock's left edge for free.
-      className="flex max-h-[40vh] min-h-0 flex-col overflow-y-auto"
+      className="flex max-h-[40vh] min-h-0 flex-col overflow-hidden"
       data-slot="composer-status-stack"
       onPointerDownCapture={() => blurComposerInput()}
     >
@@ -311,18 +373,23 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             composerDockCard('top'),
             // Inset (mx-2) so the stack reads slightly narrower than the composer
             // surface below it — the original look.
-            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent'
+            'mx-2 flex min-h-0 max-h-[inherit] shrink flex-col overflow-hidden rounded-b-none border-b border-b-transparent'
           )}
         >
-          <div
-            className={cn(
-              'transition-opacity duration-200 ease-out',
-              scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
-            )}
-          >
-            {sections.map(section => (
-              <div key={section.key}>{section.node}</div>
-            ))}
+          <div className="min-h-0 overflow-y-auto overscroll-y-contain" data-slot="status-stack-scroll">
+            <div
+              className={cn(
+                'transition-opacity duration-200 ease-out',
+                scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+              )}
+              data-slot="status-stack-content"
+            >
+              {sections.map(section => (
+                <div data-slot="status-stack-section" key={section.key}>
+                  {section.node}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

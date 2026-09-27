@@ -21,11 +21,12 @@ def window_overrides_path():
 
 def load_window_overrides() -> dict:
     """model_id -> granted window (int). Empty on any read problem."""
-    with suppress(Exception):
-        with open(window_overrides_path(), encoding="utf-8") as fh:
+    try:
+        with open(window_overrides_path(), encoding="utf-8-sig") as fh:
             data = json.load(fh)
         return {str(k): int(v) for k, v in data.items()}
-    return {}
+    except Exception:
+        return {}
 
 
 def _write_overrides(overrides: dict) -> None:

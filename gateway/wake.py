@@ -39,6 +39,43 @@ class WakeNotAccepted(RuntimeError):
     """No adapter admission: retry without treating a healthy chat as dead."""
 
 
+def session_owned_by_profile(config: Any, profile: Optional[str], session_id: Any) -> bool:
+    """True when a stateless (``api_server``) destination's raw session id is canonically owned by
+    served *profile*'s own session store.
+
+    A shared-listener mirror platform has no chat/thread/guild anchor a ``profile_routes`` entry
+    could match, so the session store itself is the ownership proof: the row must exist in that
+    profile's ``state.db`` under its own home and carry that profile's stamp (a NULL legacy stamp
+    belongs to the store's own profile — the same rule the dashboard's session routes apply). An
+    unserved profile, a missing row, a row stamped for another profile, or an unreadable store all
+    fail closed. Shared by the Kanban notifier and the background-process wake path.
+    """
+    import contextlib
+    from pathlib import Path
+    if not session_id or not profile:
+        return False
+    profile = str(profile)
+    try:
+        from gateway.run import _multiplex_profile_homes
+        home = dict(_multiplex_profile_homes(config)).get(profile)
+        if home is None:
+            return False
+        from hermes_state import SessionDB
+        db = SessionDB(Path(home) / "state.db", read_only=True)
+    except Exception as exc:
+        logger.debug("wake: session ownership check unavailable for %s/%s: %s", profile, session_id, exc)
+        return False
+    try:
+        row = db.get_session(str(session_id))
+    except Exception as exc:
+        logger.debug("wake: session ownership lookup failed for %s/%s: %s", profile, session_id, exc)
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            db.close()
+    return bool(row) and (row.get("profile_name") or profile) == profile
+
+
 async def admit_internal_event(adapter: Any, event: Any) -> None:
     """Require a concrete adapter admission, not merely a handler returning None.
 
@@ -51,22 +88,31 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
         raise WakeNotAccepted("internal wake not accepted by adapter")
 
 
-async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None) -> None:
+async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
+                       notification_category: str = "result", profile: Optional[str] = None) -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
     (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
-    ``SessionSource`` for the synthetic event — required for push-capable adapters. Raises on
-    failure so the caller can rewind/retry."""
+    ``SessionSource`` for the synthetic event — required for push-capable adapters. ``profile``
+    names the served profile that canonically owns a non-push destination; a non-default value is
+    delivered in-process under the caller's profile scope (see ``_self_post_chat_completion``).
+    Raises on failure so the caller can rewind/retry."""
     if adapter_supports_push(adapter):
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
         from gateway.platforms.event import MessageEvent, MessageType
-        synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True)
+        synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True,
+                                   metadata={"notification_category": notification_category})
         await admit_internal_event(adapter, synth_event)
         return
     if not session_id:
         raise ValueError("deliver_wake: non-push adapter (supports_async_delivery=False) "
                          "requires the raw session id to self-post the wake turn")
-    await _self_post_chat_completion(adapter, text=text, session_id=session_id)
+    extra: dict = {}
+    if profile:
+        extra["profile"] = profile
+    if notification_category == "diagnostic":
+        extra["notification_category"] = notification_category
+    await _self_post_chat_completion(adapter, text=text, session_id=session_id, **extra)
 
 
 def _delegation_display_metadata(evt: dict) -> dict:
@@ -83,6 +129,10 @@ def _delegation_display_metadata(evt: dict) -> dict:
                 "failed_count": failed_count}
     if evt.get("task_failure_notice"):
         metadata["delivery_notice"] = f"task_failure:{results[0].get('task_index', '') if results else ''}"
+        metadata["notification_category"] = "diagnostic"
+        from gateway.warning_notifications import warning_notifications_enabled
+        if not warning_notifications_enabled("api_server"):
+            metadata["presentation_suppressed"] = True
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
     if isinstance(duration, (int, float)):
         metadata["duration_seconds"] = duration
@@ -132,11 +182,30 @@ async def persist_delegation_delivery(adapter: Any, *, text: str, session_id: st
     )
 
 
-async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str) -> None:
+async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str,
+                                      notification_category: str = "result",
+                                      profile: Optional[str] = None) -> None:
     """POST the wake text to the in-pod API server as a normal session turn, using the adapter's
     own bind host/port/key. Session continuation via ``X-Hermes-Session-Id`` is 403-gated on
     ``API_SERVER_KEY``, so a missing key is a hard error rather than a wake in a fresh session
-    nobody watches."""
+    nobody watches.
+
+    ``profile`` (a served secondary under ``gateway.multiplex_profiles``) takes the IN-PROCESS
+    route instead of the HTTP one: the shared listener's ``/p/<profile>/`` mirror authenticates
+    with that profile's own ``API_SERVER_KEY`` — which a route-only profile legitimately does not
+    have — and an unprefixed self-post would resume the session in the DEFAULT profile's store.
+    The caller already holds the owner profile's runtime scope, so the turn lands in that profile's
+    own session. A non-default profile whose adapter cannot run in-process fails closed.
+    """
+    if profile and str(profile) != "default":
+        in_process: Any = getattr(adapter, "run_internal_session_turn", None)
+        if not callable(in_process):
+            raise RuntimeError(
+                f"wake self-post for served profile {profile!r} requires in-process session "
+                "delivery; refusing to self-post as the default profile")
+        await in_process(session_id=session_id, text=text, profile=str(profile),
+                         notification_category=notification_category)
+        return
     import aiohttp
     host = str(getattr(adapter, "_host", "") or "127.0.0.1")
     if host in ("0.0.0.0", "::", "*"):
@@ -153,6 +222,8 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
     headers = {"Authorization": f"Bearer {api_key}", "X-Hermes-Session-Id": session_id}
     payload = {"model": str(getattr(adapter, "_model_name", "") or "hermes-agent"),
                "messages": [{"role": "user", "content": text}], "stream": False}
+    if notification_category == "diagnostic":
+        payload["hermes_notification_category"] = "diagnostic"
     last_err: Optional[BaseException] = None
     attempts = 1 + len(_RETRY_DELAYS_SECONDS)
     for attempt in range(attempts):

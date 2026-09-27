@@ -413,13 +413,28 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     await refreshPlatforms(true)
 
     if (result.restart_started) {
-      notify({ kind: 'success', title: m.setupSaved('Telegram'), message: m.telegramQr.savedRestarting })
+      const connectedBot = result.bot_username ? `${m.states.connected}: @${result.bot_username}` : null
+
+      notify({
+        kind: 'success',
+        title: m.setupSaved('Telegram'),
+        message: [connectedBot, m.telegramQr.savedRestarting].filter(Boolean).join(' · ')
+      })
       setRestartNeeded(false)
       const ok = await watchGatewayRestartOutcome()
 
       if (!ok) {
         setRestartNeeded(true)
-        notifyError(new Error(m.restartFailedManual), m.restartFailedManual)
+        notify({
+          kind: 'error',
+          title: m.restartFailedManual,
+          message: m.restartFailedManualDetail,
+          action: { label: m.restartAgain, onClick: () => void runGatewayRestart() },
+          secondaryAction: {
+            label: m.openLogs,
+            onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined)
+          }
+        })
       }
 
       void refreshPlatforms(true)

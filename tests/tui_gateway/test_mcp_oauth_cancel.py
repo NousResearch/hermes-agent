@@ -16,8 +16,7 @@ def test_cancel_is_scoped_idempotent_and_releases_worker(
     monkeypatch.setattr(sessions, "_sessions", {})
     finished = threading.Event()
 
-    def worker(session_id, *_args):
-        flow = sessions._sessions[session_id]["flow"]
+    def worker(*_args, flow, on_done=None):
         try:
             asyncio.run(
                 flow.publish_authorization_url(
@@ -30,9 +29,11 @@ def test_cancel_is_scoped_idempotent_and_releases_worker(
             flow.mark_error(str(exc))
         finally:
             flow.mark_worker_done()
+            if on_done is not None:
+                on_done()
             finished.set()
 
-    monkeypatch.setattr(sessions, "_worker", worker)
+    monkeypatch.setattr(sessions, "run_worker", worker)
     home = str(tmp_path / "origin")
     monkeypatch.setenv("HERMES_HOME", home)
     result = sessions.start_flow(
@@ -118,11 +119,18 @@ def test_session_operations_require_resolved_owner(tmp_path, monkeypatch, operat
 
 
 def test_cancel_does_not_revoke_an_approved_flow(tmp_path, monkeypatch):
+    from tools.connectors.mcp_oauth import OAuthAttempt
+
     home = str(tmp_path)
     flow = DashboardOAuthFlow(
         "approved", "reports", None, home, "http://127.0.0.1:49152/callback"
     )
+    flow.discovery_error = "tools/list unavailable"
     flow.mark_approved()
+    assert OAuthAttempt("https://idp.example", flow).poll() == {
+        "status": "approved", "error": "", "tools": [],
+        "discovery_error": "tools/list unavailable",
+    }
     flow.mark_worker_done()
     monkeypatch.setattr(
         sessions,

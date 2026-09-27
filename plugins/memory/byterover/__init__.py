@@ -76,6 +76,31 @@ def _resolve_brv_path() -> Optional[str]:
         return _cached_brv_path or None
 
 
+def _brv_child_env(brv_path: str) -> Dict[str, str]:
+    """Env for the ``brv`` child. Under gateway.multiplex_profiles ``os.environ`` holds the
+    LAUNCH profile's ``.env``; the served profile's ``BRV_*`` (cloud identity) live only in its
+    secret scope, so they are resolved through the scope — a miss means no cloud key, never
+    another profile's — and the launch profile's ``.env`` residue is stripped. Outside multiplex
+    the process env IS this profile's own and is passed through unchanged."""
+    from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
+    from hermes_constants import get_hermes_home_override
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+
+    env = build_subprocess_env(scrub_secrets=False)
+    if is_multiplex_active():
+        env = strip_launch_profile_env(env, get_hermes_home_override())
+        for key in [k for k in env if k.startswith("BRV_")]:
+            env.pop(key, None)
+        try:
+            api_key = get_secret("BRV_API_KEY", "")
+        except UnscopedSecretError:
+            api_key = ""
+        if api_key:
+            env["BRV_API_KEY"] = api_key
+    env["PATH"] = str(Path(brv_path).parent) + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT, cwd: str = None) -> dict:
     """Run a brv CLI command. Returns {success, output, error}."""
     global _cached_brv_path
@@ -84,7 +109,7 @@ def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT, cwd: str = None) ->
         return {"success": False, "error": "brv CLI not found. Install: npm install -g byterover-cli"}
     effective_cwd = cwd or str(_get_brv_cwd())
     Path(effective_cwd).mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "PATH": str(Path(brv_path).parent) + os.pathsep + os.environ.get("PATH", "")}
+    env = _brv_child_env(brv_path)
     try:
         result = subprocess.run(
             [brv_path] + args, capture_output=True, text=True, encoding='utf-8', errors='replace',

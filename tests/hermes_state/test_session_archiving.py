@@ -97,3 +97,40 @@ def test_bulk_archive_matches_a_lineage_through_its_tip_only(db):
     assert {s: db.get_session(s)["archived"] for s in (live_root, live_tip)} == {live_root: 0, live_tip: 0}
     assert {s: db.get_session(s)["archived"] for s in (stale_root, stale_tip)} == {stale_root: 1, stale_tip: 1}
     assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True)] == [live_tip]
+
+
+def test_auto_archive_sweep_skips_a_row_a_live_turn_still_owns(db):
+    """#123583 on the automatic sweep: the idle predicate reads committed state, so an
+    unended row whose first turn lease is held — messages not yet flushed — looks stale and
+    would be hidden mid-turn. The sweep runs unattended, so the guard check and the flip
+    must share one transaction."""
+    import os
+
+    db.create_session("auto-live", source="desktop")
+    db.create_session("auto-idle", source="desktop")
+    stale = time.time() - 30 * 86400
+    db._write_sql("UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id IN ('auto-live', 'auto-idle')",
+                  (stale, stale))
+
+    holder = f"pid={os.getpid()}:turn=1"
+    assert db.try_acquire_session_turn_lease("auto-live", holder, ttl_seconds=300.0) is True
+
+    assert db.archive_stale_sessions(3) == 1  # only the idle row; the guarded one is skipped
+    assert not db.get_session("auto-live")["archived"]
+    assert db.get_session("auto-idle")["archived"]
+
+    # A compression lock protects the row too, and the sweep stays non-fatal.
+    db.create_session("auto-cmp", source="desktop")
+    db._write_sql("UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id = 'auto-cmp'",
+                  (stale, stale))
+    cmp_holder = f"pid={os.getpid()}:cmp=1"
+    assert db.try_acquire_compression_lock("auto-cmp", cmp_holder, ttl_seconds=300.0) is True
+    assert db.archive_stale_sessions(3) == 0
+    assert not db.get_session("auto-cmp")["archived"]
+
+    # After the guards release, the next sweep picks both up.
+    db.release_session_turn_lease("auto-live", holder)
+    db.release_compression_lock("auto-cmp", cmp_holder)
+    assert db.archive_stale_sessions(3) == 2
+    assert db.get_session("auto-live")["archived"]
+    assert db.get_session("auto-cmp")["archived"]

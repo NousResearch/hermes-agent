@@ -77,4 +77,12 @@ describe('preprocessMarkdown / lone tilde escaping', () => {
 
     expect(deleteNodes(parse(input))).toEqual([])
   })
+
+  it('leaves tildes inside link destinations and bare urls untouched', () => {
+    const output = preprocessMarkdown('[todo](~/todo.md) and https://example.com/c~d/page vs 1~10')
+
+    expect(output).toContain('(#preview/~%2Ftodo.md)')
+    expect(output).toContain('https://example.com/c~d/page')
+    expect(output).toContain('1\\~10')
+  })
 })

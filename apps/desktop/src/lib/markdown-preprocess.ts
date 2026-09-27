@@ -378,6 +378,32 @@ function escapeLoneTildes(text: string): string {
     return text
   }
 
+  // Markdown links (`[todo](~/todo.md)`) and bare URLs (`…/c~d/page`) own
+  // their tildes: escaping one there corrupts the destination the file-link
+  // router and autolinker read next.
+  return text
+    .split(MARKDOWN_LINK_SPLIT_RE)
+    .map((part, index) => (index % 2 === 1 ? part : escapeLoneTildesOutsideUrls(part)))
+    .join('')
+}
+
+function escapeLoneTildesOutsideUrls(text: string): string {
+  let out = ''
+  let last = 0
+
+  for (const match of text.matchAll(RAW_URL_RE)) {
+    out += escapeLoneTildesInProse(text.slice(last, match.index)) + match[0]
+    last = match.index + match[0].length
+  }
+
+  return out + escapeLoneTildesInProse(text.slice(last))
+}
+
+function escapeLoneTildesInProse(text: string): string {
+  if (!text.includes('~')) {
+    return text
+  }
+
   let out = ''
   let cursor = 0
 

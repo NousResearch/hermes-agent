@@ -321,8 +321,11 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
+                # acquire() normalizes the handle it hands out (resolved real path);
+                # on macOS the tempdir spelling differs (/var vs /private/var), so
+                # compare the database files, not the path strings.
                 self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
+                    Path(child_db.db_path).resolve(), Path(parent_db.db_path).resolve()
                 )
             finally:
                 if child_db is not None:

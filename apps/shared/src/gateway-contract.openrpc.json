@@ -8060,7 +8060,7 @@
       },
       "CompleteSlashParams": {
         "additionalProperties": false,
-        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).",
+        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills);\n``profile`` scopes a session-less request (a new-chat draft).",
         "properties": {
           "text": {
             "anyOf": [
@@ -8085,6 +8085,18 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
           }
         },
         "title": "CompleteSlashParams",
@@ -32080,7 +32092,7 @@
       },
       "SkillsReloadParams": {
         "additionalProperties": false,
-        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills).",
+        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills);\n``profile`` scopes a session-less rescan.",
         "properties": {
           "session_id": {
             "anyOf": [
@@ -32093,6 +32105,18 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
           }
         },
         "title": "SkillsReloadParams",

@@ -286,7 +286,9 @@ def _(rid, params: dict) -> dict:
     from agent.skill_bundles import get_skill_bundles
     # Skill/bundle lookups are home- and cwd-keyed: bind the calling session's profile and workspace so
     # the popup offers the project-local skills ``command.dispatch`` accepts for that session (#114359).
-    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+    # A new-chat draft has no session yet: it names its rail-selected ``profile`` instead (#124651).
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                             profile=params.get("profile")):
         skill_commands, skill_bundles = dict(get_skill_commands()), dict(get_skill_bundles())
     completer = SlashCommandCompleter(
         skill_commands_provider=lambda: skill_commands, skill_bundles_provider=lambda: skill_bundles)

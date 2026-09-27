@@ -1691,10 +1691,11 @@ export interface CompletionItem {
   meta?: string
   kind?: string | null
 }
-/** ``session_id`` binds skill completions to that session's profile and workspace (project skills). */
+/** ``session_id`` binds skill completions to that session's profile and workspace (project skills); ``profile`` scopes a session-less request (a new-chat draft). */
 export interface CompleteSlashParams {
   text?: string | null
   session_id?: string | null
+  profile?: string | null
 }
 /** ``replace_from`` is the column the accepted item replaces from. */
 export interface CompleteSlashResult {
@@ -3793,9 +3794,10 @@ export interface SkillInspectInfo {
   skill_md_preview?: string | null
   [key: string]: unknown
 }
-/** ``session_id`` binds the rescan to that session's profile and workspace (project skills). */
+/** ``session_id`` binds the rescan to that session's profile and workspace (project skills); ``profile`` scopes a session-less rescan. */
 export interface SkillsReloadParams {
   session_id?: string | null
+  profile?: string | null
 }
 export interface SkillsReloadResult {
   output: string

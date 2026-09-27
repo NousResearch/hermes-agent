@@ -3539,6 +3539,18 @@
     // Ready/Block/Complete buttons feel like no-ops.  See #26744.
     const [patchErr, setPatchErr] = useState(null);
     const [newComment, setNewComment] = useState("");
+    // Outcome of "Requeue with note" on a running task ({ok, text}).
+    const [composerMsg, setComposerMsg] = useState(null);
+    // One submission at a time: the ref blocks a second click before React
+    // re-renders, the state drives the disabled buttons.
+    const sendingRef = useRef(false);
+    const [sending, setSending] = useState(false);
+    const beginSend = function () {
+      if (sendingRef.current) return false;
+      sendingRef.current = true; setSending(true);
+      return true;
+    };
+    const endSend = function () { sendingRef.current = false; setSending(false); };
     const [uploadBusy, setUploadBusy] = useState(false);
     const [uploadErr, setUploadErr] = useState(null);
     const [editing, setEditing] = useState(false);
@@ -3570,18 +3582,55 @@
     useEffect(function () { load(); }, [load, props.eventTick]);
     useEffect(function () { loadHomeChannels(); }, [loadHomeChannels]);
 
-    const handleComment = function () {
-      const body = newComment.trim();
-      if (!body) return;
-      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug), {
+    const postComment = function (body) {
+      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body }),
-      }).then(function () {
-        setNewComment("");
+      }).then(function () { setNewComment(""); });
+    };
+
+    const handleComment = function () {
+      const body = newComment.trim();
+      if (!body || !beginSend()) return;
+      postComment(body).then(function () {
         load();
         props.onRefresh();
-      }).catch(function (e) { setErr(String(e.message || e)); });
+      }).catch(function (e) { setErr(String(e.message || e)); })
+        .finally(endSend);
+    };
+
+    // A running worker folds new comments into its live turn,
+    // so a plain comment is the light touch. "Requeue with note" is the
+    // heavy one: post the note, then reclaim so the task restarts from
+    // scratch with the note in context.
+    const handleRequeue = function () {
+      const body = newComment.trim();
+      if (!body || !beginSend()) return;
+      setComposerMsg(null);
+      let posted = false;
+      postComment(body).then(function () {
+        posted = true;
+        return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/reclaim`, boardSlug), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: "requeued with a note" }),
+        });
+      }).then(function () {
+        setComposerMsg({ ok: true, text: tx(t, "notePosted", "Note posted — worker requeued") });
+      }).catch(function (e) {
+        const reason = parseApiErrorMessage(e);
+        setComposerMsg({
+          ok: false,
+          text: posted
+            ? tx(t, "notePostedRequeueFailed", "Note posted, but requeue failed: {reason}", { reason: reason })
+            : reason,
+        });
+      }).then(function () {
+        endSend();
+        load();
+        props.onRefresh();
+      });
     };
 
     // File upload uses raw fetch (not SDK.fetchJSON, which JSON-encodes)
@@ -3802,6 +3851,10 @@
     };
 
     const task = data && data.task;
+    const running = !!task && task.status === "running";
+    const commentPlaceholder = running
+      ? tx(t, "messageWorker", "Message the running worker…")
+      : tx(t, "addComment", "Add a comment… (Enter to submit)");
     const titleText = task
       ? (task.title || tx(t, "untitled", "(untitled)"))
       : props.taskId;
@@ -3898,12 +3951,17 @@
         data ? h("div", { className: "hermes-kanban-drawer-comment-foot" },
           h("div", {
             className: "hermes-kanban-comment-hint text-xs text-muted-foreground",
-            title: tx(t, "commentHintTitle",
-              "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input."),
+            title: running
+              ? tx(t, "commentsHelpRunning",
+                  "This task is running. Your note is folded into the worker's current turn within a few seconds — no block/unblock dance. \u201cRequeue with note\u201d instead restarts the task from scratch with your note in context.")
+              : tx(t, "commentHintTitle",
+                  "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input."),
           },
             "ⓘ ",
-            tx(t, "commentHint",
-              "Comments reach the worker on its next run or kanban_show() — no need to block the task first."),
+            running
+              ? tx(t, "deliveredLive", "Delivered to the running worker within a few seconds.")
+              : tx(t, "commentHint",
+                  "Comments reach the worker on its next run or kanban_show() — no need to block the task first."),
           ),
           // Like the desktop CommentComposer: a growing textarea with a
           // ghost arrow-up send button inset top-right, rather than a
@@ -3915,22 +3973,22 @@
                 value: newComment,
                 rows: 1,
                 className: SDK_INPUT_CN,
-                "aria-label": tx(t, "addComment", "Add a comment… (Enter to submit)"),
+                "aria-label": commentPlaceholder,
                 onChange: function (e) { setNewComment(e.target.value); },
                 onKeyDown: function (e) {
                   if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault(); handleComment();
                   }
                 },
-                placeholder: tx(t, "addComment", "Add a comment… (Enter to submit)"),
+                placeholder: commentPlaceholder,
               }),
               h(Button, {
                 ghost: true,
                 size: "xs",
                 type: "button",
                 className: "hermes-kanban-comment-send",
-                "aria-label": tx(t, "comment", "Comment"),
-                disabled: !newComment.trim(),
+                "aria-label": running ? tx(t, "send", "Send") : tx(t, "comment", "Comment"),
+                disabled: sending || !newComment.trim(),
                 onClick: handleComment,
               }, h("svg", {
                 viewBox: "0 0 16 16", width: 14, height: 14, fill: "none",
@@ -3939,6 +3997,30 @@
               }, h("path", { d: "M8 13V3M3.5 7.5 8 3l4.5 4.5" }))),
             ),
           ),
+          running || composerMsg
+            ? h("div", { className: "hermes-kanban-comment-requeue" },
+                composerMsg
+                  ? h("span", {
+                      className: cn("hermes-kanban-diag-msg",
+                        composerMsg.ok ? "hermes-kanban-diag-msg--ok" : "hermes-kanban-diag-msg--err"),
+                      role: "status",
+                    }, composerMsg.text)
+                  : h("span"),
+                running
+                  ? h(Button, {
+                      size: "sm",
+                      outlined: true,
+                      type: "button",
+                      disabled: sending || !newComment.trim(),
+                      onClick: handleRequeue,
+                      title: tx(t, "requeueWithNoteTitle",
+                        "Post the note, then reclaim the task so it restarts from scratch with the note in context."),
+                    }, sending
+                      ? tx(t, "requeuing", "Requeuing…")
+                      : tx(t, "requeueWithNote", "Requeue with note"))
+                  : null,
+              )
+            : null,
         ) : null,
       ),
     );
@@ -4095,7 +4177,7 @@
           onPatch: props.onPatch,
         }),
         (function () {
-          var finalResult = t.result || t.latest_summary || null;
+          var finalResult = t.result || taskSummary(t);
           var isDone = t.status === "done";
           var isParent = links.children.length > 0;
           if (finalResult) {
@@ -4131,7 +4213,7 @@
           h("div", { className: "hermes-kanban-section-head" },
             `${tx(i18n, "childResults", "Child Results")} (${childResults.length})`),
           childResults.map(function (child) {
-            var childResult = child.result || child.latest_summary || null;
+            var childResult = child.result || taskSummary(child);
             return h("div", { key: child.id, className: "hermes-kanban-comment" },
               h("div", { className: "hermes-kanban-comment-head" },
                 h("span", { className: "hermes-kanban-comment-author" },
@@ -4486,6 +4568,17 @@
   const SDK_INPUT_CN = "w-full border border-midground/15 bg-background/40 px-3 py-1 font-courier text-sm transition-colors "
     + "placeholder:text-midground/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30 "
     + "focus-visible:border-midground/25";
+
+  // `latest_summary` is the newest run summary, but a status move from the
+  // board writes an administrative note into that slot ("status changed to
+  // ready (dashboard/direct)"). That is not a result; Run history still
+  // shows it. Producer: plugin_api.py's direct status update (_end_run
+  // summary "status changed to {status} (dashboard/direct)").
+  const ADMIN_SUMMARY_RE = /^status changed to \w+ \(dashboard\/direct\)$/;
+  function taskSummary(task) {
+    const s = task && task.latest_summary;
+    return s && !ADMIN_SUMMARY_RE.test(s) ? s : null;
+  }
 
   // Same glyph as the board card: a P{n} badge when the task is prioritised,
   // a muted 0 otherwise.

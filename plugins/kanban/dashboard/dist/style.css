@@ -754,6 +754,20 @@
   right: 0.35rem;
 }
 
+/* Running task: the live-delivery note on the left, "Requeue with note"
+   (comment + reclaim) on the right. */
+.hermes-kanban-comment-requeue {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0 0.75rem 0.55rem;
+  margin-top: -0.2rem;
+}
+.hermes-kanban-comment-requeue > button {
+  flex: 0 0 auto;
+}
+
 .hermes-kanban-count {
   display: inline-flex;
   gap: 0.2rem;

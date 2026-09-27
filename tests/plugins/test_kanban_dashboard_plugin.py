@@ -1067,7 +1067,7 @@ def test_touch_card_tap_opens_instead_of_dragging():
 
 
 def _run_modal_text_probe(payload):
-    """Run the modal's real renderMarkdown from the shipped bundle."""
+    """Run the modal's real renderMarkdown/taskSummary from the shipped bundle."""
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
@@ -1094,6 +1094,41 @@ def test_markdown_fence_info_string_is_not_rendered_as_code():
     assert "js" not in out[0].replace("hermes-kanban-md-code", "")
     assert "<code>x</code>" in out[1]
     assert "<code># not a heading</code>" in out[2] and "<h1>" not in out[2]
+
+
+def test_modal_hides_the_backend_admin_status_note_as_a_result(client):
+    """Moving a running task from the board ends its run with an administrative
+    summary. The modal's result section filters that note out; this ties the
+    frontend filter to the summary the backend actually writes, so a wording
+    change on either side fails here instead of resurfacing the note as a result."""
+    import secrets
+    conn = kbc.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="x")
+        lock = secrets.token_hex(8)
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=? WHERE id=?",
+            (lock, future, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, started_at) "
+            "VALUES (?, 'running', ?, ?, ?)",
+            (t, lock, future, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.patch(f"/api/plugins/kanban/tasks/{t}", json={"status": "ready"})
+    assert r.status_code == 200, r.text
+    admin_note = client.get(f"/api/plugins/kanban/tasks/{t}").json()["task"]["latest_summary"]
+    assert admin_note
+
+    real = "Shipped the fix; tests green."
+    assert _run_modal_text_probe({"summaries": [admin_note, real]})["summaries"] == [None, real]
 
 
 # Run clock: current run start, not first-ever start

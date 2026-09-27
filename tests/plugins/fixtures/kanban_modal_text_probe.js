@@ -1,8 +1,9 @@
 // Behavioral probe for the kanban task modal's text helpers: extracts
-// renderMarkdown (with escapeHtml/renderInline) verbatim from the shipped
-// dashboard bundle (no build step: the bundle IS the source) and runs it.
-// Input is JSON on stdin: {"markdown": [src, ...]}
-// Output is JSON on stdout: {"markdown": [html, ...]}.
+// renderMarkdown (with escapeHtml/renderInline) and taskSummary (with
+// ADMIN_SUMMARY_RE) verbatim from the shipped dashboard bundle (no build step:
+// the bundle IS the source) and runs them. Input is JSON on stdin:
+//   {"markdown": [src, ...], "summaries": [latest_summary, ...]}
+// Output is JSON on stdout: {"markdown": [html, ...], "summaries": [value|null, ...]}.
 // Run via: node kanban_modal_text_probe.js <path-to-bundle>
 const fs = require("fs");
 
@@ -17,12 +18,19 @@ function extractFunction(name) {
   }
   return src.slice(start, end + 1);
 }
+function extractLine(prefix) {
+  const start = src.indexOf(prefix);
+  if (start === -1) throw new Error(`${prefix} not found in bundle`);
+  return src.slice(start, src.indexOf("\n", start));
+}
 
 const code = [
   extractFunction("escapeHtml"),
   extractFunction("renderInline"),
   extractFunction("renderMarkdown"),
-  "module.exports = { renderMarkdown };",
+  extractLine("const ADMIN_SUMMARY_RE"),
+  extractFunction("taskSummary"),
+  "module.exports = { renderMarkdown, taskSummary };",
 ].join("\n");
 const mod = { exports: {} };
 new Function("module", code)(mod);
@@ -30,4 +38,7 @@ new Function("module", code)(mod);
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
 process.stdout.write(JSON.stringify({
   markdown: (input.markdown || []).map(mod.exports.renderMarkdown),
+  summaries: (input.summaries || []).map(function (s) {
+    return mod.exports.taskSummary({ latest_summary: s });
+  }),
 }));

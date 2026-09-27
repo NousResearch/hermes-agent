@@ -17,8 +17,8 @@ The server can also run on its own, as a sidecar started by the same systemd uni
 | `LITCO_HOST_SECRET` | yes | Shared secret LitKit sends in `X-Host-Secret`. It is also the HMAC key for user assertions. With no secret, the server refuses every request. |
 | `LITCO_MATTER_ID` | yes | The one LitKit matter this host serves. A turn for any other matter gets 403. |
 | `LITCO_MATTER_HOME` | no | Root of the per-thread working directories. Default `~/matter`. |
-| `LITCO_AGENT_TOKEN` | no | The matter-pinned LitKit bearer token (`lkm_…`). The server sends it when fetching attachments. |
-| `LITCO_INSTANCE_URL` | no | Base URL of the firm's LitKit instance, for LitKit tools. |
+| `LITCO_AGENT_TOKEN` | for LitKit tools | The matter-pinned LitKit bearer token (`lkm_` plus 43 base64url characters). The server sends it when fetching attachments; the `litkit` toolset sends it on every call. |
+| `LITCO_INSTANCE_URL` | for LitKit tools | Base URL of the firm's LitKit instance, for example `https://<firm>.litco.ai`. |
 | `LITCO_TURN_HOST` | no | Bind address. Default `127.0.0.1`. |
 | `LITCO_TURN_PORT` | no | Port. Default `8765`. |
 
@@ -106,6 +106,84 @@ A turn's working directory is `shared/` for a `channel` thread and `users/<userI
 
 Attachments that carry a `url` are downloaded into `inbox/<turnId>/` with `Authorization: Bearer $LITCO_AGENT_TOKEN`, and the agent is told where each one landed. An attachment without a `url`, or one that fails to download, is named in the prompt with its LitKit `fileId`.
 
+## LitKit toolset
+
+The `litkit` toolset is the host's access to the firm's LitKit instance. It is a bundled backend plugin (`plugins/litkit/`), so it loads with no `plugins.enabled` entry, and its tools stay hidden until `LITCO_INSTANCE_URL` and `LITCO_AGENT_TOKEN` are set. The code is in `litco/litkit/`: `client.py` (HTTP), `tools.py` (the tools), `files.py` (where tools write), `context.py` (the turn identity).
+
+### Env contract
+
+| Variable | Needed for | Use |
+|---|---|---|
+| `LITCO_INSTANCE_URL` | every call | Base URL; paths are appended to it. |
+| `LITCO_AGENT_TOKEN` | every call | `Authorization: Bearer lkm_…`. Pinned to one matter; any other matter answers `403 agent_token_matter_mismatch`. |
+| `LITCO_HOST_SECRET` | acting for a lawyer | HMAC key for the per-call user assertion. Without it, a turn with an acting user cannot call LitKit. |
+| `LITCO_MATTER_ID` | optional | The matter. When unset, the client reads `GET /api/matters`, which returns exactly the token's one matter. |
+| `LITCO_MATTER_HOME` | optional | Root of the working directories (default `~/matter`). |
+
+Credentials are read through `agent.secret_scope.get_secret`, so a profile's `.env` works as well as the process environment.
+
+### Who a call acts for
+
+The turn server verifies the turn's user assertion and records the lawyer as `acting_user`. The runner binds a `TurnIdentity` (turn id, matter, acting user, working directory) for the length of the turn, and Hermes copies it into the threads that run tool calls and delegated subagents. On every LitKit request the client sends:
+
+```
+Authorization: Bearer lkm_…
+X-LitKit-Acting-User: <userId>
+X-LitKit-User-Assertion: v1.<userId>.<matterId>.<issuedAtMs>.300000.<mac>
+```
+
+The assertion is minted fresh for each request and each retry (MAC = base64url, no padding, of HMAC-SHA256 keyed on the host secret over `v1.<userId>.<matterId>.<issuedAtMs>.<ttlMs>`). A turn whose assertion did not verify, and all work outside a turn (cron), sends neither acting-user header, so LitKit applies the Matter Agent user's own viewer role. No `Origin` header is sent.
+
+### Errors and retries
+
+- 401 and 403 raise `LitKitPermissionError` and come back to the model as `{"error": "not permitted for this user on this matter (…)", "status": 403, "permission_denied": true}`. They are never retried.
+- Reads (`GET`, and the read-only POSTs: bulk text export, quote checks, LitLex cite checks) retry on 429, 500, 502, 503 and 504 with exponential backoff (four retries, `Retry-After` honored). Writes retry only on 429, 503, or a connection that never opened, so a deliverable or a proposal is never committed twice.
+- 404 reads as "not found, or not visible to this user"; LitKit hides walled documents as missing.
+- The token and the host secret never appear in logs, reprs, or error text.
+
+### Tools
+
+| Tool | LitKit route(s) | Result |
+|---|---|---|
+| `litkit_matter` | `GET /api/matters/{id}`, `…/docs?countOnly=1`, `…/search/facets` | name, document count, custodians, productions, Bates prefixes, acting user |
+| `litkit_search` | `GET …/search` | compact hits; notes the 5 s budget, the 500-hit cap, ranked fallback |
+| `litkit_docs` | `GET …/docs?cursor=` | one page plus `nextCursor`; with `saveAs`, every page into `census/<name>.jsonl` |
+| `litkit_document` | `GET /api/documents/{id}` (Bates via `…/bates-resolve`) | metadata, tags, productions |
+| `litkit_text` | `GET /api/documents/{id}/text` | `texts/<bates>.txt` with a self-citing header, preview |
+| `litkit_pdf` | `GET /api/documents/{id}/pdf` or `/native` | `pdfs/<bates>.pdf` or `natives/…`, sha256 |
+| `litkit_export_text` | `POST …/export/text` (NDJSON, 500 ids per call, looped) | `texts/<bates>.txt` per document, `texts/index.json`, resumable |
+| `litkit_memos` | `GET /api/matter-files?kind=memo`, `GET /api/matter-files/{id}` | memo list; `memos/<title>.md` |
+| `litkit_files` | LitSpace list, search, content, upload | list, hits, `files/<name>`, upload result |
+| `litkit_deliver` | `POST …/deliverables` (multipart) | `blocked`, gate summary, version; full response in `qa/` |
+| `litkit_quote_check` | `POST …/quote-check/file` or `…/quote-check` | verified and unverified quotations; full response in `qa/` |
+| `litkit_review` | review-jobs list, status, records, resume, cancel, pause | pass-through |
+| `litkit_ingest` | productions, progress, exceptions, ingests, ingest jobs; resume, cancel, reingest, retry | pass-through |
+| `litkit_proposals` | `POST`/`GET …/proposals` | proposal id and status |
+| `litkit_tags` | `/api/tags`, `/api/documents/{id}/tags`, `…/bulk-tag` | list, create, apply, remove |
+| `litkit_work_sets` | `/api/work-sets` | list, get, create, close, reopen |
+| `litkit_litlex` | LitLex search, opinion (saved to `litlex/`), citator, authorities, statute, cite-resolve, cite-check, brief-check | pass-through |
+| `litkit_notify` | `POST /api/notifications/emit` | to the acting lawyer (default), a named member, or the matter |
+| `litkit_remember`, `litkit_recall` | `POST /api/agent/actions` (`remember`, `recall`) | `scope:"user"` keeps a note private to the acting lawyer |
+| `litkit_actions` | `POST /api/agent/actions` | `term_frequency`, `find_redacted`, `hot_documents`, `refresh_dossier`, `diagnose_issue`, `diagnose_ingest`, `litlex_format_cite` |
+| `litkit_attachment` | `GET …/chat/attachments/{fileId}` | `inbox/<fileId>/<filename>` |
+
+A blocked deliverable (`422`) returns `blocked: true`, the gate findings, and an instruction to report them to the user rather than resubmit; nothing was committed.
+
+### Where tools write
+
+Everything a LitKit tool writes lands under the turn's working directory (`shared/` or `users/<id>/`): `texts/`, `texts_x/`, `pdfs/`, `natives/`, `census/`, `memos/`, `files/`, `litlex/`, `inbox/`, `qa/`, and `litkit/results/` for spilled results. Names that come from LitKit (Bates numbers, filenames) are reduced to one safe path segment, `dir` arguments cannot climb out, and files handed to `litkit_deliver`, `litkit_quote_check`, `litkit_files upload` and `litkit_litlex brief_check` must sit inside the working directory or the matter home. Gate findings go to `qa/`, never to `deliverables/`, so they are not posted back to the thread.
+
+Results larger than 12,000 characters follow Hermes's spill convention: the full JSON is saved under `litkit/results/` and the model gets a `<persisted-output>` block with the path and a preview.
+
+### Host configuration
+
+- Hermes defers plugin tools behind its tool-search bridge by default. On a matter host the LitKit tools are the main surface, so the profile should set `tools.tool_search.enabled: "off"` (or accept the bridge, which lists the tools and calls them through `tool_call`).
+- The legal skills live in `litco/skills/legal/`. Point the profile at them with `skills.external_dirs: [<checkout>/litco/skills]`.
+
+## Legal skills
+
+`litco/skills/legal/` holds the firm's procedures rewritten for the matter host: `litkit-corpus-pull` (census, bulk text, hot-document ranking), `litkit-deliverable` (build, quote-check, commit, report the gates), `deposition-prep-package`, `discovery-letter-brief`, `docket-document-retrieval`, `expanded-legal-letter-redlines`, `legal-cite-check`, and `production-data-analysis` (with `references/litkit-access-procedure.md`). They call the `litkit` tools instead of a cookie-jar session and keep the verification discipline: quotations checked against extracted text before delivery, certified transcripts only, as-filed ECF copies. They carry no client names or matter facts.
+
 ## Code map
 
 | Path | Role |
@@ -114,8 +192,11 @@ Attachments that carry a `url` are downloaded into `inbox/<turnId>/` with `Autho
 | `litco/hermes_runner.py` | Builds the `AIAgent` for a turn and maps Hermes callbacks to events. |
 | `litco/assertion.py` | Host-secret comparison and the user-assertion MAC. |
 | `litco/homes.py` | Working-directory layout and deliverable ids. |
+| `litco/litkit/` | LitKit client, the `litkit` tools, the turn identity, the write boundary. |
+| `plugins/litkit/` | Registers the `litkit` toolset (bundled backend plugin). |
+| `litco/skills/legal/` | Legal skills for the matter host. |
 | `plugins/platforms/litco_turn/` | Registers the `litco_turn` gateway platform. |
-| `tests/litco/` | Contract tests with a fake runner, and runner tests with a fake agent. |
+| `tests/litco/` | Contract tests with a fake runner, runner tests with a fake agent, and LitKit client and toolset tests against a fake LitKit server. |
 
 ## Testing
 

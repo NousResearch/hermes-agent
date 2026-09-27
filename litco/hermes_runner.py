@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from litco.homes import safe_segment
+from litco.litkit.context import TurnIdentity, bind_turn, reset_turn
 from litco.turn_server import TurnContext, TurnOutcome, build_user_message
 
 logger = logging.getLogger("litco.hermes_runner")
@@ -236,6 +237,10 @@ class HermesTurnRunner:
             user_id=req.user_id, session_key=_session_key(req),
             session_id=hermes_sid, cwd=str(ctx.cwd), async_delivery=False, session_history_delivery="1")
         register_task_env_overrides(hermes_sid, {"cwd": str(ctx.cwd), "cwd_source": "session"})
+        # LitKit tools assert this turn's lawyer (verified by the turn server) on every call;
+        # an unasserted turn runs under the Matter Agent user's own role.
+        turn_token = bind_turn(TurnIdentity(turn_id=ctx.turn_id, matter_id=req.matter_id,
+                                            acting_user=req.acting_user, cwd=ctx.cwd))
         agent = None
         try:
             db = self._session_db()
@@ -268,6 +273,7 @@ class HermesTurnRunner:
             logger.exception("litco hermes turn failed (session %s)", req.session_id)
             return TurnOutcome(error=str(exc)[:500] or exc.__class__.__name__, error_category=_classify(exc))
         finally:
+            reset_turn(turn_token)
             clear_task_env_overrides(hermes_sid)
             clear_session_vars(tokens)
 

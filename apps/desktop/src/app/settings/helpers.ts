@@ -253,11 +253,14 @@ function personalityOptions(config: HermesConfigRecord): string[] {
   // whitespace-padded, or neutral-named block never surfaces a row the runtime can't
   // resolve, and a root/agent case clash dedupes to one canonical name (#123297).
   const customNames: string[] = []
+
   for (const key of ['personalities', 'agent.personalities']) {
     const block = getNested(config, key)
+
     if (isPlainObject(block)) {
       for (const name of Object.keys(block)) {
         const folded = foldPersonalityName(name)
+
         if (folded) {
           customNames.push(folded)
         }

@@ -280,6 +280,7 @@ describe('settings helpers', () => {
       for (const builtin of BUILTIN_PERSONALITIES) {
         expect(opts).toContain(builtin)
       }
+
       expect(opts).toContain('') // the "unset" sentinel
       expect(opts).toContain('root_persona')
     })
@@ -289,6 +290,7 @@ describe('settings helpers', () => {
         personalities: { root_persona: {}, shared: {} },
         agent: { personalities: { agent_persona: {}, shared: {} } }
       }
+
       const opts = enumOptionsFor('display.personality', '', config)!
       expect(opts).toContain('root_persona')
       expect(opts).toContain('agent_persona')
@@ -301,6 +303,7 @@ describe('settings helpers', () => {
         const opts = enumOptionsFor('display.personality', '', { personalities: bad } as HermesConfigRecord)!
         // still the built-ins + empty sentinel, no crash on a malformed block
         expect(opts).toContain('')
+
         for (const builtin of BUILTIN_PERSONALITIES) {
           expect(opts).toContain(builtin)
         }
@@ -315,6 +318,7 @@ describe('settings helpers', () => {
       const config: HermesConfigRecord = {
         personalities: { Catgirl: {}, '  Spaced  ': {}, none: {}, Default: {}, NEUTRAL: {} }
       } as HermesConfigRecord
+
       const opts = enumOptionsFor('display.personality', '', config)!
 
       // `Catgirl` folds to the built-in `catgirl` (offered once, not twice).
@@ -323,6 +327,7 @@ describe('settings helpers', () => {
       // whitespace folded to the canonical key.
       expect(opts).toContain('spaced')
       expect(opts).not.toContain('  Spaced  ')
+
       // neutral spellings never surface as selectable rows (only the '' sentinel remains).
       for (const neutral of ['none', 'Default', 'NEUTRAL', 'default', 'neutral']) {
         expect(opts).not.toContain(neutral)

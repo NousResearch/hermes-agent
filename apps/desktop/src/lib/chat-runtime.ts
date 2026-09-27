@@ -291,10 +291,12 @@ export function personalityNamesFromConfig(config: unknown): string[] {
   // whitespace-padded, or neutral-named block doesn't surface a row the runtime
   // can never resolve, and a root/agent case clash dedupes to one canonical name.
   const names = new Set<string>()
+
   for (const block of [root.personalities, agent.personalities]) {
     if (block && typeof block === 'object' && !Array.isArray(block)) {
       for (const name of Object.keys(block as Record<string, unknown>)) {
         const key = foldPersonalityName(name)
+
         if (key) {
           names.add(key)
         }

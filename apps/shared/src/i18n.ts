@@ -49,6 +49,7 @@ export const LOCALE_ENDONYMS = {
   de: 'Deutsch',
   en: 'English',
   es: 'Español',
+  fa: 'فارسی',
   fr: 'Français',
   ga: 'Gaeilge',
   hu: 'Magyar',
@@ -67,7 +68,7 @@ export type EndonymLocale = keyof typeof LOCALE_ENDONYMS
 
 /** Locales whose script flows right-to-left; drives `<html dir>` so Tailwind's
  *  logical utilities (ms-/me-, ps-/pe-) flip. */
-export const RTL_LOCALES: ReadonlySet<string> = new Set<EndonymLocale>(['ar'])
+export const RTL_LOCALES: ReadonlySet<string> = new Set<EndonymLocale>(['ar', 'fa'])
 
 /** Mirror the active locale onto `<html lang dir>`. No-op without a document (SSR, tests). */
 export function applyDocumentLocale(locale: string): void {
@@ -77,4 +78,23 @@ export function applyDocumentLocale(locale: string): void {
 
   document.documentElement.lang = locale
   document.documentElement.dir = RTL_LOCALES.has(locale) ? 'rtl' : 'ltr'
+}
+
+// ── Runtime format locale ─────────────────────────────────────────────────────
+// `Intl.*` formatters default to the AMBIENT (browser/OS) locale, but the
+// dashboard's UI language is a user choice independent of the browser. Every
+// formatter that should follow the UI language resolves its tag through
+// `intlTag()`; each app registers its active locale here whenever it changes
+// (and once at boot, before first render). Without this, a Persian UI still
+// renders Gregorian dates with Latin digits and English month names.
+let runtimeFormatLocale = 'en'
+
+export function setRuntimeFormatLocale(locale: string): void {
+  runtimeFormatLocale = locale
+}
+
+/** The Intl locale tag: an explicit `locale` argument wins (call sites that
+ *  already know their locale), else the registered runtime UI locale. */
+export function intlTag(locale?: string): string {
+  return locale ?? runtimeFormatLocale
 }

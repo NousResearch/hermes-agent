@@ -297,7 +297,7 @@ function ConnectedProviderRow({
           </p>
         )}
       </RowButton>
-      <div className="flex items-center gap-1 pr-2">
+      <div className="flex items-center gap-1 pe-2">
         {terminalDisconnect ? (
           <Button
             aria-label={`${copy.disconnect} ${title} in terminal`}

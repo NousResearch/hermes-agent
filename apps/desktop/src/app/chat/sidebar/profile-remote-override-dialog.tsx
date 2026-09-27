@@ -286,7 +286,7 @@ export function ProfileRemoteOverrideDialog({ profileNames }: { profileNames: st
             <DialogFooter>
               {loaded?.hasOverride && (
                 <Button
-                  className="mr-auto"
+                  className="me-auto"
                   disabled={saving}
                   onClick={() => void removeOverride()}
                   type="button"

@@ -362,7 +362,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               <section className="flex flex-col">
                 <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
                   <ArtifactsPagination
-                    className="ml-auto justify-end px-0"
+                    className="ms-auto justify-end px-0"
                     itemLabel={a.itemsImage}
                     onPageChange={setImagePage}
                     page={currentImagePage}
@@ -388,7 +388,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               <section className="flex flex-col">
                 <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
                   <ArtifactsPagination
-                    className="ml-auto justify-end px-0"
+                    className="ms-auto justify-end px-0"
                     itemLabel={itemsLabel(kindFilter, a)}
                     onPageChange={setFilePage}
                     page={currentFilePage}

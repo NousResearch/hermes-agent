@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -30,10 +30,19 @@ import { cn } from "@/lib/utils";
 export function LanguageSwitcher({ collapsed = false, dropUp = false }: LanguageSwitcherProps) {
   const { locale, setLocale, t } = useI18n();
   const [open, setOpen] = useState(false);
+  // Anchor metrics for the drop-up portal, captured in the toggle handler (refs
+  // must not be read during render — react-hooks/refs) and frozen at open time;
+  // the dropdown is closed while the button moves, so a stale rect is fine.
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
   const useMobileSheet = Boolean(dropUp && narrowViewport);
+
+  const toggleOpen = useCallback(() => {
+    setAnchorRect(containerRef.current?.getBoundingClientRect() ?? null);
+    setOpen((v) => !v);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -66,7 +75,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
     <div ref={containerRef} className="relative inline-flex">
       <Button
         ghost
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggleOpen}
         title={t.language.switchTo}
         aria-label={t.language.switchTo}
         aria-haspopup="listbox"
@@ -104,14 +113,14 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
       )}
 
       {open && !useMobileSheet && (() => {
-        const rect = containerRef.current?.getBoundingClientRect();
+        const rect = anchorRect;
         const dropdown = (
           <div
             ref={dropdownRef}
             aria-label={sheetTitle}
             className={cn(
               "min-w-[10rem] border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
-              dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
+              dropUp ? "fixed z-[100]" : "absolute z-50 end-0 top-full mt-1",
             )}
             role="listbox"
             style={
@@ -149,7 +158,7 @@ function LanguageSwitcherOptions({
           <button
             aria-selected={selected}
             className={cn(
-              "w-full text-left px-3 py-1.5 flex items-center gap-2 cursor-pointer",
+              "w-full text-start px-3 py-1.5 flex items-center gap-2 cursor-pointer",
               "font-sans text-display text-xs tracking-[0.08em]",
               "hover:bg-accent hover:text-accent-foreground transition-colors",
               selected ? "font-semibold text-foreground" : "text-muted-foreground",

@@ -81,7 +81,7 @@ export function TerminalInstance({
             variant="secondary"
           >
             {t.rightSidebar.addToChat}
-            <KbdCombo className="ml-1 opacity-70" combo="mod+l" size="sm" />
+            <KbdCombo className="ms-1 opacity-70" combo="mod+l" size="sm" />
           </Button>
         </div>
       )}

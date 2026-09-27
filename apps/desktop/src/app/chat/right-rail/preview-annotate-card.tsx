@@ -74,7 +74,7 @@ export function PreviewAnnotateCard({
   return (
     <form
       aria-label={title}
-      className="absolute z-20 flex h-11 w-[min(17.5rem,calc(100%-1.5rem))] items-center gap-1 rounded-full pl-4 pr-1 shadow-nous"
+      className="absolute z-20 flex h-11 w-[min(17.5rem,calc(100%-1.5rem))] items-center gap-1 rounded-full ps-4 pe-1 shadow-nous"
       data-annotate-card="true"
       data-annotate-number={number}
       onSubmit={event => {

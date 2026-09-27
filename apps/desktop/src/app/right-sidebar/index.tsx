@@ -159,7 +159,7 @@ function FilesystemTab({
   if (!hasWorkspace) {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
-        <SidebarPanelLabel className="pl-0 text-(--ui-text-quaternary)">{r.noProjectOpen}</SidebarPanelLabel>
+        <SidebarPanelLabel className="ps-0 text-(--ui-text-quaternary)">{r.noProjectOpen}</SidebarPanelLabel>
         <Button className="h-7 gap-1.5 text-xs" onClick={() => void openFolderAsProject()} size="sm" variant="outline">
           <Codicon name="folder-opened" size="0.8125rem" />
           {r.openFolder}
@@ -353,7 +353,7 @@ function FileTreeLoadingState() {
 export function PaneEmptyState({ label }: { label: string }) {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center px-4">
-      <SidebarPanelLabel className="pl-0 text-(--ui-text-quaternary)">{label}</SidebarPanelLabel>
+      <SidebarPanelLabel className="ps-0 text-(--ui-text-quaternary)">{label}</SidebarPanelLabel>
     </div>
   )
 }

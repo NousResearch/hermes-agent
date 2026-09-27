@@ -394,7 +394,7 @@ function ProviderGroupCard({
           {expanded ? (
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           ) : (
-            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0 rtl:-scale-x-100 ltr:scale-x-100" />
           )}
           <span className="font-semibold text-sm tracking-wide">
             {group.name === "Other" ? t.common.other : group.name}
@@ -634,9 +634,9 @@ export default function EnvPage() {
     if (vars) {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
-        tool: "Tools",
+        tool: t.env.envCatTools,
         messaging: t.common.gateway ?? "Gateway",
-        setting: "Settings",
+        setting: t.env.envCatSettings,
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(
@@ -663,7 +663,7 @@ export default function EnvPage() {
     setAfterTitle(
       <nav
         className="flex shrink-0 flex-nowrap items-center gap-1"
-        aria-label="Jump to section"
+        aria-label={t.env.jumpToSection}
       >
         {sections.map((s) => (
           <button
@@ -680,7 +680,7 @@ export default function EnvPage() {
     return () => {
       setAfterTitle(null);
     };
-  }, [vars, sections, setAfterTitle]);
+  }, [vars, sections, setAfterTitle, t.env.jumpToSection]);
 
   const handleSave = async (key: string) => {
     const value = edits[key];

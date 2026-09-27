@@ -1182,7 +1182,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             )}
             <span className="text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(entry.at)}</span>
             {entry.text.trim() || !isUser ? (
-              <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
+              <div className="ms-auto flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
                 {isUser ? null : (
                   <Tip label={`Reply to @${replyMentionTag(entry, member)}`}>
                     <Button
@@ -1203,7 +1203,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             ) : null}
           </div>
           <div
-            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
+            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:ps-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:ps-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
             data-slot="group-chat-message-content"

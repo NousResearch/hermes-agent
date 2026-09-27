@@ -215,7 +215,7 @@ export function LocalModelDownloadActions({
     return (
       <div className="flex items-center justify-end gap-2">
         <Pill tone="warn">
-          <Pause className="mr-1 size-3" />
+          <Pause className="me-1 size-3" />
           {copy.downloadPausedLabel}
         </Pill>
 

@@ -169,7 +169,7 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
                 {row.label}
               </span>
               <span
-                className="ml-auto grid text-[0.8rem] text-white/50"
+                className="ms-auto grid text-[0.8rem] text-white/50"
                 style={{ fontFamily: "'JetBrains Mono', monospace" }}
               >
                 {/* Stacking keeps the running/done crossfade in place. */}
@@ -206,7 +206,7 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
           {replyText || '\u00a0'}
           {replying && frame.replyWords < INTRO_REPLY_WORDS.length ? (
             <span
-              className="dither ml-1 inline-block h-[1.05em] w-[0.5em] translate-y-[3px]"
+              className="dither ms-1 inline-block h-[1.05em] w-[0.5em] translate-y-[3px]"
               style={{ animation: 'intro-caret 0.9s step-end infinite', color: BLUE }}
             />
           ) : null}
@@ -230,7 +230,7 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
             )}
             {!sent ? (
               <span
-                className="dither ml-0.5 inline-block h-[1.1em] w-[0.52em] translate-y-[3px]"
+                className="dither ms-0.5 inline-block h-[1.1em] w-[0.52em] translate-y-[3px]"
                 style={{ animation: 'intro-caret 1.05s step-end infinite', color: BLUE }}
               />
             ) : null}
@@ -249,7 +249,7 @@ function HeroChat({ frame, viewportRef }: HeroChatProps) {
                 <path d="M8 3.5v9M3.5 8h9" />
               </svg>
             </span>
-            <span className="ml-auto grid size-6 place-items-center rounded-full text-white/45">
+            <span className="ms-auto grid size-6 place-items-center rounded-full text-white/45">
               <svg
                 fill="none"
                 height="13"

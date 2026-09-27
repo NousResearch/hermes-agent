@@ -127,7 +127,7 @@ export function DecodedLabel({ leaving, text }: { leaving?: boolean; text: strin
       <GlyphText text={decoded} />
       <span
         aria-hidden="true"
-        className="dither ml-1.5 -mr-[0.875rem] inline-block size-2 shrink-0 -translate-y-px rounded-[1px] text-primary decode-cursor-blink"
+        className="dither ms-1.5 -me-[0.875rem] inline-block size-2 shrink-0 -translate-y-px rounded-[1px] text-primary decode-cursor-blink"
       />
     </span>
   )
@@ -161,7 +161,7 @@ export function HackeryButton({
     >
       <span className="text-primary/40 transition-colors group-hover:text-primary">[</span>
       {loading ? <Loader2 className="size-3 animate-spin" /> : null}
-      <span className="-mr-[0.25em] pl-[0.25em] tracking-[0.25em]">{label}</span>
+      <span className="-me-[0.25em] ps-[0.25em] tracking-[0.25em]">{label}</span>
       <span className="text-primary/40 transition-colors group-hover:text-primary">]</span>
     </button>
   )

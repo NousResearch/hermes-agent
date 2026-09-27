@@ -385,7 +385,7 @@ export const UserMessage: FC<{
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
-    'cursor-pointer pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    'cursor-pointer pe-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
@@ -553,14 +553,14 @@ export const UserMessage: FC<{
                 same emoji size, same vertical padding, right-aligned to the
                 sent bubble. Overlaying the corner read badly in practice. */}
             <ReactionBadge
-              className="justify-end gap-1.5 py-1.5 pr-1.5"
+              className="justify-end gap-1.5 py-1.5 pe-1.5"
               onRetract={() => react(null)}
               reactions={shownReactions}
             />
-            <MessageTimelineTimestamp className="self-end pr-1.5" />
+            <MessageTimelineTimestamp className="self-end pe-1.5" />
             <BranchPickerPrimitive.Root
               className={cn(
-                'checkpoint-container flex items-center gap-1 pb-0 pt-1 pl-1.5 text-[0.75rem] leading-none text-(--ui-text-tertiary)',
+                'checkpoint-container flex items-center gap-1 pb-0 pt-1 ps-1.5 text-[0.75rem] leading-none text-(--ui-text-tertiary)',
                 readOnly && 'hidden'
               )}
               hideWhenSingleBranch

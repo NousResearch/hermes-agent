@@ -318,7 +318,7 @@ function AssigneeMenu({
           <DropdownMenuItem key={profile.name} onSelect={() => onReassign(profile.name)}>
             <Avatar name={profile.name} size="0.875rem" />
             {profile.name}
-            {profile.name === current && <Codicon className="ml-auto" name="check" size="0.8rem" />}
+            {profile.name === current && <Codicon className="ms-auto" name="check" size="0.8rem" />}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -377,7 +377,7 @@ function CommentComposer({
     <div className="flex flex-col gap-1.5">
       <div className="relative">
         <Textarea
-          className="field-sizing-content max-h-40 resize-none pr-9 text-[0.8125rem]"
+          className="field-sizing-content max-h-40 resize-none pe-9 text-[0.8125rem]"
           onChange={event => setBody(event.target.value)}
           onKeyDown={event => {
             if (isSubmitEnter(event) && !event.shiftKey) {
@@ -604,7 +604,7 @@ function EstimateSection({ id }: { id: string }) {
             <Tip label={k.reEstimate}>
               <Button
                 aria-label={k.reEstimate}
-                className="ml-auto"
+                className="ms-auto"
                 disabled={est.isPending}
                 onClick={() => est.mutate()}
                 size="icon-xs"
@@ -745,7 +745,7 @@ function FeedTabs({
                       {extra}
                     </span>
                   )}
-                  <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
+                  <span className="ms-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
                 </li>
               )
             })}
@@ -768,7 +768,7 @@ function FeedTabs({
                     {duration(run.started_at, run.ended_at) && (
                       <span className="text-(--ui-text-quaternary)">{duration(run.started_at, run.ended_at)}</span>
                     )}
-                    <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
+                    <span className="ms-auto shrink-0 text-(--ui-text-quaternary)">
                       {ago(run.ended_at ?? run.started_at)}
                     </span>
                   </div>
@@ -972,7 +972,7 @@ export function TaskDrawer({
                 {shortId(task.id)}
               </span>
             )}
-            <div className="ml-auto flex items-center gap-0.5">
+            <div className="ms-auto flex items-center gap-0.5">
               {task && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>

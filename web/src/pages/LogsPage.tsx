@@ -16,6 +16,7 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n/types";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 // Level classification is unit-tested in @/lib/log-classify; it prefers the
@@ -38,8 +39,17 @@ const LINE_COLORS: Record<string, string> = {
 
 const formatFilterLabel = (value: string) => value.toUpperCase();
 
-const toSegmentOptions = <T extends string>(values: readonly T[]) =>
-  values.map((v) => ({ value: v, label: formatFilterLabel(v) }));
+// Log filter labels are UI chrome, so they translate; the log content itself
+// stays verbatim. `all` reads as a word ("All"), the rest are acronyms that
+// keep their uppercase form in every locale.
+const toSegmentOptions = <T extends string>(
+  values: readonly T[],
+  t: Translations,
+): { value: T; label: string }[] =>
+  values.map((v) => ({
+    value: v,
+    label: v === "all" ? t.logs.filterAll : formatFilterLabel(v),
+  }));
 
 const filterGroupClass =
   "flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center";
@@ -72,21 +82,26 @@ export default function LogsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
-  const fetchLogs = useCallback(() => {
+  const fetchLogs = useCallback(async () => {
+    // Await-first loader: the setLoading below runs in a promise
+    // continuation, never synchronously inside the mount/refresh effect
+    // body (react-hooks/set-state-in-effect).
+    await Promise.resolve();
     setLoading(true);
     setError(null);
-    api
-      .getLogs({ file, lines: lineCount, level, component })
-      .then((resp) => {
-        setLines(resp.lines);
-        setTimeout(() => {
-          if (scrollRef.current) {
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-          }
-        }, 50);
-      })
-      .catch((err) => setError(errorMessage(err)))
-      .finally(() => setLoading(false));
+    try {
+      const resp = await api.getLogs({ file, lines: lineCount, level, component });
+      setLines(resp.lines);
+      setTimeout(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+      }, 50);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
   }, [file, lineCount, level, component]);
 
   useLayoutEffect(() => {
@@ -122,7 +137,7 @@ export default function LogsPage() {
           />
           {autoRefresh && (
             <Badge tone="success" className="text-xs">
-              <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+              <span className="me-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
               {t.common.live}
             </Badge>
           )}
@@ -148,7 +163,13 @@ export default function LogsPage() {
   ]);
 
   useEffect(() => {
-    fetchLogs();
+    // Loader-in-effect convention: the IIFE's leading await is the explicit
+    // async boundary required by react-hooks/set-state-in-effect — calling a
+    // component-scope loader directly from the effect body is rejected.
+    void (async () => {
+      await Promise.resolve();
+      await fetchLogs();
+    })();
   }, [fetchLogs]);
 
   useEffect(() => {
@@ -170,7 +191,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={file}
             onChange={setFile}
-            options={toSegmentOptions(FILES)}
+            options={toSegmentOptions(FILES, t)}
           />
         </FilterGroup>
 
@@ -179,7 +200,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={level}
             onChange={setLevel}
-            options={toSegmentOptions(LEVELS)}
+            options={toSegmentOptions(LEVELS, t)}
           />
         </FilterGroup>
 
@@ -188,7 +209,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={component}
             onChange={setComponent}
-            options={toSegmentOptions(COMPONENTS)}
+            options={toSegmentOptions(COMPONENTS, t)}
           />
         </FilterGroup>
 

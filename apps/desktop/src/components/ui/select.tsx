@@ -102,7 +102,7 @@ function SelectItem({ className, children, ...props }: React.ComponentProps<type
       className={cn(
         menuItemClass,
         menuItemFocusClass,
-        'w-full cursor-pointer pr-7 data-disabled:pointer-events-none data-disabled:cursor-default data-disabled:opacity-50',
+        'w-full cursor-pointer pe-7 data-disabled:pointer-events-none data-disabled:cursor-default data-disabled:opacity-50',
         className
       )}
       data-slot="select-item"

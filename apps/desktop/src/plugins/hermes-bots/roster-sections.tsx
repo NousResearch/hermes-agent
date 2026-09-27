@@ -285,7 +285,7 @@ export function RosterSectionHeader({
   // With a trailing action, heading and action share one hover group so the
   // action can reveal on hover of the whole row.
   return action ? (
-    <div className="group/section mt-1 flex w-full min-w-0 items-center gap-1 pr-1">
+    <div className="group/section mt-1 flex w-full min-w-0 items-center gap-1 pe-1">
       {heading}
       {action}
     </div>

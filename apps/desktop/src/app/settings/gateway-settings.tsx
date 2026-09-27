@@ -157,7 +157,7 @@ function ModeCard({
             </span>
           </Tip>
         ) : null}
-        {active ? <Check className="ml-auto size-3.5 shrink-0 text-primary" /> : null}
+        {active ? <Check className="ms-auto size-3.5 shrink-0 text-primary" /> : null}
       </div>
       <p className="mt-1.5 flex-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {description}
@@ -1260,7 +1260,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
                             action={
                               connected ? (
                                 <Pill tone="primary">
-                                  <Check className="mr-1 inline size-3" />
+                                  <Check className="me-1 inline size-3" />
                                   {g.cloudActive}
                                 </Pill>
                               ) : (
@@ -1425,7 +1425,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         <div className="mt-6 flex flex-wrap items-center justify-end gap-4">
           {state.mode === 'remote' ? (
             <Button
-              className="mr-auto"
+              className="me-auto"
               disabled={state.envOverride || saving || remote.testing || !remote.canTest}
               onClick={() => void remote.test()}
               size="sm"
@@ -1436,7 +1436,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
             </Button>
           ) : state.mode === 'ssh' ? (
             <Button
-              className="mr-auto"
+              className="me-auto"
               disabled={testing || !state.sshHost.trim()}
               onClick={() => void testSsh()}
               size="sm"

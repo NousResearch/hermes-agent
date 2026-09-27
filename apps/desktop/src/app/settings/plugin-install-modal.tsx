@@ -475,7 +475,7 @@ export function PluginInstallModal() {
                         </span>
                       </span>
                     </label>
-                    <label className="block space-y-1 pl-7">
+                    <label className="block space-y-1 ps-7">
                       <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
                         {m.profileLabel}
                       </span>

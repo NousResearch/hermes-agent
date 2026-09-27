@@ -34,14 +34,22 @@ import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { api } from "@/lib/api";
+import { useI18n } from "@/i18n";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
 
-const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
+// Locale-aware formatter keyed to the dashboard's selected UI locale (not the
+// ambient browser locale): a Persian (fa-IR) UI renders dates with the Persian
+// (Jalali) calendar and Persian digits, matching the visible surface language.
+// Other locales keep their default calendar via the bare locale tag.
+const getDateFormat = (locale?: string) =>
+  new Intl.DateTimeFormat(locale ? locale.split("-")[0] : undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    calendar: locale?.toLowerCase().startsWith("fa") ? "persian" : undefined,
+    numberingSystem: locale?.toLowerCase().startsWith("fa") ? "arabext" : undefined,
+  });
 
 function joinPath(base: string, name: string): string {
   const cleanName = name.trim().replace(/^[\\/]+/, "");
@@ -77,6 +85,7 @@ function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
 }
 
 export default function FilesPage() {
+  const { t, locale } = useI18n();
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -138,7 +147,7 @@ export default function FilesPage() {
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          aria-label="Refresh files"
+          aria-label={t.actions.refreshFiles}
         >
           {loading ? <Spinner /> : <RefreshCw />}
         </Button>
@@ -148,7 +157,7 @@ export default function FilesPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [headerPath, load, loading, setAfterTitle, setEnd]);
+  }, [headerPath, load, loading, setAfterTitle, setEnd, t.actions.refreshFiles]);
 
   const openDirectory = (entry: ManagedFileEntry) => {
     if (entry.is_directory) {
@@ -159,7 +168,7 @@ export default function FilesPage() {
   const goToPath = async () => {
     const nextPath = pathInput.trim();
     if (!nextPath) {
-      showToast("Path required", "error");
+      showToast(t.files.pathRequired, "error");
       return;
     }
     await load(nextPath);
@@ -168,11 +177,11 @@ export default function FilesPage() {
   const createDirectory = async () => {
     const name = folderName.trim();
     if (!activePath) {
-      showToast("Directory unavailable", "error");
+      showToast(t.files.directoryUnavailable, "error");
       return;
     }
     if (!name) {
-      showToast("Folder name required", "error");
+      showToast(t.files.folderNameRequired, "error");
       return;
     }
     setCreating(true);
@@ -180,10 +189,10 @@ export default function FilesPage() {
       await api.createDirectory(joinPath(activePath, name));
       setFolderName("");
       setCreateDialogOpen(false);
-      showToast("Folder created", "success");
+      showToast(t.files.folderCreated, "success");
       await load();
     } catch (e) {
-      showToast(`Create failed: ${errorMessage(e)}`, "error");
+      showToast(t.files.createFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setCreating(false);
     }
@@ -199,7 +208,7 @@ export default function FilesPage() {
       showToast(`${files.length} file${files.length === 1 ? "" : "s"} uploaded`, "success");
       await load();
     } catch (e) {
-      showToast(`Upload failed: ${errorMessage(e)}`, "error");
+      showToast(t.files.uploadFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -242,7 +251,7 @@ export default function FilesPage() {
       const file = await api.readFile(entry.path);
       downloadDataUrl(file.data_url, file.name);
     } catch (e) {
-      showToast(`Download failed: ${errorMessage(e)}`, "error");
+      showToast(t.files.downloadFailed.replace("{error}", errorMessage(e)), "error");
     }
   };
 
@@ -251,11 +260,11 @@ export default function FilesPage() {
     setDeleting(true);
     try {
       await api.deleteFile(pendingDelete.path, pendingDelete.is_directory);
-      showToast("Deleted", "success");
+      showToast(t.files.deleted, "success");
       setPendingDelete(null);
       await load();
     } catch (e) {
-      showToast(`Delete failed: ${errorMessage(e)}`, "error");
+      showToast(t.files.deleteFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setDeleting(false);
     }
@@ -285,8 +294,8 @@ export default function FilesPage() {
             <Input
               value={pathInput}
               onChange={(event) => setPathInput(event.target.value)}
-              aria-label="Path"
-              placeholder="Path"
+              aria-label={t.fields.path}
+              placeholder={t.fields.pathPlaceholder}
               className="h-9 min-w-0 flex-1 font-mono"
             />
             <Button type="submit" size="sm" outlined className="uppercase">
@@ -332,8 +341,8 @@ export default function FilesPage() {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         disabled={!canUpload}
-        aria-label="Upload files"
-        className={`flex min-h-20 w-full min-w-0 items-center justify-between gap-4 border border-dashed px-4 py-3 text-left transition ${
+        aria-label={t.actions.uploadFiles}
+        className={`flex min-h-20 w-full min-w-0 items-center justify-between gap-4 border border-dashed px-4 py-3 text-start transition ${
           draggingFiles
             ? "border-primary bg-primary/10 text-foreground"
             : "border-border bg-background/20 text-text-secondary hover:border-text-tertiary hover:bg-background/35"
@@ -345,15 +354,19 @@ export default function FilesPage() {
           </span>
           <span className="min-w-0">
             <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
-              {uploading ? "Uploading" : draggingFiles ? "Release to upload" : "Drop files here"}
+              {uploading
+                ? t.files.uploading
+                : draggingFiles
+                  ? t.files.releaseToUpload
+                  : t.files.dropFilesHere}
             </span>
             <span className="block truncate font-mono text-xs text-text-secondary" title={activePath}>
-              {activePath || "Loading"}
+              {activePath || t.files.loading}
             </span>
           </span>
         </span>
         <span className="hidden shrink-0 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary sm:block">
-          Choose files
+          {t.files.chooseFiles}
         </span>
       </button>
 
@@ -366,17 +379,17 @@ export default function FilesPage() {
           )}
 
           <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-            <span>Name</span>
-            <span>Size</span>
-            <span>Modified</span>
-            <span className="text-right">Actions</span>
+            <span>{t.fields.name}</span>
+            <span>{t.fields.size}</span>
+            <span>{t.fields.modified}</span>
+            <span className="text-end">{t.files.actions}</span>
           </div>
 
           {listing?.parent && (
             <button
               type="button"
               onClick={() => setCurrentPath(listing.parent ?? undefined)}
-              className="grid w-full min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border/60 px-4 py-2 text-left text-sm transition hover:bg-background/40"
+              className="grid w-full min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border/60 px-4 py-2 text-start text-sm transition hover:bg-background/40"
             >
               <span className="flex min-w-0 items-center gap-2 font-mono text-text-secondary">
                 <ArrowUp className="h-4 w-4 shrink-0 text-text-tertiary" />
@@ -404,7 +417,7 @@ export default function FilesPage() {
                 <button
                   type="button"
                   onClick={() => (entry.is_directory ? openDirectory(entry) : void downloadFile(entry))}
-                  className="flex min-w-0 items-center gap-2 text-left font-mono text-foreground"
+                  className="flex min-w-0 items-center gap-2 text-start font-mono text-foreground"
                 >
                   {entry.is_directory ? (
                     <Folder className="h-4 w-4 shrink-0 text-warning" />
@@ -415,7 +428,7 @@ export default function FilesPage() {
                 </button>
                 <span className="text-xs tabular-nums text-text-secondary">{formatBytes(entry.size)}</span>
                 <span className="truncate text-xs text-text-secondary">
-                  {Number.isFinite(entry.mtime) ? DATE_FORMAT.format(entry.mtime * 1000) : "-"}
+                  {Number.isFinite(entry.mtime) ? getDateFormat(locale).format(entry.mtime * 1000) : "-"}
                 </span>
                 <span className="flex justify-end gap-1">
                   {entry.is_directory ? (
@@ -424,7 +437,7 @@ export default function FilesPage() {
                       size="icon"
                       type="button"
                       onClick={() => openDirectory(entry)}
-                      aria-label={`Open ${entry.name}`}
+                      aria-label={t.files.openItem.replace("{name}", entry.name)}
                     >
                       <FolderOpen />
                     </Button>
@@ -434,7 +447,7 @@ export default function FilesPage() {
                       size="icon"
                       type="button"
                       onClick={() => void downloadFile(entry)}
-                      aria-label={`Download ${entry.name}`}
+                      aria-label={t.files.downloadItem.replace("{name}", entry.name)}
                     >
                       <Download />
                     </Button>
@@ -444,7 +457,7 @@ export default function FilesPage() {
                     size="icon"
                     type="button"
                     onClick={() => setPendingDelete(entry)}
-                    aria-label={`Delete ${entry.name}`}
+                    aria-label={t.files.deleteItem.replace("{name}", entry.name)}
                     className="text-destructive hover:text-destructive"
                   >
                     <Trash2 />
@@ -468,9 +481,12 @@ export default function FilesPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Create folder</DialogTitle>
+            <DialogTitle>{t.actions.createFolder}</DialogTitle>
             <DialogDescription>
-              Target: {activePath || "Loading"}
+              {t.files.target.replace(
+                "{path}",
+                activePath || t.files.loading,
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="p-4">
@@ -481,7 +497,7 @@ export default function FilesPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void createDirectory();
               }}
-              placeholder="Folder name"
+              placeholder={t.fields.folderNamePlaceholder}
               disabled={creating}
             />
           </div>
@@ -495,7 +511,7 @@ export default function FilesPage() {
               }}
               disabled={creating}
             >
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button
               type="button"
@@ -503,7 +519,7 @@ export default function FilesPage() {
               disabled={creating}
               prefix={creating ? <Spinner /> : <FolderPlus />}
             >
-              Create
+              {t.files.create}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -514,11 +530,15 @@ export default function FilesPage() {
         loading={deleting}
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => void confirmDelete()}
-        title={pendingDelete ? `Delete ${pendingDelete.name}?` : "Delete item?"}
+        title={
+          pendingDelete
+            ? t.files.deleteItemTitle.replace("{name}", pendingDelete.name)
+            : t.files.deleteUntitledTitle
+        }
         description={
           pendingDelete?.is_directory
-            ? "This removes the folder and everything inside it."
-            : "This removes the file."
+            ? t.files.deleteFolderDescription
+            : t.files.deleteFileDescription
         }
       />
     </div>

@@ -466,18 +466,18 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 key={section.id}
                 onSelect={() => void moveBotsToSection([bot], section.id)}
               >
-                <Codicon className="mr-1.5" name="folder" />
+                <Codicon className="me-1.5" name="folder" />
                 {section.name}
               </ContextMenuItem>
             ))}
             {sections.length ? <ContextMenuSeparator /> : null}
             <ContextMenuItem onSelect={() => onNewSection(bot)}>
-              <Codicon className="mr-1.5" name="new-folder" />
+              <Codicon className="me-1.5" name="new-folder" />
               {b.sections.newSectionEllipsis}
             </ContextMenuItem>
             {currentSectionId ? (
               <ContextMenuItem onSelect={() => void moveBotsToSection([bot], null)}>
-                <Codicon className="mr-1.5" name="inbox" />
+                <Codicon className="me-1.5" name="inbox" />
                 {b.sections.removeFromSection}
               </ContextMenuItem>
             ) : null}
@@ -649,18 +649,18 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
                 key={section.id}
                 onSelect={() => moveGroupChatsToSection([group], section.id)}
               >
-                <Codicon className="mr-1.5" name="folder" />
+                <Codicon className="me-1.5" name="folder" />
                 {section.name}
               </ContextMenuItem>
             ))}
             {sections.length ? <ContextMenuSeparator /> : null}
             <ContextMenuItem onSelect={() => onNewSection(group)}>
-              <Codicon className="mr-1.5" name="new-folder" />
+              <Codicon className="me-1.5" name="new-folder" />
               {b.sections.newSectionEllipsis}
             </ContextMenuItem>
             {currentSectionId ? (
               <ContextMenuItem onSelect={() => moveGroupChatsToSection([group], null)}>
-                <Codicon className="mr-1.5" name="inbox" />
+                <Codicon className="me-1.5" name="inbox" />
                 {b.sections.removeFromSection}
               </ContextMenuItem>
             ) : null}

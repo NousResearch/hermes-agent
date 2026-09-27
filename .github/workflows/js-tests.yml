@@ -18,6 +18,37 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Locale parity gate. Dependency-free (plain Node, no npm ci needed),
+      # so it runs before the setup steps and fails in seconds, not minutes.
+      # Fails on any key missing from/added to a locale that its English source
+      # does not allow — full parity for locales/*.yaml, deep-merge parity (no
+      # stale keys, no string<->interpolator drift) for web + desktop locales.
+      - name: Check i18n locale key parity
+        run: node scripts/check_i18n_parity.mjs --all
+
+      # Hardcoded-string gate for the web dashboard. Dependency-free
+      # (stdlib-only Node), so it fails in seconds before any setup step.
+      # Fails when a user-facing English string appears in web/src outside
+      # the i18n catalogs (raw toasts, confirm dialogs, label/placeholder/
+      # aria attribute literals, JSX text nodes, label-map entries, or
+      # template literals with hardcoded static residue). Known pre-existing
+      # findings are recorded in scripts/i18n-hardcoded-allowlist.json;
+      # re-baseline ONLY for genuinely non-user-facing strings (proper
+      # nouns, technical tokens) via --update-allowlist — prefer fixing by
+      # wiring through useI18n().
+      - name: Check i18n hardcoded strings (web)
+        run: node scripts/check_i18n_hardcoded.mjs
+
+      # Guide walkthrough sync gate. Dependency-free (stdlib-only Python,
+      # preinstalled on the runner), so it also fails in seconds before any
+      # setup step. Fails when the first-run walkthrough captions in the
+      # standalone guide.html and the in-dashboard Persian guide
+      # (PersianGuide.tsx WALKTHROUGH) drift apart: caption edits, added or
+      # removed figures, or reorders.
+      - name: Check guide walkthrough caption sync
+        run: python3 scripts/check_guide_walkthrough_sync.py
+
       - name: Set up the locked JS build toolchain
         id: node
         uses: ./.github/actions/setup-pm
@@ -87,4 +118,77 @@ jobs:
       # not an empty run, because an empty run reports green after it checks
       # nothing.
       - name: Run all workspace checks
-        run: node .github/scripts/run-workspace-checks.mjs
+        # --expect-workspaces is the silent-skip assertion: discovery is
+        # dynamic (npm query), so a workspace whose check scripts are renamed,
+        # removed, or no longer npm-resolved would drop out of the run and the
+        # job would still report green having checked one workspace fewer. The
+        # pinned list fails the job naming the workspace instead. Add every NEW
+        # workspace to it.
+        run: >-
+          node .github/scripts/run-workspace-checks.mjs
+          --expect-workspaces apps/desktop,apps/shared,ui-tui,ui-tui/packages/hermes-ink,web
+
+  electron-platforms:
+    name: Electron unit suite (${{ matrix.os }})
+    # The electron suite (vitest --project electron) pins a lot of POSIX-only
+    # semantics (OpenSSH ControlMaster, mode bits, /bin/sh launchers) that
+    # cannot run on a Windows host. Those tests are gated with
+    # `skipIf(process.platform === 'win32')` in the specs, so the suite runs
+    # everywhere and each OS asserts exactly the behavior that is real on it.
+    # Linux coverage already lives in the `check` job above (as
+    # check:test:desktop:platforms); the matrix adds Windows and macOS. The
+    # macOS leg is intentionally included: the suite's POSIX-only gates are
+    # written against `win32` only, so darwin runs the same POSIX-semantics
+    # specs Linux does — see the darwin-triage notes in .freebuff/run.md for
+    # which specs are expected to differ on APFS/BSD userland.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: grab npm 12
+        run: |
+          npm --version | grep -q '^12\.' || npm i -g npm@12
+          echo "npm $(npm --version)"
+        shell: bash
+
+      # Same key scheme as the check job: the OS segment keeps the Windows
+      # tree separate, and the key includes the electron postinstall artifacts
+      # (apps/*/node_modules covers apps/desktop/node_modules).
+      - name: Restore node_modules
+        id: node-modules-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            tests-js/node_modules
+            web/node_modules
+          key: node-modules-scripts-${{ runner.os }}-node26-npm12-${{ hashFiles('package-lock.json') }}
+
+      - uses: ./.github/actions/retry
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          command: npm ci
+
+      # The suite shells out to real git and (on Windows) powershell.exe for
+      # its portable tests; both ship on the runner image.
+      - name: Run electron platform test suite
+        working-directory: apps/desktop
+        run: npm run check:test:desktop:platforms
+        env:
+          CI: 'true'
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''

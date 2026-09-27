@@ -13,11 +13,17 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
   "/config": "config",
   "/env": "keys",
   "/docs": "documentation",
+  "/files": "files",
+  "/mcp": "mcp",
+  "/channels": "channels",
+  "/webhooks": "webhooks",
+  "/pairing": "pairing",
+  "/system": "system",
 };
 
-// Built-in routes without an i18n nav key. Keep these in sync with the
-// sidebar labels in App.tsx — the naive capitalize fallback below mangles
-// initialisms ("/mcp" → "Mcp") and can't match multi-word labels.
+// English literals for routes whose nav key is optional — used as fallback
+// for locales that haven't translated them yet (and for the naive-capitalize
+// avoidance on initialisms like "/mcp").
 const BUILTIN_LITERAL: Record<string, string> = {
   "/files": "Files",
   "/mcp": "MCP",
@@ -42,7 +48,9 @@ export function resolvePageTitle(
   }
   const key = BUILTIN[normalized];
   if (key) {
-    return t.app.nav[key];
+    // Optional nav keys (files/mcp/channels/…) fall back to the English
+    // literal for locales that haven't translated them yet.
+    return t.app.nav[key] ?? BUILTIN_LITERAL[normalized] ?? String(key);
   }
   const literal = BUILTIN_LITERAL[normalized];
   if (literal) {

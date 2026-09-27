@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { intlTag } from "@hermes/shared/i18n";
 import {
   ShieldCheck,
   ShieldOff,
@@ -31,6 +32,7 @@ interface Props {
 function formatExpiresAt(
   expiresAt: string | null | undefined,
   expiresInTemplate: string,
+  expiredLabel: string,
 ): string | null {
   if (!expiresAt) return null;
   try {
@@ -38,17 +40,40 @@ function formatExpiresAt(
     if (Number.isNaN(dt.getTime())) return null;
     const now = Date.now();
     const diff = dt.getTime() - now;
-    if (diff < 0) return "expired";
+    if (diff < 0) return expiredLabel;
+    // Localized duration ("in 5 minutes" / «۵ دقیقهٔ دیگر») with an m/h/d
+    // fallback for engines (or TS libs) without Intl.DurationFormat.
     const mins = Math.floor(diff / 60_000);
-    if (mins < 60) return expiresInTemplate.replace("{time}", `${mins}m`);
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return expiresInTemplate.replace("{time}", `${hours}h`);
-    const days = Math.floor(hours / 24);
-    return expiresInTemplate.replace("{time}", `${days}d`);
+    const duration: { minutes: number } | { hours: number } | { days: number } =
+      mins < 60
+        ? { minutes: mins }
+        : mins < 24 * 60
+          ? { hours: Math.floor(mins / 60) }
+          : { days: Math.floor(mins / (24 * 60)) };
+    type DurationFormatCtor = new (tag: string) => {
+      format: (duration: Record<string, number>) => string;
+    };
+    const DurationFormat = (
+      Intl as unknown as { DurationFormat?: DurationFormatCtor }
+    ).DurationFormat;
+    let unit: string;
+    if (DurationFormat) {
+      unit = new DurationFormat(intlTag()).format(duration);
+    } else {
+      const [value, suffix] =
+        "minutes" in duration
+          ? [duration.minutes, "m"]
+          : "hours" in duration
+            ? [duration.hours, "h"]
+            : [duration.days, "d"];
+      unit = `${value}${suffix}`;
+    }
+    return expiresInTemplate.replace("{time}", unit);
   } catch {
     return null;
   }
 }
+
 
 export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const [providers, setProviders] = useState<OAuthProvider[] | null>(null);
@@ -59,20 +84,40 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     useState<OAuthProvider | null>(null);
   const { t } = useI18n();
 
+  // `onError` lives in a ref synced from an effect (render-phase ref writes
+  // are illegal under react-hooks/refs). The ref keeps `refresh`'s dependency
+  // list empty, so a parent identity change can't re-trigger the load.
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
 
-  const refresh = useCallback(() => {
+  const refresh = useCallback(async () => {
+    // Await-first loader: setLoading runs in a promise continuation, never
+    // synchronously inside the mount effect body below
+    // (react-hooks/set-state-in-effect).
+    await Promise.resolve();
     setLoading(true);
-    api
-      .getOAuthProviders()
-      .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${errorMessage(e)}`))
-      .finally(() => setLoading(false));
+    try {
+      const resp = await api.getOAuthProviders();
+      setProviders(resp.providers);
+    } catch (e) {
+      onErrorRef.current?.(`Failed to load providers: ${errorMessage(e)}`);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  // Initial load. (Restored after an earlier refactor dropped it: without
+  // this the card stayed empty until the first manual refresh.)
   useEffect(() => {
-    refresh();
+    // Loader-in-effect convention: the IIFE's leading await is the explicit
+    // async boundary required by react-hooks/set-state-in-effect — calling a
+    // component-scope loader directly from the effect body is rejected.
+    void (async () => {
+      await Promise.resolve();
+      await refresh();
+    })();
   }, [refresh]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
@@ -136,6 +181,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
             const expiresLabel = formatExpiresAt(
               p.status.expires_at,
               t.oauth.expiresIn,
+              t.oauth.expired,
             );
             const isBusy = busyId === p.id;
             return (
@@ -251,7 +297,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                   )}
                   {p.status.logged_in && p.flow === "external" && (
                     <span className="text-xs text-text-tertiary italic px-2">
-                      <Terminal className="h-3 w-3 inline mr-0.5" />
+                      <Terminal className="h-3 w-3 inline me-0.5" />
                       {t.oauth.managedExternally}
                     </span>
                   )}

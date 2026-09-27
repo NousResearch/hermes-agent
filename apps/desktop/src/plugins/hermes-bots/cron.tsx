@@ -38,6 +38,7 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { $focusedBotOwner, $selectedBot, focusedRosterOwner } from './bot-state'
@@ -330,7 +331,7 @@ function scheduleLabel(schedule: string | undefined): string {
 function routineTimestamp(value: string | undefined): null | string {
   const ms = value ? new Date(value).getTime() : Number.NaN
 
-  return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString()}` : null
+  return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString(getRuntimeI18nLocale())}` : null
 }
 
 /** The scheduler's `last_status` literals, spelled out for the inspector. The
@@ -588,12 +589,12 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
       {/* The schedule pill and the next-run label keep their words: when the
           pane can't fit both on one line the next-run label wraps to a second
           line instead of being cut to "next in 4" (#89534). */}
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pl-3.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 ps-3.5">
         <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
           <Codicon className="text-[0.7rem]" name="calendar" />
           {scheduleLabel(job.schedule)}
         </span>
-        <span className="ml-auto shrink-0 whitespace-nowrap text-[0.65rem] text-(--ui-text-quaternary)">
+        <span className="ms-auto shrink-0 whitespace-nowrap text-[0.65rem] text-(--ui-text-quaternary)">
           {active && job.next_run_at
             ? `${nextRunOverdueMs(job) === null ? c.next : c.overdueSince} ${relativeTime(new Date(job.next_run_at).getTime())}`
             : c.states.paused}

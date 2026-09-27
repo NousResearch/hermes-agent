@@ -77,6 +77,10 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   // back to guidance that names the common cause (sign-in stalled in the
   // opened tab) instead of a dead-end.
   const handleLocalExpiry = async () => {
+    // Leading await = the async boundary: every setState below runs in a
+    // promise continuation, so this handler can be invoked from an effect
+    // body without violating react-hooks/set-state-in-effect.
+    await Promise.resolve();
     if (!isMounted.current) return;
     let backendMessage: string | null = null;
     if (start && start.flow === "device_code") {
@@ -115,7 +119,13 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   useEffect(() => {
     if (secondsLeft !== 0) return;
     if (phase === "approved" || phase === "error") return;
-    void handleLocalExpiry();
+    // Loader-in-effect convention: the IIFE's leading await is the explicit
+    // async boundary (react-hooks/set-state-in-effect) — the expiry handler's
+    // state updates run in continuations, never in the effect body.
+    void (async () => {
+      await Promise.resolve();
+      await handleLocalExpiry();
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secondsLeft, phase]);
 
@@ -231,7 +241,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
           ghost
           size="icon"
           onClick={handleClose}
-          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
           aria-label={t.common.close}
         >
           <X />

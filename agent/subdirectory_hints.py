@@ -78,10 +78,15 @@ def _first_hint_file(directory: Path):
                 continue
             # Read the resolved target (not the link path) so a symlink swapped
             # between check and read still lands on the vetted file.
-            content = target.read_text(encoding="utf-8-sig").strip()
+            # Bounded like every other context-file read (#10047): a blocked
+            # open() (cloud placeholder, privacy prompt, stalled volume) must
+            # not wedge SubdirectoryHintTracker construction at turn start.
+            raw = _read_text_with_timeout(target)
         except (OSError, UnicodeDecodeError):
             continue
-        return candidate, content
+        if raw is None:
+            continue
+        return candidate, raw.strip()
     return None
 
 

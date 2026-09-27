@@ -844,9 +844,10 @@ matrix:
 
 Binding IDs are full internal room IDs, not names, aliases, user IDs, or Matrix
 thread event IDs. Matrix threads use their containing room's binding. Skills
-load only at session start, so after changing a binding, run `/new` or wait for
-the session to reset. Unmatched rooms and empty bindings load no skill. You can
-combine a skill binding with `channel_prompts` for per-turn room instructions.
+load only at session start. After changing a binding, restart the gateway, then
+start a new session with `/new`. Unmatched rooms and empty bindings load no
+skill. You can combine a skill binding with `channel_prompts` for per-turn room
+instructions.
 
 ## Troubleshooting
 

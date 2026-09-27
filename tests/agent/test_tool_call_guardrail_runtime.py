@@ -371,13 +371,15 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
 
 
 def _compressed_args(field: str) -> dict:
-    """Generate the current model-visible prune marker through the real compressor."""
-    from agent.context_compressor import _COMPRESSION_MARKER_PREFIX, _truncate_tool_call_args_json
+    """Generate a legacy compression marker for already-contaminated session coverage."""
+    from agent.compression_marker import _COMPRESSION_MARKER_TEMPLATE
 
-    raw = json.dumps({field: "z" * 2000})
-    parsed = json.loads(_truncate_tool_call_args_json(raw))
-    assert _COMPRESSION_MARKER_PREFIX in parsed[field]
-    return parsed
+    original = "z" * 2000
+    marker = _COMPRESSION_MARKER_TEMPLATE.format(
+        omitted=len(original) - 200,
+        total=len(original),
+    )
+    return {field: original[:200] + marker}
 
 
 def test_context_pruned_effectful_call_blocks_before_dispatch():

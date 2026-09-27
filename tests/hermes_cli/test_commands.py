@@ -163,6 +163,17 @@ class TestSlackNativeSlashes:
                 assert ch.isalnum() or ch in "-_", f"invalid char {ch!r} in {name!r}"
 
 
+    def test_manifest_respects_slack_command_cap(self):
+        """Slack rejects any app manifest past 25 slash commands outright, so the
+        generator must never emit more — the curation list (_SLACK_VIA_HERMES_ONLY)
+        is what keeps the registry inside the cap."""
+        from hermes_cli.commands_platforms import _SLACK_MAX_SLASH_COMMANDS
+
+        m = slack_app_manifest()
+        slashes = m["features"]["slash_commands"]
+        assert len(slashes) <= _SLACK_MAX_SLASH_COMMANDS
+        assert _SLACK_MAX_SLASH_COMMANDS == 25
+
     def test_telegram_parity(self):
         """Every Telegram bot command must be registerable on Slack too.
 

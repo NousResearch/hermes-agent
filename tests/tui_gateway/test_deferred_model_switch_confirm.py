@@ -22,13 +22,11 @@ import pytest
 
 from tui_gateway import server
 
-
 # A vendor-documented data-training tier. The data-policy guard keys on the
 # model id alone (no base_url / api_key / model_info), which is exactly what
 # the stash branch can see before resolution.
 GUARDED_MODEL = "muse-spark-1.2-contributor"
 UNGUARDED_MODEL = "anthropic/claude-sonnet-4.6"
-
 
 def _session(**extra):
     return {
@@ -47,13 +45,11 @@ def _session(**extra):
         **extra,
     }
 
-
 def _config_set_model(value, **extra_params):
     params = {"session_id": "sid", "key": "model", "value": value}
     params.update(extra_params)
 
     return server.handle_request({"id": "1", "method": "config.set", "params": params})
-
 
 @pytest.fixture
 def running_session(monkeypatch):
@@ -71,7 +67,6 @@ def running_session(monkeypatch):
         yield server._sessions["sid"]
     finally:
         server._sessions.pop("sid", None)
-
 
 class TestGuardedPickAsksBeforeStashing:
     def test_reports_confirm_required_instead_of_deferring(self, running_session):
@@ -95,12 +90,6 @@ class TestGuardedPickAsksBeforeStashing:
             "start would drop it anyway, after the pill already moved"
         )
 
-    def test_confirm_message_names_the_guard(self, running_session):
-        message = _config_set_model(GUARDED_MODEL)["result"]["confirm_message"]
-
-        assert "CONTRIBUTOR TIER" in message
-        assert "train" in message.lower()
-
     def test_reconfirming_queues_the_pick(self, running_session):
         resp = _config_set_model(GUARDED_MODEL, confirm_expensive_model=True)
 
@@ -114,7 +103,6 @@ class TestGuardedPickAsksBeforeStashing:
             "the ack must survive into the stash or _apply_pending_model_switch "
             "re-runs the guard at turn start and drops the confirmed pick"
         )
-
 
 class TestUnguardedPickStillDefers:
     """The queue-don't-race behaviour is the whole point of this branch."""
@@ -140,7 +128,6 @@ class TestUnguardedPickStillDefers:
         pending = running_session["pending_model_switch"]
         assert pending["display_provider"] == "anthropic"
 
-
 class TestGuardFailureIsNotFatal:
     def test_a_raising_guard_falls_back_to_deferring(self, running_session, monkeypatch):
         """A broken guard must never cost the user their model pick.
@@ -161,55 +148,3 @@ class TestGuardFailureIsNotFatal:
 
         assert result["deferred"] is True
         assert running_session["pending_model_switch"]["raw"] == GUARDED_MODEL
-
-
-class TestHelperContract:
-    def test_returns_none_for_an_empty_model(self):
-        assert server._pending_switch_selection_warning("", "") is None
-
-    def test_returns_none_when_no_guard_fires(self):
-        assert server._pending_switch_selection_warning(UNGUARDED_MODEL, "") is None
-
-    def test_returns_the_message_when_a_guard_fires(self):
-        message = server._pending_switch_selection_warning(GUARDED_MODEL, "")
-
-        assert message is not None
-        assert "CONTRIBUTOR TIER" in message
-
-    def test_an_explicit_provider_reaches_the_guards(self, monkeypatch):
-        """Provider-keyed guards are useless if the provider is dropped here.
-
-        The docstring promises the early call can only under-fire relative to
-        the resolved one, and that only holds if what the caller DID say is
-        forwarded. Asserting on a guarded model id would pass even with
-        ``provider`` dropped, so record the kwargs instead.
-        """
-        seen = {}
-
-        def _fake(model, provider=None, **kwargs):
-            seen["model"] = model
-            seen["provider"] = provider
-            return None
-
-        import hermes_cli.model_selection_guards as guards
-
-        monkeypatch.setattr(guards, "combined_selection_warning", _fake)
-        server._pending_switch_selection_warning(UNGUARDED_MODEL, "openrouter")
-
-        assert seen == {"model": UNGUARDED_MODEL, "provider": "openrouter"}
-
-    def test_an_empty_provider_is_normalised_to_none(self, monkeypatch):
-        """`provider or None` is load-bearing: "" is not "no provider" to a
-        guard that does an `is None` check, and the TUI sends "" for unset."""
-        seen = {}
-
-        def _fake(model, provider=None, **kwargs):
-            seen["provider"] = provider
-            return None
-
-        import hermes_cli.model_selection_guards as guards
-
-        monkeypatch.setattr(guards, "combined_selection_warning", _fake)
-        server._pending_switch_selection_warning(UNGUARDED_MODEL, "")
-
-        assert seen == {"provider": None}

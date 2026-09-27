@@ -32,6 +32,11 @@ export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }
     // Mid-turn the transcript changes on every delta and the gateway already
     // streams measured usage, so an estimate would be both stale and wasteful.
     if (!enabled || !sessionId || busy) {
+      // A turn invalidates the idle snapshot. Do not let it reappear between
+      // busy=false and the next RPC response (or survive a failed refresh).
+      setFetched(null)
+      setLoading(false)
+
       return
     }
 
@@ -57,7 +62,9 @@ export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }
   }, [busy, enabled, requestGateway, sessionId])
 
   return {
-    breakdown: fetched && fetched.sessionId === sessionId ? fetched.breakdown : null,
+    // The effect clears `fetched` only after commit, so gate on `busy` here too:
+    // the first busy render must not hand out the pre-turn snapshot.
+    breakdown: !busy && fetched?.sessionId === sessionId ? fetched.breakdown : null,
     loading
   }
 }

@@ -25,6 +25,9 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
+
 import {
   buildAppEnv,
   createSandbox,
@@ -32,10 +35,7 @@ import {
   type MockBackendFixture,
   type Sandbox,
   waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig,
 } from './fixtures'
-import { startMockServer } from './mock-server'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
 // localStorage slots owned by src/themes/context.tsx.
@@ -48,7 +48,7 @@ const SCOPE_KEY = 'hermes-desktop-theme-scope-v1'
 // most direct "the theme layer has seen the switch" signal there is.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
 
-const APPEARANCE_ROUTE = '/settings?tab=config%3Aappearance'
+const APPEARANCE_ROUTE = '/settings?tab=config%3Aappearance&page=theme'
 
 /**
  * Seed `<home>/profiles/<name>/` so the backend's /api/profiles lists it. Each

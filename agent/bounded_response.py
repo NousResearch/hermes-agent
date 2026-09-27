@@ -1,55 +1,27 @@
 """Bounded reads of HTTP error response bodies.
 
-When a provider returns a non-OK status on a *streaming* request, Hermes reads
-the response body to build a useful diagnostic error. A bare ``response.read()``
-on a streaming httpx response is unbounded in two dangerous ways:
-
-1. A server can declare (or stream) an arbitrarily large body, so the read can
-   balloon memory.
-2. A server can open the body and then stall forever (no ``Content-Length``,
-   no further bytes), so the read hangs the agent indefinitely.
-
-Both are realistic against a misbehaving proxy, a hijacked endpoint, or a
-provider having a bad day. The diagnostic body is only ever shown to the user
-truncated to a few hundred characters, so reading megabytes — or blocking
-forever — buys nothing.
-
-``read_streaming_error_body`` bounds the read to a byte cap and enforces a
-hard wall-clock deadline, returning the decoded text snippet. Callers pass the
-returned text into their existing error builders instead of touching
-``response.text`` (which would be unbounded / would raise after a partial
-stream read).
-
-A subtlety the implementation must respect: ``httpx``'s ``iter_bytes()`` blocks
-*inside* the C/socket read while waiting for the next chunk. A wall-clock check
-placed only between yielded chunks cannot interrupt a server that opens the
-body and then stalls mid-chunk — control never returns to Python until httpx's
-own (often 30s+) read timeout fires. To guarantee a bounded stop regardless of
-socket behavior, the read runs on a daemon worker thread and the caller waits
-on it with a hard deadline; on timeout we close the response (which unblocks /
-cancels the read) and return whatever partial bytes were collected.
-
-Ported and adapted from openclaw/openclaw#95108 ("bound Anthropic error
-streams"), generalized to cover Hermes's three streaming error-body sites
-(native Gemini, Gemini Cloud Code, Antigravity Cloud Code).
+On a non-OK *streaming* response Hermes reads the body for a diagnostic (only ever shown truncated to
+a few hundred chars). A bare ``response.read()`` is unbounded two ways: arbitrarily large body
+(memory) or a body that stalls forever (hang). ``read_streaming_error_body`` caps bytes and enforces a
+hard wall-clock deadline; callers use the returned text instead of ``response.text`` (unbounded /
+raises after a partial stream read). ``httpx.iter_bytes()`` blocks *inside* the socket read, so the
+read runs on a daemon thread; on timeout we close the response (unblocking the read) and return the
+partial bytes. Used by the streaming error-body sites: native Gemini, Gemini Cloud Code, Antigravity.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import List, Optional
+from typing import List
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-# Defaults chosen to comfortably hold any real provider error envelope (Google
-# RPC error JSON, Anthropic error JSON) while rejecting pathological bodies.
+# Comfortably holds any real provider error envelope while rejecting pathological bodies.
 DEFAULT_ERROR_BODY_MAX_BYTES = 64 * 1024
-# Hard wall-clock deadline for the whole bounded read. A streaming error body
-# that does not finish within this window is abandoned and the connection is
-# closed; we keep whatever partial bytes arrived.
+# Hard deadline for the whole read; past it the connection is closed and the partial bytes are kept.
 DEFAULT_ERROR_BODY_TIMEOUT_S = 10.0
 
 
@@ -59,17 +31,11 @@ def read_streaming_error_body(
     max_bytes: int = DEFAULT_ERROR_BODY_MAX_BYTES,
     timeout_s: float = DEFAULT_ERROR_BODY_TIMEOUT_S,
 ) -> str:
-    """Read a non-OK streaming response body with a byte cap and a hard deadline.
+    """Read a non-OK streaming body with a byte cap and a hard deadline.
 
-    Returns the decoded body text (UTF-8, errors replaced), truncated to
-    ``max_bytes``. Never raises: any transport error, stall, or oversize
-    condition is swallowed and the best-effort partial text (or an empty
-    string) is returned, because this runs on the error path and must not
-    mask the original HTTP failure with a read error.
-
-    The byte cap protects against huge bodies; the wall-clock deadline (enforced
-    via a worker thread so it can interrupt a socket read that stalls mid-chunk)
-    protects against bodies that open and then hang.
+    Returns UTF-8 text (errors replaced) truncated to ``max_bytes``. Never raises: transport errors,
+    stalls and oversize bodies yield best-effort partial text (or ""), so a read error can't mask the
+    original failure.
     """
     chunks: List[bytes] = []
     state = {"truncated": False}
@@ -82,12 +48,9 @@ def read_streaming_error_body(
                 if not chunk:
                     continue
                 remaining = max_bytes - total
-                if remaining <= 0:
-                    state["truncated"] = True
-                    break
                 if len(chunk) > remaining:
-                    chunks.append(chunk[:remaining])
-                    total += remaining
+                    if remaining > 0:
+                        chunks.append(chunk[:remaining])
                     state["truncated"] = True
                     break
                 chunks.append(chunk)
@@ -97,40 +60,30 @@ def read_streaming_error_body(
         finally:
             done.set()
 
-    worker = threading.Thread(
-        target=_drain, name="bounded-error-body-read", daemon=True
-    )
-    worker.start()
-    finished = done.wait(timeout=timeout_s)
-
-    if not finished:
+    threading.Thread(target=_drain, name="bounded-error-body-read", daemon=True).start()
+    if not done.wait(timeout=timeout_s):
         logger.debug(
             "bounded error-body read: hard timeout after %.1fs (%d bytes so far)",
-            timeout_s,
-            sum(len(c) for c in chunks),
+            timeout_s, sum(len(c) for c in chunks),
         )
-        # Closing the response cancels the in-flight socket read, letting the
-        # worker thread unwind. We do not join (it is a daemon and may be
-        # blocked in C); the partial `chunks` collected so far are returned.
-        _safe_close(response)
-    else:
-        _safe_close(response)
-
-    if state["truncated"]:
-        logger.debug(
-            "bounded error-body read: capped at %d bytes (max=%d)",
-            sum(len(c) for c in chunks),
-            max_bytes,
-        )
-    return b"".join(chunks).decode("utf-8", errors="replace")
-
-
-def _safe_close(response: httpx.Response) -> None:
+    # Closing cancels any in-flight socket read so the worker unwinds. No join (daemon, may be blocked in C).
     try:
         response.close()
     except Exception:  # noqa: BLE001
         pass
 
+    if state["truncated"]:
+        logger.debug(
+            "bounded error-body read: capped at %d bytes (max=%d)", sum(len(c) for c in chunks), max_bytes,
+        )
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from typing import Optional  # noqa: F401,E402
 
 def read_error_body_or_default(
     response: httpx.Response,
@@ -146,3 +99,4 @@ def read_error_body_or_default(
         response, max_bytes=max_bytes, timeout_s=timeout_s
     )
     return text or None
+# ---- END PLUGIN-COMPAT ----

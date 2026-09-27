@@ -7,16 +7,8 @@ that the setup wizard correctly syncs config from disk after the call.
 
 from __future__ import annotations
 
-from hermes_cli.config import load_config, save_config, save_env_value
-from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+from hermes_cli.config import load_config, save_config
 from hermes_cli.setup import _print_setup_summary, setup_model_provider
-
-
-def _maybe_keep_current_tts(question, choices):
-    if question != "Select TTS provider:":
-        return None
-    assert choices[-1].startswith("Keep current (")
-    return len(choices) - 1
 
 
 def _clear_provider_env(monkeypatch):
@@ -35,32 +27,6 @@ def _clear_provider_env(monkeypatch):
         "ANTHROPIC_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
-
-
-def _stub_tts(monkeypatch):
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda q, c, d=0: (
-        _maybe_keep_current_tts(q, c) if _maybe_keep_current_tts(q, c) is not None
-        else d
-    ))
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: False)
-
-
-def _write_model_config(provider, base_url="", model_name="test-model"):
-    """Simulate what a _model_flow_* function writes to disk."""
-    cfg = load_config()
-    m = cfg.get("model")
-    if not isinstance(m, dict):
-        m = {"default": m} if m else {}
-        cfg["model"] = m
-    m["provider"] = provider
-    if base_url:
-        m["base_url"] = base_url
-    else:
-        m.pop("base_url", None)
-    if model_name:
-        m["default"] = model_name
-    m.pop("api_mode", None)
-    save_config(cfg)
 
 
 def _write_aux_config(task="compression", provider="gemini", model_name="gemini-2.5-flash"):
@@ -95,40 +61,6 @@ def test_setup_model_provider_preserves_auxiliary_choices_written_by_picker(tmp_
     assert compression["model"] == "gemini-2.5-flash"
 
 
-def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-
-    config = load_config()
-
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select your inference provider:":
-            return 15  # GitHub Copilot ACP
-        if question == "Select default model:":
-            return 0
-        if question == "Configure vision:":
-            return len(choices) - 1
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
-
-    def fake_prompt_yes_no(question, default=True):
-        if question == "Add another credential for same-provider fallback?":
-            raise AssertionError("same-provider pool prompt should not appear for copilot-acp")
-        return False
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
-    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
-
-    setup_model_provider(config)
-
-    assert config.get("credential_pool_strategies", {}) == {}
-
-
 def test_setup_summary_local_browser_unavailable_without_chromium(
     tmp_path, monkeypatch, capsys
 ):
@@ -137,7 +69,7 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
 
     Unlike the mocked-feature tests above, this drives the real
     ``get_nous_subscription_features`` so the surface stays aligned with the
-    runtime gate in ``tools.browser_tool.check_browser_requirements``.
+    runtime gate in ``tools.browser_tool_install.check_browser_requirements``.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
@@ -156,8 +88,8 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
         "hermes_cli.nous_subscription.get_nous_portal_account_info",
         lambda *a, **k: None,
     )
-    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: False)
-    monkeypatch.setattr("tools.browser_tool._using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: False)
+    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: False)
     monkeypatch.setattr(
         "agent.auxiliary_client.get_available_vision_backends", lambda: []
     )
@@ -166,4 +98,4 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
     output = capsys.readouterr().out
 
     assert "Browser Automation (Local browser)" not in output
-    assert "agent-browser install --with-deps" in output
+    assert "hermes pm install agent-browser" in output

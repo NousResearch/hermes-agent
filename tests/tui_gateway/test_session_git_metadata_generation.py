@@ -32,11 +32,11 @@ def test_cwd_claim_precedes_probe_and_generation_reaches_publish(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: DB())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(
-        server,
-        "_git_branch_for_cwd",
+        server.git_probe,
+        "branch",
         lambda cwd: events.append(("probe", cwd)) or "feature",
     )
-    monkeypatch.setattr(server, "_git_common_repo_root_for_cwd", lambda _cwd: "/repo")
+    monkeypatch.setattr(server.git_probe, "common_repo_root", lambda _cwd: "/repo")
 
     generation = server._persist_session_cwd_and_schedule_git_meta(
         {"session_key": "session"}, "/repo/worktree"
@@ -61,7 +61,7 @@ def test_missing_db_claim_never_starts_git_probe(monkeypatch):
     probed = []
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(
-        server, "_git_branch_for_cwd", lambda cwd: probed.append(cwd)
+        server.git_probe, "branch", lambda cwd: probed.append(cwd)
     )
 
     generation = server._persist_session_cwd_and_schedule_git_meta(

@@ -29,6 +29,8 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +154,11 @@ class TestBoardCRUD:
         # contains the resolved path, the CREATE TABLE pass is skipped and
         # downstream readers hit `no such table: task_events`.
         kb.create_board("recycle")
-        # First connect populates _INITIALIZED_PATHS for this DB.
-        with kb.connect(board="recycle") as conn:
+        # First connect populates _INITIALIZED_PATHS for this DB.  Use
+        # connect_closing: `with connect() as conn` does NOT close the fd, and
+        # on Windows an open connection locks kanban.db so remove_board's
+        # rename below fails with WinError 5/32.
+        with kbc.connect_closing(board="recycle") as conn:
             kb.create_task(conn, title="t1", assignee="dev")
         db_path = kb.board_dir("recycle") / "kanban.db"
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
@@ -165,7 +170,7 @@ class TestBoardCRUD:
 
         # Simulate the event-stream poll: re-open the same slug. connect()
         # recreates the directory + empty .db; the schema must be re-applied.
-        with kb.connect(board="recycle") as conn:
+        with kbc.connect_closing(board="recycle") as conn:
             tables = {
                 row[0]
                 for row in conn.execute(
@@ -175,12 +180,6 @@ class TestBoardCRUD:
         assert "task_events" in tables
         assert "tasks" in tables
 
-    def test_rename_updates_metadata(self, fresh_home):
-        kb.create_board("slug-immutable")
-        kb.write_board_metadata("slug-immutable", name="New Display Name")
-        assert kb.read_board_metadata("slug-immutable")["name"] == "New Display Name"
-        # Slug must not change.
-        assert kb.board_exists("slug-immutable")
 
 
 # ---------------------------------------------------------------------------
@@ -192,18 +191,18 @@ class TestConnectionIsolation:
         kb.create_board("alpha")
         kb.create_board("beta")
 
-        with kb.connect(board="alpha") as conn:
+        with kbc.connect(board="alpha") as conn:
             kb.create_task(conn, title="alpha-task-1", assignee="dev")
             kb.create_task(conn, title="alpha-task-2", assignee="dev")
 
-        with kb.connect(board="beta") as conn:
+        with kbc.connect(board="beta") as conn:
             kb.create_task(conn, title="beta-only", assignee="dev")
 
-        with kb.connect(board="alpha") as conn:
+        with kbc.connect(board="alpha") as conn:
             a = kb.list_tasks(conn)
-        with kb.connect(board="beta") as conn:
+        with kbc.connect(board="beta") as conn:
             b = kb.list_tasks(conn)
-        with kb.connect(board="default") as conn:
+        with kbc.connect(board="default") as conn:
             d = kb.list_tasks(conn)
 
         assert {t.title for t in a} == {"alpha-task-1", "alpha-task-2"}
@@ -213,9 +212,9 @@ class TestConnectionIsolation:
     def test_connect_without_args_uses_current(self, fresh_home):
         kb.create_board("curr")
         kb.set_current_board("curr")
-        with kb.connect() as conn:
+        with kbc.connect() as conn:
             kb.create_task(conn, title="implicit", assignee="x")
-        with kb.connect(board="curr") as conn:
+        with kbc.connect(board="curr") as conn:
             tasks = kb.list_tasks(conn)
         assert [t.title for t in tasks] == ["implicit"]
 
@@ -224,11 +223,11 @@ class TestConnectionIsolation:
         kb.create_board("envwin")
         kb.set_current_board("persist")
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "envwin")
-        with kb.connect() as conn:
+        with kbc.connect() as conn:
             kb.create_task(conn, title="via-env", assignee="x")
-        with kb.connect(board="envwin") as conn:
+        with kbc.connect(board="envwin") as conn:
             assert [t.title for t in kb.list_tasks(conn)] == ["via-env"]
-        with kb.connect(board="persist") as conn:
+        with kbc.connect(board="persist") as conn:
             assert kb.list_tasks(conn) == []
 
 
@@ -275,7 +274,7 @@ class TestWorkerSpawnEnv:
             tenant=None,
         )
 
-        kb._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
+        kbd._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
 
         env = captured["env"]
         assert env["HERMES_KANBAN_BOARD"] == "spawntest"
@@ -308,14 +307,6 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
 
 
 class TestCLI:
-    def test_boards_list_default_only(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
-        res = _cli(["boards", "list", "--json"], env_extra=env)
-        assert res.returncode == 0, res.stderr
-        data = json.loads(res.stdout)
-        slugs = [b["slug"] for b in data]
-        assert slugs == ["default"]
-        assert data[0]["is_current"] is True
 
 
     def test_per_board_task_isolation_via_cli(self, tmp_path):

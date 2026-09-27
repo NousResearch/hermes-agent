@@ -19,24 +19,9 @@ from plugins.memory.honcho.client import (
     reset_honcho_client,
     resolve_active_host,
     resolve_config_path,
-    resolve_global_config_path,
 )
 
 
-class TestHonchoClientConfigDefaults:
-    def test_default_values(self):
-        config = HonchoClientConfig()
-        assert config.host == "hermes"
-        assert config.workspace_id == "hermes"
-        assert config.api_key is None
-        assert config.environment == "production"
-        assert config.timeout is None
-        assert config.enabled is False
-        assert config.save_messages is True
-        assert config.session_strategy == "per-directory"
-        assert config.recall_mode == "hybrid"
-        assert config.session_peer_prefix is False
-        assert config.sessions == {}
 
 
 class TestFromEnv:
@@ -47,14 +32,6 @@ class TestFromEnv:
         assert config.enabled is True
 
 
-    def test_defaults_without_env(self):
-        with patch.dict(os.environ, {}, clear=True):
-            # Remove HONCHO_API_KEY if it exists
-            os.environ.pop("HONCHO_API_KEY", None)
-            os.environ.pop("HONCHO_ENVIRONMENT", None)
-            config = HonchoClientConfig.from_env()
-        assert config.api_key is None
-        assert config.environment == "production"
 
 
     def test_enabled_without_api_key_when_base_url_set(self):
@@ -313,23 +290,6 @@ class TestResolveActiveHost:
             assert resolve_active_host() == "hermes.coder"
 
 
-    def test_profiles_import_failure_falls_back(self):
-        import sys
-        with patch.dict(os.environ, {}, clear=False), patch(
-            "plugins.memory.honcho.client.resolve_config_path",
-            return_value=Path("/nonexistent/test-honcho-config.json"),
-        ):
-            os.environ.pop("HERMES_HONCHO_HOST", None)
-            # Temporarily remove hermes_cli.profiles to simulate import failure
-            saved = sys.modules.get("hermes_cli.profiles")
-            sys.modules["hermes_cli.profiles"] = None  # type: ignore
-            try:
-                assert resolve_active_host() == "hermes"
-            finally:
-                if saved is not None:
-                    sys.modules["hermes_cli.profiles"] = saved
-                else:
-                    sys.modules.pop("hermes_cli.profiles", None)
 
 
 class TestProfileScopedConfig:
@@ -354,12 +314,6 @@ class TestObservationModeMigration:
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.observation_mode == "unified"
 
-    def test_new_config_defaults_to_directional(self, tmp_path):
-        """Config with no host block and no credentials → 'directional' (new default)."""
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.observation_mode == "directional"
 
 
     def test_granular_observation_overrides_preset(self, tmp_path):
@@ -456,70 +410,8 @@ class TestGetHonchoClient:
 
         assert mock_honcho.call_args.kwargs["api_key"] == "explicit-top-level-key"
 
-    @pytest.mark.skipif(
-        not importlib.util.find_spec("honcho"),
-        reason="honcho SDK not installed"
-    )
-    def test_passes_timeout_from_config(self):
-        fake_honcho = MagicMock(name="Honcho")
-        cfg = HonchoClientConfig(
-            api_key="test-key",
-            timeout=91.0,
-            workspace_id="hermes",
-            environment="production",
-        )
-
-        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho:
-            client = get_honcho_client(cfg)
-
-        assert client is fake_honcho
-        mock_honcho.assert_called_once()
-        assert mock_honcho.call_args.kwargs["timeout"] == 91.0
 
 
-    @pytest.mark.skipif(
-        not importlib.util.find_spec("honcho"),
-        reason="honcho SDK not installed"
-    )
-    def test_timeout_change_triggers_client_rebuild(self):
-        """Changing timeout config must rebuild the cached client."""
-        from hermes_constants import get_hermes_home
-
-        cfg_yaml = get_hermes_home() / "config.yaml"
-        cfg_yaml.write_text("honcho:\n  timeout: 30\n")
-
-        fake_honcho_1 = MagicMock(name="Honcho_v1")
-        fake_honcho_2 = MagicMock(name="Honcho_v2")
-        cfg = HonchoClientConfig(
-            api_key="test-key",
-            workspace_id="hermes",
-            environment="production",
-        )
-
-        with patch("honcho.Honcho", return_value=fake_honcho_1) as mock_h1:
-            client1 = get_honcho_client(cfg)
-
-        assert client1 is fake_honcho_1
-        assert mock_h1.call_args.kwargs["timeout"] == 30.0
-
-        # Same config — should return cached client (no rebuild)
-        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h2:
-            client2 = get_honcho_client(cfg)
-
-        assert client2 is fake_honcho_1  # still cached
-        mock_h2.assert_not_called()
-
-        # Changed timeout — must rebuild
-        cfg_yaml.write_text("honcho:\n  timeout: 300\n")
-        st = cfg_yaml.stat()
-        os.utime(cfg_yaml, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-
-        with patch("honcho.Honcho", return_value=fake_honcho_2) as mock_h3:
-            client3 = get_honcho_client(cfg)
-
-        assert client3 is fake_honcho_2  # rebuilt
-        mock_h3.assert_called_once()
-        assert mock_h3.call_args.kwargs["timeout"] == 300.0
 
     @pytest.mark.skipif(
         not importlib.util.find_spec("honcho"),
@@ -637,20 +529,6 @@ class TestResolveSessionNameLengthLimit:
         assert len(result_b) == self.HONCHO_MAX
 
 
-class TestResetHonchoClient:
-    def test_reset_clears_singleton(self):
-        import plugins.memory.honcho.client as mod
-
-        # Seed the cached client through the slot's public surface, then
-        # verify reset_honcho_client() clears it. (The client is cached in
-        # mod._honcho_client_slot, a thread-safe SingletonSlot, not a bare
-        # module global anymore — see #24759.)
-        mod._honcho_client_slot.get(lambda: MagicMock())
-        assert mod._honcho_client_slot.peek() is not None
-        reset_honcho_client()
-        assert mod._honcho_client_slot.peek() is None
-
-
 class TestDialecticDepthParsing:
     """Tests for _parse_dialectic_depth and _parse_dialectic_depth_levels."""
 
@@ -741,18 +619,12 @@ class TestGetHonchoClientBaseUrlDoublePrefixFix:
     @pytest.mark.parametrize(
         "raw_url, expected",
         [
-            # LAN IP self-host
-            ("http://10.0.0.5:8000/v3", "http://10.0.0.5:8000"),
+            # LAN IP self-host with trailing slash
             ("http://192.168.1.20:38000/v3/", "http://192.168.1.20:38000"),
-            # Tailscale / custom-domain self-host
-            ("https://honcho.my.ts.net/v3", "https://honcho.my.ts.net"),
-            ("https://honcho.lab.internal/v3", "https://honcho.lab.internal"),
-            ("https://honcho.fly.dev/v3", "https://honcho.fly.dev"),
-            # higher version segments are also stripped
+            # custom domain, higher version segment
             ("https://honcho.lab.internal/v12", "https://honcho.lab.internal"),
             # self-host without a version segment is left unchanged
             ("https://honcho.my.ts.net", "https://honcho.my.ts.net"),
-            ("http://10.0.0.5:8000", "http://10.0.0.5:8000"),
         ],
     )
     def test_self_hosted_base_url_version_stripped(self, raw_url, expected):

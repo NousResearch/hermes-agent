@@ -2,10 +2,13 @@
 
 import tarfile
 import zipfile
+from argparse import Namespace
 
 import pytest
 
 from pm import Lockfile, Store, get_package, paths
+from pm import cli as pm_cli
+from pm.store import ALL_TARGETS
 
 
 @pytest.mark.parametrize("target", ["darwin-arm64", "darwin-x64"])
@@ -39,6 +42,18 @@ def test_macos_cua_selects_bundle_binary_and_preserves_signature(tmp_path, targe
         assert (staged / name).read_bytes() == content
     assert lock.artifacts(package.name, target)[0]["url"] == package.fetch_url(version, target)
     assert "-binary.tar.gz" not in package.fetch_url(version, target)
+
+
+def test_cua_driver_pin_refresh_excludes_bionic_and_keeps_linux_arm64(tmp_path, monkeypatch):
+    lock = Lockfile(tmp_path / "lock.json")
+    monkeypatch.setattr(pm_cli, "_lockfile", lambda: lock)
+    monkeypatch.setattr(pm_cli, "hash_url", lambda _url: "a" * 64)
+
+    assert getattr(pm_cli._pin_tool, "__wrapped__")(Namespace(name="cua-driver", version="test")) == 0
+    pinned = Lockfile(tmp_path / "lock.json").pinned_artifacts("cua-driver")
+    expected = {target for target in ALL_TARGETS if target != "linux-arm64-bionic"}
+    assert set(pinned) == expected
+    assert pinned["linux-arm64"]["url"] == get_package("cua-driver").fetch_url("test", "linux-arm64")
 
 
 def test_windows_cua_keeps_uiaccess_and_cursor_helpers(tmp_path):

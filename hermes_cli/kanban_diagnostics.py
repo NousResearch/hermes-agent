@@ -112,16 +112,22 @@ def _latest_event_ts(events: Iterable[Any], kinds: set[str]) -> int:
     return max([0, *(_event_ts(ev) for ev in events if _event_kind(ev) in kinds)])
 
 
-def _latest_gave_up_is_terminal_provider(events: Iterable[Any]) -> bool:
-    """True when the most recent breaker trip was a terminal provider error (credential
-    revoked, model gone) and nothing has resumed the task since."""
+def _latest_operator_breaker_trip(events: Iterable[Any]) -> Optional[str]:
+    """Class of the latest below-budget trip requiring operator intervention.
+
+    A resumed task or a newer ordinary trip supersedes the old trip. Keep the
+    provider class distinct so systemic crashes don't get credential advice.
+    """
     for ev in reversed(list(events)):
         kind = _event_kind(ev)
         if kind == "gave_up":
-            return bool(_parse_payload(ev).get("terminal_provider"))
+            payload = _parse_payload(ev)
+            if payload.get("terminal_provider"):
+                return "terminal_provider"
+            return "sticky" if payload.get("sticky") else None
         if kind in {"unblocked", "promoted", "completed", "claimed"}:
-            return False
-    return False
+            return None
+    return None
 
 
 def _cli_hint(label: str, command: str, *, suggested: bool = False) -> DiagnosticAction:
@@ -381,10 +387,10 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     threshold = _positive_int(_failure_threshold(cfg), 3)
     failure_limit = _positive_int(cfg.get("failure_limit"), threshold)
     failures = _first_field(task, "consecutive_failures", "spawn_failures", 0)
-    # A terminal provider error (credential revoked, model gone) blocks the card after ONE
-    # attempt, below any threshold; it still needs an operator, so diagnose it now.
-    terminal_trip = _latest_gave_up_is_terminal_provider(events)
-    if not terminal_trip and (failures is None or failures < threshold):
+    # Terminal provider errors and sticky systemic crashes can park a card
+    # after ONE attempt. Both need an operator even below the normal budget.
+    operator_trip = _latest_operator_breaker_trip(events)
+    if not operator_trip and (failures is None or failures < threshold):
         return []
     failures = failures or 0
     last_err = _first_field(task, "last_failure_error", "last_spawn_error")
@@ -413,7 +419,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     severity = "critical" if failures >= threshold * 2 else "error"
     err_snippet = _error_snippet(last_err)
     outcome_label = _OUTCOME_LABELS.get(most_recent_outcome or "", "failure")
-    if terminal_trip:
+    if operator_trip == "terminal_provider":
         title = "Provider rejected this profile's credential or model — blocked after one attempt"
         detail = (
             f"The worker's provider call failed with an error a retry cannot fix (revoked or invalid "
@@ -421,6 +427,16 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             f"{failure_limit}-attempt retry budget on it. Full last error:\n\n{err_snippet}\n\n"
             f"Fix the assignee profile's provider credentials/model, then unblock the task."
         )
+    elif operator_trip == "sticky":
+        title = "Worker failure — sticky circuit breaker requires an operator"
+        detail = (
+            "The dispatcher parked this task with a sticky circuit-breaker trip "
+            "that requires intervention regardless of the normal retry budget. "
+            "It will not automatically retry. Check the worker logs, fix the root cause, "
+            "then explicitly unblock the task."
+        )
+        if err_snippet:
+            detail += f" Full last error:\n\n{err_snippet}"
     elif err_snippet:
         title = f"Agent {outcome_label} x{failures}: {err_snippet.splitlines()[0][:160]}"
         detail = (

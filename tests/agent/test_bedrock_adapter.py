@@ -1733,6 +1733,21 @@ class TestDedupProfileCoveredIds:
         result = _dedup_profile_covered_ids(ids)
         assert result == ["eu.anthropic.claude-opus-4-6", "ap.amazon.nova-pro"]
 
+    def test_dedups_apac_profile_prefix(self):
+        # ``apac.`` is a distinct Asia-Pacific inference-profile prefix — the
+        # bare ``ap.`` prefix does not cover it (``"apac.".startswith("ap.")``
+        # is False), so an ``apac.*`` profile must suppress its bare sibling on
+        # its own. The repo already treats ``apac.anthropic.claude-haiku-4-5``
+        # as a valid profile ID (tests/agent/test_bedrock_integration.py).
+        from agent.bedrock_adapter import _dedup_profile_covered_ids
+
+        ids = [
+            "apac.anthropic.claude-haiku-4-5",
+            "anthropic.claude-haiku-4-5",
+        ]
+        result = _dedup_profile_covered_ids(ids)
+        assert result == ["apac.anthropic.claude-haiku-4-5"]
+
     def test_preserves_order_and_noop_without_profiles(self):
         from agent.bedrock_adapter import _dedup_profile_covered_ids
 

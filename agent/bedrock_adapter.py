@@ -465,7 +465,7 @@ def bedrock_model_ids_or_none() -> Optional[List[str]]:
 # Regional inference-profile prefixes. A profile ID like
 # ``us.anthropic.claude-fable-5`` covers the bare foundation model
 # ``anthropic.claude-fable-5`` (its base ID with the prefix stripped).
-_PROFILE_PREFIXES = ("us.", "global.", "eu.", "ap.", "jp.")
+_PROFILE_PREFIXES = ("us.", "global.", "eu.", "ap.", "apac.", "jp.")
 
 
 def _dedup_profile_covered_ids(ids: List[str]) -> List[str]:

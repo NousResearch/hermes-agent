@@ -28,6 +28,7 @@ __all__ = [
     "bounded_git_probe",
     "bounded_probe_run",
     "selected_git_env",
+    "expose_pm_git",
     "noninteractive_git_env",
     "NO_DRIVER_DIFF_FLAGS",
     "NO_LAZY_FETCH_ENV",
@@ -369,6 +370,27 @@ def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
         return ensure("git", base_env=env).env
     except Exception:
         return env
+
+
+def expose_pm_git() -> None:
+    """Put PM's git on this process's PATH when Windows has no git of its own.
+
+    On a machine without git, install.ps1 stages the pinned Git for Windows for
+    its own process only; PM's facts never record it. Every later bare ``git``
+    (``hermes update``, the source-completion stamp) then died with
+    ``[WinError 2]``. Callers are explicit user actions (like
+    ``ensure_tools_for_sync``), so acquire PM's git outright; children inherit
+    the PATH. A machine with a working git is untouched. Raises what
+    ``pm.ensure`` raises.
+    """
+    if sys.platform != "win32" or shutil.which("git"):
+        return
+    from pm import ensure
+
+    env = ensure("git", explicit=True).env
+    path = next((value for key, value in env.items() if key.upper() == "PATH"), None)
+    if path:
+        os.environ["PATH"] = path
 
 
 def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:

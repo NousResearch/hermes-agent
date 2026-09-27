@@ -1104,6 +1104,9 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
         print("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash")
         sys.exit(1)
 
+    from hermes_cli._subprocess_compat import expose_pm_git
+
+    expose_pm_git()
     git_cmd = _base_git_cmd()
     if sys.platform == "win32" and git_dir.exists():
         _git_run(git_cmd, ["config", "windows.appendAtomically", "false"])

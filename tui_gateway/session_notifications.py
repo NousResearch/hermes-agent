@@ -313,10 +313,28 @@ def _kb_completed(task, payload: dict, title: str) -> str:
     return f" done — {title}{handoff}"
 
 
-def _kb_timed_out(task, payload: dict, title: str) -> str:
+def _kb_timed_out_cause(payload: dict) -> str:
+    """Name the cause a ``timed_out`` payload actually records - never one it does not.
+
+    ``limit_seconds`` is present only when the runtime cap stopped the worker
+    (``enforce_max_runtime``). An iteration-budget exhaustion records
+    ``budget_used``/``budget_max`` instead and carries no cap at all, so reading the
+    absent key as ``0`` printed a zero-second cap that never existed and sent the
+    reader hunting for a limit to raise.
+    """
     with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+        limit = int(payload.get("limit_seconds") or 0)
+        if limit > 0:
+            return f"max_runtime={limit}s"
+    used, cap = payload.get("budget_used"), payload.get("budget_max")
+    if used is not None and cap is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            return f"exhausted its turn budget ({int(used)}/{int(cap)})"
+    return "cause not recorded"
+
+
+def _kb_timed_out(task, payload: dict, title: str) -> str:
+    return f" timed out ({_kb_timed_out_cause(payload)}); will retry"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.

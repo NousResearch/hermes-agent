@@ -447,9 +447,23 @@ def _fmt_gave_up(ev, n) -> tuple:
 
 
 def _fmt_timed_out(ev, n) -> tuple:
+    # Name the cause the payload actually records: ``limit_seconds`` belongs to the runtime
+    # cap; an iteration-budget exhaustion carries ``budget_used``/``budget_max`` instead.
     limit = int(_payload(ev, "limit_seconds") or 0)
-    minutes = max(1, round(limit / 60)) if limit else 0
-    span = t("gateway.kanban.ping.limit_minutes", minutes=minutes) if minutes else t("gateway.kanban.ping.limit_generic")
+    if limit:
+        minutes = max(1, round(limit / 60))
+        span = t("gateway.kanban.ping.limit_minutes", minutes=minutes)
+        return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
+    try:
+        used, cap = int(_payload(ev, "budget_used") or 0), int(_payload(ev, "budget_max") or 0)
+    except (TypeError, ValueError):
+        used = cap = 0
+    if used and cap:
+        return (
+            f"⏱ {n.head} exhausted its turn budget ({used}/{cap}) and was stopped; "
+            "it will be retried automatically.", None, None,
+        )
+    span = t("gateway.kanban.ping.limit_generic")
     return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
 
 

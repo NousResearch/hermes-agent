@@ -35,8 +35,10 @@ import {
   setCurrentCwdTransient,
   setCurrentFastMode,
   setCurrentModel,
+  setCurrentModelTransient,
   setCurrentPersonality,
   setCurrentProvider,
+  setCurrentProviderTransient,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
@@ -2275,8 +2277,15 @@ export function applyStoredSessionPreviewRuntimeInfo(
   stored: { cwd?: null | string; model?: null | string } | undefined,
   storedSessionId: null | string
 ) {
-  setCurrentModel(stored?.model || '')
-  setCurrentProvider('')
+  // Transient: this is a PREVIEW painted while `session.resume` is still in
+  // flight. If the resume is abandoned (user starts a new chat before it
+  // returns, or the row is switched away), nothing repairs the selection
+  // afterwards — persisting these values left the composer holding a manual
+  // model with an EMPTY provider in localStorage, and every later
+  // `session.create` paired that model with the profile provider and failed
+  // the coherence gate (#125336).
+  setCurrentModelTransient(stored?.model || '')
+  setCurrentProviderTransient('')
   setCurrentReasoningEffort('')
   setCurrentServiceTier('')
   setCurrentFastMode(false)

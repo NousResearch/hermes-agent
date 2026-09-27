@@ -147,6 +147,15 @@ export function useModelControls({
 
         const staleMoaPick = () => !force && manualPick() && pickProvider().toLowerCase() === 'moa'
 
+        // A THIRD exception: a manual pick whose provider is EMPTY is never a
+        // coherent selection. It can only come from a persisted preview paint
+        // written before the transient setters existed — an abandoned cold
+        // resume stranded it in localStorage (#125336), and
+        // `desktopSessionCreateParams` then ships the model alone, pairing it
+        // with the unrelated profile provider. Reseed from the profile default
+        // so installs carrying the poisoned row recover on the next launch.
+        const orphanedModelPick = () => !force && manualPick() && pickProvider() === ''
+
         // A SECOND exception: a bare provider slug can be a stale spelling of a
         // `custom:<key>` profile default (#87035 aliases the two spellings for
         // one endpoint). Shipping the bare form resolves the NATIVE provider and
@@ -158,7 +167,7 @@ export function useModelControls({
         const maybeSupersededPick = () =>
           !force && manualPick() && pickProvider() !== '' && !pickProvider().includes(':')
 
-        if (manualPick() && !force && !staleMoaPick() && !maybeSupersededPick()) {
+        if (manualPick() && !force && !staleMoaPick() && !maybeSupersededPick() && !orphanedModelPick()) {
           return
         }
 
@@ -202,6 +211,7 @@ export function useModelControls({
           (manualPick() &&
             !force &&
             !reseedStaleMoa &&
+            !orphanedModelPick() &&
             !customDefaultSupersedesPick($currentProvider.get(), result.provider ?? ''))
         ) {
           return

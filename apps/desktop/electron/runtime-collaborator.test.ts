@@ -1,14 +1,18 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+
 import { afterEach, expect, test } from 'vitest'
-import { readCollaboratorChoice, saveCollaboratorChoice, discoverCollaborators } from './runtime-collaborator'
+
+import { discoverCollaborators, readCollaboratorChoice, saveCollaboratorChoice } from './runtime-collaborator'
 
 const roots: string[] = []
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })))
+
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'collaborator-test-'))
   roots.push(root)
+
   return root
 }
 

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, test, vi } from 'vitest'
+
 import { CollaboratorPicker } from './collaborator-picker'
 vi.mock('@/i18n', () => ({ useI18n: () => ({ locale: 'en' }) }))
 afterEach(() => {
@@ -14,6 +15,7 @@ test('automatically discovers and selects a collaborator without requesting inst
     selectCollaborator: vi.fn().mockResolvedValue({ ok: true }),
     continueBootstrapLocal: vi.fn()
   }
+
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: desktop })
   render(<CollaboratorPicker />)
   fireEvent.click(await screen.findByText('Use this Hermes'))
@@ -25,6 +27,7 @@ test('failed discovery leaves folder selection available and exposes a recoverab
   const desktop = {
     detectCollaborators: vi.fn().mockRejectedValueOnce(new Error('Probe failed')).mockResolvedValue([])
   }
+
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: desktop })
   render(<CollaboratorPicker />)
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Probe failed')

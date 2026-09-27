@@ -1469,13 +1469,28 @@ class TurnRunner:
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description") or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
+        # The queued approval's request_id is the canonical targeting mechanism
+        # (every queued entry carries one, and api_server_runs enforces it for
+        # room-scoped approvals) — forward it plus the requesting user so an
+        # adapter can bind its buttons to ONE request. Without the id the
+        # handler can only resolve by session_key, which picks the FIFO-oldest
+        # entry: tapping the newest card answers the oldest request and the
+        # newest blocks for the full approvals.timeout (#124974). Purely
+        # additive — an adapter that ignores the keys behaves as before.
+        button_metadata = dict(ctx._status_thread_metadata or {})
+        request_id = str(approval_data.get("request_id") or "").strip()
+        if request_id:
+            button_metadata["approval_request_id"] = request_id
+        requester_uid = getattr(getattr(ctx, "source", None), "user_id", None)
+        if requester_uid and "requester_user_id" not in button_metadata:
+            button_metadata["requester_user_id"] = str(requester_uid)
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=button_metadata or None, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )

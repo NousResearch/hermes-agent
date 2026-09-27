@@ -4270,7 +4270,7 @@ class GatewayRunner(
         from gateway.session_context import set_session_vars
         # Async-delivery capability tells async tools whether this channel can wake a later turn. Default
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
-        _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
+        _adapter = self._delivery_adapter_for(context.source)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
         return set_session_vars(
             platform=context.source.platform.value,
@@ -4287,6 +4287,7 @@ class GatewayRunner(
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
+            transport_adapter=_adapter,
             cron_session="")
 
     def _clear_session_env(self, tokens: list) -> None:

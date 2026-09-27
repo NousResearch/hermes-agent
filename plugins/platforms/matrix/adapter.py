@@ -90,6 +90,7 @@ from plugins.platforms.matrix.room_context import (
     MatrixRoomState, PendingRoomNotes, RoomStateNote, room_state_change_note,
 )
 from plugins.platforms.matrix.thread_context import fetch_thread_entries
+from plugins.platforms.matrix.read_context import read_matrix_context
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
@@ -3027,6 +3028,15 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _is_dm_room(self, room_id: str) -> bool:
         return (await self._resolve_room_identity(room_id)).chat_type == "dm"
+
+    async def read_matrix_context(
+        self, kind: str, room_id: str, event_id: str | None, limit: int,
+        *, requester: str,
+    ) -> dict:
+        return await read_matrix_context(
+            self, kind, room_id, event_id, limit,
+            requester=requester,
+        )
 
     async def fetch_thread_context(
         self, chat_id: str, thread_id: str, *, exclude_event_id: str | None = None

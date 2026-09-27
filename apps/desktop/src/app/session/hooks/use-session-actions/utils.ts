@@ -894,7 +894,8 @@ export function preserveLocalPendingTurnMessages(
           // repeat of the same captioned paste). The rowId-less paste from
           // #120978 carries no identity and keeps matching tolerantly.
           !conflictingTranscriptIdentity(message, candidate) &&
-          (textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message)) ||
+          (textWithoutReferenceLines(chatMessageText(candidate)) ===
+            textWithoutReferenceLines(chatMessageText(message)) ||
             sameAttachmentTurn(candidate, message))
       )
     ) {

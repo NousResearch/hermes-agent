@@ -140,8 +140,9 @@ const attachmentTurnAssistantMatchIndex = (
 
   const localCaptionOrdinal = localMessages
     .slice(0, localMessages.indexOf(localUser))
-    .filter(message => message.role === 'user' && attachmentTolerantUserText(chatMessageText(message)) === localCaption)
-    .length
+    .filter(
+      message => message.role === 'user' && attachmentTolerantUserText(chatMessageText(message)) === localCaption
+    ).length
 
   const matchingStoredUserIndices: number[] = []
 
@@ -356,8 +357,10 @@ function localAssistantErrorIdsToPreserve(
   const captionOrdinal = (messages: ChatMessage[], target: ChatMessage): number =>
     messages
       .slice(0, messages.indexOf(target))
-      .filter(message => message.role === 'user' && attachmentTolerantUserText(chatMessageText(message)) === tailUserTolerantText)
-      .length
+      .filter(
+        message =>
+          message.role === 'user' && attachmentTolerantUserText(chatMessageText(message)) === tailUserTolerantText
+      ).length
 
   const tailCaptionOrdinal = tailUserInNext ? captionOrdinal(mergedNextMessages, tailUserInNext) : 0
 
@@ -366,7 +369,8 @@ function localAssistantErrorIdsToPreserve(
     ((normalizedMessageText(candidate) === tailUserText &&
       (candidate.attachmentRefs ?? []).join('\n') === tailUserRefs) ||
       (tailUserInNext
-        ? sameAttachmentTurn(tailUserInNext, candidate) && captionOrdinal(currentMessages, candidate) === tailCaptionOrdinal
+        ? sameAttachmentTurn(tailUserInNext, candidate) &&
+          captionOrdinal(currentMessages, candidate) === tailCaptionOrdinal
         : false))
 
   for (let index = 0; index < currentMessages.length; index += 1) {
@@ -389,9 +393,7 @@ function localAssistantErrorIdsToPreserve(
     // hydrated user row, still names the turn: fold the error onto the first
     // settled assistant reply after that row.
     const hydratedAttachmentAssistantIndex =
-      hydratedAssistantIndex === -1
-        ? attachmentTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
-        : -1
+      hydratedAssistantIndex === -1 ? attachmentTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index) : -1
 
     if (hydratedAttachmentAssistantIndex !== -1) {
       mergedNextMessages[hydratedAttachmentAssistantIndex] = {

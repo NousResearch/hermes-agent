@@ -4721,11 +4721,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # them — without them a guild- or channel-routed profile never matches a native slash command
         # (#69178).
         parent_id = (self._get_parent_channel_id(interaction.channel) if is_thread else None) or ""
+        # Callers build the event only after _check_slash_authorization passed, so the
+        # adapter's role verdict holds here exactly as on the message path
+        # (_discord_message_admission); without it the gateway denies role-only users.
         source = self.build_source(
             chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
+            role_authorized=bool(getattr(self, "_allowed_role_ids", set())),
         )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
@@ -4781,11 +4785,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
         _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
         _parent_id = str(getattr(_parent_channel, "id", "") or "")
+        # Only reached from _handle_thread_create_slash after its authorization check.
         source = self.build_source(
             chat_id=thread_id, chat_name=chat_name, chat_type="thread",
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=_parent_id or None,
+            role_authorized=bool(getattr(self, "_allowed_role_ids", set())),
         )
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)

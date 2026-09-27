@@ -47,6 +47,10 @@ export const es: Translations = {
       "No se pudo cargar el script de este complemento. Revisa la pestaña Network (dashboard-plugins/…) y la ruta del complemento del servidor.",
     pluginNotRegistered:
       "El script del complemento no llamó a register(), o falló. Abre la consola del navegador para más detalles.",
+    loadFailed: "No se pudo cargar {what}. Comprueba que el servidor del panel esté en marcha y pulsa Reintentar.",
+    loadFailedDetails: "Detalles: {detail}",
+    gateway: "Gateway",
+    gatewayHint: "Las plataformas de mensajería, el servidor de API y los webhooks se configuran en la página Canales. Esto son ajustes de todo el gateway (modo proxy/relay y la lista blanca global)."
   },
 
   app: {
@@ -65,6 +69,8 @@ export const es: Translations = {
       running: "En ejecución",
       starting: "Iniciando",
       stopped: "Detenido",
+      degraded: "Degradado",
+      heartbeatStale: "Latido perdido"
     },
     nav: {
       analytics: "Analíticas",
@@ -90,6 +96,16 @@ export const es: Translations = {
     statusOverview: "Resumen de estado",
     system: "Sistema",
     webUi: "Web UI",
+    managingProfile: "Gestionando el perfil",
+    currentProfileOption: "este panel ({name})",
+    managingProfileBanner: "Gestionando el perfil “{name}”: la configuración, las claves, las habilidades, los MCP, el modelo y los chats nuevos se aplican a ese perfil.",
+    memoryOomRestartBanner: "Tu agente se reinició sin avisar, seguramente por quedarse sin memoria. Las sesiones largas y muchas tareas a la vez aumentan el consumo de memoria.",
+    memoryCriticalBanner: "Tu agente está a punto de quedarse sin memoria y puede reiniciarse. Plantéate cerrar sesiones inactivas o ampliarle la memoria.",
+    memoryElevatedBanner: "Tu agente se está quedando sin memoria.",
+    diskCriticalBanner: "El disco de tu agente está casi lleno. Puede que los mensajes nuevos, las memorias y los ajustes no lleguen a guardarse.",
+    diskElevatedBanner: "El disco de tu agente se está llenando. Plantéate borrar sesiones antiguas o ampliar su almacenamiento.",
+    multiplexStandaloneBanner: "Tu gateway solo sirve un perfil. Sin servir: {profiles}. Motivo: {reason}. Solución: hermes gateway migrate --multiplex",
+    dismiss: "Descartar"
   },
 
   status: {
@@ -123,6 +139,12 @@ export const es: Translations = {
     updateHermes: "Actualizar Hermes",
     updatingHermes: "Actualizando Hermes…",
     waitingForOutput: "Esperando salida…",
+    disabled: "Desactivado",
+    restartGatewayConfirmMessage: "Esto reinicia el proceso del gateway de Hermes. Los canales conectados y las sesiones activas se reconectarán después.",
+    restartGatewayConfirmTitle: "¿Reiniciar el gateway?",
+    updateHermesConfirmMessage: "Esto ejecuta hermes update y reinicia el gateway al terminar. Las sesiones activas conservan su caché de prompt hasta entonces.",
+    updateHermesConfirmNow: "Actualizar ahora",
+    updateHermesConfirmTitle: "¿Actualizar Hermes?"
   },
 
   sessions: {
@@ -288,7 +310,13 @@ export const es: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      needsHomeChannel: "configura antes un canal de inicio",
+      noneConfigured: "No hay ninguna plataforma de mensajería configurada. Configura una en Canales para poder entregar los informes."
     },
+    loadWhat: "tareas programadas",
+    scriptRequired: "Las tareas que solo ejecutan un script necesitan una ruta. Rellena el campo Script o vuelve a poner la tarea en modo prompt.",
+    overdueSince: "Atrasada desde",
+    schedulerLastTicked: "El programador no se ejecuta desde {when}: las tareas que vencieron después no se han lanzado"
   },
 
   profiles: {
@@ -322,6 +350,36 @@ export const es: Translations = {
     created: "Creado",
     deleted: "Eliminado",
     renamed: "Renombrado",
+    activeProfile: "Perfil activo",
+    activeBadge: "activo",
+    setActive: "Marcar como activo",
+    activeSet: "Perfil activo cambiado",
+    gatewayRunning: "Gateway en marcha",
+    gatewayStopped: "Gateway parado",
+    gatewayRunningWarning: "El gateway de este perfil está en marcha: se va a parar.",
+    aliasBadge: "alias",
+    description: "Descripción",
+    descriptionPlaceholder: "¿En qué destaca este perfil? Se usa para repartir tareas del kanban por rol.",
+    noDescription: "Sin descripción",
+    editDescription: "Editar la descripción",
+    descriptionSaved: "Descripción guardada",
+    reviewBadge: "revisión",
+    autoGenerate: "Generar automáticamente",
+    generating: "Generando…",
+    describeFailed: "No se pudo generar la descripción",
+    distribution: "Distribución",
+    advancedOptions: "Opciones avanzadas",
+    cloneAll: "Clonar todo (memorias, sesiones, habilidades, estado)",
+    noSkillsOption: "No copiar las habilidades incluidas",
+    descriptionOptional: "Descripción (opcional)",
+    modelOptional: "Modelo (opcional)",
+    modelInherit: "Heredar del clon / predeterminado",
+    modelLoading: "Cargando modelos…",
+    modelNone: "Todavía no hay ningún proveedor de modelos configurado. Añade una clave de API en Claves o inicia sesión en un proveedor en Modelos.",
+    editModel: "Cambiar modelo",
+    modelSaved: "Modelo actualizado",
+    modelSelect: "Elegir un modelo",
+    actions: "Acciones"
   },
 
   pluginsPage: {
@@ -365,6 +423,20 @@ export const es: Translations = {
     versionBadge: "Versión",
     showInSidebar: "Mostrar en barra lateral",
     hideFromSidebar: "Ocultar de la barra lateral",
+    updateConsentBody: (name: string, sha: string) => `El nuevo pin del catálogo para ${name} (${sha}) añade superficies que la versión instalada no tiene. Aplícalo solo si te fías de ellas:`,
+    catalogHeading: "Catálogo de complementos",
+    catalogHint: "Complementos seleccionados y revisados por Nous, fijados a commits concretos. Instala desde aquí para tener versiones seguras frente a la cadena de suministro.",
+    catalogSearchPlaceholder: "Buscar en el catálogo...",
+    catalogEmpty: "Ninguna entrada del catálogo coincide.",
+    catalogEmptyDocsLink: "Saber más sobre los complementos de Hermes",
+    catalogInstallBtn: "Instalar",
+    catalogInstalledBadge: "Instalado ✓",
+    catalogUpdateBtn: "Actualización disponible",
+    catalogRemovedBadge: "Retirado",
+    catalogConfirmTitle: "¿Instalar este complemento?",
+    catalogConfirmInstallNote: "La instalación de complementos está desactivada; actívala después de instalar para ponerlo en marcha.",
+    catalogRequiresEnv: "Requiere variables de entorno",
+    removedFromCatalog: "Retirado del catálogo"
   },
 
   skills: {
@@ -385,6 +457,12 @@ export const es: Translations = {
     setupNeeded: "Configuración necesaria",
     disabledForCli: "Deshabilitado para CLI",
     more: "+{count} más",
+    loadWhat: "habilidades",
+    browseHub: "Explorar el hub de habilidades",
+    createSkill: "Crear habilidad",
+    profileSelector: "Perfil",
+    currentProfile: "actual ({name})",
+    managingProfile: "Gestionando el perfil “{name}”: los interruptores se aplican a ese perfil, no al de este panel."
   },
 
   config: {
@@ -508,6 +586,12 @@ export const es: Translations = {
   theme: {
     title: "Tema",
     switchTheme: "Cambiar tema",
+    fontTitle: "Tipografía",
+    fontDefault: "La del tema",
+    fontDefaultHint: "Usar la tipografía del tema activo",
+    fontSans: "Sans",
+    fontSerif: "Serif",
+    fontMono: "Mono"
   },
   achievements: {
     hero: {
@@ -782,5 +866,28 @@ export const es: Translations = {
       "ruta del workspace (opcional, derivada del asignado si está vacía)",
     logTruncated: "(mostrando los últimos 100 KB — registro completo en ",
     logAt: ")",
+    needsAssignee: "Falta asignar",
+    needsAssigneeHint: "Las dependencias están resueltas, pero el dispatcher se salta esta tarea hasta que le asignes un perfil.",
+    confirmScheduled: "¿Mover esta tarea a Programado? Úsalo para esperas de tiempo conocidas, no para bloqueos humanos.",
+    newTaskTitle: "Tarea nueva — {column}",
+    taskTitleLabel: "Título",
+    assigneeLabel: "Asignado a",
+    assigneeLabelHint: "(vacío = lo elige el dispatcher)",
+    skillsLabel: "Habilidades",
+    skillsLabelHint: "(opcional, separadas por comas)",
+    parentLabel: "Tarea padre",
+    parentLabelHint: "(la hija sigue bloqueada hasta que termine la padre)",
+    create: "Crear",
+    boardSettings: "Ajustes",
+    boardSettingsTitle: "Ajustes del tablero — nombre, descripción y el directorio de proyecto predeterminado que heredan las tareas nuevas",
+    boardSettingsTitleFor: "Ajustes del tablero — {name}",
+    projectDirectoryOverrideHint: "Las tareas nuevas heredan esto como su espacio de trabajo por defecto; cada tarea puede cambiarlo en el diálogo de creación.",
+    saving: "Guardando…",
+    commentHint: "Los comentarios le llegan al worker en su siguiente ejecución o al hacer kanban_show(); no hace falta bloquear la tarea antes.",
+    commentHintTitle: "Los comentarios son el canal para hablar con el worker de una tarea. Llegan al hilo al momento: no hace falta bloquear la tarea antes. Un worker en marcha los recoge en su siguiente kanban_show() o al reiniciarse; bloquear solo sirve para que el worker PARE y espere a que le digas algo.",
+    trash: {
+      confirmTitle: "¿Eliminar la tarea?",
+      confirmManyTitle: "¿Eliminar {n} tareas?",
+    }
   },
 };

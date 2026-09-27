@@ -19,6 +19,32 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+def test_full_name_collision_renames_with_numeric_suffix() -> None:
+    """A skill whose name collides with a reserved command gets a numeric suffix instead of being dropped."""
+    from hermes_cli.commands import _clamp_command_names
+
+    reserved = {"handoff"}
+    entries = [("handoff", "My handoff skill")]
+
+    result = _clamp_command_names(entries, reserved)
+    assert len(result) == 1, f"Expected skill to be kept with suffix, got {result}"
+    name, desc = result[0]
+    assert name.startswith("handoff"), f"Expected name to start with 'handoff', got {name}"
+    assert name != "handoff", f"Expected renamed name, got {name}"
+    assert len(name) <= 32
+
+
+def test_full_name_collision_falls_back_when_all_suffixes_taken() -> None:
+    """If all 10 digit slots are taken, the entry is still dropped."""
+    from hermes_cli.commands import _clamp_command_names
+
+    reserved = {f"handoff{d}" for d in range(10)} | {"handoff"}  # handoff + handoff0..9 all taken
+    entries = [("handoff", "My handoff skill")]
+
+    result = _clamp_command_names(entries, reserved)
+    assert result == [], f"Expected drop when all suffixes taken, got {result}"
+
+
 def test_clamp_collision_emits_warning_naming_both_skills(
     tmp_path: Path, caplog
 ) -> None:

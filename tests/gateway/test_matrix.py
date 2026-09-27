@@ -1118,6 +1118,50 @@ async def test_room_state_change_is_acknowledged_with_the_saved_turn(tmp_path, e
     assert [unsaved, saved, after_save] == [expected, expected, "hello"]
 
 
+@pytest.mark.asyncio
+async def test_thread_fallback_is_not_an_explicit_reply():
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.get_members = AsyncMock(
+        return_value=["@bot:example.org", "@alice:example.org", "@bob:example.org"]
+    )
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._background_read_receipt = MagicMock()
+    adapter._require_mention = False
+
+    event = await adapter._build_inbound_event(
+        "!room:example.org", "@alice:example.org", "$message", "hello",
+        {"msgtype": "m.text", "body": "hello"},
+        {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
+         "m.in_reply_to": {"event_id": "$root"}},
+    )
+
+    assert (event.source.thread_id, event.reply_to_message_id, event.reply_to_text) == (
+        "$root", None, None,
+    )
+
+
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        ({"rel_type": "m.thread", "event_id": "$root", "m.in_reply_to": {"event_id": "$reply"}},
+         ("$root", "$reply", None, False)),
+        ({"rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
+          "m.in_reply_to": {"event_id": "$root"}},
+         ("$root", None, "$root", False)),
+        ({"rel_type": "m.replace", "event_id": "$old"}, (None, None, None, True)),
+        (["malformed"], (None, None, None, False)),
+    ],
+)
+def test_matrix_relation_distinguishes_reply_from_thread_fallback(content, expected):
+    from plugins.platforms.matrix.relations import MatrixRelation
+
+    relation = MatrixRelation.from_content(content)
+
+    assert (relation.thread_root, relation.reply_target, relation.thread_fallback_target, relation.is_edit) == expected
+
+
 # ---------------------------------------------------------------------------
 # Reply fallback stripping
 # ---------------------------------------------------------------------------

@@ -11,9 +11,14 @@ from typing import Any, MutableMapping, Optional, TypeVar
 # outgoing copy and the token estimator ignores them: one set, so an estimate
 # never prices bytes the provider never receives (an edit's inline_diff in
 # display_metadata is ~9KB and would trigger premature compaction).
+# Transcript-repair bookkeeping riding on batch rows / live dicts (agent/transcript_repair.py): the
+# stored-row CAS digest and the durable row adopted onto the live dict. Never transcript payload.
+DB_ROW_SNAPSHOT = "_db_row_snapshot"
+CANONICAL_ROW = "_canonical_row"
+REPAIR_BOOKKEEPING_FIELDS = frozenset({DB_ROW_SNAPSHOT, CANONICAL_ROW})
 PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
-    {"timestamp", "display_kind", "display_metadata", "_row_id", "_db_row_snapshot", "_canonical_row"}
-)
+    {"timestamp", "display_kind", "display_metadata", "_row_id"}
+) | REPAIR_BOOKKEEPING_FIELDS
 
 _Message = TypeVar("_Message", bound=MutableMapping[str, Any])
 

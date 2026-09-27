@@ -14,6 +14,7 @@ from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
     _newest_checkpoint_carrier, split_user_originated_turn)
 from agent.memory_manager import sanitize_context
+from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
@@ -432,12 +433,12 @@ class SessionMessagesMixin:
         # _execute_write re-runs _do after a rollback: every attempt must start from the caller's state, or a
         # rolled-back attempt's stamped _row_id could resolve to a row another writer took meanwhile.
         _absent = object()
-        pre_state = [{k: m.get(k, _absent) for k in ("_row_id", "_db_row_snapshot", "timestamp")}
+        pre_state = [{k: m.get(k, _absent) for k in ("_row_id", DB_ROW_SNAPSHOT, "timestamp")}
                      for m in messages]
 
         def _do(conn):
             for msg, state in zip(messages, pre_state):
-                msg.pop("_canonical_row", None)
+                msg.pop(CANONICAL_ROW, None)
                 for key, value in state.items():
                     if value is _absent:
                         msg.pop(key, None)
@@ -445,7 +446,7 @@ class SessionMessagesMixin:
                         msg[key] = value
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
-            from agent.transcript_repair import resolve_and_repair_transcript_batch, stamp_inserted_row_snapshots
+            from agent.transcript_repair import resolve_and_repair_transcript_batch
             inserted_rows = resolve_and_repair_transcript_batch(
                 conn,
                 session_id,
@@ -458,8 +459,6 @@ class SessionMessagesMixin:
                 decode_row_fn=self._decoded_repair_row,
             )
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
-            # Only this flush path re-reads the digest, so only it pays for one; hash the STORED rows.
-            stamp_inserted_row_snapshots(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
@@ -612,14 +611,19 @@ class SessionMessagesMixin:
             msg["timestamp"] = message_timestamp
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
-                # A new row makes any carried CAS version (a clone's parent digest) meaningless; the flush
-                # path restamps the stored digest right after this insert.
-                msg.pop("_db_row_snapshot", None)
+                # A new row makes any carried CAS version (a clone's parent digest) meaningless; the
+                # stored digest of the new row is stamped below.
+                msg.pop(DB_ROW_SNAPSHOT, None)
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
         if prune_checkpoints:
             self._prune_shadowed_checkpoints(conn, session_id, messages)
+        # Every inserter (flush, compaction clone, replace, rotation handoff, import) gets the new rows' own
+        # stored-row digest, so a later re-flush of these dicts takes the versioned rewrite path instead of the
+        # legacy one. One batched SELECT; hash the STORED rows (column affinity rewrites bind values).
+        from agent.transcript_repair import stamp_inserted_row_snapshots
+        stamp_inserted_row_snapshots(conn, session_id, messages)
         return inserted, tool_calls_total
 
     def _prune_shadowed_checkpoints(self, conn, session_id: str, live_messages: List[Dict[str, Any]]) -> None:

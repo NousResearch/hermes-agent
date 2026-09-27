@@ -23,7 +23,9 @@ from agent.memory_manager import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
-from agent.transcript_repair import _DB_ROW_SNAPSHOT, REPAIR_BOOKKEEPING_FIELDS, sync_flushed_message_markers
+from agent.message_metadata import REPAIR_BOOKKEEPING_FIELDS
+from agent.message_metadata import DB_ROW_SNAPSHOT as _DB_ROW_SNAPSHOT
+from agent.transcript_repair import sync_flushed_message_markers
 
 
 logger = logging.getLogger("run_agent")  # origin module's name: log records / caplog filters unchanged

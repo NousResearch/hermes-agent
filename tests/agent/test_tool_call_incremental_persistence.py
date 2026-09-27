@@ -767,7 +767,9 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
             {"type": "text", "text": "hi \ud800 there " + "x" * 4000},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
         ]},
-        {"role": "assistant", "content": "ok"},
+        {"role": "assistant", "content": "ok", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": '{"q": "x \ud800"}'}},
+        ]},
         {"role": "tool", "tool_call_id": "c1", "name": "terminal", "content": "r \ud800"},
     ]
     estimate_before = estimate_messages_tokens_rough(messages)
@@ -784,6 +786,8 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     assert db.set_message_reaction(session_id, durable_ids[0], "\U0001F44D")
     # ...followed by a real in-place live edit: the row is still ours, so the edit must win and be persisted.
     messages[0]["content"][0]["text"] += " EDITED"
+    # A resumed / cloned dict carries ``_row_id`` without a digest (legacy path) over a filled assistant row.
+    messages[1].pop("_db_row_snapshot")
 
     assert _sanitize_messages_surrogates(messages) is True
     assert not any(message.get("_db_persisted") for message in (messages[0], messages[2]))
@@ -804,6 +808,10 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     assert messages[0]["display_metadata"] == rows[0]["display_metadata"]
     assert rows[2]["content"] == "winner"
     assert messages[2]["content"] == "winner"
+    # The legacy path adopts the durable content only: the sanitized live tool_calls never revert to the
+    # stored lone surrogate.
+    assert messages[1]["content"] == "ok"
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == '{"q": "x \ufffd"}'
 
 
 def test_flush_sanitized_archived_user_and_tool_rows_do_not_append_duplicates(tmp_path):

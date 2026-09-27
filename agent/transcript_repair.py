@@ -9,12 +9,11 @@ import sqlite3
 from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
+from agent.message_metadata import CANONICAL_ROW as _CANONICAL_ROW
+from agent.message_metadata import DB_ROW_SNAPSHOT as _DB_ROW_SNAPSHOT
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
 
-
-_DB_ROW_SNAPSHOT = "_db_row_snapshot"
-_CANONICAL_ROW = "_canonical_row"
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
 # role, active flag and the ones owned by the display index / timestamp / session linkage.
@@ -32,9 +31,10 @@ _OWNED_COLUMNS = tuple(c for c in _REPAIR_COLUMNS if c not in _METADATA_COLUMNS)
 _LIVE_MISSING_METADATA = ("display_kind", "display_metadata")
 # ``message_id`` is identity the flush derived from the live dict (int there, TEXT in SQLite): never synced.
 _SYNC_FIELDS = ("role",) + _REPAIR_COLUMNS
-# Local repair bookkeeping riding on batch rows / live dicts; never transcript payload.
-REPAIR_BOOKKEEPING_FIELDS = frozenset({_DB_ROW_SNAPSHOT, _CANONICAL_ROW})
+# Canonical-row markers: a matched row hands over only missing presentation metadata; a legacy (no-digest)
+# dict over a filled assistant row adopts only its content.
 _METADATA_ONLY = "_metadata_only"
+_CONTENT_ONLY = "_content_only"
 
 
 def transcript_row_snapshot(row: Mapping[str, Any]) -> str:
@@ -138,8 +138,13 @@ def resolve_and_repair_transcript_batch(
                 (encode_content_fn(msg.get("content")), target_id, session_id, target_row["content"]),
             )
         else:
-            # Legacy dict over a non-blank assistant row: another writer already filled it; adopt that.
-            adopt = role == "assistant"
+            # Legacy dict (no digest: a resumed or cloned dict) over a non-blank assistant row: another writer
+            # already filled it. Adopt its content only, never the whole row: the live tool_calls /
+            # reasoning* / codex_* fields may be sanitizer-fixed while the durable JSON still holds the raw
+            # escaped surrogate, and live-only fields must survive.
+            adopt = False
+            if role == "assistant":
+                canonical = {"content": decode_content_fn(target_row["content"]), _CONTENT_ONLY: True}
 
         final_row = conn.execute(
             "SELECT * FROM messages WHERE id = ? AND session_id = ?", (target_id, session_id)
@@ -276,6 +281,8 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
             for key in _LIVE_MISSING_METADATA:
                 if canonical.get(key) is not None and written.get(key) is None:
                     written[key] = canonical[key]
+        elif isinstance(canonical, dict) and canonical.get(_CONTENT_ONLY):
+            written["content"] = canonical["content"]
         elif isinstance(canonical, dict):
             for key in _SYNC_FIELDS:
                 if key in canonical and canonical[key] is not None:

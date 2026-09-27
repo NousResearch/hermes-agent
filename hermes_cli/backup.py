@@ -15,7 +15,7 @@ import zlib
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home,
@@ -214,13 +214,22 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
 
 
 @contextmanager
-def _atomic_output_path(final_path: Path):
-    """Yield a hidden sibling path and publish it only after a clean close."""
+def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Optional[Path]]] = None):
+    """Yield a hidden sibling path and publish it only after a clean close.
+
+    ``publish_path`` picks the destination at publish time (default ``final_path``) so a caller
+    can divert an incomplete archive elsewhere without ever touching ``final_path``; returning
+    ``None`` discards the partial instead of publishing it.
+    """
     partial_path = final_path.with_name(f".{final_path.name}.{os.getpid()}-{threading.get_ident()}.partial")
     partial_path.unlink(missing_ok=True)
     try:
         yield partial_path
-        os.replace(partial_path, final_path)
+        destination = publish_path() if publish_path else final_path
+        if destination is None:
+            partial_path.unlink(missing_ok=True)
+        else:
+            os.replace(partial_path, destination)
     except BaseException:
         partial_path.unlink(missing_ok=True)
         raise
@@ -2032,9 +2041,20 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         errors.append(f"{rel_path}: {exc}")
         logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
 
+    # Salvage name keeps an incomplete archive out of normal retention (otherwise the next
+    # complete run would prune the last complete backups by count) and, because the partial is
+    # published straight there, never clobbers a previous good backup at ``out_path``. A run where
+    # every entry failed salvages nothing, so its empty archive is discarded rather than kept.
+    salvage_path = out_path.with_name(out_path.stem + _INCOMPLETE_ZIP_SUFFIX)
+
+    def _publish_path() -> Optional[Path]:
+        if not errors:
+            return out_path
+        return salvage_path if len(errors) < len(files_to_add) else None
+
     archive_started = time.monotonic()
     try:
-        with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
+        with _atomic_output_path(out_path, _publish_path) as archive_path, zipfile.ZipFile(
                 archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
@@ -2046,16 +2066,11 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         return None
 
-    zip_size = out_path.stat().st_size
+    if errors and len(errors) >= len(files_to_add):
+        logger.warning("Full-zip backup: every entry failed, nothing salvaged: %s", "; ".join(errors))
+        return None
+    zip_size = (salvage_path if errors else out_path).stat().st_size
     if errors:
-        # Rename so the salvage archive never counts toward normal retention: otherwise the
-        # next complete run would prune the last complete backups by count.
-        salvage_path = out_path.with_name(out_path.stem + _INCOMPLETE_ZIP_SUFFIX)
-        try:
-            out_path.replace(salvage_path)
-        except OSError as exc:
-            logger.warning("Full-zip backup: could not rename incomplete archive %s: %s", out_path, exc)
-            salvage_path = out_path
         logger.warning(
             "automatic backup phase=archive status=incomplete duration_ms=%.1f files=%d errors=%d "
             "bytes=%d salvage=%s skipped=%s",

@@ -150,6 +150,7 @@ def lease_directory(generation: Path) -> Callable[[], None]:
         return lambda: None  # Generations produced before leases stay conservatively retained.
     leases = generation / ".leases"
     leases.mkdir(exist_ok=True)
+    _prune_unlocked_leases(leases)
     lease = leases / uuid.uuid4().hex
     fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
     try:
@@ -199,11 +200,28 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
 
 def leases_held(generation: Path) -> bool:
     """True while any process still holds a lease taken by ``lease_directory``."""
-    for lease in (generation / ".leases").glob("*"):
-        fd = os.open(lease, os.O_RDWR)
+    return _prune_unlocked_leases(generation / ".leases")
+
+
+def _prune_unlocked_leases(leases: Path) -> bool:
+    """Remove abandoned lease files and report whether any live lock remains.
+
+    Kernel locks disappear even when ``execv``, ``os._exit`` or a crash bypasses
+    ``atexit``. Cleaning those unlocked files whenever a reader arrives bounds leaks in
+    the selected generation too, which generation GC intentionally never visits.
+    """
+    held = False
+    for lease in leases.glob("*"):
+        try:
+            fd = os.open(lease, os.O_RDWR)
+        except FileNotFoundError:
+            continue
         try:
             if not _lock(fd, wait=False):
-                return True
+                held = True
+            else:
+                with suppress(OSError):
+                    lease.unlink()
         finally:
             os.close(fd)
-    return False
+    return held

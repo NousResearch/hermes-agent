@@ -1,6 +1,9 @@
 """Superseded and aborted PM runtime generations are collected; running workers are not."""
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 from pm.runtime import collect_runtime_generations
 
@@ -47,3 +50,32 @@ def test_collector_yields_to_an_in_flight_stage(tmp_path):
         assert collect_runtime_generations(root) == []
     assert aborted.is_dir()
     assert collect_runtime_generations(root) == [aborted]
+
+
+def test_next_reader_removes_lease_left_by_hard_exit(tmp_path):
+    from hermes_cli.runtime_state import lease_directory
+
+    generation = _generation(tmp_path / "pm-runtime", "selected")
+    code = """
+import os
+import sys
+from pathlib import Path
+from hermes_cli.runtime_state import lease_directory
+
+lease_directory(Path(sys.argv[1]))
+os._exit(0)
+"""
+    subprocess.run([sys.executable, "-c", code, str(generation)], check=True, env=dict(os.environ))
+    leases = generation / ".leases"
+    stale = list(leases.iterdir())
+    assert len(stale) == 1
+
+    release = lease_directory(generation)
+    try:
+        active = list(leases.iterdir())
+        assert len(active) == 1
+        assert active[0] not in stale
+    finally:
+        release()
+
+    assert list(leases.iterdir()) == []

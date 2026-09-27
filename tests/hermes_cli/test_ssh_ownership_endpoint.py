@@ -213,6 +213,37 @@ assert web_server._ssh_runtime_intact()
         web_server._apply_ssh_owner_nonce(None)
 
 
+def test_losing_same_nonce_marker_race_survives_owner_exit(tmp_path, monkeypatch):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    monkeypatch.setattr(
+        web_server,
+        "sysconfig",
+        types.SimpleNamespace(get_paths=lambda *a, **k: {"purelib": str(purelib)}),
+    )
+    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    owner_create_time = _process_create_time(owner.pid)
+    assert owner_create_time is not None
+    nonce = "0123456789abcdef"
+    marker = purelib / f".hermes-ssh-runtime-{nonce}"
+    marker.write_text(
+        f"pid={owner.pid}\ncreate_time={owner_create_time}\n", encoding="utf-8"
+    )
+
+    try:
+        web_server._apply_ssh_owner_nonce(nonce)
+        assert web_server._SSH_RUNTIME_MARKER_OWNER_PID is None
+        assert web_server._ssh_runtime_intact() is True
+
+        marker.unlink()
+
+        assert web_server._ssh_runtime_intact() is True
+    finally:
+        web_server._apply_ssh_owner_nonce(None)
+        owner.terminate()
+        owner.wait(timeout=10)
+
+
 def test_ssh_runtime_marker_sweep_ignores_scandir_iteration_errors(monkeypatch):
     class BrokenScandir:
         def __enter__(self):

@@ -451,9 +451,10 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
             try:
                 fh = open(marker, "x", encoding="utf-8")
             except FileExistsError:
-                # Another dashboard won the nonce. Its marker is still the
-                # runtime identity, but only its creator may remove it.
-                _SSH_RUNTIME_MARKER = marker
+                # Another live dashboard owns this nonce. Do not anchor this
+                # process to a marker that its creator will remove on exit;
+                # use the purelib stat snapshot recorded below instead.
+                pass
             else:
                 with fh:
                     fh.write(payload)

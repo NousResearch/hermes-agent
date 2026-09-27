@@ -1403,6 +1403,16 @@ export default function SessionsPage() {
         ),
         "success",
       );
+      if (resp.skipped_active?.length) {
+        // Rows a live turn owns were refused server-side; say so instead of implying all went.
+        showToast(
+          t.sessions.selectedSessionsSkippedActive.replace(
+            "{count}",
+            String(resp.skipped_active.length),
+          ),
+          "error",
+        );
+      }
       setDeleteSelectedOpen(false);
       // Drop deleted rows out of the visible list immediately rather
       // than waiting for the reload. The reload still runs so total /

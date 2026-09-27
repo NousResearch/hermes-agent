@@ -193,6 +193,8 @@ export const en: Translations = {
     deleteSelectedConfirmMessage:
       "This permanently removes {count} selected sessions and all their messages. This cannot be undone.",
     selectedSessionsDeleted: "{count} sessions deleted",
+    selectedSessionsSkippedActive:
+      "{count} sessions kept: a live turn is still running in them",
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     newChat: "New chat",

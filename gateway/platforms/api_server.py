@@ -156,9 +156,9 @@ from gateway.browser_control_broker import (
     browser_control_protocol_supported, filter_browser_control_capabilities, get_browser_control_broker)
 
 from gateway.platforms._shared import coerce_port as _coerce_port
-from hermes_state_errors import SessionActiveWriteGuardError
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
+from hermes_state_errors import SessionActiveWriteGuardError
 
 
 logger = logging.getLogger(__name__)

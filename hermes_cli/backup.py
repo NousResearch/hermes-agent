@@ -442,6 +442,32 @@ def verify_sqlite_integrity(
     return _done("header check passed", valid=True, size=size)
 
 
+def _discard_failed_zip_members(zf: zipfile.ZipFile, filelist_len: int) -> None:
+    """Drop central-directory records created by a failed member write.
+
+    ZipFile.write finalizes its destination member while unwinding a source-read
+    failure, so the partial bytes can otherwise become a CRC-valid archive member.
+    Keep start_dir at the end of those abandoned bytes: rewinding it without
+    truncating would leave trailing data after the end record and can make archives
+    with a >64 KiB failed write unreadable. Rebuilding NameToInfo from the surviving
+    file list also restores the previous entry when a duplicate name failed.
+    """
+    if len(zf.filelist) <= filelist_len:
+        return
+    del zf.filelist[filelist_len:]
+    zf.NameToInfo.clear()
+    zf.NameToInfo.update((info.filename, info) for info in zf.filelist)
+
+
+def _write_zip_file(zf: zipfile.ZipFile, path: Path, arcname: str) -> None:
+    """Write one member while keeping a failed partial write out of the central directory."""
+    filelist_len = len(zf.filelist)
+    try:
+        zf.write(path, arcname=arcname)
+    except Exception:
+        _discard_failed_zip_members(zf, filelist_len)
+        raise
+
 def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, out_path: Path) -> Optional[int]:
     """Add a WAL-safe snapshot of *abs_path* to *zf*; return its byte size, or None on failure.
 
@@ -452,7 +478,7 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
     try:
         if not _safe_copy_db(abs_path, tmp_db):
             return None
-        zf.write(tmp_db, arcname=str(rel_path))
+        _write_zip_file(zf, tmp_db, str(rel_path))
         return tmp_db.stat().st_size
     finally:
         tmp_db.unlink(missing_ok=True)
@@ -477,7 +503,7 @@ def _write_zip_entries(
                     continue
                 total_bytes += size
             else:
-                zf.write(abs_path, arcname=str(rel_path))
+                _write_zip_file(zf, abs_path, str(rel_path))
                 if track_bytes:
                     total_bytes += abs_path.stat().st_size
         except (PermissionError, OSError, ValueError) as exc:
@@ -600,7 +626,7 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
         # straight zf.write is fine.
         for abs_path, arcname in external_to_add:
             try:
-                zf.write(abs_path, arcname=arcname)
+                _write_zip_file(zf, abs_path, str(arcname))
                 total_bytes += abs_path.stat().st_size
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
@@ -1978,22 +2004,38 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         logger.warning("Full-zip backup aborted: SQLite snapshot failed for %s", rel_path)
         raise _SQLiteSnapshotError(str(rel_path))
 
+    errors: list[tuple[Path, Exception]] = []
+
+    def _entry_error(rel_path: Path, exc: Exception) -> None:
+        errors.append((rel_path, exc))
+        logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
+
     archive_started = time.monotonic()
     try:
         with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
                 archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
-                on_error=lambda rel, exc: logger.debug("Skipping %s in zip backup: %s", rel, exc),
+                on_error=_entry_error,
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))
     except (OSError, _SQLiteSnapshotError) as exc:
         # The hidden partial is already gone; ``out_path`` may be a previous valid backup: keep it.
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         return None
+
+    zip_size = out_path.stat().st_size
+    if errors:
+        logger.warning(
+            "automatic backup phase=archive status=incomplete duration_ms=%.1f files=%d errors=%d bytes=%d",
+            (time.monotonic() - archive_started) * 1000, len(files_to_add), len(errors), zip_size)
+        logger.warning(
+            "Full-zip backup incomplete: %d file(s) skipped; salvage archive kept at %s",
+            len(errors), out_path)
+        return None
+
     logger.info("automatic backup phase=archive status=complete duration_ms=%.1f files=%d bytes=%d",
-                (time.monotonic() - archive_started) * 1000, len(files_to_add),
-                out_path.stat().st_size)
+                (time.monotonic() - archive_started) * 1000, len(files_to_add), zip_size)
     return out_path
 
 

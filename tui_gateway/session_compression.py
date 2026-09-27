@@ -135,7 +135,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     } if isinstance(raw_thresholds, dict) else {}
     # threshold: present value wins; absence derives via the agent_init resolution (default + autoraise).
     # resolve_model_threshold returns ``pct`` unchanged when model_thresholds is empty.
-    from agent.context_compressor import resolve_model_threshold
+    from agent.context_compressor import has_explicit_model_threshold, resolve_model_threshold
     pct: float | None = None
     if "threshold" in compression:
         with contextlib.suppress(TypeError, ValueError):
@@ -143,11 +143,14 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     if pct is None:
         pct = _derived_default_threshold_percent(agent, compression)
     cc._config_threshold_percent = cc._configured_threshold_percent = pct
-    base = cc._base_threshold_percent = resolve_model_threshold(
-        getattr(agent, "model", "") or "", cc.model_thresholds, pct, getattr(agent, "provider", "") or "",
-    )
+    _agent_model = getattr(agent, "model", "") or ""
+    _agent_provider = getattr(agent, "provider", "") or ""
+    base = cc._base_threshold_percent = resolve_model_threshold(_agent_model, cc.model_thresholds, pct, _agent_provider)
     try:
-        cc.threshold_percent = cc._effective_threshold_percent(cc.context_length, base)
+        cc.threshold_percent = cc._effective_threshold_percent(
+            cc.context_length, base,
+            explicit_override=has_explicit_model_threshold(_agent_model, cc.model_thresholds, _agent_provider),
+        )
     except Exception:
         cc.threshold_percent = pct
     # Same scoping rule as construction and the switch path: the pin describes the configured default

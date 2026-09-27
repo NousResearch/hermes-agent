@@ -9,8 +9,9 @@ Covers the gaps flagged in the review of PR #63020:
    ``/model`` switch).
 2. ``compression.model_thresholds`` is a public key in ``DEFAULT_CONFIG``.
 3. Floor interaction on the ``update_model()`` (model-switch) path:
-   an override below the small-context floor is raised to the floor
-   (raise-only); an override above the floor wins.
+   an explicit per-model override takes precedence over the small-context
+   floor (a sub-floor override is honored); a model with NO override still
+   gets the raise-only floor applied.
 4. Base-class ``update_model()`` snapshots the pre-override percent once,
    so repeated switches fall back to the engine's configured threshold
    rather than a previous model's override.
@@ -90,11 +91,16 @@ def test_plugin_engine_gets_model_thresholds_before_initial_update_model():
 
 
 class TestFloorInteractionOnModelSwitch:
-    """The small-context floor stacks on per-model overrides at switch time."""
+    """An explicit per-model override takes precedence over the small-context floor."""
 
     @patch("agent.context_compressor.get_model_context_length")
-    def test_switch_override_below_floor_is_raised_to_floor(self, mock_ctx):
-        """Switching to a small-context model with a sub-floor override → floor."""
+    def test_switch_override_below_floor_is_honored(self, mock_ctx):
+        """Switching to a small-context model with a sub-floor override keeps the override.
+
+        An operator who explicitly set ``compression.model_thresholds`` chose that ratio for
+        that model; the raise-only 0.75 small-context floor must not silently override it.
+        (Window is 200K so MINIMUM_CONTEXT_LENGTH does not also bind.)
+        """
         mock_ctx.return_value = 1_000_000
         cc = ContextCompressor(
             model="glm-5.2-1M",
@@ -105,10 +111,26 @@ class TestFloorInteractionOnModelSwitch:
         assert cc.threshold_percent == 0.25  # large context: override direct
 
         # Switch to a <512K model whose override (0.40) is below the 0.75 floor.
-        mock_ctx.return_value = 128_000
-        cc.update_model(model="small-model", context_length=128_000)
-        assert cc.threshold_percent == 0.75  # raise-only floor wins
-        assert cc.threshold_tokens == int(128_000 * 0.75)
+        mock_ctx.return_value = 200_000
+        cc.update_model(model="small-model", context_length=200_000)
+        assert cc.threshold_percent == 0.40  # explicit override beats the floor
+        assert cc.threshold_tokens == int(200_000 * 0.40)
+
+    @patch("agent.context_compressor.get_model_context_length")
+    def test_switch_no_override_still_floors(self, mock_ctx):
+        """A model with NO per-model override still gets the raise-only 0.75 floor (default)."""
+        mock_ctx.return_value = 1_000_000
+        cc = ContextCompressor(
+            model="glm-5.2-1M",
+            threshold_percent=0.50,
+            model_thresholds={"glm-5.2-1M": 0.25},
+            quiet_mode=True,
+        )
+        # Switch to a <512K model with no matching override -> configured 0.50 raised to 0.75.
+        mock_ctx.return_value = 200_000
+        cc.update_model(model="unlisted-small-model", context_length=200_000)
+        assert cc.threshold_percent == 0.75  # floor applies when there is no override
+        assert cc.threshold_tokens == int(200_000 * 0.75)
 
 
 

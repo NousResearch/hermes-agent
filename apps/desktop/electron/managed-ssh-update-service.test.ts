@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { ManagedConnectionUpdateGate, type ManagedSshUpdateIntent, type RemoteUpdateTarget } from './managed-ssh-update'
+import { ManagedConnectionUpdateGate, type ManagedSshUpdateIntent, type RemoteUpdateTarget, runManagedSshUpdate } from './managed-ssh-update'
 import {
   createManagedSshUpdateService,
   type ManagedSshUpdateScope,
@@ -733,4 +733,156 @@ test('primary restoration is serialized and exact-owner scoped', async () => {
   release()
   assert.equal(await first, 'restored')
   assert.equal(service.primaryRestoreOwnerForProfile('default'), null)
+})
+
+// ---------------------------------------------------------------------------
+// S5.1/S5.2 — original-service characterization traces.
+//
+// These traces were authored against the pre-extraction service shape
+// (ca034abddbd4, c87726d9c3be) and are restored here at the correction head.
+// The ownership gate must keep rejecting duplicate/foreign claims, restoration
+// must wait for positive clearance, and the shared transaction must close its
+// transport before restoring every drained scope. Passing here is the extracted
+// seam's proof that the extraction moved code without changing the behavior
+// these traces froze.
+// ---------------------------------------------------------------------------
+
+function traceClaimAndRelease(gate: ManagedConnectionUpdateGate, connectionId: string): string[] {
+  const trace: string[] = []
+  const record = (event: string) => trace.push(event)
+
+  record(`claim:${gate.claim(connectionId, CORRELATION)}`)
+  record(`duplicate:${gate.claim(connectionId, OTHER_CORRELATION)}`)
+  gate.release(connectionId, OTHER_CORRELATION)
+  record(`foreign-release-owner:${gate.owner(connectionId)}`)
+  gate.release(connectionId, CORRELATION)
+  record(`owner-after-release:${gate.owner(connectionId)}`)
+
+  return trace
+}
+
+test('original managed service trace rejects a duplicate claim and preserves the first owner', () => {
+  const gate = new ManagedConnectionUpdateGate()
+
+  assert.deepEqual(traceClaimAndRelease(gate, 'homelab'), [
+    'claim:true',
+    'duplicate:false',
+    `foreign-release-owner:${CORRELATION}`,
+    'owner-after-release:null'
+  ])
+})
+
+test('original managed service trace refuses a foreign release while the claim is active', () => {
+  const gate = new ManagedConnectionUpdateGate()
+
+  assert.equal(gate.claim('homelab', CORRELATION), true)
+  gate.release('homelab', OTHER_CORRELATION)
+
+  assert.equal(gate.owner('homelab'), CORRELATION)
+  assert.throws(() => gate.assertCanDial('homelab'), /paused/)
+  assert.throws(() => gate.assertCanMutate('homelab'), /edited or removed/)
+})
+
+test('original managed service trace rejects a foreign claim against a durable owner', () => {
+  const gate = new ManagedConnectionUpdateGate(connectionId =>
+    connectionId === 'homelab' ? CORRELATION : null
+  )
+
+  assert.equal(gate.claim('homelab', OTHER_CORRELATION), false)
+  assert.equal(gate.owner('homelab'), CORRELATION)
+  assert.throws(() => gate.assertCanDial('homelab'), /paused/)
+  assert.throws(() => gate.assertCanMutate('homelab'), /edited or removed/)
+})
+
+test('original managed service trace restores every scope only after positive clearance', async () => {
+  const { recoverManagedSshScopes } = await import('./managed-ssh-update')
+  const events: string[] = []
+  let releaseClearance!: () => void
+  const clearance = new Promise<void>(resolve => {
+    releaseClearance = resolve
+  })
+
+  const recovery = recoverManagedSshScopes({
+    scopes: [{ profile: 'default' }, { profile: 'research' }],
+    awaitClearance: async () => {
+      events.push('await-clearance')
+      await clearance
+    },
+    restoreScope: async (scope: { profile: string }) => {
+      events.push(`restore:${scope.profile}`)
+    },
+    completeRecovery: async () => {
+      events.push('complete')
+    }
+  })
+
+  await Promise.resolve()
+  assert.deepEqual(events, ['await-clearance'])
+  releaseClearance()
+  const results = await recovery
+
+  assert.deepEqual(events, ['await-clearance', 'restore:default', 'restore:research', 'complete'])
+  assert.deepEqual(results.map(result => result.status), ['fulfilled', 'fulfilled'])
+})
+
+test('managed service cleanup closes transport before restoring every drained scope', async () => {
+  const events: string[] = []
+  const result = await runManagedSshUpdate({
+    connectionId: 'homelab',
+    correlationId: CORRELATION,
+    scopes: [{ key: 'primary', profile: 'default' }, { profile: 'research' }],
+    preflightRemote: async () => { events.push('preflight') },
+    drainScope: async scope => { events.push(`drain:${scope.profile}`) },
+    updateRemote: async () => {
+      events.push('update')
+      throw new Error('remote update failed')
+    },
+    awaitRestoreClearance: async () => { events.push('clearance') },
+    closeTransports: async () => { events.push('close') },
+    restoreScope: async scope => { events.push(`restore:${scope.profile}`) },
+    releaseGate: () => { events.push('release') }
+  })
+
+  assert.deepEqual(events, [
+    'preflight',
+    'drain:default',
+    'drain:research',
+    'update',
+    'clearance',
+    'close',
+    'restore:default',
+    'restore:research',
+    'release'
+  ])
+  assert.equal(result.updateOk, false)
+  assert.equal(result.restoreOk, true)
+  assert.equal(result.outcome, 'update-failed')
+})
+
+test('managed service cleanup retains the fence when remote clearance is unavailable', async () => {
+  const events: string[] = []
+  const result = await runManagedSshUpdate({
+    connectionId: 'homelab',
+    correlationId: CORRELATION,
+    scopes: [{ profile: 'default' }],
+    preflightRemote: async () => { events.push('preflight') },
+    drainScope: async () => { events.push('drain') },
+    updateRemote: async () => ({
+      exitCode: 0,
+      receipt: { correlationId: CORRELATION, outcome: 'success' }
+    }),
+    awaitRestoreClearance: async () => {
+      events.push('clearance')
+      throw new Error('remote marker unavailable')
+    },
+    closeTransports: async () => { events.push('close') },
+    restoreScope: async () => { events.push('restore') },
+    completeRecovery: async () => { events.push('complete') },
+    releaseGate: () => { events.push('release') }
+  })
+
+  assert.deepEqual(events, ['preflight', 'drain', 'clearance', 'close', 'release'])
+  assert.equal(result.updateOk, true)
+  assert.equal(result.restoreOk, false)
+  assert.match(result.error || '', /remote marker unavailable/)
 })

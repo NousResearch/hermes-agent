@@ -218,12 +218,23 @@ uv_bootstrap_target() {
     esac
     case "$(uname -s)" in
         Linux)
-            # Minimal musl roots may have the loader but no ldd. Trust a
-            # recognizable ldd result before falling back to the loader:
-            # a glibc host may carry musl as a secondary toolchain.
-            local _libc
-            _libc="$(ldd --version 2>&1 || true)"
-            _libc="${_libc,,}"
+            # Same precedence as pm/store.py::_is_musl_libc: the native
+            # userland's ELF interpreter decides; ldd and a musl loader on
+            # disk are fallbacks only (a glibc host may carry musl as a
+            # secondary toolchain, and minimal musl roots may lack ldd).
+            local _libc="" _probe _head
+            for _probe in /bin/sh /bin/ls; do
+                _head="$(head -c 8192 "$_probe" 2>/dev/null | LC_ALL=C tr -d '\000')" || continue
+                [[ "$_head" == $'\x7f'ELF* ]] || continue
+                case "$_head" in
+                    *ld-musl-*) _libc="musl"; break ;;
+                    *ld-linux*) _libc="glibc"; break ;;
+                esac
+            done
+            if [[ -z "$_libc" ]]; then
+                _libc="$(ldd --version 2>&1 || true)"
+                _libc="${_libc,,}"
+            fi
             if [[ "$_libc" == *musl* ]]; then
                 echo "linux-$_arch-musl"
             elif [[ "$_libc" == *glibc* || "$_libc" == *"gnu libc"* || "$_libc" == *"gnu c library"* ]]; then

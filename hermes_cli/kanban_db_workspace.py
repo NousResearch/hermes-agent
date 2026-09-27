@@ -127,6 +127,28 @@ def _is_managed_scratch_path(p: Path) -> bool:
     return _managed_scratch_path_info(p)[0]
 
 
+def _rmtree_workspace(wp: Path) -> bool:
+    """Remove *wp* and report success only when no path survives.
+
+    ``ignore_errors=True`` previously made completion and GC claim removal even
+    when permissions, locks, or I/O errors left the workspace behind. Keep
+    cleanup best-effort, but expose the real outcome to every caller. Symlink
+    handling remains with ``shutil.rmtree``; callers must apply the managed-path
+    and top-level-symlink guards before invoking this helper.
+    """
+    try:
+        shutil.rmtree(wp)
+    except OSError:
+        return False
+    try:
+        os.lstat(wp)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     """Remove a task's scratch workspace dir and kill its stale tmux session.
     Called from :func:`complete_task` after the transaction commits; best-effort
@@ -169,8 +191,13 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             # See #28818.
             if _is_managed_scratch_path(wp):
                 release_lsp_clients(str(wp))
-                shutil.rmtree(wp, ignore_errors=True)
-                _kb._log.debug("Removed scratch workspace: %s", wp)
+                if _rmtree_workspace(wp):
+                    _kb._log.debug("Removed scratch workspace: %s", wp)
+                else:
+                    _kb._log.warning(
+                        "Scratch workspace cleanup failed for task %s; path remains: %s",
+                        task_id, wp,
+                    )
             else:
                 _kb._log.warning(
                     "Refusing to remove out-of-scratch workspace for task %s: %s "
@@ -288,8 +315,17 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
             wp = Path(row["workspace_path"])
             if wp.is_dir() and _is_managed_scratch_path(wp):
                 release_lsp_clients(str(wp))
-                shutil.rmtree(wp, ignore_errors=True)
-                _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
+                if _rmtree_workspace(wp):
+                    _kb._log.debug(
+                        "Deferred cleanup: removed parent %s scratch workspace: %s",
+                        parent_id, wp,
+                    )
+                else:
+                    _kb._log.warning(
+                        "Deferred scratch workspace cleanup failed for parent task %s; "
+                        "path remains: %s",
+                        parent_id, wp,
+                    )
     except Exception:
         pass  # best-effort
 

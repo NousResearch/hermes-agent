@@ -1741,7 +1741,7 @@ def register(ctx):
         "skill-graph.discovery",
         _render_skill_graph_prompt,
         position="after_memory",
-        max_chars=8000,
+        max_chars=4000,
     )
 
     # ── Slash command: /skill-graph ──

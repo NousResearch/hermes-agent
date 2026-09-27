@@ -452,6 +452,8 @@ _MEDIA_SEND_READ_TIMEOUT = 60.0
 # Text send used to hang forever on a shielded httpcore socket (NordVPN/Telegram sticky IP).
 # A wedged send froze getUpdates on the same loop. Bound every text send/edit and media upload.
 _TEXT_SEND_DEADLINE = 30.0
+# Leave headroom before the runner's 15s wait; sending the card consumes this budget too.
+_APPROVAL_REPAIR_SEND_BUDGET = 10.0
 # Wall-clock cap on one media upload (whole request: pool wait + connect + body upload + server
 # processing). NOT `_MEDIA_SEND_READ_TIMEOUT`: that is httpx's per-phase stall budget (time-to-first-byte
 # after the body is sent), whereas this bounds the entire call, so it must leave room for bandwidth. The
@@ -4209,6 +4211,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if isinstance(built, SendResult):
                 return built
             text, keyboard, on_sent = built
+            repair_deadline = time.monotonic() + _APPROVAL_REPAIR_SEND_BUDGET
             msg = await self._send_control_message(
                 chat_id, text, parse_mode=parse_mode if parse_mode is not None else ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard, thread_id=thread_id, metadata=metadata, reply_to_mode=reply_to_mode)
@@ -4216,11 +4219,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 # A text-only receipt is not a delivered approval UI. Repair the SAME card;
                 # if Telegram still refuses the keyboard, let the runner send its text fallback.
                 logger.warning("Telegram approval keyboard missing: message_id=%s; repairing", msg.message_id)
+                remaining = repair_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("Telegram approval keyboard repair budget exhausted")
                 repaired = await _await_with_thread_deadline(
                     self._bot.edit_message_reply_markup(
                         chat_id=normalize_telegram_chat_id(chat_id), message_id=msg.message_id,
                         reply_markup=keyboard),
-                    timeout=_TEXT_SEND_DEADLINE, label="telegram-approval-keyboard", dump_on_blocked_loop=False)
+                    timeout=remaining, label="telegram-approval-keyboard", dump_on_blocked_loop=False)
                 if not getattr(getattr(repaired, "reply_markup", None), "inline_keyboard", None):
                     raise RuntimeError("Telegram did not retain approval buttons")
             if on_sent is not None:
@@ -4283,7 +4289,8 @@ class TelegramAdapter(BasePlatformAdapter):
         def remember_message(msg):
             # An early callback may already have consumed the state; never resurrect it.
             if approval_id in self._approval_state:
-                self.__dict__.setdefault("_approval_message_ids", {})[str(msg.message_id)] = approval_id
+                key = (str(normalize_telegram_chat_id(prompt.chat_id)), str(msg.message_id))
+                self.__dict__.setdefault("_approval_message_ids", {})[key] = approval_id
 
         def build():
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
@@ -4305,7 +4312,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def retire_exec_approval_card(self, chat_id: str, message_id: str) -> None:
         """Remove expired buttons without erasing the original request from chat history."""
-        approval_id = self.__dict__.get("_approval_message_ids", {}).pop(str(message_id), None)
+        key = (str(normalize_telegram_chat_id(chat_id)), str(message_id))
+        approval_id = self.__dict__.get("_approval_message_ids", {}).pop(key, None)
         if approval_id is not None:
             self._approval_state.pop(approval_id, None)
         await self._bot.edit_message_reply_markup(
@@ -4791,7 +4799,9 @@ class TelegramAdapter(BasePlatformAdapter):
             "This approval has already been resolved.")
         if not session_key:
             return
-        self.__dict__.get("_approval_message_ids", {}).pop(str(getattr(query.message, "message_id", "")), None)
+        key = (str(normalize_telegram_chat_id(query.message.chat_id)),
+               str(getattr(query.message, "message_id", "")))
+        self.__dict__.get("_approval_message_ids", {}).pop(key, None)
         user_display = getattr(query.from_user, "first_name", "User")
         # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
         # (count == 0) must NOT claim "Approved" — the command was already denied.

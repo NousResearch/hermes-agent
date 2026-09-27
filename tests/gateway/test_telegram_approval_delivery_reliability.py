@@ -148,3 +148,132 @@ async def test_cancelled_send_drops_preregistered_callback():
     with pytest.raises(asyncio.CancelledError):
         await a.send_exec_approval(chat_id="12345", command="test only", session_key="s")
     assert not a._approval_state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_first", ["retire", "tap"])
+async def test_same_message_id_in_two_chats_keeps_approvals_independent(monkeypatch, finish_first):
+    a = adapter()
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.InlineKeyboardButton",
+        lambda label, callback_data: SimpleNamespace(text=label, callback_data=callback_data))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+        lambda rows: SimpleNamespace(inline_keyboard=rows))
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111,222")
+    entries = {chat: _ApprovalEntry({"command": "test only"}) for chat in ("111", "222")}
+    monkeypatch.setattr(approval, "_gateway_queues", {chat: [entry] for chat, entry in entries.items()})
+    cards = {}
+
+    async def send(**kw):
+        cards[str(kw["chat_id"])] = kw["reply_markup"]
+        return SimpleNamespace(message_id=42, reply_markup=kw["reply_markup"])
+
+    async def tap(chat):
+        data = next(b.callback_data for row in cards[chat].inline_keyboard
+                    for b in row if b.callback_data.startswith("ea:once:"))
+        query = SimpleNamespace(data=data, from_user=SimpleNamespace(id=int(chat), first_name="Tester"),
+            message=SimpleNamespace(chat_id=int(chat), message_id=42,
+                chat=SimpleNamespace(type="private"), message_thread_id=None),
+            answer=AsyncMock(), edit_message_text=AsyncMock())
+        await a._handle_callback_query(SimpleNamespace(callback_query=query), None)
+
+    a._bot.send_message.side_effect = send
+    for chat in entries:
+        await a.send_exec_approval(chat_id=chat, command="test only", session_key=chat)
+    if finish_first == "tap":
+        await tap("111")
+        assert entries["111"].event.is_set()
+        # Answering A must not lose B's retirement lookup.
+        await a.retire_exec_approval_card(" 222 ", "42")
+        await tap("222")
+        assert not entries["222"].event.is_set()
+    else:
+        await a.retire_exec_approval_card(" 111 ", "42")
+        assert not entries["222"].event.is_set()
+        await tap("222")
+        assert entries["222"].event.is_set()
+        assert entries["222"].result == "once"
+    assert not a._approval_state
+    assert not a._approval_message_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send_elapsed", [0.0, 8.0, 20.0])
+async def test_keyboard_repair_uses_remaining_send_budget(monkeypatch, send_elapsed):
+    import asyncio
+    import plugins.platforms.telegram.adapter as telegram_mod
+
+    a = adapter()
+    now = [0.0]
+    monkeypatch.setattr(telegram_mod, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    budgets = []
+
+    async def send(*args, **kwargs):
+        now[0] = send_elapsed
+        return SimpleNamespace(message_id=42, reply_markup=None)
+
+    async def bounded(awaitable, timeout, **kwargs):
+        awaitable.close()
+        budgets.append(timeout)
+        raise asyncio.TimeoutError("synthetic slow keyboard repair")
+
+    monkeypatch.setattr(a, "_send_control_message", send)
+    monkeypatch.setattr(telegram_mod, "_await_with_thread_deadline", bounded)
+    result = await a.send_exec_approval(chat_id="111", command="test only", session_key="s")
+    assert not result.success
+    assert not a._approval_state
+    if send_elapsed >= 15:
+        assert budgets == [], "an already-late send must not start a new repair window"
+    else:
+        assert len(budgets) == 1
+        assert 0 < send_elapsed + budgets[0] < 15, "send and repair share the runner's budget"
+
+
+@pytest.mark.parametrize("buttons", [True, False])
+@pytest.mark.parametrize("late_result", ["success", "failure", "exception", "pending", "cancelled"])
+def test_ambiguous_send_still_posts_timeout_notice(monkeypatch, buttons, late_result):
+    import asyncio
+    from gateway.run import _approval_send_outcome
+
+    class TextAdapter:
+        def __init__(self):
+            self.send = AsyncMock(return_value=SendResult(success=True))
+            self.retired = []
+        def pause_typing_for_chat(self, chat_id):
+            pass
+        async def retire_exec_approval_card(self, chat_id, message_id):
+            self.retired.append((chat_id, message_id))
+
+    class ButtonAdapter(TextAdapter):
+        async def send_exec_approval(self, **kwargs):
+            pass
+
+    a = ButtonAdapter() if buttons else TextAdapter()
+    entry = _ApprovalEntry({"command": "test only"})
+    monkeypatch.setattr(approval, "_gateway_queues", {"s": [entry]})
+    runner = TurnRunner(None, SimpleNamespace(_status_adapter=a, _status_chat_id="111",
+        _status_thread_metadata=None, session_key="s"))
+    monkeypatch.setattr(runner, "_close_native_stream_boundary", lambda *args: None)
+    # Real classifier, but exercise the timeout deterministically rather than sleeping 15s.
+    monkeypatch.setattr("gateway.run._approval_send_outcome",
+        lambda future, timeout: _approval_send_outcome(future, timeout=0))
+    future = Future()
+    sends = []
+    def schedule(coro, label):
+        coro.close()
+        sends.append(label)
+        return future
+    monkeypatch.setattr(runner, "_schedule", schedule)
+    runner._approval_notify_sync(dict(entry.data))
+    assert len(sends) == 1, "possibly delivered prompts must not be sent twice"
+    assert entry.settle is not None, "ambiguous delivery still needs a timeout notice"
+    if late_result == "exception":
+        future.set_exception(RuntimeError("late send failed"))
+    elif late_result == "cancelled":
+        future.cancel()
+    elif late_result != "pending":
+        future.set_result(SendResult(success=late_result == "success", message_id="42"))
+    monkeypatch.setattr(runner, "_schedule", lambda coro, label: asyncio.run(coro))
+    entry.settle("timeout")
+    assert a.send.await_count == 1
+    assert "NOT run" in a.send.call_args.args[1]
+    assert a.retired == ([("111", "42")] if buttons and late_result == "success" else [])

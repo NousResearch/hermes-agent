@@ -20,15 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 def register_timeout_notice(
-    runner, approval_data: dict, *, command: str, card_message_id: Optional[str]) -> None:
+    runner, approval_data: dict, *, command: str, card_message_id: Optional[str], card_future=None) -> None:
     """Arm a settle hook that posts the timed-out notice for ``approval_data['request_id']``.
 
     ``runner`` is the ``TurnRunner`` (for ``_ctx`` and ``_schedule``); ``card_message_id`` is the
     delivered BUTTON card's id when the adapter returned one, so the card itself is edited in place
     (which also drops its buttons). The plain-text prompt passes ``None``: it has no buttons to
     drop and rewriting it would erase the record of what was asked. ``command`` is the
-    already-redacted command shown to the user. The notice is skipped when the run is no longer
-    current (``ctx._run_still_current``).
+    already-redacted command shown to the user. An ambiguous button send supplies ``card_future``;
+    its late receipt is read without waiting when the approval expires. The notice is skipped
+    when the run is no longer current (``ctx._run_still_current``).
     """
     from tools.approval import register_gateway_settle
 
@@ -46,8 +47,17 @@ def register_timeout_notice(
         still_current = getattr(runner._ctx, "_run_still_current", None)
         if callable(still_current) and not still_current():
             return
+        message_id = card_message_id
+        if card_future is not None:
+            try:
+                result = card_future.result(timeout=0)
+                if getattr(result, "success", False):
+                    message_id = getattr(result, "message_id", None)
+            except Exception:
+                # Missing/failed ACK must not suppress the notice or trigger a duplicate prompt.
+                logger.debug("Approval card receipt unavailable at timeout", exc_info=True)
         runner._schedule(
-            _post_timeout_notice(runner._ctx, command, card_message_id, timeout_s),
+            _post_timeout_notice(runner._ctx, command, message_id, timeout_s),
             "Approval timeout notice scheduling error")
 
     register_gateway_settle(session_key, request_id, settle)

@@ -1503,6 +1503,8 @@ class TurnRunner:
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
                     # registration stays alive so a tap still resolves; re-sending made duplicate
                     # cards + orphaned "/approve: nothing pending".
+                    register_timeout_notice(
+                        self, approval_data, command=cmd, card_message_id=None, card_future=fut)
                     logger.warning(
                         "Button-based approval send timed out — treating "
                         "as possibly-delivered (no re-send; the prompt "
@@ -1554,8 +1556,7 @@ class TurnRunner:
             outcome = _approval_send_outcome(fut, timeout=15)
             if outcome not in {"sent", "ambiguous"}:
                 raise RuntimeError("approval prompt undeliverable: text fallback failed")
-            if outcome == "sent":
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
             logger.info("Approval text delivery outcome=%s request_id=%s", outcome, approval_data.get("request_id"))
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)

@@ -1669,7 +1669,7 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages():
          "content": {"msgtype": "m.text", "body": "First point @file:private.txt"}},
     ]})
     adapter._resolve_room_identity = AsyncMock(return_value=types.SimpleNamespace(
-        display_name="Room", room_topic=None, server_name="example.org"))
+        display_name="Room", room_topic=None, server_name="example.org", members_digest=None))
     adapter._is_dm_room = AsyncMock(return_value=False)
     adapter._get_display_name = AsyncMock(side_effect=lambda room, user: user.split(":")[0][1:])
     adapter._background_read_receipt = MagicMock()
@@ -1755,7 +1755,7 @@ async def test_admitted_thread_mention_backfills_only_earlier_thread_messages():
         "content": {},
     })
     adapter._resolve_room_identity = AsyncMock(return_value=types.SimpleNamespace(
-        display_name="Room", room_topic=None, server_name="example.org"))
+        display_name="Room", room_topic=None, server_name="example.org", members_digest=None))
     adapter._is_dm_room = AsyncMock(return_value=False)
     adapter._get_display_name = AsyncMock(side_effect=lambda room, user: user.split(":")[0][1:])
     adapter._background_read_receipt = MagicMock()
@@ -1849,12 +1849,15 @@ async def test_thread_backfill_omits_child_redacted_during_relations_fetch():
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def relations(_method, _path, **_kwargs):
+    async def relations(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "trigger-boundary"}
         started.set()
         await release.wait()
         return {"chunk": [{
             "event_id": "$child", "sender": "@alice:example.org",
-            "content": {"msgtype": "m.text", "body": "redacted child"},
+            "content": {"msgtype": "m.text", "body": "redacted child",
+                        "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}},
         }]}
 
     client = MagicMock()
@@ -1862,7 +1865,9 @@ async def test_thread_backfill_omits_child_redacted_during_relations_fetch():
     cache = MatrixEventContextCache()
     root = MatrixEventContext("@alice:example.org", "root")
     cache.store(room_id, "$root", root)
-    fetching = asyncio.create_task(fetch_thread_entries(client, cache, room_id, "$root", limit=5))
+    fetching = asyncio.create_task(fetch_thread_entries(
+        client, cache, room_id, "$root", limit=5, before_event_id="$current",
+    ))
     await asyncio.wait_for(started.wait(), timeout=2)
     cache.redact(room_id, "$child")
     release.set()

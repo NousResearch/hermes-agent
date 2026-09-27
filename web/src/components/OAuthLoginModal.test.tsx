@@ -22,6 +22,7 @@ vi.mock("@/lib/api", () => ({
     cancelOAuthSession: apiMocks.cancelOAuthSession,
     pollOAuthSession: apiMocks.pollOAuthSession,
     startOAuthLogin: apiMocks.startOAuthLogin,
+    getLocaleDefault: vi.fn(async () => ({ language: "en" })),
   },
 }));
 

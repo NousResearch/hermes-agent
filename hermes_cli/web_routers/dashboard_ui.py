@@ -106,6 +106,18 @@ async def set_dashboard_font(body: FontSetBody, profile: Optional[str] = None):
     return {"ok": True, "font": font}
 
 
+@router.get("/api/dashboard/language")
+async def get_dashboard_language(profile: Optional[str] = None):
+    """Configured UI language (``display.language``) as the dashboard's server-side
+    locale default. Echoed verbatim — the frontend validates it against its own
+    supported set, so the two locale lists cannot drift apart here."""
+    def _run():
+        lang = cfg_get(load_config(), "display", "language", default="en")
+        return {"language": str(lang) if lang else "en"}
+
+    return await config_scoped_to_thread(profile, _run)
+
+
 def _plugin_enable_sets() -> tuple[set, set]:
     """(enabled, disabled) plugin name sets; empty on any failure."""
     try:

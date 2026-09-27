@@ -1,12 +1,12 @@
 name: anyrouter
-repo: https://github.com/duyetbot/hermes-provider-anyrouter
+repo: https://github.com/duyet/hermes-provider-anyrouter
 sha: d5820c183a83e252f9fbeb421ff5cdcd9100fec3
 subdir: anyrouter
 description: AnyRouter — unified model gateway (OpenAI-compatible); /model picker filtered to tool-capable routes, first-party meta-models like anyrouter/hermes.
 maintainer: duyet
 tier: community
 category: models
-docs_url: https://github.com/duyetbot/hermes-provider-anyrouter#readme
+docs_url: https://github.com/duyet/hermes-provider-anyrouter#readme
 capabilities:
   provides_tools: []
   provides_hooks: []

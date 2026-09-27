@@ -1,4 +1,4 @@
-"""Read earlier Matrix thread messages for a new gateway session."""
+"""Read earlier Matrix thread messages at an event boundary."""
 
 from __future__ import annotations
 
@@ -72,19 +72,31 @@ async def fetch_thread_entries(
     thread_id: str,
     *,
     limit: int,
-    exclude_event_id: str | None = None,
-    before_ts: float | None = None,
+    before_event_id: str | None = None,
 ) -> list[MatrixEventContext]:
-    if client is None or limit <= 0 or not thread_id:
+    if client is None or limit <= 0 or not thread_id or not before_event_id:
         return []
 
+    context_path = (
+        f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}"
+        f"/context/{quote(before_event_id, safe='')}"
+    )
     path = (
         f"/_matrix/client/v1/rooms/{quote(room_id, safe='')}"
         f"/relations/{quote(thread_id, safe='')}/m.thread"
     )
     try:
+        boundary = await asyncio.wait_for(
+            client.api.request(Method.GET, context_path, query_params={"limit": "0"}), timeout=10.0,
+        )
+        token = boundary.get("start") if isinstance(boundary, dict) else None
+        if not isinstance(token, str) or not token:
+            return []
         response = await asyncio.wait_for(
-            client.api.request(Method.GET, path, query_params={"dir": "b", "limit": str(limit)}),
+            client.api.request(
+                Method.GET, path,
+                query_params={"dir": "b", "limit": str(limit), "from": token},
+            ),
             timeout=10.0,
         )
     except Exception as exc:
@@ -104,12 +116,8 @@ async def fetch_thread_entries(
         if not isinstance(raw, dict):
             continue
         event_id = raw.get("event_id")
-        if event_id == exclude_event_id or not isinstance(event_id, str):
+        if event_id == before_event_id or not isinstance(event_id, str):
             continue
-        if before_ts is not None:
-            timestamp = raw.get("origin_server_ts")
-            if not isinstance(timestamp, (int, float)) or timestamp >= before_ts * 1000:
-                continue
         parsed = await history_entry(client, raw)
         if parsed is None:
             continue

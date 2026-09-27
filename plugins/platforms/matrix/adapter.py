@@ -2228,8 +2228,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        ctx: Optional[tuple] = None, history_before_ts: float | None = None,
-        **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
@@ -2254,8 +2253,6 @@ class MatrixAdapter(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
-        if history_before_ts:
-            extra.setdefault("metadata", {})["matrix_origin_ts"] = history_before_ts
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply.event_id, reply_to_text=reply.text, reply_to_author_id=reply.author_id,
@@ -2307,8 +2304,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._background_read_receipt(room_id, event_id)  # the claim receipted the voice
                 return
         msg_event = await self._build_inbound_event(
-            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to,
-            history_before_ts=event_ts)
+            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
         if msg_event is None:
             return
         self._event_context_cache.store(room_id, event_id, MatrixEventContext(sender, msg_event.text))
@@ -2375,7 +2371,7 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype,
-            history_before_ts=event_ts)
+            metadata={"matrix_mention_claimed": True} if mention_claimed else {})
         if msg_event is not None:
             await self.handle_message(msg_event)
 
@@ -3034,12 +3030,11 @@ class MatrixAdapter(BasePlatformAdapter):
         return (await self._resolve_room_identity(room_id)).chat_type == "dm"
 
     async def fetch_thread_context(
-        self, chat_id: str, thread_id: str, *, exclude_event_id: str | None = None,
-        before_ts: float | None = None,
+        self, chat_id: str, thread_id: str, *, before_event_id: str | None = None,
     ) -> str | None:
         entries = await fetch_thread_entries(
             self._client, self._event_context_cache, chat_id, thread_id,
-            limit=self._thread_backfill_limit, exclude_event_id=exclude_event_id, before_ts=before_ts,
+            limit=self._thread_backfill_limit, before_event_id=before_event_id,
         )
         return await self._format_history_context(chat_id, entries, "Earlier messages in this thread")
 
@@ -3055,7 +3050,9 @@ class MatrixAdapter(BasePlatformAdapter):
         content = event.raw_message
         if event.internal or source.chat_type == "dm" or not isinstance(content, dict):
             return None
-        if not self._content_mentions_bot(str(content.get("body") or ""), content):
+        if not event.metadata.get("matrix_mention_claimed") and not self._content_mentions_bot(
+            str(content.get("body") or ""), content,
+        ):
             return None
         if not event.message_id:
             return None
@@ -3063,8 +3060,7 @@ class MatrixAdapter(BasePlatformAdapter):
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.thread_root:
             return await self.fetch_thread_context(
-                source.chat_id, relation.thread_root, exclude_event_id=event.message_id,
-                before_ts=event.metadata.get("matrix_origin_ts"),
+                source.chat_id, relation.thread_root, before_event_id=event.message_id,
             )
         return await self.fetch_room_context(source.chat_id, event.message_id)
 

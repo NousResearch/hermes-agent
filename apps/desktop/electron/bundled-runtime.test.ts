@@ -1,7 +1,9 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+
 import { afterEach, expect, test } from 'vitest'
+
 import { bundledRuntimeBackend } from './bundled-runtime'
 
 const roots: string[] = []
@@ -12,6 +14,7 @@ test.skipIf(process.platform !== 'win32')(
   () => {
     const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), 'czesiek-bundle-'))
     roots.push(resourcesPath)
+
     for (const file of [
       'runtime/python/python.exe',
       'runtime/agent/hermes_cli/main.py',
@@ -22,6 +25,7 @@ test.skipIf(process.platform !== 'win32')(
       fs.mkdirSync(path.dirname(target), { recursive: true })
       fs.writeFileSync(target, '')
     }
+
     fs.writeFileSync(
       path.join(resourcesPath, 'runtime/manifest.json'),
       JSON.stringify({
@@ -30,6 +34,7 @@ test.skipIf(process.platform !== 'win32')(
         arch: process.arch
       })
     )
+
     const backend = bundledRuntimeBackend({
       isPackaged: true,
       resourcesPath,
@@ -37,6 +42,7 @@ test.skipIf(process.platform !== 'win32')(
       args: ['serve'],
       currentEnv: { PYTHONPATH: 'unrelated-install', VIRTUAL_ENV: 'unrelated-venv' }
     })!
+
     expect(backend.bootstrap).toBe(false)
     expect(backend.command).toBe(path.join(resourcesPath, 'runtime/python/python.exe'))
     expect(backend.env.PYTHONPATH).toBe(backend.root)

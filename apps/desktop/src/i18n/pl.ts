@@ -2965,7 +2965,7 @@ export const pl = defineLocale({
     },
     nav: {
       newChat: { title: 'Nowa sesja', detail: 'Rozpocznij nową sesję' },
-      settings: { title: 'Ustawienia', detail: 'Witaj w Agencie Cześku' },
+      settings: { title: 'Ustawienia', detail: 'Poznaj współpracownika Cześka' },
       skills: { title: 'Narzędzia', detail: 'Umiejętności, narzędzia, serwery MCP i wtyczki' },
       messaging: { title: 'Komunikatory', detail: 'Skonfiguruj Telegram, Slack, Discord i inne' },
       artifacts: { title: 'Pliki i wyniki', detail: 'Przeglądaj wygenerowane wyniki' }
@@ -4351,15 +4351,15 @@ export const pl = defineLocale({
     viewDocs: 'Zobacz dokumentację instalacji',
     installTo: 'Zostanie zainstalowane w',
     retryAfterRun: 'Uruchomiłem je — ponów',
-    setupChoiceTitle: 'Witaj w Agencie Cześku',
+    setupChoiceTitle: 'Poznaj współpracownika Cześka',
     setupChoiceDesc:
-      'Zainstaluj Cześka na tym komputerze. Przygotujemy jego własny silnik i środowisko pracy. Potrzebujesz połączenia z internetem.',
+      'Czesiek prowadzi rozmowę i planuje pracę, a Hermes pomaga wykonywać zadania. Przygotuj nowego współpracownika albo wybierz gotową instalację.',
     connectExistingTitle: 'Połącz z istniejącym Agentem Cześkiem',
     connectExistingShort: 'Połącz z istniejącym',
     connectExistingDesc:
       'Użyj zdalnego backendu z tokenem sesji albo logowaniem w przeglądarce. Instalacja lokalna nie zostanie uruchomiona.',
-    installLocalTitle: 'Zainstaluj Agenta Cześka lokalnie',
-    installLocalDesc: 'Wszystko przygotujemy automatycznie. Nie potrzebujesz wcześniej zainstalowanego Hermesa.',
+    installLocalTitle: 'Przygotuj nowego współpracownika',
+    installLocalDesc: 'Pełny pakiet Windows zawiera gotowy silnik. Czesiek użyje własnego profilu, bez zmieniania innych instalacji.',
     localStartUnavailable:
       'Nie udało się rozpocząć instalacji lokalnej. Zrestartuj Agent Czesiek Desktop i spróbuj ponownie.',
     remoteSetupTitle: 'Połącz z istniejącym Agentem Cześkiem',

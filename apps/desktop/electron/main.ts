@@ -80,7 +80,6 @@ import {
 } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
-import { bundledRuntimeBackend } from './bundled-runtime'
 import {
   BROWSER_WINDOW_HEIGHT,
   BROWSER_WINDOW_MIN_HEIGHT,
@@ -90,6 +89,7 @@ import {
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
+import { bundledRuntimeBackend } from './bundled-runtime'
 import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
@@ -359,6 +359,7 @@ import { isTrustedRendererUrl } from './renderer-document-trust'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
+import { discoverCollaborators, type ExistingCollaborator, readCollaboratorChoice, saveCollaboratorChoice } from './runtime-collaborator'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -4962,6 +4963,9 @@ function createActiveBackend(backendArgs) {
   }
 }
 
+const COLLABORATOR_CONFIG = path.join(app.getPath('userData'), 'runtime-collaborator.json')
+let detectedCollaborators: ExistingCollaborator[] = []
+
 function resolveHermesBackend(backendArgs) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
@@ -4987,12 +4991,34 @@ function resolveHermesBackend(backendArgs) {
     }
   }
 
+  if (IS_PACKAGED && IS_WINDOWS) {
+    const choice = readCollaboratorChoice(COLLABORATOR_CONFIG)
+
+    if (!choice) {
+      if (getFirstRunSetupGate().isLocalBootstrapConfirmed()) {getFirstRunSetupGate().resetForRepair()}
+
+      return { kind: 'bootstrap-needed', collaboratorChoice: true, label: 'Wybierz współpracownika Cześka',
+        command: null, args: backendArgs, bootstrap: true, env: {}, shell: false,
+        activeRoot: ACTIVE_HERMES_ROOT, isPackaged: true, platform: process.platform }
+    }
+
+    if (choice.mode === 'existing') {
+      return { kind: 'python', label: `współpracownik Hermes z ${choice.root}`,
+        command: choice.python, args: ['-m', 'hermes_cli.main', ...backendArgs], root: choice.root,
+        bootstrap: false, shell: false,
+        env: { ...buildDesktopBackendEnv({ hermesHome: HERMES_HOME, pythonPathEntries: [choice.root],
+          venvRoot: path.dirname(path.dirname(choice.python)) }), PYTHONPATH: choice.root, PYTHONHOME: '', PYTHONNOUSERSITE: '1' } }
+    }
+  }
+
   const bundled = bundledRuntimeBackend({
     isPackaged: IS_PACKAGED, resourcesPath: process.resourcesPath,
     hermesHome: HERMES_HOME, args: backendArgs
   })
+
   if (bundled) {
     bootstrapRepairRequested = false
+
     return bundled
   }
 
@@ -5030,6 +5056,7 @@ function resolveHermesBackend(backendArgs) {
     process.env.HERMES_DESKTOP_IGNORE_EXISTING === '1',
     Boolean(process.env.HERMES_DESKTOP_HERMES)
   )
+
   if (externalRuntime.command) {
     let hermesCommand = null
     const hermesOverride = process.env.HERMES_DESKTOP_HERMES
@@ -5154,6 +5181,15 @@ function resolveHermesBackend(backendArgs) {
 }
 
 async function ensureRuntime(backend) {
+  if (backend.collaboratorChoice) {
+    const selected = resolveHermesBackend(backend.args)
+
+    if ('collaboratorChoice' in selected && selected.collaboratorChoice) {throw new Error('Wybierz dostępnego współpracownika Cześka.')}
+    hideFirstRunSetupChoice()
+
+    return ensureRuntime(selected)
+  }
+
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
@@ -15507,6 +15543,7 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   // to the normal restart branch, which just kills the current child
   // and respawns it against the same venv. See #74874 — this is what
   // breaks the infinite reinstall loop the user hit.
+  if (IS_PACKAGED && IS_WINDOWS) {fs.rmSync(COLLABORATOR_CONFIG, { force: true })}
   bootstrapRepairRequested = repairDecision.hardReinstall
   bootstrapFailure = null
   backendStartFailure = null
@@ -15516,7 +15553,37 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
 
   return { ok: true }
 })
+ipcMain.handle('hermes:bootstrap:detect-collaborators', async (_event, browse = false) => {
+  const roots = [
+    ...detectedCollaborators.map(item => item.root),
+    ACTIVE_HERMES_ROOT,
+    path.join(os.homedir(), '.hermes', 'hermes-agent'),
+    path.join(os.homedir(), '.hermes'),
+    path.join(process.env.LOCALAPPDATA || os.homedir(), 'hermes', 'hermes-agent')
+  ]
+
+  if (browse) {
+    const result = await dialog.showOpenDialog({ title: 'Wybierz folder Hermesa', properties: ['openDirectory'] })
+
+    if (result.canceled) {return detectedCollaborators}
+    roots.push(...result.filePaths)
+  }
+
+  detectedCollaborators = await discoverCollaborators(roots)
+
+  return detectedCollaborators
+})
+ipcMain.handle('hermes:bootstrap:select-collaborator', async (_event, root: string) => {
+  const candidate = detectedCollaborators.find(item => item.root === root)
+
+  if (!candidate) {throw new Error('Najpierw wykryj i sprawdź instalację Hermesa.')}
+  saveCollaboratorChoice(COLLABORATOR_CONFIG, { mode: 'existing', ...candidate })
+  continueFirstRunLocalBootstrap()
+
+  return { ok: true }
+})
 ipcMain.handle('hermes:bootstrap:continue-local', async () => {
+  if (IS_PACKAGED && IS_WINDOWS) {saveCollaboratorChoice(COLLABORATOR_CONFIG, { mode: 'bundled' })}
   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
   continueFirstRunLocalBootstrap()
 
@@ -18281,6 +18348,7 @@ app.whenReady().then(() => {
     rememberLog(
       `[tls] trusting ${systemCa.systemCertificateCount} Windows system CA certificate(s) for backend connections`
     )
+
     // Python's requests/httpx use certifi instead of the Windows trust store.
     // Pass the same merged roots to the desktop-owned backend so corporate or
     // locally installed CAs work for Gemini Live and OpenRouter as well.

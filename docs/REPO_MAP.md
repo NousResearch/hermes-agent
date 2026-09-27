@@ -50,7 +50,10 @@ Sekrety i dane profilu pozostają poza repozytorium.
 Instrukcja użytkownika: [własne umiejętności i role](SKILLS_AND_ASSISTANT.md).
 
 
-### Windows: silnik w instalatorze
+### Windows: silnik w instalatorze i wybór współpracownika
+
+- `apps/desktop/electron/runtime-collaborator.ts`: wykrywanie gotowego środowiska i zapis wyboru; własny profil Cześka pozostaje oddzielny.
+- `apps/desktop/src/components/collaborator-picker.tsx`: automatyczne wykrywanie i ręczny wybór folderu w pierwszym uruchomieniu.
 
 - `apps/desktop/electron/bundled-runtime.ts`: wybór dołączonego silnika przed starym bootstrapem.
 - `apps/desktop/scripts/stage-windows-runtime.mjs`: pakowanie kodu, Pythona, zależności, Git i Node.

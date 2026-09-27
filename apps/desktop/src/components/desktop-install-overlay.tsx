@@ -19,6 +19,7 @@ import { AlertCircle, ChevronDown, ChevronRight, Globe, iconSize, Loader2, Monit
 import { capitalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 
+import { CollaboratorPicker } from './collaborator-picker'
 import { FirstRunRemoteForm } from './first-run-remote-form'
 
 /**
@@ -399,7 +400,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   if (state.setupChoice) {
     return (
       <div className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-background/90 p-4 backdrop-blur-md">
-        <div className="w-full max-w-2xl rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
+        <div className="max-h-[calc(100dvh-2rem)] w-full max-w-2xl overflow-y-auto rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
           <div className="flex items-start gap-4">
             <BrandMark className="size-11 shrink-0" />
             <div className="min-w-0">
@@ -441,6 +442,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             </button>
           </div>
 
+          {state.setupChoice.platform === 'win32' && <CollaboratorPicker />}
+
           {localStartError ? (
             <div className="mt-4 flex items-start gap-2 text-sm text-destructive">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -448,10 +451,12 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             </div>
           ) : null}
 
-          <div className="mt-6 text-xs text-muted-foreground">
-            {copy.installTo}{' '}
-            <code className="font-mono text-(--ui-text-secondary)">{state.setupChoice.activeRoot}</code>
-          </div>
+          {state.setupChoice.platform !== 'win32' && (
+            <div className="mt-6 text-xs text-muted-foreground">
+              {copy.installTo}{' '}
+              <code className="font-mono text-(--ui-text-secondary)">{state.setupChoice.activeRoot}</code>
+            </div>
+          )}
         </div>
       </div>
     )

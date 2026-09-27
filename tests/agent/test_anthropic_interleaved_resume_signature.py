@@ -192,7 +192,17 @@ class TestInterleavedResumeSignatures:
             if isinstance(b, dict) and b.get("type") == "thinking" and b.get("signature")
         ]
         assert signed, "the hoisted block keeps its signature — the residual hole this PR accepts"
-        assert not content[0].get("_thinking_signature_invalidated") if isinstance(content[0], dict) else True
+        # The demotion flag lives on the converted MESSAGE and is popped by
+        # _manage_thinking_signatures before the wire; reading it off a content BLOCK is
+        # vacuous. The real guard: the internal flag must never leak onto ANY wire message
+        # or block, in either direction (set here or not).
+        for wire_msg in converted:
+            assert "_thinking_signature_invalidated" not in wire_msg, (
+                "internal demotion flag leaked onto a wire message"
+            )
+            for block in wire_msg.get("content") or []:
+                if isinstance(block, dict):
+                    assert "_thinking_signature_invalidated" not in block
 
     def test_in_memory_ordered_channel_unaffected(self):
         """Live sessions replay through anthropic_content_blocks verbatim and must not be demoted."""

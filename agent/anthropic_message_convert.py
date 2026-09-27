@@ -392,8 +392,8 @@ def _interleaved_signature_layout_dead(message: Dict[str, Any]) -> bool:
     signature and 400s "thinking blocks cannot be modified" on every resume of a
     heartbeat-spawned session.
 
-    The ``>= 2`` threshold is the single-block boundary, and it is a trade-off, not an
-    exact fingerprint: with exactly ONE signed block the parallel-fields signature order is
+    The ``>= 2`` threshold is the single-block boundary, and it is a trade-off, not
+    an exact fingerprint: with exactly ONE signed block the parallel-fields signature order is
     only provably dead when the block did NOT sit first on the original wire
     (``tool_use -> thinking -> tool_use`` restores hoisted yet still signed).
     ``reasoning_details`` carries no position, so the two single-block shapes are
@@ -403,6 +403,15 @@ def _interleaved_signature_layout_dead(message: Dict[str, Any]) -> bool:
     permitted between tool calls), so that residual single-block case stays live here. The
     stronger provenance-based policy (demote ANY restored signed thinking when the ordered
     channel is absent) is #124570.
+
+    The same blindness cuts the other way and is accepted too: a turn that emitted ALL its
+    signed thinking blocks BEFORE the tool blocks on the wire (``thinking, (redacted_)thinking,
+    tool_use, tool_use`` — a shape the wire format permits) reconstructs byte-identically, so
+    its signatures were still valid; this gate demotes it anyway. That is a continuity/cache
+    cost (a resume drops a signature replay it could have kept), never a 400 — the failure the
+    gate exists to prevent. ``reasoning_details`` order alone cannot distinguish "all thinking
+    led" from "interleaved" because both persist as the same flat list; only ordered-block
+    provenance (#124570) can.
     """
     if not (isinstance(message.get("tool_calls"), list) and message["tool_calls"]):
         return False

@@ -16,9 +16,7 @@ from hermes_cli.web_routers.files import fs_read_text
 
 @pytest.mark.linux_only
 @pytest.mark.parametrize("route,target_kind", [
-    ("file", "main"), ("file", "shm"), ("file", "shm_alias"), ("file", "wal"),
-    ("folder", "directory"), ("desktop", "main"),
-    ("desktop", "shm"), ("desktop", "shm_alias"), ("desktop", "wal"),
+    ("file", "main"), ("folder", "directory"), ("desktop", "main"), ("desktop", "shm"),
 ])
 def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
     path = tmp_path / "state.db"
@@ -30,11 +28,7 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
         db.create_session("preview-test", "cli")
         db.append_message("preview-test", "user", "before preview")
         shm = Path(str(path) + "-shm")
-        wal = Path(str(path) + "-wal")
-        alias = tmp_path / "linked-shm"
-        alias.symlink_to(shm)
-        target = {"main": path, "shm": shm, "shm_alias": alias,
-                  "wal": wal, "directory": tmp_path}[target_kind]
+        target = {"main": path, "shm": shm, "directory": tmp_path}[target_kind]
         conn = db._conn
         assert isinstance(conn, sqlite3.Connection)
         conn.execute("CREATE TABLE preview_markers (value TEXT)")

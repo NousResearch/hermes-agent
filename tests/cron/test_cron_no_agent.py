@@ -283,7 +283,6 @@ def test_run_job_no_agent_uses_configured_interpreter(hermes_env):
     Proves the override survives the no_agent branch of ``run_job`` →
     ``_run_job_script_with_claim_heartbeat`` → ``_run_job_script``.
     """
-    import os
     import stat as _stat
     import sys
 

@@ -369,9 +369,10 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
 def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional[str]]:
     """``(python_exe, error)`` for a job's ``interpreter`` field. Checked at run time, not create
     time: a user venv can be rebuilt or moved while the job lives. Bare names are refused — they
-    silently change meaning with PATH. Only a Python image is accepted (link target included):
-    the lifecycle guard classifies ``.py`` scripts as Python and skips its shell reference walk,
-    so ``interpreter=/bin/bash`` would run an unscanned ``.py`` body as shell."""
+    silently change meaning with PATH. The name (and the symlink target's name) must look like a
+    Python: the lifecycle guard classifies ``.py`` scripts as Python and skips its shell reference
+    walk, so ``interpreter=/bin/bash`` would run an unscanned ``.py`` body as shell. ``pythonw``
+    is refused because it discards captured output (an agent job would go silently quiet)."""
     from cron.lifecycle_guard import _INTERPRETER_IMAGE_RE
 
     raw = interpreter.strip()
@@ -384,13 +385,14 @@ def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional
         names = {resolved.name.lower(), resolved.resolve().name.lower()}
     except FileNotFoundError:
         return None, f"Interpreter not found: {raw}"
-    except (RuntimeError, OSError) as exc:  # unknown ~user, broken symlink, unreadable parent
+    except (RuntimeError, OSError) as exc:  # unknown ~user, unreadable parent, symlink loop
         return None, f"Unable to resolve interpreter path {raw!r}: {exc}"
     if not stat.S_ISREG(mode):
         return None, f"Interpreter path is not a file: {resolved}"
     if sys.platform != "win32" and not mode & 0o111:
         return None, f"Interpreter is not executable: {resolved}"
-    if not all(_INTERPRETER_IMAGE_RE.match(name) for name in names):
+    if not all(_INTERPRETER_IMAGE_RE.match(name) and not name.startswith("pythonw")
+               for name in names):
         return None, f"Interpreter must be a Python executable (python, python3, python3.12, ...): {resolved}"
     return str(resolved), None
 

@@ -106,7 +106,10 @@ class TestRunJobScript:
         (lambda d: "/bin/bash", "must be a Python executable"),
         (lambda d: (d / "python").symlink_to("/bin/bash") or str(d / "python"),
          "must be a Python executable"),
-    ])
+        (lambda d: (d / "pythonw").symlink_to(sys.executable) or str(d / "pythonw"),
+         "must be a Python executable"),
+    ], ids=["bare-name", "missing", "directory", "not-executable", "bash",
+            "python-symlink-to-bash", "pythonw"])
     def test_configured_interpreter_is_refused_unless_a_python_path(
         self, cron_env, tmp_path, make_interpreter, expected
     ):

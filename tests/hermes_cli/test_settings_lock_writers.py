@@ -139,6 +139,33 @@ def test_an_unlock_does_not_revive_when_the_same_lock_is_recreated(home, retire)
     assert _text(home / "config.yaml") == before
 
 
+def test_lock_administration_from_a_profile_targets_the_root_it_is_enforced_from(tmp_path, monkeypatch):
+    # `hermes -p work config lock …` / `config lock --clear`: the status, the file written and
+    # the enforcing owner must all be the shared root; the profile's own config stays untouched.
+    import types
+
+    from hermes_cli.config import _cmd_config_lock
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents=True)
+    (root / "config.yaml").write_text(CONFIG, encoding="utf-8")
+    (profile / "config.yaml").write_text("approvals:\n  mode: manual\ndisplay:\n  theme: dark\n", encoding="utf-8")
+    profile_before = _text(profile / "config.yaml")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    _cmd_config_lock(types.SimpleNamespace(clear=False, keys=["approvals.mode"], no_password=True))
+    assert _raw(root)["settings_lock"]["keys"] == ["approvals.mode"]
+    assert _text(profile / "config.yaml") == profile_before
+    assert sl.lock_state(profile).status == "valid"
+
+    sl.begin_unlock(profile, seconds=60)
+    _cmd_config_lock(types.SimpleNamespace(clear=True, keys=[], no_password=False))
+    assert "settings_lock" not in _raw(root)
+    assert _text(profile / "config.yaml") == profile_before
+    assert sl.lock_state(profile).status == "off"
+
+
 # ── the desktop (tui_gateway config.set → _write_config_key → _save_cfg) ─────
 
 

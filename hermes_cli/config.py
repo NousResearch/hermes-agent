@@ -4029,10 +4029,34 @@ def _lock_status_lines() -> list[str]:
     return lines
 
 
+def _save_root_lock_stanza(spec: Optional[Dict[str, Any]]) -> None:
+    """Write *spec* as the ``settings_lock`` stanza of the SHARED ROOT config.yaml, or remove it
+    when *spec* is None, through the guarded writer.
+
+    The root is the only file the lock is read from. Going through the active profile's config
+    (``read_raw_config`` / ``save_config``) wrote a profile-local stanza the lock ignores, and
+    ``--clear`` removed that copy and reported success while the root lock stayed in force.
+    """
+    from hermes_cli.settings_lock import LOCK_SECTION, hermes_root
+
+    if is_managed():
+        managed_error("change the settings lock")
+        sys.exit(1)
+    root_config = hermes_root(get_config_path().parent) / "config.yaml"
+    with _CONFIG_LOCK:
+        cfg = read_user_config_raw(root_config)
+        if spec is None:
+            cfg.pop(LOCK_SECTION, None)
+        else:
+            cfg[LOCK_SECTION] = spec
+        atomic_config_write(root_config, cfg)
+        _secure_file(root_config)
+        _RAW_CONFIG_CACHE.pop(str(root_config), None)
+
+
 def _cmd_config_lock(args):
     """Show the lock, or lock the named config paths."""
-    from hermes_cli.settings_lock import (LOCK_SECTION, describe, hash_password, is_unlocked,
-                                          lock_spec, lock_state)
+    from hermes_cli.settings_lock import hash_password, is_unlocked, lock_spec, lock_state
 
     keys = [str(k).strip() for k in (getattr(args, "keys", None) or []) if str(k).strip()]
     if getattr(args, "clear", False):
@@ -4040,9 +4064,7 @@ def _cmd_config_lock(args):
         if state.status != "off" and not is_unlocked(spec=state.spec):
             print("Settings are locked. Run `hermes config unlock` first.", file=sys.stderr)
             sys.exit(1)
-        cfg = read_raw_config() or {}
-        cfg.pop(LOCK_SECTION, None)
-        save_config(cfg, merge_existing=False)
+        _save_root_lock_stanza(None)
         print("Settings lock removed.")
         return
     if not keys:
@@ -4066,9 +4088,7 @@ def _cmd_config_lock(args):
             sys.exit(1)
         spec["password"] = hash_password(first)
 
-    cfg = read_raw_config() or {}
-    cfg[LOCK_SECTION] = spec
-    save_config(cfg, merge_existing=False)
+    _save_root_lock_stanza(spec)
     print("\n".join(_lock_status_lines()))
 
 

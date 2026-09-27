@@ -2180,7 +2180,8 @@ updates:
 # config.set and model switch, the gateway slash commands, the credential
 # lifecycle, `hermes auth`, `hermes agent import`, the update-time restores.
 # Read from the SHARED ROOT config.yaml only, never a profile's, so a profile
-# cannot unlock itself. The stanza protects itself: `settings_lock.*` is always
+# cannot unlock itself; `hermes config lock` (and `--clear`) writes it there
+# too, whichever profile it is run from. The stanza protects itself: `settings_lock.*` is always
 # locked while enabled.
 #
 #   hermes config lock approvals.mode yolo     # prompts for a password, stores only its hash

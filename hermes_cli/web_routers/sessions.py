@@ -220,7 +220,7 @@ def get_sessions(
                 compact_rows=not full,
                 include_pinned=True,
                 **scope)
-            total = db.session_count(exclude_children=True, exclude_hidden=True, **scope)
+            total = db.session_count(exclude_children=True, **scope)
             now = time.time()
             row_profile = profile_name or _cron_default_profile()
             for s in sessions:
@@ -498,8 +498,9 @@ async def get_session_stats(profile: Optional[str] = None):
     """Session-store statistics (mirrors `hermes sessions stats`)."""
     def _stats(db):
         out = {
-            "total": db.session_count(include_archived=True),
-            "active_store": db.session_count(include_archived=False),
+            # Storage-wide counts: hidden (Bot Mode) rows are stored rows too.
+            "total": db.session_count(include_archived=True, include_hidden=True),
+            "active_store": db.session_count(include_archived=False, include_hidden=True),
             "archived": db.session_count(archived_only=True), "messages": db.message_count(),
             "by_source": {}}
         try:

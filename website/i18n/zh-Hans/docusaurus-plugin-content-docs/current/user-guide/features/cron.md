@@ -652,7 +652,7 @@ print(json.dumps({"wakeAgent": True, "context": {"new_issues": latest - prev}}))
 **文件变更门控**——仅在被监视文件自上次成功 tick 以来有新内容时运行。调度器记录每个任务的 `last_run_at`；将其与文件的 mtime 比较。
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.hermes/scripts/feed-changed.sh
 FEED="$HOME/data/feed.json"
 STATE="$HOME/.hermes/scripts/.feed-changed.last"
@@ -677,7 +677,7 @@ cronjob(action="create", name="process-feed",
 **外部标志门控**——仅在其他进程发出就绪信号时运行（例如，部署 hook 落下一个文件，CI 任务在状态存储中设置一个值）。
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.hermes/scripts/flag-ready.sh
 if test -f /tmp/new-data-ready; then
   rm -f /tmp/new-data-ready
@@ -741,6 +741,8 @@ cronjob(action="create", name="daily-digest",
 ## 任务存储
 
 任务存储在 `~/.hermes/cron/jobs.json`。任务运行的输出保存到 `~/.hermes/cron/output/{job_id}/{timestamp}.md`。
+
+如果手动编辑使 `jobs.json` 格式出错，调度器会在下次加载时修复它，而不是停止运行：`jobs` 列表中不是 JSON 对象的条目会被丢弃，不是非负整数的 `repeat.completed` 会被规范化为非负整数（无法解析时为 0）。每次修复都会记录一条警告（只记录值的类型，不记录内容）。
 
 任务可能将 `model` 和 `provider` 存储为 `null`。省略这些字段时，Hermes 在执行时从全局配置中解析它们。只有设置了单任务覆盖时，这些字段才会出现在任务记录中。
 

@@ -27,6 +27,7 @@ class _CardAdapter(BasePlatformAdapter):
         self.card = card
         self.sent_text: list[str] = []
         self.cards = 0
+        self.on_text_sent = None
 
     def pause_typing_for_chat(self, chat_id):
         return None
@@ -40,6 +41,9 @@ class _CardAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.sent_text.append(content)
+        if self.on_text_sent is not None:
+            callback, self.on_text_sent = self.on_text_sent, None
+            callback()
         return SendResult(success=True, message_id="t1")
 
     async def retire_clarify_card(self, clarify_id, notice):
@@ -78,17 +82,8 @@ def _runner(adapter, loop, monkeypatch, timeout=5):
 
 
 def _answer_once_text_prompt_is_seen(adapter, text):
-    """Answer ONLY after the plain-text prompt was observed — never on a deadline, so a missing
-    fallback leaves the waiter blocked and the test fails on elapsed time / sent_text, not luck."""
-    def _wait_then_answer():
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not adapter.sent_text:
-            time.sleep(0.02)
-        if not adapter.sent_text:
-            return
-        time.sleep(0.1)
-        cm.resolve_text_response_for_session("sk-fallback", text)
-    threading.Thread(target=_wait_then_answer, daemon=True).start()
+    """Answer causally from the adapter's plain-text send, never from a timing poll."""
+    adapter.on_text_sent = lambda: cm.resolve_text_response_for_session("sk-fallback", text)
 
 
 # --- Atom: the platform rejects the native card -> plain-text question instead of a sentinel ---

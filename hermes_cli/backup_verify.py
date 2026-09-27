@@ -21,6 +21,7 @@ The receipt is machine-readable and a failed drill cannot report ``verified``.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -46,6 +47,64 @@ def _member_targets(members: List[str], prefix: str) -> List[str]:
         if rel:
             rels.append(rel)
     return rels
+
+
+def _restore_members(
+    zf: zipfile.ZipFile, members: List[str], prefix: str, candidate: Path,
+) -> tuple[int, List[str], List[str]]:
+    """Publish *members* into *candidate* with the primitives the live import uses.
+
+    The live restore loop runs inline in ``hermes_cli.backup.run_import`` (upstream inlined
+    the former ``_import_members``), so the drill walks the members through the same shared
+    helpers that drive it: ``_import_member_rel`` applies the runtime-state skip policy,
+    ``_extract_member_atomically``/``_import_db_member`` publish a member, and the traversal
+    and secret-mode rules match. ``_external/`` members never reach this loop — they restore
+    to the invoking user's home and a drill must not publish them.
+
+    Returns ``(restored, errors, skipped_runtime)``.
+    """
+    from hermes_cli.archive_safe import normalize_archive_parts
+    from hermes_cli.backup_restore import (
+        _default_new_file_mode, _extract_member_atomically, _import_db_member,
+    )
+
+    restored = 0
+    errors: List[str] = []
+    skipped_runtime: List[str] = []
+    # Resolved once, like the live import: members are published via a temp file, and
+    # mkstemp would otherwise create newly restored files as 0600.
+    new_file_mode = _default_new_file_mode()
+    for member in members:
+        rel, skipped = _backup._import_member_rel(member, prefix)
+        if not rel:
+            continue
+        if skipped:
+            skipped_runtime.append(rel)
+            continue
+        try:
+            parts = tuple(normalize_archive_parts(rel))
+        except ValueError:
+            errors.append(f"  {rel}: path traversal blocked")
+            continue
+        target = candidate.joinpath(*parts)
+        # Security: reject absolute paths and traversals, exactly as the import does.
+        try:
+            target.resolve().relative_to(candidate.resolve())
+        except ValueError:
+            errors.append(f"  {rel}: path traversal blocked")
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.suffix == ".db":
+                _import_db_member(zf, member, target, new_file_mode)
+            else:
+                _extract_member_atomically(zf, member, target, new_file_mode)
+            if target.name in _backup._SECRET_FILE_NAMES:
+                os.chmod(target, 0o600)
+            restored += 1
+        except (OSError, *_backup._ZIP_MEMBER_READ_ERRORS) as exc:
+            errors.append(f"  {rel}: {exc}")
+    return restored, errors, skipped_runtime
 
 
 def _check_stores(candidate: Path) -> tuple[Dict[str, Any], List[str]]:
@@ -174,8 +233,8 @@ def verify_backup_archive(
             receipt["required_objects"] = len(required_rels)
 
             candidate.mkdir(parents=True, exist_ok=True)
-            _restored, _restored_external, import_errors, skipped_runtime, _shrunk = (
-                _backup._import_members(zf, staged, prefix, candidate, len(staged))
+            _restored, import_errors, skipped_runtime = _restore_members(
+                zf, staged, prefix, candidate
             )
             receipt["runtime_skipped"] = sorted(skipped_runtime)
             receipt["errors"].extend(import_errors)

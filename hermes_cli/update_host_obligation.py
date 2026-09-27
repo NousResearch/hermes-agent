@@ -52,7 +52,7 @@ def read_host_obligation() -> Optional[dict]:
     if path is None:
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeDecodeError, ValueError):
         return None
     if not isinstance(payload, dict) or payload.get("version") != _RECORD_VERSION:

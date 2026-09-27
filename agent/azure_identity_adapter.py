@@ -11,6 +11,7 @@ Reference: https://learn.microsoft.com/azure/ai-foundry/foundry-models/how-to/co
 
 from __future__ import annotations
 
+from pm import install_hint
 import contextvars
 import functools
 import logging
@@ -25,10 +26,14 @@ logger = logging.getLogger(__name__)
 # scope is an ARM control-plane scope rejected for inference by newer resources; override via ``model.entra.scope``.
 SCOPE_AI_AZURE_DEFAULT = "https://ai.azure.com/.default"
 
-_AZURE_IDENTITY_FEATURE = "provider.azure_identity"
+# ---------------------------------------------------------------------------
+# Lazy SDK import — only loaded when the Entra path is actually used.
+# ---------------------------------------------------------------------------
+
+_AZURE_IDENTITY_FEATURE = "azure-identity"
 _INSTALL_MSG = "The 'azure-identity' package is required for Azure AI Foundry Entra ID authentication. "
 _LAZY_INSTALL_HINT = (
-    "pip install azure-identity manually, or enable lazy installs (security.allow_lazy_installs: true in config.yaml)."
+    f"Run: {install_hint('azure-identity')}"
 )
 _AUTH_HEADERS = ("Authorization", "authorization", "Api-Key", "api-key", "X-Api-Key", "x-api-key")
 
@@ -49,12 +54,12 @@ def _require_azure_identity():
         return _ai
     except ImportError:
         try:
-            from tools.lazy_deps import ensure, FeatureUnavailable
+            from pm import InstallError, ensure_import
         except ImportError as exc:
-            raise ImportError(_INSTALL_MSG + "Install it with: pip install azure-identity") from exc
+            raise ImportError(_INSTALL_MSG + "Run: hermes pm repair") from exc
         try:
-            ensure(_AZURE_IDENTITY_FEATURE, prompt=False)
-        except FeatureUnavailable as exc:
+            ensure_import(_AZURE_IDENTITY_FEATURE)
+        except InstallError as exc:
             raise ImportError(_INSTALL_MSG + str(exc)) from exc
         import azure.identity as _ai  # noqa: WPS440 — retry after lazy install
         return _ai
@@ -164,7 +169,7 @@ def _install_failure(allow_install: bool) -> Optional[Dict[str, Any]]:
     if has_azure_identity_installed():
         return None
     if not allow_install:
-        return {"error": "azure-identity not installed", "hint": "pip install azure-identity (or rely on lazy install at first use)"}
+        return {"error": "azure-identity not installed", "hint": _LAZY_INSTALL_HINT}
     try:
         _require_azure_identity()
     except ImportError as exc:

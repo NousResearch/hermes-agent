@@ -154,11 +154,11 @@ async def rescan_dashboard_plugins():
 
 
 @router.get("/api/dashboard/plugins/hub")
-async def get_plugins_hub(request: Request):
+async def get_plugins_hub(request: Request, profile: Optional[str] = None):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
     _require_token(request)
     try:
-        return await asyncio.to_thread(_merged_plugins_hub)
+        return await config_scoped_to_thread(profile, _merged_plugins_hub)
     except Exception as exc:
         _log.warning("plugins/hub failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
@@ -166,7 +166,10 @@ async def get_plugins_hub(request: Request):
 
 def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
     """Common tail of agent-plugin mutations: 400 on ``ok=False``, then invalidate caches
-    (rescanning discovery when files changed on disk)."""
+    (rescanning discovery when files changed on disk). A ``consent_required`` answer is not a failure:
+    nothing changed, the client shows the delta and retries with consent."""
+    if result.get("consent_required"):
+        return result
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or fallback_error)
     if rescan:
@@ -266,13 +269,49 @@ async def post_agent_plugin_disable(request: Request, name: str):
 @router.post("/api/dashboard/agent-plugins/{name:path}/update")
 async def post_agent_plugin_update(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
-    return await _named_plugin_action(request, name, dashboard_update_user_plugin, "Update failed.", rescan=True)
+    # Body is optional: ``{"accept_capabilities": true}`` applies a re-pin the user confirmed after a
+    # ``consent_required`` answer.
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    accept = isinstance(body, dict) and body.get("accept_capabilities") is True
+    return await _named_plugin_action(
+        request, name, lambda n: dashboard_update_user_plugin(n, accept_capabilities=accept), "Update failed.",
+        rescan=True)
 
 
 @router.delete("/api/dashboard/agent-plugins/{name:path}")
 async def delete_agent_plugin(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
     return await _named_plugin_action(request, name, dashboard_remove_user_plugin, "Remove failed.", rescan=True)
+
+
+@router.post("/api/dashboard/agent-plugins/activate")
+async def post_agent_plugin_activate(request: Request):
+    """``hermes plugins install`` / ``enable`` in another process asks this backend to load the plugin
+    for ``home`` and hand its MCP servers and skills to that profile's open chats
+    (``hermes_cli.plugins_activation.load_and_go_live``). ``home`` must be a profile this host serves."""
+    _require_token(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = _validate_plugin_name(str((body or {}).get("name") or ""))
+    from hermes_constants import get_hermes_home, hermes_home_key, profile_name_for_home
+    home = Path(str((body or {}).get("home") or "")).expanduser()
+    profile = profile_name_for_home(home) if str(home) not in ("", ".") else None
+    if profile is None:
+        raise HTTPException(status_code=400, detail="Not a Hermes profile home.")
+    from hermes_cli.plugins_activation import load_and_go_live
+
+    def _run():
+        with _config_profile_scope(None if profile == "default" else profile):
+            if hermes_home_key(get_hermes_home()) != hermes_home_key(home):
+                raise HTTPException(status_code=400, detail="Home is not served by this backend.")
+            return {"ok": True, "activation": load_and_go_live(name)}
+
+    return await asyncio.to_thread(_run)
 
 
 @router.put("/api/dashboard/plugin-providers")

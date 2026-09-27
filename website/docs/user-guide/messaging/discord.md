@@ -86,7 +86,7 @@ This guide walks you through the full setup process — from creating your bot o
 
 Discord REST and the Gateway WebSocket are separate transports. A successful REST response (including `fetch_user()` returning HTTP 200) does not prove that the bot can still receive Gateway events. Hermes therefore combines the ready state, client/socket closure state, socket openness, heartbeat ACK age, finite heartbeat latency, and — since the dispatch-side dimension — how long it has been since the last parsed Gateway event.
 
-After the configured number of consecutive unhealthy samples, the adapter emits one retryable fatal event. The existing gateway reconnect watcher creates a fresh adapter; the Discord adapter does not start a second unbounded reconnect loop.
+After the configured number of consecutive unhealthy samples, the adapter emits one retryable fatal event. A closed transport (`socket_closed` / `client_closed`) is a confirmed death and forces the reconnect on the first unhealthy sample; the threshold applies to soft signals only (stale heartbeat ACK, latency, event silence) — see [#118487](https://github.com/NousResearch/hermes-agent/issues/118487). The existing gateway reconnect watcher creates a fresh adapter; the Discord adapter does not start a second unbounded reconnect loop.
 
 Configure the non-secret thresholds in `config.yaml`:
 

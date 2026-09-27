@@ -17,7 +17,8 @@ def remember_onboarding(answers: dict) -> dict:
             raise ValueError(f'{key} must be text')
         if value and value.strip():
             facts.append(f'{label}: {value.strip()}')
-    for key, label in (('focus', 'Focus areas'), ('connectors', 'Tools the user uses (not connection status)')):
+    for key, label in (('focus', 'Focus areas'), ('connectors', 'Tools the user uses (not connection status)'),
+                       ('plugins', 'Hermes plugins the user picked during onboarding (not install status)')):
         values = answers.get(key, [])
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
             raise ValueError(f'{key} must be a list of text')

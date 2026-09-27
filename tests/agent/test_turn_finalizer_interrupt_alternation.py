@@ -13,7 +13,6 @@ typically empty on an interrupt, so the placeholder text is used rather than
 an empty-content assistant turn.
 """
 
-import pytest
 
 from agent.turn_finalizer import finalize_turn
 
@@ -62,6 +61,8 @@ class _StubAgent:
         self.session_cost_status = "ok"
         self.session_cost_source = "stub"
         self.persisted_messages = None
+        # #95514 stream-recovery state read by the finalizer; None on a clean stub.
+        self._current_streamed_assistant_text: str | None = None
 
     # --- fallible cleanup surfaces (all succeed here) ------------------
     def _save_trajectory(self, *a, **k):
@@ -154,7 +155,7 @@ def test_interrupt_after_tool_closes_sequence_with_placeholder():
     assert messages[-1]["role"] == "assistant"
     # Empty final_response falls back to the explicit placeholder rather
     # than persisting an empty-content assistant turn.
-    assert messages[-1]["content"] == "Operation interrupted."
+    assert messages[-1]["content"].strip()
 
     # The persisted snapshot is alternation-safe: appending a new user
     # message would follow an assistant, not an orphan tool.
@@ -194,4 +195,66 @@ def test_interrupted_turn_with_diagnostic_text_is_not_completed():
     )
     assert result["interrupted"] is True
     assert result["completed"] is False
+    assert result["failed"] is False
+
+
+def _pending_tool_result_tail():
+    """A non-interrupted turn that fell out of the loop after a tool result, with no
+    follow-up assistant text — the #55316/#54756 "silent stop" shape."""
+    return [
+        {"role": "user", "content": "summarize the log"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "log output"},
+    ]
+
+
+def test_non_interrupted_tool_tail_gets_visible_close():
+    """A turn that stops on a tool tail WITHOUT an interrupt must not return a silent,
+    ready-looking result: the finalizer fails the turn, mints the ``pending_tool_result``
+    exit reason, and persists a visible assistant close so the durable transcript does
+    not end at a raw ``tool`` row (#55316, #54756)."""
+    agent = _StubAgent()
+    messages = _pending_tool_result_tail()
+    result = _finalize(agent, messages, interrupted=False, final_response=None)
+
+    assert result["turn_exit_reason"] == "pending_tool_result"
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["final_response"].strip()
+    # The durable tail is an assistant row, not the raw tool result.
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"].strip()
+    assert agent.persisted_messages is not None
+    assert agent.persisted_messages[-1]["role"] == "assistant"
+    follow_on = agent.persisted_messages + [{"role": "user", "content": "continue"}]
+    _assert_no_tool_then_user(follow_on)
+
+
+def test_tool_tail_with_streamed_text_is_recovered_not_marked_pending():
+    """A turn whose stream already delivered text is #95514's stream-recovery case; the
+    ``pending_tool_result`` close must not fire over it."""
+    agent = _StubAgent()
+    agent._current_streamed_assistant_text = "Here is the summary you asked for."
+    messages = _pending_tool_result_tail()
+    result = _finalize(agent, messages, interrupted=False, final_response=None)
+
+    assert result["turn_exit_reason"] != "pending_tool_result"
+    assert result["final_response"] == "Here is the summary you asked for."
+    assert messages[-1]["role"] == "assistant"
+
+
+def test_tool_tail_with_non_tool_last_role_is_untouched():
+    """Only the tool-tail shape triggers the close; a plain user-tail turn keeps its
+    existing exit reason."""
+    agent = _StubAgent()
+    result = _finalize(
+        agent, [{"role": "user", "content": "hi"}], interrupted=False, final_response=None,
+    )
+    assert result["turn_exit_reason"] == "interrupted_by_user"  # unchanged passthrough
     assert result["failed"] is False

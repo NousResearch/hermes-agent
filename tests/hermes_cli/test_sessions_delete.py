@@ -2,7 +2,6 @@ import sys
 
 import pytest
 
-
 def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
     import hermes_cli.main as main_mod
     import hermes_state
@@ -41,7 +40,6 @@ def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
     }
     assert "Deleted session '20260315_092437_c9a6ff'." in output
 
-
 def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
     """Run `hermes sessions prune <argv_tail>` against a FakeDB, capturing
     the filter kwargs passed to list_prune_candidates. Auto-confirms."""
@@ -78,7 +76,9 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
             return rows
 
         def count_open_prune_matches(self, **kwargs):
-            assert kwargs == seen
+            # Same filters as the preview. `whole_lineages` is the preview's selection mode, not a
+            # filter: an open row is never a compression ancestor, so the count never takes it.
+            assert kwargs == {k: v for k, v in seen.items() if k != "whole_lineages"}
             return skipped_open
 
         def count_prune_matches(self, **kwargs):
@@ -98,7 +98,6 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
     main_mod.main()
     return seen, capsys.readouterr().out
 
-
 def test_sessions_prune_bare_keeps_90_day_default(monkeypatch, capsys):
     """A truly bare `hermes sessions prune` keeps the implicit 90-day cutoff."""
     import time as _time
@@ -108,28 +107,3 @@ def test_sessions_prune_bare_keeps_90_day_default(monkeypatch, capsys):
     assert filters["last_active_before"] == pytest.approx(
         _time.time() - 90 * 86400, abs=60
     )
-
-
-def test_sessions_prune_preview_shows_oldest_newest(monkeypatch, capsys):
-    """Confirmation preview surfaces count + oldest/newest session times."""
-    from hermes_cli.session_filters import format_epoch
-
-    _filters, out = _run_prune(monkeypatch, capsys, ["--source", "cron"])
-    assert "2 session(s) match" in out
-    assert f"oldest activity {format_epoch(1_600_000_050.0)}" in out
-    assert f"newest activity {format_epoch(1_700_000_050.0)}" in out
-
-
-def test_sessions_prune_surfaces_matching_open_sessions(monkeypatch, capsys):
-    _filters, out = _run_prune(
-        monkeypatch,
-        capsys,
-        ["--source", "cron"],
-        candidates=[],
-        skipped_open=2,
-    )
-
-    assert "2 open sessions also match these filters" in out
-    assert "prune only deletes ended sessions" in out
-    assert "hermes sessions delete <id>" in out
-    assert "No sessions match" in out

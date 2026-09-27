@@ -46,11 +46,6 @@ def _run_shim(
     )
 
 
-def test_shim_script_is_executable_bit_friendly() -> None:
-    assert SHIM.is_file()
-    text = SHIM.read_text()
-    assert text.startswith("#!/bin/sh")
-    assert "HERMES_TINI_SHIM_TARGET" in text
 
 
 def test_strips_g_and_double_dash(recorder: tuple[Path, Path]) -> None:

@@ -58,4 +58,30 @@ describe('keybinds store persist vs late-registered contributed actions', () => 
     })
     expect(bindingsFor('demo.late')).toEqual(['mod+alt+l'])
   })
+
+  it('keeps an explicitly cleared sidebar binding empty so mod+b can be unbound', async () => {
+    const { $comboIndex, bindingsFor, setBinding } = await import('./keybinds')
+
+    setBinding('view.toggleSidebar', [])
+
+    expect(bindingsFor('view.toggleSidebar')).toEqual([])
+    expect($comboIndex.get().get('mod+b')).toBeUndefined()
+    expect(storedDiff()['view.toggleSidebar']).toEqual([])
+
+    vi.resetModules()
+    const reloaded = await import('./keybinds')
+
+    expect(reloaded.bindingsFor('view.toggleSidebar')).toEqual([])
+    expect(reloaded.$comboIndex.get().get('mod+b')).toBeUndefined()
+  })
+
+  it('treats Backspace and Delete during capture as a cleared binding', async () => {
+    const keybinds = await import('./keybinds')
+
+    expect(keybinds.captureStep('Backspace', null)).toEqual({ type: 'set', combos: [] })
+    expect(keybinds.captureStep('Delete', 'mod+b')).toEqual({ type: 'set', combos: [] })
+    expect(keybinds.captureStep('Escape', null)).toEqual({ type: 'cancel' })
+    expect(keybinds.captureStep('b', null)).toEqual({ type: 'wait' })
+    expect(keybinds.captureStep('b', 'mod+b')).toEqual({ type: 'set', combos: ['mod+b'] })
+  })
 })

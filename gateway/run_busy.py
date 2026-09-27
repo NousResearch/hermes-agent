@@ -593,7 +593,9 @@ class GatewayBusySessionMixin:
                 steered = self._try_agent_verb(
                     running_agent, "steer", steer_text, session_key, event=event
                 )
-            if not steered:
+            if steered:
+                self._fold_into_running_turn(running_agent, session_key, event)
+            else:
                 effective_mode = "queue"
         elif (
             effective_mode == "interrupt" and plain_text and agent_live
@@ -636,8 +638,8 @@ class GatewayBusySessionMixin:
         """
         if not self._try_agent_verb(running_agent, "redirect", text, session_key, event=event):
             return False
-        turn = self._session_state(session_key).turn
-        if turn.agent is not running_agent:
+        turn = self._fold_into_running_turn(running_agent, session_key, event)
+        if turn is None:
             return True  # a newer turn already owns the slot; never re-anchor it
         anchor = self._reply_anchor_for_event(event)
         inbound_id = str(event.message_id) if event.message_id else None
@@ -648,6 +650,19 @@ class GatewayBusySessionMixin:
             turn.ctx.event_message_id = anchor
             turn.ctx.inbound_message_id = inbound_id
         return True
+
+    def _fold_into_running_turn(self, running_agent, session_key: str, event: MessageEvent):
+        """The running turn now answers *event* too (steer, redirect): if *event* was addressed to
+        the bot, a bare silence marker must not end the turn. Returns the turn, or None when a newer
+        turn already owns the slot."""
+        turn = self._session_state(session_key).turn
+        if turn.agent is not running_agent:
+            return None
+        if turn.event is not None and turn.event is not event:
+            turn.event.absorb_reply_expected(event)
+            if turn.ctx is not None:
+                turn.ctx.reply_expected = turn.event.reply_expected
+        return turn
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""
@@ -940,7 +955,8 @@ class GatewayBusySessionMixin:
         if policy in ("dispatch", "interrupt_then_dispatch"):
             plain = self._gateway_plain_command_handlers().get(name)
             if plain is not None:
-                return await plain(event)
+                async with self._async_profile_scope_for_source(source):
+                    return await plain(event)
             logger.warning(
                 "busy_policy=%s for /%s has no mid-run handler — "
                 "falling back to busy-reject", policy, name,
@@ -1057,6 +1073,7 @@ class GatewayBusySessionMixin:
             return f"⚠️ Steer failed: {exc}"
         if not accepted:
             return "Steer rejected (empty payload)."
+        self._fold_into_running_turn(running_agent, quick_key, event)
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
         target = "run and its active subagent(s)" if self._agent_has_active_subagents(running_agent) else "run"
         return f"⏩ Steer queued into current {target} — arrives after the next tool call: '{preview}'"
@@ -1202,7 +1219,7 @@ class GatewayBusySessionMixin:
                     self._booted_from_restart = False
                     return True
                 return False
-            data = json.loads(marker_path.read_text(encoding="utf-8"))
+            data = json.loads(marker_path.read_text(encoding="utf-8-sig"))
         except Exception:
             return False
 

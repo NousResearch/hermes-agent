@@ -14,6 +14,7 @@ import re
 from functools import partial
 from typing import Any, Callable
 
+from agent.message_metadata import DB_ROW_SNAPSHOT
 from agent.vision_message_prep import _provider_model_key
 
 logger = logging.getLogger(__name__)
@@ -23,11 +24,16 @@ logger = logging.getLogger(__name__)
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
 # Keys handled explicitly by _sanitize_messages; every OTHER key is swept generically.
-_MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role"})
+# The durable snapshot is an immutable compare-and-swap version, not message payload.
+_MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role", DB_ROW_SNAPSHOT})
 
 
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD; no-op when none present."""
+    # ``str.isascii`` is an O(1) flag check; surrogates are never ASCII, so the
+    # regex scan only runs for the (rare) non-ASCII leaf.
+    if text.isascii():
+        return text
     return _SURROGATE_RE.sub('\ufffd', text)
 
 
@@ -52,6 +58,8 @@ def coerce_tool_name(name: Any, fallback: str = "invalid_tool_call") -> str:
 
 def _strip_non_ascii(text: str) -> str:
     """Drop non-ASCII characters — last resort for ASCII-only system encodings (LANG=C)."""
+    if text.isascii():
+        return text
     return text.encode('ascii', errors='ignore').decode('ascii')
 
 

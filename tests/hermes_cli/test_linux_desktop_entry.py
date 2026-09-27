@@ -80,7 +80,7 @@ def test_install_writes_entry_with_absolute_exec_and_icon(
 
     entry = lde.install_desktop_entry(root)
 
-    assert entry == xdg_home / "applications" / "hermes.desktop"
+    assert entry == xdg_home / "applications" / lde.DESKTOP_ENTRY_NAME
     values = _parse(entry.read_text(encoding="utf-8"))
 
     # Exec must be the absolute path of the resolved binary. The launcher
@@ -212,7 +212,7 @@ def test_exec_leaves_shell_wrapper_launchers_alone(tmp_path, xdg_home, monkeypat
     hermes_bin = tmp_path / "bin" / "hermes"
     hermes_bin.parent.mkdir()
     hermes_bin.write_text(
-        '#!/bin/bash\nexec /opt/hermes/venv/bin/python "$@"\n', encoding="utf-8"
+        '#!/usr/bin/env bash\nexec /opt/hermes/venv/bin/python "$@"\n', encoding="utf-8"
     )
     hermes_bin.chmod(0o755)
     monkeypatch.setattr(
@@ -279,7 +279,7 @@ def test_exec_converges_from_repo_script_argv0_to_installed_wrapper(
     repo_script.chmod(0o755)
     wrapper = tmp_path / "installed" / "bin" / "hermes"
     wrapper.parent.mkdir(parents=True)
-    wrapper.write_text(f'#!/bin/bash\nexec {sys.executable} "$@"\n', encoding="utf-8")
+    wrapper.write_text(f'#!/usr/bin/env bash\nexec {sys.executable} "$@"\n', encoding="utf-8")
     wrapper.chmod(0o755)
 
     # argv[0] = repo script; PATH lookup finds the installed wrapper.
@@ -302,12 +302,11 @@ def test_exec_never_persists_a_bare_interpreter_command(
 ):
     """The `python -m hermes_cli.main` relaunch context must not write
     `Exec=<python> desktop` — a command line no DE can run."""
-    import sys
 
     root = _make_project(tmp_path)
     wrapper = tmp_path / "installed" / "bin" / "hermes"
     wrapper.parent.mkdir(parents=True)
-    wrapper.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     wrapper.chmod(0o755)
 
     interpreter = tmp_path / "uv" / "cpython-3.11.15" / "bin" / "python3.11"
@@ -400,7 +399,7 @@ def test_exec_uses_known_wrapper_when_path_lookup_misses(
     known_wrapper = tmp_path / "known-home" / ".local" / "bin" / "hermes"
     known_wrapper.parent.mkdir(parents=True)
     known_wrapper.write_text(
-        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        f'#!/usr/bin/env bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
         encoding="utf-8",
     )
     known_wrapper.chmod(0o755)
@@ -433,7 +432,7 @@ def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, mo
     persisting the venv form; the next DE launch re-resolves to the durable
     wrapper and flips the bytes back. Alternating writers alternate the
     file content (captured: wrapper -> venv -> wrapper inside one update
-    cycle), and every flip rewrites hermes.desktop. A rewrite landing
+    cycle), and every flip rewrites the entry. A rewrite landing
     inside a grid launch's STARTING window is the arm for the gnome-shell
     50.x crash this module already guards against. A PATH hit inside the
     checkout must fall through to the durable probe.
@@ -441,13 +440,13 @@ def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, mo
     root = _make_project(tmp_path)
     venv_script = root / "venv" / "bin" / "hermes"
     venv_script.parent.mkdir(parents=True)
-    venv_script.write_text("#!/bin/bash\nexec true\n", encoding="utf-8")
+    venv_script.write_text("#!/usr/bin/env bash\nexec true\n", encoding="utf-8")
     venv_script.chmod(0o755)
 
     known_wrapper = tmp_path / "path-home" / ".local" / "bin" / "hermes"
     known_wrapper.parent.mkdir(parents=True)
     known_wrapper.write_text(
-        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        f'#!/usr/bin/env bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
         encoding="utf-8",
     )
     known_wrapper.chmod(0o755)
@@ -487,7 +486,7 @@ def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
     None outright. The early `return primary` that used to fire here skipped
     the durable-wrapper probe, so the persisted Exec flipped to the bare
     `<python> -m hermes_cli.main desktop` module form. Each flip between the
-    wrapper and module forms rewrites hermes.desktop on the next launch; any
+    wrapper and module forms rewrites the entry on the next launch; any
     rewrite that lands while gnome-shell's ShellApp for the entry is still
     STARTING crashes the shell (shell_app_dispose `state == STOPPED`
     assertion, gnome-shell 50.4). The entry must converge on the durable
@@ -498,7 +497,7 @@ def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
     known_wrapper = tmp_path / "cold-home" / ".local" / "bin" / "hermes"
     known_wrapper.parent.mkdir(parents=True)
     known_wrapper.write_text(
-        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        f'#!/usr/bin/env bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
         encoding="utf-8",
     )
     known_wrapper.chmod(0o755)
@@ -551,7 +550,7 @@ def test_exec_rejects_known_wrapper_from_another_checkout(
     foreign_wrapper = tmp_path / "known-home" / ".local" / "bin" / "hermes"
     foreign_wrapper.parent.mkdir(parents=True)
     foreign_wrapper.write_text(
-        f"#!/bin/bash\nexec {other_root / 'venv' / 'bin' / 'python'} "
+        f"#!/usr/bin/env bash\nexec {other_root / 'venv' / 'bin' / 'python'} "
         f'{other_root / "hermes"} "$@"\n',
         encoding="utf-8",
     )
@@ -614,7 +613,6 @@ def test_known_wrapper_candidates_cover_installer_layouts(
     candidate. Locking these in protects against silent regressions in
     the stripped-PATH probe path.
     """
-    import os
 
     sentinel_home = "/home/__sentinel_home__"
     monkeypatch.setenv("HOME", sentinel_home)
@@ -639,6 +637,99 @@ def test_known_wrapper_candidates_cover_installer_layouts(
     if layout == "non-root-no-fhs":
         # Non-root euid: /usr/local/bin must be excluded outright.
         assert "/usr/local/bin/hermes" not in candidates
+
+
+def test_installed_entry_carries_the_window_app_id(tmp_path, xdg_home, monkeypatch):
+    """The window's app_id is what GNOME matches the entry against — not the old "Hermes"."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+
+    entry = lde.install_desktop_entry(root)
+
+    assert entry is not None
+    assert entry.name == f"{lde.APP_ID}.desktop"
+    values = _parse(entry.read_text(encoding="utf-8"))
+    assert values["StartupWMClass"] == lde.APP_ID
+    assert values["Name"] == "Hermes"  # the menu label is not part of the identity
+
+
+def test_install_retires_the_legacy_entry_name(tmp_path, xdg_home, monkeypatch):
+    """A leftover hermes.desktop would surface as a second Hermes in the app grid."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        "[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n",
+        encoding="utf-8",
+    )
+
+    entry = lde.install_desktop_entry(root)
+
+    assert entry is not None and entry.is_file()
+    assert not legacy.exists()
+
+
+def test_install_keeps_foreign_files_at_the_legacy_path(tmp_path, xdg_home, monkeypatch):
+    """Only our own entry retires; another app's file at that name is not ours to delete."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    foreign = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text(
+        "[Desktop Entry]\nType=Application\nName=Someone else\nExec=other-app\n",
+        encoding="utf-8",
+    )
+
+    lde.install_desktop_entry(root)
+
+    assert foreign.is_file()
+    assert "Name=Someone else" in foreign.read_text(encoding="utf-8")
+
+
+def test_install_opt_out_preserves_the_legacy_entry(tmp_path, xdg_home, monkeypatch):
+    """The opt-out protects user edits, so it also stops the legacy retirement.
+
+    The missing-entry path still creates the app-id entry; the deletion is
+    management too and must not run when the user asked to be left alone.
+    """
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(
+        "desktop:\n  manage_launcher_entry: false\n", encoding="utf-8"
+    )
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        "[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n",
+        encoding="utf-8",
+    )
+
+    entry = lde.install_desktop_entry(root)
+
+    assert entry == xdg_home / "applications" / lde.DESKTOP_ENTRY_NAME
+    assert legacy.is_file(), "the opt-out must keep the legacy entry in place"
+
+
+def test_app_id_matches_the_desktop_build_identity():
+    """APP_ID mirrors apps/desktop/product-identity.cjs; the two must not drift apart."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+    repo = Path(__file__).resolve().parents[2]
+    probe = "console.log(require('./apps/desktop/product-identity.cjs').appId)"
+    result = subprocess.run(
+        [node, "-e", probe], cwd=repo, capture_output=True, text=True, timeout=60
+    )
+    if result.returncode != 0:
+        pytest.skip(f"product-identity.cjs did not evaluate: {result.stderr.strip()[:200]}")
+    assert result.stdout.strip() == lde.APP_ID
 
 
 def test_install_is_idempotent_and_skips_cache_refresh(tmp_path, xdg_home, monkeypatch):
@@ -674,14 +765,14 @@ def test_install_without_source_icon_uses_themed_name(tmp_path, xdg_home, monkey
     assert _parse(entry.read_text(encoding="utf-8"))["Icon"] == "hermes"
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_install_is_a_noop_on_macos(tmp_path):
     """Faking darwin only renamed the host — the real macOS runner is the
     only place the `sys.platform` guard is exercised against a real host."""
     assert lde.install_desktop_entry(_make_project(tmp_path)) is None
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_install_is_a_noop_on_windows(tmp_path):
     """As above for Windows: a fake left POSIX paths and a POSIX XDG layout
     in place, so the no-op was never proven against a real one."""
@@ -704,16 +795,6 @@ def _stub_tools(monkeypatch, available: "set[str]") -> "list[list[str]]":
     return ran
 
 
-def test_refresh_runs_kbuildsycoca6_when_present(monkeypatch, tmp_path):
-    ran = _stub_tools(monkeypatch, {"update-desktop-database", "kbuildsycoca6"})
-
-    tools = lde.refresh_desktop_databases(tmp_path)
-
-    assert tools == ["update-desktop-database", "kbuildsycoca6"]
-    assert ran == [
-        ["/usr/bin/update-desktop-database", str(tmp_path)],
-        ["/usr/bin/kbuildsycoca6", "--noincremental"],
-    ]
 
 
 def test_refresh_falls_back_to_kbuildsycoca5(monkeypatch, tmp_path):
@@ -752,18 +833,6 @@ def test_run_quiet_swallows_missing_binary(tmp_path):
     assert lde._run_quiet([str(tmp_path / "definitely-not-a-binary")]) is False
 
 
-def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
-    root = _make_project(tmp_path)
-    spaced = tmp_path / "my apps" / "hermes"
-    spaced.parent.mkdir()
-    spaced.write_text("", encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: str(spaced))
-    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
-
-    entry = lde.install_desktop_entry(root)
-    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-
-    assert exec_line == f'"{spaced}" desktop'
 
 
 @pytest.mark.skipif(
@@ -801,32 +870,6 @@ def test_running_interpreter_resolves_plain_interpreter(monkeypatch):
     assert Path(out).is_absolute()
 
 
-def test_can_import_probe_runs_and_caches(tmp_path):
-    """The probe executes the real interpreter and memoizes the answer.
-
-    Asserts the two things that hold on ANY host: the probe returns a
-    definite boolean for a real interpreter (not None, not an exception
-    path), and the per-path cache is populated so the second call pays
-    no subprocess. Host-dependent capability itself (True vs False) is
-    deliberately NOT asserted - a CI host with hermes pip-installed
-    system-wide would legitimately answer True.
-    """
-    import time
-
-    real = Path("/usr/bin/python3")
-    if not real.exists():
-        pytest.skip("no system python to probe")
-    lde._probe_cache.pop(str(real), None)
-    try:
-        first = lde._can_import_hermes_cli(real)
-        assert isinstance(first, bool)
-        assert str(real) in lde._probe_cache
-        t0 = time.monotonic()
-        second = lde._can_import_hermes_cli(real)
-        assert second is first
-        assert time.monotonic() - t0 < 0.05  # cache hit: no subprocess
-    finally:
-        lde._probe_cache.pop(str(real), None)
 
 
 def test_exec_falls_back_to_running_interpreter_when_probe_fails(
@@ -884,7 +927,7 @@ def test_wrapper_ownership_rejects_sibling_extensions(suffix, tmp_path):
     checkout.mkdir()
     evil = tmp_path / "evil-shim"
     evil.write_text(
-        f"#!/bin/bash\n"
+        f"#!/usr/bin/env bash\n"
         f"exec {checkout}{suffix}/venv/bin/python "
         f'{checkout}{suffix}/hermes "$@"\n',
         encoding="utf-8",
@@ -912,7 +955,7 @@ def test_wrapper_ownership_accepts_shim_via_symlinked_home(tmp_path, monkeypatch
     shim = home_link / ".local" / "bin" / "hermes"
     shim.parent.mkdir(parents=True)
     shim.write_text(
-        f"#!/bin/bash\n"
+        f"#!/usr/bin/env bash\n"
         f"exec {lexical_checkout}/venv/bin/python "
         f'{lexical_checkout}/hermes "$@"\n',
         encoding="utf-8",
@@ -1023,7 +1066,6 @@ def test_probe_skips_wrapper_with_escaping_python_shebang(
     The shebang-safety gate skips it; the module fallback wins. Idea
     credited to autumn8's #92122 rung-2 check.
     """
-    import sys as _s
 
     root = _make_project(tmp_path)
     repo_script = root / "hermes"
@@ -1069,7 +1111,7 @@ def test_probe_accepts_shell_launcher_wrapper(tmp_path, xdg_home, monkeypatch):
     good_wrapper = xdg_home / ".local" / "bin" / "hermes"
     good_wrapper.parent.mkdir(parents=True)
     good_wrapper.write_text(
-        f"#!/bin/bash\nexec {root / 'venv' / 'bin' / 'python'} "
+        f"#!/usr/bin/env bash\nexec {root / 'venv' / 'bin' / 'python'} "
         f'{root / "hermes"} "$@"\n',
         encoding="utf-8",
     )

@@ -10,6 +10,7 @@ tries QQ's free ``asr_refer_text`` first, then the configured STT provider.
 
 from __future__ import annotations
 
+from pm import install_hint
 import asyncio
 import contextlib
 import json
@@ -188,8 +189,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Authenticate, obtain gateway URL, and open the WebSocket. ``is_reconnect``
         is accepted for interface conformance only (QQBot has no server-side update queue)."""
         for ok, code, what, hint in (
-            (AIOHTTP_AVAILABLE, "qq_missing_dependency", "aiohttp not installed", ". Run: pip install aiohttp"),
-            (HTTPX_AVAILABLE, "qq_missing_dependency", "httpx not installed", ". Run: pip install httpx"),
+            (AIOHTTP_AVAILABLE, "qq_missing_dependency", "aiohttp not installed",
+             f". Run: {install_hint('messaging')}"),
+            (HTTPX_AVAILABLE, "qq_missing_dependency", "httpx not installed", ". Run: hermes pm repair"),
             (self._app_id and self._client_secret, "qq_missing_credentials",
              "QQ_APP_ID and QQ_CLIENT_SECRET are required", "")):
             if not ok:
@@ -1134,7 +1136,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             import pilk
         except ImportError:
-            logger.warning("[%s] pilk not installed — cannot decode SILK audio. Run: pip install pilk", self._log_tag)
+            logger.warning("[%s] pilk not installed — cannot decode SILK audio. Run: "
+                           f"{install_hint('silk')}", self._log_tag)
             return None
 
         silk_path = src_path.rsplit(".", 1)[0] + ".silk"
@@ -1669,6 +1672,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             with contextlib.suppress(ValueError, TypeError):
                 return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
         return datetime.now(tz=timezone.utc)
+    
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

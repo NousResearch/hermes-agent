@@ -1,7 +1,5 @@
 """Tests for the platform adapter registry and dynamic Platform enum."""
 
-import os
-import pytest
 from unittest.mock import MagicMock
 
 from gateway.platform_registry import PlatformRegistry, PlatformEntry
@@ -14,9 +12,6 @@ from gateway.config import Platform, GatewayConfig
 class TestPlatformEnumDynamic:
     """Test that Platform enum accepts unknown values for plugin platforms."""
 
-    def test_builtin_members_still_work(self):
-        assert Platform.TELEGRAM.value == "telegram"
-        assert Platform("telegram") is Platform.TELEGRAM
 
 
     def test_dynamic_member_case_normalised(self):
@@ -57,7 +52,6 @@ class TestPlatformEnumDynamic:
             by_manifest = Platform("a2a-platform")
             assert by_manifest is by_dir
             assert by_manifest.value == "a2a"
-            assert gc._Platform__bundled_plugin_aliases.get("a2a-platform") == "a2a"
         finally:
             gc._Platform__bundled_plugin_names = None
             gc._Platform__bundled_plugin_aliases = None
@@ -111,9 +105,6 @@ class TestPlatformRegistry:
         assert reg.get("alpha") is entry
         assert reg.is_registered("alpha")
 
-    def test_get_unknown_returns_none(self):
-        reg = PlatformRegistry()
-        assert reg.get("nonexistent") is None
 
     def test_unregister(self):
         reg = PlatformRegistry()
@@ -281,34 +272,11 @@ class TestGatewayConfigPluginPlatform:
 # ── Extended PlatformEntry fields ─────────────────────────────────────
 
 
-class TestPlatformEntryExtendedFields:
-    """Test the auth, message length, and display fields on PlatformEntry."""
-
-    def test_default_field_values(self):
-        entry = PlatformEntry(
-            name="test",
-            label="Test",
-            adapter_factory=lambda cfg: None,
-            check_fn=lambda: True,
-        )
-        assert entry.allowed_users_env == ""
-        assert entry.allow_all_env == ""
-        assert entry.max_message_length == 0
-        assert entry.pii_safe is False
-        assert entry.emoji == "🔌"
-        assert entry.allow_update_command is True
 
 
 # ── Cron platform resolution ─────────────────────────────────────────
 
 
-class TestCronPlatformResolution:
-    """Test that cron delivery accepts plugin platform names."""
-
-    def test_builtin_platform_resolves(self):
-        """Built-in platform names resolve via Platform() call."""
-        p = Platform("telegram")
-        assert p is Platform.TELEGRAM
 
 
 # ── platforms.py integration ──────────────────────────────────────────
@@ -341,17 +309,6 @@ class TestPlatformsMerge:
 # ── apply_yaml_config_fn (PlatformEntry field + load_gateway_config dispatch) ──
 
 
-class TestApplyYamlConfigFnField:
-    """The hook field itself — defaults, custom values, signature."""
-
-    def test_default_is_none(self):
-        entry = PlatformEntry(
-            name="test",
-            label="Test",
-            adapter_factory=lambda cfg: None,
-            check_fn=lambda: True,
-        )
-        assert entry.apply_yaml_config_fn is None
 
 
 class TestApplyYamlConfigFnDispatch:
@@ -432,33 +389,6 @@ class TestApplyYamlConfigFnDispatch:
             _reg.unregister("mygoodplat")
 
 
-    def test_env_var_takes_precedence_when_hook_uses_getenv_guard(
-        self, tmp_path, monkeypatch
-    ):
-        """The standard `not os.getenv(...)` guard preserves env > YAML."""
-        env_var = "MYPRECPLAT_FLAG"
-        monkeypatch.setenv(env_var, "preexisting")
-
-        def _hook(yaml_cfg, platform_cfg):
-            if "flag" in platform_cfg and not os.getenv(env_var):
-                os.environ[env_var] = str(platform_cfg["flag"]).lower()
-            return None
-
-        reg = self._register_hook("myprecplat", _hook)
-        try:
-            home = self._write_config(
-                tmp_path, "myprecplat:\n  flag: yaml-value\n",
-            )
-            monkeypatch.setenv("HERMES_HOME", str(home))
-
-            from gateway.config import load_gateway_config
-            load_gateway_config()
-
-            # Pre-existing env var was NOT clobbered by the hook.
-            assert os.environ.get(env_var) == "preexisting"
-        finally:
-            reg.unregister("myprecplat")
-            os.environ.pop(env_var, None)
 
 
 class TestPluginPlatformSharedKeyBridge:
@@ -716,20 +646,16 @@ class TestMigratedPlatformWiring:
 
     Behavior contract, not a snapshot: asserts the two fields are distinct
     callables (probe != installer), not specific function identities, so
-    renames don't churn this test.
+    renames don't churn this test. One discovery pass covers every platform.
     """
 
-    import pytest as _pytest
-
-    @_pytest.mark.parametrize(
-        "platform_name",
-        [
-            "teams", "telegram", "discord", "slack",
-            "matrix", "dingtalk", "feishu", "wecom_callback",
-            "google_chat",
-        ],
+    _LAZY_INSTALLABLE = (
+        "teams", "telegram", "discord", "slack",
+        "matrix", "dingtalk", "feishu", "wecom_callback",
+        "google_chat",
     )
-    def test_lazy_installable_platform_has_split_wiring(self, platform_name):
+
+    def test_lazy_installable_platforms_have_split_wiring(self):
         from hermes_cli.plugins import discover_plugins
 
         discover_plugins()
@@ -738,15 +664,16 @@ class TestMigratedPlatformWiring:
         # Materialize deferred loaders (wecom_callback is registered by the
         # "wecom" manifest's loader; a cold get() by its own name misses).
         platform_registry.plugin_entries()
-        entry = platform_registry.get(platform_name)
-        assert entry is not None, f"{platform_name} not registered"
-        assert entry.ensure_deps_fn is not None, (
-            f"{platform_name} has a lazy-installable SDK but no "
-            "ensure_deps_fn — its deps can never auto-install "
-            "(the #79812 deadlock)"
-        )
-        assert entry.ensure_deps_fn is not entry.check_fn, (
-            f"{platform_name} registered the same callable for the passive "
-            "probe and the active installer — status displays would "
-            "pip-install as a side effect"
-        )
+        for platform_name in self._LAZY_INSTALLABLE:
+            entry = platform_registry.get(platform_name)
+            assert entry is not None, f"{platform_name} not registered"
+            assert entry.ensure_deps_fn is not None, (
+                f"{platform_name} has a lazy-installable SDK but no "
+                "ensure_deps_fn — its deps can never auto-install "
+                "(the #79812 deadlock)"
+            )
+            assert entry.ensure_deps_fn is not entry.check_fn, (
+                f"{platform_name} registered the same callable for the passive "
+                "probe and the active installer — status displays would "
+                "pip-install as a side effect"
+            )

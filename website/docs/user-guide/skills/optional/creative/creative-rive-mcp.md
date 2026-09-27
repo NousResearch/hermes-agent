@@ -1,16 +1,32 @@
 ---
-name: rive-mcp
-description: "Author, inspect, and integrate interactive Rive graphics."
-version: 1.1.0
-author: "Brooklyn Nicholson (OutThisLife), Chris Mish (cygnostik, prodyn.ai), Hermes Agent"
-license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    category: creative
-    tags: [Rive, Animation, MCP, Data Binding, State Machines, Luau, Accessibility]
-    related_skills: []
+title: "Rive Mcp — Author, inspect, and integrate interactive Rive graphics"
+sidebar_label: "Rive Mcp"
+description: "Author, inspect, and integrate interactive Rive graphics"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Rive Mcp
+
+Author, inspect, and integrate interactive Rive graphics.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Optional — install with `hermes skills install official/creative/rive-mcp` |
+| Path | `optional-skills/creative/rive-mcp` |
+| Version | `1.1.0` |
+| Author | Brooklyn Nicholson (OutThisLife), Chris Mish (cygnostik, prodyn.ai), Hermes Agent |
+| License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `Rive`, `Animation`, `MCP`, `Data Binding`, `State Machines`, `Luau`, `Accessibility` |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # Rive Skill
 

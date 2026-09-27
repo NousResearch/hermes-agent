@@ -71,4 +71,21 @@ def test_delete_sessions_bulk_skips_active_write_guards(tmp_path):
     assert db.get_session("bulk-idle") is None
 
     db.release_session_turn_lease("bulk-active", turn_holder)
+
+    # Delegate children cascade with their root, so a guarded child protects the root too:
+    # single delete refuses, bulk delete skips the root and never cascades the guarded child away.
+    db.create_session("deleg-root", source="test")
+    db.create_session(
+        "deleg-child", source="test", parent_session_id="deleg-root",
+        model_config={"_delegate_from": "deleg-root"},
+    )
+    child_holder = f"pid={os.getpid()}:turn=child"
+    assert db.try_acquire_session_turn_lease("deleg-child", child_holder, ttl_seconds=300.0) is True
+    with pytest.raises(SessionActiveWriteGuardError):
+        db.delete_session("deleg-root", exclude_active_write_guards=True)
+    skipped = []
+    assert db.delete_sessions(["deleg-root"], exclude_active_write_guards=True, skipped_ids=skipped) == 0
+    assert skipped == ["deleg-root"]
+    assert db.get_session("deleg-root") is not None and db.get_session("deleg-child") is not None
+    db.release_session_turn_lease("deleg-child", child_holder)
     db.close()

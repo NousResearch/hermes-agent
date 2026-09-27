@@ -1576,11 +1576,12 @@ class SessionSessionsMixin:
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
-            if exclude_active_write_guards and self._write_guards_reject(
-                conn, session_id, allow_closed_compression_parent=True,
+            if exclude_active_write_guards and self._guarded_ids(
+                conn, [session_id, *_collect_delegate_child_ids(conn, [session_id])],
             ):
+                # Delegate children cascade with the root, so a guard on any of them refuses too.
                 raise SessionActiveWriteGuardError(
-                    f"session '{session_id}' has an active turn lease or compression lock"
+                    f"session '{session_id}' (or a delegate child) has an active turn lease or compression lock"
                 )
             if expected_ids is not None and expected_ids != {
                 session_id, *_collect_delegate_child_ids(conn, [session_id])
@@ -1632,6 +1633,11 @@ class SessionSessionsMixin:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
 
+    def _guarded_ids(self, conn, ids: List[str]) -> set:
+        """Ids in *ids* protected by a live turn lease / compression lock. Idle compression-ended
+        parents are closed, not live, so they are not guarded (matches prune)."""
+        return {sid for sid in ids if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
+
     def delete_sessions(
         self, session_ids: List[str], sessions_dir: Optional[Path] = None,
         exclude_active_write_guards: bool = False, skipped_ids: Optional[List[str]] = None,
@@ -1651,9 +1657,11 @@ class SessionSessionsMixin:
             if not existing:
                 return 0
             if exclude_active_write_guards:
+                # A root is skipped when it or any delegate child it would cascade is guarded, so the
+                # cascade below never deletes a guarded row reported back as kept.
                 active_ids = {
                     sid for sid in existing
-                    if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)
+                    if self._guarded_ids(conn, [sid, *_collect_delegate_child_ids(conn, [sid])])
                 }
                 existing = [sid for sid in existing if sid not in active_ids]
                 if skipped_ids is not None:

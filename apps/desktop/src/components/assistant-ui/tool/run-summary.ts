@@ -2,7 +2,15 @@ import { translateNow } from '@/i18n'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { firstStringField } from '@/lib/text'
 
-import { fileEditBasename, isFileEditTool, parseMaybeObject, toolCallFailed } from './fallback-model'
+import {
+  compactPreview,
+  fileEditBasename,
+  findFirstUrl,
+  hostnameOf,
+  isFileEditTool,
+  parseMaybeObject,
+  toolCallFailed
+} from './fallback-model'
 import { skillActivityTitle } from './skill-activity'
 
 /**
@@ -23,48 +31,75 @@ export function isToolCallPart<T extends { type: string }>(part: T): part is Ext
   return part.type === 'tool-call'
 }
 
-type RunCategory = 'delegate' | 'edit' | 'explore' | 'other' | 'run'
+type RunCategory =
+  'analyze' | 'browse' | 'delegate' | 'edit' | 'explore' | 'interact' | 'other' | 'read' | 'run' | 'search'
 
 // Clause order is fixed so the same run always reads the same way, whichever
 // category happens to be live.
-const CATEGORY_ORDER: readonly RunCategory[] = ['edit', 'explore', 'run', 'delegate', 'other']
+const CATEGORY_ORDER: readonly RunCategory[] = [
+  'edit',
+  'explore',
+  'search',
+  'read',
+  'browse',
+  'interact',
+  'analyze',
+  'run',
+  'delegate',
+  'other'
+]
 
 const CATEGORY_COPY: Record<RunCategory, { noun: [string, string]; past: string; present: string }> = {
+  analyze: { noun: ['image', 'images'], past: 'Analyzed', present: 'Analyzing' },
+  browse: { noun: ['page', 'pages'], past: 'Opened', present: 'Opening' },
   delegate: { noun: ['task', 'tasks'], past: 'Delegated', present: 'Delegating' },
   edit: { noun: ['file', 'files'], past: 'Edited', present: 'Editing' },
   explore: { noun: ['file', 'files'], past: 'Explored', present: 'Exploring' },
+  interact: { noun: ['browser action', 'browser actions'], past: 'Performed', present: 'Performing' },
   other: { noun: ['tool', 'tools'], past: 'Used', present: 'Using' },
-  run: { noun: ['command', 'commands'], past: 'Ran', present: 'Running' }
+  read: { noun: ['page', 'pages'], past: 'Read', present: 'Reading' },
+  run: { noun: ['command', 'commands'], past: 'Ran', present: 'Running' },
+  search: { noun: ['query', 'queries'], past: 'Searched', present: 'Searching' }
 }
 
-const EXPLORE_TOOLS = new Set([
-  'list_files',
-  'read_file',
-  'search_files',
-  'session_search_recall',
-  'vision_analyze',
-  'web_extract',
-  'web_search'
-])
+// Routed by name so a web search never counts as an explored file (#123085).
+// Browser tools other than navigation are interaction, not page loads: a
+// screenshot or a click fetches nothing, so they must not be counted as pages.
+const TOOL_CATEGORY: Record<string, RunCategory> = {
+  browser_navigate: 'browse',
+  delegate_task: 'delegate',
+  execute_code: 'run',
+  list_files: 'explore',
+  read_file: 'explore',
+  search_files: 'explore',
+  session_search_recall: 'search',
+  terminal: 'run',
+  vision_analyze: 'analyze',
+  web_extract: 'read',
+  web_search: 'search'
+}
 
 function toolCategory(toolName: string): RunCategory {
   if (isFileEditTool(toolName)) {
     return 'edit'
   }
 
-  if (toolName === 'terminal' || toolName === 'execute_code') {
-    return 'run'
+  return TOOL_CATEGORY[toolName] ?? (toolName.startsWith('browser_') ? 'interact' : 'other')
+}
+
+/**
+ * How many things one call acted on. One call is one thing everywhere except
+ * `web_extract`, which takes up to five URLs — counting its calls would report
+ * five fetched pages as one.
+ */
+function unitCount(tool: ToolCallLike): number {
+  if (tool.toolName !== 'web_extract') {
+    return 1
   }
 
-  if (toolName === 'delegate_task') {
-    return 'delegate'
-  }
+  const urls = parseMaybeObject(tool.args).urls
 
-  if (EXPLORE_TOOLS.has(toolName) || toolName.startsWith('browser_')) {
-    return 'explore'
-  }
-
-  return 'other'
+  return Array.isArray(urls) && urls.length > 0 ? urls.length : 1
 }
 
 function isPending(tool: ToolCallLike): boolean {
@@ -87,9 +122,28 @@ export function toolPresentVerb(toolName: string): string {
 /** The thing a tool acted on, as the header should name it. */
 function toolTarget(tool: ToolCallLike): string {
   const args = parseMaybeObject(tool.args)
+  const category = toolCategory(tool.toolName)
 
-  if (toolCategory(tool.toolName) === 'run') {
+  if (category === 'run') {
     return summarizeShellCommand(firstStringField(args, ['command', 'code']))
+  }
+
+  // A lone search names what its own row names — the quoted query for
+  // web_search — so the summary and the rows underneath it read as the same
+  // work. The real schema key is `query`; `search_term` is a tolerated legacy
+  // spelling.
+  if (category === 'search') {
+    const query = firstStringField(args, ['query', 'search_term'])
+
+    return query ? `“${compactPreview(query, 48)}”` : ''
+  }
+
+  // A page read or a navigation names its host the way its own row does, so a
+  // lone extract reads "Read example.com/docs" right above a row saying the
+  // same. findFirstUrl walks the args, so the real `urls` list shape and the
+  // legacy string-`url` shape both name a host.
+  if (category === 'read' || category === 'browse') {
+    return hostnameOf(findFirstUrl(args))
   }
 
   const path = firstStringField(args, ['path', 'file', 'filepath'])
@@ -106,13 +160,14 @@ function toolTarget(tool: ToolCallLike): string {
 function clause(category: RunCategory, tools: ToolCallLike[], live: boolean): string {
   const copy = CATEGORY_COPY[category]
   const verb = live ? copy.present : copy.past
-  const target = tools.length === 1 ? toolTarget(tools[0]) : ''
+  const count = tools.reduce((sum, tool) => sum + unitCount(tool), 0)
+  const target = count === 1 && category !== 'interact' ? toolTarget(tools[0]) : ''
 
   if (target && (live || category !== 'run')) {
     return `${verb} ${target}`
   }
 
-  return `${verb} ${tools.length} ${copy.noun[tools.length === 1 ? 0 : 1]}`
+  return `${verb} ${count} ${copy.noun[count === 1 ? 0 : 1]}`
 }
 
 function lowerFirst(text: string): string {
@@ -137,7 +192,7 @@ function lowerFirst(text: string): string {
 export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean): string {
   // Which clause narrates in the present tense: normally the outstanding call,
   // but sequential calls leave gaps where the run is still going and nothing is
-  // pending. The most recent call covers those, and it's the one the ticker is
+  // pending. The most recent call covers these, and it's the one the ticker is
   // showing anyway.
   const narrating = live ? (tools.find(isPending) ?? tools.at(-1)) : undefined
   const liveCategory = narrating ? toolCategory(narrating.toolName) : null

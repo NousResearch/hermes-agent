@@ -848,6 +848,40 @@ class TestReapUnsupervisedGatewayOrphansWindows:
 
 
 
+class TestReaperStartupGrace:
+    """``min_age_s`` spares a gateway still claiming gateway.pid/lock (#122533).
+
+    A booting gateway is argv-visible before it is record-visible; reaping it writes
+    a planned-stop marker it consumes on startup and exits 0 with no supervisor. An
+    undeterminable age must read as too young, never widen the reap.
+    """
+
+    def test_grace_spares_booting_and_unknown_age_but_reaps_stale_orphan(self, monkeypatch):
+        booting, unknown, stale = 55501, 55502, 99998
+        ages = {booting: 2.0, stale: 900.0}
+
+        def _age(pid):
+            if pid not in ages:
+                raise RuntimeError("probe failed")
+            return ages[pid]
+
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=True: None)
+        monkeypatch.setattr(
+            gateway, "find_gateway_pids",
+            lambda exclude_pids=None: [p for p in (booting, unknown, stale) if p not in (exclude_pids or set())],
+        )
+        monkeypatch.setattr("hermes_cli.dashboard_procs._process_age_seconds", _age)
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        marked = []
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked.append)
+
+        assert gateway._reap_unsupervised_gateway_orphans(min_age_s=180.0) is True
+        assert marked == [stale]
+
+
 class TestReaperCandidateIsSupervisorOwned:
     """Regression for the Windows pidfile-less supervisor-owned case (#83683).
 

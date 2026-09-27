@@ -141,6 +141,17 @@ describe('MessagingView profile scope', () => {
   })
 })
 
+describe('MessagingView enable switch', () => {
+  it('labels the enable switch with the platform state', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ enabled: true })] })
+
+    await renderMessaging()
+
+    const toggle = await screen.findByRole('switch', { name: 'Disable Microsoft Teams' })
+    expect(toggle.closest('label')?.textContent).toBe('Enabled')
+  })
+})
+
 describe('MessagingView setup-guide link', () => {
   it('hides the setup-guide button for a plugin platform with no docs URL', async () => {
     // Teams (and other plugin platforms) ship an empty docs_url. Rendering an

@@ -81,7 +81,11 @@ on:
         description: 'Job timeout. The install leg does real toolchain work and the update leg a full Electron rebuild.'
         required: false
         type: number
-        default: 60
+        # Green legs take up to ~40 min; from v2026.9.24 the update alone runs the venv->PM
+        # takeover plus npm ci and a Desktop rebuild (24 min in 108542725043, 11 of them one
+        # npm ci), and the app-update driver may wait 30 min. pty-run.py's deadline and the
+        # per-step budgets bound real hangs, so the job cap only has to clear a slow runner.
+        default: 90
       bundle-manifest-url:
         type: string
         default: ''

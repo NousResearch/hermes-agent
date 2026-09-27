@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.secret_scope import set_multiplex_active
-from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
+from gateway.config import Platform, PlatformConfig
 from gateway.run import _profile_runtime_scope
-from plugins.platforms.matrix.adapter import MatrixAdapter, _apply_yaml_config
+from plugins.platforms.matrix.adapter import MatrixAdapter
 
 
 @pytest.mark.asyncio
@@ -107,20 +107,17 @@ async def test_reply_modes_control_split_chunks_without_losing_thread_relations(
         assert (plain, threaded) == (expected[mode], expected_thread[mode])
 
 
-def test_yaml_off_mode_keeps_a_valid_fallback_on_threaded_media(monkeypatch):
-    monkeypatch.delenv("MATRIX_REPLY_TO_MODE", raising=False)
-    seeded = _apply_yaml_config({}, {"reply_to_mode": False})
-    config = GatewayConfig()
-    config.platforms[Platform.MATRIX] = PlatformConfig(
+def test_off_mode_keeps_a_valid_fallback_on_threaded_media():
+    config = PlatformConfig(
         enabled=True,
         token="syt_test",
+        reply_to_mode="off",
         extra={
             "homeserver": "https://matrix.example.org",
             "user_id": "@bot:example.org",
         },
     )
-    _apply_env_overrides(config)
-    adapter = MatrixAdapter(config.platforms[Platform.MATRIX])
+    adapter = MatrixAdapter(config)
     content = {"msgtype": "m.image", "body": "photo"}
 
     adapter._apply_relation_metadata(
@@ -130,8 +127,7 @@ def test_yaml_off_mode_keeps_a_valid_fallback_on_threaded_media(monkeypatch):
         metadata={"thread_id": "$root"},
     )
 
-    assert (seeded, adapter._reply_to_mode, content) == (
-        {"reply_to_mode": "off"},
+    assert (adapter._reply_to_mode, content) == (
         "off",
         {
             "msgtype": "m.image",
@@ -178,4 +174,28 @@ def test_reply_mode_follows_each_profile_config_in_multiplex(monkeypatch, tmp_pa
         ("all", "all"),
         ("off", "off"),
         ("all", "all"),
+    )
+
+
+@pytest.mark.parametrize(("env_override", "expected"), [(None, "off"), ("all", "all")])
+def test_reply_mode_uses_highest_priority_yaml_block(
+    monkeypatch, tmp_path, env_override, expected
+):
+    from gateway.config import load_gateway_config
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n  platforms:\n    matrix:\n      reply_to_mode: all\n"
+        "platforms:\n  matrix:\n    reply_to_mode: false\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    if env_override is None:
+        monkeypatch.delenv("MATRIX_REPLY_TO_MODE", raising=False)
+    else:
+        monkeypatch.setenv("MATRIX_REPLY_TO_MODE", env_override)
+
+    config = load_gateway_config().platforms[Platform.MATRIX]
+
+    assert (config.reply_to_mode, MatrixAdapter(config)._reply_to_mode) == (
+        expected,
+        expected,
     )

@@ -76,6 +76,7 @@ def transition(tmp_path):
     (package / "venv_sync.py").write_text(
         "from hermes_cli.probe import event\n"
         "publish_launchers = lambda root: event('launchers')\n"
+        "collect_superseded_generations = lambda root: event('collect')\n"
         "refuse_foreign_owned_venv = lambda root: None\n"
         "from pathlib import Path\n"
         "import os\n"
@@ -201,6 +202,9 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     events = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
     by_name = {event["name"]: event for event in events}
     assert by_name["activate"]["pid"] == by_name["build"]["pid"]
+    assert by_name["prepare"]["pid"] == by_name["collect"]["pid"]
+    names = [event["name"] for event in events]
+    assert names.index("prepare") < names.index("collect") < names.index("activate")
     assert by_name["prepare"]["pid"] != by_name["build"]["pid"]
     assert Path(by_name["build"]["python"]).is_relative_to(root.parent / "selected-python")
     assert by_name["build"]["pid"] == by_name["maintenance"]["pid"] == by_name["restart"]["pid"]
@@ -392,6 +396,8 @@ def test_prepare_failure_preserves_correlated_pm_receipt(transition, monkeypatch
     assert receipt["update_id"] == request["receipt"]["update_id"]
     assert receipt["pm_sync_outcome"] == "refused"
     assert receipt["pm_refusal"] == {"reason": "dependency refused"}
+    events = [json.loads(line)["name"] for line in (root / "events.jsonl").read_text().splitlines()]
+    assert "collect" not in events
 
 
 def test_bootstrap_does_not_initialize_old_site_packages(transition, tmp_path, monkeypatch):

@@ -159,6 +159,35 @@ def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, m
     assert config.read_bytes() == config_before
 
 
+def test_repair_dependencies_collects_only_after_success(tmp_path, monkeypatch):
+    from hermes_cli import venv_sync
+    from pm import client, paths, recovery
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    events = []
+    monkeypatch.setattr(paths, "repo_root", lambda: root)
+    monkeypatch.setattr(
+        client, "sync_venv", lambda **kwargs: events.append(("sync", kwargs)))
+    monkeypatch.setattr(
+        venv_sync, "collect_superseded_generations",
+        lambda project: events.append(("collect", Path(project))))
+
+    recovery.repair_dependencies(root)
+
+    assert events == [("sync", {"repair": True}), ("collect", root)]
+
+    def fail_sync(**kwargs):
+        raise RuntimeError("repair failed")
+
+    monkeypatch.setattr(client, "sync_venv", fail_sync)
+    monkeypatch.setattr(
+        venv_sync, "collect_superseded_generations",
+        lambda _project: pytest.fail("failed repair must not collect generations"))
+    with pytest.raises(RuntimeError, match="repair failed"):
+        recovery.repair_dependencies(root)
+
+
 def test_uncertain_profile_selection_skips_sync_but_not_admission_or_recorded_repair(tmp_path, monkeypatch, recovery_graph, caplog):
     import pm.paths as paths
     from hermes_cli.plugins_admission import AdmissionRefused, admit_plugin_set_change

@@ -17,6 +17,7 @@ from typing import Awaitable, Callable
 
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
+from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.sizefmt import format_bytes
 
 # ── Plugin context-reference provider API ────────────────────────────────────
@@ -296,21 +297,23 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
     if is_folder:
         listing = _build_folder_listing(path, cwd, display_base=allowed_root)
         return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     try:
-        # Keep admission through every sniff, line count and text read: a connection
-        # can start between a check and a later open otherwise.
+        # Keep admission through every sniff, stat and text read (a connection can start
+        # between a check and a later open otherwise), but release it before token
+        # counting/formatting: the registry lock blocks every tracked connect/close.
         with offline_file_access(path, what="preview context reference"):
-            return _expand_file_reference(ref, path, max_inline_tokens)
+            raw = _read_file_reference(ref, path, max_inline_tokens)
     except LiveConnectionError:
         return None, _on_disk_reference_block(
             ref, path, descriptor="live SQLite database file",
             reason="not previewed: raw access would cancel SQLite's POSIX locks.",
             guidance="Do not open this file directly while its database connection is live.",
         )
+    return raw if isinstance(raw, tuple) else _format_file_reference(ref, path, raw, max_inline_tokens)
 
 
-def _expand_file_reference(ref: ContextReference, path: Path, max_inline_tokens: int | None) -> Expansion:
+def _read_file_reference(ref: ContextReference, path: Path, max_inline_tokens: int | None) -> str | Expansion:
+    """Raw file I/O for an @file ref: the text to inline, or an early refusal block."""
     if _is_binary_file(path):
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
@@ -363,6 +366,10 @@ def _expand_file_reference(ref: ContextReference, path: Path, max_inline_tokens:
         if max_inline_tokens is not None and size > max_inline_tokens * CHARS_PER_TOKEN:
             return None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)
         text = path.read_text(encoding="utf-8-sig")
+    return text
+
+
+def _format_file_reference(ref: ContextReference, path: Path, text: str, max_inline_tokens: int | None) -> Expansion:
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
     text_tokens = estimate_tokens_rough(text)
     # Check BEFORE building the fenced block: an oversized file is not going to be
@@ -672,13 +679,12 @@ def _file_metadata(path: Path) -> str:
         size = path.stat().st_size
     except OSError:
         return "unknown size"
-    # A listing line is a summary, not content: past the cap, byte size conveys the
-    # same "how big is this" without a full scan per entry.
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     try:
         # A directory preview inspects each entry separately; the registry lock
         # must cover both its binary sniff and optional line-count read.
         with offline_file_access(path, what="inspect folder entry"):
+            # A listing line is a summary, not content: past the cap, byte size conveys
+            # the same "how big is this" without a full scan per entry.
             if _is_binary_file(path) or size > _LINE_COUNT_MAX_BYTES:
                 return f"{size} bytes"
             with path.open("rb") as fh:

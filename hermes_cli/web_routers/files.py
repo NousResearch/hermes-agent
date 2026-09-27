@@ -25,6 +25,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.sqlite_safe_read import LiveConnectionError, is_live_database_file, offline_file_access
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
     _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
@@ -174,9 +175,22 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
     return target, st
 
 
+def _refuse_live_database(target: Path) -> None:
+    """409 before streaming ``target`` while this process has a live SQLite connection to it.
+
+    ``FileResponse`` opens and closes the file in-process, and that raw close cancels the
+    connection's POSIX locks. The registry lock can't be held across a streamed response
+    (never across an await/yield), so this is a point-in-time admission check."""
+    if is_live_database_file(target):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Refusing to download {target}: a SQLite connection to its database is "
+            "open in this process, and raw file access would cancel its POSIX advisory locks.",
+        )
+
+
 def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
-    """Read (a prefix of) ``target``; 403/400 on failure."""
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+    """Read (a prefix of) ``target``; 403/400 on failure, 409 while a SQLite connection to it is live."""
     try:
         # Keep admission through close; a raw close cancels this process's SQLite locks.
         with offline_file_access(target, what="preview file"):
@@ -404,6 +418,7 @@ def _managed_readable_file(request: Request, path: str) -> tuple[Any, Path, str,
         raise HTTPException(status_code=400, detail="Path is not a file")
     if _is_sensitive_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    _refuse_live_database(target)
     mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     return policy, target, display_path, _MANAGED_FILE_MAX_BYTES, mime_type
 
@@ -740,6 +755,7 @@ async def fs_download(
     path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
+    _refuse_live_database(target)
     return FileResponse(
         path=str(target),
         media_type=_fs_mime_type(target),

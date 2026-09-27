@@ -11,10 +11,11 @@ from fastapi import HTTPException
 
 from agent.context_references import _expand_path_reference, parse_context_references
 from hermes_state import SessionDB
-from hermes_cli.web_routers.files import fs_read_text
+from hermes_cli.web_routers.files import fs_download, fs_read_text
 
 
 @pytest.mark.platforms("linux")
+@pytest.mark.requires_wal
 @pytest.mark.parametrize("route,target_kind", [
     ("file", "main"), ("folder", "directory"), ("desktop", "main"), ("desktop", "shm"),
 ])
@@ -45,7 +46,7 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
         def posix_locks(file):
             inode = file.stat().st_ino
             return sorted(line.split(": ", 1)[1] for line in Path("/proc/locks").read_text(encoding="utf-8").splitlines()
-                          if f":{inode} " in line and f"POSIX  ADVISORY" in line
+                          if f":{inode} " in line and "POSIX  ADVISORY" in line
                           and f" {os.getpid()} " in line)
 
         def rival_locked():
@@ -63,13 +64,20 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
             with pytest.raises(HTTPException) as refused:
                 asyncio.run(fs_read_text(str(target)))
             assert refused.value.status_code == 409
+            if target_kind == "shm":
+                assert "main database" in refused.value.detail
+            # FileResponse opens/closes in-process too, so a download must be refused as well.
+            with pytest.raises(HTTPException) as refused:
+                asyncio.run(fs_download(str(target)))
+            assert refused.value.status_code == 409
             assert asyncio.run(fs_read_text(str(text)))["text"] == "ordinary readable text"
         else:
             ref = parse_context_references(f"@{route}:{target}")[0]
             warning, block = _expand_path_reference(ref, tmp_path.parent)
             assert warning is None
             assert block is not None
-            assert "not previewed" in block if route == "file" else "state.db" in block
+            if route == "file":
+                assert "not previewed" in block
             ordinary = parse_context_references(f"@file:{text}")[0]
             warning, block = _expand_path_reference(ordinary, tmp_path.parent)
             assert warning is None and block is not None and "ordinary readable text" in block
@@ -107,3 +115,4 @@ def test_closed_database_can_still_be_previewed(tmp_path):
     assert warning is None and block is not None and "binary file" in block
     preview = asyncio.run(fs_read_text(str(path)))
     assert preview["binary"] is True and preview["byteSize"] == path.stat().st_size
+    assert asyncio.run(fs_download(str(path))).path == str(path)

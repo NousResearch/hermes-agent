@@ -790,6 +790,52 @@ def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypa
     assert not dm_file.exists()
 
 
+def test_wrapper_python_prefers_install_venv_sibling(tmp_path):
+    """The runner must not inherit the sender's interpreter: a managed tools python lacks repo
+    deps (ruamel), so admission dies on import and the DM is lost. Pin the venv python beside
+    the child hermes entrypoint instead."""
+    venv_bin = tmp_path / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
+    venv_bin.mkdir(parents=True)
+    hermes = venv_bin / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    hermes.write_text("#!python\n", encoding="utf-8")
+    venv_python = venv_bin / ("python.exe" if sys.platform == "win32" else "python3")
+    venv_python.write_text("", encoding="utf-8")
+
+    assert bot_mode_dm._wrapper_python(str(hermes)) == str(venv_python)
+
+
+def test_wrapper_python_falls_back_without_sibling(tmp_path):
+    """No python beside the entrypoint (or a bare PATH name) keeps sys.executable."""
+    cli_dir = tmp_path / "bin"
+    cli_dir.mkdir()
+    hermes = cli_dir / "hermes"
+    hermes.write_text("#!python\n", encoding="utf-8")
+
+    assert bot_mode_dm._wrapper_python(str(hermes)) == sys.executable
+    assert bot_mode_dm._wrapper_python("hermes") == sys.executable
+
+
+def test_delivery_command_runs_runner_under_install_venv_python(tmp_path):
+    """End to end through _delivery_command: argv[0] from _hermes_cli() decides the runner's
+    interpreter, so a sender on the managed tools python still launches a working wrapper."""
+    venv_bin = tmp_path / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
+    venv_bin.mkdir(parents=True)
+    hermes = venv_bin / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    hermes.write_text("#!python\n", encoding="utf-8")
+    venv_python = venv_bin / ("python.exe" if sys.platform == "win32" else "python3")
+    venv_python.write_text("", encoding="utf-8")
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hi", encoding="utf-8")
+
+    command = bot_mode_dm._delivery_command(
+        [str(hermes), "-p", "ops"], str(dm_file), stdin_file=False)
+
+    expected = str(venv_python)
+    if sys.platform == "win32":
+        expected = expected.replace("\\", "/")
+    assert shlex.split(command)[0] == expected
+
+
 def test_real_delivery_command_round_trip_carries_author(tmp_path):
     """Through a real subprocess, the runner argv built by ``_delivery_command`` sets HERMES_TURN_AUTHOR on the child."""
     dm_file = tmp_path / "message.txt"

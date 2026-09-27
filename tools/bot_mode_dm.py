@@ -581,11 +581,32 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         _unlink_dm_file(dm_file)
 
 
+def _wrapper_python(child_cli: str) -> str:
+    """Interpreter for the delivery runner: the venv python beside the child hermes entrypoint.
+
+    The wrapper's admission path imports repo modules (``utils`` → ``hermes_yaml`` → ruamel,
+    ``tools.bot_relay``), so it must run under an interpreter that has the repo's deps. The
+    sender's own ``sys.executable`` is not that interpreter when the sending process runs under
+    the managed tools python (``~/.hermes/tools/python-*``, no site-packages): the wrapper then
+    dies on ``ModuleNotFoundError: ruamel`` inside ``_admit_live_dm`` and the DM is lost.
+    The child hermes binary already points at an install with working deps, and its venv keeps
+    the matching python beside it — derive the wrapper interpreter from that path. A bare
+    ``"hermes"`` (PATH fallback in ``_hermes_cli``) has no sibling to read; keep sys.executable.
+    """
+    cli = Path(child_cli)
+    if cli.is_absolute():
+        name = "python.exe" if sys.platform == "win32" else "python3"
+        sibling = cli.parent / name
+        if sibling.is_file():
+            return str(sibling)
+    return sys.executable
+
+
 def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
                       profile_home: Path | None = None, author: Optional[dict] = None) -> str:
     """Build an argv-safe command for the cleanup-owning background runner:
     ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``."""
-    runner_argv = [sys.executable, str(Path(__file__).resolve()), "--run-delivery",
+    runner_argv = [_wrapper_python(argv[0]), str(Path(__file__).resolve()), "--run-delivery",
                    "stdin" if stdin_file else "query-file", dm_file]
     if profile_home is not None:
         runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])

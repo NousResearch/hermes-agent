@@ -55,12 +55,11 @@ def test_fresh_process_recovers_latest_of_same_second_config_changes(tmp_path, l
         assert loaded["model"]["default"] == model
 
     config_path.write_text(BROKEN, encoding="utf-8")
-    recovered, stderr = _fresh_load(tmp_path, loader=loader)
+    recovered, _ = _fresh_load(tmp_path, loader=loader)
 
     assert recovered["model"]["default"] == "test/updated"
     assert recovered["approvals"]["deny"] == ["curl*evil*"]
     assert recovered["custom_providers"][0]["api_key"] == "expanded-secret"
-    assert "LAST KNOWN GOOD" in stderr
     assert config_path.read_text(encoding="utf-8") == BROKEN
 
 

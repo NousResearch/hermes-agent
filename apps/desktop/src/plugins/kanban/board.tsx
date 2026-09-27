@@ -205,6 +205,16 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           <span className="shrink-0 cursor-help font-medium text-amber-500">{k.noHeartbeat}</span>
         </Tip>
       )}
+      {task.status === 'blocked' && task.block_kind && (
+        // #124391: say WHY the card is blocked — the kind arrives on every
+        // card payload; without it every blocked card reads identically.
+        <Tip label={k.blockKindTip(task.block_kind)}>
+          <span className="inline-flex shrink-0 cursor-help items-center gap-1 text-destructive">
+            <Codicon name="debug-breakpoint-data-unverified" size="0.7rem" />
+            {task.block_kind}
+          </span>
+        </Tip>
+      )}
       {unassignedReady && !fallback && (
         <Tip label={k.wontRunTip}>
           <span className="inline-flex shrink-0 cursor-help items-center gap-1 text-amber-500">

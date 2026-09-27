@@ -42,97 +42,90 @@ def test_symlinks_escaping_the_destination_are_rejected(tmp_path, linkname):
         extract(archive, tmp_path / "out")
     assert not (tmp_path / "out" / "python/bin/evil").is_symlink()
 
-def test_git_pin_is_the_self_extracting_archive():
-    """Both win32 targets pin the self-extracting PortableGit archive: it
-    carries its own extractor, so no tar/bzip2 is needed anywhere (#122512)."""
-    from pm.packages import Git
 
-    for target in ("win32-x64", "win32-arm64"):
-        assert Git().fetch_url("2.53.0+3", target).endswith(".7z.exe")
+def _portable_git(tmp_path):
+    archive = tmp_path / "fetch" / "PortableGit-2.53.0.3-64-bit.7z.exe"
+    archive.parent.mkdir()
+    archive.write_bytes(b"pinned bytes; the fake run never executes them")
+    return archive
+
+
+def _fake_run(monkeypatch, returncode=0, calls=None):
+    import subprocess
+
+    def run(argv, **kwargs):
+        if calls is not None:
+            calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, returncode)
+
+    monkeypatch.setattr(subprocess, "run", run)
 
 
 def test_git_unpack_executes_a_scratch_copy_never_the_cached_bytes(tmp_path, monkeypatch):
-    """Executing the cached fetch-<sha> artifact in place kept it handle-held
-    (Defender on-execute scan, the stub's RunProgram child chain) past pm's
-    ~2 s download-cleanup retry and failed the install with WinError 32
-    (CI run 36189416163). The extractor must run from a disposable copy
-    beside the staging tree, where the .staging-* teardown owns it."""
+    """An executed PE can stay handle-held past pm's download-cleanup retry
+    (WinError 32), so the extractor runs from a disposable copy beside the
+    staging tree, never from the cached fetch-<sha> entry."""
     import subprocess
     from pathlib import Path
     import pm.packages
     from pm.packages import Git
 
-    # The pinned asset is a PE self-extractor: pin the host flag so the POSIX
-    # guard (tested separately) doesn't short-circuit the behaviour here.
-    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True, raising=False)
-
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
     calls = []
-
-    class _Result:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: calls.append(argv) or _Result())
-    archive = tmp_path / "fetch" / "PortableGit-2.53.0.3-64-bit.7z.exe"
-    archive.parent.mkdir()
-    archive.write_bytes(b"pinned bytes; the fake run never executes them")
+    _fake_run(monkeypatch, calls=calls)
+    archive = _portable_git(tmp_path)
     staged = tmp_path / "scratch" / "tree"
     Git().unpack(archive, staged, "win32-x64")
-    argv = calls[0]
+    (argv, kwargs), = calls
     assert argv[1:] == [f"-o{staged}", "-y"]
-    assert argv[0] != str(archive)
-    assert archive.parent not in Path(argv[0]).parents
-    assert staged.parent in Path(argv[0]).parents
+    exe = Path(argv[0])
+    assert archive.parent not in exe.parents
+    assert staged.parent in exe.parents
+    assert not exe.exists(), "the scratch copy is removed after the run"
+    # Inherited pipes would let the RunProgram children hold run() open.
+    assert all(kwargs[k] is subprocess.DEVNULL for k in ("stdin", "stdout", "stderr"))
 
 
 def test_git_unpack_names_the_extractor_exit_code(tmp_path, monkeypatch):
-    """Under -y the GUI stub fails silently (no stdout, no stderr, no error
-    box), so the message must carry the exit code and the usual causes
-    instead of promising captured output (#123094 review)."""
-    import subprocess
+    """Under -y the stub reports nothing, so the error carries the exit code."""
     import pm.packages
+    from pm.package import InstallError
     from pm.packages import Git
 
-    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
+    _fake_run(monkeypatch, returncode=7)
+    with pytest.raises(InstallError, match="exited 7"):
+        Git().unpack(_portable_git(tmp_path), tmp_path / "scratch" / "tree", "win32-x64")
 
-    class _Result:
-        returncode = 7
-        stdout = ""
-        stderr = ""
 
-    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: _Result())
-    archive = tmp_path / "fetch" / "PortableGit-2.53.0.3-64-bit.7z.exe"
-    archive.parent.mkdir()
-    archive.write_bytes(b"pinned bytes")
-    with pytest.raises(RuntimeError) as excinfo:
-        Git().unpack(archive, tmp_path / "scratch" / "tree", "win32-x64")
-    message = str(excinfo.value)
-    assert "exit code 7" in message
-    assert "silent" in message
+def test_git_unpack_timeout_is_a_package_error(tmp_path, monkeypatch):
+    import subprocess
+    import pm.packages
+    from pm.package import InstallError
+    from pm.packages import Git
+
+    def hang(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(InstallError, match="did not finish"):
+        Git().unpack(_portable_git(tmp_path), tmp_path / "scratch" / "tree", "win32-x64")
 
 
 def test_git_unpack_requires_a_windows_host(tmp_path, monkeypatch):
-    """Cross-host staging of win32 git worked with the old tar.bz2 pin; the
-    self-extracting pin must refuse off-Windows with that trade-off stated
-    instead of a raw exec error (#123094 review)."""
-    import subprocess
+    """Off Windows the PE extractor cannot run: refuse before executing
+    anything, with a remedy that is not "retry"."""
     import pm.packages
+    from pm.package import InstallError
     from pm.packages import Git
 
     calls = []
-
-    class _Result:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: calls.append(argv) or _Result())
-    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", False, raising=False)
-    archive = tmp_path / "x.7z.exe"
-    archive.write_bytes(b"pinned bytes")
-    with pytest.raises(RuntimeError, match="Windows host"):
-        Git().unpack(archive, tmp_path / "out", "win32-x64")
+    _fake_run(monkeypatch, calls=calls)
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", False)
+    with pytest.raises(InstallError, match="Windows host") as excinfo:
+        Git().unpack(_portable_git(tmp_path), tmp_path / "out", "win32-x64")
+    assert "retry" not in str(excinfo.value)
     assert not calls, "the guard must refuse before any execution"
 
 

@@ -622,14 +622,11 @@ _HOST_IS_WINDOWS = os.name == "nt"
 @register
 class Git(BinaryPackage):
     """Windows only: Git for Windows carries the bash.exe contract. POSIX
-    uses the system git - a deliberate gap, not an oversight. The pinned
-    PortableGit asset is a self-extracting 7z: it carries its own extractor,
-    so no tar bzip2 filter and no bzip2.exe are needed on the machine
-    (#122512). The stub still shows an Extracting progress window (-y only
-    suppresses prompts and error boxes), and its RunProgram then runs the
-    vendor post-install (git-bash hardlinking, etc/ hosts files, mtab
-    snapshot), so the staged tree is post-install output - the old tar.bz2
-    pin never ran post-install."""
+    uses the system git - a deliberate gap, not an oversight. The pin is the
+    PortableGit self-extracting 7z: it carries its own extractor (stock
+    Windows 10 tar.exe has no bzip2), shows a progress window (-y only drops
+    prompts), and runs the vendor post-install, so the staged tree is
+    post-install output."""
 
     name = "git"
     optional = True
@@ -662,46 +659,44 @@ class Git(BinaryPackage):
         return out
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
-        import shutil
-        import subprocess
-
         if not _HOST_IS_WINDOWS:
-            raise RuntimeError(
-                "the pinned git artifact is a PortableGit self-extracting 7z: "
-                "staging the win32 git target runs the vendor extractor and "
-                "requires a Windows host (POSIX hosts get git from the system "
-                "tool, see this package's gaps)"
+            raise InstallError(
+                self.name,
+                "the pinned artifact is a PortableGit self-extracting 7z, which "
+                "only runs on Windows",
+                "stage win32 git on a Windows host; POSIX hosts use the system git",
             )
-        staged.mkdir(parents=True, exist_ok=True)
-        # Never execute the cached fetch-<sha> bytes: an executed PE can stay
-        # handle-held (Defender on-execute scan, the stub's RunProgram child
-        # chain) past pm's ~2 s download-cleanup retry and fail the install
-        # with WinError 32 (CI run 36189416163). Execute a copy beside the
-        # staging tree instead: pm's .staging-* scratch teardown owns that
-        # path and ignores errors, so any hold lands on a disposable path.
-        work = Path(tempfile.mkdtemp(prefix=".sfx-", dir=staged.parent))
-        exe = work / archive.name
-        try:
+        shutil.rmtree(staged, ignore_errors=True)
+        staged.mkdir(parents=True)
+        # Execute a scratch copy, never the cached fetch-<sha> bytes: an executed
+        # PE can stay handle-held (on-execute AV scan, the RunProgram children)
+        # past pm's download-cleanup retry and fail the install (WinError 32).
+        with tempfile.TemporaryDirectory(
+            prefix=".sfx-", dir=staged.parent, ignore_cleanup_errors=True
+        ) as work:
+            exe = Path(work) / archive.name
             shutil.copy2(archive, exe)
-            proc = subprocess.run(
-                [str(exe), f"-o{staged}", "-y"],
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-            if proc.returncode:
-                # Under -y the GUI stub is silent on every channel; say so and
-                # name the usual causes instead of promising captured output.
-                tail = (proc.stderr or proc.stdout or "").strip()[-200:]
-                raise RuntimeError(
-                    f"PortableGit self-extractor failed with exit code {proc.returncode}; "
-                    "under -y the GUI stub is silent (no stdout, stderr, or error box), "
-                    "so the usual causes are disk full, a path-length limit, or an "
-                    "antivirus lock"
-                    + (f" -- extractor output: {tail}" if tail else "")
+            # No pipes: RunProgram children would inherit them and hold run()
+            # open past the stub's exit. Under -y the stub prints nothing anyway.
+            try:
+                proc = subprocess.run(
+                    [str(exe), f"-o{staged}", "-y"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=600,
                 )
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
+            except subprocess.TimeoutExpired:
+                raise InstallError(
+                    self.name, "PortableGit self-extractor did not finish in 600 s"
+                ) from None
+        if proc.returncode:
+            raise InstallError(
+                self.name,
+                f"PortableGit self-extractor exited {proc.returncode} (it reports "
+                "nothing under -y; usual causes: disk full, path-length limit, "
+                "antivirus lock)",
+            )
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}

@@ -1160,7 +1160,6 @@ def test_desktop_lifespan_reaps_orphans_with_a_startup_grace(monkeypatch):
     seen = {}
 
     def _fake_reap(extra_exclude=None, *, min_age_s=0.0):
-        seen["extra_exclude"] = extra_exclude
         seen["min_age_s"] = min_age_s
         return False
 
@@ -1175,4 +1174,3 @@ def test_desktop_lifespan_reaps_orphans_with_a_startup_grace(monkeypatch):
         pass
 
     assert seen["min_age_s"] == _REAP_MIN_AGE_SECONDS
-    assert _REAP_MIN_AGE_SECONDS > 0

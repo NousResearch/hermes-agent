@@ -1778,8 +1778,8 @@ def _reap_unsupervised_gateway_orphans(
     that a previous Desktop generation (or a concurrent ``gateway start``) just launched
     is scan-visible but not yet record-visible, and the argv sweep cannot tell it from
     a corpse. Reaping it writes a planned-stop marker it consumes seconds later — a clean
-    exit 0 with no supervisor to revive it (#122533). Only the Desktop boot sweep passes a
-    grace (it is the one caller that races a launch); stop/restart keep reaping at once.
+    exit 0 with no supervisor to revive it (#122533). The Desktop boot sweep passes a
+    grace; stop/restart keep reaping at once.
     """
     try:
         supervised_host = supports_systemd_services()

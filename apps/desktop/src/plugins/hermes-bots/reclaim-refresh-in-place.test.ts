@@ -159,7 +159,7 @@ beforeEach(() => {
   register()
 })
 
-describe("session.reclaimed re-resumes the open Bot Chat WITHOUT navigating (issue 121874)", () => {
+describe('session.reclaimed re-resumes the open Bot Chat WITHOUT navigating (issue 121874)', () => {
   it('re-resumes the claimed chat as a background refresh', async () => {
     $openBotChat.set({ key: 'local::alpha', openedRegistryId: 'bot-chat', openedSessionId: 'bot-chat-tip' })
 

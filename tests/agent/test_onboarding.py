@@ -117,6 +117,20 @@ class TestFirstContactTurnNote:
         loaded = yaml.safe_load(cfg_path.read_text())
         assert loaded["onboarding"]["seen"][PROFILE_BUILD_FLAG] is True
 
+    def test_every_first_contact_note_puts_a_real_task_first(self, tmp_path):
+        # Default "ask" (profile-build offer) and "off" (plain intro) must both
+        # tell the model to do a first-message task before the intro/offer.
+        from agent.onboarding import TASK_FIRST_CLAUSE, first_contact_turn_note
+
+        for mode in ("ask", "off"):
+            note = first_contact_turn_note(
+                {"onboarding": {"profile_build": mode}},
+                tmp_path / f"{mode}.yaml",
+                session_history_empty=True,
+                install_has_prior_sessions=False,
+            )
+            assert TASK_FIRST_CLAUSE in note, mode
+
     def test_returns_none_when_not_first_contact(self, tmp_path):
         from agent.onboarding import first_contact_turn_note
 

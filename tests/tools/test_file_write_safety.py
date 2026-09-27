@@ -588,6 +588,28 @@ class TestBomHandling:
             signal.signal(signal.SIGALRM, previous)
         assert data is None and failed is not None and "handed to the shell" in failed.stdout
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX bash xtrace via BASH_ENV")
+    def test_byte_exact_read_survives_a_real_xtrace_shell(self, tmp_path: Path, monkeypatch):
+        # A user rc / BASH_ENV with `set -x` must not break byte-exact reads, or every edit fails
+        # its read. (The post-write sha256 check under noisy stdout is a separate issue.)
+        import shutil
+        from tools.file_operations import ShellFileOperations
+        from tools.environments.local import LocalEnvironment
+        if not shutil.which("bash"):
+            pytest.skip("bash not installed")
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        hook = tmp_path / "xtrace.sh"
+        hook.write_text("set -x\n")
+        target = tmp_path / "conf.txt"
+        original = b"HEADER\n\x1b]0;osc\x07\n" + b"line\n" * 250 + b"VERSION=1 \xff\n"
+        target.write_bytes(original)
+        env = LocalEnvironment(cwd=str(tmp_path), env={"BASH_ENV": str(hook)})
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        assert ops._sample_file_bytes(str(target)) == original[:1000]
+        raw = ops.read_file_raw(str(target))
+        assert raw.error is None and raw.content.encode("utf-8", "surrogateescape") == original
+
 
 class TestProtectedInstructionFiles:
     """Writes to agent-instruction files ALWAYS require approval.

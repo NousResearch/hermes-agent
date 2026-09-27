@@ -93,6 +93,11 @@ interface MentionCompletionItem {
   display: string
   insert: string
   meta: string
+  /** Handles that resolve to this same bot — the raw profile name and the
+   *  roster handle — so the popover can drop the gateway's own row for that
+   *  name instead of listing the bot twice (once under its title slug,
+   *  once under the raw name). */
+  handles?: string[]
 }
 
 /** The draft a `composer.middleware` handler rewrites, passes through, or
@@ -190,7 +195,12 @@ export default {
             items.push({
               insert,
               display: insert,
-              meta: `Bot · ${display}${source}`
+              meta: `Bot · ${display}${source}`,
+              // The live gateway's own `@` rows list this backend's profiles
+              // by raw name; claim ours so the popover drops that twin row.
+              // Remote rows are NOT ours to claim — the local gateway's
+              // same-named row resolves locally, not to the remote bot.
+              ...(profile.remoteSource ? {} : { handles: [`@${profile.name}`] })
             })
           }
 

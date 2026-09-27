@@ -41,11 +41,10 @@ def test_unpublished_install_retains_interpreter_sibling(launchers):
 
 
 @pytest.mark.platforms("windows")
-def test_windows_delivery_uses_published_cmd_when_exe_is_absent(launchers):
-    published, _ = launchers
-    command_file = published.with_suffix(".cmd")
-    command_file.touch()
-    assert bot_relay.local_delivery_command("default", "body.txt")[0] == str(command_file)
+def test_windows_delivery_does_not_select_batch_shims(launchers):
+    published, sibling = launchers
+    published.with_suffix(".cmd").touch()
+    assert bot_relay.local_delivery_command("default", "body.txt")[0] == str(sibling)
 
 
 def test_path_then_bare_fallback_remain_available(launchers, monkeypatch):
@@ -58,8 +57,7 @@ def test_path_then_bare_fallback_remain_available(launchers, monkeypatch):
 
 
 @pytest.mark.platforms("windows")
-@pytest.mark.parametrize("command_file", [False, True])
-def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch, command_file):
+def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
     import json
     import os
     import subprocess
@@ -92,10 +90,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch, co
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
     out = root / ".hermes" / "bin"
     out.mkdir(parents=True)
-    with monkeypatch.context() as mint_patch:
-        if command_file:
-            mint_patch.setattr(_launchers, "_load_script_maker", lambda: None)
-        published = _launchers.mint_launcher("hermes", root, out, real_python, None)
+    published = _launchers.mint_launcher("hermes", root, out, real_python, None)
     assert published is not None
     record = runtime_facts_path(root)
     record.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +106,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch, co
     assert _launchers.mint_launcher("hermes", old_package.parent, old_bin, real_python, None)
     monkeypatch.setattr(bot_relay, "__file__", str(root / "tools" / "bot_relay.py"))
     monkeypatch.setattr(sys, "executable", str(old_bin / "python.exe"))
-    argv = bot_relay.local_delivery_command("researcher", "message.txt")
+    argv = bot_relay.local_delivery_command("researcher", str(tmp_path / "message&extra.txt"))
     for generation in ("first", "new-plugin"):
         selected = record.parent / "environments" / generation / "venv"
         packages = site_packages(selected)
@@ -133,7 +128,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch, co
     assert "old-generation" not in result.stdout
 
 
-@pytest.mark.parametrize("name", ["hermes", "hermes.exe", "hermes.cmd"])
+@pytest.mark.parametrize("name", ["hermes", "hermes.exe"])
 def test_launcher_shape_preserves_profile_and_lock(tmp_path, monkeypatch, name):
     import contextlib
     from tools import bot_mode_dm, bot_mode_probe

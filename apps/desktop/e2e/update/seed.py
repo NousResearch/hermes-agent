@@ -57,6 +57,11 @@ def install(root: Path) -> None:
         shutil.rmtree(p[key], ignore_errors=True)
     head = os.environ.get("HERMES_E2E_UPDATE_INSTALL_REF") or I.head_sha()
     origin = I.make_origin(root, head)
+    # Serve full clones. When a CI runner's git honours the installer's --filter=tree:0 against a
+    # local file:// origin, the clone's lazy tree fetches fan out into more than 1300 concurrent
+    # upload-packs, and the runner is OOM-killed about 90 s into seeding. The Desktop cells need an
+    # installed checkout, not a treeless one.
+    I.git("config", "uploadpack.allowFilter", "false", cwd=origin)
     sb = I.new_sandbox(p["sb"], origin)
     cp = I.run_installer(sb)
     if cp.returncode != 0:

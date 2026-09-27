@@ -546,6 +546,7 @@ export interface Translations {
     catalogToolsChip: string;
     catalogHooksChip: string;
     catalogMiddlewareChip: string;
+    pythonDependencies: string;
   };
 
   // ── Profiles page ──
@@ -1210,6 +1211,29 @@ export interface Translations {
     authBadge: string;
     sourceLink: string;
     disabledBadge: string;
+    yourServers: string;
+    emptyServers: string;
+    browseCatalog: string;
+    removeTitle: string;
+    removeDesc: string;
+    removeDescNamed: string;
+    added: string;
+    addedOauth: string;
+    invalidServer: string;
+    testTools: string;
+    testFailedShort: string;
+    oauthComplete: string;
+    authenticate: string;
+    authenticateOauth: string;
+    restartNote: string;
+    connectedNoTools: string;
+    toolsHeading: string;
+    connectionFailed: string;
+    envVars: string;
+    runs: string;
+    installsFrom: string;
+    bootstrapCommands: string;
+    envRequired: string;
   };
 
   // ── Files page ──
@@ -1470,6 +1494,10 @@ export interface Translations {
     telegramStep3: string;
     openBotFather: string;
     botFatherTokenInvalid: string;
+    whatsappExistingConfigured: string;
+    telegramAllowedUsers: string;
+    telegramOwnerDetected: string;
+    telegramOpen: string;
   };
 
   // ── Kanban ──

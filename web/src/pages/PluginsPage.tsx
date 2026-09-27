@@ -229,7 +229,7 @@ function MemoryProviderSetupHint({
 
           {setup.pip_dependencies.length ? (
             <div className="grid gap-2">
-              <p className="text-muted-foreground">Python dependencies</p>
+              <p className="text-muted-foreground">{t.pluginsPage.pythonDependencies}</p>
               <div className="flex flex-wrap gap-2">
                 {setup.pip_dependencies.map((dep) => (
                   <code

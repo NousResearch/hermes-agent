@@ -546,7 +546,7 @@ export default function ChannelsPage() {
                   className="w-full sm:w-auto"
                   onClick={() => setEditing(null)}
                 >
-                  Cancel
+                  {t.common.cancel}
                 </Button>
                 <Button
                   className="w-full uppercase sm:w-auto"
@@ -939,11 +939,11 @@ function WhatsAppOnboardingPanel({
             disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
             prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
           >
-            {phase === "starting" ? "Starting…" : "Pair with QR"}
+            {phase === "starting" ? t.channels.telegramStarting : t.channels.telegramCreateWithQr}
           </Button>
           {platform.configured && (
             <span className="text-xs text-muted-foreground">
-              Existing WhatsApp settings are configured.
+              {t.channels.whatsappExistingConfigured}
             </span>
           )}
         </div>
@@ -1052,7 +1052,7 @@ function WhatsAppOnboardingPanel({
                       {phase === "applying" ? "Saving…" : "Save and restart"}
                     </Button>
                     <Button size="sm" ghost onClick={() => void cancel()}>
-                      Cancel
+                      {t.common.cancel}
                     </Button>
                   </div>
                 </div>
@@ -1087,7 +1087,7 @@ function WhatsAppOnboardingPanel({
                 </span>
               )}
               <Button size="sm" ghost onClick={() => void cancel()}>
-                Cancel
+                {t.common.cancel}
               </Button>
             </div>
           </div>
@@ -1414,10 +1414,10 @@ function TelegramOnboardingPanel({
                 <div className="grid gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
-                      Allowed users
+                      {t.channels.telegramAllowedUsers}
                     </span>
                     {detectedOwnerId && allowedIds.includes(detectedOwnerId) && (
-                      <Badge tone="success">owner detected</Badge>
+                      <Badge tone="success">{t.channels.telegramOwnerDetected}</Badge>
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -1467,7 +1467,7 @@ function TelegramOnboardingPanel({
                     {phase === "applying" ? "Saving…" : "Save and restart"}
                   </Button>
                   <Button size="sm" ghost onClick={() => void cancel()}>
-                    Cancel
+                    {t.common.cancel}
                   </Button>
                 </div>
               </div>
@@ -1494,10 +1494,10 @@ function TelegramOnboardingPanel({
                 className="inline-flex h-8 items-center gap-1 border border-border px-3 text-xs uppercase text-foreground hover:border-foreground/40"
               >
                 <ExternalLink className="h-4 w-4" />
-                Open Telegram
+                {t.channels.telegramOpen}
               </a>
               <Button size="sm" ghost onClick={() => void cancel()}>
-                Cancel
+                {t.common.cancel}
               </Button>
             </div>
           </div>

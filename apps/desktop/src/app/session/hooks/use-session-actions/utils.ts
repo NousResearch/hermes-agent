@@ -1963,10 +1963,27 @@ export function cachedSessionRow(storedSessionId: string): SessionInfo | undefin
   )
 }
 
+export type StoredSessionProbe = { status: 'found'; session: SessionInfo } | { status: 'gone' | 'inconclusive' }
+
 export async function resolveStoredSession(
   storedSessionId: string,
   ownerRoute?: SessionProfileRoute
 ): Promise<SessionInfo | undefined> {
+  const result = await probeStoredSession(storedSessionId, ownerRoute)
+
+  return result.status === 'found' ? result.session : undefined
+}
+
+/** Preserve the probe ladder's evidence: only explicit session 404s prove absence. */
+export async function probeStoredSession(
+  storedSessionId: string,
+  ownerRoute?: SessionProfileRoute
+): Promise<StoredSessionProbe> {
+  let allGone = true
+  const recordFailure = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error ?? '')
+    allGone &&= /\b404\b/.test(message) && /session not found/i.test(message)
+  }
   // Snapshot BEFORE any await: a resolve that started before an archive/delete
   // must reject its own stale response (see upsertResolvedSession).
   const tombstoneGenerationsAtRequestStart = captureSessionTombstoneGenerations()
@@ -1985,7 +2002,7 @@ export async function resolveStoredSession(
       (!cached.profile || normalizeProfileKey(cached.profile) === normalizeProfileKey(ownerRoute.profile))
 
     if (cached && cachedOwnerMatches) {
-      return cached
+      return { status: 'found', session: cached }
     }
 
     try {
@@ -1994,11 +2011,12 @@ export async function resolveStoredSession(
       session.connection_id = ownerRoute.connectionId
       upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
 
-      return session
-    } catch {
+      return { status: 'found', session }
+    } catch (error) {
       // An explicit owner is fail-closed. Probing the ambient or another
       // profile would turn a stale route into a cross-connection open.
-      return undefined
+      recordFailure(error)
+      return { status: allGone ? 'gone' : 'inconclusive' }
     }
   }
 
@@ -2009,7 +2027,7 @@ export async function resolveStoredSession(
   const multiProfile = $profiles.get().length > 1
 
   if (cached && (cached.profile?.trim() || !multiProfile)) {
-    return cached
+    return { status: 'found', session: cached }
   }
 
   // Direct by-id on the active profile — one row lookup, no list scan. Electron
@@ -2028,9 +2046,10 @@ export async function resolveStoredSession(
 
     upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
 
-    return session
-  } catch {
+    return { status: 'found', session }
+  } catch (error) {
     // Not on the active profile — fall through to the cross-profile probe.
+    recordFailure(error)
   }
 
   // Multi-profile only: probe each remaining profile by id (still one cheap
@@ -2054,13 +2073,14 @@ export async function resolveStoredSession(
 
       upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
 
-      return session
-    } catch {
+      return { status: 'found', session }
+    } catch (error) {
       // Not on this profile; try the next.
+      recordFailure(error)
     }
   }
 
-  return undefined
+  return { status: allGone ? 'gone' : 'inconclusive' }
 }
 
 /**

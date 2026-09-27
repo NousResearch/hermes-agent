@@ -482,6 +482,30 @@ Override the driver binary path (tests / CI / local builds):
 HERMES_CUA_DRIVER_CMD=/path/to/your/cua-driver
 ```
 
+### Windows auto-start (opt-in)
+
+On Windows, cua-driver can run from a per-boot Scheduled Task
+(`cua-driver-serve`) so it is already listening when Hermes needs it. This
+task is **opt-in**: by default Computer Use starts the driver on demand,
+per session — exactly as on macOS and Linux — and no scheduled task is
+registered when you install or enable the toolset (#97389).
+
+Set this in `config.yaml` to opt in (the task is registered — or repaired —
+the next time the driver is installed or the toolset is enabled):
+
+```yaml
+computer_use:
+  autostart: true   # default: false (on-demand; no scheduled task)
+```
+
+You need this when driving Windows over SSH: Session 0 has no interactive
+desktop, so an on-demand driver cannot reach one
+([windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) has the
+recipe). If the task exists but you want it gone, remove it with
+`cua-driver autostart disable` (or `schtasks /Delete /TN cua-driver-serve`)
+from an elevated shell — Hermes does not re-register it once
+`computer_use.autostart` is false.
+
 Swap the backend entirely (for testing):
 
 ```

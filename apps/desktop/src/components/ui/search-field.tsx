@@ -84,11 +84,14 @@ export function SearchField({
       <input
         aria-label={ariaLabel ?? placeholder}
         className={cn(
-          // `field-sizing: content` grows the input to fit the placeholder/typed
-          // text; min-w-0 lets it shrink back below content size when the
-          // context is narrower — long queries scroll inside the field.
+          // `field-sizing: content` sizes the input to its placeholder/typed
+          // text, so a width-less caller's row stays compact; `flex-1` +
+          // `min-w-0` make the input ABSORB the extra space when the caller
+          // does stretch the row (w-full/flex-1 callers), pinning the clear
+          // button to the row's right edge instead of trailing the typed
+          // text (#119204). Long queries scroll inside the field.
           // text-xs matches the form controls (Input/Select via controlVariants).
-          'h-7 min-w-0 max-w-full bg-transparent text-xs text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
+          'h-7 min-w-0 max-w-full flex-1 bg-transparent text-xs text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
           // Boxed: the wrapper owns the chrome, the input fills it (same as an
           // adorned Input).
           boxed && 'h-auto w-full flex-1 text-sm leading-5 [field-sizing:initial]',

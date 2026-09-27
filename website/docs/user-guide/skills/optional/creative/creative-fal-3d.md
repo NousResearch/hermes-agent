@@ -53,7 +53,7 @@ code instead).
 
 | id | text | image | faces knob | pick it when |
 |----|------|-------|------------|--------------|
-| `hunyuan-3.1-rapid` (default) | yes | yes | no | fastest and cheapest; $0.225 per model (+$0.15 `--pbr`); prompt ≤ 200 chars; OBJ+MTL out, GLB when available |
+| `hunyuan-3.1-rapid` (default) | yes | yes | model-decided | fastest and cheapest; $0.225 per model (+$0.15 `--pbr`); prompt ≤ 200 chars; OBJ+MTL out, GLB when available |
 | `hunyuan-3.1-pro` | yes | yes | 40k–1.5M | dense high-poly mesh; $0.375; `--no-texture` gives a white geometry-only model |
 | `tripo-p2` | yes | yes | ≤ 25k | production PBR assets, `--quad` topology, `--texture-quality`, seedable, `--negative-prompt`; $1.00–1.30 |
 | `meshy-7.1` | yes | yes | 100–300k | game-ready assets, `--quad`, `--pbr`, seedable (text); $0.80 untextured / $1.20 textured; also returns FBX + USDZ |
@@ -68,13 +68,14 @@ bills. Every endpoint is queue-based: the script blocks until the mesh is ready.
    `~/.hermes/profiles/<name>/skills/`):
    ```bash
    SKILL_DIR=$(dirname "$(find ~/.hermes/skills -path '*/fal-3d/SKILL.md' 2>/dev/null | head -1)")
-   [ -f "$SKILL_DIR/SKILL.md" ] || echo "fal-3d is not installed: hermes skills install official/creative/fal-3d"
+   [ -f "$SKILL_DIR/SKILL.md" ] || { echo "fal-3d is not installed: hermes skills install official/creative/fal-3d"; false; }
    ```
-2. Confirm prerequisites once per machine. Use the interpreter Hermes runs on
-   (`~/.hermes/hermes-agent/.venv/bin/python` on a source install; a bare `python`
-   on a PEP 668 host may be the wrong one):
+   Stop here if that prints: `$SKILL_DIR` is `.` and every later command would fail.
+2. Confirm prerequisites once per machine, with the interpreter Hermes runs on
+   (a bare `python` on a PEP 668 host is the wrong one and `pip install` is refused):
    ```bash
-   python -c "import fal_client" 2>/dev/null || pip install fal-client==0.13.1
+   PY=~/.hermes/hermes-agent/.venv/bin/python; [ -x "$PY" ] || PY=python
+   "$PY" -c "import fal_client" 2>/dev/null || "$PY" -m pip install fal-client==0.13.1
    test -n "$FAL_KEY" || echo "FAL_KEY missing — https://fal.ai/dashboard/keys"
    ```
    Hermes sessions already export the `FAL_KEY` saved during setup (`hermes setup`
@@ -88,19 +89,22 @@ bills. Every endpoint is queue-based: the script blocks until the mesh is ready.
    but wants a specific look.
 4. Preview the payload, then generate:
    ```bash
-   python "$SKILL_DIR/scripts/fal_3d.py" --model hunyuan-3.1-rapid \
+   "$PY" "$SKILL_DIR/scripts/fal_3d.py" --model hunyuan-3.1-rapid \
      --prompt "low-poly wooden treasure chest, iron bands, closed lid" --dry-run
-   python "$SKILL_DIR/scripts/fal_3d.py" --model hunyuan-3.1-rapid \
-     --prompt "low-poly wooden treasure chest, iron bands, closed lid" -o chest.glb
+   "$PY" "$SKILL_DIR/scripts/fal_3d.py" --model hunyuan-3.1-rapid \
+     --prompt "low-poly wooden treasure chest, iron bands, closed lid" -o chest
    ```
-   Image-to-3D from a local file (uploaded to fal's CDN first) or a URL:
+   `--dry-run` prints only `{endpoint, payload}`. Hunyuan rapid may return OBJ
+   instead of GLB, so give `-o` no extension there and read `format` from the JSON.
+   Image-to-3D from a local file (uploaded to fal's CDN first) or a URL; `--prompt`
+   is ignored when `--image` is given:
    ```bash
-   python "$SKILL_DIR/scripts/fal_3d.py" --model tripo-p2 --image ./mug.png \
+   "$PY" "$SKILL_DIR/scripts/fal_3d.py" --model tripo-p2 --image ./mug.png \
      --quad --faces 20000 --pbr -o mug.glb
    ```
    Cheap geometry for printing (no textures):
    ```bash
-   python "$SKILL_DIR/scripts/fal_3d.py" --model meshy-7.1 \
+   "$PY" "$SKILL_DIR/scripts/fal_3d.py" --model meshy-7.1 \
      --prompt "chess knight piece, smooth, solid base" --no-texture -o knight.glb
    ```
 5. The script prints JSON with `output`, `url`, `format`, `preview_url`, `seed` and
@@ -109,8 +113,9 @@ bills. Every endpoint is queue-based: the script blocks until the mesh is ready.
    the user can judge without opening a viewer, and mention the seed when present.
 6. Iterate by changing one thing at a time (prompt wording, model, seed, `--faces`).
    Escalate cost only when the cheap tier fails: `hunyuan-3.1-rapid` → `hunyuan-3.1-pro`
-   → `meshy-7.1` / `tripo-p2`. For downstream tooling, `--quad` (tripo, meshy) gives
-   cleaner topology for sculpting and rigging; triangles are fine for engines.
+   → `tripo-p2` (cheaper, `--faces` ≤ 25k, seedable) → `meshy-7.1` (when FBX/USDZ
+   downloads or higher polycounts are needed). `--quad` (tripo, meshy) gives cleaner
+   topology for sculpting and rigging; triangles are fine for engines.
 
 ## Pitfalls
 
@@ -139,7 +144,7 @@ bills. Every endpoint is queue-based: the script blocks until the mesh is ready.
 
 ## Verification
 
-- `python fal_3d.py --list` prints all five models with both endpoints.
+- `"$PY" fal_3d.py --list` prints all five models with both endpoints.
 - `--dry-run` shows the exact endpoint + payload before any billable call, and
   `<upload:/abs/path>` in place of a local image instead of uploading it.
 - After generation the output file starts with the `glTF` magic (`head -c 4 out.glb`)

@@ -588,11 +588,13 @@ _ZHIPU_API_KEY_RE = re.compile(
 # which is what the real first segment always is. JWTs are handled by _JWT_RE. Without this,
 # ``DISCORD_BOT_TOKEN=<tok>`` was masked by the assignment pass but the same token as a JSON
 # value or bare in tool output went through verbatim (#117848) — in a project whose Discord
-# adapter keeps one in every install's ``.env``.
+# adapter keeps one in every install's ``.env``. The first character is the top six bits of
+# the id's leading ASCII digit, so ids starting 0-3 encode to ``M``, 4-7 to ``N`` and 8-9 to
+# ``O`` at every snowflake length; ``[MNO]`` covers them all, not just the older ``M`` bots.
 _DISCORD_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_.-])("
     r"mfa\.[A-Za-z0-9_-]{20,}"
-    r"|M[A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}"
+    r"|[MNO][A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}"
     r")(?![A-Za-z0-9_.-])"
 )
 

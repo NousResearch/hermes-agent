@@ -85,3 +85,16 @@ async def test_aggressive_dry_run_shows_preview_plus_note():
     runner.session_store.rewrite_transcript.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_preview_here_boundary_ignores_timeline_marker():
+    """The preview reports the split the real run makes: a marker row is not a kept exchange."""
+    history = _make_history(2)
+    history.append({"role": "user", "content": "[model switched]", "display_kind": "model_switch"})
+    history += [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}]
+    runner = _make_runner(history)
+    result = await runner._handle_compress_command(
+        _make_event("/compress --preview here 2")
+    )
+    assert "2 of 7" in result, result
+    assert "(5 message(s))" in result, result
+

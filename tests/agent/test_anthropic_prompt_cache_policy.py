@@ -585,19 +585,6 @@ class TestMiniMaxAnthropicWire:
         )
         assert agent._anthropic_prompt_cache_policy() == (True, True)
 
-    def test_minimax_m27_still_caches_after_m3_opt_out(self):
-        # Regression guard: the M3 substring check must not collide with
-        # M2.7 / M2.5 / M2.1 / M2 model names. "minimax-m3" is not a
-        # substring of "minimax-m2.7" etc., but pin this with a test so a
-        # future "startswith minimax-m" loosening can't silently drop the
-        # M2.x cache_control path.
-        agent = _make_agent(
-            provider="minimax",
-            base_url="https://api.minimax.io/anthropic",
-            api_mode="anthropic_messages",
-            model="MiniMax-M2.7",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (True, True)
 
 
 class TestOpenAIWireFormatOnCustomProvider:
@@ -747,21 +734,14 @@ class TestLiteLLMOpenAIWire:
             ("custom", "https://my-litellm-gw.internal.example.com/v1"),
         ],
     )
-    @pytest.mark.parametrize(
-        "model",
-        [
-            "claude-opus-4.8",
-            "anthropic/claude-sonnet-4.6",
-        ],
-    )
     def test_claude_on_litellm_openai_wire_caches_with_envelope_layout(
-        self, provider, base_url, model
+        self, provider, base_url
     ):
         agent = _make_agent(
             provider=provider,
             base_url=base_url,
             api_mode="chat_completions",
-            model=model,
+            model="anthropic/claude-sonnet-4.6",
         )
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 

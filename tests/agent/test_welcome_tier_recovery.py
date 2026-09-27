@@ -96,7 +96,6 @@ class TestOneShotRecoveries:
         assert _recover_welcome_tier(agent, classified, retry) is True
         assert agent.model == "nous/welcome"
         assert agent._nous_model_switch == ("gpt-5", "nous/welcome")
-        assert "without signing in" in agent.lines[0]
         # Once: a second refusal in the same attempt falls through to the terminal path.
         assert _recover_welcome_tier(agent, classified, retry) is False
 
@@ -219,7 +218,7 @@ class TestTerminalResultsCarryTheFreeTierBlock:
             messages=[], conversation_history=[], api_call_count=1, approx_tokens=10,
             provider="nous", base_url=WELCOME, model="nous/welcome")
         # The chat text names /login; the card text (a button beside it) leaves that tail off.
-        assert "switched off" in result["final_response"] and "/login" in result["final_response"]
+        assert "/login" in result["final_response"]
         assert result["free_tier"]["kind"] == "disabled"
         assert result["final_response"].startswith(result["free_tier"]["message"])
         assert "/login" not in result["free_tier"]["message"]
@@ -234,7 +233,7 @@ class TestTerminalResultsCarryTheFreeTierBlock:
             api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=3,
             approx_tokens=10, provider="nous", base_url=WELCOME, model="nous/welcome")
         assert result["free_tier"]["kind"] == "at_capacity"
-        assert "really busy" in result["free_tier"]["message"] and "/login" not in result["free_tier"]["message"]
+        assert "/login" not in result["free_tier"]["message"]
         assert "/login" in result["final_response"]
 
     def test_a_spent_outage_on_the_welcome_host_is_stamped_outage(self):

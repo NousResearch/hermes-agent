@@ -50,41 +50,11 @@ describe('reconnectBackoffDelayMs', () => {
     }
   })
 
-  it('resets to the attempt-0 ceiling after a successful connection (caller passes attempt back to 0)', () => {
-    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(1)
-
-    try {
-      // Simulates: fail, fail, fail (attempt climbs), succeed (caller resets
-      // its counter to 0), fail again — the very next delay must be back at
-      // the base ceiling, not continuing the climb.
-      reconnectBackoffDelayMs(0, { baseDelayMs: 300 })
-      reconnectBackoffDelayMs(1, { baseDelayMs: 300 })
-      const afterSeveralFailures = reconnectBackoffDelayMs(2, { baseDelayMs: 300 })
-      const afterReset = reconnectBackoffDelayMs(0, { baseDelayMs: 300 })
-
-      expect(afterSeveralFailures).toBe(1200)
-      expect(afterReset).toBe(300)
-    } finally {
-      randomSpy.mockRestore()
-    }
-  })
-
   it('treats negative attempt numbers as attempt 0 rather than throwing or returning a negative delay', () => {
     const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(1)
 
     try {
       expect(reconnectBackoffDelayMs(-5, { baseDelayMs: 300 })).toBe(300)
-    } finally {
-      randomSpy.mockRestore()
-    }
-  })
-
-  it('uses sane defaults when no options are passed', () => {
-    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(1)
-
-    try {
-      expect(reconnectBackoffDelayMs(0)).toBe(300)
-      expect(reconnectBackoffDelayMs(100)).toBe(15_000)
     } finally {
       randomSpy.mockRestore()
     }

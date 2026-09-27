@@ -98,6 +98,12 @@ class _TerminalBatch:
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.executor = DaemonThreadPoolExecutor(max_workers=len(parsed))
         self.slots = [_TerminalSlot(self, pc, i) for i, pc in enumerate(parsed)]
+        # Set once ANY slot in the batch has published a failed result (or a
+        # denied/blocked one). Informed consent is per the batch state the user
+        # SAW: after a failure, a later slot's pre-collected approval no longer
+        # describes the world its command will run in, so it must not be
+        # consumed — the guard re-runs live instead (#113158).
+        self.failure_seen = False
 
     def start(self):
         from agent.tool_executor import _resolve_sequential_tool_timeout
@@ -211,6 +217,16 @@ def consume_prepared_guard(command, env_type, has_host_access):
     if slot is None or slot.preparing:
         return None
     slot.check_cancelled()
+    # Re-gate after an earlier slot in the same batch failed (#113158): the
+    # user approved a batch where every command was expected to run; once one
+    # failed, that informed consent is stale for the commands after it, so
+    # drop the pre-made decision and let the guard run its live flow (tirith
+    # scan, allowlist, human approval). Nothing is auto-denied: an explicit
+    # human answer still wins; the prepared (often auto/policy) decision is
+    # simply not consumed.
+    if slot.batch.failure_seen and slot.decision is not None:
+        slot.decision = None
+        return None
     from tools.approval_context import _approval_tool_call_id
     if (_approval_tool_call_id.get() != slot.parsed.ref(slot.batch.task_id).call_id
             or slot.guard_key != (command, env_type, has_host_access)):
@@ -222,6 +238,20 @@ def consume_prepared_guard(command, env_type, has_host_access):
 def preparing_terminal_approval():
     slot = _slot.get()
     return slot is not None and slot.preparing
+
+
+def mark_batch_outcome(failed: bool) -> None:
+    """Record that the batch's current slot published a failed result.
+
+    Called by the sequential publisher AFTER a result is committed, so the
+    flag lands only for failures the model actually sees (a wedged worker's
+    late result never publishes). Sticky for the batch: one failure re-gates
+    every later prepared slot (#113158); successes leave it alone — a later
+    success must not un-stale an approval after an even earlier failure.
+    """
+    batch = _batch.get()
+    if batch is not None and failed:
+        batch.failure_seen = True
 
 
 def validate_prepared_terminal(args):

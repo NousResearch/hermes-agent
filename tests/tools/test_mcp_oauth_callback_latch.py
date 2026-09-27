@@ -47,24 +47,42 @@ def _wait_listening(port: int) -> None:
 
 
 def _drive_waiter(monkeypatch, paths: list[str]):
-    """Run the real waiter on its own loop; send *paths* back-to-back once the listener is bound."""
+    """Run the real waiter on its own loop; send *paths* back-to-back once the listener is bound.
+
+    The waiter polls ``_result_taken`` every 500 ms and closes the listener as soon as the first
+    terminal callback lands, so on a loaded runner the stand-in's later requests raced a dead port
+    (``ConnectionRefusedError`` / ``ConnectionResetError``). The waiter's poll is held open until
+    every request has been answered; the handler's own ``_result_taken`` reads are untouched, which
+    is what the latch under test relies on."""
     monkeypatch.setattr(mo.sys, "stdin", io.StringIO())  # paste reader sees EOF; the HTTP listener is under test
     port = _free_port()
     out: dict = {}
+    requests_sent = threading.Event()
+    real_taken = mo._result_taken
 
     def run():
         async def main():
             with mo.force_interactive_oauth():
-                return await mo._make_callback_waiter(port, timeout=4)()
+                return await mo._make_callback_waiter(port, timeout=30)()
         try:
             out["result"] = asyncio.run(main())
         except Exception as exc:  # noqa: BLE001 — the timeout is the failure under test
             out["exc"] = exc
 
     thread = threading.Thread(target=run)
+
+    def gated_taken(result):
+        if threading.current_thread() is thread and not requests_sent.is_set():
+            return False  # the waiter's poll: keep the listener up until the browser stand-in is done
+        return real_taken(result)
+
+    monkeypatch.setattr(mo, "_result_taken", gated_taken)
     thread.start()
     _wait_listening(port)
-    statuses = [_get(port, p) for p in paths]
+    try:
+        statuses = [_get(port, p) for p in paths]
+    finally:
+        requests_sent.set()
     thread.join(timeout=15)
     assert not thread.is_alive(), "waiter did not finish"
     assert "exc" not in out, f"waiter raised {type(out.get('exc')).__name__}"

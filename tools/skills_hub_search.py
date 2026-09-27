@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from tools.skills_hub_clawhub import ClawHubSource
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _filter_results_by_provider, _provider_filter_of
-from tools.skills_hub_models import SkillMeta, SkillSource, TRUST_RANK, _dedupe_by_trust
+from tools.skills_hub_models import SkillMeta, SkillSource, TRUST_RANK, _dedupe_by_trust, hub
 from tools.skills_hub_official import HermesIndexSource, OptionalSkillSource
 from tools.skills_hub_skillssh import SkillsShSource
 from tools.skills_hub_sources import BrowseShSource, LobeHubSource, UrlSource, WellKnownSkillSource
@@ -51,8 +51,10 @@ def _load_hermes_index() -> Optional[dict]:
     data = None
     for accept_encoding in ("gzip, deflate", "identity"):
         try:
-            resp = httpx.get(HERMES_INDEX_URL, timeout=15, follow_redirects=True,
-                             headers={"Accept-Encoding": accept_encoding})
+            resp = hub()._skills_hub_http_get(
+                HERMES_INDEX_URL, timeout=15, follow_redirects=True,
+                headers={"Accept-Encoding": accept_encoding},
+            )
             if resp.status_code != 200:
                 logger.debug("Hermes index fetch returned %d", resp.status_code)
                 return _load_stale_index_cache()

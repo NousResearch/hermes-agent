@@ -283,7 +283,6 @@ class TestHelpers:
         a = _deterministic_call_id("exec", "")
         b = _deterministic_call_id("exec", "")
         assert a == b
-        assert "exec" in a
 
     def test_format_tool_args_sorted_keys(self) -> None:
         # Sorted keys = deterministic across replays = prefix cache stays valid

@@ -147,7 +147,7 @@ def _configured_mcp_servers() -> tuple[set[str], set[str]]:
     """``(enabled, disabled)`` MCP server names from config; both empty on any error."""
     try:
         from hermes_cli.config import read_raw_config
-        from hermes_cli.tools_config import _parse_enabled_flag
+        from tools.mcp_tool_common import mcp_server_enabled
 
         cfg = read_raw_config()
         mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
@@ -156,7 +156,7 @@ def _configured_mcp_servers() -> tuple[set[str], set[str]]:
         for name, server_cfg in mcp_servers.items():
             if not isinstance(server_cfg, dict):
                 continue
-            target = enabled if _parse_enabled_flag(server_cfg.get("enabled", True), default=True) else disabled
+            target = enabled if mcp_server_enabled(server_cfg) else disabled
             target.add(str(name))
         return enabled, disabled
     except Exception:

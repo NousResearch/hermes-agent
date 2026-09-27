@@ -13,13 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Sequence
 
+from hermes_cli.gateway_multiplex_s6 import AUTOSTART_STATES as _AUTOSTART_STATES, fold_named_slot_intent
+
 log = logging.getLogger(__name__)
 
-# Only this desired state auto-restarts; everything else (startup_failed, starting, stopped,
-# missing) registers the slot down and waits for the user — no crash-loop of a broken gateway
-# across `docker restart`. Older installs only have gateway_state; newer lifecycle commands
-# persist desired_state separately so a transient runtime state can't erase operator intent.
-_AUTOSTART_STATES = frozenset({"running"})
+# Older installs only have gateway_state; newer lifecycle commands persist desired_state separately
+# so a transient runtime state can't erase operator intent.
 # Transient sub-states of a RUNNING gateway (not an operator stop, not a failed boot). A gateway
 # hard-killed in one of them with no `desired_state` would otherwise stay DOWN on every later boot
 # (observed: staging stranded at `draining`); map them to `running`, mirroring gateway/run.py.
@@ -119,8 +118,8 @@ def reconcile_profile_gateways(
     # booted with ZERO gateways: it has no root state (or "stopped"), every named slot is now
     # registered down unconditionally, and every action reported "registered" — a container that
     # looks healthy while nothing is listening.
-    folded = [name for name, _dir, prior in named if prior in _AUTOSTART_STATES]
-    default_should_start = default_prior_state in _AUTOSTART_STATES or bool(folded)
+    fold = fold_named_slot_intent(default_prior_state, ((name, prior) for name, _dir, prior in named))
+    folded, default_should_start = list(fold.folded), fold.root_should_start
     if folded and default_prior_state not in _AUTOSTART_STATES:
         log.warning("%s", boot_notice(folded))
     if not dry_run:
@@ -239,7 +238,7 @@ def _read_desired_state(profile_dir: Path) -> str | None:
     if not state_file.exists():
         return None
     try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
+        data = json.loads(state_file.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         log.warning("could not read %s; treating as no prior state", state_file)
         return None

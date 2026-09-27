@@ -9,13 +9,14 @@ statistics aggregated across all batches. See ``main`` (fire CLI) for usage.
 # hermes_bootstrap must be the very first import — UTF-8 stdio on Windows, no-op on POSIX.
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    # Partial ``hermes update`` (git reset landed, ``uv pip install -e .`` did not):
-    # only Windows UTF-8 stdio setup is skipped.
-    pass
+except ModuleNotFoundError as exc:
+    # Partial ``hermes update`` (git reset landed, ``uv pip install -e .`` did not).
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import json
 import logging
+import contextlib
 import os
 import time
 import traceback
@@ -260,14 +261,20 @@ def _process_single_prompt(
             # even for callers that build a config without it.
             platform=config.get("platform") or "batch",
         )
+        try:
+            # task_id ensures each task gets its own isolated VM
+            result = agent.run_conversation(prompt, task_id=task_id)
 
-        # task_id ensures each task gets its own isolated VM
-        result = agent.run_conversation(prompt, task_id=task_id)
-
-        # Stats before conversion — keep the original evaluation order.
-        tool_stats = _extract_tool_stats(result["messages"])
-        reasoning_stats = _extract_reasoning_stats(result["messages"])
-        trajectory = agent._convert_to_trajectory_format(result["messages"], prompt, result["completed"])
+            # Stats before conversion — keep the original evaluation order.
+            tool_stats = _extract_tool_stats(result["messages"])
+            reasoning_stats = _extract_reasoning_stats(result["messages"])
+            trajectory = agent._convert_to_trajectory_format(result["messages"], prompt, result["completed"])
+        finally:
+            # One agent per prompt, N prompts per batch process: an unclosed
+            # agent per prompt leaks terminals/VMs/httpx clients for the
+            # batch's whole run (#50197).
+            with contextlib.suppress(Exception):
+                agent.close()
 
         return {
             "success": True,

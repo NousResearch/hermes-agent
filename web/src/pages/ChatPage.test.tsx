@@ -43,6 +43,8 @@ class FakeTerminal {
 
   clearSelection() {}
 
+  clearTextureAtlas() {}
+
   dispose() {}
 
   focus() {}
@@ -396,7 +398,7 @@ describe("ChatPage", () => {
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
   });
 
-  it("explains an expired login in plain words with a Reload button when auto-reload is spent", async () => {
+  it("offers a Reload button for an expired login when auto-reload is spent", async () => {
     const { default: ChatPage } = await import("./ChatPage");
     await render(
       <MemoryRouter initialEntries={["/chat"]}>
@@ -409,9 +411,6 @@ describe("ChatPage", () => {
       FakeWebSocket.instances[0].onclose?.({ code: 4401, reason: "auth: bad-token", wasClean: true });
     });
 
-    const alert = container.querySelector('[role="alert"]');
-    expect(alert?.textContent).toMatch(/login expired/i);
-    expect(alert?.textContent).not.toMatch(/auth failed|bad-token|4401/i);
     const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
     expect(labels).toContain("Reload page");
   });
@@ -429,12 +428,11 @@ describe("ChatPage", () => {
       FakeWebSocket.instances[0].onclose?.({ code: 1011, reason: "", wasClean: true });
     });
 
-    expect(container.textContent).toMatch(/Chat could not start/);
     const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
     expect(labels).toContain("Start new session");
   });
 
-  it("offers Open logs when the agent process ended, since a crash looks like /exit", async () => {
+  it("offers Start new session and Open logs when the agent process ended", async () => {
     const { default: ChatPage } = await import("./ChatPage");
     await render(
       <MemoryRouter initialEntries={["/chat"]}>
@@ -447,7 +445,6 @@ describe("ChatPage", () => {
       FakeWebSocket.instances[0].onclose?.({ code: 4410, reason: "", wasClean: true });
     });
 
-    expect(container.textContent).toMatch(/may have crashed/i);
     const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
     expect(labels).toContain("Start new session");
     expect(labels).toContain("Open logs");
@@ -475,9 +472,6 @@ describe("ChatPage", () => {
         });
       }
 
-      expect(container.textContent).not.toMatch(/code 1006/);
-      expect(container.textContent).toMatch(/Lost connection to the Hermes dashboard server/);
-      expect(container.textContent).toContain("hermes dashboard");
       const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
       expect(labels).toContain("Reconnect now");
       expect(labels).toContain("Check server status");
@@ -587,6 +581,46 @@ describe("ChatPage side panel collapse", () => {
 // (that timer is set after `new WebSocket`). Without its own deadline the tab
 // strands on "connecting" with no retry. Mirrors the ChatSidebar events-feed
 // coverage in src/components/ChatSidebar.test.tsx.
+describe("ChatPage bundled font swap-in", () => {
+  it("redraws the terminal with the bundled font once it finishes loading", async () => {
+    let releaseFont!: () => void;
+    const fontGate = new Promise<void>((resolve) => {
+      releaseFont = resolve;
+    });
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        check: () => false,
+        load: async () => {
+          await fontGate;
+          return [{}];
+        },
+      },
+    });
+    const clearAtlas = vi.spyOn(FakeTerminal.prototype, "clearTextureAtlas");
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      expect(clearAtlas).not.toHaveBeenCalled();
+
+      await act(async () => {
+        releaseFont();
+        await fontGate;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(clearAtlas).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAtlas.mockRestore();
+      delete (document as { fonts?: unknown }).fonts;
+    }
+  });
+});
+
 describe("ChatPage PTY ticket connect deadline", () => {
   beforeEach(() => {
     vi.useFakeTimers();

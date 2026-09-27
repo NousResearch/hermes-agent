@@ -16,7 +16,7 @@ import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
-import { $layoutEditMode } from '../../edit-mode'
+import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
 import type { LayoutNode, SplitNode } from '../model'
 import { allPaneIds } from '../model'
 import {
@@ -111,6 +111,7 @@ export function TreeSplit({
   // re-render — not every split in the tree.
   const overrides = useSubtreeOverrides(useMemo(() => allPaneIds(node), [node]))
   const editMode = useStore($layoutEditMode)
+  const revealsHidden = useStore($layoutEditRevealsHidden)
   const collapsedSides = useStore($collapsedTreeSides)
   const horizontal = node.orientation === 'row'
   const axis = node.orientation
@@ -136,11 +137,12 @@ export function TreeSplit({
   // is narrow and the pane is collapsible (edge overlay instead).
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
-  // Layout-edit mode forces toggle-hidden panes (terminal off, review/preview
-  // closed) visible so they're rearrangeable — only truly-absent (unregistered)
-  // or narrow-collapsed panes stay gone. Restores itself on exit (render-only).
+  // Layout-edit mode (in Advanced) forces toggle-hidden panes (terminal off,
+  // review/preview closed) visible so they're rearrangeable — only truly-absent
+  // (unregistered) or narrow-collapsed panes stay gone. Restores itself on exit
+  // (render-only).
   const paneGone = (id: string) =>
-    !paneFor(id) || (!editMode && hiddenPanes.has(id)) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
+    !paneFor(id) || (!revealsHidden && hiddenPanes.has(id)) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
 
   const trackCtx: TrackContext = { paneFor, paneGone, overrides }
 
@@ -230,8 +232,9 @@ export function TreeSplit({
         const zone = fixed ? edgeFixedZone(child, edge, axis, trackCtx) : null
         const zoneEl = zone ? container.querySelector<HTMLElement>(`[data-tree-group="${zone.id}"]`) : null
         // Clamps live on the zone's split-child WRAPPER (where we render them).
-        const el = zoneEl?.parentElement ?? wrapper
-        const cs = window.getComputedStyle(el)
+        // For a nested section this is the INNER flex item, not the seam partner.
+        const zoneItem = zoneEl?.parentElement ?? wrapper
+        const cs = window.getComputedStyle(zoneItem)
         // A tool panel (terminal / logs) may be dragged down to its collapsed
         // header — the generic 80px floor is not its floor. Below that the
         // release minimizes the zone instead of leaving a useless sliver.
@@ -249,7 +252,10 @@ export function TreeSplit({
           min: toolZone ? floor : Math.max(floor, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
           max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY),
           collapseId: toolZone ? (zone?.id ?? groupIdOf(child)) : null,
-          floor
+          floor,
+          // The flex item the release commit resizes: the seam partner itself
+          // for a direct group, the inner zone wrapper for a nested section.
+          zoneItem
         }
       }
 
@@ -274,6 +280,9 @@ export function TreeSplit({
           element,
           index,
           initial: side.fixed ? side.size : sizeOf(element),
+          // Seam-partner width at pointerdown. A nested section is wider than
+          // its edge zone, so the preview grows the wrapper from this width.
+          wrapperSize: sizeOf(element),
           // A minimized rail is its 28px strip: it neither donates nor takes,
           // and its remembered weight must survive the gesture so restoring
           // it brings back the size it had before it was folded.
@@ -371,16 +380,17 @@ export function TreeSplit({
         }
       }
 
-      const styleSnapshots = sashTracks.map(track => track.element.getAttribute('style'))
+      // Nested sections also preview their inner zone wrapper, so snapshot it too.
+      const styleSnapshots = [...new Set(sashTracks.flatMap(track => [track.element, track.zoneItem]))].map(
+        el => [el, el.getAttribute('style')] as const
+      )
 
       const restoreStyles = () => {
-        sashTracks.forEach((track, index) => {
-          const style = styleSnapshots[index]
-
+        styleSnapshots.forEach(([el, style]) => {
           if (style === null) {
-            track.element.removeAttribute('style')
+            el.removeAttribute('style')
           } else {
-            track.element.setAttribute('style', style)
+            el.setAttribute('style', style)
           }
         })
       }
@@ -412,7 +422,11 @@ export function TreeSplit({
           const px = plan.sizes[index]
 
           if (track.fixed) {
-            track.element.style.flexBasis = `${px}px`
+            // Fixed tracks plan in zone space. A nested section's wrapper moves
+            // by the zone's delta from its own width. For a direct group both
+            // are one element, and the second write leaves it at `px`.
+            track.element.style.flexBasis = `${track.wrapperSize + px - track.initial}px`
+            track.zoneItem.style.flexBasis = `${px}px`
           } else {
             track.element.style.flex = `0 1 ${px}px`
           }
@@ -524,7 +538,19 @@ export function TreeSplit({
     },
     // trackCtx is derived state rebuilt per render; the drag captures it once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [axis, editMode, horizontal, node.children, node.id, node.weights, hiddenPanes, narrow, overrides, panes]
+    [
+      axis,
+      editMode,
+      revealsHidden,
+      horizontal,
+      node.children,
+      node.id,
+      node.weights,
+      hiddenPanes,
+      narrow,
+      overrides,
+      panes
+    ]
   )
 
   // Double-click a sash: every neighbor returns to its DEFAULT size.
@@ -601,7 +627,19 @@ export function TreeSplit({
       setTreeSplitWeights(node.id, !preset && !pinned ? weights.map(() => 1) : weights)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [axis, editMode, horizontal, node.children, node.id, node.weights, hiddenPanes, narrow, overrides, panes]
+    [
+      axis,
+      editMode,
+      revealsHidden,
+      horizontal,
+      node.children,
+      node.id,
+      node.weights,
+      hiddenPanes,
+      narrow,
+      overrides,
+      panes
+    ]
   )
 
   // A run of ONLY fixed tracks can't fill the container (grow-0 all around
@@ -652,6 +690,17 @@ export function TreeSplit({
     ? allFixedAbsorberIndex(growable, i => (horizontal ? tracks[i].sizing?.maxWidth : tracks[i].sizing?.maxHeight))
     : -1
 
+  // A capped all-fixed run leaves slack. When every track left standing is
+  // END-placed chrome (a bottom terminal whose column-mates ⌘J folded away),
+  // the slack goes BEFORE it so the zone keeps hugging its edge — a terminal
+  // deck belongs at the bottom of its column, not floating at the top.
+  const endPlacement = horizontal ? 'right' : 'bottom'
+
+  const anchorsEnd =
+    allFixed &&
+    absorberIndex < 0 &&
+    growable.every(i => allPaneIds(tracks[i].child).every(id => paneChrome(paneFor(id)).placement === endPlacement))
+
   // Weights are RATIOS, but CSS flex-grow is absolute: a run whose grows sum
   // below 1 fills only that fraction of the leftover (normalize's flatten
   // scales weights into the parent slot — a dock-split nested into an
@@ -686,7 +735,7 @@ export function TreeSplit({
 
   return (
     <div
-      className={cn('flex min-h-0 min-w-0 flex-1', horizontal ? 'flex-row' : 'flex-col')}
+      className={cn('flex min-h-0 min-w-0 flex-1', horizontal ? 'flex-row' : 'flex-col', anchorsEnd && 'justify-end')}
       data-tree-split={node.id}
       ref={containerRef}
     >

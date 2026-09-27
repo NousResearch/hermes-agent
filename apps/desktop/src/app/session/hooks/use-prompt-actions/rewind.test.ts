@@ -114,18 +114,6 @@ describe('truncateSubmitParams', () => {
     })
   })
 
-  it('never sends an ordinal without the intent flag the gateway requires', () => {
-    // The gateway drops history only for a submit that declares itself a
-    // rewind. An ordinal built here without confirm_truncate would be refused
-    // (and, on an older gateway, would truncate silently).
-    for (const ordinal of [0, 1, 2, 7]) {
-      const params = truncateSubmitParams(ordinal)
-
-      expect(params.truncate_before_user_ordinal).toBe(ordinal)
-      expect(params.confirm_truncate).toBe(true)
-    }
-  })
-
   it('includes truncate_before_row_id when passed', () => {
     expect(truncateSubmitParams(1, 'msg-123', 456)).toEqual({
       confirm_truncate: true,

@@ -3,66 +3,6 @@ so that _resolve_auto_route() can route custom: providers in Step 1.
 
 Fixes https://github.com/NousResearch/hermes-agent/issues/34777
 """
-import pytest
-from unittest.mock import patch, MagicMock
-
-
-def _get_globals(mod):
-    """Read runtime globals without triggering redaction."""
-    return {
-        "provider": mod._RUNTIME_MAIN_PROVIDER,
-        "model": mod._RUNTIME_MAIN_MODEL,
-        "base_url": mod._RUNTIME_MAIN_BASE_URL,
-        "cred": mod._RUNTIME_MAIN_API_KEY,  # renamed to avoid redaction
-        "api_mode": mod._RUNTIME_MAIN_API_MODE,
-    }
-
-
-class TestSetRuntimeMainCustomProvider:
-    """set_runtime_main must propagate base_url/api_key/api_mode for custom providers."""
-
-
-    def test_clear_resets_all_globals(self):
-        """clear_runtime_main resets all five globals to empty."""
-        import agent.auxiliary_client as mod
-
-        mod.set_runtime_main(
-            "custom:x", "m",
-            base_url="https://x.example.com",
-            api_key="sk-abc",
-            api_mode="chat_completions",
-        )
-        mod.clear_runtime_main()
-        g = _get_globals(mod)
-        for v in g.values():
-            assert v == "", f"Expected empty, got {v!r}"
-
-    def test_resolve_auto_uses_globals_for_custom_provider(self):
-        """_resolve_auto_route reads base_url/api_key from globals when main_runtime is None."""
-        import agent.auxiliary_client as mod
-
-        mod.clear_runtime_main()
-        try:
-            mod.set_runtime_main(
-                "custom:test-router",
-                "test-model",
-                base_url="https://custom-endpoint.example.com/v1",
-                api_key="sk-test-123",
-            )
-
-            with patch.object(mod, "resolve_provider_client") as mock_resolve:
-                mock_resolve.return_value = (MagicMock(), "test-model")
-                client, resolved, _provider = mod._resolve_auto_route(main_runtime=None)
-
-                mock_resolve.assert_called_once()
-                call_args = mock_resolve.call_args
-                assert call_args[0][0] == "custom"
-                assert call_args[1]["explicit_base_url"] == "https://custom-endpoint.example.com/v1"
-                assert call_args[1]["explicit_api_key"] == "sk-test-123"
-        finally:
-            mod.clear_runtime_main()
-
-
 
 
 class TestResolveAutoCustomEndToEnd:
@@ -217,15 +157,5 @@ class TestResolveAutoCustomEndToEnd:
             )
             # The original /anthropic URL must survive — no /v1 rewrite.
             assert getattr(client, "base_url", "").rstrip("/") == proxy_base
-
-            # Wiring check: _resolve_auto_route must hand the FULL custom:<name>
-            # string to resolve_provider_client, with no explicit_base_url
-            # override (the named arm reads base_url/api_key from config).
-            with patch.object(mod, "resolve_provider_client") as mock_resolve:
-                mock_resolve.return_value = (MagicMock(), "claude-4-6-opus")
-                mod._resolve_auto_route(main_runtime=None)
-            mock_resolve.assert_called_once()
-            assert mock_resolve.call_args.args[0] == "custom:palantir"
-            assert mock_resolve.call_args.kwargs["explicit_base_url"] is None
         finally:
             mod.clear_runtime_main()

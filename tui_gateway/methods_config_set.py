@@ -471,12 +471,21 @@ _CONFIG_SETTERS = {
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
 
+# Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
+# agent.* for every surface, the process env every later child inherits). A non-empty session_id this
+# backend no longer holds (reaped / re-minted) is a stale session, not "no session": it answers 4001 so
+# the client resumes, never the global write. An explicit scope="global" is still honoured.
+_SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning"})
+
 
 @method("config.set")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))
+    if session is None and params.get("session_id") and key in _SESSION_SCOPED_KEYS \
+            and _word(params.get("scope")) != "global":
+        return _sess_nowait(params, rid)[1]
     handler = _CONFIG_SETTERS.get(key)
     if handler is None and key.startswith("details_mode."):
         handler = _set_details_section

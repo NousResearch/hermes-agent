@@ -139,8 +139,8 @@ def _load_catalog(lang: str) -> dict[str, str]:
         logger.debug("i18n catalog missing for %s at %s", lang, path)
     else:
         try:
-            import yaml
-            with path.open("r", encoding="utf-8") as f:
+            import hermes_yaml as yaml
+            with path.open("r", encoding="utf-8-sig") as f:
                 _flatten_into(yaml.safe_load(f) or {}, "", flat)
         except Exception as exc:
             logger.warning("Failed to load i18n catalog %s: %s", path, exc)
@@ -149,8 +149,8 @@ def _load_catalog(lang: str) -> dict[str, str]:
     overlay = _overlay_path(lang, home_key)
     if overlay is not None:
         try:
-            import yaml
-            with overlay.open("r", encoding="utf-8") as f:
+            import hermes_yaml as yaml
+            with overlay.open("r", encoding="utf-8-sig") as f:
                 _flatten_into(yaml.safe_load(f) or {}, "", flat)
         except Exception as exc:
             logger.warning("Failed to load i18n overlay %s: %s", overlay, exc)

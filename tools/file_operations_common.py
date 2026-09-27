@@ -5,6 +5,7 @@ behavior — key names, order and omission rules are pinned by tests and read by
 the model.
 """
 
+import difflib
 import re
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, List, Optional
@@ -246,6 +247,72 @@ def _normalize_line_endings(text: str, target: str) -> str:
     if target == "\r\n":
         return lf_normalized.replace("\n", "\r\n")
     return text
+
+
+# Lines as LF delimits them (str.splitlines also breaks on CR, FF, VT and U+2028).
+_LF_LINE_RE = re.compile(r"[^\n]*\n|[^\n]+")
+_LINE_MATCH_LIMIT = 20_000
+
+
+def _split_line_ending(line: str) -> tuple[str, str]:
+    """``(body, ending)`` where ending is ``\\r\\n``, ``\\n`` or empty. A lone CR is
+    content, not an ending: progress-bar logs and old Mac text carry them mid-line."""
+    if line.endswith("\r\n"):
+        return line[:-2], "\r\n"
+    if line.endswith("\n"):
+        return line[:-1], "\n"
+    return line, ""
+
+
+def _keep_untouched_line_endings(original: str, edited: str, fallback: Optional[str]) -> str:
+    """``edited`` with every line it shares with ``original`` carrying the ending it
+    had there. An edit writes the whole file back, so normalizing the whole text
+    rewrites lines the edit never touched: one CRLF in an LF file turned every line
+    CRLF, and a lone CR became a line break. Changed lines take the ending of the
+    line they replace (``fallback`` when there is none), so an edit stays consistent
+    with its surroundings in a mixed file."""
+    old = [_split_line_ending(line) for line in _LF_LINE_RE.findall(original)]
+    new = [_split_line_ending(line) for line in _LF_LINE_RE.findall(edited)]
+    # Most edits touch one region: strip the shared head and tail so the matcher only
+    # sees what lies between the first and last change.
+    shortest = min(len(old), len(new))
+    head = 0
+    while head < shortest and old[head][0] == new[head][0]:
+        head += 1
+    tail = 0
+    while tail < shortest - head and old[-1 - tail][0] == new[-1 - tail][0]:
+        tail += 1
+    old_end, new_end = len(old) - tail, len(new) - tail
+    blocks = [("equal", 0, head, 0, head)]
+    if max(old_end, new_end) - head > _LINE_MATCH_LIMIT:
+        # Matching is quadratic; past the limit the span between the first and last
+        # change counts as changed rather than stalling the edit.
+        blocks.append(("replace", head, old_end, head, new_end))
+    else:
+        matcher = difflib.SequenceMatcher(
+            None, [body for body, _ in old[head:old_end]], [body for body, _ in new[head:new_end]])
+        blocks += [(tag, i1 + head, i2 + head, j1 + head, j2 + head)
+                   for tag, i1, i2, j1, j2 in matcher.get_opcodes()]
+    blocks.append(("equal", old_end, len(old), new_end, len(new)))
+
+    def ending_near(index: int) -> str:
+        for i in (index, index - 1):
+            if 0 <= i < len(old) and old[i][1]:
+                return old[i][1]
+        return fallback or ""
+
+    out: List[str] = []
+    for tag, i1, _i2, j1, j2 in blocks:
+        if tag == "delete":
+            continue
+        for offset, (body, ending) in enumerate(new[j1:j2]):
+            # A line that gained or lost its final newline was edited there, even if its text was not.
+            if tag == "equal" and bool(old[i1 + offset][1]) == bool(ending):
+                ending = old[i1 + offset][1]
+            elif ending:
+                ending = ending_near(i1 + offset if tag == "equal" else i1) or ending
+            out.append(body + ending)
+    return "".join(out)
 
 
 # UTF-8 BOM (EF BB BF == U+FEFF), prepended by some Windows editors. Stripped on

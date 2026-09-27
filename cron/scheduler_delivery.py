@@ -1315,8 +1315,9 @@ class _TargetDelivery:
     mirror_this_target: bool
     in_channel_surface: bool
     inchannel_continuable: bool
-    opened_thread_id: Optional[str]
+    opened_thread_id: Optional[str] = None
     live_adapter_ready: bool = False
+    live_error: Optional[str] = None  # raw live-lane rejection (e.g. "send_path_degraded")
 
     @property
     def is_relay(self) -> bool:
@@ -1324,7 +1325,10 @@ class _TargetDelivery:
 
     @property
     def where(self) -> str:
-        return f"{self.platform_name}:{self.chat_id}"
+        # thread_id disambiguates forum/topic targets — a bare platform:chat_id report of a
+        # topic-routed failure points at the wrong lane.
+        base = f"{self.platform_name}:{self.chat_id}"
+        return f"{base}:{self.thread_id}" if self.thread_id else base
 
 
 def _note_target_error(job: dict, msg: str, errors: list) -> None:
@@ -1525,6 +1529,7 @@ def _live_send_text(
         else:
             err, shape = getattr(send_result, "error", None), type(send_result).__name__
         msg = f"live adapter send to {t.where} returned unconfirmed result ({shape}, error={err})"
+        t.live_error = str(err) if err else msg  # raw rejection; the caller decides retryable vs doomed
         _warn_live_lane_failure(job, msg, t.is_relay)
         target_errors.append(msg)
         return False, False, None
@@ -1667,6 +1672,7 @@ def _deliver_via_live_adapter(
             _seed_live_delivery_sessions(t, delivered_message_id)
     except Exception as e:
         err_msg = f"live adapter delivery to {t.where} failed: {e}"
+        t.live_error = str(e)  # raw rejection; the caller decides retryable vs doomed
         if not any(err_msg in err for err in target_errors):
             target_errors.append(err_msg)
         _warn_live_lane_failure(job, err_msg, t.is_relay)
@@ -1738,6 +1744,67 @@ def _standalone_send(
             return _failed(e)
     except Exception as e:
         return _failed(e)
+
+
+# Live-lane rejections the runtime sweep treats as "wait for reconnect, then redeliver".
+# Mirrors gateway.delivery_ledger._RUNTIME_RETRYABLE_ERRORS; duplicated here so the cron
+# lane does not import the gateway package (scheduler_delivery runs pre-gateway in some
+# deployments).
+_RETRYABLE_LIVE_ERRORS = frozenset({"send_path_degraded"})
+
+
+def _queue_retryable_live_rejection(t: _TargetDelivery, content: str, delivery_errors: list) -> bool:
+    """Queue a retryable live-lane rejection to the delivery ledger instead of falling
+    through to standalone.
+
+    Standalone runs in the cron worker's own credential scope. A satellite profile has no
+    platform token there, so the fallback hard-fails ("You must pass the token from
+    BotFather") and the payload is lost — even though the adapter marked the rejection
+    retryable. Recording the payload as a failed delivery obligation (reconnect-only)
+    lets the existing post-reconnect sweep (_redeliver_failed_obligations_for_platform)
+    redeliver it once the adapter's send path is healthy again.
+
+    Returns True if the payload was queued (caller must skip standalone).
+    """
+    raw = (t.live_error or "").strip()
+    if raw not in _RETRYABLE_LIVE_ERRORS:
+        return False
+    try:
+        from gateway.delivery_ledger import (
+            compute_obligation_id, ledger_enabled, mark_failed, record_obligation,
+        )
+
+        if not ledger_enabled():
+            return False
+        job_id = str(t.job.get("id", "?"))
+        # Build the report BEFORE any ledger write: if message construction raises, no row
+        # must land (a landed row + False return would double-send via standalone).
+        queued_msg = (
+            f"queued {t.where} for post-reconnect redelivery (live lane rejected with retryable "
+            f"'{raw}'; standalone skipped to avoid a doomed credential-scope fallback)")
+        # Owner profile of the adapter that actually tried the send (a satellite profile's
+        # transport resolves to the PRIMARY adapter via SharedRouteAdapters): the post-reconnect
+        # runtime sweep matches rows to the adapter identity by (platform, adapter_profile).
+        adapter_profile = getattr(getattr(t.transport, "adapter", None), "_owner_profile", None)
+        session_key = f"cron:{t.platform_name}:{t.chat_id}"
+        if t.thread_id:
+            session_key += f":{t.thread_id}"
+        obligation_id = compute_obligation_id(session_key, f"job:{job_id}", content)
+        record_obligation(
+            obligation_id=obligation_id,
+            session_key=session_key,
+            platform=t.platform_name,
+            chat_id=str(t.chat_id),
+            thread_id=t.thread_id,
+            content=content,
+            adapter_profile=adapter_profile,
+        )
+        mark_failed(obligation_id, raw)
+        delivery_errors.append(queued_msg)
+        return True
+    except Exception as e:  # ledger unavailable — behave exactly as before
+        logger.debug("Job delivery: could not queue retryable rejection to ledger: %s", e)
+        return False
 
 
 def _deliver_standalone(
@@ -2043,6 +2110,14 @@ def _deliver_result(
             unverified_targets=unverified_targets,
         )
         if not delivered:
+            # A retryable live-lane rejection (adapter send-path degraded during a network
+            # wobble) must NOT fall through to standalone: standalone runs on THIS profile's
+            # credential scope, which a satellite profile does not have (no platform token),
+            # so the fallback hard-fails and the payload is lost — even though the adapter
+            # marked the rejection retryable. Queue it to the delivery ledger instead; the
+            # post-reconnect runtime sweep redelivers it.
+            if _queue_retryable_live_rejection(t, cleaned_delivery_content, delivery_errors):
+                continue
             _deliver_standalone(
                 t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
 

@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import pytest
 
+from plugins.platforms.matrix.adapter import MatrixAdapter
 from plugins.platforms.matrix.read_context import read_matrix_context
 from plugins.platforms.matrix.effective_event import MatrixEffectiveEvent, effective_event
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
@@ -51,14 +52,17 @@ def _edited(original: dict, body: str) -> dict:
     }
 
 
-def _adapter(client) -> SimpleNamespace:
-    return SimpleNamespace(
+def _adapter(client) -> MatrixAdapter:
+    adapter = object.__new__(MatrixAdapter)
+    adapter._allowed_room_ids = set()
+    vars(adapter).update(
         _client=client, _joined_rooms={ROOM}, _user_id="@bot:example.org",
         _event_context_cache=MatrixEventContextCache(),
         _is_allowed_matrix_room_event=AsyncMock(return_value=True),
         _is_dm_room=AsyncMock(return_value=False),
         _is_sender_authorized=lambda *_args, **_kwargs: True,
     )
+    return adapter
 
 
 def _edit_store(content: dict) -> SimpleNamespace:

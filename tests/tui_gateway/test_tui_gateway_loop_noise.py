@@ -58,6 +58,33 @@ def test_no_exception_is_not_suppressed():
     assert _is_benign_teardown({"message": "loop warning, no exc"}) is False
 
 
+def _shielded_ctx(exc: BaseException) -> dict:
+    # Shape of the context Python 3.14's asyncio.shield() reports when the shielded
+    # future fails after the outer await was cancelled (cpython gh-156321).
+    return {"message": f"{type(exc).__name__} exception in shielded future", "exception": exc}
+
+
+def test_closed_websocket_in_shielded_future_is_benign():
+    from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
+    from websockets.frames import Close, CloseCode
+
+    timeout = ConnectionClosedError(None, Close(CloseCode.INTERNAL_ERROR, "keepalive ping timeout"), None)
+    assert _is_benign_teardown(_shielded_ctx(timeout)) is True
+    assert _is_benign_teardown(_shielded_ctx(ConnectionClosedOK(None, None, None))) is True
+
+
+def test_other_errors_in_shielded_future_are_not_suppressed():
+    assert _is_benign_teardown(_shielded_ctx(RuntimeError("real bug"))) is False
+    assert _is_benign_teardown(_shielded_ctx(ConnectionResetError("reset"))) is False
+
+
+def test_closed_websocket_outside_shield_is_not_suppressed():
+    from websockets.exceptions import ConnectionClosedOK
+
+    ctx = {"message": "Task exception was never retrieved", "exception": ConnectionClosedOK(None, None, None)}
+    assert _is_benign_teardown(ctx) is False
+
+
 def test_install_suppresses_flood_and_forwards_real_errors():
     loop = asyncio.new_event_loop()
     try:

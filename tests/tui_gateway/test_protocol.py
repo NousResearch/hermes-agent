@@ -1263,6 +1263,202 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     assert resp["error"]["code"] == 4018
 
 
+class _BannerWorker:
+    """Stand-in for the slash worker's current skill path: ok-reply the banner."""
+
+    def __init__(self):
+        self.calls = []
+        self.closed = False
+
+    def run(self, command):
+        self.calls.append(command)
+        return "⚡ Loading skill: grilling"
+
+    def close(self):
+        self.closed = True
+
+
+def _grilling_profile(tmp_path):
+    """A session whose profile has only the grilling skill, plus a banner worker."""
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    external = tmp_path / "external"
+    skill_dir = external / "grilling"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: grilling\ndescription: Grill the plan.\n---\n\n# grilling\n\nAsk hard questions.\n"
+    )
+    (profile / "config.yaml").write_text(f"skills:\n  external_dirs:\n    - {external}\n")
+    sid = "skill-failopen-session"
+    worker = _BannerWorker()
+    return empty_local_dir, {
+        "session_key": sid,
+        "agent": None,
+        "profile_home": str(profile),
+        "slash_worker": worker,
+    }, worker
+
+
+def _assert_not_ok_banner(resp, worker):
+    blob = json.dumps(resp)
+    assert "Loading skill" not in blob
+    assert worker.calls == []
+    result = resp.get("result") or {}
+    if result.get("type") == "skill":
+        assert result.get("message")
+        assert result.get("name") == "grilling"
+        return
+    assert "error" in resp
+    assert resp["error"]["code"] != 0
+
+
+def test_slash_exec_skill_scan_raise_returns_dispatch_payload_not_banner(server, tmp_path):
+    """A skill-scan exception must not fail open into an ok loading banner.
+
+    The client gets command.dispatch's skill payload (the expanded prompt), never
+    a silent success that drops it.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+    server._sessions[sid] = session
+    real_get = sc_mod.get_skill_commands
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("external_dirs hiccup")
+        return real_get()
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", flaky),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_project", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "grilling tighten this", "session_id": sid},
+        })
+
+    _assert_not_ok_banner(resp, worker)
+    assert resp["result"]["type"] == "skill"
+    assert "tighten this" in resp["result"]["message"]
+
+
+def test_slash_exec_skill_scan_raise_is_hard_error_not_banner_when_dispatch_misses(server, tmp_path):
+    """If the scan keeps failing, slash.exec still must not ok-reply the banner."""
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+    server._sessions[sid] = session
+
+    def always_raise():
+        raise OSError("external_dirs hiccup")
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", always_raise),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/grilling", "session_id": sid},
+        })
+
+    _assert_not_ok_banner(resp, worker)
+    assert "error" in resp
+
+
+def test_slash_exec_skill_scan_raise_still_runs_registry_commands(server):
+    """A skill-scan exception must not block built-ins the worker owns."""
+    import agent.skill_commands as sc_mod
+
+    class _StatusWorker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, command):
+            self.calls.append(command)
+            return "verbose ok"
+
+        def close(self):
+            pass
+
+    sid = "registry-during-skill-scan-failure"
+    worker = _StatusWorker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch.object(sc_mod, "get_skill_commands", side_effect=OSError("external_dirs hiccup")):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/verbose", "session_id": sid},
+        })
+
+    assert worker.calls == ["/verbose"]
+    assert resp.get("result", {}).get("output") == "verbose ok"
+    assert "error" not in resp
+
+
+def test_slash_exec_worker_skill_refuse_returns_dispatch_payload(server, tmp_path):
+    """A worker that refuses a skill before process_command must not become a 5030 drop.
+
+    The gate can miss (stale empty scan) while dispatch still resolves the skill.
+    The client gets that payload, and the worker stays up.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+
+    class _RefuseWorker(_BannerWorker):
+        def run(self, command):
+            self.calls.append(command)
+            raise RuntimeError("skill command refused before process: /grilling")
+
+    worker = _RefuseWorker()
+    session["slash_worker"] = worker
+    server._sessions[sid] = session
+    real_get = sc_mod.get_skill_commands
+    calls = {"n": 0}
+
+    def stale_then_real():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {}
+        return real_get()
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", stale_then_real),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_project", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/grilling", "session_id": sid},
+        })
+
+    assert worker.closed is False
+    assert resp.get("result", {}).get("type") == "skill"
+    assert resp["result"].get("message")
+    assert "Loading skill" not in json.dumps(resp)
+
+
 def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_path):
     """command.dispatch must load a skill that exists only in the session profile."""
     import agent.skill_commands as sc_mod

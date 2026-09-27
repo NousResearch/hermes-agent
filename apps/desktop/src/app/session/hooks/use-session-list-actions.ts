@@ -53,8 +53,20 @@ import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions
 // (telegram, discord, …) is fetched separately into its own self-managed
 // sidebar section (refreshMessagingSessions). Excluding them here keeps
 // "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'oneshot', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+// interleaving gateway threads that bury them. ACP rows are editor-driven
+// conversations: every editor wake mints an auto-titled row, so they would
+// bury local chats — and they were never ended before #118216, which also
+// kept prune/archive away from them.
+const SIDEBAR_EXCLUDED_SOURCES = [
+  'acp',
+  'cron',
+  'kanban',
+  'oneshot',
+  'subagent',
+  'tool',
+  ...MESSAGING_SESSION_SOURCE_IDS
+]
+
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -340,10 +352,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           const recents = result.recents
           const recentsErrors = recents.errors ?? result.errors
 
+          const scopedRetry =
+            recents.retry === true ||
+            (sessionProfile !== 'all' && recents.profiles_failed?.[sessionProfile]?.retry === true) ||
+            result.profiles_failed?.[sessionProfile]?.retry === true
+
           setCorruptSessionStores(result.storage)
           // A damaged store already has its own notice; Retry can't repair it.
           const retryableErrors = recentsErrors?.filter(e => !result.storage?.[e.profile])
-          setSessionsLoadError(Boolean(showLoading && retryableErrors?.length && recents.sessions.length === 0))
+          setSessionsLoadError(
+            Boolean(showLoading && (scopedRetry || retryableErrors?.length) && (recents.sessions?.length ?? 0) === 0)
+          )
 
           // Drop rows the user just deleted/archived: a refresh can race an
           // in-flight mutation and the backend page still carries the doomed row.

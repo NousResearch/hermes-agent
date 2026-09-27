@@ -183,6 +183,20 @@ JUDGE_BACKGROUND_BLOCK_TEMPLATE = (
     "on one of these):\n{background_lines}\n\n"
 )
 
+REVIEW_HANDOFF_JUDGE_BLOCK = (
+    "Review-handoff decision: the Goal below is the whole card, but this "
+    "transition only admits the candidate to independent review. Judge "
+    "review readiness, not whether the whole card is finished. Return DONE "
+    "when the response identifies the candidate (commit, branch, artifact or "
+    "equivalent) and shows its implementation-stage verification evidence. "
+    "Stages that come after this handoff (independent review verdict, "
+    "reviewer-authored results, release, installation, activation, "
+    "deployment, live or domain-owner acceptance) are owned by other people "
+    "and are expected to remain; they are neither CONTINUE nor BLOCKED. "
+    "Missing or unverified implementation-stage work is CONTINUE; BLOCKED "
+    "only when the implementation stage itself cannot proceed.\n\n"
+)
+
 JUDGE_USER_PROMPT_TEMPLATE = (
     "Goal:\n{goal}\n\n"
     "Agent's most recent response:\n{response}\n\n"
@@ -877,6 +891,7 @@ def judge_goal(
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    review_handoff: bool = False,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -918,6 +933,8 @@ def judge_goal(
         prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(subgoals_block=_truncate(subgoals_block, 2000), **common)
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
+    if review_handoff:
+        prompt = REVIEW_HANDOFF_JUDGE_BLOCK + prompt
 
     try:
         raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)

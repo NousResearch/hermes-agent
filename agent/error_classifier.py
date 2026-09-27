@@ -527,8 +527,10 @@ _REASONING_PARAM_REJECTION = re.compile(
 # title on every call:
 #   {'type': 'literal_error', 'loc': ('body', 'reasoning_effort'),
 #    'msg': "Input should be 'low', 'medium' or 'high'", 'input': 'none'}
+# stringified body names the loc in whatever quote style the repr picked (``'loc':`` from a
+# JSON dump, ``\'loc\':`` once Python's dict repr escapes the inner quotes).
 _REASONING_LOC_REJECTION = re.compile(
-    r"""['\"]loc['\"]\s*:\s*[\[(][^\])]*"""
+    r"""\\?['\"]loc\\?['\"]\s*:\s*[\[(][^\])]*"""
     r"""(?:reasoning_effort|reasoning|thinking_config|thinking_budget|enable_thinking|thinking|think)\b"""
 )
 

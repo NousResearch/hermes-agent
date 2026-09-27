@@ -3392,7 +3392,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         fn = tc.get("function", {})
         # Redact the FULL args before cutting: delimited secrets (PEM BEGIN…END) only match whole, so a
         # pre-redaction cut would leave a key body straddling the cut unredacted in the persisted summary.
-        args = _redact_compaction_text(fn.get("arguments", "") or "")
+        args = _redact_compaction_text(fn.get("arguments", ""))
         if len(args) > self._TOOL_ARGS_MAX:
             args = args[:self._TOOL_ARGS_HEAD] + "..."
         return f"  {fn.get('name', '?')}({args})"

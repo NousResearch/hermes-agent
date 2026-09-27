@@ -3470,15 +3470,22 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
-    command = [
-        sys.executable,
-        "-m",
-        "cron.scheduler",
-        "--external-worker-file",
-        str(payload_path),
-        "--ack-file",
-        str(ack_path),
-    ]
+    repo_root = Path(__file__).resolve().parent.parent
+    # A managed gateway runs on the bare store Python with the committed dependency
+    # generation activated *in-process* only (hermes_bootstrap -> activate_dependencies),
+    # and the sanitizer-built worker env deliberately drops runtime site-packages — so a
+    # worker spawned from ``sys.executable`` re-resolves imports from scratch and dies at
+    # the first third-party import before its ownership ack (#124279). Launch through the
+    # same installation-bound runtime command every other entry point uses: the bootstrap
+    # leases the committed generation in the child, and the handoff argv is preserved.
+    from hermes_cli._launchers import runtime_command
+
+    command = runtime_command(
+        repo_root,
+        ["--external-worker-file", str(payload_path),
+         "--ack-file", str(ack_path)],
+        module="cron.scheduler",
+    )
 
     from agent.secret_scope import (
         build_profile_secret_scope,

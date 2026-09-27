@@ -790,20 +790,24 @@ def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, mo
 
 
 def test_no_config_drops_bridged_index_settings_from_child_env(tmp_path):
-    """no_config must isolate the pinned runtime builder from ALL ambient uv
-    configuration: --no-config covers config files, but PM's pip-mirror bridge
+    """no_config must isolate the pinned runtime builder from ambient INDEX
+    redirection: --no-config covers config files, but PM's pip-mirror bridge
     injects UV_INDEX_URL as an env var, and re-resolving the official-index
     runtime lockfile against that mirror trips `uv sync --locked` (#124418).
-    The default path keeps the bridge — mirrored networks need it to resolve
-    their application dependencies at all."""
+    Transport knobs are NOT index redirects and must survive isolation —
+    corporate networks need UV_HTTP_TIMEOUT et al. to reach the pinned URLs.
+    The default path keeps the whole bridge — mirrored networks need it to
+    resolve their application dependencies at all."""
     import io
     from pm.environment import PythonEnvironment
 
     ambient = dict(os.environ, UV_INDEX_URL="https://fixture-mirror.invalid/simple",
                    UV_HTTP_TIMEOUT="99")
     child = ("import os, sys\n"
-             "present = sorted(k for k in ('UV_INDEX_URL', 'UV_HTTP_TIMEOUT') if k in os.environ)\n"
-             "sys.exit(', '.join(present) if present else None)\n")
+             "if 'UV_INDEX_URL' in os.environ:\n"
+             "    sys.exit('leaked index redirect: UV_INDEX_URL')\n"
+             "if 'UV_HTTP_TIMEOUT' not in os.environ:\n"
+             "    sys.exit('transport knob dropped: UV_HTTP_TIMEOUT')\n")
 
     def run(**kwargs):
         environment = PythonEnvironment(
@@ -812,7 +816,7 @@ def test_no_config_drops_bridged_index_settings_from_child_env(tmp_path):
         return environment._run(["-c", child], cwd=tmp_path, timeout=60)
 
     isolated = run(no_config=True)
-    assert isolated.returncode == 0, f"bridged settings leaked into no_config child: {isolated.stderr}"
+    assert isolated.returncode == 0, f"isolation wrong: {isolated.stderr}"
     bridged = run()
     assert bridged.returncode == 1, "default path must keep the bridge"
-    assert "UV_INDEX_URL" in bridged.stderr and "UV_HTTP_TIMEOUT" in bridged.stderr
+    assert "UV_INDEX_URL" in bridged.stderr, bridged.stderr

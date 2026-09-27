@@ -278,10 +278,12 @@ class PythonEnvironment:
             # builder asked to be isolated from ambient index configuration:
             # re-resolving its official-index lockfile against a mirror trips
             # `--locked` (#124418), and a fully-pinned graph never needs a
-            # mirror to resolve.
-            from pm.index_config import is_forwarded
+            # mirror to resolve. Index-REDIRECT settings are dropped; transport
+            # knobs (UV_NATIVE_TLS / UV_INSECURE_HOST / UV_HTTP_TIMEOUT) survive
+            # — corporate networks need them to reach the pinned URLs at all.
+            from pm.index_config import is_index_redirect
 
-            env = {key: value for key, value in env.items() if not is_forwarded(key)}
+            env = {key: value for key, value in env.items() if not is_index_redirect(key)}
         env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
                    UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:

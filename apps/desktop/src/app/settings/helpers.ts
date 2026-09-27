@@ -25,6 +25,19 @@ export const withoutKey = <T>(record: Record<string, T>, key: string) => {
 
 export const redactedValue = (v: string) => (v.length <= 8 ? '••••' : `${v.slice(0, 4)}...${v.slice(-4)}`)
 
+// The backend wraps stored-key previews in a write-guard sentinel
+// (hermes_cli/web_routers/_common.redacted_credential_preview): show the inner
+// preview, and a plain mask for the label-less forms.
+export const credentialPreview = (value: null | string | undefined): null | string => {
+  if (!value?.startsWith('«redacted')) {
+    return value || null
+  }
+
+  const inner = /^«redacted:(.+)»$/.exec(value)?.[1]?.trim()
+
+  return inner || '••••••••'
+}
+
 // Longest-prefix match so a more specific group like ``MINIMAX_CN_`` is
 // chosen over its shorter parent ``MINIMAX_``. Falls back to the bucket
 // "Other" used by the Keys settings view for un-grouped env vars.

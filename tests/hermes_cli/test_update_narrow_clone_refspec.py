@@ -62,22 +62,13 @@ def test_check_fetch_materialises_tracking_ref_on_narrow_clone(
         clone, "config", "--get-all", "remote.origin.fetch"
     )
     tip_sha = _git(origin, "rev-parse", "main")
-    # The defect: a by-name fetch leaves origin/main unresolvable.
-    assert (
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(clone),
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                "origin/main",
-            ],
-            capture_output=True,
-        ).returncode
-        != 0
+    # The defect: a by-name fetch succeeds but leaves origin/main unresolvable.
+    _git(clone, "fetch", "-q", "origin", "main")
+    unresolved = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "--verify", "--quiet", "origin/main"],
+        capture_output=True,
     )
+    assert unresolved.returncode != 0
 
     monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", clone)
     monkeypatch.setattr(

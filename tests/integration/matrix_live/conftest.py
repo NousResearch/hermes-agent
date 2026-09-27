@@ -30,6 +30,7 @@ from nio import (
     LoginResponse,
     RegisterResponse,
     RoomCreateResponse,
+    RoomPutStateResponse,
 )
 from testcontainers.core import testcontainers_config
 from testcontainers.core.container import DockerContainer, Reaper
@@ -414,7 +415,12 @@ async def _register(url: str, localpart: str, *, unique: bool = False) -> Matrix
         await client.close()
 
 
-def _create_live_room(synapse: tuple[DockerContainer, str, Network], *, unique_accounts: bool = False) -> LiveRoom:
+@pytest.fixture
+def matrix_room_topic() -> str | None:
+    return None
+
+
+def _create_live_room(synapse: tuple[DockerContainer, str, Network], *, unique_accounts: bool = False, matrix_room_topic: str | None = None) -> LiveRoom:
     _, url, _ = synapse
 
     async def create() -> LiveRoom:
@@ -424,6 +430,11 @@ def _create_live_room(synapse: tuple[DockerContainer, str, Network], *, unique_a
         try:
             response = await client.room_create(name="Matrix live test", invite=[bot.user_id])
             assert isinstance(response, RoomCreateResponse), response
+            if matrix_room_topic:
+                topic_response = await client.room_put_state(
+                    response.room_id, "m.room.topic", {"topic": matrix_room_topic}
+                )
+                assert isinstance(topic_response, RoomPutStateResponse), topic_response
             return LiveRoom(url, response.room_id, bot, alice)
         finally:
             await client.close()
@@ -432,8 +443,8 @@ def _create_live_room(synapse: tuple[DockerContainer, str, Network], *, unique_a
 
 
 @pytest.fixture
-def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
-    return _create_live_room(synapse)
+def live_room(synapse: tuple[DockerContainer, str, Network], matrix_room_topic: str | None) -> LiveRoom:
+    return _create_live_room(synapse, matrix_room_topic=matrix_room_topic)
 
 
 @pytest.fixture

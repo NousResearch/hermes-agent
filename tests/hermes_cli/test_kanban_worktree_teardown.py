@@ -266,24 +266,44 @@ def test_archive_task_reaps_clean_worktree(kanban_home: Path, repo: Path) -> Non
     assert not wt.exists()
 
 
-def test_parent_worktree_deferred_until_children_done(
+def test_parent_worktree_reaped_while_independent_child_active(
     kanban_home: Path, repo: Path
 ) -> None:
     with kbc.connect_closing() as conn:
         parent, parent_wt = _worktree_task(conn, repo, title="parent")
-        child = kb.create_task(conn, title="child", assignee="worker")
+        child, child_wt = _worktree_task(conn, repo, title="child")
         kb.link_tasks(conn, parent, child)
 
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
         assert kb.claim_task(conn, parent, claimer="worker") is not None
         assert kb.complete_task(conn, parent, summary="parent done")
-        # child still active -> parent worktree must survive for handoff
+    # child still active but works in its own tree: the pushed parent tree goes
+    assert not parent_wt.exists()
+    assert child_wt.is_dir()
+
+
+def test_parent_worktree_deferred_while_child_shares_it(
+    kanban_home: Path, repo: Path
+) -> None:
+    with kbc.connect_closing() as conn:
+        parent, parent_wt = _worktree_task(conn, repo, title="parent")
+        child = kb.create_task(conn, title="child", assignee="worker")
+        kb.link_tasks(conn, parent, child)
+        with kb.write_txn(conn):
+            # decompose children inherit the root's workspace_path verbatim
+            conn.execute(
+                "UPDATE tasks SET workspace_kind='worktree', workspace_path=? WHERE id=?",
+                (str(parent_wt), child),
+            )
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
+        assert kb.claim_task(conn, parent, claimer="worker") is not None
+        assert kb.complete_task(conn, parent, summary="parent done")
+        # child still runs in the parent's tree -> it must survive
         assert parent_wt.is_dir()
 
         with kb.write_txn(conn):
-            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
-        assert kb.claim_task(conn, child, claimer="worker") is not None
-        assert kb.complete_task(conn, child, summary="child done")
-    # last child terminal -> deferred parent worktree reaped
+            conn.execute("UPDATE tasks SET status='archived' WHERE id=?", (child,))
+        kbw._try_cleanup_parent_workspaces(conn, child)
+    # last sharing child terminal -> deferred parent worktree reaped
     assert not parent_wt.exists()

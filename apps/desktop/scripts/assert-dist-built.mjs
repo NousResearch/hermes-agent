@@ -111,8 +111,7 @@ function verifyChunksParse(assetsDir) {
     return { ok: true }
   }
 
-  const nodeBin = process.env.NODE ||
-    (process.execPath && process.execPath.endsWith("node") ? process.execPath : "node")
+  const nodeBin = process.env.NODE || process.execPath || "node"
   const checker = join(import.meta.dirname, "check-chunks-parse.mjs")
   const probe = spawnSync(nodeBin, ["--experimental-vm-modules", checker, assetsDir], {
     encoding: "utf8",

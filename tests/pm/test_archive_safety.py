@@ -293,6 +293,26 @@ class TestCollisionsAndClobbering:
         assert (dest / "wrapper" / "bin" / "tool").is_file()
         assert (dest / "real" / "other").is_file()
 
+    def test_wrapper_metadata_does_not_ride_along(self, tmp_path):
+        """Finder browses freshly created directories too, so a stray can
+        land inside the wrapper itself seconds after extract; the hoist
+        must drop it instead of publishing it beside the layout."""
+        archive = _tar(
+            tmp_path / "node.tar.gz",
+            {"node-v26.7.0-darwin-arm64/bin/node": b"x"},
+        )
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+        (dest / "node-v26.7.0-darwin-arm64" / ".DS_Store").write_bytes(
+            b"\x00\x00metadata"
+        )
+
+        flatten_single_dir(dest)
+
+        assert (dest / "bin" / "node").is_file()
+        assert not (dest / ".DS_Store").exists()
+        assert list(dest.iterdir()) == [dest / "bin"]
+
 
 class TestStoreIsolation:
     def test_extract_replaces_only_its_own_entry_directory(self, tmp_path):

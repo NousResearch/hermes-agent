@@ -230,8 +230,9 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
 
 
 # Finder and Explorer drop these into any directory they browse, so they can
-# appear between extraction and the flatten pass below. They are never
-# package payload, and must not count as (or block) a top-level entry.
+# appear between extraction and the flatten pass below — at the staging root
+# or inside the wrapper itself. They are never package payload, and must not
+# count as (or block) an entry at either level.
 _OS_METADATA_FILES = frozenset({".DS_Store", ".localized", "Thumbs.db", "Desktop.ini"})
 _APPLE_DOUBLE_PREFIX = "._"
 
@@ -260,6 +261,10 @@ def flatten_single_dir(dest: Path) -> None:
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
         return
     inner = entries[0]
+    # The wrapper was created moments before the hoist, so it gets its own
+    # strays seconds later; purge them or the rename loop would publish one
+    # beside the layout and leave the closing rmdir() to trip over it.
+    _purge_os_metadata(inner)
     for item in list(inner.iterdir()):
         target = dest / item.name
         if target.exists():

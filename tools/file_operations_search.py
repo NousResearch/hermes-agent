@@ -343,6 +343,10 @@ class SearchMixin:
                 start_new_session=True)
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
+        # start_new_session: rg leads its own group. Stamped so the kill below still finds the
+        # group when rg exits between poll() and the kill — macOS getpgid() on the unreaped
+        # zombie raises ESRCH, which surfaced as "[Errno 3] No such process" (#125461).
+        proc._hermes_pgid = proc.pid
 
         # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the
         # caller past the deadline or past a /stop; the waiter below owns both.

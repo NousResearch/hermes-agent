@@ -288,6 +288,57 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 # under memory.high, SIGKILL pending): releasing now would spawn a duplicate.
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
+# How often a block/schedule stopped by a surviving worker may retry the kill
+# (the caller re-invokes; each attempt re-reads live pid state).
+WORKER_STOP_RETRY_SECONDS = 30
+
+
+def _settle_running_worker_before_transition(
+    conn: sqlite3.Connection, task_id: str, *, event_kind: str, signal_fn=None,
+) -> bool:
+    """Terminate a running card's host-local worker BEFORE a resumable
+    transition (``block_task``/``schedule_task``); False when the worker
+    survived and the transition must not proceed.
+
+    ``block`` and ``scheduled`` are resumable: the moment the txn releases the
+    claim, ``unblock_task`` -> ``_claim_and_open_run`` can admit a successor —
+    so, unlike the terminal ``archive_task`` (#76196), the release must not
+    happen until the predecessor is settled (the ``release_stale_claims``
+    ordering: terminate first, hold the claim when it survives). The signal
+    runs OUTSIDE any write txn because ``_poll_worker_exit`` can wait ~5 s.
+    A refused signal (unverified spawn) still lands in the audit trail, so an
+    operator can see why the stop is not taking effect. The caller re-invokes
+    to retry; liveness/fingerprint are re-read from live state each attempt.
+    """
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return True  # vanished: nothing to settle, let the transition report it
+    pid, started_at = row["worker_pid"], row["worker_started_at"]
+    if not pid:
+        return True  # no worker to settle
+    termination = _terminate_reclaimed_worker(
+        pid, row["claim_lock"], signal_fn=signal_fn, started_at=started_at,
+    )
+    with write_txn(conn):
+        # The run is still open here: attributing the audit event to it keeps
+        # the evidence chain the post-transition flow used to have.
+        run_id = _current_run_id(conn, task_id)
+        if _worker_survived_termination(termination):
+            _append_event(
+                conn, task_id, event_kind, {**termination, "stop_pending": True}, run_id=run_id,
+            )
+            conn.execute(
+                "UPDATE tasks SET claim_expires = ? WHERE id = ? AND status = 'running' "
+                "AND claim_lock IS ?",
+                (int(time.time()) + WORKER_STOP_RETRY_SECONDS, task_id, row["claim_lock"]),
+            )
+            return False
+        _append_event(conn, task_id, event_kind, termination, run_id=run_id)
+    return True
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Explicit ``ttl_seconds`` > ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` > default."""
@@ -3231,9 +3282,35 @@ def block_task(
     audit event is appended, while status, failure evidence and the terminal
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
+
+    An operator block of a RUNNING card settles its worker first (see
+    :func:`_settle_running_worker_before_transition`): the card is resumable,
+    so the claim is only released once the predecessor is confirmed dead. A
+    worker that survives the signal fences the transition (False return) and
+    keeps the card ``running`` — re-invoke to retry.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
+    # Refuse the refused-transition shapes BEFORE the kill so a stopped stop
+    # never appends audit events (a blocked card keeps its worker evidence
+    # when it has a live run; re-settling it would spam termination events).
+    with write_txn(conn):
+        prow = conn.execute(
+            "SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if (
+            prow is not None and prow["status"] == "blocked"
+            and (kind is None or expected_run_id is not None or prow["block_kind"] is not None)
+        ):
+            return False
+    if (
+        expected_run_id is None
+        and _task_status(conn, task_id) == "running"
+        and not _settle_running_worker_before_transition(
+            conn, task_id, event_kind="block_worker_termination", signal_fn=signal_fn,
+        )
+    ):
+        return False
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences, worker_pid, claim_lock, worker_started_at"
@@ -3242,13 +3319,8 @@ def block_task(
         ).fetchone()
         if cur_row is None:
             return False
-        # Snapshot for the post-commit termination below (#76196 pattern, same
-        # as archive_task). A worker-asserting caller (expected_run_id) signals
-        # itself away from the transition path, so only operator blocks terminate.
-        was_running = cur_row["status"] == "running" and expected_run_id is None
-        prev_pid = _row_get(cur_row, "worker_pid")
-        prev_lock = _row_get(cur_row, "claim_lock")
-        prev_started = _row_get(cur_row, "worker_started_at")
+        # The worker was settled BEFORE this txn (fence above); nothing here
+        # snapshots or signals it anymore.
         # The breaker (``_record_task_failure``) parks cards ``blocked`` with no
         # ``block_kind`` and no ``blocked`` event -- the policy is the
         # supervisor's, not the kernel's -- but the transition guard below only
@@ -3312,19 +3384,8 @@ def block_task(
         if kind == "dependency":
             # Historical ordering: the dependency lane fires inside the txn.
             _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
-        else:
-            _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
-    if was_running:
-        # Post-commit kill (same pattern as archive_task): the transition won,
-        # the pid/claim snapshot is ours, and ``blocked``/``todo``/``triage``
-        # releases the card for respawn — a live worker beside it would
-        # duplicate work (#76196). Termination lands as its own audit event so
-        # the ``blocked`` event stays atomic with the status flip.
-        termination = _terminate_reclaimed_worker(
-            prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started,
-        )
-        with write_txn(conn):
-            _append_event(conn, task_id, "block_worker_termination", termination, run_id=run_id)
+            return True
+    _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     return True
 
 
@@ -3983,22 +4044,30 @@ def schedule_task(
     expected_run_id: Optional[int] = None, signal_fn=None,
 ) -> bool:
     """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
-    until ``unblock_task`` re-gates it."""
+    until ``unblock_task`` re-gates it.
+
+    An operator schedule of a RUNNING card settles its worker first (see
+    :func:`_settle_running_worker_before_transition`): ``scheduled`` is
+    resumable, so the claim is only released once the predecessor is confirmed
+    dead. A worker that survives the signal fences the transition (False
+    return) and keeps the card ``running`` — re-invoke to retry.
+    """
+    if (
+        expected_run_id is None
+        and _task_status(conn, task_id) == "running"
+        and not _settle_running_worker_before_transition(
+            conn, task_id, event_kind="schedule_worker_termination", signal_fn=signal_fn,
+        )
+    ):
+        return False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, worker_pid, claim_lock, worker_started_at FROM tasks WHERE id = ?",
-            (task_id,),
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
             return False
-        # Post-commit termination snapshot (#76196 pattern, see archive_task):
-        # a worker-asserting caller parks its own run — it exits on its own
-        # terms — while an operator scheduling a running card must not leave a
-        # live worker beside an untracked claim.
-        was_running = row["status"] == "running" and expected_run_id is None
-        prev_pid = _row_get(row, "worker_pid")
-        prev_lock = _row_get(row, "claim_lock")
-        prev_started = _row_get(row, "worker_started_at")
+        # The worker was settled BEFORE this txn (fence above); nothing here
+        # snapshots or signals it anymore.
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks
@@ -4018,12 +4087,6 @@ def schedule_task(
             conn, task_id, outcome="scheduled", status="scheduled", summary=reason, synthesize=bool(reason),
         )
         _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
-    if was_running:
-        termination = _terminate_reclaimed_worker(
-            prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started,
-        )
-        with write_txn(conn):
-            _append_event(conn, task_id, "schedule_worker_termination", termination, run_id=run_id)
     return True
 
 

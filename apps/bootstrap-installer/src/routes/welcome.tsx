@@ -42,7 +42,13 @@ export default function Welcome() {
         </p>
       </div>
 
-      <HackeryButton label="Install" onClick={() => void startInstall()} />
+      <div className="flex flex-wrap items-center justify-center gap-4">
+        <HackeryButton label="Install" onClick={() => void startInstall({ desktopOnly: false })} />
+        <HackeryButton
+          label="Connect to existing Hermes"
+          onClick={() => void startInstall({ desktopOnly: true })}
+        />
+      </div>
     </div>
   )
 }

@@ -43,8 +43,11 @@ def start_hosted_room_service():
     global _service
     if _bound_server is None:
         return None
+    from gateway.hosted_room_coordination import require_hosted_room_coordination_runtime
     from gateway.hosted_rooms import default_db_path
     from tui_gateway.hosted_room_service import HostedRoomService
+
+    require_hosted_room_coordination_runtime()
     db_path = default_db_path()
     with _service_lock:
         if _service is not None and _service.db_path != db_path:
@@ -109,6 +112,13 @@ def _requested_profile(params: dict) -> str:
     return str(_bound_server._response_profile_name(requested) or requested)
 
 
+def _require_hosted_room_coordination(_params: dict) -> None:
+    """Refuse the active selected backend before any room SQLite/runtime work."""
+    from gateway.hosted_room_coordination import require_hosted_room_coordination_runtime
+
+    require_hosted_room_coordination_runtime()
+
+
 def _api_server_key(profile: str | None = None) -> str:
     # Published onto the server by methods_bot_relay.register (an explicit routed profile is
     # authoritative: never borrow the process profile's key on a multiplexed gateway).
@@ -145,12 +155,17 @@ def _room_link_run_storage_durable() -> bool:
     store = getattr(_bound_server, "_run_idempotency_store", None)
     if store is None:
         # This process does not construct the API adapter that owns the store; open the
-        # same shared SQLite store lazily so negotiation reflects the real replay boundary.
+        # same shared store lazily so negotiation reflects the real replay boundary,
+        # honoring the selected state-store backend (fails closed on a PG DSN error).
         from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+        from gateway.platforms.api_server_run_idempotency_adapter import (
+            selected_run_idempotency_store_factory)
         with _run_store_lock:
             store = getattr(_bound_server, "_run_idempotency_store", None)
             if store is None:
-                store = _bound_server._run_idempotency_store = RunIdempotencyStore()
+                factory = selected_run_idempotency_store_factory()
+                store = factory() if factory is not None else RunIdempotencyStore()
+                _bound_server._run_idempotency_store = store
     return bool(getattr(store, "durable", False))
 
 
@@ -189,19 +204,21 @@ def _room_method(
     (only ``ReplicaError`` when ``replica_only``) to a client error with ``{"reason"}`` data
     when ``with_reason``; anything else maps to ``code``."""
     error_class = _room_error_class  # closure cell: handlers run under server.py globals
+    guard = _require_hosted_room_coordination
 
     def dec(fn):
         def handler(rid, params: dict) -> dict:
-            args = (rid, params)
-            if service_code is not None:
-                service = get_hosted_room_service()
-                if service is None:
-                    return _err(rid, service_code, service_message)
-                args += (service,)
-            if db:
-                from gateway.hosted_rooms import default_db_path
-                args += (default_db_path(),)
             try:
+                guard(params)
+                args = (rid, params)
+                if service_code is not None:
+                    service = get_hosted_room_service()
+                    if service is None:
+                        return _err(rid, service_code, service_message)
+                    args += (service,)
+                if db:
+                    from gateway.hosted_rooms import default_db_path
+                    args += (default_db_path(),)
                 return fn(*args)
             except Exception as exc:
                 if room_code is not None and isinstance(exc, error_class(replica_only)):
@@ -214,8 +231,13 @@ def _room_method(
 
 
 @method("groups.capabilities")
-def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
+def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS,
+      _guard=_require_hosted_room_coordination) -> dict:
     """Describe the hosted-room protocol implemented by this gateway."""
+    try:
+        _guard(params)
+    except Exception as exc:
+        return _err(rid, 5109, str(exc))
     from gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
     service = get_hosted_room_service()
     driver_ready = bool(service and service.runtime.status()["running"])
@@ -250,7 +272,8 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
     """Mint one target-issued room/profile grant for a prospective home."""
     from gateway.hosted_room_peer import (
         decode_room_grant, gateway_room_grant_secret, issue_room_grant)
-    from gateway.hosted_rooms import local_authority_gateway_id, reserve_peer_room
+    from gateway.hosted_room_coordination import sqlite_hosted_room_coordination
+    from gateway.hosted_rooms import local_authority_gateway_id
     if not _room_link_run_storage_durable():
         raise ValueError("durable run idempotency storage is required")
     installation_id = local_authority_gateway_id()
@@ -270,7 +293,7 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
         target_profile=profile, execution_policy_digest=execution_policy["policy_digest"],
         ttl_seconds=ttl)
     claims = decode_room_grant(grant_secret, token, permission="status")
-    reserve_peer_room(db_path, claims=claims, expires_at=_expiry(claims))
+    sqlite_hosted_room_coordination(db_path).reserve_peer_room(claims=claims, expires_at=_expiry(claims))
     catalog = _catalog(installation_id, profile, execution_policy)
     return _ok(rid, {
         "grant": token, "target_profile": profile, "catalog": catalog,
@@ -281,14 +304,15 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
 def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
     """Revoke one target-issued grant using its exact profile scope."""
     from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
-    from gateway.hosted_rooms import local_authority_gateway_id, revoke_room_grant_scope
+    from gateway.hosted_room_coordination import sqlite_hosted_room_coordination
+    from gateway.hosted_rooms import local_authority_gateway_id
     profile = _requested_profile(params)
     claims = decode_room_grant(
         gateway_room_grant_secret(), str(params.get("grant") or ""), permission="status")
     if (claims["target_profile"] != profile
             or claims["target_install_id"] != local_authority_gateway_id()):
         raise ValueError("room grant target does not match this profile")
-    revoke_room_grant_scope(db_path, claims=claims, expires_at=_expiry(claims))
+    sqlite_hosted_room_coordination(db_path).revoke_room_grant_scope(claims=claims, expires_at=_expiry(claims))
     return _ok(rid, {"revoked": True})
 
 

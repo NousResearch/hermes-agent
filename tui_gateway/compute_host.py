@@ -285,7 +285,12 @@ class ComputeHost:
                     with session.get("history_lock", threading.Lock()):
                         session["running"] = False
                         server._clear_inflight_turn(session)
-            self._reply("turn.error", sid, request_id, reason="exception", message=str(exc))
+            from state_store_runtime_readiness import PostgreSQLRuntimeActivationError
+            if isinstance(exc, PostgreSQLRuntimeActivationError):
+                self._reply("turn.error", sid, request_id, reason="session_db_unavailable",
+                            message=str(exc), diagnostic=exc.report.as_dict())
+            else:
+                self._reply("turn.error", sid, request_id, reason="exception", message=str(exc))
 
     def _emit_turn_activity(self, sid: str, session: dict, turn_id: str, started_at: float) -> None:
         # Observe the agent clock, never the host heartbeat. A reused agent's last
@@ -329,6 +334,11 @@ class ComputeHost:
         owns_db = False
         try:
             if profile_home:
+                # Reject before profile scopes, agent construction, session
+                # registration, or transport/tool work. This is a safety boundary,
+                # not a PostgreSQL SessionDB adapter.
+                from state_store_runtime_readiness import require_legacy_state_db_runtime
+                require_legacy_state_db_runtime(home=Path(profile_home))
                 from hermes_constants import set_hermes_home_override
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
                 from hermes_cli.env_loader import hydrate_profile_secret_sources

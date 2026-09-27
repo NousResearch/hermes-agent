@@ -1951,6 +1951,9 @@ class BasePlatformAdapter(ABC):
         # Set by the runner on a secondary's port-binding adapter: serve via the default profile's
         # shared listener (/p/<profile>/...) instead of binding a port (gateway/platforms/shared_ingress.py).
         self._shared_listener_profile: Optional[str] = None
+        # Deliberately opt-in dependency injection.  PostgreSQL selection alone
+        # must not alter gateway/session runtime or create a SQLite fallback.
+        self.delivery_ledger: Optional[Any] = None
         # Registered by GatewayRunner (see set_authorization_check).
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.
@@ -4140,7 +4143,7 @@ class BasePlatformAdapter(ABC):
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
-        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
+        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Any:
         """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
         next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
         or None."""
@@ -4148,9 +4151,9 @@ class BasePlatformAdapter(ABC):
             ("/", self.typed_command_prefix or "!")):
             return None
         try:
-            from gateway.delivery_ledger import (
-                compute_obligation_id, ledger_enabled, mark_attempting, record_obligation)
-            if not await asyncio.to_thread(ledger_enabled):
+            from gateway.delivery_ledger import compute_obligation_id, ledger_enabled
+            ledger = self.delivery_ledger
+            if ledger is None and not await asyncio.to_thread(ledger_enabled):
                 return None
             source = event.source
             # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
@@ -4160,20 +4163,26 @@ class BasePlatformAdapter(ABC):
                 _ledger_id = getattr(event, "message_id", "")
             obligation_id = compute_obligation_id(
                 session_key, str(_ledger_id or ""), text_content)
-            await asyncio.to_thread(
-                record_obligation, obligation_id=obligation_id, session_key=session_key,
+            if ledger is None:
+                from gateway.delivery_ledger_adapter import selected_delivery_ledger
+                ledger = selected_delivery_ledger()
+            if ledger is None:
+                from gateway.delivery_ledger_adapter import SqliteDeliveryLedger
+                ledger = SqliteDeliveryLedger()
+            receipt = await asyncio.to_thread(
+                ledger.record_obligation, obligation_id=obligation_id, session_key=session_key,
                 platform=str(getattr(source.platform, "value", source.platform)),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
                 content=text_content,
                 adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
-            await asyncio.to_thread(mark_attempting, obligation_id)
-            return obligation_id
+            receipt = await asyncio.to_thread(ledger.mark_attempting, receipt)
+            return receipt
         except Exception:
             logger.debug("delivery ledger record failed", exc_info=True)
             return None
 
     async def _finalize_delivery_obligation(
-        self, obligation_id: str, result: Any, event: MessageEvent,
+        self, obligation_id: Any, result: Any, event: MessageEvent,
         delivery_adapter: "BasePlatformAdapter") -> None:
         """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
@@ -4182,12 +4191,19 @@ class BasePlatformAdapter(ABC):
         backoff has passed instead of waiting for the next restart (#91653)."""
         try:
             from gateway.dead_targets import classify_dead_error
-            from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
+            from gateway.delivery_ledger import is_reconnect_only
+            ledger = self.delivery_ledger
+            if ledger is None:
+                from gateway.delivery_ledger_adapter import selected_delivery_ledger
+                ledger = selected_delivery_ledger()
+            if ledger is None:
+                from gateway.delivery_ledger_adapter import SqliteDeliveryLedger
+                ledger = SqliteDeliveryLedger()
             if getattr(result, "success", False):
-                await asyncio.to_thread(mark_delivered, obligation_id)
+                await asyncio.to_thread(ledger.mark_delivered, obligation_id)
                 return
             error = str(getattr(result, "error", "") or "")
-            await asyncio.to_thread(mark_failed, obligation_id, error)
+            await asyncio.to_thread(ledger.mark_failed, obligation_id, error)
             if is_reconnect_only(error):
                 redeliver = getattr(
                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
@@ -4287,6 +4303,11 @@ class BasePlatformAdapter(ABC):
                     len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        # An explicitly injected ledger is a selected-backend safety boundary:
+        # without its fence receipt, no external final send is authorized.
+        # The compatibility SQLite path retains its historical best-effort send.
+        if delivery_adapter.delivery_ledger is not None and obligation_id is None:
+            return SendResult(success=False, error="delivery_ledger_claim_denied"), delivery_adapter
         if obligation_id is not None:
             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
         result = await delivery_adapter._send_with_retry(

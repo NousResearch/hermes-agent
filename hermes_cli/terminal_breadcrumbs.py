@@ -114,8 +114,10 @@ def read_breadcrumb() -> Optional[dict]:
 
 def resolve_breadcrumb_session() -> Optional[str]:
     """Resolve a bare ``-c`` for this terminal, or ``None`` to fall back. The breadcrumb's session
-    id counts only if it still exists in the DB, projected through the compression chain so the
-    resume lands on the live tip (same projection as ``main._resolve_session_by_name_or_id``)."""
+    id counts only if it still exists in the SELECTED store, projected through the compression
+    chain so the resume lands on the live tip (same projection as ``main._resolve_session_by_name_or_id``).
+    A selected PostgreSQL store that fails to open is skipped with a stderr note — the breadcrumb
+    never falls through to SQLite to keep resolving."""
     if not is_enabled():
         return None
     crumb = read_breadcrumb()
@@ -124,23 +126,30 @@ def resolve_breadcrumb_session() -> Optional[str]:
     session_id = str(crumb.get("session_id") or "").strip()
     if not session_id:
         return None
+    from hermes_cli.config import load_config
+    store = None
     try:
-        from hermes_state import SessionDB
-
-        db = SessionDB(read_only=True)  # existence + lineage lookup only; no writer connection
-    except Exception:
+        from cli_session_store import open_selected_read_store
+        store = open_selected_read_store(load_config())
+    except Exception as exc:
+        print(
+            f"terminal breadcrumb: cannot open selected state store ({exc}); skipping breadcrumb resume",
+            file=sys.stderr,
+        )
+        return None
+    if store is None:
         return None
     try:
-        if not db.get_session(session_id):
+        if not store.get_session(session_id):
             return None  # session was deleted — fall back to latest
         try:
-            return db.get_compression_tip(session_id) or session_id
+            return store.get_compression_tip(session_id) or session_id
         except Exception:
             return session_id
     except Exception:
         return None
     finally:
         try:
-            db.close()
+            store.close()
         except Exception:
             pass

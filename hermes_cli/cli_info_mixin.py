@@ -807,12 +807,13 @@ class CLIInfoMixin:
                 i += 1
 
         try:
-            from hermes_state import SessionDB, _default_db_path
             from agent.insights import InsightsEngine
-            if not _default_db_path().exists():
+            from cli_session_store import open_selected_read_store
+            from hermes_cli.config import load_config
+            db = open_selected_read_store(load_config())
+            if db is None:
                 print("  No session data yet.")
                 return
-            db = SessionDB(read_only=True)
             try:
                 engine = InsightsEngine(db)
                 print(engine.format_terminal(engine.generate(days=days, source=source)))

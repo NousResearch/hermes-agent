@@ -29,6 +29,13 @@ def _resolve_sessions_index() -> Path:
             else get_hermes_home() / "sessions" / "sessions.json")
 
 
+def _require_legacy_mirror_runtime() -> None:
+    """Refuse selected PostgreSQL before mirror lookup or transcript persistence."""
+    from state_store_runtime_readiness import require_legacy_state_db_runtime
+
+    require_legacy_state_db_runtime()
+
+
 def _origin_user_id(entry: dict) -> str:
     return str((entry.get("origin") or {}).get("user_id") or "")
 
@@ -52,6 +59,7 @@ def mirror_to_session(
     ``role`` defaults to ``"assistant"`` — correct for the interactive ``send_message`` mirror, where the
     mirrored text is the agent's own outgoing reply (a genuine assistant turn). See #2221.
     """
+    _require_legacy_mirror_runtime()
     try:
         if not session_id:
             session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id, user_id=user_id)
@@ -84,6 +92,7 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     Queries state.db gateway session rows (primary source since #9006); falls back to scanning sessions.json
     for pre-migration databases.
     """
+    _require_legacy_mirror_runtime()
     try:
         from hermes_state_registry import acquire, release_or_close
         db = acquire()
@@ -132,6 +141,7 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     Raises on failure: ``mirror_to_session`` reports ``False`` (and warns) only when the
     exception reaches it — swallowing it here made every failed write look mirrored (#10130).
     """
+    _require_legacy_mirror_runtime()
     from hermes_state_registry import acquire, release_or_close
 
     db = acquire()

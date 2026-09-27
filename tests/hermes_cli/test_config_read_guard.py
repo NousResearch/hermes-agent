@@ -51,6 +51,21 @@ ALLOWLIST = {
     # hermes_cli.config is importable; it reads one display key best-effort and
     # defaults to the classic REPL on any error.
     "hermes_cli/main.py",
+    # Cross-profile state-store resolution: these read a RESOLVED target
+    # home's config.yaml (a different profile than the ambient one), so
+    # load_config()/load_config_readonly() would answer for the WRONG
+    # profile; read_user_config_raw() would silently coerce a non-mapping
+    # file to {} (= SQLite default), breaking the selected-PG fail-closed
+    # contract. Raw parse + explicit Mapping validation is the safe read.
+    "state_store.py",
+    "state_store_maintenance.py",
+    # Same cross-profile resolved-home read for the readiness report
+    # (explicit Mapping validation, typed error on garbage).
+    "state_store_runtime_readiness.py",
+    # Watcher-side conservative skip: unreadable/non-mapping target-home
+    # config => {} => SQLite, deliberately fail-open because the watcher
+    # must never hard-fail the process it observes.
+    "tui_gateway/change_watcher.py",
 }
 
 # Directories that never count (tests may build fixture configs freely).

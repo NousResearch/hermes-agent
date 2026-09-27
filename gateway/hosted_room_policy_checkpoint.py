@@ -103,8 +103,13 @@ def _settled_message(
 
 class HostedRoomPolicyCheckpoint:
     """Incrementally index room policy without compacting visible history."""
-    def __init__(self, db_path: DbPath) -> None:
+    def __init__(
+        self, db_path: DbPath, *, read_events: Callable[..., dict[str, Any]] | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
+        # The adapter supplies this in production.  Direct construction remains
+        # compatible for existing callers and tests.
+        self._read_events = read_events or (lambda **kwargs: hosted_rooms.read_events(self.db_path, **kwargs))
         with self._transaction() as conn:
             for ddl in _SCHEMA_DDL:
                 conn.execute(ddl)
@@ -287,8 +292,7 @@ class HostedRoomPolicyCheckpoint:
         if cursor > latest_seq:
             raise RuntimeError("room policy cursor is ahead of the durable log")
         while cursor < latest_seq:
-            page = hosted_rooms.read_events(
-                self.db_path, room_id=room_id, since_seq=cursor, limit=hosted_rooms.MAX_LOG_LIMIT)
+            page = self._read_events(room_id=room_id, since_seq=cursor, limit=hosted_rooms.MAX_LOG_LIMIT)
             rows = [event for event in page.get("events", []) if isinstance(event, Mapping)]
             next_cursor = int(page.get("cursor") or cursor)
             if not rows or next_cursor <= cursor:

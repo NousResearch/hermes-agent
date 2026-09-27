@@ -6,6 +6,62 @@ import sys
 
 import pytest
 
+
+_PG_CONFIG = (
+    "state_store:\n"
+    "  backend: postgresql\n"
+    "  postgresql:\n"
+    "    dsn_env: HERMES_STATE_STORE_TEST_DSN\n"
+)
+
+
+def _selected_pg_profile(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    profile = root / "profiles" / "selected-pg"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text(_PG_CONFIG, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("HERMES_STATE_STORE_TEST_DSN", "postgresql://fixture/only")
+    return root, profile
+
+
+def test_selected_postgresql_mailbox_entrypoints_refuse_before_sqlite_or_receipt_io(tmp_path, monkeypatch):
+    """No mailbox retry, recovery, or late completion can cross the PG boundary."""
+    from hermes_state import SessionDB
+    from state_store_runtime_readiness import PostgreSQLRuntimeActivationError, trap_state_db_opens
+    from tools import bot_live_delivery as mailbox
+
+    root, profile = _selected_pg_profile(tmp_path, monkeypatch)
+    root_db = SessionDB(db_path=root / "state.db")
+    root_db.create_session("root-only", "test")
+    root_db.close()
+    root_size = (root / "state.db").stat().st_size
+    owner = dict(profile_home=str(profile.resolve()), session_id="chat", lease_id="lease", live_session_id="live")
+    record = {"owner": owner, "status": "queued"}
+    mailbox_root = profile / "runtime" / mailbox.DELIVERY_DIR_NAME
+    monkeypatch.setattr(mailbox, "_root", lambda _home: pytest.fail("mailbox filesystem must not be reached"))
+
+    entrypoints = (
+        lambda: mailbox.find_canonical_live_owner(profile),
+        lambda: mailbox.deliver_to_live_owner(profile, owner, "must not admit", delivery_id="d" * 32),
+        lambda: mailbox.claim_pending_delivery(profile, owner),
+        lambda: mailbox.complete_delivery(profile, "d" * 32, status="cancelled"),
+        lambda: mailbox.read_delivery_result(profile, "d" * 32),
+        lambda: mailbox._matches(profile, record, owner),
+    )
+    with trap_state_db_opens(root, profile) as opens:
+        for entrypoint in entrypoints:
+            with pytest.raises(PostgreSQLRuntimeActivationError) as caught:
+                entrypoint()
+            assert "tui-api-session-runtime" in caught.value.report.missing_capabilities
+
+    assert opens == []
+    assert not mailbox_root.exists()
+    assert (root / "state.db").stat().st_size == root_size
+    assert not (profile / "state.db").exists()
+
+
 @pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
 def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
     from tools import bot_live_delivery as mailbox

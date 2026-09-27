@@ -140,7 +140,12 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
             return bool(wdb.unarchive_recoverable_session(session_id))
         finally:
             _best_effort(lambda: _lazy("hermes_state_registry", "release_or_close")(wdb))
-    except Exception:
+    except Exception as exc:
+        # Selected-PG is a typed routing refusal: re-raise, never a False "not recoverable"
+        # (function-local import — rebound bodies see only server.py globals).
+        from state_store_runtime_readiness import PostgreSQLRuntimeActivationError as _typed
+        if isinstance(exc, _typed):
+            raise
         return False
 
 
@@ -213,10 +218,34 @@ def _latest_profile_session_rows(db):
         return None, None
 
 
+def _selected_pg_refusal(profile_path):
+    """The readiness refusal for THIS profile home, or None (function-local import: this body is
+    rebound onto server.py globals and cannot see module-level names)."""
+    try:
+        from state_store_runtime_readiness import PostgreSQLRuntimeActivationError, require_legacy_state_db_runtime
+        require_legacy_state_db_runtime(home=Path(profile_path))
+    except Exception as exc:
+        from state_store_runtime_readiness import PostgreSQLRuntimeActivationError as _typed
+        if isinstance(exc, _typed):
+            return exc
+        raise
+
+
 def _profile_session_fields(row, profile_path):
     """Attach last_session / worker_session / canonical_session to a roster row. The DB is a
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
-    and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
+    and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow).
+    A selected-PostgreSQL profile is MARKED unavailable (never a silent empty roster): the fields
+    are absent, and ``sessions_unavailable`` carries the capability refusal so a client can tell
+    a storeless profile from one this backend cannot serve yet."""
+    if (refusal := _selected_pg_refusal(profile_path)) is not None:
+        # Once per roster poll, not per row: the refusal is a routing fact, not log spam.
+        __import__("logging").getLogger(__name__).warning(
+            "profiles.list session fields unavailable for %s: %s", profile_path, refusal)
+        row["last_session"] = row["worker_session"] = row["canonical_session"] = None
+        row["sessions_unavailable"] = {
+            "reason": str(refusal), "missing_capabilities": refusal.report.missing_capabilities}
+        return
     def _read() -> dict:
         db_path = Path(profile_path) / "state.db"
         db = None

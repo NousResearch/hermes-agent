@@ -580,6 +580,7 @@ from hermes_cli.setup_platforms import setup_gateway  # noqa: E402
 from hermes_cli.setup_summary import _print_setup_summary  # noqa: E402,F401
 from hermes_cli.setup_migration import _offer_openclaw_migration, _skip_configured_section  # noqa: E402
 from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup  # noqa: E402
+from hermes_cli.setup_state_store import configure_state_store  # noqa: E402
 
 
 # ── Main Wizard Orchestrator ──
@@ -590,6 +591,7 @@ SETUP_SECTIONS = [
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
+    ("state-store", "State Store", configure_state_store),
     ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
 ]
@@ -654,7 +656,8 @@ def _run_full_setup(config: dict, hermes_home, *, is_existing: bool, migration_r
         _step("model", "Model & Provider", lambda: setup_model_provider(config)),
         _step("terminal", "Terminal Backend", lambda: setup_terminal_backend(config)),
         ("Messaging Platforms", _gateway_step),
-        _step("tools", "Tools", lambda: setup_tools(config, first_install=not is_existing))])
+        _step("tools", "Tools", lambda: setup_tools(config, first_install=not is_existing)),
+        _step("state-store", "State Store", lambda: configure_state_store(config))])
 
 
 # First-time mode picker: (menu label, setup_quick runner name) — None falls through to Full Setup.

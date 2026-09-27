@@ -114,6 +114,7 @@ class TestExistingInstallDefault:
                 agent="hermes_cli.setup.setup_agent_settings",
                 gateway="hermes_cli.setup.setup_gateway",
                 tools="hermes_cli.setup.setup_tools",
+                state_store="hermes_cli.setup.configure_state_store",
             )
             from hermes_cli.setup import run_setup_wizard
             run_setup_wizard(args)
@@ -129,6 +130,7 @@ class TestExistingInstallDefault:
         m["agent"].assert_not_called()
         m["gateway"].assert_called_once()
         m["tools"].assert_called_once()
+        m["state_store"].assert_called_once()
 
 
 class TestQuickFlag:
@@ -146,6 +148,7 @@ class TestQuickFlag:
                 agent="hermes_cli.setup.setup_agent_settings",
                 gateway="hermes_cli.setup.setup_gateway",
                 tools="hermes_cli.setup.setup_tools",
+                state_store="hermes_cli.setup.configure_state_store",
             )
             from hermes_cli.setup import run_setup_wizard
             from hermes_cli import setup as setup_mod
@@ -164,6 +167,7 @@ class TestQuickFlag:
         m["agent"].assert_not_called()
         m["gateway"].assert_not_called()
         m["tools"].assert_not_called()
+        m["state_store"].assert_not_called()
 
 
 class TestFreshInstall:

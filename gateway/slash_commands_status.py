@@ -246,9 +246,13 @@ class GatewayStatusCommandsMixin:
         # Pending /queue follow-ups (slot + overflow).
         adapter = self.adapters.get(source.platform) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
-        title, session_row, db_total_tokens, persisted_route = await self._status_session_db_facts(
-            session_entry.session_id
-        )
+        try:
+            title, session_row, db_total_tokens, persisted_route = await self._status_session_db_facts(
+                session_entry.session_id
+            )
+        except Exception as exc:
+            logger.error("Status command storage error: %s", exc, exc_info=True)
+            return f"Storage unavailable for /status: {exc}"
         # Prefer the live or cached agent (actual runtime route + context compressor); fall back
         # to an active /model override, then SessionDB metadata + last_prompt_tokens so /status
         # stays useful between turns. Rehydrate first so this precedence survives gateway restarts.
@@ -322,23 +326,30 @@ class GatewayStatusCommandsMixin:
         return "\n".join(lines)
 
     async def _status_session_db_facts(self, session_id: str):
-        """``(title, session_row, db_total_tokens, persisted_route)`` for /status; each fail-open.
-
-        Token totals come from the SQLite session DB, not SessionStore: run_agent.py persists per-turn
-        token deltas into sessions_db, never into SessionEntry (its total_tokens is always 0).
-        """
-        db = self._session_db
-        if not db:
-            return None, {}, 0, {}
-        title = await _quiet(lambda: db.get_session_title(session_id))
-        row = await _quiet(lambda: db.get_session(session_id))
+        """Read /status facts through the selected store; never fall back to SQLite for PostgreSQL."""
+        from gateway.run import _SESSION_DB_UNPINNED
+        pinned = getattr(self, "_session_db_pinned", _SESSION_DB_UNPINNED)
+        if pinned is not _SESSION_DB_UNPINNED:
+            db = pinned
+            title = await _quiet(lambda: db.get_session_title(session_id))
+            row = await _quiet(lambda: db.get_session(session_id))
+            route = await _quiet(lambda: db.get_recent_session_model_route(session_id))
+        else:
+            def _read():
+                from cli_session_store import open_selected_read_store
+                from hermes_cli.config import load_config
+                db = open_selected_read_store(load_config())
+                if db is None:
+                    return None, None, None
+                try:
+                    return db.get_session_title(session_id), db.get_session(session_id), db.get_recent_session_model_route(session_id)
+                finally:
+                    db.close()
+            title, row, route = await self._run_in_executor_with_context(_read)
         session_row = row if isinstance(row, dict) else {}
-        db_total_tokens = sum(
-            _int_value(session_row.get(k))
-            for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
-        )
-        route = await _quiet(lambda: db.get_recent_session_model_route(session_id))
-        return title, session_row, db_total_tokens, route if isinstance(route, dict) else {}
+        total = sum(_int_value(session_row.get(key)) for key in (
+            "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens"))
+        return title, session_row, total, route if isinstance(route, dict) else {}
 
     @staticmethod
     def _redact_matrix_session_key(session_key: str) -> str:
@@ -677,21 +688,21 @@ class GatewayStatusCommandsMixin:
                 days = int(flag) if flag.isdigit() else days
                 i += 1
         try:
-            from hermes_state_registry import acquire
             from agent.insights import InsightsEngine
 
             def _run_insights():
-                db = acquire()
+                from cli_session_store import open_selected_read_store
+                from hermes_cli.config import load_config
+                db = open_selected_read_store(load_config())
+                if db is None:
+                    return "No session data yet."
                 try:
                     engine = InsightsEngine(db)
                     return engine.format_gateway(engine.generate(days=days, source=source))
                 finally:
-                    from hermes_state_registry import release_or_close
-                    release_or_close(db)
+                    db.close()
 
-            # Not a bare hop: ``SessionDB()`` resolves ``get_hermes_home()`` at call time, a
-            # contextvar set by ``_profile_runtime_scope``; a default-executor hop starts with an
-            # EMPTY context and would read the DEFAULT profile's state.db.
+            # Carry profile context: the selected-store resolver reads config and state from the active home.
             return await self._run_in_executor_with_context(_run_insights)
         except Exception as e:
             logger.error("Insights command error: %s", e, exc_info=True)

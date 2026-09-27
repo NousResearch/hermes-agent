@@ -320,6 +320,17 @@ class AIAgent(
         if self._session_db is not None:
             return self._session_db
         try:
+            from hermes_cli.config import load_config
+            from state_store import resolve_state_store_config
+
+            config = load_config()
+            if resolve_state_store_config(config).backend == "postgresql":
+                # The selected backend owns this acquisition.  Do not go through
+                # the SQLite registry: it would violate selected-PG isolation.
+                from cli_session_store import open_cli_session_store
+                self._session_db = open_cli_session_store(config)
+                self._owns_session_db = True
+                return self._session_db
             from hermes_state_registry import acquire
 
             self._session_db = acquire()

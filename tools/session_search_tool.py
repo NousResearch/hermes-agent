@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Session Search Tool - long-term conversation recall over the SQLite session DB.
+"""Session Search Tool - long-term conversation recall through a contextual store.
 
 Single-shape tool; the mode is inferred from the args: DISCOVERY (``query``;
 FTS5 deduped by lineage, adaptive detail hydrates only the top result),
@@ -214,12 +214,11 @@ def _session_left_live_context(db, session_id: str) -> bool:
 
 def _get_message_storage_state(db, message_id) -> Optional[Dict[str, Any]]:
     """Owning session and visibility flags for *message_id* (None if missing/error)."""
-    def _lookup():
-        with db._lock:
-            return db._conn.execute(
-                "SELECT session_id, active, compacted FROM messages WHERE id = ?", (message_id,)).fetchone()
-    row = message_id and _quiet(_lookup, None, "message storage-state lookup failed for %s", message_id)
-    return dict(row) if row else None
+    if not hasattr(db, "get_message_storage_state"):
+        from state_store import contextual_session_search_store
+        db = contextual_session_search_store(db)
+    return message_id and _quiet(lambda: db.get_message_storage_state(message_id), None,
+                                  "message storage-state lookup failed for %s", message_id)
 
 
 def _is_compacted_state(state: Optional[Dict[str, Any]]) -> bool:
@@ -314,12 +313,17 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
 def _discover_payload(db, query: str, detail: str, results: list, **extra) -> str:
     """Discovery response; notes FTS backfill progress so the agent can explain thin
     results instead of treating them as ground truth."""
-    status = _quiet(db.fts_rebuild_status, None, "fts_rebuild_status failed")
-    rebuild = {} if status is None else {"index_rebuild": {"percent": status["percent"], "note": (
-        f"The search index is rebuilding in the background ({status['percent']}% done, "
-        f"{status['indexed']:,} of {status['total']:,} messages). Results from older messages "
-        f"may be incomplete until it finishes.")}}
-    return _ok(mode="discover", query=query, detail=detail, results=results, count=len(results), **extra, **rebuild)
+    status = _quiet(db.search_index_status, None, "search-index status lookup failed")
+    if status is None:
+        health = {}
+    elif status.get("backend") == "postgresql":
+        health = {"search_index": status}
+    else:
+        health = {"index_rebuild": {"percent": status["percent"], "note": (
+            f"The search index is rebuilding in the background ({status['percent']}% done, "
+            f"{status['indexed']:,} of {status['total']:,} messages). Results from older messages "
+            f"may be incomplete until it finishes.")}}
+    return _ok(mode="discover", query=query, detail=detail, results=results, count=len(results), **extra, **health)
 
 
 def _bookend(view: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
@@ -358,6 +362,9 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
+    index_status = _quiet(db.search_index_status, None, "search-index status lookup failed")
+    if index_status and index_status.get("backend") == "postgresql" and not index_status.get("available"):
+        return tool_error("Search unavailable: PostgreSQL generated-search health is not valid", success=False)
     title_result = _title_match_result(db, query, current_lineage_root)
     # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
     # query, so it is the one place the window is re-checked in Python.
@@ -431,17 +438,13 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         "session_search(session_id=..., around_message_id=match_message_id)."))
 
 
-def _resolve_profile_db(profile: str):
-    """Another profile's ``state.db`` opened read-only (safe on a live DB); None = current."""
+def _resolve_profile_store(profile: str):
+    """Resolve another profile's complete recall capability, read-only and isolated."""
     if profile is None or not str(profile).strip():
         return None
-    from hermes_cli import profiles as profiles_mod
-    from hermes_state import SessionDB
-    canon = profiles_mod.normalize_profile_name(profile)
-    profiles_mod.validate_profile_name(canon)
-    if not profiles_mod.profile_exists(canon):
-        raise ValueError(f"profile '{canon}' does not exist")
-    return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+    from state_store import resolve_contextual_session_search_store
+
+    return resolve_contextual_session_search_store(profile=profile, read_only=True)
 
 
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
@@ -590,7 +593,7 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
     # Cross-profile: swap in the named profile's DB (read-only) for every shape;
     # current-lineage guards key off ids that won't collide, so they stay inert.
     try:
-        profile_db = _resolve_profile_db(profile)
+        profile_db = _resolve_profile_store(profile)
     except Exception as e:
         return tool_error(f"profile '{profile}': {e}", success=False)
     if profile_db is not None:
@@ -622,25 +625,52 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
                    after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
-    from hermes_state import format_session_db_unavailable
+    from state_store import resolve_contextual_session_search_store
     from hermes_state_registry import acquire, release_or_close
     owned_dbs: List[Any] = []
+    registry_owned_ids: set[int] = set()
     if db is None:
-        db = _quiet(acquire, None, "SessionDB unavailable for session_search")
+        acquired: List[Any] = []
+
+        def acquire_sqlite_session_db():
+            raw_db = acquire()
+            if raw_db is None:
+                raise RuntimeError("SessionDB unavailable for session_search")
+            acquired.append(raw_db)
+            return raw_db
+
+        db = _quiet(
+            lambda: resolve_contextual_session_search_store(session_db_factory=acquire_sqlite_session_db),
+            None,
+            "Contextual session-search capability unavailable",
+        )
         if db is None:
-            return tool_error(format_session_db_unavailable(), success=False)
-        owned_dbs.append(db)
+            return tool_error(
+                "Contextual session search is unavailable for the selected state-store backend",
+                success=False,
+            )
+        if acquired:
+            owned_dbs.append(acquired[0])
+            registry_owned_ids.add(id(acquired[0]))
+        else:
+            owned_dbs.append(db)
+    else:
+        db = _quiet(lambda: resolve_contextual_session_search_store(session_db=db), None,
+                    "Contextual session-search capability unavailable")
+        if db is None:
+            return tool_error("Contextual session search is unavailable for the selected state-store backend", success=False)
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
                          around_message_id, window, sort, profile, detail, owned_dbs,
                          after=after, before=before, exclude_session_ids=exclude_session_ids)
     finally:
         for owned_db in reversed(owned_dbs):
-            _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
+            closer = (lambda db=owned_db: release_or_close(db)) if id(owned_db) in registry_owned_ids else owned_db.close
+            _quiet(closer, None, "Failed to close session_search store")
 
 
 def check_session_search_requirements() -> bool:
-    """Requires the SQLite state database."""
+    """Requires a complete contextual search capability (currently SQLite only)."""
     try:
         from hermes_state import _default_db_path
         return _default_db_path().parent.exists()

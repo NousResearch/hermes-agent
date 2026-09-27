@@ -488,7 +488,10 @@ def _retired_wal_holders(f: Finding, state_db_path: Path, _DHH: str) -> bool:
 @doctor_check()
 def _check_state_db(should_fix: bool, f: Finding) -> None:
     """state.db session count, FTS write health, schema repair, stats snapshot, WAL size."""
+    from state_store_maintenance import require_state_store_maintenance
     from hermes_cli.doctor import HERMES_HOME, _DHH
+
+    require_state_store_maintenance("doctor", home=HERMES_HOME)
     state_db_path = HERMES_HOME / "state.db"
     # A read-only connect on the new generation is itself another opener, so nothing below may run.
     if _retired_wal_holders(f, state_db_path, _DHH):

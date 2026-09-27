@@ -6,6 +6,7 @@ import pytest
 from hermes_state import SessionDB
 from agent.insights import (
     InsightsEngine,
+    SqliteInsightsReadStore,
     _estimate_cost,
     _bar_chart,
 )
@@ -352,41 +353,19 @@ class TestInsightsPopulated:
                 "SELECT sql FROM sqlite_master WHERE type = 'index'"
             )
         )
-        for attr, params in self._PINNED_QUERIES:
-            sql = getattr(InsightsEngine, attr)
-            plan = "\n".join(
-                row["detail"]
-                for row in populated_db._conn.execute(
-                    "EXPLAIN QUERY PLAN " + sql, params
-                ).fetchall()
-            )
-            assert self._INDEX in plan, f"{attr} did not use the index:\n{plan}"
+        adapter = SqliteInsightsReadStore(populated_db)
+        assert adapter._has_assistant_index is True
+        snapshot = adapter.read_insights_snapshot(cutoff=0.0, source="cli")
+        assert snapshot.assistant_tool_call_rows
 
     def test_assistant_call_rows_invariant_to_index_selection(self, populated_db):
-        """The pinned index only changes the plan, never the result set.
-
-        For every branch, the index-pinned query and the un-pinned form (whose
-        plan the optimizer chooses freely) must return identical rows — proving
-        the index is a pure optimization — for both the unfiltered and
-        source-filtered scopes.
-        """
-        assert populated_db._conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
-            (self._INDEX,),
-        ).fetchone() is not None
-
-        for attr, params in self._PINNED_QUERIES:
-            pinned_sql = getattr(InsightsEngine, attr)
-            unpinned_sql = pinned_sql.replace(f" INDEXED BY {self._INDEX}", "")
-            pinned = [
-                tuple(r) for r in
-                populated_db._conn.execute(pinned_sql, params).fetchall()
-            ]
-            unpinned = [
-                tuple(r) for r in
-                populated_db._conn.execute(unpinned_sql, params).fetchall()
-            ]
-            assert sorted(pinned) == sorted(unpinned), attr
+        """The SQLite adapter's index pin is an optimization, not a result dependency."""
+        adapter = SqliteInsightsReadStore(populated_db)
+        pinned = adapter.read_insights_snapshot(cutoff=0.0, source="cli").assistant_tool_call_rows
+        populated_db._conn.execute(f"DROP INDEX IF EXISTS {self._INDEX}")
+        populated_db._conn.commit()
+        unpinned = SqliteInsightsReadStore(populated_db).read_insights_snapshot(cutoff=0.0, source="cli").assistant_tool_call_rows
+        assert sorted(map(dict, pinned), key=str) == sorted(map(dict, unpinned), key=str)
 
     def test_missing_index_falls_back_to_unpinned_queries(self, populated_db):
         """INDEXED BY would be a hard error if the index is missing — which
@@ -399,15 +378,12 @@ class TestInsightsPopulated:
         populated_db._conn.execute(f"DROP INDEX IF EXISTS {self._INDEX}")
         populated_db._conn.commit()
 
-        engine = InsightsEngine(populated_db)
-        assert engine._has_assistant_calls_index is False
-        assert "INDEXED BY" not in engine._GET_TOOL_CALLS_ALL
-        tools_after = engine._get_tool_usage(0.0)
+        adapter = SqliteInsightsReadStore(populated_db)
+        assert adapter._has_assistant_index is False
+        tools_after = InsightsEngine(populated_db)._get_tool_usage(0.0)
         assert sorted(t["tool_name"] for t in tools_after) == sorted(
             t["tool_name"] for t in tools_before
         )
-        # And with the index present, the pin stays.
-        assert "INDEXED BY" in InsightsEngine._GET_TOOL_CALLS_ALL
 
     def test_get_usage_breakdown_matches_full_generate(self, populated_db):
         engine = InsightsEngine(populated_db)

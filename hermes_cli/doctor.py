@@ -164,7 +164,14 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
 
 def run_doctor(args):
     """Run diagnostic checks."""
+    from state_store_maintenance import StateStoreMaintenanceError, require_state_store_maintenance
+
     should_fix = getattr(args, 'fix', False)
+    try:
+        require_state_store_maintenance("doctor", home=HERMES_HOME)
+    except StateStoreMaintenanceError as exc:
+        print(exc)
+        return 2
     # Doctor runs from the interactive CLI, so CLI-gated tool checks (e.g. cronjob) see the same context.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
     if getattr(args, 'ack', None):

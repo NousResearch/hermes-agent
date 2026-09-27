@@ -209,6 +209,9 @@ class PeerRunsHTTPClient:
         self, *, base_url: str, api_key: str, timeout_seconds: float = 30,
         receipt_db_path: Path | str | None = None, poll_min_seconds: float = 0.1,
         poll_max_seconds: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
+        from gateway.hosted_room_coordination import require_hosted_room_coordination_runtime
+
+        require_hosted_room_coordination_runtime()
         base_url, self.transport_security = validate_room_link_url(base_url)
         if api_key and len(api_key) < 16:
             raise ValueError("peer API key is missing or too short")
@@ -258,10 +261,10 @@ class PeerRunsHTTPClient:
         record = self._runs.get((task_id, execution_generation))
         if record is not None or self.receipt_db_path is None or self._room_scope is None:
             return record
-        from gateway import hosted_rooms
+        from gateway.hosted_room_coordination import sqlite_hosted_room_coordination
         identity = {"task_id": task_id, "execution_generation": execution_generation}
-        return hosted_rooms.remote_run_receipt(
-            self.receipt_db_path, record={**self._room_scope, **identity})
+        return sqlite_hosted_room_coordination(self.receipt_db_path).remote_run_receipt(
+            record={**self._room_scope, **identity})
 
     def bind_observation(self, *, task_id: str, execution_generation: int) -> None:
         """Pin history/status reads to one exact logical task attempt."""
@@ -423,8 +426,8 @@ class PeerRunsHTTPClient:
             **{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},
             "task_id": checked.task_id, "execution_generation": checked.execution_generation}
         if self.receipt_db_path is not None:
-            from gateway import hosted_rooms
-            hosted_rooms.upsert_remote_run_receipt(self.receipt_db_path, record=receipt)
+            from gateway.hosted_room_coordination import sqlite_hosted_room_coordination
+            sqlite_hosted_room_coordination(self.receipt_db_path).upsert_remote_run_receipt(record=receipt)
         self._runs[(checked.task_id, checked.execution_generation)] = receipt
         self._status_cache.pop(run_id, None)
         return self._accepted(

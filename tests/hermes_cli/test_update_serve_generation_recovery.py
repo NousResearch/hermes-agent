@@ -471,6 +471,22 @@ def test_gateway_units_are_not_restarted_by_the_serve_pass(linux_systemctl):
     assert out == {"verified": [], "failed": []}
 
 
+def test_dashboard_unit_is_restarted_and_verified_by_the_serve_pass(linux_systemctl):
+    """#125297: a systemd-supervised dashboard is the same stale-generation risk
+    as a serve unit — the abort-recovery pass must enumerate and restart it too."""
+    fake = _Systemctl(
+        listed=["hermes-serve.service", "hermes-dashboard-work.service"],
+        active={"hermes-serve.service": True, "hermes-dashboard-work.service": True},
+        main_pids={"hermes-serve.service": 7, "hermes-dashboard-work.service": 8},
+    )
+    out = recovery.restart_serve_units(run=fake, sleep=lambda _: None)
+    assert fake.restarted == ["hermes-serve.service", "hermes-dashboard-work.service"]
+    assert out == {
+        "verified": ["user/hermes-dashboard-work", "user/hermes-serve"],
+        "failed": [],
+    }
+
+
 def test_no_systemctl_means_no_serve_pass(monkeypatch):
     monkeypatch.setattr(recovery.shutil, "which", lambda name: None)
 

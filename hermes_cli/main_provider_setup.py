@@ -63,7 +63,12 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
-    ("curator", "Curator", "skill-usage review pass")]
+    ("curator", "Curator", "skill-usage review pass"),
+    ("goal_judge", "Goal judge", "/goal contract drafting + satisfaction judge"),
+    ("background_review", "Background review", "post-turn memory/skill self-improvement"),
+    ("monitor", "Monitor", "important-mail 0-10 scorer"),
+    ("moa_reference", "MoA reference", "mixture-of-agents reference models"),
+    ("moa_aggregator", "MoA aggregator", "mixture-of-agents aggregation step")]
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation. Routing lives
 # under top-level `delegation.*` (NOT `auxiliary.delegation`) because delegate_task spawns full

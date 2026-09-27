@@ -498,6 +498,12 @@ def apply_llm_output_transform(
         model=agent.model,
         platform=platform,
         turn_id=turn_id,  # per-turn identity for the hook callback gate
+        # Turn destination: a plugin that replaces the final text with an out-of-band
+        # message (rich card, media, another channel) must know where the turn was going.
+        # Empty for CLI/programmatic turns, which carry no gateway routing identity.
+        chat_id=getattr(agent, "_chat_id", None) or "",
+        chat_type=getattr(agent, "_chat_type", None) or "",
+        thread_id=getattr(agent, "_thread_id", None) or "",
     ):
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True

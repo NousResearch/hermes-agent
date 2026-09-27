@@ -99,3 +99,31 @@ def test_recovery_path_tail_row_carries_transformed_text(db_agent, monkeypatch):
     assert messages[-1]["role"] == "assistant"
     assert messages[-1]["content"] == "REWRITTEN:RECOVERED TEXT"
     assert calls.count("transform_llm_output") == 1
+
+
+def test_hook_receives_the_turn_destination(db_agent, monkeypatch):
+    """A plugin that replaces the final text with an out-of-band message (rich card, media)
+    must be able to address the conversation it belongs to: the payload carries the turn's
+    gateway identity, not just its session id."""
+    agent, _ = db_agent
+    seen = []
+
+    def capture(hook_name, **kwargs):
+        if hook_name == "transform_llm_output":
+            seen.append(kwargs)
+        return []
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", capture)
+
+    agent._chat_id, agent._chat_type, agent._thread_id = "6630335290", "dm", "42"
+    agent.client.chat.completions.create = _fake_completion("one")
+    agent.run_conversation("hello")
+
+    agent._chat_id = agent._chat_type = agent._thread_id = None
+    agent.client.chat.completions.create = _fake_completion("two")
+    agent.run_conversation("again")
+
+    first, second = seen[0], seen[1]
+    assert (first["chat_id"], first["chat_type"], first["thread_id"]) == ("6630335290", "dm", "42")
+    # A CLI/programmatic turn carries no gateway identity — empty, never a stale chat.
+    assert (second["chat_id"], second["chat_type"], second["thread_id"]) == ("", "", "")

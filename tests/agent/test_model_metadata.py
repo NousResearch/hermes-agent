@@ -214,7 +214,7 @@ class TestEstimateMessagesTokensRough:
 
     def test_cache_consistency_on_mutation(self):
         """Cache must update when message content is mutated in-place."""
-        from agent.model_metadata import estimate_messages_tokens_rough
+        from agent.model_metadata import estimate_messages_tokens_rough, _MSG_TOKENS_CACHE
 
         msg = {"role": "user", "content": [{"type": "text", "text": "initial text"}]}
         tokens1 = estimate_messages_tokens_rough([msg])
@@ -227,7 +227,7 @@ class TestEstimateMessagesTokensRough:
         tokens2 = estimate_messages_tokens_rough([msg])
 
         assert tokens2 > tokens1, f"Cache failed to detect in-place mutation: {tokens1} vs {tokens2}"
-
+        _MSG_TOKENS_CACHE.clear()
         fresh_msg = {"role": "user", "content": [{"type": "text", "text": "initial text"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,dGVzdA=="}}]}
         fresh_tokens = estimate_messages_tokens_rough([fresh_msg])
         assert tokens2 == fresh_tokens, f"Cached ({tokens2}) != fresh ({fresh_tokens})"

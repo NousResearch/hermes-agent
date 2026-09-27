@@ -1,7 +1,7 @@
 name: orcaslicer
 repo: https://github.com/mazzanfar/hermes-orcaslicer
-sha: c4c4860b6f160f99dfd88a74175feaa386ba32a1
-version: "0.3.0"
+sha: 84b282d7edabf85c98251845b3c7c200e946505d
+version: "0.4.0"
 title: OrcaSlicer for Hermes
 description: >-
   Prepare, slice, preflight and export 3D prints with stock OrcaSlicer profiles.

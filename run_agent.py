@@ -1219,11 +1219,11 @@ class AIAgent(
         """Drop duplicate (tool_name, arguments) pairs in one turn (first wins).
 
         Valid JSON arguments are canonicalized so key order/whitespace cannot evade dedup.
-        Repeated computer_use key/scroll/wait actions are intentional ordered inputs,
-        so preserve them; removing one changes the requested GUI operation sequence.
+        Repeated computer_use key actions are intentional ordered inputs, so preserve
+        them; removing one changes the requested GUI operation sequence.
         """
         seen, unique = set(), []
-        repeatable_computer_actions = {"key", "scroll", "wait"}
+        repeatable_computer_actions = {"key"}
         for tc in tool_calls:
             arguments = tc.function.arguments
             parsed_arguments = None

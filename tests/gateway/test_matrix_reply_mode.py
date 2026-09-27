@@ -1,10 +1,13 @@
 """Matrix reply references and thread fallbacks."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.secret_scope import set_multiplex_active
 from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
+from gateway.run import _profile_runtime_scope
 from plugins.platforms.matrix.adapter import MatrixAdapter, _apply_yaml_config
 
 
@@ -140,4 +143,39 @@ def test_yaml_off_mode_keeps_a_valid_fallback_on_threaded_media(monkeypatch):
                 "is_falling_back": True,
             },
         },
+    )
+
+
+def test_reply_mode_follows_each_profile_config_in_multiplex(monkeypatch, tmp_path):
+    root = tmp_path / "hermes"
+    secondary = root / "profiles" / "secondary"
+    secondary.mkdir(parents=True)
+    (root / "config.yaml").write_text(
+        "matrix:\n  enabled: true\n  reply_to_mode: all\n"
+    )
+    (secondary / "config.yaml").write_text(
+        "matrix:\n  enabled: true\n  reply_to_mode: false\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("MATRIX_REPLY_TO_MODE", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    set_multiplex_active(True)
+    try:
+        from gateway.config import load_gateway_config
+
+        def current_mode():
+            config = load_gateway_config().platforms[Platform.MATRIX]
+            return config.reply_to_mode, MatrixAdapter(config)._reply_to_mode
+
+        default_before = current_mode()
+        with _profile_runtime_scope(secondary, prepared_secret_scope={}):
+            served = current_mode()
+        default_after = current_mode()
+    finally:
+        set_multiplex_active(False)
+
+    assert (default_before, served, default_after) == (
+        ("all", "all"),
+        ("off", "off"),
+        ("all", "all"),
     )

@@ -1278,9 +1278,9 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from hermes_cli.config import atomic_config_write
+    from hermes_cli.config import atomic_config_replace
     path = _active_config_path()
-    atomic_config_write(path, cfg)
+    atomic_config_replace(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:

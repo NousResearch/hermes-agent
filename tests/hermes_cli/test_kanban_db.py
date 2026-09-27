@@ -1545,24 +1545,34 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # launchd jobs, and other detached processes routinely run with a stripped
 # $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
 # spawn fails with FileNotFoundError and the task gets stuck. The resolver
-# prefers the interpreter-bound module form (exactly this install; a PATH
-# shim could be attacker-planted or belong to another install, #111569) and
-# only falls back to the PATH shim when ``hermes_cli`` is not importable.
+# prefers the interpreter-bound installation bootstrap (exactly this install;
+# a PATH shim could be attacker-planted or belong to another install, #111569)
+# and only falls back to the PATH shim when ``hermes_cli`` is not importable.
+# The bootstrap inserts the running install's own root into sys.path itself:
+# a bare `-m hermes_cli.main` only resolves via leaked PYTHONPATH, which the
+# worker-env scrub strips for routed profiles (every named-profile worker died
+# with ModuleNotFoundError: hermes_cli).
 # ---------------------------------------------------------------------------
 
 
 def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     """A `hermes` on PATH must not shadow the running install (#111569):
-    the module argv wins whenever ``hermes_cli`` is importable; only an
-    explicit ``$HERMES_BIN`` overrides it."""
+    the installation-bound bootstrap wins whenever ``hermes_cli`` is
+    importable; only an explicit ``$HERMES_BIN`` overrides it."""
     import shutil
     import sys
+    from pathlib import Path
     from hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    argv = kbd._resolve_hermes_argv()
+    assert argv[0] == sys.executable
+    assert argv[1:3] == ["-I", "-c"]
+    bootstrap = argv[3]
+    assert "hermes_cli.main" in bootstrap
+    assert str(Path(kbd.__file__).resolve().parents[1]) in bootstrap
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
@@ -1571,13 +1581,13 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
 
 
 def test_resolve_hermes_argv_module_actually_runs():
-    """The fallback module name must be importable + runnable.
+    """The resolved bootstrap must be importable + runnable.
 
-    A unit test that pins the literal string is necessary but not
-    sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
-    handling or its argparse setup, `python -m hermes_cli.main --version`
-    would fail and so would every dispatcher spawn that hits the fallback.
-    Run it as a real subprocess to catch that regression.
+    A unit test that pins the argv shape is necessary but not
+    sufficient — if the bootstrap program ever breaks (bad quoting, lost
+    ``run_module`` target, broken argparse setup), the spawned worker would
+    fail and so would every dispatcher spawn. Run it as a real subprocess
+    to catch that regression.
     """
     import subprocess
     from hermes_cli import kanban_db_dispatch as kbd
@@ -1590,8 +1600,39 @@ def test_resolve_hermes_argv_module_actually_runs():
             argv = kbd._resolve_hermes_argv()
     r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, (
-        f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
+        f"`--version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
+    )
+
+
+def test_resolve_hermes_argv_runs_without_pythonpath(tmp_path):
+    """Regression: routed-profile workers spawn with Hermes-owned PYTHONPATH
+    entries stripped, so every named-profile worker died with
+    ``ModuleNotFoundError: hermes_cli``. The installation-bound bootstrap must
+    boot with no PYTHONPATH at all and from an unrelated cwd.
+    """
+    import subprocess
+    from hermes_cli import kanban_db_dispatch as kbd
+    import shutil
+    import unittest.mock as mock
+
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HERMES_BIN", None)
+        with mock.patch.object(shutil, "which", return_value=None):
+            argv = kbd._resolve_hermes_argv()
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": os.environ.get("HOME", "/root"),
+        "TMPDIR": str(tmp_path),
+    }
+    r = subprocess.run(
+        argv + ["--version"],
+        capture_output=True, text=True, timeout=60,
+        cwd=str(tmp_path), env=env,
+    )
+    assert r.returncode == 0, (
+        f"bootstrap `--version` without PYTHONPATH failed (rc={r.returncode}); "
+        f"stderr={r.stderr[:300]!r}"
     )
 
 

@@ -82,7 +82,7 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
   const git = (...args) => checked('git', args, { cwd: work, env: gitEnv })
   git('init', '-q')
   git('-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'Stable fixture')
-  git('tag', 'v1.2.3')
+  git('-c', 'tag.gpgsign=false', 'tag', 'v1.2.3')
   const commitA = git('rev-parse', 'HEAD')
   git('-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'Second commit fixture')
   const commitB = git('rev-parse', 'HEAD')

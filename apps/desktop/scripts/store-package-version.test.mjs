@@ -29,7 +29,7 @@ function fixture() {
   fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'hermes', version: '0.27.1' }))
   const env = { ...process.env, ...gitIdentityEnv,
     GIT_AUTHOR_DATE: '2026-09-07T00:18:00Z', GIT_COMMITTER_DATE: '2026-09-07T00:18:00Z' }
-  for (const args of [['init', '-q'], ['add', '.'], ['-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture'], ['tag', 'v0.27.1']]) {
+  for (const args of [['init', '-q'], ['add', '.'], ['-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture'], ['-c', 'tag.gpgsign=false', 'tag', 'v0.27.1']]) {
     execFileSync('git', args, { cwd: root, env, stdio: 'pipe' })
   }
   return { root, app }
@@ -89,7 +89,7 @@ test('Store calendar ordering survives minute, hour, day and year boundaries and
 test('stable candidate identity uses the admitted claim epoch before the final tag exists', () => {
   const { root, app } = fixture()
   execFileSync('git', ['tag', '-d', 'v0.27.1'], { cwd: root, stdio: 'pipe' })
-  execFileSync('git', ['tag', '-a', 'v0.27.1-rc', '-m', 'claim'], {
+  execFileSync('git', ['-c', 'tag.gpgsign=false', 'tag', '-a', 'v0.27.1-rc', '-m', 'claim'], {
     cwd: root,
     env: { ...process.env, ...gitIdentityEnv, GIT_COMMITTER_DATE: '2026-09-07T00:18:00Z' },
     stdio: 'pipe'

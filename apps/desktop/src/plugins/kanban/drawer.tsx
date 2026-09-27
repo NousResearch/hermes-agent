@@ -258,6 +258,7 @@ function Diagnostics({
     <div className="flex flex-col gap-2">
       {items.map(diag => {
         const tone = SEVERITY_TONE[diag.severity]
+
         const actions = diag.actions.filter(
           action => action.kind === 'reclaim' || action.kind === 'unblock' || action.kind === 'cli_hint'
         )

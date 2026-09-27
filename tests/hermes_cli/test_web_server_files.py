@@ -484,6 +484,12 @@ def test_mutating_a_link_entry_never_touches_its_referent(local_files_client):
     )
     assert uploaded.status_code == 200, uploaded.text
     assert (shortcuts / "todo.md").read_bytes() == b"new"
+    uploaded = client.post(
+        "/api/files/upload",
+        json={"path": str(shortcuts / "notes.md"), "data_url": "data:text/plain;base64,bmV3"},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert (shortcuts / "notes.md").read_bytes() == b"new"
 
     # Exactly what FilesPage.confirmDelete() sends for each listed row.
     listing = client.get("/api/files", params={"path": str(shortcuts)})

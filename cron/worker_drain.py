@@ -145,17 +145,22 @@ def query_drain(target: str) -> Dict[str, Any]:
         return {"target": target, "status": "unknown", "drained": False,
                 "reason": "empty target"}
 
-    # Exact attempt id first: a single indexed ledger row read.
+    # The drain log itself is the authoritative index for execution ids: an
+    # exact record wins even without a ledger row (e.g. attempts from a worker
+    # whose gateway never re-read the ledger, or pruned ledger history).
+    status = drain_status(target)
+    if status.get("drained"):
+        status["target"] = target
+        return status
+
+    # Job id: the pause-then-drain flow names the job, not the attempt.
     from cron.executions import get_execution, list_executions
     try:
         if get_execution(target) is not None:
-            status = drain_status(target)
             status["target"] = target
             return status
     except Exception:
         pass
-
-    # Job id: the pause-then-drain flow names the job, not the attempt.
     try:
         latest = list_executions(job_id=target, limit=1)
     except Exception:

@@ -141,6 +141,12 @@ foreach ($jobOnly in @('HERMES_RUNTIME_DIR', 'HERMES_PYTHON', 'VIRTUAL_ENV')) {
 if (-not $RepoRoot) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 }
+# The workflow's HERMES_E2E_WORKROOT is "<workspace>\..\hermes-desktop-gui-e2e".
+# Everything below derives HERMES_HOME (and so the PM store) from it, and a
+# user's HERMES_HOME has no ".." segment. With one, Windows reports the store
+# Python's sys.executable normalized while PM names it with the "..", and
+# prepare_launch() relaunched into the same interpreter forever (#122513).
+$WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
 
 $ServeRepo   = Join-Path $WorkRoot "serve.git"
 $HermesHome  = Join-Path $WorkRoot "hermes-home"

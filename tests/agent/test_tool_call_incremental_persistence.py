@@ -762,7 +762,10 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     session_id = "sess-sanitized-active-rows"
     db = _attach_real_session_db(agent, tmp_path / "state.db", session_id)
     messages = [
-        {"role": "user", "content": "hi \ud800 there " + "x" * 4000},
+        {"role": "user", "content": [
+            {"type": "text", "text": "hi \ud800 there " + "x" * 4000},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]},
         {"role": "assistant", "content": "ok"},
         {"role": "tool", "tool_call_id": "c1", "name": "terminal", "content": "r \ud800"},
     ]
@@ -787,6 +790,8 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     assert [row["id"] for row in rows] == durable_ids
     assert [message["_row_id"] for message in messages] == durable_ids
     assert rows[0]["content"].startswith("hi \ufffd there")
+    # Our own rewrite never copies the lossy durable projection back: the live image part survives.
+    assert messages[0]["content"][1]["type"] == "image_url"
     assert rows[2]["content"] == "winner"
     assert messages[2]["content"] == "winner"
 

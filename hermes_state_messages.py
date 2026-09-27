@@ -432,7 +432,7 @@ class SessionMessagesMixin:
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
-            from agent.transcript_repair import resolve_and_repair_transcript_batch
+            from agent.transcript_repair import resolve_and_repair_transcript_batch, stamp_inserted_row_snapshots
             inserted_rows = resolve_and_repair_transcript_batch(
                 conn,
                 session_id,
@@ -445,6 +445,8 @@ class SessionMessagesMixin:
                 decode_row_fn=self._decoded_repair_row,
             )
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
+            # Only this flush path re-reads the digest, so only it pays for one; hash the STORED rows.
+            stamp_inserted_row_snapshots(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
@@ -582,8 +584,6 @@ class SessionMessagesMixin:
         Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows.
         A caller that re-archives some rows afterwards passes ``prune_checkpoints=False`` and prunes once they
         are archived again (:meth:`_prune_shadowed_checkpoints`)."""
-        from agent.transcript_repair import _DB_ROW_SNAPSHOT, transcript_row_snapshot
-
         now_ts = time.time()
         inserted = tool_calls_total = 0
         for msg in messages:
@@ -599,7 +599,6 @@ class SessionMessagesMixin:
             msg["timestamp"] = message_timestamp
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
-            msg[_DB_ROW_SNAPSHOT] = transcript_row_snapshot(serialized)
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6

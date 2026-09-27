@@ -5,9 +5,8 @@ clone lookup) and sync markers after commit."""
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from hermes_state_common import _placeholders
@@ -15,8 +14,11 @@ from hermes_state_common import _placeholders
 
 _DB_ROW_SNAPSHOT = "_db_row_snapshot"
 _CANONICAL_ROW = "_canonical_row"
+
+
 def _write_columns() -> tuple:
-    # Late import: hermes_state_messages imports this module lazily inside its methods.
+    # Function-local import: hermes_state_messages imports this module lazily, so a top-level import
+    # here would create an import cycle for callers that load agent.transcript_repair first.
     from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
 
     return _MESSAGE_WRITE_COLUMNS
@@ -29,24 +31,43 @@ _REPAIR_COLUMNS = tuple(c for c in _write_columns() if c not in _NON_PAYLOAD_COL
 _SYNC_FIELDS = ("role", "message_id") + _REPAIR_COLUMNS
 
 
-def _canonical_value(value: Any) -> Any:
-    return value.hex() if isinstance(value, (bytes, bytearray, memoryview)) else value
-
-
-def transcript_row_snapshot(row: Mapping[str, Any]) -> Optional[str]:
+def transcript_row_snapshot(row: Mapping[str, Any]) -> str | None:
     """Fixed-size digest of the durable repair columns (the CAS version), or ``None`` for a partial SELECT.
 
-    A digest rather than a row copy: the value rides on live message dicts, so a full copy would double
-    transcript memory and anything that prices dict bytes.
+    Callers pass rows read back from SQLite, never Python bind values: column affinity rewrites values on
+    storage (int ``platform_message_id`` -> TEXT, float ``token_count`` -> INTEGER), so hashing bind values
+    would never match the stored version. A digest rather than a row copy: the value rides on live message
+    dicts, so a full copy would double transcript memory and anything that prices dict bytes.
     """
     keys = set(row.keys())
     if not set(_REPAIR_COLUMNS) <= keys:
         return None
-    canonical = json.dumps(
-        [_canonical_value(row[column]) for column in _REPAIR_COLUMNS],
-        ensure_ascii=True, separators=(",", ":"), default=str,
-    )
-    return hashlib.blake2b(canonical.encode("utf-8"), digest_size=16).hexdigest()
+    digest = hashlib.blake2b(digest_size=16)
+    for column in _REPAIR_COLUMNS:
+        value = row[column]
+        if value is None:
+            digest.update(b"N")
+            continue
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            tag, data = b"B", bytes(value)
+        elif isinstance(value, str):
+            tag, data = b"S", value.encode("utf-8", "surrogatepass")
+        else:
+            tag, data = (b"F" if isinstance(value, float) else b"I"), repr(value).encode("ascii")
+        digest.update(tag + len(data).to_bytes(8, "big") + data)
+    return digest.hexdigest()
+
+
+def stamp_inserted_row_snapshots(conn: sqlite3.Connection, session_id: str, messages: List[Dict[str, Any]]) -> None:
+    """Stamp the stored-row digest on freshly inserted live dicts (flush path only; one SELECT per batch)."""
+    by_id = {msg["_row_id"]: msg for msg in messages if isinstance(msg.get("_row_id"), int)}
+    ids = list(by_id)
+    for start in range(0, len(ids), 500):
+        chunk = ids[start:start + 500]
+        for row in conn.execute(
+            f"SELECT * FROM messages WHERE session_id = ? AND id IN ({_placeholders(chunk)})", (session_id, *chunk)
+        ).fetchall():
+            by_id[int(row["id"])][_DB_ROW_SNAPSHOT] = transcript_row_snapshot(row)
 
 
 def is_content_blank(content: Any) -> bool:
@@ -91,9 +112,16 @@ def resolve_and_repair_transcript_batch(
         serialized = serialize_message_fn(msg, float(target_row["timestamp"]))
         expected = msg.get(_DB_ROW_SNAPSHOT)
         has_snapshot = isinstance(expected, str)
+        # Adopt the durable row onto the live dict only when another writer's version wins (digest mismatch)
+        # or on the legacy assistant path. After our own rewrite the live dict is the source of truth: the DB
+        # holds its lossy durable projection (multimodal parts -> text), which must never flow back.
+        adopt = role == "assistant" and not has_snapshot
         if has_snapshot and transcript_row_snapshot(target_row) == expected:
             # The caller holds BEGIN IMMEDIATE, so the row cannot change between this compare and the UPDATE.
-            _rewrite_row(conn, session_id, target_row, serialized)
+            if any(target_row[column] != serialized[column] for column in _REPAIR_COLUMNS):
+                _rewrite_row(conn, session_id, target_row, serialized)
+        elif has_snapshot:
+            adopt = True
         if not has_snapshot and role == "assistant" and is_content_blank(decode_content_fn(target_row["content"])):
             # Blank assistant rows are the pre-existing interrupted-stream repair path. Keep its narrow
             # content-only CAS for live dicts that predate durable row snapshots.
@@ -107,7 +135,10 @@ def resolve_and_repair_transcript_batch(
         ).fetchone()
         msg["timestamp"] = final_row["timestamp"]
         msg[_DB_ROW_SNAPSHOT] = transcript_row_snapshot(final_row)
-        msg[_CANONICAL_ROW] = decode_row_fn(final_row)
+        if adopt:
+            msg[_CANONICAL_ROW] = decode_row_fn(final_row)
+        else:
+            msg.pop(_CANONICAL_ROW, None)
     return inserted_rows
 
 

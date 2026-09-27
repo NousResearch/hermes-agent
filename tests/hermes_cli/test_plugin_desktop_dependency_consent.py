@@ -102,6 +102,44 @@ def test_real_rpc_preserves_review(world):
     assert not calls
 
 
+@pytest.mark.parametrize('drift', ['commit', 'declaration', 'profile', 'source'])
+def test_review_answer_cannot_follow_a_changed_candidate(world, tmp_path, drift):
+    from hermes_cli.plugin_dependency_review import DependencyConsentRequired, review_install_dependencies
+    source, target, home, calls = world
+    record = {'source': source.as_uri(), 'revision': 'a' * 40}
+    def review(answer=None):
+        review_install_dependencies(source, target, record, enable=True, force=True, accepted=answer)
+    with pytest.raises(DependencyConsentRequired) as pending:
+        review()
+    token = pending.value.token
+    if drift == 'commit':
+        record['revision'] = 'b' * 40
+    elif drift == 'source':
+        record['source'] = 'https://example.invalid/other'
+    elif drift == 'profile':
+        target = tmp_path / 'other-profile' / 'plugins' / 'consent-test'
+    else:
+        (source / 'plugin.yaml').write_text('name: consent-test\npython_dependencies: ["httpx>=0.28,<1"]\n')
+    with pytest.raises(DependencyConsentRequired) as changed:
+        review(token)
+    assert changed.value.token != token
+    assert not calls
+
+
+def test_accepted_review_preserves_pm_refusal(world, monkeypatch):
+    source, target, home, calls = world
+    first = pc.dashboard_install_plugin(source.as_uri(), force=True, enable=False)
+    old = (target / '__init__.py').read_bytes()
+    def refuse(**kwargs):
+        raise RuntimeError('fixture dependency conflict')
+    monkeypatch.setattr('pm.client.sync_venv', refuse)
+    result = pc.dashboard_install_plugin(source.as_uri(), force=True, enable=False,
+                                         dependency_consent=first['dependency_consent'])
+    assert not result['ok']
+    assert 'fixture dependency conflict' in result['error']
+    assert (target / '__init__.py').read_bytes() == old
+
+
 @pytest.mark.parametrize('kind', ['fresh', 'pyproject', 'external', 'none', 'invalid'])
 def test_declaration_boundaries(world, kind):
     import shutil

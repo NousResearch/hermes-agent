@@ -236,5 +236,40 @@ describe("SessionsPage load failures", () => {
     await act(async () => click(retry() ?? null));
     await waitFor(() => apiMocks.searchSessions.mock.calls.length === 2);
   });
+
+  it("shows the empty state for an empty list that loaded, with no error", async () => {
+    apiMocks.getSessions.mockImplementation(async (limit: number) => ({ sessions: [], total: 0, limit, offset: 0 }));
+    await mountSessionsPage();
+    await waitFor(() => document.body.textContent?.includes("No sessions yet") === true);
+    expect(alert()).toBeNull();
+  });
+
+  it("never lets a superseded search overwrite the current one", async () => {
+    let rejectAlpha: (err: Error) => void = () => {};
+    apiMocks.searchSessions.mockImplementation((query: string) => {
+      if (query === "alpha") return new Promise((_, reject) => { rejectAlpha = reject; });
+      return Promise.resolve({
+        results: [{ ...ROW, id: "sid-beta", session_id: "sid-beta", title: "BetaHit", snippet: "beta", role: "user", session_started: 1 }],
+      });
+    });
+    await renderSessionsPage([ROW]);
+
+    const search = document.querySelector<HTMLInputElement>('input[placeholder]');
+    if (!search) throw new Error("search input not rendered");
+    const type = (value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, value);
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await type("alpha");
+    await waitFor(() => apiMocks.searchSessions.mock.calls.length === 1);
+    await type("beta");
+    await waitFor(() => document.body.textContent?.includes("BetaHit") === true);
+
+    // The superseded "alpha" request fails late.
+    await act(async () => rejectAlpha(new Error("alpha boom")));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(alert()).toBeNull();
+    expect(document.body.textContent).toContain("BetaHit");
+  });
 });
 

@@ -848,6 +848,7 @@ export default function SessionsPage() {
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   const sessionsRequestRef = useRef(0);
+  const searchRequestRef = useRef(0);
   // Count of empty (no-message, ended, non-archived) sessions across the
   // entire DB, populated by /api/sessions/empty/count. Used to:
   //   • hide the "Delete empty" button when there's nothing to clean up
@@ -1264,6 +1265,10 @@ export default function SessionsPage() {
   // Debounced FTS search
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    // Every run supersedes the search in flight, a cleared box included, so a
+    // late answer to an older query never lands under the current one.
+    const requestId = ++searchRequestRef.current;
+    const current = () => requestId === searchRequestRef.current;
 
     if (!search.trim()) {
       debounceRef.current = setTimeout(() => {
@@ -1280,10 +1285,16 @@ export default function SessionsPage() {
       setSearchError(null);
       api
         .searchSessions(search.trim(), sessionQueryOptions)
-        .then((resp) => setSearchResults(resp.results))
+        .then((resp) => {
+          if (current()) setSearchResults(resp.results);
+        })
         // A failed search is not the unfiltered page: say so instead of listing every session as a match.
-        .catch((err) => setSearchError(errorMessage(err)))
-        .finally(() => setSearching(false));
+        .catch((err) => {
+          if (current()) setSearchError(errorMessage(err));
+        })
+        .finally(() => {
+          if (current()) setSearching(false);
+        });
     }, 300);
 
     return () => {

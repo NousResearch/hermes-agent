@@ -143,11 +143,32 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
         calls.append((cmd[1:], kwargs))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(subprocess, "run", run)
+    popen_calls = []
+
+    def popen(cmd, **kwargs):
+        popen_calls.append((cmd[1:], kwargs))
+
+        class _FakeProc:
+            args = list(cmd)
+            pid = 4321
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+            def kill(self):
+                pass
+
+        return _FakeProc()
+
+    monkeypatch.setattr(update_cmd.subprocess, "run", run)
+    monkeypatch.setattr(update_cmd.subprocess, "Popen", popen)
     update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True, check=True)
     assert update_cmd_git._sync_with_upstream_if_needed(["git"], tmp_path, assume_yes=True)
-    assert [args[0] for args, _ in calls] == ["fetch", "fetch", "pull", "push"]
-    for args, kwargs in calls:
+    # Network git now spawns via Popen (group-isolated); plain run() is out of the network path.
+    assert calls == []
+    assert [args[0] for args, _ in popen_calls] == ["fetch", "fetch", "pull", "push"]
+    for args, kwargs in popen_calls:
         assert kwargs["stdin"] is subprocess.DEVNULL, args
         env = kwargs["env"]
         assert env["GIT_TERMINAL_PROMPT"] == "0", args

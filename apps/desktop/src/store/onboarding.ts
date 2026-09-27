@@ -238,10 +238,17 @@ async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string):
   })
 }
 
-function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
-  // Non-authoritative transport fallback only — keep a previously verified
-  // configured state instead of forcing the blocking onboarding overlay.
-  return runtime.source === 'fallback' && state.configured === true && !state.requested
+function shouldPreserveConfiguredOnNotReady(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
+  // A background (never explicitly requested) readiness round may never
+  // downgrade a previously verified configured state — not even on a
+  // confident-looking not-ready answer. After a renderer reload the check can
+  // run before the remote gateway transport is re-established, or against the
+  // local/pooled backend instead of the remote one (#123339); neither proves
+  // the user unconfigured anything. Genuine credential loss still surfaces
+  // through explicit request paths (submit-time gate, status/session error
+  // events, manual open), which set requested=true and keep downgrading.
+  // ponytail: blanket preserve; re-attest against the scoped remote backend once readiness carries scope proof.
+  return !runtime.ready && state.configured === true && !state.requested
 }
 
 function notifyReady(provider: string) {
@@ -719,9 +726,10 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
 
   const state = $desktopOnboarding.get()
 
-  if (shouldPreserveConfiguredOnFallback(runtime, state)) {
-    // Gateway probes timed out but the user was already configured — don't
-    // downgrade to the blocking onboarding overlay. Surface a non-blocking
+  if (shouldPreserveConfiguredOnNotReady(runtime, state)) {
+    // The user was already configured and nobody asked for onboarding — don't
+    // downgrade to the blocking overlay on a background check that may never
+    // have reached the configured backend (#123339). Surface a non-blocking
     // notification with a stable id so repeated calls during an outage dedup
     // instead of stacking toasts.
     notify({

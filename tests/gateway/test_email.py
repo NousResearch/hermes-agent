@@ -13,7 +13,6 @@ Covers:
 """
 
 import os
-import time
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -81,12 +80,16 @@ class TestHelperFunctions(unittest.TestCase):
                     "attacker@evil.test, <victim@x>", "attacker@evil.test,\r\n <victim@x>",
                     "attacker@evil.test (c) <victim@x>", "attacker@evil.test; <victim@x>",
                     "Grp: attacker@evil.test; <victim@x>", "undisclosed-recipients:; <victim@x>",
-                    "John", 'a\\"b <victim@x>'):
+                    "John", 'a\\"b <victim@x>',
+                    # over _MAX_FROM_LEN (uncapped parseaddr would return a@example.com)
+                    "x" * 3000 + " <a@example.com>",
+                    # >=500 nested comments make stdlib parseaddr raise RecursionError
+                    "Doe, " + "(" * 500 + ")" * 500 + " <v@example.com>"):
             self.assertEqual(_extract_email_address(raw), "", raw)
-        # Hostile-size From values are refused outright (stdlib parseaddr takes ~1s at 100KB with the GIL held).
-        start = time.monotonic()
-        self.assertEqual(_extract_email_address("<" + "a@" * 50_000), "")
-        self.assertLess(time.monotonic() - start, 0.5)
+        # A From with no usable address is dropped at parse time, before dispatch.
+        from plugins.platforms.email.adapter import EmailAdapter
+        self.assertIsNone(EmailAdapter._parse_fetched_message(
+            object.__new__(EmailAdapter), b"2", b"From: a@x.com, b@y.com\r\nSubject: x\r\n\r\nbody"))
 
     def test_extract_email_address_ignores_angle_brackets_in_display_name(self):
         from plugins.platforms.email.adapter import _extract_email_address
@@ -193,8 +196,6 @@ class TestDispatchMessage(unittest.TestCase):
 
         asyncio.run(adapter._dispatch_message(msg_data))
         adapter._message_handler.assert_not_called()
-        # A From with no usable address is dropped at parse time, before dispatch.
-        self.assertIsNone(adapter._parse_fetched_message(b"2", b"From: a@x.com, b@y.com\r\nSubject: x\r\n\r\nbody"))
 
     def test_subject_included_in_text(self):
         """Subject should be prepended to body for non-reply emails."""
@@ -1226,15 +1227,42 @@ class TestSenderAuthentication(unittest.TestCase):
                    'mx.google.com; spf=pass smtp.mailfrom="x;dmarc=pass header.from=example.com x"@evil.test; '
                    "dmarc=fail header.from=example.com",
                    "mx.google.com; dmarc=pass (a (b) ; header.from=example.com) header.from=evil.test",
-                   'mx.google.com; dmarc=pass reason="a;b" header.from=evil.test'):
+                   'mx.google.com; dmarc=pass reason="a;b" header.from=evil.test',
+                   "mx.google.com; dmarc=pass a) ; header.from=evil.test",  # stray ')' is unbalanced
+                   "mx.google.com; dmarc=pass header.from=example.com; dmarc=pass header.from=evil.test",
+                   "mx.google.com; dmarc=pass (a ; header.from=evil.test",
+                   r'mx.google.com; spf=pass smtp.mailfrom="x\\";dmarc=pass header.from=example.com;x="y"; '
+                   "dmarc=fail header.from=example.com",
+                   # spf/dkim verdicts and domains come only from their own clause, never quoted text or comments
+                   'mx.google.com; spf=fail smtp.mailfrom="x spf=pass smtp.mailfrom=example.com "@evil.test; '
+                   "dmarc=fail header.from=example.com",
+                   "mx.google.com; spf=fail (spf=pass) smtp.mailfrom=a@example.com",
+                   "mx.google.com; spf=fail smtp.mailfrom=a.spf=pass@example.com; dmarc=fail header.from=example.com",
+                   'mx.google.com; dkim=pass header.d=evil.test header.i="x header.d=example.com y"@evil.test',
+                   "mx.google.com; spf=pass smtp.mailfrom=example.com; spf=fail smtp.mailfrom=evil.test",
+                   "mx.google.com; dkim=pass header.d=evil.test; dkim=fail header.d=example.com",
+                   'mx.google.com; dkim=pass header.i="x header.d=example.com"@evil.test',
+                   # an escaped quote keeps the quoted-string open, so no dmarc clause is smuggled out of it
+                   r'mx.google.com; spf=fail smtp.mailfrom="a\";dmarc=pass header.from=example.com;x=\""@evil.test'):
             ok, reason = self._verify("Admin <admin@example.com>", [ar])
             self.assertFalse(ok, ar)
-        ok, reason = self._verify("Admin <admin@example.com>", [
-            "mx.google.com; arc=pass (dmarc=fail header.from=evil.test); dmarc=pass header.from=example.com"])
-        self.assertTrue(ok, reason)
-        ok, reason = self._verify("Admin <admin@example.com>", [
-            'mx.google.com; dmarc=pass reason="a;b" header.from="example.com"'])
-        self.assertTrue(ok, reason)
+        # Real MTA headers (multi-signature DKIM, comments, quoted values) keep authenticating.
+        for ar in ("mx.google.com; arc=pass (dmarc=fail header.from=evil.test); dmarc=pass header.from=example.com",
+                   'mx.google.com; dmarc=pass reason="a;b" header.from="example.com"',
+                   'mx.google.com; dmarc=pass reason="header.from=evil.test" header.from=example.com',
+                   "mx.google.com; dkim=pass header.i=@example.com header.s=s1 header.b=AbC; spf=pass (google.com: "
+                   "domain of admin@example.com designates 1.2.3.4 as permitted sender) smtp.mailfrom=admin@example.com; "
+                   "dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=example.com",
+                   "spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=example.com; dkim=pass (signature was verified) "
+                   "header.d=example.com;dmarc=pass action=none header.from=example.com;compauth=pass reason=100",
+                   "mail.example.org; dmarc=pass (p=none dis=none) header.from=example.com",
+                   'mail.example.org; dkim=pass (2048-bit key; unprotected) header.d=example.com header.i=@example.com '
+                   'header.b="AbC+/1"; spf=pass smtp.mailfrom=example.com',
+                   "mx.example.org; dkim=pass (1024-bit key) header.d=esp.test header.i=@esp.test; "
+                   "dkim=pass (2048-bit key) header.d=example.com header.i=@example.com; spf=softfail "
+                   "smtp.mailfrom=bounce@esp.test"):
+            ok, reason = self._verify("Admin <admin@example.com>", [ar])
+            self.assertTrue(ok, (ar, reason))
 
 
     def test_dkim_pass_aligned_authenticates(self):

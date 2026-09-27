@@ -55,14 +55,17 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
               (re.compile(r"&amp;"), "&"), (re.compile(r"&lt;"), "<"), (re.compile(r"&gt;"), ">"), (re.compile(r"\n{3,}"), "\n\n"))
 # ``display <bracketed>`` split for the _extract_email_address fallback (linear: neither part can match the other's delimiters).
 _SINGLE_BRACKET_FROM_RE = re.compile(r'([^"<>]*)<([^<>\s]+)>\s*')
-_DMARC_CLAUSE_RE = re.compile(r"\s*dmarc\s*=\s*([a-z]+)", re.IGNORECASE)
 _COMMENT_RE = re.compile(r"\([^()]*\)")
 # Longest From: value we parse. parseaddr is pure Python and superlinear on hostile input (~1s at 100KB, GIL held);
 # a real mailbox plus display name stays far below this (RFC 5322 caps a line at 998 chars).
 _MAX_FROM_LEN = 2048
-# "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
-_AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
-_AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
+# Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
+_AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
+# One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
+# any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
+_QUOTED = r'"(?:[^"\\]|\\.)*"'
+_AUTH_PROP_RE = re.compile(r'(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*((?:%s|[^\s";])+)'
+                           r'|(?:%s|[^\s"])+' % (_QUOTED, _QUOTED), re.IGNORECASE)
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -255,10 +258,10 @@ def _extract_email_address(raw: str) -> str:
     ``Name <addr>`` values parseaddr rejects (``Doe, John <j@x>``) fall back to their single bracketed address,
     but only when the display part (``(comments)`` removed) cannot hold another mailbox or group: no quotes, ``;``,
     ``:`` or stray parens, and no ``@`` unless it is exactly the bracketed address (``a@x <a@x>``). Values over
-    ``_MAX_FROM_LEN`` and results without ``@`` return ``""`` so the caller drops the message."""
+    ``_MAX_FROM_LEN`` (or with more than 64 ``(``) and results without ``@`` return ``""`` so the caller drops the message."""
     value = re.sub(r"\r?\n[ \t]+", " ", str(raw or ""))
-    if len(value) > _MAX_FROM_LEN:
-        return ""  # hostile size: take the empty-sender drop instead of a GIL-holding parse
+    if len(value) > _MAX_FROM_LEN or value.count("(") > 64:
+        return ""  # hostile size/nesting: take the empty-sender drop (parseaddr recurses per nested comment)
     _, addr = parseaddr(value)
     if not addr and (m := _SINGLE_BRACKET_FROM_RE.fullmatch(value)):
         display, bracketed = _strip_comments(m.group(1)).strip(), m.group(2)
@@ -283,7 +286,7 @@ def _ar_clauses(text: str) -> Optional[List[str]]:
     while i < len(text):
         c = text[i]
         if c == "\\" and (quoted or depth):
-            if depth == 0:
+            if quoted:
                 cur.append(text[i:i + 2])
             i += 2
             continue
@@ -299,6 +302,8 @@ def _ar_clauses(text: str) -> Optional[List[str]]:
         elif c == '"':
             quoted = True
             cur.append(c)
+        elif c == ")":
+            return None  # stray close paren: unbalanced
         elif c == ";":
             clauses.append("".join(cur))
             cur = []
@@ -309,8 +314,9 @@ def _ar_clauses(text: str) -> Optional[List[str]]:
 
 
 def _auth_props(text: str) -> List[Tuple[str, str]]:
-    """Authentication-Results ``(property, value)`` pairs (``header.from=x``), property lowercased, quotes stripped."""
-    return [(p.lower(), v.strip().strip('"')) for p, v in _AUTH_PROP_RE.findall(text)]
+    """``(property, value)`` pairs (``header.from=x``) of one comment-free Authentication-Results clause, property
+    lowercased, surrounding quotes stripped. Quoted-string contents are never scanned for properties."""
+    return [(p.lower(), v.strip('"')) for p, v in _AUTH_PROP_RE.findall(text) if p]
 
 
 def _domain_of(address: str) -> str:
@@ -342,26 +348,32 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
                     or _domains_aligned(serv, authserv_id)), None)
     if trusted is None:
         return False, "no Authentication-Results from trusted authserv-id"
-    methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
-    props = dict(_auth_props(trusted))
-    # Verdict and header.from come from the ONE clause starting with dmarc= (split outside quotes/comments).
-    # A quoted smtp.mailfrom can smuggle a fake clause, so an unbalanced value or a second dmarc clause fails closed.
+    # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
+    # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
     if (clauses := _ar_clauses(trusted)) is None:
         return False, "unbalanced quote or comment in Authentication-Results"
-    if len(dmarcs := [c for c in clauses if _DMARC_CLAUSE_RE.match(c)]) > 1:
+    results: Dict[str, List[Tuple[str, List[Tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}
+    for clause in clauses:
+        if m := _AUTH_METHOD_RE.match(clause):
+            results[m.group(1).lower()].append((m.group(2).lower(), _auth_props(clause)))
+
+    def aligned(props: List[Tuple[str, str]], names: Tuple[str, ...], *, required: bool = True) -> bool:
+        domains = [_domain_of(v) for p, v in props if p in names]
+        return (bool(domains) or not required) and all(_domains_aligned(d, from_domain) for d in domains)
+
+    if len(results["dmarc"]) > 1:
         return False, "ambiguous dmarc result"
-    dmarc = dmarcs[0] if dmarcs else ""
-    if (m := _DMARC_CLAUSE_RE.match(dmarc)) and m.group(1).lower() == "pass":
-        if all(_domains_aligned(_domain_of(v), from_domain) for p, v in _auth_props(dmarc) if p == "header.from"):
-            return True, "dmarc=pass"  # the verdict must be for the From domain we parsed (absent header.from: trust it)
-    if methods.get("spf") == "pass":  # envelope/MAIL FROM domain must align with From
-        spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get("smtp.from", "") or props.get("envelope-from", "")
-        if _domains_aligned(_domain_of(spf_domain) if "@" in spf_domain else spf_domain, from_domain):
-            return True, "spf=pass aligned"
-    if methods.get("dkim") == "pass":  # signing domain header.d must align with From
-        dkim_domain = props.get("header.d", "") or _domain_of(props.get("header.from", ""))
-        if _domains_aligned(dkim_domain, from_domain):
-            return True, "dkim=pass aligned"
+    # every header.from in the dmarc clause must be the From domain we parsed (absent header.from: trust the verdict)
+    if any(r == "pass" and aligned(props, ("header.from",), required=False) for r, props in results["dmarc"]):
+        return True, "dmarc=pass"
+    # one SMTP transaction has one MAIL FROM verdict: a second spf clause means the SPF signal is not trusted
+    if len(results["spf"]) == 1 and (spf := results["spf"][0])[0] == "pass" and aligned(
+            spf[1], ("smtp.mailfrom", "smtp.from", "envelope-from")):
+        return True, "spf=pass aligned"
+    # several dkim clauses are normal (one per signature): any single pass whose own header.d aligns is enough
+    if any(r == "pass" and aligned(props, ("header.d",) if any(p == "header.d" for p, _ in props) else ("header.from",))
+           for r, props in results["dkim"]):
+        return True, "dkim=pass aligned"
     return False, f"authentication failed ({trusted[:120]})"
 
 

@@ -1135,6 +1135,10 @@ def _commit_tool_result(
                 tool_message["display_metadata"] = metadata
         except Exception as callback_error:
             logging.debug("Tool result metadata callback error: %s", callback_error)
+    if not blocked:
+        # Measured duration is its own DB column (never a wire field); the request builder renders it
+        # as a model-only ``Wall time`` header. Blocked calls are synthetic: no timing.
+        tool_message["duration_ms"] = max(int(round(tool_duration * 1000)), 0)
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None

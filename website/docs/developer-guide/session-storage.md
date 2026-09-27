@@ -207,7 +207,10 @@ later.
 
 Abridged — the full schema also includes `effect_disposition`,
 `platform_message_id`, `observed`, `active`, `compacted`, `api_content`,
-`display_kind`, and `display_metadata`:
+`display_kind`, `display_metadata`, and `duration_ms` (tool rows only: the
+measured wall time of the call, rendered into the model-bound copy as a leading
+`Wall time: N.NNN seconds` line while the stored content stays the raw tool
+output):
 
 ```sql
 CREATE TABLE IF NOT EXISTS messages (

@@ -42,7 +42,9 @@ _SKILLS_CACHE_TTL_SECONDS = 30.0
 
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
     """O(#dirs + #categories) stat-based change signature; platform is read via
-    ``agent.skill_utils.sys`` so test patches are honored."""
+    ``agent.skill_utils.sys`` so test patches are honored. ``filter_skill_visible``
+    registration is part of the signature: a plugin load changes what the listing
+    should contain without touching any SKILL.md mtime (TTL bounds the staleness)."""
     from agent import skill_utils as _skill_utils
     platform = getattr(getattr(_skill_utils, "sys", None), "platform", "")
     sig = []
@@ -57,7 +59,12 @@ def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
                     if entry.is_dir(follow_symlinks=False):
                         m = max(m, entry.stat(follow_symlinks=False).st_mtime)
         sig.append((str(d), m))
-    return (tuple(sig), frozenset(disabled), platform)
+    try:
+        from hermes_cli.plugins import has_hook
+        filter_hook = has_hook("filter_skill_visible")
+    except Exception:
+        filter_hook = False
+    return (tuple(sig), frozenset(disabled), platform, filter_hook)
 
 
 HERMES_HOME = get_hermes_home()  # all skills live in ~/.hermes/skills/ (seeded from bundled)

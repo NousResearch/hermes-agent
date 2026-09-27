@@ -1434,6 +1434,16 @@ def _oneshot_prompt_variant() -> bool:
     return is_single_query_session()
 
 
+def _filter_skill_visible_token() -> bool:
+    """Cache-key part: whether any ``filter_skill_visible`` callback is registered — a plugin
+    load changes what the index should contain without touching any SKILL.md mtime."""
+    try:
+        from hermes_cli.plugins import has_hook
+        return has_hook("filter_skill_visible")
+    except Exception:
+        return False
+
+
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",

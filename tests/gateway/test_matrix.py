@@ -1,5 +1,6 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
+from datetime import datetime, timezone
 import sys
 import threading
 import time
@@ -6341,3 +6342,63 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+class TestMatrixInboundEventTimestamp:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._client = MagicMock()
+        self.adapter._client.download_media = AsyncMock(return_value=None)
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._mxc_to_http = (
+            lambda url: "https://matrix.example.org/_matrix/media/v3/download/example/30.png"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("msgtype, body", [("m.text", "hello"), ("m.image", "photo.png")])
+    async def test_server_timestamp_reaches_text_and_media_events(self, msgtype, body):
+        self.adapter._startup_ts = 0.0
+        self.adapter._text_batch_delay_seconds = 0
+        self.adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        self.adapter._is_duplicate_event = MagicMock(return_value=False)
+        self.adapter.handle_message = AsyncMock()
+        content = {"msgtype": msgtype, "body": body}
+        if msgtype == "m.image":
+            content["url"] = "mxc://example/photo"
+            content["info"] = {"mimetype": "image/png"}
+        timestamp_ms = 1768488600123
+        event = types.SimpleNamespace(
+            room_id="!room:example.org", sender="@alice:example.org",
+            event_id="$timestamp", timestamp=timestamp_ms, content=content,
+        )
+
+        await self.adapter._on_room_message(event)
+
+        (message,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        assert message.timestamp == datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("msgtype, body", [("m.text", "hello"), ("m.image", "photo.png")])
+    async def test_missing_server_timestamp_uses_current_utc_time(self, msgtype, body):
+        self.adapter._startup_ts = 0.0
+        self.adapter._text_batch_delay_seconds = 0
+        self.adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        self.adapter._is_duplicate_event = MagicMock(return_value=False)
+        self.adapter.handle_message = AsyncMock()
+        content = {"msgtype": msgtype, "body": body}
+        if msgtype == "m.image":
+            content["url"] = "mxc://example/photo"
+            content["info"] = {"mimetype": "image/png"}
+        event = types.SimpleNamespace(
+            room_id="!room:example.org", sender="@alice:example.org",
+            event_id="$timestamp", timestamp=0, content=content,
+        )
+
+        before = datetime.now(timezone.utc)
+        await self.adapter._on_room_message(event)
+        after = datetime.now(timezone.utc)
+
+        (message,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        assert before <= message.timestamp <= after

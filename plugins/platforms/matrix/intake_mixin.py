@@ -84,15 +84,15 @@ class MatrixIntakeMixin(BasePlatformAdapter):
             await self._parked_voices.settle(room_id, sender)  # same-/sync-batch voice still gating
             parked = self._parked_voices.claim(room_id, sender, before=limit)
             if parked:  # answer the voice this bare mention was typed for, not an empty text
-                voice_id, voice_content, voice_relates = parked
+                voice_id, voice_ts, voice_content, voice_relates = parked
                 await self._handle_media_message(
-                    room_id, sender, voice_id, event_ts, voice_content, voice_relates, "m.audio",
+                    room_id, sender, voice_id, voice_ts, voice_content, voice_relates, "m.audio",
                     mention_claimed=True)
                 self._background_read_receipt(room_id, event_id)  # the claim receipted the voice
                 return
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to,
-            reply_parent=reply_parent)
+            reply_parent=reply_parent, event_ts=event_ts)
         if msg_event is None:
             return
         self._event_context_cache.store(room_id, event_id, MatrixEventContext(sender, msg_event.text))

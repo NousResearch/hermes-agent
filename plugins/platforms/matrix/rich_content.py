@@ -226,7 +226,7 @@ class MatrixRichContentMixin:
             body,
             source_content,
             relates_to,
-            reply_parent=reply_parent,
+            reply_parent=reply_parent, event_ts=event_ts,
         )
         if event is None:
             return None

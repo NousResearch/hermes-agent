@@ -1,4 +1,4 @@
-"""A failed update lookup is not a current result or permission to apply."""
+"""A failed lookup stays nonzero and never authorizes updating that package."""
 import importlib
 from argparse import Namespace
 
@@ -48,16 +48,27 @@ def prepare(tmp_path, monkeypatch, packages):
 
 @pytest.mark.parametrize("check", [True, False])
 @pytest.mark.parametrize("mixed", [True, False])
-def test_failed_resolution_stops_every_apply_path(tmp_path, monkeypatch, capsys, check, mixed):
+def test_failed_resolution_only_applies_successful_siblings(tmp_path, monkeypatch, capsys, check, mixed):
     failed = UpdateFixture("failed-lookup", TimeoutError("fixture index unavailable"))
     healthy = UpdateFixture("healthy-lookup", ["2.0"])
     packages = [failed, healthy] if mixed else [failed]
     lock = prepare(tmp_path, monkeypatch, packages)
     before = lock.path.read_bytes()
+    installed = []
+    if mixed and not check:
+        monkeypatch.setattr(cli, "_pin_artifacts", lambda package, decision, current: current)
+        monkeypatch.setattr(cli, "_install_names", lambda names: installed.extend(names) or 0)
+        monkeypatch.setattr(cli, "_sync_venv_step", lambda: True)
     args = Namespace(names=[p.name for p in packages], target=None, check=check, uv=True, npm=True, termux=False)
     assert cli.cmd_update(args) == 1
     assert "fixture index unavailable" in capsys.readouterr().out
-    assert lock.path.read_bytes() == before
+    if mixed and not check:
+        reopened = Lockfile(lock.path)
+        assert reopened.version("healthy-lookup") == "2.0"
+        assert reopened.version("failed-lookup") == "1.0"
+        assert installed == ["healthy-lookup"]
+    else:
+        assert lock.path.read_bytes() == before
     assert not (tmp_path / "tools").exists()
     if mixed:
         assert healthy.lookups == 1

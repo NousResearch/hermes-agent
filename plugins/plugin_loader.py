@@ -10,6 +10,7 @@ import importlib.machinery
 import importlib.util
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -95,7 +96,22 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     """Import ``plugin_dir/__init__.py`` as *module_name* (reusing sys.modules when loaded).
     Order matters: parents first (relative imports need them), then siblings as ``module_name.<stem>``
     (so ``from ._x import Y`` resolves), then the module. Finally child is bound onto parent and
-    siblings onto module — the shape normal imports produce, which monkeypatch relies on."""
+    siblings onto module — the shape normal imports produce, which monkeypatch relies on.
+
+    Serialized: the module is reserved in sys.modules BEFORE it executes, so a concurrent caller
+    (several agents built at once by the desktop/gateway) took the half-initialized module for a
+    cache hit, found no engine in it, and silently fell back to the built-in compressor."""
+    with _LOAD_LOCK:
+        return _load_plugin_module_locked(module_name, plugin_dir, parents=parents, logger=logger,
+                                          synthetic_namespace=synthetic_namespace)
+
+
+# Reentrant: a plugin's own import may load a sibling plugin through this function.
+_LOAD_LOCK = threading.RLock()
+
+
+def _load_plugin_module_locked(module_name: str, plugin_dir: Path, *, parents: Tuple[str, ...],
+                               logger: logging.Logger, synthetic_namespace: Optional[str]) -> Optional[Any]:
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return None

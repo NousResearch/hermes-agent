@@ -36,7 +36,10 @@ _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 _FLEET_PROBE_SETTLE_TIMEOUT_SECONDS = 120.0
 
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
-_LIST_GATEWAY_UNITS = ["list-units", "hermes-gateway*", "hermes-serve*", "--plain", "--no-legend", "--no-pager"]
+_LIST_GATEWAY_UNITS = [
+    "list-units", "hermes-gateway*", "hermes-serve*", "hermes-dashboard*",
+    "--plain", "--no-legend", "--no-pager",
+]
 
 
 def _write_gateway_update_exit_code(ok: bool) -> None:
@@ -797,6 +800,11 @@ def _is_hermes_gateway_unit(unit: str) -> bool:
         or unit.startswith("hermes-gateway-")
         or unit == "hermes-serve.service"
         or unit.startswith("hermes-serve-")
+        # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the
+        # same fleet this pass restarts. Leaving them out meant a successful update reported
+        # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
+        or unit == "hermes-dashboard.service"
+        or unit.startswith("hermes-dashboard-")
     )
 
 

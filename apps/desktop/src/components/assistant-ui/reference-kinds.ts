@@ -171,3 +171,27 @@ export function textWithoutReferenceLines(text: string): string {
     .join('\n')
     .trim()
 }
+
+/** A composer attachment ref (`@file:`/`@folder:`), which renders as a chip, not a thumbnail. */
+export const isAttachmentRef = (ref: string): boolean => /^@(?:file|folder):/.test(ref)
+
+/**
+ * Peel the attachment block off the top of a stored user prompt.
+ *
+ * The composer sends attachments as one `@file:`/`@folder:` line each, ahead
+ * of the typed text, and keeps them out of the bubble as `attachmentRefs`. A
+ * persisted turn carries that block inline, so without this a reloaded (or
+ * reconciled) bubble opens with a raw path and a blank line where the live one
+ * showed a chip under the prompt. Only the leading run moves: a ref typed
+ * mid-prose stays where the user put it.
+ */
+export function splitLeadingAttachmentRefs(text: string): { refs: string[]; text: string } {
+  const lines = text.split('\n')
+  const refs: string[] = []
+
+  while (lines.length && isAttachmentRef(lines[0]) && REFERENCE_LINE_RE.test(lines[0].trimEnd())) {
+    refs.push(lines.shift()!.trimEnd())
+  }
+
+  return refs.length ? { refs, text: lines.join('\n').trim() } : { refs, text }
+}

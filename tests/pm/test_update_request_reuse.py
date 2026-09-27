@@ -104,9 +104,12 @@ def test_resolution_reuses_successful_responses_but_refreshes_next_operation(ups
                 # Linux comes from BtbN too (Windows .zip, Linux .tar.xz).
                 btbn_assets.append(
                     {"name": f"ffmpeg-n{version}-1-gabcdef-linux{arch}-gpl-9.1.tar.xz"})
-            payloads["/repos/BtbN/FFmpeg-Builds/releases?per_page=30&page=1"] = [{
-                "tag_name": f"autobuild-{generation}", "assets": btbn_assets,
-            }]
+            btbn_tag = f"autobuild-2026-{generation:02d}-28-12-00"
+            payloads["/repos/BtbN/FFmpeg-Builds/releases?per_page=30&page=1"] = [
+                # Newest tag is the in-progress month's daily, never pinned.
+                {"tag_name": "autobuild-2026-12-01-12-00", "assets": []},
+                {"tag_name": btbn_tag, "assets": btbn_assets},
+            ]
         RangeHandler.payloads = {path: (value if isinstance(value, str) else json.dumps(value)).encode()
                                  for path, value in payloads.items()}
         # A failed transfer still retries; only the eventual success is reusable.
@@ -118,7 +121,7 @@ def test_resolution_reuses_successful_responses_but_refreshes_next_operation(ups
         assert decision.changed
         if name == "ffmpeg":
             assert set(decision.artifact_updates) == set(expected_targets)
-            assert all(f"/{generation}_{version}/" in urls[0] or f"/autobuild-{generation}/" in urls[0]
+            assert all(f"/{generation}_{version}/" in urls[0] or f"/{btbn_tag}/" in urls[0]
                        for urls in decision.artifact_updates.values())
         expected = Counter(dict.fromkeys(payloads, 1))
         expected[retry_path] += 1

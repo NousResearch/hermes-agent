@@ -73,3 +73,21 @@ def test_verify_budget_covers_the_watchers_own_wait_when_the_old_pid_is_still_al
     # reports "no stable gateway process appeared" before the relaunch could have happened.
     assert pending > GATEWAY_RESTART_WATCHER_TIMEOUT_S
     assert settled < pending
+
+
+def test_windows_relaunch_argv_is_visible_to_the_liveness_poll(monkeypatch):
+    """The argv the Windows relaunch spawns must be one the poll can actually find.
+
+    The poll discovers gateways by command line, and an inline-source (``-c``) command line is
+    never a gateway (#107002) — a store-Python bootstrap relaunch is invisible to it, so the
+    update reports "no stable gateway process appeared" and exits 1 with the gateway up.
+    """
+    monkeypatch.setattr(gateway_mod, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway_mod, "get_python_path", lambda: "/usr/bin/python3")
+    default = gateway_mod._gateway_run_args_for_profile("default")
+    named = gateway_mod._gateway_run_args_for_profile("work")
+    assert looks_like_gateway_command_line(" ".join(default)) is True
+    assert looks_like_gateway_command_line(" ".join(named)) is True
+    assert "-c" not in default
+    assert " ".join(default).endswith("gateway run --replace")
+    assert "--profile work" in " ".join(named)

@@ -908,6 +908,21 @@ def find_windows_gateway_services(
 
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
+    """Relaunch argv for a profile gateway.
+
+    Windows publishes the launcher renderers' form (``python -m hermes_cli.main … gateway run``)
+    instead of the store-Python ``-I -c`` bootstrap: ``hermes update`` verifies the relaunch by
+    discovering the new process, and an inline-source (``-c``) command line is deliberately never a
+    gateway (#107002) — so a bootstrap relaunch is invisible to that poll and the update fails with
+    "no stable gateway process appeared" while the gateway is up. The ``-m`` form needs the respawn
+    env overlay ``windowless_gateway_restart_spec`` supplies on Windows only; POSIX respawns inherit
+    the watcher's env, so they keep the self-contained bootstrap argv.
+    """
+    if is_windows():
+        from hermes_cli.gateway_windows import _gateway_run_argv, _resolve_detached_python
+        python_exe, _, _ = _resolve_detached_python(get_python_path())
+        profile_arg = "" if profile == "default" else f"--profile {profile}"
+        return [*_gateway_run_argv(python_exe, profile_arg), "--replace"]
     from hermes_cli._launchers import runtime_command
     args = []
     if profile != "default":

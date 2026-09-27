@@ -684,6 +684,7 @@ function escapeCjkProseDollars(text: string): string {
 
     if (!CJK_RE.test(body)) {
       cursor = closingIndex
+
       continue
     }
 

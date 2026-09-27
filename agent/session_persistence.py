@@ -79,6 +79,15 @@ def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
     )
 
 
+def _content_with_turn_override(msg: Dict, content: Any, override: Any) -> Any:
+    """Replace only the absorbed current turn, leaving unanswered history intact."""
+    prefix = msg.get("_merged_turn_prefix")
+    if isinstance(content, str) and isinstance(override, str) and isinstance(prefix, str):
+        if content.startswith(prefix):
+            return prefix + override
+    return override
+
+
 def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -> Tuple[Any, Any]:
     """``(content, api_content)`` as the current turn's user row is written: the persist override is the
     clean transcript, the live content is what the wire sent — so when they differ and nothing else was
@@ -88,7 +97,7 @@ def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -
     if _override_replaces_content(msg, content, override):
         if api_content is None and isinstance(content, str) and content != override:
             api_content = content
-        content = override
+        content = _content_with_turn_override(msg, content, override)
     return content, api_content
 
 
@@ -405,7 +414,7 @@ class SessionPersistenceMixin:
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             return
         if _override_replaces_content(msg, msg.get("content"), override):
-            msg["content"] = override
+            msg["content"] = _content_with_turn_override(msg, msg.get("content"), override)
         if timestamp is not None:
             msg["timestamp"] = timestamp
         if platform_id is not None:  # load-bearing for restart drain-window recovery dedup (has_platform_message_id)

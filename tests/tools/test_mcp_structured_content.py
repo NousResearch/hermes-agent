@@ -257,6 +257,57 @@ class TestContentStructuredArbitration:
         )
         assert json.loads(handler({})) == {"result": "done"}
 
+    def test_wrapped_string_dual_emit_suppresses_structured(self, _patch_mcp_server):
+        """FastMCP ``wrap_result`` string form: the text block is a JSON string and
+        ``structuredContent`` is ``{"result": <that same string>}``. The parsed-JSON
+        comparison misses it (model object vs ``{"result": …}`` wrapper), so without
+        the verbatim-string check the model receives the payload twice — Hindsight's
+        ``get_mental_model`` regressed this way (a ~53K envelope for a ~3K model)."""
+        session = _patch_mcp_server
+        inner = {"id": "demo", "name": "用户观察", "content": "正文"}
+        inner_str = json.dumps(inner, ensure_ascii=True, indent=2)
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock(inner_str)],
+                structuredContent={"result": inner_str},
+                meta={"fastmcp": {"wrap_result": True}},
+            )
+        )
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data == {
+            "result": inner_str,
+            "_meta": {"fastmcp": {"wrap_result": True}},
+        }
+
+    def test_wrapped_string_mismatch_keeps_structured(self, _patch_mcp_server):
+        """Only an *exact* ``{"result": text}`` match dedupes: a different string or
+        extra wrapper keys keep ``structuredContent`` alongside the text."""
+        session = _patch_mcp_server
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("status ok")],
+                structuredContent={"result": "other string"},
+            )
+        )
+        data = json.loads(handler({}))
+        assert data == {
+            "result": "status ok",
+            "structuredContent": {"result": "other string"},
+        }
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("status ok")],
+                structuredContent={"result": "status ok", "extra": 1},
+            )
+        )
+        data = json.loads(handler({}))
+        assert data == {
+            "result": "status ok",
+            "structuredContent": {"result": "status ok", "extra": 1},
+        }
+
     def test_summary_plus_data_keeps_structured(self, _patch_mcp_server):
         """#115430 reproducer shape: a status summary in content with the real data
         (the jid needed by follow-up calls) only in structuredContent. A text-only

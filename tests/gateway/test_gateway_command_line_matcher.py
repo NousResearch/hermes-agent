@@ -165,3 +165,66 @@ def test_accepts_atomic_desktop_gateway():
     assert matches_runtime(ATOMIC_DESKTOP) is True
 
 
+# Store-launcher shims (#124893): the launchers published by hermes_cli/_launchers.py run the CLI
+# as ``python -I -c "<source>" gateway run …`` — the entry point lives INSIDE the source literal
+# (runpy.run_module('hermes_cli.main', …) / from hermes_cli.main import …), so the live process's
+# argv names no CLI entry point. The gateway identity check must recognize these as real gateways,
+# or the Windows updater's strict fleet check aborts before fetching and unscoped status cleanup
+# unlinks the running gateway's PID file.
+BOOTSTRAP = (
+    "import os, sys, runpy; os.environ.pop('PYTHONHOME', None); "
+    "os.environ.pop('PYTHONPATH', None); os.environ.pop('VIRTUAL_ENV', None); "
+    "sys.path.insert(0, 'C:/Users/me/AppData/Local/hermes/hermes-agent'); "
+    "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or "
+    "str(__import__('hermes_constants').get_default_hermes_root()); "
+    "import hermes_bootstrap; "
+    "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+)
+SHIM = (
+    r'"C:\Users\me\AppData\Local\hermes\tools\python-3.14.7-win32-x64\python.exe"'
+    f' -I -c "{BOOTSTRAP}"'
+)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # runtime_command() form (issue #124893's exact live command line)
+        f"{SHIM} gateway run --replace",
+        f"{SHIM} gateway run",
+        # profile selector in the trailing argv
+        f"{SHIM} --profile work gateway run",
+        # _launcher_script() form (from hermes_cli.main import <func>; sys.exit(<func>()))
+        r'"C:\tools\python.exe" -I -c "import os, re, sys; sys.path.insert(0, '
+        r"'/opt/hermes-agent'); import hermes_bootstrap; "
+        r'from hermes_cli.main import cli; sys.exit(cli())" gateway run',
+    ],
+)
+def test_accepts_store_launcher_shim_gateway(cmd):
+    assert matches(cmd) is True
+    assert matches_runtime(cmd) is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # Non-run subcommands through the shim stay unrecognized.
+        f"{SHIM} gateway status",
+        f"{SHIM} gateway stop",
+        # Inline source that does NOT name the Hermes CLI entry point keeps the
+        # #107002 treatment: trailing argv is data, not this process's identity.
+        'python -I -c "import time; time.sleep(1)" gateway run',
+        # Our shim with no trailing argv names no subcommand.
+        f"{SHIM}",
+    ],
+)
+def test_rejects_non_gateway_shim_forms(cmd):
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+
+
+def test_spawn_intent_accepts_store_launcher_shim():
+    """The shim IS the gateway (no spawn lag): spawn intent resolves through the direct match."""
+    assert spawn_intent(f"{SHIM} gateway run --replace") == "run"
+
+

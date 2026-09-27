@@ -14,107 +14,107 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-elevenlabs = false
-langfuse = "2026-09-09T16:01:26Z"
-setuptools = false
-modal = false
-pyyaml = false
-maturin = false
-numpy = false
-pvporcupine = false
-google-auth = false
+agent-client-protocol = false
 aiohttp = false
-starlette = false
-mistralai = false
-firecrawl-py = false
-parallel-web = false
-markdown = false
-opentelemetry-sdk = false
-prompt-toolkit = false
-fastapi = false
-anthropic = false
-pathspec = false
-ruff = false
-defusedxml = false
-websockets = false
-exa-py = false
-mcp = false
-python-olm = false
-wheel = false
-pytest = false
-pillow = false
-setuptools-rust = false
-tenacity = false
-sherpa-onnx-core = "2026-09-10T15:58:47Z"
-pyjwt = false
-slack-bolt = false
-fal-client = false
-asyncpg = false
-boto3 = false
-ruamel-yaml = false
-sherpa-onnx = "2026-09-10T17:00:04Z"
-huggingface-hub = false
-pytest-asyncio = false
-google-cloud-pubsub = false
-slack-sdk = false
-discord-py = false
-honcho-ai = false
-faster-whisper = false
-certifi = false
-debugpy = false
-ddgs = "2026-08-26T21:52:34Z"
-packaging = false
-rich = false
-supermemory = false
-h2 = false
-unpaddedbase64 = false
-youtube-transcript-api = false
-edge-tts = false
-microsoft-teams-apps = false
 aiohttp-socks = false
-sentencepiece = false
-opentelemetry-exporter-otlp-proto-http = false
-croniter = false
-azure-identity = false
-lark-oapi = false
-firecrawl-anydoc = false
-google-api-python-client = false
-brotlicffi = false
-mem0ai = false
-qrcode = false
-soundfile = "2026-06-06T08:58:48Z"
-vercel = false
 aiosqlite = false
-tzdata = false
-python-dotenv = false
+alibabacloud-dingtalk = false
+anthropic = false
+asyncpg = false
+azure-identity = false
+boto3 = false
+brotlicffi = false
+certifi = false
+concurrent-log-handler = false
+croniter = false
+cryptography = false
 daytona = false
-uvicorn = false
-nemo-relay = false
-requests = false
+ddgs = "2026-08-26T21:52:34Z"
+debugpy = false
+defusedxml = false
+dingtalk-stream = false
+discord-py = false
+edge-tts = false
+elevenlabs = false
+exa-py = false
+fal-client = false
+fastapi = false
+faster-whisper = false
+fire = false
+firecrawl-anydoc = false
+firecrawl-py = false
+google-api-python-client = false
+google-auth = false
+google-auth-httplib2 = false
+google-auth-oauthlib = false
+google-cloud-pubsub = false
+h2 = false
+honcho-ai = false
 httplib2 = false
 httpx = false
-piper-tts = "2026-09-04T16:47:32Z"
-pyasn1 = false
-snowballstemmer = false
-concurrent-log-handler = false
-cryptography = false
-pydantic = false
-agent-client-protocol = false
-fire = false
 httpx2 = false
-google-auth-oauthlib = false
-python-multipart = false
-ty = false
-openai = false
-mautrix = false
-neutts = "2026-07-22T14:54:23Z"
-google-auth-httplib2 = false
-psutil = false
-python-telegram-bot = false
+huggingface-hub = false
 jinja2 = false
+langfuse = "2026-09-09T16:01:26Z"
+lark-oapi = false
+markdown = false
+maturin = false
+mautrix = false
+mcp = false
+mem0ai = false
+microsoft-teams-apps = false
+mistralai = false
+modal = false
+nemo-relay = false
+neutts = "2026-07-22T14:54:23Z"
+numpy = false
+openai = false
+opentelemetry-exporter-otlp-proto-http = false
+opentelemetry-sdk = false
+packaging = false
+parallel-web = false
+pathspec = false
+pillow = false
+piper-tts = "2026-09-04T16:47:32Z"
+prompt-toolkit = false
+psutil = false
+pvporcupine = false
+pyasn1 = false
+pydantic = false
+pyjwt = false
+pytest = false
+pytest-asyncio = false
+python-dotenv = false
+python-multipart = false
+python-olm = false
+python-telegram-bot = false
+pyyaml = false
+qrcode = false
+requests = false
+rich = false
+ruamel-yaml = false
+ruff = false
+sentencepiece = false
+setuptools = false
+setuptools-rust = false
+sherpa-onnx = "2026-09-10T17:00:04Z"
+sherpa-onnx-core = "2026-09-10T15:58:47Z"
+slack-bolt = false
+slack-sdk = false
+snowballstemmer = false
 sounddevice = false
-alibabacloud-dingtalk = false
-dingtalk-stream = false
+soundfile = "2026-06-06T08:58:48Z"
+starlette = false
+supermemory = false
+tenacity = false
+ty = false
+tzdata = false
+unpaddedbase64 = false
+uvicorn = false
+vercel = false
+websockets = false
+wheel = false
+youtube-transcript-api = false
 
 [manifest]
 overrides = [
@@ -2469,6 +2469,7 @@ mcp = [
 ]
 mem0 = [
     { name = "mem0ai", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "ollama", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
 ]
 messaging = [
     { name = "aiohttp" },
@@ -2707,6 +2708,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'audio-io'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'wake'", specifier = "==2.4.3" },
+    { name = "ollama", marker = "(platform_machine != 'ARM64' and extra == 'mem0') or (sys_platform != 'win32' and extra == 'mem0')", specifier = ">=0.3.0" },
     { name = "openai", marker = "python_full_version >= '3.14'", specifier = "==2.24.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otlp'", specifier = "==1.39.1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otlp'", specifier = "==1.39.1" },
@@ -4302,6 +4304,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/74/3269a3a58347e0b019742d888612c4b765293c9c75efa44e144b1e884c0d/obstore-0.8.2-cp314-cp314-musllinux_1_2_armv7l.whl", hash = "sha256:329038c9645d6d1741e77fe1a53e28a14b1a5c1461cfe4086082ad39ebabf981", size = 3687307, upload-time = "2025-09-16T15:34:14.501Z" },
     { url = "https://files.pythonhosted.org/packages/01/f9/4fd4819ad6a49d2f462a45be453561f4caebded0dc40112deeffc34b89b1/obstore-0.8.2-cp314-cp314-musllinux_1_2_i686.whl", hash = "sha256:1e4df99b369790c97c752d126b286dc86484ea49bff5782843a265221406566f", size = 3776076, upload-time = "2025-09-16T15:34:16.207Z" },
     { url = "https://files.pythonhosted.org/packages/14/dd/7c4f958fa0b9fc4778fb3d232e38b37db8c6b260f641022fbba48b049d7e/obstore-0.8.2-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:9e1c65c65e20cc990414a8a9af88209b1bbc0dd9521b5f6b0293c60e19439bb7", size = 3947445, upload-time = "2025-09-16T15:34:17.423Z" },
+]
+
+[[package]]
+name = "ollama"
+version = "0.6.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fc/72/5f12423b6b39ca8430fbe56f77fcf4ef60f63067c7c4a2e30e200ed9ec16/ollama-0.6.2.tar.gz", hash = "sha256:936d55daa684f474364c098611c933626f8d6c7d67065c5b7ae0c477b508b07f", size = 53145, upload-time = "2026-04-29T21:21:15.018Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/ab/d6722beeb2d10f7a3b9ff49375708904fde18f82b5609a0bc4aeb5996a4d/ollama-0.6.2-py3-none-any.whl", hash = "sha256:3ad7daab28e5a973445c36a73882a3ef698c2ebb00e21e308652741577509f7d", size = 15115, upload-time = "2026-04-29T21:21:13.794Z" },
 ]
 
 [[package]]

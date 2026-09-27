@@ -368,6 +368,13 @@ supermemory = ["supermemory==3.50.0"]
 # provider is simply unavailable.
 mem0 = [
   "mem0ai==2.0.10; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  # mem0's ollama paths (mem0/embeddings/ollama.py, mem0/llms/ollama.py) import
+  # ``ollama`` unconditionally, but mem0ai only declares it under its own ``llms``
+  # extra. OSS mode defaults to ollama for LLM and embedder, so the dep belongs
+  # to this extra — otherwise a hand-installed copy is pruned by every env sync
+  # and the backend dies on an interactive ``input()`` prompt (EOFError in any
+  # TTY-less process, #125234).
+  "ollama>=0.3.0; platform_machine != 'ARM64' or sys_platform != 'win32'",
 ]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on

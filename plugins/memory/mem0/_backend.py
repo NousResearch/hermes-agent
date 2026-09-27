@@ -116,8 +116,27 @@ class OSSBackend(Mem0Backend):
 
     def __init__(self, oss_config: dict):
         import os
+        import importlib.util
+
         from mem0 import Memory
         from ._oss_providers import EMBEDDER_PROVIDERS, KNOWN_DIMS, LLM_PROVIDERS
+
+        # A missing backend SDK must fail loudly, not interactively: mem0's
+        # factory wrappers call input() ("Install it now? [y/N]") on import
+        # failure, which raises EOFError in any TTY-less gateway (#125234).
+        missing = sorted({
+            str(registry[str(dict(oss_config.get(name, {})).get("provider") or "").strip().lower()].get("pip_dep"))
+            for name, registry in (("llm", LLM_PROVIDERS), ("embedder", EMBEDDER_PROVIDERS))
+            if str(dict(oss_config.get(name, {})).get("provider") or "").strip().lower() in registry
+        } - {"None"})
+        missing = [dep for dep in missing
+                   if importlib.util.find_spec(dep.replace("-", "_").split("[")[0]) is None]
+        if missing:
+            raise RuntimeError(
+                f"OSS provider package(s) {', '.join(missing)} not installed — "
+                "the mem0 extra declares them; re-sync the environment "
+                "(`hermes pm install`) instead of installing by hand (hand installs are pruned)."
+            )
 
         def _provider_block(name: str, registry: dict) -> dict:
             """Copy of oss_config[name] with the legacy ``api_base`` key mapped to the provider's canonical base-URL key."""

@@ -45,9 +45,18 @@ that instead of re-deriving "is it on?" from an ambient value:
   one cannot be shown to have authorised anything. Recovery is editing the root ``config.yaml``.
 
 An unlock window is therefore authority over ONE lock generation, not over "the lock" in general.
-The receipt carries a fingerprint of the exact normalised spec (patterns + password hash) it was
-opened against, and lapses the moment that changes — so unlocking lock A and then replacing it with
-lock B does not leave B unlocked with B's password never verified.
+The receipt carries two bindings, and lapses when either stops matching:
+
+* a fingerprint of the exact normalised spec (patterns + password hash) it was opened against, so
+  unlocking lock A and then replacing it with lock B does not leave B unlocked with B's password
+  never verified;
+* the policy EPOCH (``.settings-lock-epoch`` beside the receipt), a random id the gate replaces
+  before any write that changes a ``settings_lock`` node lands — disable, clear, re-enable, new
+  keys, new password, through any writer. Content identity alone is replayable: A cleared or
+  disabled and later recreated byte-identically would match A's fingerprint again. The epoch is a
+  fresh random id rather than a counter so two concurrent rotations can never land on the same
+  value, and it lives outside the stanza because clearing the stanza is exactly the case it must
+  survive.
 """
 
 from __future__ import annotations
@@ -60,7 +69,7 @@ import logging
 import os
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -68,6 +77,7 @@ logger = logging.getLogger(__name__)
 
 LOCK_SECTION = "settings_lock"
 UNLOCK_FILENAME = ".settings-unlock"
+EPOCH_FILENAME = ".settings-lock-epoch"
 DEFAULT_UNLOCK_SECONDS = 900
 
 # scrypt parameters. n=2**14 keeps an interactive unlock well under a second on the machines
@@ -231,6 +241,9 @@ class LockState:
     status: str
     spec: dict
     reason: str = ""
+    # The policy epoch observed BEFORE the stanza was read (see ``lock_state``); ``None`` when it
+    # could not be read, which no receipt ever matches.
+    epoch: Optional[str] = ""
 
 
 def lock_state(home: Path | str | None = None) -> LockState:
@@ -238,8 +251,17 @@ def lock_state(home: Path | str | None = None) -> LockState:
 
     Every policy decision reads this — never ``is_enabled`` alone, which cannot tell an explicit
     disable from a value it failed to recognise.
+
+    The epoch is read before the stanza: the gate rotates it before a policy write lands, so a
+    window opened from this state can only ever be bound to an epoch at least as old as the spec it
+    verified — a race with a concurrent policy change lapses the window, never widens it.
     """
     root = hermes_root(home)
+    epoch = _read_epoch(root)
+    return replace(_parse_root_policy(root), epoch=epoch)
+
+
+def _parse_root_policy(root: Path) -> LockState:
     try:
         data = _read_root_yaml(root)
     except _RootPolicyUnavailable as exc:
@@ -414,23 +436,62 @@ def spec_fingerprint(spec: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def epoch_path(home: Path | str | None = None) -> Path:
+    return hermes_root(home) / EPOCH_FILENAME
+
+
+def _read_epoch(home: Path | str | None = None) -> Optional[str]:
+    """The current policy epoch: ``""`` before any policy write ever rotated one, ``None`` when it
+    exists but cannot be read (no receipt matches an epoch nobody can observe)."""
+    try:
+        data = json.loads(epoch_path(home).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError):
+        return None
+    epoch = data.get("epoch") if isinstance(data, dict) else None
+    return epoch if isinstance(epoch, str) and epoch else None
+
+
+def _rotate_epoch(home: Path | str | None = None) -> None:
+    """Start a new policy epoch, lapsing every receipt bound to the old one."""
+    from utils import atomic_json_write
+
+    path = epoch_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json_write(path, {"epoch": secrets.token_hex(16)}, mode=0o600)
+
+
+def _policy_nodes(document: Any) -> dict:
+    """Every top-level node whose dotted spelling is ``settings_lock`` or lies beneath it — the
+    nested stanza and any literal ``settings_lock.x`` key alike (see ``violations``)."""
+    if not isinstance(document, dict):
+        return {}
+    return {key: value for key, value in document.items()
+            if str(key) == LOCK_SECTION or str(key).startswith(LOCK_SECTION + ".")}
+
+
 def unlock_expiry(home: Path | str | None = None, *, spec: dict | None = None) -> Optional[float]:
     """Expiry of the live unlock window for *spec*, or None when there is none.
 
     None when the receipt is missing, unreadable, lapsed, or was opened against a DIFFERENT lock
-    generation — including a receipt written before this binding existed, which cannot be shown to
-    belong to any spec and so is never honoured.
+    generation — another spec, or the same spec in an earlier policy epoch — including a receipt
+    written before these bindings existed, which cannot be shown to belong to any generation and so
+    is never honoured.
     """
     if spec is None:
         spec = lock_spec(home)
     try:
         data = json.loads(unlock_path(home).read_text(encoding="utf-8"))
         expires = float(data.get("expires_at") or 0)
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError):
         return None
     if expires <= time.time():
         return None
-    return expires if data.get("lock") == spec_fingerprint(spec) else None
+    if data.get("lock") != spec_fingerprint(spec):
+        return None
+    current = _read_epoch(home)
+    return expires if isinstance(current, str) and data.get("epoch") == current else None
 
 
 def is_unlocked(home: Path | str | None = None, *, spec: dict | None = None) -> bool:
@@ -438,20 +499,24 @@ def is_unlocked(home: Path | str | None = None, *, spec: dict | None = None) -> 
 
 
 def begin_unlock(home: Path | str | None = None, seconds: float = DEFAULT_UNLOCK_SECONDS,
-                 *, spec: dict | None = None) -> float:
+                 *, spec: dict | None = None, state: LockState | None = None) -> float:
     """Open a time-boxed unlock window over ONE lock generation and return its expiry.
 
-    The caller verifies the password first. *spec* is the lock that authority was proven against;
-    the window lapses if it is replaced.
+    The caller verifies the password first. *state* is the :func:`lock_state` that authority was
+    proven against (its spec and the epoch observed before it); the window lapses if the spec is
+    replaced or any policy write starts a new epoch. *spec* overrides the state's spec.
     """
     from utils import atomic_json_write
 
+    if state is None:
+        state = lock_state(home)
     if spec is None:
-        spec = lock_spec(home)
+        spec = state.spec
     expires = time.time() + max(1.0, float(seconds))
     path = unlock_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_json_write(path, {"expires_at": expires, "lock": spec_fingerprint(spec)}, mode=0o600)
+    atomic_json_write(path, {"expires_at": expires, "lock": spec_fingerprint(spec), "epoch": state.epoch},
+                      mode=0o600)
     return expires
 
 
@@ -468,12 +533,11 @@ def end_unlock(home: Path | str | None = None) -> None:
 def check_write(before: Any, after: Any, home: Path | str | None = None) -> None:
     """Raise :class:`SettingsLockError` when this write would change a locked path.
 
-    Never raises while an unlock window is live, and never for a write that leaves every locked
-    path exactly as it was.
+    Never raises for a locked path while an unlock window is live, and never for a write that
+    leaves every locked path exactly as it was. A write that changes the policy itself also starts
+    a new epoch first, and is refused if that cannot be recorded.
     """
     state = lock_state(home)
-    if state.status == "off":
-        return
     if state.status == "unusable":
         # No unlock-window escape here on purpose: a stanza that cannot be normalised cannot be
         # reasoned about, and a window opened against one cannot be shown to have authorised
@@ -484,16 +548,24 @@ def check_write(before: Any, after: Any, home: Path | str | None = None) -> None
             f"{state.reason}. Fix the root config.yaml (or set "
             f"{LOCK_SECTION}.enabled: false there) — every config write is refused until you do.")
     spec = state.spec
-    if is_unlocked(home, spec=spec):
-        return
-    offending = violations(before, after, spec)
-    if not offending:
-        return
-    raise SettingsLockError(
-        "settings are locked: " + ", ".join(offending)
-        + ". Run `hermes config unlock` to open a time-boxed window"
-        + (" (a password is required)." if has_password(spec) else "."),
-        offending)
+    if state.status == "valid" and not is_unlocked(home, spec=spec):
+        offending = violations(before, after, spec)
+        if offending:
+            raise SettingsLockError(
+                "settings are locked: " + ", ".join(offending)
+                + ". Run `hermes config unlock` to open a time-boxed window"
+                + (" (a password is required)." if has_password(spec) else "."),
+                offending)
+    if _policy_nodes(before) != _policy_nodes(after):
+        # Any change to the policy — including while it is off, so re-enabling cannot revive a
+        # window — starts a new epoch BEFORE the write lands. If that cannot be recorded, the
+        # write must not happen: the old receipts would stay live against the new policy.
+        try:
+            _rotate_epoch(home)
+        except OSError as exc:
+            raise SettingsLockError(
+                f"{LOCK_SECTION} cannot be changed: a new lock generation could not be recorded in "
+                f"{epoch_path(home)} ({exc.strerror or type(exc).__name__}).") from exc
 
 
 def check_config_write(config_path: Path | str, before: Any, after: Any) -> None:

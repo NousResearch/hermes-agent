@@ -107,6 +107,38 @@ def test_a_literal_dotted_key_cannot_mask_a_change_to_the_locked_nested_path(hom
     assert _raw(home)["models"]["grok-4.6"]["supports_vision"] is True
 
 
+@pytest.mark.parametrize("retire", ["disable", "clear"])
+def test_an_unlock_does_not_revive_when_the_same_lock_is_recreated(home, retire):
+    # Unlock A (password verified), retire A through a supported writer, then bring back a
+    # byte-identical A — same keys, same stored hash, so the same content fingerprint. The old
+    # receipt must stay dead: A's new incarnation never had its password presented.
+    import types
+
+    from hermes_cli.config import _cmd_config_lock, atomic_config_write, read_user_config_raw, set_config_value
+
+    state = sl.lock_state(home)
+    assert sl.verify_password(PASSWORD, state.spec["password"])
+    sl.begin_unlock(home, seconds=600, spec=state.spec)
+    lock_a = _raw(home)["settings_lock"]
+
+    if retire == "disable":
+        set_config_value("settings_lock.enabled", "false")
+        set_config_value("settings_lock.enabled", "true")
+    else:
+        _cmd_config_lock(types.SimpleNamespace(clear=True, keys=[], no_password=False))
+        assert "settings_lock" not in _raw(home)
+        atomic_config_write(home / "config.yaml", {**read_user_config_raw(home / "config.yaml"),
+                                                   "settings_lock": lock_a})
+    assert _raw(home)["settings_lock"] == lock_a
+    assert sl.spec_fingerprint(sl.lock_state(home).spec) == sl.spec_fingerprint(state.spec)
+
+    assert sl.is_unlocked(home) is False
+    before = _text(home / "config.yaml")
+    with pytest.raises(sl.SettingsLockError, match="approvals.mode"):
+        set_config_value("approvals.mode", "off")
+    assert _text(home / "config.yaml") == before
+
+
 # ── the desktop (tui_gateway config.set → _write_config_key → _save_cfg) ─────
 
 

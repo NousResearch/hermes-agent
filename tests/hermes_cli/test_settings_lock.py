@@ -177,7 +177,7 @@ def test_an_unusable_lock_is_refused_even_inside_an_unlock_window(tmp_path):
     state = sl.lock_state(home)
     assert state.status == "unusable"
     sl.unlock_path(home).write_text(
-        '{"expires_at": %d, "lock": "%s"}' % (int(time.time() + 600), sl.spec_fingerprint(state.spec)),
+        '{"expires_at": %d, "lock": "%s", "epoch": ""}' % (int(time.time() + 600), sl.spec_fingerprint(state.spec)),
         encoding="utf-8")
     assert sl.unlock_expiry(home, spec=state.spec) is not None  # the window really is live
 
@@ -312,10 +312,6 @@ def test_an_unlock_does_not_survive_the_lock_it_authorised_being_replaced(tmp_pa
     assert sl.is_unlocked(home) is False
     with pytest.raises(sl.SettingsLockError):
         sl.check_write({"yolo": False}, {"yolo": True}, home)
-
-    # Restoring the exact lock the window was opened against keeps that window live.
-    (home / "config.yaml").write_text(lock_a, encoding="utf-8")
-    assert sl.is_unlocked(home) is True
 
 
 def test_changing_only_the_password_also_lapses_the_window(tmp_path):

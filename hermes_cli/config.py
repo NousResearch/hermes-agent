@@ -4097,7 +4097,7 @@ def _cmd_config_unlock(args):
             print("Incorrect password.", file=sys.stderr)
             sys.exit(1)
     minutes = max(0.1, float(getattr(args, "minutes", 15.0) or 15.0))
-    expires = begin_unlock(seconds=minutes * 60, spec=spec)
+    expires = begin_unlock(seconds=minutes * 60, state=state)
     print(f"Settings unlocked until {time.strftime('%H:%M:%S', time.localtime(expires))} "
           f"({minutes:g} min). `hermes config relock` closes it sooner.")
 

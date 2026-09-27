@@ -2187,6 +2187,10 @@ updates:
 #   hermes config unlock --minutes 5           # opens a time-boxed window (password if set)
 #   hermes config relock                       # closes it early
 #
+# A window belongs to the lock it was opened against. Any change to the
+# stanza (new keys or password, disable, clear, re-enable) closes it, even if
+# the identical lock is put back later: the next change needs a new unlock.
+#
 # Fails closed: a stanza this build cannot apply (an unrecognised `enabled`, no
 # usable `keys`, a malformed password hash), a root config.yaml that names a
 # lock but no longer parses, or a root config.yaml that exists but cannot be

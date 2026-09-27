@@ -565,7 +565,7 @@ def _(rid, params: dict) -> dict:
         seconds = max(6.0, float(minutes) * 60) if minutes is not None else 900.0
     except (TypeError, ValueError):
         seconds = 900.0
-    return _ok(rid, {"ok": True, "unlocked_until": begin_unlock(seconds=seconds, spec=spec)})
+    return _ok(rid, {"ok": True, "unlocked_until": begin_unlock(seconds=seconds, state=state)})
 
 
 @method("config.relock")

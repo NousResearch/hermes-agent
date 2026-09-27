@@ -29,7 +29,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
   const { t, locale } = useI18n()
   const copy = t.sessionImport
   const queryClient = useQueryClient()
-  const [source, setSource] = useState<'all' | 'claude' | 'codex'>('all')
+  const [source, setSource] = useState<'all' | 'claude' | 'codex' | 'cursor'>('all')
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
@@ -164,7 +164,8 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
                 options={[
                   { id: 'all', label: copy.all },
                   { id: 'claude', label: 'Claude Code' },
-                  { id: 'codex', label: 'Codex' }
+                  { id: 'codex', label: 'Codex' },
+                  { id: 'cursor', label: 'Cursor' }
                 ]}
                 value={source}
               />

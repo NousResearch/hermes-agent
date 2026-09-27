@@ -1,0 +1,46 @@
+# Hermes Plugin Catalog entry for OpenLTM.
+#
+# This file is NOT read at runtime. It is the artifact submitted to
+# NousResearch/hermes-agent as plugin-catalog/openltm.yaml via a pull request.
+# Validate with `bun run catalog:check`; refresh the pin with `bun run catalog:sync`.
+#
+# Schema reference: https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog
+name: openltm
+repo: https://github.com/RohiRIK/OpenLtm
+sha: 3c0560c87ebdc5049575ce98054c684ea7f30638
+subdir: hermes/openltm_hermes
+description: >-
+  Long-term memory for Hermes agents, stored in a local SQLite database. FTS5 full-text search with
+  optional vector (sqlite-vec) recall, importance-weighted decay, a queryable memory graph, and
+  automatic capture: a declarative rule engine classifies corrections, constraints, preferences,
+  decisions, and agent-discovered facts from a conversation and stores each one as a distilled,
+  self-contained fact. Runtime notifications and read-only OpenLTM tool requests are excluded by
+  named guards so ops noise never becomes memory. No cloud, no telemetry, no API keys required;
+  optional Gemini/OpenAI/Ollama providers for embeddings. MIT licensed.
+maintainer: RohiRIK
+tier: community
+category: memory
+docs_url: https://github.com/RohiRIK/OpenLtm/blob/main/docs/10-hermes-plugin.md
+version: "2.14.3"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - openltm_recall
+    - openltm_learn
+    - openltm_forget
+    - openltm_context
+    - openltm_relate
+    - openltm_graph
+    - openltm_brain_stats
+    - openltm_stale
+  provides_hooks:
+    - system_prompt_block
+    - prefetch
+    - sync_turn
+    - on_turn_start
+    - on_session_switch
+    - on_session_end
+    - on_memory_write
+  provides_middleware: []
+  requires_env: []

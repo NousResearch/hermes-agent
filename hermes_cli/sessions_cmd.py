@@ -572,7 +572,7 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
                   "changed after export.")
             return
     except SessionActiveWriteGuardError as exc:
-        print(f"Exported, but session '{resolved_session_id}' was not deleted because it is active: {exc}")
+        print(f"Exported, but not deleted: {exc}")
         return
     delegates = len(delete_target_ids) - 1
     delegate_suffix = f" and {delegates} delegate session{'' if delegates == 1 else 's'}" if delegates else ""

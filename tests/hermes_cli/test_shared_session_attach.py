@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -317,6 +318,106 @@ def test_e2e_launch_tui_exits_cleanly_against_a_rogue_listener(tmp_path, monkeyp
             _launch_tui(resume_session_id="prey")
         assert caught.value.code == 1
         assert "identity" in capsys.readouterr().err
+    finally:
+        lease.release()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_registry_entries_are_written_owner_only(tmp_path):
+    """The registry carries the lease ids that key the attach MACs, so every
+    write must leave the file and its directory unreadable to other users."""
+    if os.name != "posix":
+        pytest.skip("POSIX file modes only")
+    from hermes_cli.active_sessions import _read_entries, _write_entries
+
+    lease, error = try_acquire_active_session(
+        session_id="locked", surface="desktop", config={}, registry_home=tmp_path,
+    )
+    assert error is None
+    try:
+        registry = tmp_path / "runtime" / "active_sessions.json"
+        assert stat.S_IMODE(os.stat(registry).st_mode) == 0o600
+        assert stat.S_IMODE(os.stat(registry.parent).st_mode) == 0o700
+        # An already-loose registry is tightened again on the next write.
+        os.chmod(registry, 0o644)
+        _write_entries(registry, _read_entries(registry))
+        assert stat.S_IMODE(os.stat(registry).st_mode) == 0o600
+    finally:
+        lease.release()
+
+
+def test_discovery_refuses_a_listener_that_reads_the_registry_as_another_user(tmp_path):
+    """The informed-listener case: a rogue that forges its proof by reading the
+    registry is only as dangerous as the registry's file modes let it be. With
+    the registry owner-only, a listener confined to what other users can read
+    (the kernel's rule for a non-owner, simulated here) cannot learn the lease
+    id and its forged proof is refused."""
+    if os.name != "posix":
+        pytest.skip("POSIX file modes only")
+    import hashlib
+    import hmac as hmac_mod
+    from urllib.parse import parse_qs, urlsplit
+
+    from hermes_cli.shared_session_attach import discover_attach_url
+
+    home = tmp_path / "profile"
+
+    def read_lease_id_as_other_user():
+        """Apply the kernel's read rule for a non-owner: reading is refused
+        unless the file and the traversed directory grant other-user access."""
+        registry = home / "runtime" / "active_sessions.json"
+        for part in (registry, registry.parent):
+            if stat.S_IMODE(os.stat(part).st_mode) & 0o007 == 0:
+                raise PermissionError(f"other users cannot read {part}")
+        return json.loads(registry.read_text(encoding="utf-8"))["entries"][0]["lease_id"]
+
+    class InformedRogueHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            params = parse_qs(urlsplit(self.path).query)
+            try:
+                lease_id = read_lease_id_as_other_user()
+            except PermissionError:
+                lease_id = None
+            if lease_id is None:
+                proof = "0" * 64  # a stranger can only guess: must be refused
+            else:
+                proof = hmac_mod.new(
+                    lease_id.encode(),
+                    f"hermes-session-attach:{params['session_id'][0]}:{params['nonce'][0]}".encode(),
+                    hashlib.sha256,
+                ).hexdigest()
+            body = json.dumps({
+                "session_id": params["session_id"][0],
+                "nonce": params["nonce"][0],
+                "profile_home": params["profile_home"][0],
+                "attach_proof": proof,
+                "websocket_url": (
+                    f"ws://127.0.0.1:{self.server.server_port}/api/ws?token=stolen"
+                ),
+            }).encode()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), InformedRogueHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    origin = f"http://127.0.0.1:{server.server_port}"
+    lease, error = try_acquire_active_session(
+        session_id="prey", surface="desktop", config={}, registry_home=home,
+        metadata={"live_session_id": "live", "shared_runtime_url": origin},
+    )
+    assert error is None
+    try:
+        registry = home / "runtime" / "active_sessions.json"
+        assert stat.S_IMODE(os.stat(registry).st_mode) == 0o600
+        with pytest.raises(ValueError, match="identity"):
+            discover_attach_url("prey", registry_home=home)
     finally:
         lease.release()
         server.shutdown()

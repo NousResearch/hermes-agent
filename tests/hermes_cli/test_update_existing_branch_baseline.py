@@ -103,6 +103,20 @@ def test_locally_ahead_switch_still_needs_completion(checkout):
     assert git(root, "rev-parse", "HEAD") == tip
 
 
+def test_stale_local_main_can_catch_up_to_original_detached_tip(checkout):
+    root, old, tip = checkout
+    git(root, "branch", "-f", "main", old)
+    git(root, "checkout", "-q", "--detach", tip)
+    plan = prepare(root)
+    assert plan.commit_count != 0
+    update_cmd._pull_updates(
+        ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
+        gw_input_fn=None, discard_local_changes=False, keep_stash=False,
+        pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch,
+    )
+    assert git(root, "rev-parse", "main") == tip
+
+
 def test_command_hands_off_after_existing_main_switch(update_tree, monkeypatch, capsys):
     t = update_tree
     monkeypatch.setattr("hermes_cli.update_owning_install.retarget_to_owning_install", lambda *_: None)

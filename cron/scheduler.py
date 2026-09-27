@@ -4180,6 +4180,16 @@ if __name__ == "__main__":
         parser.add_argument("--external-worker-file", type=Path, required=True)
         parser.add_argument("--ack-file", type=Path, required=True)
         args = parser.parse_args()
+        # FIRST: activate the gateway's import path in this bare `-m` child
+        # (repo-root pin + committed site-packages via addsitedir + generation
+        # lease). Without it every managed-topology worker dies with
+        # ModuleNotFoundError before its ownership ack.
+        try:
+            from cron.scheduler_worker_env import bootstrap_worker_environment
+
+            bootstrap_worker_environment(Path(__file__).resolve().parent.parent)
+        except Exception:
+            pass
         # The gateway spawns this worker with stdout on DEVNULL and stderr on a
         # capture file it only reads back if we die before the ack; without a
         # log handler every adoption/ack failure below would otherwise be

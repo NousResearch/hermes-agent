@@ -55,7 +55,7 @@ def probe_with_rollback(
         previous_entry = manager.remove(server_name, hermes_home=hermes_home)
         tools = _probe_single_server(
             server_name, cfg, connect_timeout=login_connect_timeout(cfg), details=details)
-        if not _oauth_tokens_present(server_name):
+        if not _oauth_tokens_present(server_name, cfg.get("url")):
             details["initialized"] = False
             raise RuntimeError(
                 "The server responded, but no OAuth token was obtained — "
@@ -129,7 +129,7 @@ def _reuse_saved_authorization(
     from hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server
     from tools.mcp_oauth import suppress_interactive_oauth
 
-    if not _oauth_tokens_present(server_name):
+    if not _oauth_tokens_present(server_name, cfg.get("url")):
         return False
     try:
         with suppress_interactive_oauth():

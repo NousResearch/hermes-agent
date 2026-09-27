@@ -593,3 +593,74 @@ def test_goal_draft_uses_session_profile_without_blocking_rpc_reader(
         assert state.max_turns == 37 and state.contract.verification == "tests pass"
     result = next(frame["result"] for frame in frames if frame.get("id") == "draft")
     assert result["type"] == "send" and result["message"] == state.goal
+
+
+# ── /goal continuation rows persist as machinery, not authored user turns ─────
+
+
+def test_goal_continuation_persists_hidden_not_authored(
+    server, turn_env, monkeypatch
+):
+    """#125477: the self-injected continuation prompt must reach the agent with
+    ``persist_user_display_kind="hidden"`` while a real user turn keeps ``None``
+    (liuhao1024's follow-up note: the tui path gates the kwarg on
+    ``inspect.signature(agent.run_conversation).parameters``, so the stub must
+    declare it explicitly — a bare ``**kwargs`` mock never receives it and the
+    assertion silently passes against ``None``)."""
+    from hermes_cli.goals import GoalManager
+
+    session_key = "goal-continuation-display-kind"
+    mgr = GoalManager(session_key)
+    mgr.set("finish the current task")
+    continuation = mgr.next_continuation_prompt()
+    seen = []
+    results = iter([
+        {
+            "final_response": "step one done",
+            "completed": True,
+            "failed": False,
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+        },
+        {
+            "final_response": "finished normally",
+            "completed": True,
+            "failed": False,
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+        },
+    ])
+
+    def run_conversation(message, persist_user_display_kind=None, **_kwargs):
+        seen.append((message, persist_user_display_kind))
+        return next(results)
+
+    judged = []
+
+    def evaluate(self, response, **_kwargs):
+        judged.append(response)
+        if len(judged) == 1:
+            return {
+                "message": "",
+                "should_continue": True,
+                "continuation_prompt": continuation,
+            }
+        return {"message": "", "should_continue": False}
+
+    monkeypatch.setattr(GoalManager, "evaluate_after_turn", evaluate)
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=run_conversation,
+        clear_interrupt=lambda: None,
+    )
+    session = _turn_session(agent, session_key)
+
+    server._run_prompt_submit("rid", "sid", session, "initial work")
+
+    assert [message for message, _kind in seen] == ["initial work", continuation]
+    assert [kind for _message, kind in seen] == [None, "hidden"], (
+        "the continuation turn must be typed hidden; a real user turn stays None"
+    )
+    completes = [
+        payload for event, _sid, payload in turn_env
+        if event == "message.complete"
+    ]
+    assert [p["status"] for p in completes] == ["complete", "complete"]

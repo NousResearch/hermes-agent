@@ -78,15 +78,18 @@ import {
   fetchProfiles,
   patchTask,
   profilesKey,
+  routedToScope,
   taskKey,
   useKanbanScope
 } from './api'
 import { BoardSwitcher } from './board-switcher'
+import { cardFace, isFleetBoard } from './card-face'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
+  $boardRequest,
   $newTaskLane,
   ago,
   type ArcState,
@@ -137,6 +140,9 @@ function moveCard(board: KanbanBoard, id: string, toStatus: string): KanbanBoard
 function removeCard(board: KanbanBoard, id: string): KanbanBoard {
   return { ...board, columns: board.columns.map(col => ({ ...col, tasks: col.tasks.filter(t => t.id !== id) })) }
 }
+
+/** The governed way off a board. Never a drop target, never a delete. */
+const ARCHIVED = 'archived'
 
 // ── card ─────────────────────────────────────────────────────────────────────
 
@@ -191,7 +197,10 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           </span>
         </Tip>
       ) : task.assignee ? (
-        <Avatar name={task.assignee} size="1.125rem" />
+        <span className="inline-flex min-w-0 items-center gap-1 font-medium text-(--ui-text-secondary)">
+          <Avatar name={task.assignee} size="1.125rem" />
+          <span className="truncate">{task.assignee}</span>
+        </span>
       ) : null}
       {arc === 'running' && (
         <Tip label={k.arcRunning}>
@@ -237,8 +246,34 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
   )
 }
 
+function CardFacts({ fleet, task }: { fleet: boolean; task: KanbanTask }) {
+  const k = useKanban()
+  const meta = columnMeta(task.status)
+
+  return (
+    <div className="flex min-w-0 items-center gap-2 whitespace-nowrap text-[0.625rem] text-(--ui-text-tertiary)">
+      <span
+        className="inline-flex shrink-0 items-center gap-1 font-medium uppercase tracking-wide"
+        style={{ color: meta.tone }}
+      >
+        <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
+        {columnLabel(k, task.status)}
+      </span>
+      {fleet && task.tenant && (
+        <Tip label={k.node}>
+          <span className="inline-flex min-w-0 cursor-help items-center gap-1">
+            <Codicon name="vm" size="0.7rem" />
+            <span className="truncate">{task.tenant}</span>
+          </span>
+        </Tip>
+      )}
+    </div>
+  )
+}
+
 function Card({
   columns,
+  fleet,
   onDelete,
   onMove,
   onOpen,
@@ -247,6 +282,7 @@ function Card({
   task
 }: {
   columns: string[]
+  fleet: boolean
   onDelete: (id: string) => void
   onMove: (id: string, status: string) => void
   onOpen: (id: string) => void
@@ -257,7 +293,8 @@ function Card({
   const k = useKanban()
   const [dragging, setDragging] = useState(false)
   const meta = columnMeta(task.status)
-  const summary = task.latest_summary || task.body
+  const face = cardFace(task, fleet)
+  const summary = face.summary
   const fallback = useDefaultAssignee()
   const arc = arcState(task, fallback)
 
@@ -295,11 +332,12 @@ function Card({
             <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
           )}
           <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
-            {task.title || task.id}
+            {face.title || task.id}
           </span>
           {summary && (
             <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
           )}
+          <CardFacts fleet={fleet} task={task} />
           <CardFooter arc={arc} task={task} />
         </div>
       </ContextMenuTrigger>
@@ -314,7 +352,7 @@ function Card({
         </ContextMenuItem>
         <ContextMenuSeparator />
         {columns
-          .filter(name => name !== task.status && !isLockedTarget(name))
+          .filter(name => name !== task.status && name !== ARCHIVED && !isLockedTarget(name))
           .map(name => (
             <ContextMenuItem key={name} onSelect={() => onMove(task.id, name)}>
               <span className="size-2 rounded-full" style={{ backgroundColor: columnMeta(name).tone }} />
@@ -322,6 +360,12 @@ function Card({
             </ContextMenuItem>
           ))}
         <ContextMenuSeparator />
+        {task.status !== ARCHIVED && (
+          <ContextMenuItem onSelect={() => onMove(task.id, ARCHIVED)}>
+            <Codicon name="archive" size="0.85rem" />
+            {k.archive}
+          </ContextMenuItem>
+        )}
         <ContextMenuItem onSelect={() => onDelete(task.id)} variant="destructive">
           <Codicon name="trash" size="0.85rem" />
           {k.delete}
@@ -337,6 +381,7 @@ function Column({
   collapsed,
   column,
   columns,
+  fleet,
   onAdd,
   onDelete,
   onDropTask,
@@ -349,6 +394,7 @@ function Column({
   collapsed: boolean
   column: { name: string; tasks: KanbanTask[] }
   columns: string[]
+  fleet: boolean
   onAdd: (status: string) => void
   onDelete: (id: string) => void
   onDropTask: (id: string, status: string) => void
@@ -473,6 +519,7 @@ function Column({
                 {tasks.map(task => (
                   <Card
                     columns={columns}
+                    fleet={fleet}
                     key={task.id}
                     onDelete={onDelete}
                     onMove={onMove}
@@ -487,6 +534,7 @@ function Column({
           : column.tasks.map(task => (
               <Card
                 columns={columns}
+                fleet={fleet}
                 key={task.id}
                 onDelete={onDelete}
                 onMove={onMove}
@@ -1088,13 +1136,70 @@ export function KanbanBoardPage() {
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
 
+  // A scoped entry validates its target against a fresh board list before the
+  // page exposes any action. Cached board metadata cannot prove that the
+  // requested board still exists on the currently routed backend.
+  const request = useValue($boardRequest)
+  const boardsQuery = useQuery({ queryKey: boardsKey(scope), queryFn: fetchBoards, staleTime: 30_000 })
+  const boards = boardsQuery.data
+  const resolving = request !== null
+  const [validation, setValidation] = useState<null | { error: string; seq: number }>(null)
+  const [attempt, setAttempt] = useState(0)
+  const validationError = request && validation?.seq === request.seq ? validation.error : null
+
+  useEffect(() => {
+    if (!request) {
+      return
+    }
+
+    let superseded = false
+
+    qc.fetchQuery({ queryKey: boardsKey(scope), queryFn: fetchBoards, staleTime: 0 }).then(
+      list => {
+        if (superseded) {
+          return
+        }
+
+        if (list.boards.some(meta => meta.slug === request.slug)) {
+          const next = request.slug === list.current ? '' : request.slug
+
+          if ($boardSlug.get() !== next) {
+            $boardSlug.set(next)
+          }
+        } else {
+          host.notify({ kind: 'warning', message: k.boardMissing(request.slug) })
+        }
+
+        $boardRequest.set(null)
+      },
+      (err: unknown) => {
+        if (!superseded) {
+          setValidation({ error: errText(err), seq: request.seq })
+        }
+      }
+    )
+
+    return () => {
+      superseded = true
+    }
+  }, [request, attempt, qc, scope, k])
+
+  // With no explicit slug, the board list is the only authority for whether
+  // the server-current board is Fleet. Avoid painting the wrong semantics
+  // while that identity is unresolved.
+  const contextPending = !slug && !boards && !boardsQuery.isError
+  const fleet = isFleetBoard(slug || boards?.current)
+
   // Live updates ride the events socket (bindApi); this interval is only the
   // slow heartbeat for socketless paths (OAuth remotes, dropped connections).
-  const { data: board, error } = useQuery({
-    queryFn: () => fetchBoard(archived),
+  const { data: fetched, error } = useQuery({
+    enabled: query => !resolving && routedToScope(query),
+    queryFn: () => fetchBoard(archived, slug),
     queryKey: boardKey(scope, slug, archived),
     refetchInterval: 60_000
   })
+
+  const board = resolving || contextPending ? undefined : fetched
 
   const [openId, setOpenId] = useState<null | string>(null)
   const [addStatus, setAddStatus] = useState<null | string>(null)
@@ -1251,7 +1356,7 @@ export function KanbanBoardPage() {
     moveMut.mutate({ id, status })
   }
 
-  const errorMessage = error ? errText(error) : null
+  const errorMessage = error && !resolving && !contextPending ? errText(error) : null
 
   // Grab-to-scrub the lane strip (shared primitive, same as the dashboard's pan).
   const lanesRef = useRef<HTMLDivElement>(null)
@@ -1359,7 +1464,7 @@ export function KanbanBoardPage() {
               <Codicon name="organization" size="0.85rem" />
             </Button>
           </Tip>
-          <Button onClick={() => setAddStatus('triage')} size="sm">
+          <Button disabled={resolving} onClick={() => setAddStatus('triage')} size="sm">
             <Codicon name="add" size="0.8rem" />
             {k.newTask}
           </Button>
@@ -1370,7 +1475,34 @@ export function KanbanBoardPage() {
 
       {board && <Intro />}
 
-      {errorMessage && !board ? (
+      {validationError && request ? (
+        <div className="grid flex-1 place-items-center px-4">
+          <ErrorState description={validationError} title={k.boardsCheckFailed(request.slug)}>
+            <div className="flex justify-center gap-2">
+              <Button
+                onClick={() => {
+                  setValidation(null)
+                  setAttempt(n => n + 1)
+                }}
+                size="sm"
+                variant="outline"
+              >
+                {k.retry}
+              </Button>
+              <Button
+                onClick={() => {
+                  setValidation(null)
+                  $boardRequest.set(null)
+                }}
+                size="sm"
+                variant="text"
+              >
+                {k.cancel}
+              </Button>
+            </div>
+          </ErrorState>
+        </div>
+      ) : errorMessage && !board ? (
         <div className="grid flex-1 place-items-center">
           <ErrorState title={errorMessage} />
         </div>
@@ -1403,6 +1535,7 @@ export function KanbanBoardPage() {
                 collapsed={laneOverrides[col.name] ?? auto}
                 column={col}
                 columns={columnNames}
+                fleet={fleet}
                 key={col.name}
                 onAdd={setAddStatus}
                 onDelete={id => deleteMut.mutate(id)}
@@ -1418,7 +1551,7 @@ export function KanbanBoardPage() {
         </div>
       )}
 
-      {selected.size > 0 && (
+      {selected.size > 0 && !resolving && (
         <SelectionBar
           columns={columnNames}
           onClear={() => setSelected(new Set())}
@@ -1427,8 +1560,14 @@ export function KanbanBoardPage() {
         />
       )}
 
-      <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
-      <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
+      <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={resolving ? null : addStatus} />
+      <TaskDrawer
+        columns={columnNames}
+        fleet={fleet}
+        id={resolving ? null : openId}
+        onClose={() => setOpenId(null)}
+        onOpen={setOpenId}
+      />
     </div>
   )
 }

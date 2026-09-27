@@ -20,6 +20,9 @@ import type { KanbanTaskDetail } from './types'
 
 vi.mock('@/hermes', () => ({ setApiRequestProfile: vi.fn() }))
 
+const META_LINE =
+  '> Fleet: revision 3 | point Conductor: tb-cndr | campaign: none | repository: none | canonical status: todo'
+
 const legacyDetail: Omit<KanbanTaskDetail, 'attachments'> = {
   task: { id: 't_example', title: 'Example task', body: 'Keep this description readable.', status: 'todo' },
   comments: [{ id: 1, author: 'test', body: 'Keep this comment readable.', created_at: 0 }],
@@ -85,10 +88,10 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function openDrawer() {
+function openDrawer(fleet = false) {
   return render(
     <QueryClientProvider client={client}>
-      <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={vi.fn()} onOpen={vi.fn()} />
+      <TaskDrawer columns={['todo', 'ready', 'done']} fleet={fleet} id="t_example" onClose={vi.fn()} onOpen={vi.fn()} />
     </QueryClientProvider>
   )
 }
@@ -245,7 +248,13 @@ describe('task modal dialog', () => {
     const onClose = vi.fn()
     render(
       <QueryClientProvider client={client}>
-        <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={onClose} onOpen={vi.fn()} />
+        <TaskDrawer
+          columns={['todo', 'ready', 'done']}
+          fleet={false}
+          id="t_example"
+          onClose={onClose}
+          onOpen={vi.fn()}
+        />
       </QueryClientProvider>
     )
 
@@ -330,7 +339,13 @@ describe('dependency chips resolve titles', () => {
     const onOpen = vi.fn()
     render(
       <QueryClientProvider client={client}>
-        <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={vi.fn()} onOpen={onOpen} />
+        <TaskDrawer
+          columns={['todo', 'ready', 'done']}
+          fleet={false}
+          id="t_example"
+          onClose={vi.fn()}
+          onOpen={onOpen}
+        />
       </QueryClientProvider>
     )
 
@@ -348,11 +363,61 @@ describe('dependency chips resolve titles', () => {
     detail = withoutTitles
     render(
       <QueryClientProvider client={client}>
-        <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={vi.fn()} onOpen={vi.fn()} />
+        <TaskDrawer
+          columns={['todo', 'ready', 'done']}
+          fleet={false}
+          id="t_example"
+          onClose={vi.fn()}
+          onOpen={vi.fn()}
+        />
       </QueryClientProvider>
     )
 
     expect(await screen.findByText('parent')).toBeTruthy()
     expect(screen.getByText('child')).toBeTruthy()
+  })
+})
+
+describe('fleet detail surface', () => {
+  it('reads through the sync decoration and keeps the lifted bookkeeping in its own section', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: {
+        ...legacyDetail.task,
+        body: `<!-- fleet-kanban:meta -->\n${META_LINE}\n<!-- /fleet-kanban:meta -->\n\nKeep this description readable.`,
+        tenant: 'turnerbook',
+        title: '[Sync pending] Example task'
+      }
+    }
+    openDrawer(true)
+
+    expect(await screen.findByRole('heading', { name: 'Example task' })).toBeTruthy()
+    expect(screen.getByText('Keep this description readable.')).toBeTruthy()
+    expect(screen.getByText(en.sync.pending)).toBeTruthy()
+    expect(screen.getByText(en.fleetSync)).toBeTruthy()
+    expect(screen.getByText(META_LINE)).toBeTruthy()
+    expect(screen.queryByText(/fleet-kanban:meta/)).toBeNull()
+  })
+
+  it('shows the same task literally on an ordinary board', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: {
+        ...legacyDetail.task,
+        body: `<!-- fleet-kanban:meta -->\n${META_LINE}\n<!-- /fleet-kanban:meta -->\n\nKeep this description readable.`,
+        tenant: 'turnerbook',
+        title: '[Sync pending] Example task'
+      }
+    }
+    openDrawer(false)
+
+    expect(await screen.findByRole('heading', { name: '[Sync pending] Example task' })).toBeTruthy()
+    // Upstream's Markdown renderer hides the leading HTML-comment block, but
+    // the ordinary board still keeps its literal title and readable body.
+    expect(screen.getByText('Keep this description readable.')).toBeTruthy()
+    expect(screen.queryByText(en.sync.pending)).toBeNull()
+    expect(screen.queryByText(en.fleetSync)).toBeNull()
   })
 })

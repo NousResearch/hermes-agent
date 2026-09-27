@@ -56,6 +56,7 @@ import {
   uploadAttachment,
   useKanbanScope
 } from './api'
+import { cardFace, workSummary } from './card-face'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -465,10 +466,6 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
   )
 }
 
-// `latest_summary` is just the newest non-null run summary. A reclaim writes an
-// administrative note into that slot; hide those (Runs still shows them).
-const isAdminSummary = (summary: string) => /^status changed to \w+ \(dashboard\/direct\)$/.test(summary)
-
 // The filename is the download action. The path is the backend's own
 // stored_path, saved through the connection/profile that returned this detail;
 // a row without one (older backend) stays inert rather than guessing a path.
@@ -819,11 +816,13 @@ function FeedTabs({
 
 export function TaskDrawer({
   columns,
+  fleet,
   id,
   onClose,
   onOpen
 }: {
   columns: string[]
+  fleet: boolean
   id: null | string
   onClose: () => void
   onOpen: (id: string) => void
@@ -836,18 +835,20 @@ export function TaskDrawer({
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
     enabled: query => !!id && routedToScope(query),
-    queryFn: () => fetchTask(id!),
+    queryFn: () => fetchTask(id!, slug),
     queryKey: taskKey(scope, slug, id ?? ''),
     refetchInterval: 30_000
   })
 
   const task = detail?.task
+  const face = task ? cardFace(task, fleet) : null
+  const summary = workSummary(task?.latest_summary)
   const running = task?.status === 'running'
   const defaultAssignee = useDefaultAssignee()
 
   const { data: log } = useQuery({
     enabled: query => !!id && routedToScope(query),
-    queryFn: () => fetchLog(id!),
+    queryFn: () => fetchLog(id!, slug),
     queryKey: logKey(scope, slug, id ?? ''),
     refetchInterval: running ? 3_000 : 15_000
   })
@@ -972,6 +973,11 @@ export function TaskDrawer({
                 {shortId(task.id)}
               </span>
             )}
+            {face?.syncState && (
+              <Badge size="xs" variant={face.syncState === 'pending' ? 'muted' : 'destructive'}>
+                {k.sync[face.syncState]}
+              </Badge>
+            )}
             <div className="ml-auto flex items-center gap-0.5">
               {task && (
                 <DropdownMenu>
@@ -992,7 +998,7 @@ export function TaskDrawer({
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={() => {
-                        void navigator.clipboard.writeText(task.title || task.id)
+                        void navigator.clipboard.writeText(face?.title || task.id)
                         host.notify({ kind: 'info', message: k.copiedTitle })
                       }}
                     >
@@ -1020,7 +1026,7 @@ export function TaskDrawer({
             </div>
           </div>
           <DialogTitle className="leading-snug" data-selectable-text="true">
-            {task ? task.title || task.id : shortId(id)}
+            {task ? face?.title || task.id : shortId(id)}
           </DialogTitle>
         </header>
 
@@ -1053,9 +1059,21 @@ export function TaskDrawer({
                   )}
 
                   <DescriptionSection
-                    body={task.body}
+                    body={face?.body}
                     onSave={body => void mutate(() => patchTask(task.id, { body }))()}
                   />
+
+                  {face && face.meta.length > 0 && (
+                    <Section label={k.fleetSync}>
+                      <ul className="flex flex-col gap-0.5 font-mono text-[0.6875rem] text-(--ui-text-tertiary)">
+                        {face.meta.map(line => (
+                          <li className="break-words whitespace-pre-wrap" key={line}>
+                            {line}
+                          </li>
+                        ))}
+                      </ul>
+                    </Section>
+                  )}
 
                   {task.result && (
                     <Section label={k.result}>
@@ -1063,9 +1081,9 @@ export function TaskDrawer({
                     </Section>
                   )}
 
-                  {task.latest_summary && !isAdminSummary(task.latest_summary) && (
+                  {summary && (
                     <Section label={k.latestSummary}>
-                      <TaskMarkdown text={task.latest_summary} />
+                      <TaskMarkdown text={summary} />
                     </Section>
                   )}
 

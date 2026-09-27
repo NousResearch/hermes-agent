@@ -32,8 +32,9 @@ import {
 
 import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
 import { KanbanBoardPage } from './board'
+import { FLEET_BOARD } from './card-face'
 import { KANBAN_LOCALES } from './i18n'
-import { $newTaskLane, useKanban } from './ui'
+import { $newTaskLane, enterBoard, useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
 // clicks through to the board. Shares the board query (one cache, one poll with
@@ -45,7 +46,7 @@ function KanbanCount() {
 
   // Socket-invalidated like the page (same cache); slow socketless heartbeat.
   const { data: board } = useQuery({
-    queryFn: () => fetchBoard(false),
+    queryFn: () => fetchBoard(false, slug),
     queryKey: boardKey(scope, slug, false),
     refetchInterval: 60_000
   })
@@ -135,6 +136,16 @@ const plugin: HermesPlugin = {
             label: ctx.i18n.t('openBoard'),
             keywords: ['kanban', 'board', 'tasks', 'agents'],
             run: () => host.navigate('/kanban')
+          } satisfies PaletteContribution
+        },
+        {
+          id: 'open-fleet',
+          area: PALETTE_AREA,
+          data: {
+            id: 'kanban.openFleet',
+            label: ctx.i18n.t('openFleetBoard'),
+            keywords: ['kanban', 'board', 'fleet', 'stallion'],
+            run: () => enterBoard(FLEET_BOARD)
           } satisfies PaletteContribution
         },
         {

@@ -10,8 +10,9 @@ export function RowValue({ onAction, row }: { onAction?: () => void; row: Billin
   // Destructure to a const so narrowing survives into the onClick closure below.
   const { action } = row
 
+  // Rendered as a ListRow `action`; the row owns wrapping and alignment.
   return (
-    <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
+    <>
       {row.value && (
         <span className="min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
           {row.value}
@@ -43,6 +44,6 @@ export function RowValue({ onAction, row }: { onAction?: () => void; row: Billin
           {!action.disabled && action.url && <ExternalLink className="size-3.5" />}
         </Button>
       )}
-    </div>
+    </>
   )
 }

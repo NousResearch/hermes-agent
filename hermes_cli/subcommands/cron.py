@@ -18,7 +18,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_subparsers = cron_parser.add_subparsers(dest="cron_command")
 
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
-    _flag(cron_list, "--all", help="Include disabled jobs")
+    _flag(cron_list, "--all", help="Include disabled and completed jobs")
 
     cron_create = cron_subparsers.add_parser(
         "create", aliases=["add"], help="Create a scheduled job")
@@ -66,7 +66,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument("--model",
         help="Pin this job to a specific inference model (user-owned; the "
             "agent's cronjob tool cannot set this). Omit to follow "
-            "cron.model / model.default from config.yaml.")
+            "cron.model, then the main agent model (`hermes model`), at fire time.")
+    cron_create.add_argument("--pin", dest="pinned", action="store_true", default=None,
+        help="Lock the CURRENT main agent model (and its provider) onto this job so later "
+            "`hermes model` changes never touch it. Ignored when --model is given.")
     cron_create.add_argument("--provider", dest="model_provider",
         help="Inference provider paired with --model (e.g. 'openrouter', 'nous').")
     cron_create.add_argument("--reasoning-effort", dest="reasoning_effort",
@@ -129,7 +132,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--model",
         help="Pin this job to a specific inference model (user-owned; the "
             "agent's cronjob tool cannot set this). Pass empty string to "
-            "clear the pin and follow cron.model / model.default.")
+            "clear the pin and follow cron.model, then the main agent model.")
+    _pin = cron_edit.add_mutually_exclusive_group()
+    _pin.add_argument("--pin", dest="pinned", action="store_true", default=None,
+        help="Lock the CURRENT main agent model (and its provider) onto this job.")
+    _pin.add_argument("--unpin", dest="pinned", action="store_false",
+        help="Release the job's model pin so it follows the main agent model again.")
     cron_edit.add_argument("--provider", dest="model_provider",
         help="Inference provider paired with --model. Pass empty string to clear.")
     cron_edit.add_argument("--reasoning-effort", dest="reasoning_effort",
@@ -154,6 +162,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "remove", aliases=["rm", "delete"], help="Remove a scheduled job")
     cron_remove.add_argument("job_id", help="Job ID to remove")
 
+    # cron status
     cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
 
     cron_runs = cron_subparsers.add_parser(
@@ -164,7 +173,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     # cron incidents — durable failure incidents (list/ack)
     cron_incidents = cron_subparsers.add_parser(
         "incidents", help="List or acknowledge durable cron failure incidents")
-    cron_incidents.add_argument("--state", choices=["detected", "alerted", "closed"],
+    cron_incidents.add_argument("--state", choices=["detected", "alerted", "resolved", "closed"],
         help="Filter incidents by lifecycle state")
     cron_incidents.add_argument(
         "incident_action", nargs="?", default="list", choices=["list", "ack"],

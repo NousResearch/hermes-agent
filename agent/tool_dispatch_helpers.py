@@ -16,19 +16,22 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.compression_marker import _COMPRESSION_MARKER_RE
 from agent.message_metadata import stamp_message_timestamp
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
+    tool_may_have_side_effect,
 )
 from tools.threat_patterns import scan_for_threats
 
 logger = logging.getLogger(__name__)
 
 # Interactive / user-facing tools never run concurrently: any of these in a batch is a barrier.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_catalog"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
+    "connectors__execute",  # pure remote batches have per-dispatch idempotency keys
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",
@@ -66,6 +69,38 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
+def _context_pruned_argument_paths(tool_name: str, args: Any) -> list[str]:
+    """Paths whose values contain model-visible context-compression artifacts.
+
+    The compressor's current marker carries numeric omitted/total counts. Match
+    that rendered shape rather than the prefix alone so Hermes can still edit
+    source/docs that mention the compression marker constant or its template.
+    Unknown/plugin/MCP tools stay effect-capable by default; known read-only
+    tools may inspect or quote compressed history.
+    """
+    if not tool_may_have_side_effect(tool_name):
+        return []
+
+    found: list[str] = []
+
+    def _walk(value: Any, path: str) -> None:
+        if isinstance(value, str):
+            if _COMPRESSION_MARKER_RE.search(value):
+                found.append(path)
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key_text = str(key)
+                child_path = f"{path}.{key_text}" if key_text.isidentifier() else f"{path}[{key_text!r}]"
+                _walk(child, child_path)
+            return
+        if isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                _walk(child, f"{path}[{index}]")
+
+    _walk(args, "$")
+    return found
+
 
 def _is_destructive_command(cmd: str) -> bool:
     """Heuristic: does this terminal command look like it modifies/deletes files?"""
@@ -86,18 +121,48 @@ _PARALLEL_SAFE_BRIDGE_LOOKUPS = frozenset({"tool_search", "tool_describe"})
 
 
 def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
-    """Resolve a ``tool_call`` bridge invocation to ``(underlying_name, underlying_args)`` so
-    admission is decided on the real tool (as the executors' unwrap does). An unparseable
-    bridge call is returned unchanged: it stays a sequential barrier and fails at dispatch."""
+    """Resolve a ``tool_call`` bridge invocation to its underlying tool.
+
+    The batch planner admits calls to a parallel run by tool NAME, but when
+    tool search is active the model emits the literal name ``tool_call`` for
+    every deferred tool — so a server opted in via
+    ``supports_parallel_tool_calls: true`` silently lost concurrency the
+    moment the bridge activated. Peel the wrapper here so admission is
+    decided on the underlying tool, exactly like the executors' unwrap.
+
+    Returns ``(underlying_name, underlying_args)`` when the wrapper parses
+    cleanly, else ``(tool_name, function_args)`` unchanged — an unparseable
+    bridge call stays a sequential barrier and fails at dispatch as before.
+    """
     try:
-        from tools.tool_search import TOOL_CALL_NAME, resolve_underlying_call
-        if tool_name == TOOL_CALL_NAME:
-            underlying, underlying_args, err = resolve_underlying_call(function_args)
-            if err is None and underlying:
+        from tools.tool_search import (
+            CONNECTOR_BATCH_SENTINEL,
+            TOOL_CALL_NAME,
+            is_connector_name,
+            resolve_underlying_call,
+        )
+        if tool_name != TOOL_CALL_NAME:
+            return tool_name, function_args
+        underlying, underlying_args, err = resolve_underlying_call(function_args)
+        if err is not None or not underlying:
+            return tool_name, function_args
+        if underlying == CONNECTOR_BATCH_SENTINEL:
+            # Only a PURE connector batch is parallel-safe (network-bound,
+            # no local state, own idempotency key). A batch containing any
+            # local entry keeps the sequential barrier: its entries never
+            # went through per-tool admission here, so treating the batch
+            # as parallel-safe would bypass path-overlap serialization for
+            # local writers and the per-server MCP parallel opt-in.
+            entries = underlying_args.get("calls") or []
+            if entries and all(
+                isinstance(e, dict) and is_connector_name(e.get("name"))
+                for e in entries
+            ):
                 return underlying, underlying_args
+            return tool_name, function_args
+        return underlying, underlying_args
     except Exception:
-        pass
-    return tool_name, function_args
+        return tool_name, function_args
 
 
 def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, List[Path], bool] | None:
@@ -512,7 +577,8 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
 
 __all__ = [
     "_NEVER_PARALLEL_TOOLS", "_PARALLEL_SAFE_TOOLS", "_PATH_SCOPED_TOOLS", "_PATH_SCOPED_READERS",
-    "_PATH_SCOPED_WRITERS", "_DESTRUCTIVE_PATTERNS", "_REDIRECT_OVERWRITE", "_is_destructive_command",
+    "_PATH_SCOPED_WRITERS", "_DESTRUCTIVE_PATTERNS", "_REDIRECT_OVERWRITE", "_context_pruned_argument_paths",
+    "_is_destructive_command",
     "_plan_tool_batch_segments", "_should_parallelize_tool_batch", "_canonical_path",
     "_extract_parallel_scope_path", "_extract_parallel_scope_paths", "_paths_overlap",
     "_is_multimodal_tool_result", "_multimodal_text_summary", "_append_subdir_hint_to_multimodal",

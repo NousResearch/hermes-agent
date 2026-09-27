@@ -23,7 +23,7 @@ class CLIProcessNotificationsMixin:
         from tools.process_registry import process_registry
         from tools.async_delegation import claim_event_delivery, complete_event_delivery
         from tools.process_registry_notifications import (
-            ProcessNotificationBatch, SubagentNotification, group_process_notifications)
+            ProcessNotificationBatch, TimelineNotification, group_process_notifications)
 
         claimed = []
         for event, text in process_registry.drain_notifications(
@@ -39,16 +39,22 @@ class CLIProcessNotificationsMixin:
             if event.get("type", "completion") == "completion":
                 pending = ProcessNotificationBatch(notifications)
             else:
-                pending = SubagentNotification(text, event) if event.get("type") == "async_delegation" else text
+                pending = TimelineNotification.for_delegation(text, event) if event.get("type") == "async_delegation" else text
+                from agent.notification_presentation import diagnostic_process_event
+                if diagnostic_process_event(event) and not isinstance(pending, TimelineNotification):
+                    pending = TimelineNotification(text, text, "internal_notification", "diagnostic")
             self._pending_input.put(pending)
 
     def _tui_unwrap_input(self, user_input):
         """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""
         from cli import _VoiceInputMessage, _SeededQueryMessage
         from tools.process_registry import process_registry
-        from tools.process_registry_notifications import ProcessNotificationBatch
+        from tools.process_registry_notifications import (
+            PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification)
         if isinstance(user_input, ProcessNotificationBatch):
-            user_input = user_input.render(process_registry)
+            rendered = user_input.render(process_registry)
+            user_input = rendered and TimelineNotification(
+                rendered, user_input.display_text(process_registry), PROCESS_COMPLETE_DISPLAY_KIND)
         # Voice-transcribed messages arrive wrapped in a sentinel so only genuine STT output gets the voice
         # prefix (#65827).
         is_voice_input = isinstance(user_input, _VoiceInputMessage)

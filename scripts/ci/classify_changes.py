@@ -20,11 +20,12 @@ Lanes:
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
-* ``uv_lock``     — ``uv lock --check``. Re-resolves the whole graph against
+* ``uv_lock``     — ``PM lock check``. Re-resolves the whole graph against
   PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
   must not run it.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
-* ``installer``   — PowerShell installer tests (Windows runner).
+* ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
+  pin-fragment drift check, and shipped version-stamp verification.
 * ``desktop_updater`` — the Windows desktop-update hand-off script and the
   tests that drive the REAL ``windows.ps1`` (``-SelfTestUi`` / pipe drain /
   retry policy). These are integration tests of a PowerShell process on a
@@ -91,6 +92,17 @@ _PY_RELEVANT_SITE = (
     "website/docs/",
     "website/scripts/",
 )
+# Cross-language contract files: data committed under a frontend tree that a
+# pytest pins against the Python side (emitter inventory, command registry).
+# Editing only the JSON in an apps/-only PR would otherwise skip the one test
+# that can catch the drift, so these force the Python lane too.
+_PY_RELEVANT_CONTRACT_FILES = {
+    # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
+    "apps/shared/src/gateway-contract.generated.ts",
+    "apps/shared/src/gateway-contract.openrpc.json",
+    # tests/hermes_cli/test_desktop_slash_registry.py
+    "apps/desktop/src/lib/desktop-slash-registry.json",
+}
 
 # CI-sensitive files: eslint config, workflow files, composite actions.
 # Changes here can influence what code the autofix job executes and pushes to
@@ -113,15 +125,17 @@ _SCAN_FILES = {"setup.cfg", "pyproject.toml"}
 _MCP_CATALOG_PATHS = ("optional-mcps/",)
 _MCP_CATALOG_FILES = {"hermes_cli/mcp_catalog.py"}
 
-# Windows installer + its PowerShell tests. These only run on a Windows runner,
-# so they get their own lane rather than riding along with ``python``.
-_INSTALLER_PATHS = ("scripts/tests/",)
-_INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
-
+# Bootstrap installer: the POSIX shell installer, the dev-checkout wrapper
+# that carries the same pin fragment, and the Tauri app's non-Rust sources
+# (the .rs/Cargo files are the ``rust`` lane's job). Changes here get the
+# bootstrap-installer.yml lane — a real sandboxed install + stamp check.
+_BOOTSTRAP_PATHS = ("apps/bootstrap-installer/",)
+_BOOTSTRAP_FILES = {"scripts/install.sh", "setup-hermes.sh"}
 # Windows desktop-update hand-off (scripts/desktop-update/windows.ps1 + the
 # Electron side that launches it) and the pytest files that spawn it.
-_DESKTOP_UPDATER_PATHS = ("scripts/desktop-update/",)
-_DESKTOP_UPDATER_TEST_PREFIX = "tests/test_desktop_update_"
+# tests/_fixtures/ holds the conftest's platform gating, so it re-arms the lane too.
+_DESKTOP_UPDATER_PATHS = ("scripts/desktop-update/", "tests/_fixtures/")
+_DESKTOP_UPDATER_TEST_PREFIX = "tests/scripts/desktop_update/"
 _DESKTOP_UPDATER_FILES = {
     "apps/desktop/electron/updater-process.ts",
     "apps/desktop/electron/managed-ssh-update.ts",
@@ -147,7 +161,7 @@ def _is_nix(p: str) -> bool:
 
 
 def _py_irrelevant(p: str) -> bool:
-    if p.startswith(_PY_RELEVANT_SITE):
+    if p.startswith(_PY_RELEVANT_SITE) or p in _PY_RELEVANT_CONTRACT_FILES:
         return False
     return (
         _is_docs(p)
@@ -163,7 +177,7 @@ def _py_test_only(p: str) -> bool:
 
     Product jobs (Desktop E2E's ``hermes serve`` backend, the Docker image)
     run installed code — nothing under ``tests/`` is packaged or importable
-    there. scripts/run_tests.sh and run_tests_parallel.py are deliberately
+    there. scripts/run_tests.sh and scripts/run_tests_parallel.py are deliberately
     NOT test-only: they are runner infrastructure, and a bad edit there can
     mask real failures, so they stay conservative (python_prod=true).
     """
@@ -176,10 +190,6 @@ def _is_scan(p: str) -> bool:
 
 def _is_mcp_catalog(p: str) -> bool:
     return p.startswith(_MCP_CATALOG_PATHS) or p in _MCP_CATALOG_FILES
-
-
-def _is_installer(p: str) -> bool:
-    return p.startswith(_INSTALLER_PATHS) or p in _INSTALLER_FILES
 
 
 def _is_desktop_updater(p: str) -> bool:
@@ -218,6 +228,8 @@ def classify(files: list[str]) -> dict[str, bool]:
     python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
     frontend = any(
         f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
+        or f.startswith("tests-js/")
+        or (f.startswith("scripts/build/") and f.endswith((".mjs", ".js", ".ts")))
         for f in files
     )
     deps = any(f == "pyproject.toml" for f in files)
@@ -235,7 +247,9 @@ def classify(files: list[str]) -> dict[str, bool]:
         "deps": deps,
         "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
         "npm_lock": npm_lock,
-        "installer": any(_is_installer(f) for f in files),
+        "bootstrap": any(
+            f.startswith(_BOOTSTRAP_PATHS) or f in _BOOTSTRAP_FILES for f in files
+        ),
         "desktop_updater": any(_is_desktop_updater(f) for f in files),
         "rust": any(_is_rust(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
@@ -253,7 +267,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["deps"] = True
         ret["uv_lock"] = True
         ret["npm_lock"] = True
-        ret["installer"] = True
+        ret["bootstrap"] = True
         ret["desktop_updater"] = True
         ret["rust"] = True
         ret["nix"] = True
@@ -269,7 +283,7 @@ def _pull_request_number() -> str | None:
     if not event_path:
         return None
     try:
-        with open(event_path, encoding="utf-8") as fh:
+        with open(event_path, encoding="utf-8-sig") as fh:
             payload = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return None

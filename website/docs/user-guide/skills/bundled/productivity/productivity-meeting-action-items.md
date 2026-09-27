@@ -15,13 +15,13 @@ Turn meeting notes into cited decisions, owners, tickets.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\meeting-action-items` |
+| Path | `skills/productivity/meeting-action-items` |
 | Version | `0.1.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Meetings`, `Action-Items`, `Follow-Up`, `Productivity` |
-| Related skills | [`teams-meeting-pipeline`](/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline), [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace), [`notion`](/docs/user-guide/skills/bundled/productivity/productivity-notion) |
+| Related skills | [`teams-meeting-pipeline`](../../bundled/productivity/productivity-teams-meeting-pipeline.md), [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`notion`](../../bundled/productivity/productivity-notion.md) |
 
 ## Reference: full SKILL.md
 

@@ -64,10 +64,44 @@ def _start_parent_death_watchdog(original_ppid) -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
+def _slash_base(command: str) -> str:
+    cmd = (command or "").strip()
+    if cmd.startswith("/"):
+        cmd = cmd[1:]
+    return (cmd.split(maxsplit=1)[0] if cmd else "").lower()
+
+
+class SkillSlashRefused(RuntimeError):
+    """Skill slash parks the prompt on ``_pending_input``; this worker has no reader."""
+
+    def __init__(self, base: str):
+        self.base = base
+        super().__init__(f"skill command refused before process: /{base}")
+
+
+def _refuse_skill_slash(command: str) -> None:
+    """Refuse a skill command before ``process_command`` prints the loading banner.
+
+    A scan failure here is not a miss the parent already handled: only a positive
+    hit is refused, so a broken skill index does not block ``/status``.
+    """
+    base = _slash_base(command)
+    if not base:
+        return
+    try:
+        from cli import get_skill_commands
+        commands = get_skill_commands()
+    except Exception:
+        return
+    if f"/{base}" in commands:
+        raise SkillSlashRefused(base)
+
+
 def _run(cli: HermesCLI, command: str) -> str:
     cmd = (command or "").strip()
     if not cmd:
         return ""
+    _refuse_skill_slash(cmd)
     buf = io.StringIO()
     # Rich Console captures its file handle at construction, so redirect_stdout won't affect it; swap
     # the console's file so self.console.print() is captured. cli._cprint is likewise redirected.
@@ -100,6 +134,7 @@ def main():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
+    p.add_argument("--provider", default="")
     args = p.parse_args()
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
@@ -108,7 +143,11 @@ def main():
     _start_parent_death_watchdog(os.getppid())
     _prepare_slash_worker_runtime()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
+        # --provider pins the CLI to the parent agent's resolved provider (a MoA session's virtual
+        # "moa" provider included). Without it HermesCLI re-resolves from config and dispatches the
+        # MoA preset NAME to the configured real provider (#57283).
+        cli = HermesCLI(model=args.model or None, provider=args.provider or None,
+                        compact=True, resume=args.session_key, verbose=False)
     # Spurious stdin-EOF recovery (same shared-file-description O_NONBLOCK issue as the gateway entry
     # point — any child inheriting fd 0 can flip the flag).
     _sw_recovery_times: list[float] = []

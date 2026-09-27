@@ -20,14 +20,7 @@
  * the managed route with in-app billing (desktop Settings → Billing, TUI
  * `/topup`), while third-party providers deep-link to `billing_url`.
  */
-export interface BillingBlock {
-  provider: string
-  provider_label: string
-  model: string
-  billing_url: string | null
-  is_nous: boolean
-  message: string
-}
+export type { BillingBlock } from './gateway-contract.generated.js'
 
 // ── Remote Spending (Phase 2b) ───────────────────────────────────────
 

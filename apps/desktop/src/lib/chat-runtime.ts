@@ -215,6 +215,25 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
   return null
 }
 
+// Encode the blob: URL tail so the markdown-image ref stays parseable by the
+// renderer's strict consumer regex: spaces would kill the match and `)` would
+// truncate it mid-URL. Keep the structural separators (`blob:`, `://`, `/`,
+// `=` in queries) readable; percent-encode everything else non-alphanumeric.
+function encodeBlobUrl(url: string): string {
+  const marker = url.indexOf(':')
+  if (marker < 0) {
+    return url
+  }
+
+  const scheme = url.slice(0, marker + 1)
+  const rest = url.slice(marker + 1)
+
+  // encodeURIComponent is UTF-8 correct but leaves `!~*'()` raw — none of
+  // those may survive into the ref (a `)` truncates the consumer match).
+  return scheme + rest.replace(/[^\w.~:/=-]/g,
+    ch => encodeURIComponent(ch).replace(/[!~*'()]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase()))
+}
+
 /**
  * Display ref for the optimistic (in-flight) user bubble.
  *
@@ -238,9 +257,15 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
     // markdown image keeps them out of the data-URL extract path while still
     // rendering inline in the optimistic bubble (#63682).
     if (attachment.previewUrl?.startsWith('blob:')) {
-      const alt = attachment.label || 'image'
+      // Encode both fields: the consumer (BLOB_MARKDOWN_IMAGE_RE) parses a
+      // strict Markdown image, and a raw `]`/`)`/space in the label or URL
+      // would break that shape — the ref then leaks as raw text (the exact
+      // bug this path exists to fix) or truncates mid-URL. encodeURIComponent
+      // leaves the common shapes (plain names, UUID-suffixed URLs) unchanged.
+      const alt = encodeURIComponent(attachment.label || 'image')
+      const url = encodeBlobUrl(attachment.previewUrl)
 
-      return `![${alt}](${attachment.previewUrl})`
+      return `![${alt}](${url})`
     }
 
     // Prefer a filesystem-backed `@image:<path>` ref so the in-flight bubble

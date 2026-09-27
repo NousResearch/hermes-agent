@@ -45,7 +45,8 @@ import {
   refChipElement,
   renderComposerContents,
   replaceBeforeCaret,
-  RICH_INPUT_SLOT
+  RICH_INPUT_SLOT,
+  syncElementTextDirection
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
@@ -271,6 +272,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       // marker here as well, just like the main composer.
       markEditorEmptiness(editor)
       const nextDraft = sanitizeComposerInput(composerPlainText(editor))
+      syncElementTextDirection(editor, nextDraft)
 
       if (nextDraft !== draftRef.current) {
         draftRef.current = nextDraft

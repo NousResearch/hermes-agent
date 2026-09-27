@@ -1,7 +1,8 @@
-// Appearance → Text direction. Auto is the shipped per-block first-strong
-// behavior and must leave the DOM exactly as it was; RTL/LTR stamp one `dir`
-// on each chat prose surface and both composers, replacing the list/quote
-// boxes' `dir="auto"` vote, while inline code keeps its own `dir="ltr"`.
+// Appearance → Text direction. Auto keeps the per-block resolver (not the
+// browser's first-strong vote): boxes and prose carry its resolved dir and
+// must keep doing so; RTL/LTR stamp one `dir` on each chat prose surface and
+// both composers, replacing that vote, while inline code keeps its own
+// `dir="ltr"`.
 // jsdom neither resolves `dir` nor applies styles.css, so these pin the
 // attribute contract; the stylesheet half is checked in real Chromium.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
@@ -139,29 +140,37 @@ function composerEditor(container: HTMLElement) {
   return editor!
 }
 
-// Every `dir` in a rendered subtree, so "Auto adds nothing" is one comparison.
 function dirAttributes(container: HTMLElement) {
   return [...container.querySelectorAll('[dir]')].map(el => `${el.tagName.toLowerCase()}=${el.getAttribute('dir')}`)
 }
 
 describe('Text direction: Auto', () => {
-  it('keeps the native first-strong DOM: only list/quote boxes vote, code opts out', async () => {
+  it('keeps the per-block resolver DOM: prose and boxes vote, code opts out', async () => {
     const { blockquote, code, list, quote, root, userText, view } = await renderThread()
 
     expect($textDirection.get()).toBe('auto')
     expect(root.hasAttribute('dir')).toBe(false)
-    expect(quote.hasAttribute('dir')).toBe(false)
-    expect(userText.hasAttribute('dir')).toBe(false)
-    expect(list.getAttribute('dir')).toBe('auto')
-    expect(blockquote.getAttribute('dir')).toBe('auto')
+    // The resolver replaces the browser's first-strong vote: a paragraph opening with a
+    // Latin name ("Ergander و Aspalta …") still resolves RTL, and the list/quote boxes
+    // carry that same resolved direction for their markers/border. The quote body here
+    // resolves LTR (dominant strong chars) — that is the resolver's vote, not "auto".
+    expect(quote.getAttribute('dir')).toBe('rtl')
+    expect(userText.getAttribute('dir')).toBe('rtl')
+    expect(list.getAttribute('dir')).toBe('rtl')
+    expect(blockquote.getAttribute('dir')).toBe('ltr')
     expect(code.getAttribute('dir')).toBe('ltr')
-    expect(new Set(dirAttributes(view.container))).toEqual(new Set(['ol=auto', 'blockquote=auto', 'code=ltr']))
+    expect(new Set(dirAttributes(view.container))).toEqual(
+      // p inside the quote body resolves LTR; the two list items split (ltr, rtl).
+      new Set(['blockquote=ltr', 'code=ltr', 'li=ltr', 'li=rtl', 'ol=rtl', 'p=ltr', 'p=rtl', 'span=rtl'])
+    )
   })
 
-  it('leaves the composer attribute-free and stores nothing', () => {
+  it('keeps the composer on the resolver and stores nothing', () => {
     const { container } = render(<ComposerHarness />)
 
-    expect(composerEditor(container).hasAttribute('dir')).toBe(false)
+    // Auto keeps the composer's own vote — stamped imperatively from the draft
+    // (empty draft → `dir="auto"`, typed text → the resolved direction).
+    expect(composerEditor(container).getAttribute('dir')).toBe('auto')
     expect(window.localStorage.getItem('hermes.desktop.textDirection')).toBeNull()
   })
 
@@ -188,8 +197,9 @@ describe.each<Exclude<TextDirection, 'auto'>>(['rtl', 'ltr'])('Text direction: %
     expect(list.getAttribute('dir')).toBe(direction)
     expect(blockquote.getAttribute('dir')).toBe(direction)
     expect(userText.getAttribute('dir')).toBe(direction)
-    // Paragraphs inherit from the root rather than carrying their own vote.
-    expect(quote.hasAttribute('dir')).toBe(false)
+    // Paragraphs carry the forced direction too (the resolver steps aside), so an
+    // English-leading paragraph inside a forced RTL document cannot vote itself LTR.
+    expect(quote.getAttribute('dir')).toBe(direction)
     expect(code.getAttribute('dir')).toBe('ltr')
     // Presentation only: the text itself carries no injected bidi controls.
     expect(quote.textContent).toBe(QUOTE)
@@ -204,6 +214,8 @@ describe.each<Exclude<TextDirection, 'auto'>>(['rtl', 'ltr'])('Text direction: %
     expect(window.localStorage.getItem('hermes.desktop.textDirection')).toBe(direction)
 
     act(() => setTextDirection('auto'))
+    // React's Auto `dir={undefined}` drops the attribute; the next keystroke
+    // restamps via syncElementTextDirection.
     expect(composerEditor(container).hasAttribute('dir')).toBe(false)
   })
 })

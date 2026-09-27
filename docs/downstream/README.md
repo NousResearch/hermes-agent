@@ -1,0 +1,49 @@
+# Downstream Intent Ledger
+
+This directory records only long-lived differences that an upstream sync could
+accidentally erase. It is not architecture documentation, a changelog, or a
+conflict log.
+
+## Brevity is a contract
+
+- Keep each active entry under **150 words**, excluding metadata.
+- State one invariant, the upstream risk, the merge rule, and minimal checks.
+- Link to authoritative docs; never copy their detail, diffs, or history here.
+- Keep the active-entry index to one line per entry.
+
+## Sync contract
+
+Before integrating upstream changes, read every active entry and check
+both path and conceptual overlap. Preserve intent, absorb compatible upstream
+improvements, validate the listed checks, and report one concise outcome per
+entry. Flag ambiguous or obsolete intent for review.
+
+The sync automation is a **read-only consumer**: it may not author, expand, or
+retire entries. It may only propose a separate developer change.
+
+## Ownership
+
+A developer or ordinary downstream change owns ledger updates. Add or change an
+entry only with the long-lived divergence it governs; retire it when the intent
+is removed or upstream satisfies it. Use this shape:
+
+```markdown
+# <title>
+
+- Status: active | retired
+- Scope: `<paths or surface>`
+- Introduced: `<commit or pull request>`
+
+## Downstream intent
+<Invariant and upstream risk.>
+
+## Reconciliation
+<How to absorb upstream changes without losing the invariant.>
+
+## Validation
+<Concrete checks for the sync pull request.>
+```
+
+## Active entries
+
+- [Scoped agent guidance](divergences/scoped-agent-guidance.md) — route agent guidance instead of growing one root file.

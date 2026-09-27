@@ -1,0 +1,49 @@
+{
+  "source_commit": "6f4f56aae0",
+  "image": "ghcr.io/vectorize-io/hindsight-api@sha256:7635a15739361dbdf221ba796ad25a813f876144fe113022eea8e26cb6ee75e7",
+  "environment": {
+    "HINDSIGHT_API_TENANT_EXTENSION": "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension",
+    "HINDSIGHT_API_LLM_PROVIDER": "openai-responses",
+    "HINDSIGHT_API_LLM_MODEL": "gpt-5.6-luna",
+    "HINDSIGHT_API_LLM_REASONING_EFFORT": "low",
+    "HINDSIGHT_API_REFLECT_LLM_REASONING_EFFORT": "medium",
+    "HINDSIGHT_API_LLM_SEND_BANK_AS_USER": "true",
+    "HINDSIGHT_API_RERANKER_SEND_BANK_AS_HEADER": "true",
+    "HINDSIGHT_API_LLM_BASE_URL": "http://127.0.0.1:8890/api/openai/v1",
+    "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "openai",
+    "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL": "qwen/qwen3-embedding-8b",
+    "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL": "http://127.0.0.1:8890/api/openrouter/v1",
+    "HINDSIGHT_API_EMBEDDINGS_OPENAI_DIMENSIONS": "1536",
+    "HINDSIGHT_API_RERANKER_PROVIDER": "openrouter",
+    "HINDSIGHT_API_RERANKER_OPENROUTER_MODEL": "cohere/rerank-4-fast",
+    "HINDSIGHT_API_RERANKER_OPENROUTER_BASE_URL": "http://127.0.0.1:8890/api/openrouter/v1/rerank",
+    "HINDSIGHT_API_VECTOR_EXTENSION": "pgvector",
+    "HINDSIGHT_API_TEXT_SEARCH_EXTENSION": "native",
+    "HINDSIGHT_API_RECALL_CONNECTION_BUDGET": "2",
+    "HINDSIGHT_API_MCP_ENABLED": "false",
+    "HINDSIGHT_API_LOG_FORMAT": "json",
+    "HINDSIGHT_API_RECENCY_DECAY_FUNCTION": "exponential",
+    "HINDSIGHT_API_RECENCY_DECAY_HALFLIFE_DAYS": "60",
+    "HINDSIGHT_API_ENABLE_BANK_CONFIG_API": "false",
+    "HINDSIGHT_API_LLM_TRACE_ENABLED": "false",
+    "HINDSIGHT_API_DB_POOL_MIN_SIZE": "1",
+    "HINDSIGHT_API_DB_POOL_MAX_SIZE": "4",
+    "HINDSIGHT_API_DEFAULT_BANK_TEMPLATE": {
+      "version": "1",
+      "bank": {
+        "reflect_mission": "I am an autonomous AI employee for this workspace. This memory bank is the AI employee's shared work memory across users, channels, and sessions \u2014 workspace-level operational knowledge, not a profile of any individual. Answer in precise, operational terms for the AI employee's own use: prefer the newest confirmed decisions and constraints, distinguish what was decided or done from what was merely proposed, ground answers in stored evidence, and say plainly when evidence is thin, stale, or conflicting.",
+        "retain_mission": "This bank holds durable workspace-level work memory. Keep information that should guide future work for this workspace: project and product decisions and their reasoning, strategy and direction changes, stable constraints, reusable workflows, account and system ownership, and durable preferences for how the AI employee should operate. Record status faithfully, for people and the AI employee alike: decisions as decisions, completed work as completed, and proposals or ideas as proposals with their author \u2014 never as if adopted or done. About people, keep work-relevant facts: roles, responsibilities, ownership, and stated working preferences. Judge each fact on its own merit \u2014 a durable decision mentioned alongside transient chatter is still worth keeping; an assignment of ongoing ownership is durable, a one-off task request is not. Do not keep scheduling logistics, memory tests, or jokes; do not build personal profiles beyond work-relevant facts; treat names as speakers or collaborators, not verified identities. Skip facts whose referent the conversation does not clearly identify (bare labels like 'this framework').",
+        "retain_extraction_mode": "concise",
+        "enable_observations": true,
+        "observations_mission": "Observations are this workspace's consolidated operating picture, built from repeated evidence: the current state, direction, and key decisions of each project, product, and account; who currently owns and works on what; recurring workflows and preferences for how work gets done; and stable constraints. When direction changes, update the belief to the current state and note what it replaced. Keep decided and done separate from proposed: a proposal \u2014 anyone's, including the AI employee's \u2014 remains a proposal until the workspace adopts it, and repeated restatement does not make it adopted. Do not build observations from one-off conversation events, unclear referents, or unverified identity claims.",
+        "disposition_skepticism": 4,
+        "disposition_literalism": 4,
+        "disposition_empathy": 2
+      }
+    }
+  },
+  "deployment_expressions": {
+    "HINDSIGHT_API_WORKER_ID": "f'{config.resource_prefix}-hindsight'"
+  },
+  "note": "Reference values, not a deployable Railway config. Endpoints/auth and worker identity require the approved substitutions. Database URL and secret bindings are deployment inputs."
+}

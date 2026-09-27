@@ -133,6 +133,10 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: true })
       }
 
+      if (arg.trim().toLowerCase() === '--session') {
+        return patchOverlayState({ modelPicker: { sessionOnly: true } })
+      }
+
       if (arg.trim() === '--refresh') {
         return patchOverlayState({ modelPicker: { refresh: true } })
       }

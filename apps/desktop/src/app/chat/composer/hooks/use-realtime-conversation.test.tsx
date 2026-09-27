@@ -11,7 +11,7 @@ import { useRealtimeConversation } from './use-realtime-conversation'
 const mocks = vi.hoisted(() => ({
   handlers: null as RealtimeVoiceHandlers | null,
   notify: vi.fn(() => true),
-  request: vi.fn(async () => ({ found: true }))
+  request: vi.fn(async () => ({ found: true, status: 'queued' }))
 }))
 
 vi.mock('@/lib/live-voice/start', () => ({
@@ -116,7 +116,10 @@ test('acknowledges a task without waiting for its result, then voices only the r
   expect(mocks.notify).toHaveBeenCalledWith('Raport zapisany w wynik.txt')
 })
 
-test('spoken stop targets the session-owned worker and does not claim it already stopped', async () => {
+test.each([
+  ['zatrzymaj zadanie', 'interrupt'],
+  ['zmień polecenie: zapisz CSV', 'steer']
+])('spoken control %s targets the session-owned worker', async (request, method) => {
   vi.useFakeTimers()
 
   const item: SubagentProgress = {
@@ -148,11 +151,12 @@ test('spoken stop targets the session-owned worker and does not claim it already
     })
   )
   await act(async () => {})
-  const reply = await mocks.handlers!.onAsk('zatrzymaj zadanie')
-  expect(mocks.request).toHaveBeenCalledWith('s1', expect.any(Function), 'subagent.interrupt', {
+  const reply = await mocks.handlers!.onAsk(request)
+  expect(mocks.request).toHaveBeenCalledWith('s1', expect.any(Function), `subagent.${method}`, {
     session_id: 's1',
-    subagent_id: 'worker'
+    subagent_id: 'worker',
+    ...(method === 'steer' ? { text: request } : {})
   })
-  expect(reply).toContain('poczekaj na potwierdzenie')
+  expect(reply).toContain(method === 'interrupt' ? 'poczekaj na potwierdzenie' : 'Zmiana została przekazana')
   expect(onSubmit).not.toHaveBeenCalled()
 })

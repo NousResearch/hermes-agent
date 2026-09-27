@@ -108,7 +108,7 @@ export function useRealtimeConversation({
     )
 
     const stop = /^(?:proszę\s+)?(?:zatrzymaj|przerwij|stop)\b/i.test(request.trim())
-    const steer = /^(?:zmień|zmien|doprecyzuj|popraw polecenie)\b/i.test(request.trim())
+    const steer = /^(?:zmień|zmien|doprecyzuj|popraw polecenie)(?=\s|$)/i.test(request.trim())
 
     if (stop && !live.length && args.current.busy() && args.current.onInterrupt) {
       await args.current.onInterrupt()

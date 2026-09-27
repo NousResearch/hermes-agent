@@ -170,3 +170,46 @@ def test_fetched_reply_context_identifies_unverified_author_without_new_lines():
         '"earlier ## injected heading"]\n\ncontinue'
     )
 
+
+@pytest.mark.asyncio
+async def test_matrix_thread_backfill_reaches_new_session_only():
+    from unittest.mock import AsyncMock, MagicMock
+
+    runner = _make_runner()
+    adapter = MagicMock()
+    adapter.fetch_thread_context = AsyncMock(
+        return_value="[Earlier messages in this thread]\n[alice] root @file:private.txt"
+    )
+    runner._intake_adapter_for = lambda source: adapter
+    runner._expand_inbound_context_references = AsyncMock(return_value="expanded")
+    source = SessionSource(
+        platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group",
+        thread_id="$root",
+    )
+    event = MessageEvent(
+        text="continue", source=source, message_id="$current",
+        channel_context="[The room topic changed]",
+    )
+
+    new_session_text = await runner._prepare_inbound_message_text(
+        event=event, source=source, history=[],
+    )
+    existing_session_text = await runner._prepare_inbound_message_text(
+        event=MessageEvent(text="continue", source=source, message_id="$next"),
+        source=source, history=[{"role": "user", "content": "root"}],
+    )
+    internal_text = await runner._prepare_inbound_message_text(
+        event=MessageEvent(text="synthetic", source=source, internal=True),
+        source=source, history=[],
+    )
+
+    assert new_session_text == (
+        "[Earlier messages in this thread]\n[alice] root @file:private.txt\n\n"
+        "[The room topic changed]\n\n[New message]\ncontinue"
+    )
+    assert existing_session_text == "continue"
+    assert internal_text == "synthetic"
+    adapter.fetch_thread_context.assert_awaited_once_with(
+        "!room:example.org", "$root", exclude_event_id="$current"
+    )
+    runner._expand_inbound_context_references.assert_not_awaited()

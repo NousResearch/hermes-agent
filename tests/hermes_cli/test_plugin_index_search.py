@@ -134,6 +134,20 @@ class TestParsing:
             assert e.ref, f"seed entry {e.name} must pin a ref"
             assert len(e.ref) == 40, f"seed entry {e.name} must pin a commit SHA"
 
+    def test_bundled_seed_lists_perseus_vault(self):
+        # Issue #87107: the bundled seed should include the perseus-vault
+        # community plugin announcement so it is discoverable today, even
+        # before the canonical remote index (#86154) settles.
+        raw = json.loads(plugin_index.SEED_INDEX_PATH.read_text(encoding="utf-8"))
+        entries = _parse_entries(raw)
+        names = {e.name for e in entries}
+        assert "perseus-vault" in names, (
+            "perseus-vault entry missing from bundled seed; see #87107"
+        )
+        entry = next(e for e in entries if e.name == "perseus-vault")
+        assert entry.repo == "Perseus-Computing-LLC/hermes-plugin-perseus-vault"
+        assert len(entry.ref) == 40, "perseus-vault ref must pin a commit SHA"
+
 
 # ---------------------------------------------------------------------------
 # Search

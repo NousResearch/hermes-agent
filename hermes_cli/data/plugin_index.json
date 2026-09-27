@@ -63,6 +63,18 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "perseus-vault",
+      "description": "Perseus Vault memory provider for Hermes: governed durable memory (admission control, supersession, corrections, provenance) with session-start prefetch and optional Authorized Action Receipt enforcement.",
+      "author": "Perseus Computing LLC",
+      "tags": ["memory", "memory-provider", "mcp", "governance", "provenance", "approvals"],
+      "repo": "Perseus-Computing-LLC/hermes-plugin-perseus-vault",
+      "ref": "c6e693288b5536f0426bb62da8cd6d7b97192410",
+      "homepage": "https://github.com/Perseus-Computing-LLC/hermes-plugin-perseus-vault",
+      "capabilities": ["memory", "tools", "mcp"],
+      "api_version": 1,
+      "added_at": "2026-09-28"
     }
   ]
 }

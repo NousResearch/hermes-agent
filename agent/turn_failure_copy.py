@@ -18,7 +18,7 @@ from hermes_constants import display_hermes_home
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
 SITE_FAILURE_CODES = frozenset({
     "context_overflow", "truncated", "invalid_response", "empty_response", "loop_error",
-    "interpreter_shutdown", "session_busy",
+    "interpreter_shutdown", "session_busy", "malformed_tool_call",
 })
 
 
@@ -269,6 +269,11 @@ _FAILURE_CODE_COPY: Dict[str, str] = {
         "This conversation has grown too long for {model} to read, and Hermes couldn't shrink "
         "it enough automatically. Start a new session with /new (your history is kept), or try "
         "/compress once more. Switching to a model with a bigger context window also works."
+    ),
+    "malformed_tool_call": (
+        "{model} kept sending tool calls whose arguments were not valid JSON objects, so none of "
+        "them ran, even after being shown the error. Nothing was changed. Switch to a different "
+        "model with /model, or ask for the work in smaller steps."
     ),
     "truncated": (
         "The model's reply was cut off before it finished (it hit its output length limit), so "

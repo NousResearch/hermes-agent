@@ -52,7 +52,14 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
         })
 
 
-def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> Dict[str, Any]:
+# Recovery rounds (3 silent retries, then error results for the model) a turn may spend on
+# tool arguments that are not a JSON object before it ends: 2 rounds = 9 model responses,
+# where an unbounded loop ran the whole iteration budget (~500 calls, #125368).
+_MAX_MALFORMED_ARGS_RECOVERIES = 2
+
+
+def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str,
+                  reason: str = "truncated", retryable: bool = True) -> Dict[str, Any]:
     """Terminal partial result. Prior retries or an earlier tool batch leave a tool-result
     tail; close it as interrupt aborts do so the next turn is not tool→user (#48879).
     This path never reaches finalize_turn, so persist here."""
@@ -65,7 +72,7 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
         "completed": False,
         "partial": True,
         "error": final_response,
-    }, "truncated", True)
+    }, reason, retryable)
 
 
 def validate_tool_calls(
@@ -143,32 +150,42 @@ def validate_tool_calls(
     # Validate tool call arguments are valid JSON; empty strings become empty
     # objects (common model quirk).
     invalid_json_args = []
+    undecodable_names = set()
     for tc in tool_calls:
         args = tc.function.arguments
-        if isinstance(args, (dict, list)):
+        if isinstance(args, dict):
             tc.function.arguments = json.dumps(args)
             continue
+        if isinstance(args, list):
+            tc.function.arguments = args = json.dumps(args)
         if args is not None and not isinstance(args, str):
             tc.function.arguments = args = str(args)
         if not args or not args.strip():
             tc.function.arguments = "{}"
             continue
+        # A mixed-batch invalid-name call never executes (error result later);
+        # don't let its broken args trigger the whole-turn JSON retry.
+        if _mixed_invalid_batch and tc.function.name not in valid_names:
+            continue
         try:
-            json.loads(args)
+            parsed = json.loads(args)
         except json.JSONDecodeError as e:
-            # A mixed-batch invalid-name call never executes (error result later);
-            # don't let its broken args trigger the whole-turn JSON retry.
-            if not (_mixed_invalid_batch and tc.function.name not in valid_names):
-                invalid_json_args.append((tc.function.name, str(e)))
+            invalid_json_args.append((tc.function.name, str(e)))
+            undecodable_names.add(tc.function.name)
+            continue
+        # Valid JSON that is not an object (`[]`, `1`, `"x"`) is refused by the executor too;
+        # route it through the same bounded retry instead of an unbounded error-result loop.
+        if not isinstance(parsed, dict):
+            invalid_json_args.append((tc.function.name, f"arguments must be a JSON object, got {type(parsed).__name__}"))
 
     if invalid_json_args:
         invalid_names = {n for n, _ in invalid_json_args}
         # Routers may rewrite finish_reason "length" → "tool_calls", hiding
-        # truncation; args not ending in } or ] (stripped) were cut off
+        # truncation; undecodable args not ending in } or ] (stripped) were cut off
         # mid-stream.
         _truncated = any(
             not (tc.function.arguments or "").rstrip().endswith(("}", "]"))
-            for tc in tool_calls if tc.function.name in invalid_names
+            for tc in tool_calls if tc.function.name in undecodable_names
         )
         if _truncated:
             agent._vprint(
@@ -196,10 +213,26 @@ def validate_tool_calls(
             agent._buffer_vprint(f"🔄 Retrying API call ({agent._invalid_json_retries}/3)...")
             # Don't add anything to messages, just retry the API call
             return _verdict("continue")
+        agent._invalid_json_retries = 0  # Reset for next attempt
+        if getattr(agent, "_malformed_args_recoveries", 0) >= _MAX_MALFORMED_ARGS_RECOVERIES:
+            # The model had its error results twice and still cannot produce a JSON object:
+            # end the turn with a typed failure, not a loop until the iteration budget is gone.
+            agent._flush_status_buffer()
+            agent._vprint(
+                f"{agent.log_prefix}❌ Tool arguments for '{tool_name}' still invalid after "
+                f"{_MAX_MALFORMED_ARGS_RECOVERIES} recovery rounds. Stopping.",
+                force=True, diagnostic=True,
+            )
+            agent._malformed_args_recoveries = 0
+            agent._cleanup_task_resources(effective_task_id)
+            return _verdict("return", _partial_exit(
+                agent, messages, conversation_history, api_call_count,
+                site_copy("malformed_tool_call", model=agent.model), "malformed_tool_call", False,
+            ))
+        agent._malformed_args_recoveries = getattr(agent, "_malformed_args_recoveries", 0) + 1
         # Instead of returning partial, inject tool error results so the model can recover.
         # Using tool results (not user messages) preserves role alternation.
         agent._buffer_vprint("⚠️  Injecting recovery tool results for invalid JSON...")
-        agent._invalid_json_retries = 0  # Reset for next attempt
         # Append the assistant message with its (broken) tool_calls, then one
         # error result per call.
         append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
@@ -217,6 +250,7 @@ def validate_tool_calls(
         _append_tool_error_results(messages, tool_calls, _json_error_result)
         return _verdict("continue")
 
-    # Reset retry counter on successful JSON validation
+    # Reset retry counters on successful JSON validation
     agent._invalid_json_retries = 0
+    agent._malformed_args_recoveries = 0
     return _verdict("ok")

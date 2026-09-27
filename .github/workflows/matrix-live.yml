@@ -1,0 +1,40 @@
+name: Matrix live client
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/matrix-live.yml'
+      - 'Dockerfile'
+      - 'gateway/**'
+      - 'plugins/platforms/matrix/**'
+      - 'tests/fakes/fake_llm_provider.py'
+      - 'tests/integration/matrix_live/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plain-exchange:
+    name: Separate client and Linux gateway
+    runs-on: ubuntu-latest-32-core
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Set up locked Python and Matrix dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["matrix"]'
+          test-environment: 'true'
+      - name: Run Matrix live client tests
+        run: scripts/run_tests.sh --include-integration tests/integration/matrix_live/
+        env:
+          HERMES_TEST_WORKERS: '1'
+          HERMES_TEST_FILE_TIMEOUT: '300'
+          HERMES_TEST_FILE_RETRIES: '0'

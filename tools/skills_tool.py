@@ -196,7 +196,9 @@ def never_resolvable_toolsets(conditions: Dict[str, Any]) -> List[str]:
     checked: plugin/MCP tools are not statically knowable from a bare CLI process.
     """
     raw = (conditions or {}).get("requires_toolsets")
-    if raw is None:
+    # Installed frontmatter may contain malformed YAML scalars. A diagnostic
+    # must not make the whole skill list unavailable while inspecting them.
+    if not isinstance(raw, (str, list)):
         return []
     names = [raw] if isinstance(raw, str) else [n for n in raw if isinstance(n, str) and n]
     try:

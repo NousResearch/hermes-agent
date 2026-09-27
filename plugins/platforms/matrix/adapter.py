@@ -41,7 +41,7 @@ import shutil
 import subprocess
 import sys
 import time
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
 from html import escape as _html_escape
@@ -3146,8 +3146,11 @@ class MatrixAdapter(BasePlatformAdapter):
         if not event_id:
             return None
         via = server_name or (room_id.rsplit(":", 1)[-1].strip() or None if ":" in room_id else None)
-        permalink = f"https://matrix.to/#/{room_id}/{event_id}"
-        return f"{permalink}?via={via}" if via else permalink
+        permalink = (
+            f"https://matrix.to/#/{quote(room_id, safe='!$:@')}/"
+            f"{quote(event_id, safe='!$:@')}"
+        )
+        return f"{permalink}?{urlencode({'via': via})}" if via else permalink
 
     async def _is_dm_room(self, room_id: str) -> bool:
         return (await self._resolve_room_identity(room_id)).chat_type == "dm"

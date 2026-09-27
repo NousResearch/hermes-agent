@@ -5002,6 +5002,17 @@ class TestMatrixSourcePermalink:
         url = MatrixAdapter._build_source_permalink("!room", "$ev1")
         assert url == "https://matrix.to/#/!room/$ev1"
 
+    def test_permalink_encodes_identifier_and_server_delimiters(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        url = MatrixAdapter._build_source_permalink(
+            "!room/part:example.org", "$event?part#1", "example.org:8448"
+        )
+        assert url == (
+            "https://matrix.to/#/!room%2Fpart:example.org/"
+            "$event%3Fpart%231?via=example.org%3A8448"
+        )
+
     def test_permalink_none_without_event(self):
         from plugins.platforms.matrix.adapter import MatrixAdapter
 

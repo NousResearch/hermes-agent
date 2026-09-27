@@ -128,24 +128,24 @@
           "url": "https://ffmpeg.martin-riedl.de/download/macos/amd64/1787081194_9.0.1/ffmpeg.zip"
         },
         "linux-arm64": {
-          "sha256": "2de63f615df3a46ac26921ac0314f501c3536aaf9fd5197ffe03dd17cd01a404",
-          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-linuxarm64-gpl-9.0.tar.xz"
+          "sha256": "0d6de6628a5316b6ccccc127c31bcd78429e8e392db18c6ce91da3a5c86e5eae",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-18-13-22/ffmpeg-n9.0.1-84-g946fcce07b-linuxarm64-gpl-9.0.tar.xz"
         },
         "linux-arm64-bionic": {
           "sha256": "1ec37f4f092521cb785e0ccfa2d82cc4a79ec8d2a4864f5eefc50a314f2d5dec",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_8.1.2-5_aarch64.deb"
         },
         "linux-x64": {
-          "sha256": "70b162b63517038ff18c8a50f4ea11f919a071f945c5881e87b0b2cd7173f8c7",
-          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-linux64-gpl-9.0.tar.xz"
+          "sha256": "7dc13616ee2d069485c314ca9df47fdea4f0c92db81f6d810ee9070f979ee50d",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-18-13-22/ffmpeg-n9.0.1-84-g946fcce07b-linux64-gpl-9.0.tar.xz"
         },
         "win32-arm64": {
-          "sha256": "0f241c74c576f68dbd375f7557c2d08740783d7b8c6f892031c3830df18f672f",
-          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-winarm64-gpl-9.0.zip"
+          "sha256": "675d077d8fdd40bb229b94b77e5f7ada146bfd3b41df3e048e030c8d2755630e",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-18-13-22/ffmpeg-n9.0.1-84-g946fcce07b-winarm64-gpl-9.0.zip"
         },
         "win32-x64": {
-          "sha256": "84ad164ea98ef4201010c03ee6041d4a920599c5e6f2efb3c119718cfbd2ffc9",
-          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-win64-gpl-9.0.zip"
+          "sha256": "77713f067d26e9a5340b3e26a55e23c06440c18bcd19c1770ee91b21282ca9ee",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-18-13-22/ffmpeg-n9.0.1-84-g946fcce07b-win64-gpl-9.0.zip"
         }
       },
       "version": "9.0.1"

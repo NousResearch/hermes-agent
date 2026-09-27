@@ -272,6 +272,46 @@ def test_in_place_prune_grows_by_changed_rows_only(tmp_path: Path) -> None:
     assert len(db.get_messages(session_id, include_compacted=True)) == len(pruned)
 
 
+def _page(db: SessionDB, session_id: str) -> list:
+    return [m["content"] for m in db.get_messages(session_id, include_compacted=True)]
+
+
+@pytest.mark.parametrize("shape", ["first-generation", "carried", "carried-legacy-slots"])
+def test_in_place_prune_display_survives_later_compaction_and_backfill(tmp_path: Path, shape: str) -> None:
+    """The transcript page shows each message once, in its own slot, as the stub and never the archived
+    full body: right after the prune, after a later full compaction, and after a later display backfill."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_IN_PLACE_DISPLAY"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    if shape != "first-generation":  # every message already has an archived copy in its display slot
+        db.archive_and_compact(session_id, db.get_messages_as_conversation(session_id))
+    if shape == "carried-legacy-slots":  # rows written before the display index existed
+        db._conn.execute("UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?",
+                         (session_id,))
+        db._conn.commit()
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    pruned, count = agent.context_compressor.prune_tool_results_only(
+        db.get_messages_as_conversation(session_id), current_tokens=120_000)
+    assert count >= 1
+    # The prune leaves every visible row its slot, so no whole-session backfill follows it.
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
+        "AND (display_order IS NULL OR display_identity IS NULL)", (session_id,)).fetchone()[0] == 0
+    expected = [m["content"] for m in pruned]
+    assert _page(db, session_id) == expected
+
+    db.archive_and_compact(session_id, db.get_messages_as_conversation(session_id))
+    assert _page(db, session_id) == expected
+
+    # A later content rewrite elsewhere (the turn prologue's) re-derives the session's display slots.
+    db.append_messages_batch(session_id, [{"role": "user", "content": "@notes.md"}])
+    row_id = db._conn.execute("SELECT MAX(id) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
+    assert db.set_user_message_content(session_id, row_id, "expanded notes") == 1
+    assert _page(db, session_id) == expected + ["expanded notes"]
+
+
 def test_in_place_prune_twice_keeps_one_search_hit_per_unchanged_turn(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "PRUNE_IN_PLACE_SEARCH"

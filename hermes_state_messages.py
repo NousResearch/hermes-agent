@@ -986,15 +986,29 @@ class SessionMessagesMixin:
             for row_id, columns, values, identity, order in updates:
                 twin_id = conn.execute(f"INSERT INTO messages ({twin_columns}, active, compacted) "
                              f"SELECT {twin_columns}, 0, 1 FROM messages WHERE id = ?", (row_id,)).lastrowid
+                # The content UPDATE fires the identity trigger, which nulls the slot of the live row and of
+                # every visible row sharing its old identity: the twin and any earlier generation's copies.
+                peers = conn.execute(
+                    "SELECT id, display_order FROM messages WHERE session_id = ? AND id <> ? "
+                    "AND display_identity = ? AND (active = 1 OR compacted = 1)",
+                    (session_id, row_id, identity)).fetchall() if identity is not None else [(twin_id, order)]
                 conn.execute(f"UPDATE messages SET {', '.join(f'{column} = ?' for column in columns)} WHERE id = ?",
                              [*values, row_id])
-                # The identity trigger just nulled both rows; the twin is the live row's superseded body and
-                # keeps its display slot (one page row per display_order; #117750's stored-identity dedupe).
-                conn.execute("UPDATE messages SET display_identity = ?, display_order = ? WHERE id IN (?, ?)",
-                             (identity, order, row_id, twin_id))
+                # The superseded bodies keep their identity and slot. The live row takes the identity of what it
+                # now stores, so a later compaction's copy of it joins the same slot, and keeps the slot.
+                # The page shows one row per display_order, preferring the live one: the stub, in place.
+                conn.executemany("UPDATE messages SET display_identity = ?, display_order = ? WHERE id = ?",
+                                 [(identity, order if peer_order is None else peer_order, peer_id)
+                                  for peer_id, peer_order in peers])
+                live = conn.execute(
+                    "SELECT role, content, timestamp, tool_call_id, tool_calls, tool_name, display_kind, "
+                    "display_metadata FROM messages WHERE id = ?", (row_id,)).fetchone()
+                conn.execute("UPDATE messages SET display_identity = ?, display_order = ? WHERE id = ?",
+                             (self._display_identity(self._display_dedupe_key(live)), order, row_id))
             if patch:
                 conn.execute("UPDATE sessions SET model_config = ? WHERE id = ?", (patched_model_config, session_id))
             return len(updates)
+        self._ensure_display_order(session_id)  # every row holds its stored slot before one is carried over
         return self._execute_write(_do)
 
     def _message_column_names(self, conn) -> List[str]:
@@ -1146,7 +1160,10 @@ class SessionMessagesMixin:
                 for row in rows:
                     last_id = row["id"]
                     identity = self._display_identity(self._display_dedupe_key(row))
-                    order = first_id.setdefault(identity, last_id)
+                    # A row already holding this identity keeps its stored slot (an in-place prune changes a
+                    # row's content, not its place); otherwise the slot is the identity's first row.
+                    kept = row["display_order"] if row["display_identity"] == identity else None
+                    order = first_id.setdefault(identity, last_id if kept is None else kept)
                     if order != row["display_order"] or identity != row["display_identity"]:
                         updates.append((order, identity, last_id))
                 rows.close()

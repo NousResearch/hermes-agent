@@ -2212,6 +2212,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
+        if self.prepared_compaction is not None and (session_id or "") != self._session_id:
+            self.prepared_compaction.discard("session rebind")
         self._session_db = session_db
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
@@ -5307,10 +5309,12 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return messages
         # Opt-in: an automatic compaction may splice a summary prepared in the background at ITS
-        # boundary; newer messages stay outside the summary, in the tail (agent/prepared_compaction.py).
+        # boundary; newer messages (at most one more tail budget) stay outside the summary, in the
+        # tail (agent/prepared_compaction.py).
         prepared = self.prepared_compaction and self.prepared_compaction.take(
             messages, self._session_id, compress_start, compress_end,
             eligible=not (force or focus_topic or bypass_cooldown or memory_context.strip()),
+            max_gap_tokens=self.tail_token_budget,
         )
         if prepared:
             compress_end = prepared.compress_end

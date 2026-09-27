@@ -1,27 +1,29 @@
 """Opt-in prepared compaction (``compression.prepare_ahead``, default off).
 
 When the provider-reported prompt size comes within ``PREPARE_BAND_RATIO`` of
-the context window below the compaction trigger, the turn loop (before a tool
-batch runs, and at turn end) starts a background pass. The pass plans the same
-window ``ContextCompressor.compress`` would plan and runs the existing
-summariser on a copy of the compressor and of that window's messages. The
-live transcript and compressor are untouched, so the prompt cache is too.
+the compaction trigger, the turn loop (before a tool batch runs, and at turn
+end) starts a background pass. The pass plans the same window
+``ContextCompressor.compress`` would plan and runs the existing summariser on a
+copy of the compressor and of that window's messages. The live transcript and
+compressor are untouched, so the prompt cache is too.
 
 At the next automatic threshold compaction ``compress`` takes the completed
 candidate if it still fits: same head boundary, a boundary no later than the
-current tail cut, and an unchanged transcript up to that boundary. On a hit the
+current tail cut, an unchanged transcript up to that boundary, and at most the
+tail token budget between that boundary and the current cut. On a hit the
 candidate's summary replaces ``messages[start:candidate_end]``; everything
 after the candidate boundary stays outside the summary, as tail, including
 messages a fresh plan would have summarised (existing tail handling, such as
-lean-mode tool-result stubs, still applies). On a miss, or when the pass has not finished,
-compaction runs inline exactly as without the flag. A running pass is never
-waited on (the wait would sit inside the host's compression idle timeout) and
-loses the right to publish once compaction runs.
+lean-mode tool-result stubs, still applies). On a miss, or when the pass has
+not finished, compaction runs inline exactly as without the flag. A running
+pass is never waited on (the wait would sit inside the host's compression idle
+timeout) and loses the right to publish once compaction runs.
 
-State is per compressor and in memory only; every session boundary discards
-it. Manual, focus, overflow-recovery and memory-provider-context compactions
-always summarise fresh. A failed pass backs off further passes but never
-touches the live compressor's cooldown or failure state.
+State is per compressor and in memory only; every session boundary (reset,
+end, or a rebind to another session id) discards it. Manual, focus,
+overflow-recovery and memory-provider-context compactions always summarise
+fresh. A failed pass backs off further passes but never touches the live
+compressor's cooldown or failure state.
 
 The fingerprint ignores what the no-LLM prune rewrites (tool result bodies,
 tool call arguments, image parts), so a prune between pass and splice does not
@@ -40,7 +42,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Start passes once the real prompt count is within this fraction of the
-# context window below the compaction trigger.
+# compaction trigger (a band below ``threshold_tokens``).
 PREPARE_BAND_RATIO = 0.12
 # A completed candidate that still fits is only extended once this many rough
 # tokens sit between its boundary and the current cut; until then it keeps
@@ -147,9 +149,11 @@ class PreparedCompaction:
             )
 
     def take(
-        self, messages: List[Dict[str, Any]], session_id: str, start: int, end: int, *, eligible: bool,
+        self, messages: List[Dict[str, Any]], session_id: str, start: int, end: int, *,
+        eligible: bool, max_gap_tokens: int,
     ) -> Optional[PreparedSummary]:
         """The completed candidate when it fits ``compress()``'s planned window, else None.
+        A candidate whose boundary trails the cut by more than ``max_gap_tokens`` is stale.
         Either way the state is cleared: this compaction consumes or supersedes it."""
         with self._lock:
             entry, running = self._entry, self._pending is not None
@@ -160,6 +164,12 @@ class PreparedCompaction:
             reason = "pass still running" if running else "no candidate"
         else:
             reason = _mismatch(entry, messages, session_id, start, end)
+            if reason is None:
+                from agent.model_metadata import estimate_messages_tokens_rough
+
+                gap = estimate_messages_tokens_rough(messages[entry.compress_end:end])
+                if gap > max_gap_tokens:
+                    reason = f"stale candidate (~{gap} tokens past its boundary, budget {max_gap_tokens})"
         if reason is not None:
             if entry is not None or running:
                 logger.info("prepared compaction: splice miss reason=%s", reason)
@@ -181,7 +191,7 @@ class PreparedCompaction:
         if compressor.awaiting_real_usage_after_compression:
             return True
         tokens = compressor.last_prompt_tokens
-        band_floor = compressor.threshold_tokens - int(compressor.context_length * PREPARE_BAND_RATIO)
+        band_floor = int(compressor.threshold_tokens * (1 - PREPARE_BAND_RATIO))
         if tokens <= 0 or compressor.threshold_tokens <= 0 or tokens < band_floor:
             return True
         now = time.monotonic()

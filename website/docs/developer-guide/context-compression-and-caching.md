@@ -589,26 +589,28 @@ text for this purpose.
 
 With `compression.prepare_ahead: true` (read at agent construction, so it takes effect on the next
 session or gateway agent rebuild), `agent/prepared_compaction.py` writes the next summary before
-the trigger fires. When the last provider-reported prompt count is within 12% of the context window
-below the trigger, the turn loop starts a background pass before a tool batch runs and at turn end.
-The pass plans the same window `compress()` plans (`_plan_compaction_window`) and calls the same
+the trigger fires. When the last provider-reported prompt count is within 12% of the trigger
+(`threshold_tokens`) below it, the turn loop starts a background pass before a tool batch runs and
+at turn end. The pass plans the same window `compress()` plans (`_plan_compaction_window`) and calls the same
 `_generate_summary` on a copy of the compressor and of the window's messages, so the live transcript,
 the system prompt and the prompt cache are untouched until compaction.
 
 At the next automatic threshold compaction `compress()` splices the completed candidate only when
-the head boundary is unchanged, the candidate boundary is no later than the fresh tail cut, and the
+the head boundary is unchanged, the candidate boundary is no later than the fresh tail cut, the
 transcript up to that boundary fingerprints identically (role, text, tool call ids and names, tool
-result ids; not the tool bodies or arguments the prune rewrites). The summary then covers
-`[head, candidate boundary)` and every later message is kept as tail, including messages a fresh
-plan would have summarized; tail rules such as lean-mode tool stubbing still apply to them. Summary
-placement and alternation handling are the normal Phase 4 assembly.
+result ids; not the tool bodies or arguments the prune rewrites), and the messages between the
+candidate boundary and the fresh cut fit in one more tail budget (`tail_token_budget`, rough
+estimate). The summary then covers `[head, candidate boundary)` and every later message is kept as
+tail, including those messages a fresh plan would have summarized; tail rules such as lean-mode
+tool stubbing still apply to them. Summary placement and alternation handling are the normal
+Phase 4 assembly.
 
 Everything else runs inline exactly as without the flag: no candidate, a candidate that no longer
 fits, a pass still running (never waited on: the wait would count against the compression idle
 timeout), manual `/compress`, focus compaction, provider-overflow recovery, and compactions where a
 memory provider contributes summary context. A running pass overtaken by compaction or a session
-boundary cannot publish its result. A failed pass pauses further passes but never arms the live
-compressor's failure cooldown. State is per compressor and in memory only, so a gateway agent
+boundary (including a rebind to another session id on `/resume` or `/branch`) cannot publish its
+result. A failed pass pauses further passes but never arms the live compressor's failure cooldown. State is per compressor and in memory only, so a gateway agent
 eviction or process restart simply means the next compaction runs inline. Plugin context engines,
 Codex app-server sessions, native Responses compaction and micro-compaction are not prepared.
 

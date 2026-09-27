@@ -165,6 +165,10 @@ export const ga: Translations = {
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
     newChat: "Comhrá nua",
+    workspace: "spás oibre",
+    workspaceDefault: "Réamhshocrú",
+    workspaceRescan: "Athscan na stórtha",
+    workspaceCustom: "Cosán eile…",
     previousPage: "Leathanach roimhe seo",
     nextPage: "An chéad leathanach eile",
     roles: {
@@ -332,6 +336,8 @@ export const ga: Translations = {
     disableRuntime: "Díchumasaigh",
     enableAfterInstall: "Cumasaigh tar éis suiteála",
     enableRuntime: "Cumasaigh",
+    toggleTakesEffectAfterRestart:
+      "Sábháilte — atosaigh an gateway chun an t-athrú a chur i bhfeidhm.",
     forceReinstall: "Cuir iallach ar athshuiteáil (scrios an fillteán atá ann ar dtús)",
     headline:
       "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Hermes (paireacht le `hermes plugins`).",

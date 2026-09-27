@@ -4,11 +4,13 @@ Local engines load lazily on first synthesis, so the first spoken reply after
 "read replies aloud" / voice conversation turns on pays the model load as dead
 air. The toggles now hold *leases*: acquiring warms the configured provider
 into the SAME cache slot synthesis reads; releasing the last lease unloads
-resident local models.
+resident local models once the keep-warm window passes (#118037).
 """
 
 from __future__ import annotations
 
+import shlex
+import subprocess
 import threading
 
 import pytest
@@ -59,6 +61,39 @@ def fake_piper(monkeypatch, tmp_path):
     cfg = {"provider": "piper", "piper": {"voice": "en_US-test-medium", "voices_dir": str(voices_dir)}}
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
     return cfg
+
+
+class _FakeTimer:
+    def __init__(self, interval, function, args=None, kwargs=None):
+        self.interval, self.function, self.args = interval, function, tuple(args or ())
+        self.started = self.cancelled = False
+        self.daemon = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        self.function(*self.args)
+
+
+@pytest.fixture
+def timers(monkeypatch):
+    created: list = []
+
+    def _factory(*args, **kwargs):
+        timer = _FakeTimer(*args, **kwargs)
+        created.append(timer)
+        return timer
+
+    monkeypatch.setattr(tts_tool_lifecycle, "_make_keep_warm_timer", _factory, raising=False)
+    return created
+
+
+def _pending(timers):
+    return [t for t in timers if t.started and not t.cancelled]
 
 
 # --------------------------------------------------------------------------
@@ -115,31 +150,37 @@ def test_warm_is_noop_for_cloud_provider_without_lazy_sdk(monkeypatch):
     assert result == {"provider": "openai", "warmed": False, "action": "noop"}
 
 
-def test_warm_lazy_sdk_provider_reports_cached_when_installed(monkeypatch):
-    import types
-
-    fake = types.SimpleNamespace(
-        is_available=lambda feature: feature == "tts.edge",
-        ensure=lambda *a, **k: pytest.fail("ensure must not run when the SDK is present"),
-    )
-    monkeypatch.setitem(__import__("sys").modules, "tools.lazy_deps", fake)
-    result = tts_tool_lifecycle.warm_tts_provider({"provider": "edge"})
-    assert result["warmed"] is True
-    assert result["action"] == "cached"
-
-
-def test_warm_lazy_sdk_provider_installs_when_missing(monkeypatch):
-    import types
+@pytest.mark.parametrize("installed", [True, False])
+def test_warm_sdk_uses_pm_availability_and_refuses_inactive_generation(tmp_path, monkeypatch, installed):
+    import pm
+    import pm.client
+    import pm.paths
+    import pm.extras
+    from pm.environments import runtime_facts_path
 
     calls = []
-    fake = types.SimpleNamespace(
-        is_available=lambda feature: False,
-        ensure=lambda feature, prompt: calls.append((feature, prompt)),
-    )
-    monkeypatch.setitem(__import__("sys").modules, "tools.lazy_deps", fake)
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: root)
+    # The real anchor probe sees a real temporary module, or an absent anchor.
+    (tmp_path / "warm_sdk_probe.py").write_text("ready = True\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(pm.extras, "_anchors", lambda extra: ("warm_sdk_probe" if installed else "absent_warm_sdk_probe",))
+    candidate = runtime_facts_path(root).parent / "environments/new/venv"
+    candidate.mkdir(parents=True)
+    (candidate / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+
+    def prepare(extras):
+        calls.append(extras)
+        pm.Facts(runtime_facts_path(root)).record_state("venv", "new", extras, environment=candidate)
+
+    monkeypatch.setattr(pm.client, "sync_venv", prepare)
     result = tts_tool_lifecycle.warm_tts_provider({"provider": "edge"})
-    assert result["action"] == "installed"
-    assert calls == [("tts.edge", False)]
+    assert result["warmed"] is installed
+    assert result["action"] == ("cached" if installed else "error")
+    assert calls == ([] if installed else [["edge-tts"]])
+    if not installed:
+        assert "restart" in result["error"]
 
 
 # --------------------------------------------------------------------------
@@ -180,7 +221,7 @@ def test_acquire_warms_and_counts(fake_piper):
     assert tts_tool_lifecycle.tts_lease_holders() == ["desktop:read-aloud"]
 
 
-def test_last_release_unloads_but_earlier_release_does_not(fake_piper):
+def test_last_release_unloads_but_earlier_release_does_not(fake_piper, timers):
     tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud")
     tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
     assert len(tts_tool_local._piper_voice_cache) == 1
@@ -190,9 +231,12 @@ def test_last_release_unloads_but_earlier_release_does_not(fake_piper):
     first = tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
     assert first == {"leases": 1, "released": 0}
     assert len(tts_tool_local._piper_voice_cache) == 1
+    assert _pending(timers) == []
 
     last = tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
-    assert last == {"leases": 0, "released": 1}
+    assert last["leases"] == 0
+    [timer] = _pending(timers)
+    timer.fire()
     assert tts_tool_local._piper_voice_cache == {}
 
 
@@ -242,7 +286,7 @@ def test_every_local_warmer_has_a_registered_cache():
 # --------------------------------------------------------------------------
 
 
-def test_plugin_provider_warm_and_release_follow_the_lease(monkeypatch):
+def test_plugin_provider_warm_and_release_follow_the_lease(monkeypatch, timers):
     from agent import tts_provider, tts_registry
 
     calls: list = []
@@ -272,12 +316,16 @@ def test_plugin_provider_warm_and_release_follow_the_lease(monkeypatch):
         tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
         assert calls == ["warm", "warm"]  # still one holder — no release yet
         tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
+        assert calls == ["warm", "warm"]  # parked for the keep-warm window
+        _pending(timers)[0].fire()
         assert calls == ["warm", "warm", "release"]
     finally:
         tts_registry._reset_for_tests()
 
 
-def test_command_provider_runs_warm_and_release_commands(monkeypatch):
+def test_command_provider_runs_warm_and_release_commands(monkeypatch, timers):
+    import os
+
     ran: list = []
     done = threading.Event()
 
@@ -301,5 +349,75 @@ def test_command_provider_runs_warm_and_release_commands(monkeypatch):
     assert done.wait(5)
     done.clear()
     tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
+    _pending(timers)[0].fire()
     assert done.wait(5)
-    assert ran == ["curl -s localhost:5002/load?model='kokoro v1'", "curl -s localhost:5002/unload"]
+    # The {model} placeholder is unquoted in the template, so the renderer
+    # shell-quotes it for the host platform (list2cmdline on Windows,
+    # shlex.quote elsewhere) — compute the expectation the same way.
+    quote = subprocess.list2cmdline([cfg["providers"]["srv"]["model"]]) if os.name == "nt" \
+        else shlex.quote(cfg["providers"]["srv"]["model"])
+    assert ran == [f"curl -s localhost:5002/load?model={quote}", "curl -s localhost:5002/unload"]
+
+
+# --------------------------------------------------------------------------
+# Keep-warm window (#118037): the last release schedules the unload on a
+# cancellable timer instead of dropping the model inline, so a wake-word loop
+# that re-acquires within ``tts.keep_warm_seconds`` reuses the loaded voice.
+# --------------------------------------------------------------------------
+
+
+def test_last_release_keeps_model_warm_for_configured_window(fake_piper, timers):
+    fake_piper["keep_warm_seconds"] = 30
+    tts_tool_lifecycle.acquire_tts_lease("desktop:conversation")
+
+    result = tts_tool_lifecycle.release_tts_lease("desktop:conversation")
+
+    assert result == {"leases": 0, "released": 0}
+    assert len(tts_tool_local._piper_voice_cache) == 1
+    [timer] = _pending(timers)
+    assert timer.interval == fake_piper["keep_warm_seconds"]
+    assert timer.daemon is True  # a parked unload never holds the process open
+
+    timer.fire()
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+def test_reacquire_within_window_reuses_the_loaded_voice(fake_piper, timers):
+    tts_tool_lifecycle.acquire_tts_lease("desktop:conversation")
+    tts_tool_lifecycle.release_tts_lease("desktop:conversation")
+    [stale] = _pending(timers)
+
+    again = tts_tool_lifecycle.acquire_tts_lease("desktop:conversation")
+
+    assert again["action"] == "cached"
+    assert _FakePiperVoice.loads == 1
+    assert _pending(timers) == []
+    stale.fire()  # a timer that already woke up before the cancel must not unload
+    assert len(tts_tool_local._piper_voice_cache) == 1
+
+
+def test_release_during_warm_up_still_unloads_after_the_window(fake_piper, timers, monkeypatch):
+    """A release that lands mid-load finds an empty cache; the voice must not stay resident forever."""
+    real_load = _FakePiperVoice.load.__func__
+
+    def _load_then_release(cls, model_path, use_cuda=False):
+        tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
+        return real_load(cls, model_path, use_cuda)
+
+    monkeypatch.setattr(_FakePiperVoice, "load", classmethod(_load_then_release))
+    tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+
+    assert tts_tool_lifecycle.tts_lease_holders() == []
+    assert len(tts_tool_local._piper_voice_cache) == 1
+    [timer] = _pending(timers)
+    timer.fire()
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+def test_zero_keep_warm_unloads_inline(fake_piper, timers):
+    fake_piper["keep_warm_seconds"] = 0
+    tts_tool_lifecycle.acquire_tts_lease("cli:voice-tts")
+
+    assert tts_tool_lifecycle.release_tts_lease("cli:voice-tts") == {"leases": 0, "released": 1}
+    assert tts_tool_local._piper_voice_cache == {}
+    assert _pending(timers) == []

@@ -133,6 +133,23 @@ async def test_whoami_non_admin_lists_runnable_commands():
     assert "/model" in result
 
 
+@pytest.mark.asyncio
+async def test_help_non_admin_lists_only_runnable_commands():
+    """/help for a gated non-admin renders the floor + user_allowed_commands, never the
+    admin-only catalog the dispatcher would then refuse; admins keep the full list."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["status"],
+        }
+    )
+    user = await runner._handle_message(_make_event("/help", _make_source(user_id="999")))
+    assert "`/help" in user and "`/whoami" in user and "`/status" in user
+    assert "`/model" not in user and "`/restart" not in user
+    admin = await runner._handle_message(_make_event("/help", _make_source(user_id="111")))
+    assert "`/model" in admin and "`/restart" in admin
+
+
 # ---------------------------------------------------------------------------
 # Gate denial — admin-only command attempted by non-admin
 # ---------------------------------------------------------------------------
@@ -180,6 +197,24 @@ async def test_group_only_gating_leaves_dm_unrestricted():
     )
     result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="anyone", chat_type="dm")))
     assert "Tier: unrestricted" in result
+
+
+@pytest.mark.asyncio
+async def test_blank_chat_type_resolves_to_gated_scope():
+    """A blank chat_type (relay frames can send ""/null; restored rows keep a
+    stored empty value) used to resolve to group scope, so on a DM-only-gated
+    install the source landed in an ungated scope and every command ran."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["status"],
+        }
+    )
+    for blank in ("", None):
+        result = await runner._handle_message(
+            _make_event("/stop", _make_source(user_id="999", chat_type=blank))
+        )
+        assert "⛔" in result, repr(blank)
 
 
 # ---------------------------------------------------------------------------

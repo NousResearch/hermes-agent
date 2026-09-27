@@ -493,6 +493,7 @@
             "approval_outcome": {
               "enum": [
                 "approved",
+                "cancelled",
                 "denied",
                 "not_required",
                 "timed_out",
@@ -578,6 +579,7 @@
             "outcome": {
               "enum": [
                 "approved",
+                "cancelled",
                 "denied",
                 "timed_out",
                 "unknown"

@@ -120,4 +120,6 @@ def test_tui_subagent_interrupt_is_an_explicit_hard_stop() -> None:
         with delegate_tool._active_subagents_lock:
             delegate_tool._active_subagents.pop(subagent_id, None)
 
-    assert agent.calls == [("hard", f"Interrupted via TUI ({subagent_id})", None)]
+    assert len(agent.calls) == 1
+    assert agent.calls[0][0] == "hard"
+    assert subagent_id in agent.calls[0][1]

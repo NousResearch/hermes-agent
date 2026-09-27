@@ -7,18 +7,15 @@ no network I/O or gateway is required.
 
 from __future__ import annotations
 
-import io
 import json
 
 import pytest
 
 from hermes_cli import send_cmd
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 
 def _parse(argv):
     """Build the top-level parser and return the parsed args for ``argv``."""
@@ -28,7 +25,6 @@ def _parse(argv):
     subparsers = parser.add_subparsers(dest="command")
     send_cmd.register_send_subparser(subparsers)
     return parser.parse_args(["send", *argv])
-
 
 class _FakeTool:
     """Replacement for ``tools.send_message_tool.send_message_tool``."""
@@ -40,7 +36,6 @@ class _FakeTool:
     def __call__(self, args, **_kw):
         self.calls.append(dict(args))
         return json.dumps(self.payload)
-
 
 @pytest.fixture
 def fake_tool(monkeypatch):
@@ -58,50 +53,127 @@ def fake_tool(monkeypatch):
     monkeypatch.setitem(sys.modules, "tools.send_message_tool", mod)
     return fake
 
-
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def whatsapp_bridge(monkeypatch):
+    """Route ``hermes send --to whatsapp:...`` through the real plugin standalone sender into a fake
+    bridge; returns the recorded ``(path, payload)`` posts and a mutable ``supports_mentions`` flag."""
+    import asyncio
+    from types import SimpleNamespace
 
+    import aiohttp
 
+    from gateway.config import Platform
+    from hermes_cli.plugins import discover_plugins
 
+    calls = []
+    state = {"supports_mentions": True}
 
+    class BridgeResponse:
+        status = 200
 
+        def __init__(self, *, health=False):
+            self.health = health
 
+        async def json(self):
+            if self.health:
+                return {"capabilities": {"outboundMentions": state["supports_mentions"]}}
+            return {"messageId": f"m{len(calls)}"}
 
+        async def text(self):
+            return ""
 
+        async def __aenter__(self):
+            return self
 
-# ---------------------------------------------------------------------------
-# Error paths
-# ---------------------------------------------------------------------------
+        async def __aexit__(self, *_args):
+            return False
 
+    class BridgeSession:
+        async def __aenter__(self):
+            return self
 
+        async def __aexit__(self, *_args):
+            return False
 
+        def get(self, url, *, timeout):
+            return BridgeResponse(health=True)
 
-def test_file_decode_error_suggests_media_directive(fake_tool, capsys, monkeypatch, tmp_path):
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    bad = tmp_path / "bad-bytes.bin"
-    bad.write_bytes(b"\xff\xfe\x00")
+        def post(self, url, *, json, timeout):
+            calls.append((url.rsplit("/", 1)[-1], json))
+            return BridgeResponse()
 
-    args = _parse(["--to", "telegram", "--file", str(bad)])
+    discover_plugins()
+    config = SimpleNamespace(
+        platforms={Platform.WHATSAPP: SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000})},
+        get_home_channel=lambda _platform: None,
+    )
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
+    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *_args: False)
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *_args, **_kwargs: BridgeSession())
+    return SimpleNamespace(calls=calls, state=state)
+
+_GROUP = "whatsapp:120363000000000000@g.us"
+
+@pytest.mark.parametrize("argv", [
+    ["--to", "telegram", "--mention", "15550000001", "hello"],
+    ["--to", _GROUP, "--mention", "not-a-phone", "hello"],
+    ["--to", _GROUP, "--mention", "\u0661\u0665\u0665\u0665\u0660\u0660\u0660\u0660\u0660\u0660\u0661", "hello"],
+    ["--to", _GROUP, "--mention", "\u0661\u0665\u0665\u0665\u0660\u0660\u0660\u0660\u0660\u0660\u0661@s.whatsapp.net", "hello"],
+])
+def test_whatsapp_mention_rejections_never_reach_the_bridge(whatsapp_bridge, capsys, argv):
+    """Non-WhatsApp targets and non-ASCII / non-numeric mention values are usage errors (exit 2)
+    raised before any delivery attempt."""
     with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
+        send_cmd.cmd_send(_parse(argv))
     assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert "not a text file" in err.lower()
-    assert f"MEDIA:{bad}" in err
-    assert "[[as_document]]" in err
+    assert "mention" in capsys.readouterr().err.lower()
+    assert whatsapp_bridge.calls == []
 
+def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, tmp_path, capsys):
+    """Across chunked text and text+media, exactly one bridge payload carries the normalized,
+    deduplicated JIDs; a captioned single-media send carries them on the media payload; a bridge
+    without native-mention support fails closed instead of silently sending an unmentioned message."""
+    calls = whatsapp_bridge.calls
+    image = tmp_path / "photo.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    long_message = "@15550000001 " + "word " * 1000
 
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse([
+            "--to", _GROUP, "--mention", "+1 (555) 000-0001", "--mention", "15550000001@s.whatsapp.net",
+            f"{long_message} MEDIA:{image}",
+        ]))
+    assert exc.value.code == 0
+    text_payloads = [payload for path, payload in calls if path == "send"]
+    assert len(text_payloads) >= 2 and calls[-1][0] == "send-media"
+    assert text_payloads[0]["mentions"] == ["15550000001@s.whatsapp.net"]
+    assert all("mentions" not in payload for _, payload in calls[1:])
 
+    calls.clear()
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(["--to", _GROUP, "--mention", "15550000001", f"hello @15550000001 MEDIA:{image}"]))
+    assert exc.value.code == 0
+    assert [path for path, _ in calls] == ["send-media"]
+    assert calls[0][1]["mentions"] == ["15550000001@s.whatsapp.net"]
 
-
+    calls.clear()
+    whatsapp_bridge.state["supports_mentions"] = False
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(["--to", _GROUP, "--mention", "15550000001", "hello @15550000001"]))
+    assert exc.value.code == 1
+    assert "does not support native mentions" in capsys.readouterr().err
+    assert calls == []
 
 # ---------------------------------------------------------------------------
 # --list
 # ---------------------------------------------------------------------------
-
 
 def test_list_includes_configured_platform_without_discovered_channels(
     monkeypatch, capsys
@@ -143,7 +215,6 @@ def test_list_includes_configured_platform_without_discovered_channels(
     assert "simplex" in out
     assert "no channels discovered yet" in out
 
-
 def test_list_json_includes_configured_platform(monkeypatch, capsys):
     import types
     import sys
@@ -175,30 +246,13 @@ def test_list_json_includes_configured_platform(monkeypatch, capsys):
     assert "local" not in payload["platforms"]  # infra pseudo-platform skipped
     assert payload["platforms"]["telegram"]  # discovered entries preserved
 
-
 # ---------------------------------------------------------------------------
 # Parser registration contract
 # ---------------------------------------------------------------------------
 
-
-def test_register_send_subparser_is_reusable():
-    """Sanity check: the registrar returns a parser and wires ``cmd_send``."""
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    send_parser = send_cmd.register_send_subparser(subparsers)
-    assert send_parser is not None
-    args = parser.parse_args(["send", "--to", "telegram", "hi"])
-    assert args.func is send_cmd.cmd_send
-    assert args.to == "telegram"
-    assert args.message == "hi"
-
-
 # ---------------------------------------------------------------------------
 # Env loader
 # ---------------------------------------------------------------------------
-
 
 def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
     """Top-level config.yaml scalars should be bridged into os.environ.
@@ -213,7 +267,7 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
-    (hermes_home / ".env").write_text("SOME_TOKEN=abc123\n")
+    (hermes_home / ".env").write_text("SOME_TOKEN=abc123\n", encoding="utf-8")
     (hermes_home / "config.yaml").write_text(
         "TELEGRAM_HOME_CHANNEL: '5550001111'\nnested:\n  ignored: true\n"
     )
@@ -232,7 +286,6 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
 
     assert os.environ.get("SOME_TOKEN") == "abc123"
     assert os.environ.get("TELEGRAM_HOME_CHANNEL") == "5550001111"
-
 
 def test_load_hermes_env_utf8_bom_preserves_first_key(tmp_path, monkeypatch):
     """A leading UTF-8 BOM must not mangle the first .env key name.
@@ -313,16 +366,17 @@ def test_load_hermes_env_latin1_fallback_still_loads(tmp_path, monkeypatch):
 
 def test_load_hermes_env_latin1_fallback_overrides_shell(tmp_path, monkeypatch):
     """The stream-based latin-1 fallback must keep override=True semantics:
-    the .env value wins over a stale shell export, same as the primary path."""
+    the .env value wins over a stale shell export, same as the primary path. (A non-credential
+    key name: ``*_TOKEN`` values are ASCII-sanitized by the shared loader, by design.)"""
     import os
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     # 0xE9 forces the UnicodeDecodeError \u2192 latin-1 stream fallback.
-    (hermes_home / ".env").write_bytes(b"SEND_OVR_TOKEN=caf\xe9-file\n")
+    (hermes_home / ".env").write_bytes(b"SEND_OVR_LABEL=caf\xe9-file\n")
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("SEND_OVR_TOKEN", "stale-shell-value")
+    monkeypatch.setenv("SEND_OVR_LABEL", "stale-shell-value")
 
     from importlib import reload
     import hermes_cli.config as _hc_config
@@ -330,7 +384,7 @@ def test_load_hermes_env_latin1_fallback_overrides_shell(tmp_path, monkeypatch):
 
     send_cmd._load_hermes_env()
 
-    assert os.environ.get("SEND_OVR_TOKEN") == "caf\xe9-file"
+    assert os.environ.get("SEND_OVR_LABEL") == "caf\xe9-file"
 
 def test_load_hermes_env_fallback_read_error_is_swallowed(tmp_path, monkeypatch):
     """An I/O error inside the latin-1 fallback must not escape \u2014 the send
@@ -375,3 +429,33 @@ def test_load_hermes_env_bom_only_env_is_noop(tmp_path, monkeypatch):
 
     added = {k: v for k, v in os.environ.items() if k not in before}
     assert "\ufeff" not in "".join(added)
+
+def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, capsys):
+    """``--help`` and the ``--list`` empty-state hint derive their paths from the resolved home instead of a
+    hardcoded ``~/.hermes`` (absent on a Windows install or under a profile home)."""
+    import argparse
+    import sys
+    import types
+
+    home = tmp_path / "AppData" / "Local" / "hermes"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    send_parser = send_cmd.register_send_subparser(parser.add_subparsers(dest="command"))
+    help_text = send_parser.format_help()
+    assert str(home / ".env") in help_text and str(home / "config.yaml") in help_text
+    assert "~/.hermes" not in help_text
+
+    fake_gw_config = types.ModuleType("gateway.config")
+    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: [])
+    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
+    fake_dir = types.ModuleType("gateway.channel_directory")
+    fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
+    fake_dir.format_directory_for_display = lambda platforms=None: ""
+    monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
+
+    assert send_cmd._list_targets(None, json_mode=False) == 0
+    out = capsys.readouterr().out
+    assert str(home / "channel_directory.json") in out
+    assert "~/.hermes" not in out

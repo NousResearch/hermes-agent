@@ -384,6 +384,11 @@ class TestFileSync:
         env.cleanup()
         env.cleanup()
 
+        # The remote tar must skip live sockets (gateway.sock) instead of failing the download.
+        tar_scripts = [args[1] for cmd, args, _ in sandbox.run_command_calls
+                       if cmd == "bash" and args and args[1].startswith("tar cf ")]
+        assert tar_scripts and all("--exclude='*.sock'" in script for script in tar_scripts)
+
         # Credential mounts are upload-only since bcfc7458fa ("fix remote
         # sync-back credential overwrite"): the sandbox must never rewrite a
         # host credential file, so token.txt keeps its host content, and the
@@ -517,6 +522,25 @@ class TestExecute:
         assert cmd == "bash"
         assert args == ["-c", "echo done"]
         assert kwargs["cwd"] == "/vercel/sandbox"
+
+
+    def test_payload_stdin_is_staged_byte_exact_not_in_argv(self, make_env):
+        env = make_env()
+        sandbox = env._sandbox
+        raw = (b"A" * (160 * 1024)) + b"\x00\xff\xfeTAIL"
+        writes_before = len(sandbox.write_files_calls)
+
+        handle = env._run_bash("cat > /tmp/out", stdin_data=raw.decode("utf-8", "surrogateescape"))
+
+        assert handle.wait(timeout=2) == 0
+        (staged,) = sandbox.write_files_calls[writes_before]
+        assert staged["content"] == raw
+        assert staged["mode"] == 0o600
+        cmd, args, _ = sandbox.run_command_calls[-1]
+        assert cmd == "bash" and args[0] == "-c"
+        assert args[1].startswith(f"exec 0< {staged['path']} || exit $?\n")
+        assert args[1].endswith("\ncat > /tmp/out")
+        assert "AAAAAAAAAAAAAAAA" not in " ".join(args)
 
 
 class TestSnapshotPersistence:

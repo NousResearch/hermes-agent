@@ -14,9 +14,11 @@ the patch landed in a different directory's copy of the same file).
 Fix: _exec() now prefers the LIVE ``env.cwd`` over the init-time
 ``self.cwd``.  Explicit ``cwd`` arg to _exec still wins over both.
 """
-
 from __future__ import annotations
 
+import pytest
+
+import pytest
 
 from tools.file_operations import ShellFileOperations
 
@@ -58,6 +60,24 @@ class _FakeEnv:
         }
 
 
+class _WrapperEnv:
+    """Backend whose command wrapper does ``builtin cd -- <cwd> || exit 126`` (the
+    real terminal backends' shape), so a bad cwd kills every command before it runs."""
+
+    def __init__(self, cwd, env_type=None):
+        self.cwd = cwd
+        if env_type:
+            self.env_type = env_type
+
+    def execute(self, command, cwd=None, **kwargs):
+        import shlex
+        import subprocess
+        script = f"builtin cd -- {shlex.quote(cwd)} || exit 126\n{command}"
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, encoding="utf-8",
+                              input=kwargs.get("stdin_data"))
+        return {"output": proc.stdout + proc.stderr, "returncode": proc.returncode}
+
+
 class TestShellFileOpsCwdTracking:
     """_exec() must use live env.cwd, not the init-time cached cwd."""
 
@@ -66,8 +86,8 @@ class TestShellFileOpsCwdTracking:
         dir_b = tmp_path / "b"
         dir_a.mkdir()
         dir_b.mkdir()
-        (dir_a / "target.txt").write_text("content-a\n")
-        (dir_b / "target.txt").write_text("content-b\n")
+        (dir_a / "target.txt").write_text("content-a\n", encoding="utf-8")
+        (dir_b / "target.txt").write_text("content-b\n", encoding="utf-8")
 
         env = _FakeEnv(start_cwd=str(dir_a))
         ops = ShellFileOperations(env, cwd=str(dir_a))
@@ -91,7 +111,7 @@ class TestShellFileOpsCwdTracking:
         """Backends without a cwd attribute still work via init-time cwd."""
         dir_a = tmp_path / "fixed"
         dir_a.mkdir()
-        (dir_a / "target.txt").write_text("fixed-content\n")
+        (dir_a / "target.txt").write_text("fixed-content\n", encoding="utf-8")
 
         class _NoCwdEnv:
             def execute(self, command, cwd=None, **kwargs):
@@ -106,6 +126,7 @@ class TestShellFileOpsCwdTracking:
         assert result.exit_code == 0
         assert "fixed-content" in result.stdout
 
+    @pytest.mark.platforms("linux")
     def test_patch_returns_success_only_when_file_actually_written(self, tmp_path):
         """Safety rail: patch_replace success must reflect the real file state.
 
@@ -116,7 +137,7 @@ class TestShellFileOpsCwdTracking:
         this test catches it.
         """
         target = tmp_path / "file.txt"
-        target.write_text("old content\n")
+        target.write_text("old content\n", encoding="utf-8")
 
         env = _FakeEnv(start_cwd=str(tmp_path))
         ops = ShellFileOperations(env, cwd=str(tmp_path))
@@ -124,6 +145,49 @@ class TestShellFileOpsCwdTracking:
         result = ops.patch_replace(str(target), "old content\n", "new content\n")
         assert result.success is True
         assert result.error is None
-        assert target.read_text() == "new content\n", (
+        assert target.read_text(encoding="utf-8") == "new content\n", (
             "patch_replace claimed success but file wasn't written correctly"
         )
+
+    def test_wrapper_cd_failure_names_the_invalid_working_directory(self, tmp_path):
+        """When the backend's own ``builtin cd -- <cwd> || exit 126`` fails (a
+        host ``terminal.cwd`` inside a container, #113894) the surfaced error
+        must name the working directory / ``terminal.cwd`` problem, not just
+        the raw ``cd:`` line that reads like a fault at the requested path."""
+        host_cwd = r"C:\Users\rashi\OneDrive\Documents\ai_workspace"
+        ops = ShellFileOperations(_WrapperEnv(host_cwd))
+        result = ops.write_file(str(tmp_path / "probe.py"), "print('hi')\n")
+
+        assert result.error is not None
+        assert "terminal.cwd" in result.error and host_cwd in result.error
+        assert "No such file or directory" in result.error  # the shell's own line is kept
+        assert not (tmp_path / "probe.py").exists()
+
+    @pytest.mark.parametrize("op", ["read_file", "read_file_raw", "read_file_bytes", "patch", "search"])
+    def test_wrapper_cd_failure_is_reported_as_such_on_every_read_path(self, tmp_path, op):
+        """#98723: a wrapper-level failure must be reported as what it is on the
+        paths that do NOT embed stdout (stat-probe reads, patch pre-image, search),
+        never as 'environment unavailable' / 'file not found' / 'rg or find missing';
+        and no ``_has_command`` verdict may be cached from a probe that never ran."""
+        target = tmp_path / "t.txt"
+        target.write_text("hello\n", encoding="utf-8")
+        ops = ShellFileOperations(_WrapperEnv("/Users/nobody/ws"))
+        result = {
+            "read_file": lambda: ops.read_file(str(target)),
+            "read_file_raw": lambda: ops.read_file_raw(str(target)),
+            "read_file_bytes": lambda: ops.read_file_bytes(str(target)),
+            "patch": lambda: ops.patch_replace(str(target), "hello", "bye"),
+            "search": lambda: ops.search("t*", str(tmp_path), target="files"),
+        }[op]()
+        assert "/Users/nobody/ws" in result.error and "No such file or directory" in result.error
+        assert "unavailable" not in result.error and "requires" not in result.error
+        assert ops._has_command("find") is False
+        assert ops._command_cache == {}  # a later valid cwd must re-probe
+
+    def test_container_hint_only_for_container_backends(self, tmp_path):
+        """The in-container path hint misdirects on local/ssh backends (the cwd may
+        be an explicit arg, a session ``cd`` or a deleted directory)."""
+        local = ShellFileOperations(_WrapperEnv("/nope/local", env_type="local")).read_file_raw("/x")
+        docker = ShellFileOperations(_WrapperEnv("/nope/docker", env_type="docker")).read_file_raw("/x")
+        assert "/workspace" not in local.error
+        assert "/workspace" in docker.error

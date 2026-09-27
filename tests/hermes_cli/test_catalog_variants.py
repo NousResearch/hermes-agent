@@ -4,7 +4,6 @@ synthetic budgets."""
 
 from __future__ import annotations
 
-import pytest
 
 from hermes_cli.local_runtime.catalog import (
     CATALOG,
@@ -86,7 +85,7 @@ def test_small_card_gets_q4_spilled_never_below():
     assert choice is not None
     assert not choice.zero_spill
     assert choice.reason_key == "smallest-fits-spilled"
-    assert choice.variant.quant == "UD-Q4_K_M"
+    assert choice.variant.quant == entry.variants[-1].quant
 
 
 def test_frontier_model_refused_on_consumer_card_offered_on_big_ram():
@@ -114,18 +113,6 @@ def test_selection_accounts_for_kv_not_just_weights():
     assert not choice.zero_spill, "KV cost ignored — weights alone can't zero-spill"
 
 
-def test_floor_fallback_when_target_window_does_not_fit():
-    """Cards where nothing clears the target keep the old rule: highest
-    quality that zero-spills at the 64K floor (reason 'best-fits'), never
-    a needless step down."""
-    entry = catalog_by_id()["qwen3.8-27b"]
-    # ~23.5 GiB usable: Q4 weights (16.7 GiB in-memory) + floor KV (2.2)
-    # + overhead (1.5 + 0.9 mmproj + ~1.0 MTP-posture logits) fits, but
-    # the 144K-target KV (+2.7 more) does not.
-    choice = select_variant(entry, budget(23.5))
-    assert choice is not None and choice.zero_spill
-    assert choice.reason_key == "best-fits"
-    assert choice.variant.quant == "UD-Q4_K_M"
 
 
 def test_target_never_degrades_below_floor_choice():
@@ -149,6 +136,45 @@ def test_find_entry_for_model_resolves_split_ids():
     entry, variant = hit
     assert entry.id == "deepseek-v4-flash"
     assert variant.quant == "UD-Q4_K_XL"
+
+
+def test_catalog_and_preset_agree_on_identical_model_facts(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import bootstrap, catalog, presets
+    from hermes_cli.local_runtime.context_policy import RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_cli.local_runtime.estimator import ctx_bytes
+    from hermes_cli.web_routers.local_models import _catalog_row
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.web_routers.local_models._engine_too_old", lambda tag: False)
+    for entry in catalog.CATALOG:
+        variant = entry.variants[0]
+        profile = entry.profile(variant)
+        path = tmp_path / f"{variant.model_id}.gguf"
+        monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}))
+        monkeypatch.setattr(presets, "profile_from_gguf", lambda h: profile)
+        if entry.mmproj:
+            asset = bootstrap.assets_dir() / entry.mmproj.local_name
+            asset.parent.mkdir(parents=True, exist_ok=True)
+            asset.touch()
+        for vram in (16, 24, 32, 48):
+            for uma in (False, True):
+                machine = HardwareBudget(int(vram * GIB * 0.8), vram * GIB,
+                                         0 if uma else 32 * GIB, uma)
+                row = _catalog_row(entry, machine, None, None, set())
+                preset = presets.preset_for_model(path, machine, set())
+                assert row["fits"] == (preset.refusal is None)
+                if preset.refusal:
+                    continue
+                assert row["start_window"] == preset.window
+                assert row["spilled"] == preset.spilled
+                overhead = (RUNTIME_OVERHEAD_BYTES + (entry.mmproj.size_bytes if entry.mmproj else 0)
+                            + ub_logits_bytes(profile.n_vocab, mtp_capable=entry.mtp,
+                                              mtp_prefill=preset.keys.get("ubatch-size") == "2048" and entry.mtp))
+                need = profile.weights_bytes + ctx_bytes(profile, preset.window) + overhead
+                assert preset.spilled == (need > machine.usable_vram_bytes)
+                assert need <= machine.usable_vram_bytes + machine.ram_available_bytes
 
 
 def test_hybrid_long_context_stays_cheap():

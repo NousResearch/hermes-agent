@@ -36,6 +36,7 @@ import {
   rehydrateLiveSessionStatuses,
   resetTypingActivityTracking,
   resolveActiveTranscriptSession,
+  TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS,
   useBackgroundSync
 } from './use-background-sync'
 
@@ -739,6 +740,58 @@ describe('active transcript refresh', () => {
     rerender({ activeSessionId: 'runtime-other', activeStoredSessionId: 'stored-other', gatewayState: 'closed' })
     rerender({ activeSessionId: 'runtime-other', activeStoredSessionId: 'stored-other', gatewayState: 'open' })
     expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshes the open transcript when the window is viewed again (#125532)', () => {
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about returns
+
+    // One return fires both visibilitychange and focus — a single read.
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('throttles return refreshes inside the minimum gap (#125532)', () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh)
+    refresh.mockClear()
+
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    // A rapid cmd-tab pair inside the gap adds no read...
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    // ...but the next return after the gap catches up again.
+    act(() => {
+      vi.advanceTimersByTime(TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS)
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not refresh on return while the gateway is closed (#125532)', () => {
+    $changeEventsAvailable.set(true)
+    const refresh = vi.fn(async () => undefined)
+
+    renderSync(refresh, { gatewayState: 'closed' })
+    refresh.mockClear()
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(refresh).not.toHaveBeenCalled()
   })
 
   it('coalesces a burst of global session-change ticks', async () => {

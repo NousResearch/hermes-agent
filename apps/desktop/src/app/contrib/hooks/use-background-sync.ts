@@ -682,6 +682,12 @@ const SESSIONS_LIST_TICK_GAP_MS = 10_000
 // backstops) keep their cadence because they carry liveness, not the heavy
 // list reconciliation.
 const TYPING_BURST_QUIET_MS = 1_500
+// Returning to the window fires both `visibilitychange` and `focus`, and a
+// rapid cmd-tab switch fires another pair seconds later. The return refresh
+// (#125532) is signature-gated downstream, but collapses to one read per
+// return instead — the transcript it protects is only readable behind a
+// socket the window just regained.
+export const TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS = 5_000
 
 interface LiveSessionStatusItem {
   id?: string
@@ -1149,6 +1155,44 @@ export function useBackgroundSync({
       }),
     [requestGateway, updateSessionState]
   )
+
+  // Wake/return backstop (#125532): a socket that zombie-survives laptop sleep
+  // never transitions gatewayState, so the reconnect backstop above cannot
+  // fire, and replies that completed while the machine slept leave the open
+  // transcript behind — the first send after wake then bounces off the
+  // stale-send guard (#65047) once. Catch up when the window is viewed again;
+  // the reconcile is signature-gated, so an unchanged transcript costs one
+  // cheap tail read. Messaging transcripts keep their own visible poll below.
+  useEffect(() => {
+    if (gatewayState !== 'open' || activeIsMessaging || !activeSessionId || !activeStoredSessionId) {
+      return
+    }
+
+    let lastRefreshAt = 0
+
+    const refreshOnReturn = () => {
+      if (!windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })) {
+        return
+      }
+
+      const now = Date.now()
+
+      if (now - lastRefreshAt < TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS) {
+        return
+      }
+
+      lastRefreshAt = now
+      requestActiveTranscriptRefresh(true)
+    }
+
+    document.addEventListener('visibilitychange', refreshOnReturn)
+    window.addEventListener('focus', refreshOnReturn)
+
+    return () => {
+      document.removeEventListener('visibilitychange', refreshOnReturn)
+      window.removeEventListener('focus', refreshOnReturn)
+    }
+  }, [activeIsMessaging, activeSessionId, activeStoredSessionId, gatewayState, requestActiveTranscriptRefresh])
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session

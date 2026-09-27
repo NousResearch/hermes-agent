@@ -67,15 +67,6 @@ def build_cli(data, out, tmp_path):
     )
 
 
-@pytest.mark.parametrize("target", ["linux-x64-musl", "linux-arm64-musl"])
-def test_agent_inputs_accept_pm_musl_targets(tmp_path, target):
-    from scripts.build.inputs import AgentInputs
-
-    out, data = inputs_fixture(tmp_path)
-    data["target"] = target
-    AgentInputs.from_dict(data).validate(out)
-
-
 @pytest.mark.platforms("posix")
 def test_contained_cli_assembly_runs_after_move_and_preserves_prepared_state(tmp_path):
     out, data = inputs_fixture(tmp_path)

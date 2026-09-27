@@ -47,12 +47,16 @@ class GatewayFake:
         self.status_reason = status_reason
         self.mint_connection_id = mint_connection_id
         self.lists = 0
+        self.list_timeouts = []  # timeout per list_connectors call, in call order
+        self.list_retries = []  # retries per list_connectors call, in call order
         self.mints = []
         self.reads = []  # (connection_id, timeout) in call order
         self.slug_of = {}  # connection id -> connector slug
 
-    def list_connectors(self, *, timeout=None):
+    def list_connectors(self, *, timeout=None, retries=None):
         self.lists += 1
+        self.list_timeouts.append(timeout)
+        self.list_retries.append(retries)
         return [{"connector": s, "enabled": True, "connected": s in self.connected} for s in ("gmail", "notion")]
 
     def connections(self, connectors, *, reinitiate=False, return_to=None, op=None):
@@ -463,3 +467,97 @@ def test_interrupt_wakes_the_loop_and_settles_before_the_next_tick():
         set_interrupt(False, worker.get("tid"))
     assert out["settled_by"] == "interrupt"
     assert time.monotonic() - started < 2.0  # woke on the interrupt, not on the 5 s tick
+
+
+# ---------------------------------------------------------------------------
+# the reconnect repair check and the status action are deadline-bounded (review)
+# ---------------------------------------------------------------------------
+
+
+def _stalling_client(calls):
+    """A real ConnectorClient whose transport stalls for the full requested timeout, then fails.
+    Records (url, timeout) per transport call in ``calls``."""
+    from tools.connectors.gateway.client import ConnectorClient
+
+    class FakeResponse:
+        def __init__(self, status_code, body):
+            self.status_code = status_code
+            self._body = body
+            self.text = json.dumps(body)
+
+        def json(self):
+            return self._body
+
+    class StalledTransport:
+        def request(self, method, url, *, headers=None, json=None, timeout=None):
+            calls.append((url, timeout))
+            time.sleep(timeout or 0)
+            raise TimeoutError("stalled")
+
+    return ConnectorClient(
+        transport=StalledTransport(),
+        endpoint_resolver=lambda: "https://tool-gateway.test",
+        header_provider=lambda url: {"Authorization": "Bearer t"},
+    )
+
+
+def test_reconnect_repair_check_cannot_block_past_the_operation_deadline():
+    """The reconnect repair check read the connector list with the module default timeout=30 and
+    one retry, unbounded by the deadline: with a stalled gateway and a 1.5s deadline, prepare
+    blocked ~61s (two list requests at 30s each) before the watch loop ever checked the clock.
+    Through the real client the check now takes at most the operation's remaining deadline,
+    never retried."""
+    from tools.connectors import operation as op_module
+    from tools.connectors.gateway.errors import ToolGatewayError
+    from tools.connectors.managed import _prepare
+
+    calls = []
+    client = _stalling_client(calls)
+    with patch.object(op_module, "OPERATION_DEADLINE_SECONDS", 1.5):
+        operation = op_module.ConnectionOperation(
+            [op_module.Target("gmail", "connector", "reconnect")], session_key="s1")
+        started = time.monotonic()
+        with pytest.raises(ToolGatewayError):
+            _prepare(client, "reconnect", False)(operation)
+        elapsed = time.monotonic() - started
+
+    assert len(calls) == 1  # the stalled page was not retried
+    assert 0 < calls[0][1] <= 1.5  # bounded by the remaining deadline, not the 30s default
+    assert elapsed < 2.5  # pre-fix: ~61s
+
+
+def test_status_action_list_read_is_capped_and_never_retried():
+    """The status action has no operation, so its list read also used the 30s default with one
+    retry and held the call ~61s on a stalled gateway. It now takes the same read cap the
+    watcher uses and is never retried; the stalled read surfaces as a tool error, not a hang."""
+    from tools.connectors.managed import _MAX_READ_SECONDS, run_managed_action
+
+    calls = []
+    client = _stalling_client(calls)
+    started = time.monotonic()
+    out = json.loads(run_managed_action("status", [], {}, client_factory=lambda: client))
+    elapsed = time.monotonic() - started
+
+    assert "error" in out
+    assert len(calls) == 1
+    assert calls[0][1] == _MAX_READ_SECONDS
+    assert elapsed < _MAX_READ_SECONDS + 2.0  # pre-fix: ~61s
+
+
+def test_reconnect_repair_check_honors_the_remaining_deadline_through_the_fake():
+    """The repair check wires the operation's remaining time (capped) into the list read and
+    disables retries; the account route's bound is the mirror."""
+    from tools.connectors import operation as op_module
+    from tools.connectors.managed import _MAX_READ_SECONDS, _prepare
+
+    gw = GatewayFake(connected={"gmail"})
+    with patch.object(op_module, "OPERATION_DEADLINE_SECONDS", 1.5):
+        operation = op_module.ConnectionOperation(
+            [op_module.Target("gmail", "connector", "reconnect")], session_key="s1")
+        _prepare(gw, "reconnect", False)(operation)
+
+    (timeout,) = gw.list_timeouts
+    (retries,) = gw.list_retries
+    assert 0 < timeout <= min(_MAX_READ_SECONDS, 1.5)
+    assert retries == 0
+    assert operation.target("gmail").state == c.TargetState.connected

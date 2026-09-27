@@ -53,10 +53,13 @@ def managed_kind(client: Any, action: str, force: bool) -> Kind:
     return Kind(prepare=_prepare(client, action, force), observe=lambda operation: _observe(client, operation), note=NOTE)
 
 
-def _status_by_slug(client: Any) -> Dict[str, Dict[str, Any]]:
+def _status_by_slug(client: Any, operation: ConnectionOperation) -> Dict[str, Dict[str, Any]]:
     """The toolkit list, by slug. Only the reconnect repair check reads it: it answers "is this app
-    already connected" before any account exists for the watcher to read."""
-    return {str(i.get("connector", "")).lower(): i for i in client.list_connectors() if isinstance(i, dict)}
+    already connected" before any account exists for the watcher to read. The read is bounded by
+    the operation's remaining deadline (capped) and never retried, like the account reads."""
+    timeout = min(_MAX_READ_SECONDS, operation.remaining_seconds())
+    return {str(i.get("connector", "")).lower(): i
+            for i in client.list_connectors(timeout=timeout, retries=0) if isinstance(i, dict)}
 
 
 def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reinitiate: bool, actor: Actor) -> None:
@@ -206,7 +209,14 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
             mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher)
             _mark_misrouted(operation)
             return
-        status = _status_by_slug(client)
+        remaining = operation.remaining_seconds()
+        if remaining <= 0:
+            # prepare ran after the deadline (the clock settles the row on the next pass); a
+            # repair check started now cannot fit inside it anyway, so every target goes to
+            # repair without the list read.
+            status: Dict[str, Dict[str, Any]] = {}
+        else:
+            status = _status_by_slug(client, operation)
         repair = []
         for name in names:
             if status.get(name, {}).get("connected"):
@@ -248,7 +258,9 @@ def run_managed_action(
     try:
         client = (client_factory or managed_client)()
         if action == "status":
-            items = client.list_connectors()
+            # No operation here, so no deadline to consult: cap the read at the same bound the
+            # watcher uses and never retry it, so a stalled gateway cannot hold the call open.
+            items = client.list_connectors(timeout=_MAX_READ_SECONDS, retries=0)
             if connectors:
                 wanted = set(connectors)
                 items = [i for i in items if str(i.get("connector", "")).lower() in wanted]

@@ -588,6 +588,36 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+def _bootstrap_shim_subcommand(tokens: list[str]) -> Optional[str]:
+    """Lifecycle subcommand of a gateway launched through one of OUR source shims, or None.
+
+    The store launchers (``hermes_cli/_launchers.py``: ``runtime_command()`` and
+    ``_launcher_script()``) run the CLI as ``python -I -c "<source>" gateway run …``, so the
+    live process's argv carries neither a ``hermes`` basename nor ``-m hermes_cli.main`` —
+    only the wrapped program's own argv (#124893: the gateway identity check rejected the
+    shim-launched gateway, so the Windows updater aborted before fetching and unscoped status
+    cleanup unlinked its PID file). The #107002 rule still holds for THIRD-PARTY inline
+    source (trailing argv is data, not identity); what distinguishes our shims is the source
+    literal itself, which names the Hermes CLI entry point
+    (``runpy.run_module('hermes_cli.main', …)`` / ``from hermes_cli.main import …``). With
+    the entry point proven by the source, the canonical subcommand walk runs on the trailing
+    argv via the matcher itself (single ``gateway``-token scan + profile filtering)."""
+    flag_index = inline_source_flag_index(tokens)
+    source_index = None if flag_index is None else flag_index + 1
+    if source_index is None or source_index >= len(tokens):
+        return None
+    source = tokens[source_index]
+    if "hermes_cli.main" not in source and "hermes_cli/main.py" not in source:
+        return None
+    trailing = tokens[source_index + 1 :]
+    if not trailing:
+        return None
+    # Re-arm the canonical walk with the entry point the source provably runs; the
+    # synthetic prefix has no ``-c``, so this cannot recurse into the shim branch.
+    return _gateway_command_subcommand(
+        " ".join(["python", "-m", "hermes_cli.main", *trailing]))
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -607,10 +637,12 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
-    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
-    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
+    # the inline source will spawn later, not to this process (#107002) — EXCEPT our own launcher
+    # shims, whose source IS this process's entry point and whose trailing argv is therefore its
+    # own program argv (#124893). Case-preserving tokens: the operand-taking ``-X``/``-W``/``-Q``
+    # must not be conflated with ``-q``/``-b``.
     if command_line_runs_inline_source(cased_tokens):
-        return None
+        return _bootstrap_shim_subcommand(cased_tokens)
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":

@@ -1662,6 +1662,44 @@ class TestMultiplexConstructionScope:
         assert adapter._agents[""]["description"] == "Default profile's own agent."
         assert adapter._public_url == "https://default-profile.example.com/"
 
+    def test_is_connected_false_for_profile_without_its_own_a2a_port(
+        self, multiplex_scope, default_profile_env
+    ):
+        """A served profile with no ``A2A_PORT`` of its own must NOT be treated as
+        A2A-configured just because the default profile's bridged value sits in the
+        process env.
+
+        Enablement is the gate that decides whether a secondary starts an inbound
+        A2A server at all. A raw env read says "yes" for every profile, and each one
+        then resolves its own (absent) port scope-aware to the shared module default —
+        so N profiles all bind one port and the losers retry forever.
+        """
+        from plugins.platforms.a2a import is_connected
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()  # secondary: its own scope holds no A2A_PORT
+        assert is_connected(PlatformConfig(enabled=True, extra={})) is False
+
+    def test_is_connected_true_for_profile_holding_its_own_port(
+        self, multiplex_scope, default_profile_env
+    ):
+        """The counterpart: a profile WITH its own ``A2A_PORT`` still enables."""
+        from plugins.platforms.a2a import is_connected
+        from gateway.config import PlatformConfig
+
+        multiplex_scope({"A2A_PORT": "9333"})
+        assert is_connected(PlatformConfig(enabled=True, extra={})) is True
+
+    def test_is_connected_honours_explicit_enable_flag_under_scope(
+        self, multiplex_scope
+    ):
+        """An explicit ``extra.enabled`` still wins without any env at all."""
+        from plugins.platforms.a2a import is_connected
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        assert is_connected(PlatformConfig(enabled=True, extra={"enabled": True})) is True
+
 
 def test_load_conversation_skips_non_dict_lines(monkeypatch, tmp_path):
     """A scalar line in a conversation file must not break replay or pollute

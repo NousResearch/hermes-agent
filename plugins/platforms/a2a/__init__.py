@@ -4,7 +4,6 @@ five outbound client tools of the ``a2a`` toolset through the public PluginConte
 from __future__ import annotations
 
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +33,17 @@ def validate_config(config) -> bool:
 
 
 def is_connected(config) -> bool:
-    """'Connected' when explicitly enabled (the gateway only instantiates enabled platforms)."""
+    """'Connected' when THIS profile explicitly configured A2A.
+
+    The env read goes through the profile scope, never a raw ``os.environ``/``get_env_value``
+    read: under multiplexing the process env holds the DEFAULT profile's values, so a raw read
+    would report every served profile as A2A-configured. Each of them would then start an
+    inbound server, read its own (absent) ``A2A_PORT`` scope-aware and fall back to the same
+    module default — a fleet-wide bind fight on one port (#a2a-multiplex-bind).
+    """
+    from gateway.platforms._shared import get_scoped_secret
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("enabled")) or bool(os.getenv("A2A_PORT"))
+    return bool(extra.get("enabled")) or bool(str(get_scoped_secret("A2A_PORT") or "").strip())
 
 
 def interactive_setup() -> None:

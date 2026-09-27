@@ -71,6 +71,11 @@ automatycznie plików dostępnych w Releases.
 
 - Zbudowano renderer, Electron i instalator NSIS x64; TypeScript bez błędów.
 - Testy ikon, bootstrapa i polityki runtime: 45 zaliczonych, 1 pominięty.
+- Dodatkowe testy instalatora Python: 9 zaliczonych, 1 niezaliczony
+  (`test_python_find_timeout_kills_uv_and_fails_stage`, timeout 45 s).
+  Ten sam błąd odtworzono oddzielnie na kodzie sprzed zmian; nie uznajemy
+  obsługi tego przypadku za zweryfikowaną. Job CI „PowerShell installer tests”
+  dla PR #69 zakończył się sukcesem, ale obejmuje inny zakres.
 - Rzeczywiste pobranie przypiętego `install.ps1` z repozytorium Cześka: sukces.
 - W pustym katalogu wykonano etapy `repository`, `python`, `venv`, `dependencies`.
   Pobrano własnego Pythona 3.11.16, a nowy backend odpowiedział HTTP 200

@@ -129,6 +129,7 @@ class FakeLLMServer:
         api_key: str | list[str] | tuple[str, ...] | frozenset[str] | None = None,
         record_get: bool = False,
         prompt_tokens_fn: Callable[[dict[str, Any]], int] | None = None,
+        bind_host: str = "127.0.0.1",
     ) -> None:
         self._script: list[Response] = list(script) if isinstance(script, list) else []
         self._responder: Responder | None = script if callable(script) else None
@@ -143,6 +144,7 @@ class FakeLLMServer:
         # Optional: derive reported ``usage.prompt_tokens`` from each request body (so token-driven
         # logic such as compaction triggers sees a realistic, growing count instead of a constant).
         self.prompt_tokens_fn = prompt_tokens_fn
+        self.bind_host = bind_host
         self.requests: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -159,7 +161,7 @@ class FakeLLMServer:
         self.stop()
 
     def start(self) -> None:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
+        server = ThreadingHTTPServer((self.bind_host, 0), _handler_for(self))
         server.daemon_threads = True
         self._server = server
         self._thread = threading.Thread(target=server.serve_forever, name="fake-llm", daemon=True)

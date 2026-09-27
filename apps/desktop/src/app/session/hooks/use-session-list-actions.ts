@@ -57,7 +57,15 @@ import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions
 // conversations: every editor wake mints an auto-titled row, so they would
 // bury local chats — and they were never ended before #118216, which also
 // kept prune/archive away from them.
-const SIDEBAR_EXCLUDED_SOURCES = ['acp', 'cron', 'kanban', 'oneshot', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+const SIDEBAR_EXCLUDED_SOURCES = [
+  'acp',
+  'cron',
+  'kanban',
+  'oneshot',
+  'subagent',
+  'tool',
+  ...MESSAGING_SESSION_SOURCE_IDS
+]
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]

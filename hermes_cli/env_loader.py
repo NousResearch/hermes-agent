@@ -401,9 +401,12 @@ def load_hermes_dotenv(
     from hermes_constants import get_process_hermes_home
     home_path = Path(hermes_home) if hermes_home else get_process_hermes_home()
 
-    # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
-    # into os.environ would expose its credentials to sibling turns and every spawned child. Unscoped
-    # startup loads keep the normal path; external sources still refresh against the profile mapping.
+    # Multiplex gateway: while a routed profile-home override is active, copying THAT profile's .env
+    # into os.environ would expose its credentials to sibling turns and every spawned child. The process
+    # home's .env (home_path, *not* the override) still loads below — the routed profile's .env lives at a
+    # different path (the override's home) so loading the process home .env does not leak sibling credentials,
+    # and skipping it breaks unscoped reads that fallback_providers depend on (e.g. OPENROUTER_API_KEY in
+    # ~/.hermes/.env used to fail over when the primary provider is rate-limited; #125530).
     from agent.secret_scope import is_multiplex_active
     from hermes_constants import get_hermes_home_override
 
@@ -411,14 +414,16 @@ def load_hermes_dotenv(
         home_key = str(home_path.resolve())
         if home_key not in _SCOPED_SKIP_LOGGED:
             _SCOPED_SKIP_LOGGED.add(home_key)
-            logger.debug("multiplex: skipping process-global dotenv load for routed "
-                         "profile home %s (credentials resolve via the profile scope)", home_path)
+            logger.debug("multiplex: skipping routed profile-home .env load for %s "
+                         "(credentials resolve via the profile scope); still loading process-home .env",
+                         get_hermes_home_override())
         if load_external_secrets:
             from hermes_cli import _early_recovery
 
             if not _early_recovery._should_skip_external_secret_sources():
                 hydrate_profile_secret_sources(home_path)
-        return []
+        # FALL THROUGH to normal loading: process-home .env must still load so non-routed credentials
+        # (e.g. fallback_providers' keys) are visible to the multiplex gateway process.
 
     loaded: list[Path] = []
     user_env = home_path / ".env"

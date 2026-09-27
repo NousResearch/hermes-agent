@@ -28,9 +28,11 @@ async def _matrix_read(args: dict[str, Any]) -> str:
     event_id = args.get("event_id")
     if kind == "thread" and not event_id:
         event_id = get_session_env("HERMES_SESSION_THREAD_ID")
-    if kind not in {"room", "thread", "event"}:
-        return json.dumps({"error": "kind must be room, thread, or event"})
-    if kind != "room" and (not isinstance(event_id, str) or not event_id.startswith("$")):
+    history_kinds = {"room", "thread", "event"}
+    inspection_kinds = {"state", "members", "permissions", "pins"}
+    if kind not in history_kinds | inspection_kinds:
+        return json.dumps({"error": "kind must be room, thread, event, state, members, permissions, or pins"})
+    if kind in {"thread", "event"} and (not isinstance(event_id, str) or not event_id.startswith("$")):
         return json.dumps({"error": "event_id is required for thread and event reads"})
 
     limit = args.get("limit", 20)
@@ -39,8 +41,13 @@ async def _matrix_read(args: dict[str, Any]) -> str:
 
     if owner_loop is None or not owner_loop.is_running():
         return json.dumps({"error": "Matrix gateway loop is unavailable"})
+
+    if kind in inspection_kinds:
+        read = adapter.inspect_matrix_room(kind, room_id, limit, requester=requester)
+    else:
+        read = read_context(kind, room_id, event_id, limit, requester=requester)
     future = safe_schedule_threadsafe(
-        read_context(kind, room_id, event_id, limit, requester=requester), owner_loop,
+        read, owner_loop,
         logger=logger, log_message="matrix_read: failed to schedule on the gateway loop",
     )
     if future is None:
@@ -59,7 +66,7 @@ registry.register(
     schema={
         "name": "matrix_read",
         "description": (
-            "Read recent messages, one thread, or one event in the current Matrix room. "
+            "Read messages, events, state, joined members, permissions, or pins in the current Matrix room. "
             "Events are listed oldest first: a room read returns the latest messages, and a thread "
             "read returns the thread root followed by its latest replies. `skipped` counts events in "
             "the read window that have no readable message body, such as redacted messages. "
@@ -68,7 +75,7 @@ registry.register(
         "parameters": {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["room", "thread", "event"]},
+                "kind": {"type": "string", "enum": ["room", "thread", "event", "state", "members", "permissions", "pins"]},
                 "event_id": {"type": "string", "description": "Event ID for an event read, or thread root. A thread read defaults to the current thread."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20,
                           "description": "Maximum number of events to read. A thread read counts the root."},

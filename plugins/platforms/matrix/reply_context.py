@@ -57,6 +57,13 @@ def _content_dict(event: Any) -> dict:
     return {}
 
 
+def _event_sender(event: Any) -> str:
+    sender = str(getattr(event, "sender", "") or "")
+    if not sender and isinstance(event, dict):
+        sender = str(event.get("sender", "") or "")
+    return sender
+
+
 def _effective_content(event: Any) -> tuple[dict, bool]:
     content = _content_dict(event)
     unsigned = getattr(event, "unsigned", None)
@@ -259,6 +266,14 @@ class MatrixEventContextCache:
         if client is None:
             return cached
 
+        event = await self.fetch_event(client, room_id, event_id)
+        if event is None:
+            current = self._entries.get(key)
+            return current if current is not None and not current.redacted else None
+        return await self.store_event(room_id, event_id, event, image_loader)
+
+    async def fetch_event(self, client: Any, room_id: str, event_id: str) -> Any | None:
+        """Fetch and decrypt an event from the homeserver. Returns None when either step fails."""
         try:
             event = await asyncio.wait_for(client.get_event(room_id, event_id), self.timeout_seconds)
             if str(getattr(event, "type", "")) == "m.room.encrypted":
@@ -268,12 +283,14 @@ class MatrixEventContextCache:
                 event = await asyncio.wait_for(crypto.decrypt_megolm_event(event), self.timeout_seconds)
         except Exception as exc:
             logger.debug("Matrix: could not resolve reply target %s in %s: %s", event_id, room_id, exc)
-            current = self._entries.get(key)
-            return current if current is not None and not current.redacted else None
+            return None
+        return event
 
-        sender = str(getattr(event, "sender", "") or "")
-        if not sender and isinstance(event, dict):
-            sender = str(event.get("sender", "") or "")
+    async def store_event(
+        self, room_id: str, event_id: str, event: Any,
+        image_loader: Callable[[dict, str], Awaitable[tuple[str, str] | None]] | None = None,
+    ) -> MatrixEventContext | None:
+        sender = _event_sender(event)
         content, edited = _effective_content(event)
         body = content.get("body")
         if not isinstance(body, str):

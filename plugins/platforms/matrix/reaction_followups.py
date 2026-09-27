@@ -32,12 +32,15 @@ class ReactionWatchStore:
                     requester TEXT NOT NULL,
                     source_json TEXT NOT NULL,
                     emoji_json TEXT NOT NULL,
+                    text_content TEXT NOT NULL DEFAULT '',
                     expires_at REAL NOT NULL
                 )
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(watches)")}
             if "session_id" not in columns:
                 db.execute("ALTER TABLE watches ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
+            if "text_content" not in columns:
+                db.execute("ALTER TABLE watches ADD COLUMN text_content TEXT NOT NULL DEFAULT ''")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5)
@@ -55,6 +58,7 @@ class ReactionWatchStore:
         requester: str,
         source: dict[str, Any],
         emoji_filter: tuple[str, ...],
+        text_content: str = "",
     ) -> None:
         rows = [
             (
@@ -68,6 +72,7 @@ class ReactionWatchStore:
                 requester,
                 json.dumps(source),
                 json.dumps(emoji_filter),
+                text_content,
                 self.clock() + WATCH_SECONDS,
             )
             for event_id in event_ids
@@ -80,8 +85,8 @@ class ReactionWatchStore:
             db.executemany(
                 """INSERT OR REPLACE INTO watches
                    (event_id, turn_id, profile, room_id, thread_id, session_key,
-                    session_id, requester, source_json, emoji_json, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    session_id, requester, source_json, emoji_json, text_content, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
 
@@ -101,7 +106,7 @@ class ReactionWatchStore:
             row = db.execute(
                 """
                 SELECT turn_id, thread_id, session_key, session_id, requester,
-                       source_json, emoji_json, expires_at
+                       source_json, emoji_json, expires_at, text_content
                 FROM watches WHERE event_id = ? AND profile = ? AND room_id = ?
             """,
                 (target_event_id, profile, room_id),
@@ -124,6 +129,7 @@ class ReactionWatchStore:
             "source": json.loads(row[5]),
             "emoji": emoji,
             "target_event_id": target_event_id,
+            "text_content": row[8],
         }
 
     def candidate(self, room_id: str, target_event_id: str) -> dict[str, Any] | None:

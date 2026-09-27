@@ -102,6 +102,10 @@ _PY_RELEVANT_CONTRACT_FILES = {
     "apps/shared/src/gateway-contract.openrpc.json",
     # tests/hermes_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
+    # tests/hermes_cli/test_config_reference_generated.py (rendered by
+    # scripts/gen_config_reference.py from the config defaults dicts)
+    "docs/reference/config-reference.generated.md",
+    "scripts/gen_config_reference.py",
 }
 
 # CI-sensitive files: eslint config, workflow files, composite actions.

@@ -360,9 +360,12 @@ import { registerNativeNotifications } from './notification-ipc'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
-import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
+import {
+  mintGatewayWsTicket as mintOauthGatewayWsTicket,
+  requestWithOauthFallback,
+  shouldReplayAfterCookie401
+} from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
-import { remoteSessionCookies } from './remote-session-cookies'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { bundledPayload, installIdForRoot, type PayloadInfo } from './payload-backend'
@@ -450,6 +453,7 @@ import {
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
+import { remoteSessionCookies } from './remote-session-cookies'
 import {
   attachRemoteRequestHeaderListener,
   collectRemoteHeaderSources,
@@ -7341,18 +7345,17 @@ function warmOauthCookieStore(url?) {
 // connection-config.ts (cookiesHaveSession / cookiesHaveLiveSession). See
 // that module for details.
 
-// #61457: snapshot the partition jar's session cookies for this gateway into
-// the in-memory mirror. Best-effort: a failed read just means the next
-// response's Set-Cookie capture populates the mirror instead.
-async function captureRemoteSessionCookiesIntoMirror(baseUrl) {
-  const sess = getOauthSessionForUrl(baseUrl)
-
-  if (!sess) {
+// #61457: snapshot a partition jar's session cookies for this gateway into
+// the in-memory mirror, keyed by the SAME partition the jar belongs to.
+// Best-effort: a failed read just means the next response's Set-Cookie
+// capture populates the mirror instead.
+async function captureRemoteSessionCookiesIntoMirror(sess, partition, baseUrl) {
+  if (!sess || !partition) {
     return
   }
 
   try {
-    remoteSessionCookies.recordFromJar(baseUrl, await sess.cookies.get({ url: baseUrl }))
+    remoteSessionCookies.recordFromJar(partition, baseUrl, await sess.cookies.get({ url: baseUrl }))
   } catch (error) {
     rememberLog(`Remote session cookie mirror capture failed: ${error?.message || error}`)
   }
@@ -7538,7 +7541,11 @@ function openOauthLoginWindow(
       } else {
         // #61457: the jar just got the fresh session cookies — mirror them
         // into memory immediately, before the jar can drop them again.
-        void captureRemoteSessionCookiesIntoMirror(baseUrl)
+        void captureRemoteSessionCookiesIntoMirror(
+          sess,
+          resolveOauthPartitionForUrl(baseUrl, { connectionId, pendingAuthMode, pendingKind }),
+          baseUrl
+        )
         resolve({ baseUrl, ok: true })
       }
     }
@@ -7652,15 +7659,21 @@ function openOauthLoginWindow(
 // drop the `hermes_session*` cookies (Windows %3A profile folders, lazy
 // hydration, flush races) and `useSessionCookies: true` then intermittently
 // omits the cookie → 401 `no_cookie` right after a successful sign-in. Two
-// mitigations, both keyed by origin:
+// mitigations, both keyed by the request's resolved OAuth partition + origin
+// (the same owner the jar itself is scoped to, so same-origin gateways on
+// separate jars stay separate here too):
 //   1. an explicit `Cookie` header built from the in-memory session-cookie
 //      mirror (remote-session-cookies.ts) — an explicit header bypasses the
 //      network stack's jar lookup entirely, and every `Set-Cookie` observed
 //      here (and in the login window) feeds the mirror back; and
 //   2. one forced silent re-login + single retry when the gateway still
-//      answers 401. Safe even for mutations: a 401 means the server rejected
-//      the request before executing it.
+//      answers 401 — ONLY when shouldReplayAfterCookie401 holds: the 401 is
+//      the auth gate's pre-handler refusal AND the operation is idempotent or
+//      vouched replay-safe (`options.replayOn401`). Anything else keeps the
+//      no-replay rule of requestWithOauthFallback.
 function fetchJsonViaOauthSession(url, options: any = {}) {
+  const partition = resolveOauthPartitionForUrl(url)
+
   const attempt = (): Promise<unknown> =>
     new Promise((resolve, reject) => {
       const sess = getOauthSessionForUrl(url)
@@ -7704,7 +7717,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 
       // Explicit mirror cookies ride last so an existing caller-supplied
       // Cookie header still wins, and the mirror never clobbers intent.
-      const mirroredCookies = remoteSessionCookies.cookieHeaderFor(url)
+      const mirroredCookies = remoteSessionCookies.cookieHeaderFor(partition, url)
 
       if (mirroredCookies && headerBag.Cookie === undefined && headerBag.cookie === undefined) {
         headerBag.Cookie = mirroredCookies
@@ -7735,7 +7748,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
           clearTimer: (): void => clearTimeout(timer),
           resolve,
           reject,
-          onSetCookies: setCookie => remoteSessionCookies.record(url, setCookie)
+          onSetCookies: setCookie => remoteSessionCookies.record(partition, url, setCookie)
         })
       })
       request.on('error', error => {
@@ -7755,12 +7768,12 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
     })
 
   return attempt().catch(async error => {
-    if (Number(error?.statusCode) !== 401) {
+    if (!shouldReplayAfterCookie401(error, options)) {
       throw error
     }
 
     // Stale mirror + dead jar: force one silent re-login, then retry once.
-    remoteSessionCookies.clear(url)
+    remoteSessionCookies.clear(partition, url)
 
     try {
       await openOauthLoginWindow(new URL(url).origin, { silent: true })

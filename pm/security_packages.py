@@ -11,9 +11,9 @@ from urllib.parse import urlparse
 from pm import paths
 from pm.lock import Lockfile
 from pm.package import InstallError
-from pm.packages import BinaryPackage, _MUSL_TARGETS, _RUST_TRIPLE
+from pm.packages import BinaryPackage, _RUST_TRIPLE
 from pm.registry import register
-from pm.store import flatten_single_dir
+from pm.store import _MUSL_TARGETS, flatten_single_dir
 
 
 @register

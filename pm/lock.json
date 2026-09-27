@@ -135,15 +135,7 @@
           "sha256": "1ec37f4f092521cb785e0ccfa2d82cc4a79ec8d2a4864f5eefc50a314f2d5dec",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_8.1.2-5_aarch64.deb"
         },
-        "linux-arm64-musl": {
-          "sha256": "2de63f615df3a46ac26921ac0314f501c3536aaf9fd5197ffe03dd17cd01a404",
-          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-linuxarm64-gpl-9.0.tar.xz"
-        },
         "linux-x64": {
-          "sha256": "70b162b63517038ff18c8a50f4ea11f919a071f945c5881e87b0b2cd7173f8c7",
-          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-linux64-gpl-9.0.tar.xz"
-        },
-        "linux-x64-musl": {
           "sha256": "70b162b63517038ff18c8a50f4ea11f919a071f945c5881e87b0b2cd7173f8c7",
           "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-linux64-gpl-9.0.tar.xz"
         },

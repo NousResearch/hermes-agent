@@ -98,6 +98,9 @@ def _is_bionic_libc() -> bool:
     return bool(sysconfig.get_config_var("ANDROID_API_LEVEL"))
 
 
+_MUSL_TARGETS = frozenset({"linux-x64-musl", "linux-arm64-musl"})
+
+
 def _elf_loader_is_musl(binary: Path) -> bool | None:
     """Read an ELF's interpreter string without executing foreign bytes."""
     try:
@@ -126,21 +129,22 @@ def _native_linux_uses_musl() -> bool | None:
 def _is_musl_libc() -> bool:
     """True on native Linux musl userlands (Alpine, Void-musl, etc.).
 
-    libc is part of PM's artifact identity. Prefer Python's build metadata,
-    then inspect a native userland ELF: a bootstrap interpreter may itself be
-    a glibc build running through a compatibility shim and misreport the host
-    libc. A bare musl-loader existence check is only the last resort because
-    glibc hosts may install musl as a secondary toolchain.
+    libc is part of PM's artifact identity. The native userland takes
+    precedence over a bootstrap Python built for a different libc.
+    Python build metadata breaks ties when native binaries cannot be inspected;
+    a musl loader on disk alone is the last resort because glibc hosts may
+    install musl as a secondary toolchain.
     """
+    native = _native_linux_uses_musl()
+    if native is not None:
+        return native
+
     import sysconfig
 
     for key in ("HOST_GNU_TYPE", "MULTIARCH"):
         value = str(sysconfig.get_config_var(key) or "").lower()
         if "musl" in value:
             return True
-    native = _native_linux_uses_musl()
-    if native is not None:
-        return native
     return any(Path("/lib").glob("ld-musl-*.so.1"))
 
 

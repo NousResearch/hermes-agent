@@ -29,6 +29,7 @@ def test_current_target_detects_musl_from_python_build_metadata(monkeypatch):
 
     monkeypatch.setattr(store, "_native_machine", lambda: "x86_64")
     monkeypatch.setattr(store, "_is_bionic_libc", lambda: False)
+    monkeypatch.setattr(store, "_native_linux_uses_musl", lambda: None)
     monkeypatch.setattr(
         sysconfig,
         "get_config_var",
@@ -59,6 +60,15 @@ def test_musl_detection_falls_back_to_native_userland(monkeypatch):
     assert store._is_musl_libc() is True
 
 
+def test_native_glibc_overrides_foreign_musl_bootstrap(monkeypatch):
+    from pm import store
+
+    monkeypatch.setattr(store, "_native_linux_uses_musl", lambda: False)
+    monkeypatch.setattr(sysconfig, "get_config_var", lambda _key: "x86_64-unknown-linux-musl")
+
+    assert store._is_musl_libc() is False
+
+
 def test_bionic_remains_more_specific_than_musl(monkeypatch):
     from pm import store
 
@@ -74,7 +84,7 @@ def test_required_runtime_has_native_musl_pins(target):
     """Every runtime tool PM selects by default has an artifact for musl."""
     lock = Lockfile(REPO_ROOT / "pm" / "lock.json")
 
-    for name in ("python", "uv", "node", "npm", "ffmpeg", "ripgrep"):
+    for name in ("python", "uv", "node", "npm", "ripgrep"):
         assert get_package(name).missing_reason(target) is None, name
         assert lock.artifacts(name, target), f"{name} has no {target} artifact"
 
@@ -96,24 +106,24 @@ def test_interpreter_and_js_runtime_never_reuse_glibc_rows(target):
 def test_static_linux_tools_reuse_the_reviewed_bytes(target, base):
     lock = Lockfile(REPO_ROOT / "pm" / "lock.json")
 
-    for name in ("ffmpeg", "ripgrep", "gh", "bws", "iron-proxy"):
+    for name in ("ripgrep", "gh", "bws", "iron-proxy"):
         assert lock.artifacts(name, target) == lock.artifacts(name, base)
 
 
-def test_ffmpeg_musl_resolution_uses_static_linux_index(monkeypatch):
-    from pm import packages
+@pytest.mark.parametrize("target", _MUSL_TARGETS)
+def test_musl_default_closure_excludes_incompatible_ffmpeg(monkeypatch, target):
+    from pm import store
+    from pm.package import InstallError
+    from pm.registry import source_install_packages, tool_roots
 
-    package = packages.Ffmpeg()
-    advertised = {
-        "linux-x64": {
-            "9.0.1": ("autobuild-test", "ffmpeg-test-linux64-static.tar.xz")
-        }
-    }
-    monkeypatch.setattr(packages, "btbn_index", lambda: advertised)
-
-    url = package.fetch_url("9.0.1", "linux-x64-musl")
-
-    assert url.endswith("/autobuild-test/ffmpeg-test-linux64-static.tar.xz")
+    lock = Lockfile(REPO_ROOT / "pm" / "lock.json")
+    monkeypatch.setattr(store, "current_target", lambda: target)
+    assert get_package("ffmpeg").missing_reason(target)
+    assert lock.artifacts("ffmpeg", target) == []
+    assert "ffmpeg" not in source_install_packages(lock.names())
+    assert "ffmpeg" not in tool_roots(lock.names())
+    with pytest.raises(InstallError, match="unavailable on"):
+        get_package("ffmpeg").fetch_url(lock.version("ffmpeg"), target)
 
 
 @pytest.mark.parametrize("target", _MUSL_TARGETS)

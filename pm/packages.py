@@ -21,7 +21,7 @@ from pm.package import (
     _probe_reason,
 )
 from pm.registry import register
-from pm.store import ALL_TARGETS, Store, current_target, flatten_single_dir, merge_tree
+from pm.store import ALL_TARGETS, Store, _MUSL_TARGETS, current_target, flatten_single_dir, merge_tree
 from pm.update import (
     btbn_index,
     btbn_versions,
@@ -47,8 +47,6 @@ _RUST_TRIPLE = {
     "darwin-x64": "x86_64-apple-darwin",
     "darwin-arm64": "aarch64-apple-darwin",
 }
-
-_MUSL_TARGETS = frozenset({"linux-x64-musl", "linux-arm64-musl"})
 
 _NODE_PLAT = {
     "win32-x64": "win-x64",
@@ -686,8 +684,8 @@ class Gh(BinaryPackage):
 
 @register
 class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
-    """Static ffmpeg. GPLv3 builds; always bundled.
-    optional=False: ffmpeg is a required runtime tool. Sealed bundles ship
+    """FFmpeg builds for supported targets; BtbN Linux archives require glibc.
+    optional=False: ffmpeg is a required runtime tool where supported. Sealed bundles ship
     it baked into the payload; every `hermes update` and `hermes pm install`
     re-ensures it from the new lockfile before the venv sync
     (pm.client.ensure_tools_for_sync), so a pin bump lands. Windows + Linux:
@@ -702,6 +700,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     name = "ffmpeg"
     deb_package = "ffmpeg"
     optional = False
+    gaps = {target: "BtbN Linux builds link glibc dynamically" for target in _MUSL_TARGETS}
 
     def main_rel(self, target: str) -> str:
         return "bin/ffmpeg"
@@ -718,8 +717,6 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
         "win32": "bin/ffmpeg.exe",
         "linux-x64": "bin/ffmpeg",
         "linux-arm64": "bin/ffmpeg",
-        "linux-x64-musl": "bin/ffmpeg",
-        "linux-arm64-musl": "bin/ffmpeg",
         "posix": "ffmpeg",
     }
     flatten = True
@@ -731,10 +728,11 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
             return f"https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_{version}_aarch64.deb"
-        lookup_target = target.removesuffix("-musl") if target in _MUSL_TARGETS else target
-        osname, arch = lookup_target.split("-")
+        if target in _MUSL_TARGETS:
+            raise InstallError(self.name, f"unavailable on {target}: {self.missing_reason(target)}")
+        osname, arch = target.split("-")
         if osname in ("win32", "linux"):
-            artifact = btbn_index().get(lookup_target, {}).get(version)
+            artifact = btbn_index().get(target, {}).get(version)
             if artifact is not None:
                 tag, asset = artifact
                 return f"https://github.com/BtbN/FFmpeg-Builds/releases/download/{tag}/{asset}"
@@ -749,10 +747,11 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
                            "retry when the upstream index is available, or keep the existing pin")
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        lookup_target = target.removesuffix("-musl") if target in _MUSL_TARGETS else target
-        if lookup_target in ("win32-x64", "win32-arm64", "linux-x64", "linux-arm64"):
-            return btbn_versions(lookup_target)
-        return martin_riedl_versions(lookup_target)
+        if target in _MUSL_TARGETS:
+            return []
+        if target in ("win32-x64", "win32-arm64", "linux-x64", "linux-arm64"):
+            return btbn_versions(target)
+        return martin_riedl_versions(target)
 
 
 @register

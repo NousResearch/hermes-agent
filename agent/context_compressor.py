@@ -4074,7 +4074,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             raise AuxiliaryExplicitCancellation()
         # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
         content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
-        where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
+        # ``summary_model`` is empty in every production construction (the only in-tree call
+        # passes summary_model_override=None), so naming it here unconditionally reported the
+        # MAIN model — the misattribution quoted in #113582. ``_aux_route`` already carries the
+        # route call_llm actually selected; keep the static expression only as the pre-dispatch
+        # fallback (#72636 review).
+        _where_provider = _aux_route.get("provider") or self.provider or "auto"
+        _where_model = _aux_route.get("model") or self.summary_model or self.model
+        where = f"(provider={_where_provider} model={_where_model})"
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
         # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
         # payload passes ``_validate_llm_response`` (a ``message`` exists), so it reaches here and would
@@ -4344,10 +4351,27 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_summary_auth_failure = True
             self._last_attempt_failure_class = "auth"
         if kind.json_decode and not kind.model_not_found and not kind.timeout:
+            # ``summary_model`` is permanently empty in production, so the old values logged
+            # the MAIN identity ("(main)" / the main provider) for an auxiliary failure. Name
+            # the route the aux lane actually used — the wire identity first, the config-layer
+            # identity when the call died pre-dispatch — with the static fields as the final
+            # fallback for an unset auxiliary.compression (#72636 review / #113582).
+            _ident_provider = (
+                self._last_aux_call_provider or self._last_aux_config_provider
+                or self.provider or "auto"
+            )
+            _ident_model = (
+                self._last_aux_call_model or self._last_aux_config_model
+                or self.summary_model or "(main)"
+            )
+            _ident_base_url = (
+                self._last_aux_call_base_url or self._last_aux_config_base_url
+                or self.base_url or "default"
+            )
             logger.error(
                 "Context compression failed: auxiliary LLM returned a non-JSON response. provider=%s "
                 "summary_model=%s main_model=%s base_url=%s err=%s",
-                self.provider or "auto", self.summary_model or "(main)", self.model, self.base_url or "default", e,
+                _ident_provider, _ident_model, self.model, _ident_base_url, e,
             )
         # A distinct summary model gets ONE main-model retry: a specific reason for known transient classes,
         # else a best-effort "failed" retry — losing N turns is worse than one extra summary attempt.

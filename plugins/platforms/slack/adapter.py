@@ -1099,6 +1099,8 @@ class SlackAdapter(BasePlatformAdapter):
         # never reached the session. Keys follow the thread session-key scoping. See #63530.
         self._thread_rehydration_checked: set = set()
         self._reacting_message_ids: set = set()
+        # Emoji names Slack rejected as invalid_name; warned once each (they come from config).
+        self._warned_invalid_emoji: set = set()
         # Active Assistant statuses by (team_id, channel_id, thread_ts) so cleanup
         # can't clear an overlapping Slack Connect workspace; evicted oldest-thread-first.
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -3109,8 +3111,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _react(
         self, channel: str, timestamp: str, emoji: str, team_id: str, *, remove: bool) -> bool:
-        """reactions.add / reactions.remove; True on success. Failures (already reacted,
-        missing scope) are debug-logged only."""
+        """reactions.add / reactions.remove; True on success. Routine failures (already
+        reacted, missing scope) are debug-logged; an unknown emoji name warns once, since
+        the lifecycle names come from ``extra.reaction_*`` and a typo would otherwise be silent."""
         if not self._app:
             return False
         try:
@@ -3119,8 +3122,14 @@ class SlackAdapter(BasePlatformAdapter):
             await method(channel=channel, timestamp=timestamp, name=emoji)
             return True
         except Exception as e:
-            logger.debug(
-                "[Slack] reactions.%s failed (%s): %s", "remove" if remove else "add", emoji, e)
+            if _slack_error_is(e, "invalid_name") and emoji not in self._warned_invalid_emoji:
+                self._warned_invalid_emoji.add(emoji)
+                logger.warning(
+                    "[Slack] Slack rejected reaction emoji %r (invalid_name); check "
+                    "platforms.slack.extra.reaction_ack/reaction_ok/reaction_fail", emoji)
+            else:
+                logger.debug(
+                    "[Slack] reactions.%s failed (%s): %s", "remove" if remove else "add", emoji, e)
             return False
 
     async def _add_reaction(

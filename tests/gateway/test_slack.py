@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import importlib
 from importlib.machinery import PathFinder
+import logging
 import os
 import socket
 import sys
@@ -2768,6 +2769,45 @@ class TestReactions:
         removed = [c.kwargs["name"] for c in adapter._app.client.reactions_remove.call_args_list]
         assert added == ["hourglass", adapter.config.extra[final_key]]
         assert removed == [added[0]]
+
+    @pytest.mark.parametrize("blank", ["", "  ", "::", " : "])
+    def test_blank_reaction_emoji_keeps_default(self, adapter, blank):
+        """A blank or colon-only reaction_* resolves to the same name as an absent key."""
+        keys = {"reaction_ack": "eyes", "reaction_ok": "white_check_mark", "reaction_fail": "x"}
+        unset = {k: adapter._reaction_emoji(k, d) for k, d in keys.items()}
+        adapter.config.extra.update({k: blank for k in keys})
+        assert {k: adapter._reaction_emoji(k, d) for k, d in keys.items()} == unset
+
+    @pytest.mark.asyncio
+    async def test_invalid_reaction_emoji_warns_once_and_fails_open(self, adapter, caplog):
+        """Slack's invalid_name for a configured emoji is a WARNING (once per name), not a
+        silent debug line, and the lifecycle still completes."""
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageType, ProcessingOutcome
+        from gateway.config import Platform
+
+        adapter.config.extra["reaction_ok"] = "tadaa"
+
+        async def _add(**kw):
+            if kw["name"] == "tadaa":
+                raise _StreamExpiredError("invalid_name", {"ok": False, "error": "invalid_name"})
+
+        adapter._app.client.reactions_add = AsyncMock(side_effect=_add)
+        adapter._app.client.reactions_remove = AsyncMock()
+        for ts in ("111.222", "111.333"):
+            adapter._reacting_message_ids.add(adapter._workspace_message_marker("", ts))
+            msg_event = MessageEvent(
+                text="hello", message_type=MessageType.TEXT, message_id=ts,
+                source=SessionSource(platform=Platform.SLACK, chat_id="C123", chat_type="dm",
+                                     user_id="U_USER"))
+            with caplog.at_level(logging.DEBUG, logger="plugins.platforms.slack.adapter"):
+                await adapter.on_processing_start(msg_event)
+                await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+
+        warnings = [r for r in caplog.records
+                    if r.levelno == logging.WARNING and "tadaa" in r.getMessage()]
+        assert len(warnings) == 1
+        assert adapter._app.client.reactions_remove.await_count == 2
 
 
 # ---------------------------------------------------------------------------

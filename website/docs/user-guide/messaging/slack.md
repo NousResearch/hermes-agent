@@ -773,8 +773,12 @@ platforms:
 ```
 
 Names work with or without the surrounding colons (`tada` or `:tada:`). A key
-that is missing or blank keeps its default. To turn these reactions off
-completely, set `reactions: false` (or `SLACK_REACTIONS=false`).
+that is missing or blank keeps its default. These three keys are YAML-only;
+there are no `SLACK_REACTION_*` environment variables for them. If Slack
+doesn't recognize a name (a typo, or a custom emoji from another workspace),
+the gateway logs a warning once and carries on without that reaction. To turn
+these reactions off completely, set `reactions: false` (or
+`SLACK_REACTIONS=false`).
 
 ### Reaction Triggers (`reaction_triggers`)
 

@@ -2,6 +2,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearClarifyRequest, setClarifyRequest } from './clarify'
+import { $notifications, approvalNoticeId, notify } from './notifications'
 import {
   $activeSessionAwaitingInput,
   $approvalRequest,
@@ -63,6 +64,38 @@ describe('approval prompt store', () => {
     expect($approvalRequest.get()?.requestId).toBe('r1')
     clearApprovalRequest('s1', 'r1')
     expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('dismisses the pinned approval notice when the request resolves', () => {
+    const id = approvalNoticeId('s1', 'r1')
+    setApprovalRequest({ command: 'x', description: 'd', requestId: 'r1', sessionId: 's1' })
+    notify({ id, kind: 'warning', message: 'x', pinned: true })
+
+    expect($notifications.get().some(item => item.id === id)).toBe(true)
+
+    clearApprovalRequest('s1', 'r1')
+    expect($notifications.get().some(item => item.id === id)).toBe(false)
+  })
+
+  it('a stale resolve clears its request but never a newer approval notice', () => {
+    const first = approvalNoticeId('s1', 'r1')
+    const second = approvalNoticeId('s1', 'r2')
+    notify({ id: first, kind: 'warning', message: 'a', pinned: true })
+    notify({ id: second, kind: 'warning', message: 'b', pinned: true })
+
+    clearApprovalRequest('s1', 'r1')
+    expect($notifications.get().some(item => item.id === first)).toBe(false)
+    expect($notifications.get().some(item => item.id === second)).toBe(true)
+  })
+
+  it('clears every approval notice for a session on turn end (clearAllPrompts)', () => {
+    const first = approvalNoticeId('s1', 'r1')
+    const second = approvalNoticeId('s1', 'r2')
+    notify({ id: first, kind: 'warning', message: 'a', pinned: true })
+    notify({ id: second, kind: 'warning', message: 'b', pinned: true })
+
+    clearAllPrompts('s1')
+    expect($notifications.get().some(item => item.id.startsWith('approval:s1'))).toBe(false)
   })
 
   it('acknowledges an approval only after parking it', async () => {

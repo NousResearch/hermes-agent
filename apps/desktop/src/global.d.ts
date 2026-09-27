@@ -124,6 +124,11 @@ declare global {
         onSkip: (callback: () => void) => () => void
         onClosed: (callback: () => void) => () => void
       }
+      // Play the OS alert sound from the main process. Renderer WebAudio is
+      // suspended while the window is unfocused (autoplay policy), so this is
+      // the reliable channel for attention cues the user must hear even when
+      // they are in another app or session.
+      playSystemBeep: () => Promise<boolean>
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).

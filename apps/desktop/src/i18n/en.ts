@@ -617,6 +617,7 @@ export const en: Translations = {
       approvalTitleNamed: session => `Approval needed — ${session}`,
       approveAction: 'Approve',
       rejectAction: 'Reject',
+      runAction: 'Run',
       inputTitle: 'Input needed',
       inputTitleNamed: session => `Input needed — ${session}`,
       inputBody: 'Hermes is waiting for your response.',

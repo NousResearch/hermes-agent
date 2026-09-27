@@ -20,8 +20,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from tools.skills_sync_client_wire import (
     DEFAULT_MAX_OBJECT_BYTES, KIND_BLOB, ObjectSet, SyncClient, SyncConflict, SyncError,
     assemble_root_from_skill_trees, build_commit, build_root_tree, build_sync_manifest_bytes, build_tree,
-    checked_capabilities, materialize_tree, merge_skill, nest_skill_tree, read_manifest_of_root,
-    read_ref_hash, root_tree_of_commit, skill_trees_of_root)
+    checked_capabilities, confined_tree_dest, fold_rel_to_disk, materialize_tree, merge_skill,
+    nest_skill_tree,
+    read_manifest_of_root, read_ref_hash, root_tree_of_commit, skill_trees_of_root)
 from tools.skills_sync_client_org import (
     ORG_DIR_NAME, list_locally_modified_org_skills, list_org_skill_names, resolve_org_identity)
 
@@ -309,8 +310,10 @@ def snapshot_profile(skill_names: List[str], *, max_object_bytes: int = DEFAULT_
         except ValueError as e:
             logger.warning("skills_sync_client: skipping %s: %s", name, e)
             continue
+        if not nest_skill_tree(root, rel.parts, tree_hash):
+            logger.warning("skills_sync_client: skipping %s: unsafe rel path %r", name, str(rel))
+            continue
         skill_tree_map[name] = tree_hash
-        nest_skill_tree(root, rel.parts, tree_hash)
     manifest_hash = objects.add(KIND_BLOB, build_sync_manifest_bytes(dict.fromkeys(skill_tree_map, True)))
     return objects, build_root_tree(root, objects, manifest_hash=manifest_hash), skill_tree_map
 
@@ -439,11 +442,56 @@ def pull_skills(client: Optional[SyncClient] = None, *, identity: Optional[Dict[
     remote_trees = skill_trees_of_root(client, root_tree)
     adopted = _adopt_manifest_opt_ins(read_manifest_of_root(client, root_tree))
     opted_in = set(_opted_in_rel_paths())
-    updated = [path for path in remote_trees if not opted_in or path in opted_in]
-    for path in updated:
-        materialize_tree(client, remote_trees[path], _skills_dir() / path)
+    candidates = [path for path in remote_trees if not opted_in or path in opted_in]
+    skills_root = _skills_dir()
+    updated, skipped = [], []
+    seen_dests: Dict[str, str] = {}
+    for path in candidates:
+        # Personal content must never land in the org mirror namespace: a hostile personal-plane
+        # tree path '_org/<active_org>/x' would otherwise plant skills the org gate is meant to
+        # hold back (the push side excludes _org; the pull side has to enforce it too). Leading
+        # dot components are likewise refused: a remote '.usage.json'/'.sync_state' materializes
+        # as a DIRECTORY that shadows the state file it is named for (opt-ins or head tracking
+        # permanently broken, every tick re-pulling everything).
+        first = path.split("/", 1)[0]
+        if first.rstrip(" .").casefold() == ORG_DIR_NAME or first.startswith("."):
+            skipped.append(path)
+            logger.warning("skills_sync_client: remote path %r claims a reserved namespace, skipping", path)
+            continue
+        # A remote path aliasing a differently-spelled existing dir would merge blobs into a dir
+        # the local user knows under another name; skip rather than fold (same rule as org pull).
+        if fold_rel_to_disk(skills_root, path) != path:
+            skipped.append(path)
+            logger.warning("skills_sync_client: remote skill %r aliases an existing "
+                           "differently-spelled dir on disk, skipping", path)
+            continue
+        # Same alias guard as the org pull: 'deploy' and 'deploy ' fold onto one dir on Win32/APFS.
+        norm_key = "/".join(p.rstrip(" .").casefold() for p in path.split("/"))
+        if norm_key in seen_dests:
+            skipped.append(path)
+            logger.warning("skills_sync_client: remote skill %r aliases %r on this filesystem, skipping",
+                           path, seen_dests[norm_key])
+            continue
+        dest = confined_tree_dest(skills_root, path)
+        if dest is None:
+            skipped.append(path)
+            logger.warning("skills_sync_client: remote skill path escapes the skills dir, skipping: %r", path)
+            continue
+        seen_dests[norm_key] = path
+        try:
+            materialize_tree(client, remote_trees[path], dest)
+            updated.append(path)
+        except Exception as e:
+            # Isolate per skill (as pull_org_skills does): one malformed or unwritable remote
+            # entry must not wedge the pull -- a raised exception here would skip write_sync_state
+            # below and make every subsequent tick retry the same poisoned head forever.
+            skipped.append(path)
+            logger.warning("skills_sync_client: skill materialize failed for %s: %s", path, e)
     write_sync_state({**state, "head": head})
-    return {"ok": True, "head": head, "updated": sorted(updated), "opt_in_adopted": sorted(adopted)}
+    result = {"ok": True, "head": head, "updated": sorted(updated), "opt_in_adopted": sorted(adopted)}
+    if skipped:
+        result["skipped"] = skipped
+    return result
 
 
 # Gated public entrypoints (gate-and-swallow, like maybe_run_curator): never raise; dict or None.

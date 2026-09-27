@@ -15,6 +15,7 @@ in-memory object store + ref table. No live server, no network.
 
 import hashlib
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -415,6 +416,23 @@ class TestObjectBuilding:
         objects = ssc.ObjectSet()
         with pytest.raises(ValueError):
             ssc.build_tree(d, objects, max_object_bytes=10)
+
+    def test_build_tree_skips_wire_unsafe_names(self, tmp_path):
+        # A POSIX-legal local name that pulls refuse must never be emitted -- every pull would
+        # silently drop it, diverging devices with no signal. ('x:y' = NTFS ADS, 'a\b' = Win32
+        # separator, 'CON' = Win32 device name; 'trailing ' is fine -- it only folds onto an
+        # existing 'trailing', which the pull alias guard handles.)
+        d = tmp_path / "skill"
+        d.mkdir()
+        (d / "SKILL.md").write_text("ok", encoding="utf-8")
+        (d / "x:y").write_text("ads", encoding="utf-8")
+        (d / "a\\b").write_text("sep", encoding="utf-8")
+        (d / "ok.txt").write_text("fine", encoding="utf-8")
+        objects = ssc.ObjectSet()
+        tree_hash = ssc.build_tree(d, objects, max_object_bytes=ssc.DEFAULT_MAX_OBJECT_BYTES)
+        names = {e["name"] for e in json.loads(objects.objects[tree_hash][1])["entries"]}
+        assert {"SKILL.md", "ok.txt"} <= names
+        assert names.isdisjoint({"x:y", "a\\b"})
 
     def test_build_commit_shape(self):
         objects = ssc.ObjectSet()
@@ -1085,3 +1103,204 @@ class TestEmptyActualConflict:
         assert result["ok"] is True
         assert result.get("recovered_stale_head") is True
         assert state.refs[ssc.user_head_ref(identity["owner"])] == result["head"]
+
+
+# ---------------------------------------------------------------------------
+# Remote tree names are attacker input: rel paths must stay confined (findings:
+# a tree entry named ".." used to escape the mirror into rmtree / blob writes).
+# ---------------------------------------------------------------------------
+
+def _inject_tree(state: _MockState, node: dict, *, org: bool = False) -> str:
+    """Build tree objects for a nested ``{name: child | ("blob", bytes)}`` node and
+    insert them into the mock's object store (bypassing put_objects, so the test
+    can serve entry names a conformant client would never upload)."""
+    objects = {}
+
+    def build(sub: dict) -> str:
+        entries = []
+        for name, child in sub.items():
+            if isinstance(child, tuple) and child[0] == wire.KIND_BLOB:
+                blob_hash = wire.wire_address(child[1])
+                objects[blob_hash] = (wire.KIND_BLOB, child[1])
+                entries.append({"name": name, "kind": wire.KIND_BLOB,
+                                "hash": blob_hash, "mode": wire.MODE_FILE})
+            else:
+                entries.append({"name": name, "kind": wire.KIND_TREE,
+                                "hash": build(child), "mode": wire.MODE_DIR})
+        data = wire.canonical_json_bytes({"type": wire.KIND_TREE, "entries": entries})
+        tree_hash = wire.wire_address(data)
+        objects[tree_hash] = (wire.KIND_TREE, data)
+        return tree_hash
+
+    root_hash = build(node)
+    (state.org_objects if org else state.objects).update(objects)
+    return root_hash
+
+
+def _inject_commit(state: _MockState, tree_hash: str, *, org: bool, ref: str) -> str:
+    data = wire.canonical_json_bytes({
+        "type": wire.KIND_COMMIT, "tree": tree_hash, "parents": [],
+        "author": {"owner": "attacker", "device": "evil"},
+        "ts": "2026-01-01T00:00:00Z", "message": "crafted", "artifact_type": "skill"})
+    commit_hash = wire.wire_address(data)
+    (state.org_objects if org else state.objects)[commit_hash] = (wire.KIND_COMMIT, data)
+    state.refs[ref] = commit_hash
+    return commit_hash
+
+
+class TestRemoteTreeConfinement:
+    """Remote entry names land on disk. ``..``/separator components must never
+    reach ``rmtree`` or a blob write."""
+
+    def test_pull_org_skills_refuses_traversal(self, mock_server, synced_env):
+        base, state = mock_server
+        home, skills, identity = synced_env
+        admin = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
+        client = ssc.SyncClient(base, identity["api_key"])
+
+        # skills/_org/org-1 / "../../victim" == skills/victim: a live directory the
+        # old code rmtree'd and then wrote the attacker's blobs into. The mirror
+        # root is pre-created so dest.exists() resolves and the rmtree path fires.
+        (skills / "_org" / "org-1").mkdir(parents=True, exist_ok=True)
+        victim = skills / "victim"
+        victim.mkdir()
+        (victim / "keep.txt").write_text("keep", encoding="utf-8")
+        # An in-root symlink retargets one rel path onto a sibling: remote "a" must not
+        # rmtree/overwrite "b" (confined_tree_dest rejects lexical != resolved).
+        mirror_pre = skills / "_org" / "org-1"
+        (mirror_pre / "b").mkdir()
+        (mirror_pre / "b" / "precious.txt").write_text("precious", encoding="utf-8")
+        try:
+            (mirror_pre / "a").symlink_to(mirror_pre / "b", target_is_directory=True)
+            have_symlink = True
+        except (OSError, NotImplementedError):
+            have_symlink = False  # no symlink privilege on this platform
+
+        root = _inject_tree(state, {
+            "..": {"..": {"victim": {"SKILL.md": (wire.KIND_BLOB, b"# evil\n")}}},
+            # Win32 strips the trailing space -> "..": must be rejected at the walk.
+            ".. ": {"SKILL.md": (wire.KIND_BLOB, b"# windows-escape\n")},
+            "good": {
+                "SKILL.md": (wire.KIND_BLOB, b"# good\n"),
+                # Backslash name: legal on POSIX, a traversal on Windows.
+                "..\\evil.txt": (wire.KIND_BLOB, b"win32\n"),
+            },
+            # Remote skill "a" lands on the pre-existing symlink into "b".
+            "a": {"SKILL.md": (wire.KIND_BLOB, b"# aliased\n")},
+        }, org=True)
+        _inject_commit(state, root, org=True, ref="refs/org/org-1/HEAD")
+
+        result = org.pull_org_skills(client, identity=admin)
+        assert result["ok"] is True
+        # The victim tree survived: no rmtree outside the mirror, no writes either.
+        assert (victim / "keep.txt").read_text(encoding="utf-8") == "keep"
+        assert not (victim / "SKILL.md").exists()
+        mirror = skills / "_org" / "org-1"
+        assert not (mirror / ".. ").exists()
+        assert all(".." not in p for p in result["updated"])
+        # The legitimate sibling still mirrored; the backslash blob was refused.
+        assert "good" in result["updated"]
+        assert (mirror / "good" / "SKILL.md").exists()
+        assert not (mirror / "good" / "..\\evil.txt").exists()
+        # ".. " on Win32 aliases its parent, so assert on dir names, not path existence.
+        assert ".. " not in {p.name for p in mirror.iterdir()}
+        if have_symlink:
+            # "a" confined to its lexical path: "b" was NOT aliased away, its file intact.
+            assert "a" in result.get("skipped", [])
+            assert (mirror / "a").is_symlink()
+            assert (mirror / "b" / "precious.txt").read_text(encoding="utf-8") == "precious"
+            assert not (mirror / "b" / "SKILL.md").exists()
+
+        # A baseline poisoned by a pre-fix pull must never stat outside the mirror: seed the
+        # sidecar with a traversal key + a fingerprint that would MISMATCH the outside dir, so
+        # the assert discriminates (pre-fix this stat'd skills/victim and returned True).
+        baseline_file = mirror / ".org-baseline.json"
+        baseline_doc = json.loads(baseline_file.read_text(encoding="utf-8"))
+        baseline_doc["../../victim"] = {"fingerprint": "0" * 64, "tree": "sha256:x"}
+        baseline_file.write_text(json.dumps(baseline_doc), encoding="utf-8")
+        assert org.org_skill_is_locally_modified("../../victim", "org-1") is False
+
+    @pytest.mark.require_symlinks
+    def test_pull_skills_confines_remote_paths(self, mock_server, synced_env, tmp_path, monkeypatch):
+        base, state = mock_server
+        home, skills, identity = synced_env
+        client = ssc.SyncClient(base, identity["api_key"])
+
+        # Fresh device: empty skills dir, no opt-in filter (opted_in empty -> all
+        # remote paths materialize), so the traversal path is the one under test.
+        dev = tmp_path / "hermes2" / "skills"
+        dev.mkdir(parents=True)
+        monkeypatch.setattr(ssc, "_skills_dir", lambda: dev)
+        monkeypatch.setattr(ssc, "list_synced_skill_names", lambda: [])
+        persisted: list = []
+        monkeypatch.setattr(ssc, "write_sync_state", lambda d: persisted.append(d))
+
+        # A pre-existing local symlink must never become a write-through for a
+        # remote blob either.
+        outside = tmp_path / "outside.txt"
+        outside.write_text("mine", encoding="utf-8")
+        slink = dev / "slink"
+        slink.mkdir()
+        (slink / "SKILL.md").symlink_to(outside)
+        # ...and a symlinked SUBDIR inside that skill must never be recursed into:
+        # writing "x.txt" through it would land in outside_dir, outside dest.
+        outside_dir = tmp_path / "outside_dir"
+        outside_dir.mkdir()
+        (slink / "sub").symlink_to(outside_dir, target_is_directory=True)
+        # A pre-existing FILE colliding with a remote skill dir name raises FileExistsError
+        # inside materialize; per-skill isolation must keep it from aborting the pull.
+        (dev / "clash").write_text("local file, not a dir", encoding="utf-8")
+        # A pre-existing FIFO at a remote blob path must be unlinked -- open('wb') on a FIFO
+        # blocks forever waiting for a reader.
+        (dev / "fifo_skill").mkdir()
+        have_fifo = hasattr(os, "mkfifo")
+        if have_fifo:
+            os.mkfifo(dev / "fifo_skill" / "payload.txt")
+
+        root = _inject_tree(state, {
+            "..": {"escape": {"SKILL.md": (wire.KIND_BLOB, b"# escaped\n")}},
+            "slink": {"SKILL.md": (wire.KIND_BLOB, b"# replaced\n"),
+                      "sub": {"x.txt": (wire.KIND_BLOB, b"drop\n")}},
+            # Reserved namespaces: org mirror and state files live under the skills root.
+            "_org": {"org-1": {"planted": {"SKILL.md": (wire.KIND_BLOB, b"# forged\n")}}},
+            ".sync_state": {"SKILL.md": (wire.KIND_BLOB, b"# shadowed\n")},
+            ".usage.json": {"SKILL.md": (wire.KIND_BLOB, b"# shadowed\n")},
+            # A non-str name must never become a path component.
+            123: {"SKILL.md": (wire.KIND_BLOB, b"# weird\n")},
+            "clash": {"SKILL.md": (wire.KIND_BLOB, b"# remote\n")},
+            "fifo_skill": {"SKILL.md": (wire.KIND_BLOB, b"# remote\n"),
+                           "payload.txt": (wire.KIND_BLOB, b"pipe\n")},
+            "benign": {"SKILL.md": (wire.KIND_BLOB, b"# fine\n")},
+        })
+        _inject_commit(state, root, org=False, ref="refs/user/owner1/HEAD")
+
+        result = ssc.pull_skills(client, identity=identity)
+        assert result["ok"] is True
+        assert not (tmp_path / "hermes2" / "escape").exists()
+        # The symlink target is untouched and the link was replaced by a real file.
+        assert outside.read_text(encoding="utf-8") == "mine"
+        assert not (slink / "SKILL.md").is_symlink()
+        assert (slink / "SKILL.md").read_text(encoding="utf-8") == "# replaced\n"
+        # The symlinked subdir was refused: nothing escaped into outside_dir.
+        assert list(outside_dir.iterdir()) == []
+        assert (slink / "sub").is_symlink()
+        # Reserved namespaces refused: no forged org mirror, no state-file shadows.
+        assert not (dev / "_org").exists()
+        assert not (dev / ".sync_state").exists()
+        assert not (dev / ".usage.json").exists()
+        skipped = result.get("skipped", [])
+        assert {"_org/org-1/planted", ".sync_state", ".usage.json"} <= set(skipped)
+        # The colliding skill failed in isolation; the pull still completed and persisted.
+        assert (dev / "clash").read_text(encoding="utf-8") == "local file, not a dir"
+        assert "clash" in skipped
+        assert "benign" in result["updated"]
+        assert (dev / "benign" / "SKILL.md").read_text(encoding="utf-8") == "# fine\n"
+        # The non-str entry name never became a directory (or a crash).
+        assert "123" not in {p.name for p in dev.iterdir()}
+        # And the pull persisted its head: the pre-fix abort would have skipped
+        # write_sync_state and wedged every subsequent tick on the same remote tree.
+        assert persisted and persisted[-1]["head"] == result["head"]
+        if have_fifo:
+            assert "fifo_skill" in result["updated"]
+            assert not (dev / "fifo_skill" / "payload.txt").is_fifo()
+            assert (dev / "fifo_skill" / "payload.txt").read_text(encoding="utf-8") == "pipe\n"

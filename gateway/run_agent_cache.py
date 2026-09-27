@@ -618,6 +618,83 @@ class GatewayAgentCacheMixin:
             return None
         return f"[Voice channel now: {vc_now or 'not connected to a voice channel'}]"
 
+    def _rehydrate_prompt_pins(self, session_key: Optional[str]) -> None:
+        """Restore durable prompt pins lazily for the first internal turn after a gateway restart."""
+        if not session_key:
+            return
+        state = self._session_state(session_key)
+        if state.conversation.ephemeral_pin is not None and state.conversation.channel_pin is not None:
+            return
+        store = getattr(self, "session_store", None)
+        getter = getattr(store, "get_prompt_pin", None)
+        if not callable(getter):
+            return
+        try:
+            persisted = getter(session_key)
+        except Exception:
+            logger.debug("Failed to read persisted prompt pin for %s", session_key, exc_info=True)
+            return
+        if not isinstance(persisted, dict):
+            return
+        context_key, context_prompt = persisted.get("context_key"), persisted.get("context_prompt")
+        channel_prompt, parent_chat_id = persisted.get("channel_prompt"), persisted.get("parent_chat_id")
+        if isinstance(context_key, str) and context_key and isinstance(context_prompt, str):
+            if state.conversation.ephemeral_pin is None:
+                state.conversation.ephemeral_pin = (context_key, context_prompt)
+        if (
+            (channel_prompt is None or isinstance(channel_prompt, str))
+            and (parent_chat_id is None or isinstance(parent_chat_id, str))
+            and state.conversation.channel_pin is None
+        ):
+            state.conversation.channel_pin = (channel_prompt, parent_chat_id)
+
+    def _prompt_pin_snapshot(self, session_key: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Current coherent pair of context/channel pins, ready for durable storage."""
+        state = self._peek_session_state(session_key) if session_key else None
+        if state is None:
+            return None
+        ephemeral_pin, channel_pin = state.conversation.ephemeral_pin, state.conversation.channel_pin
+        if not (
+            isinstance(ephemeral_pin, tuple) and len(ephemeral_pin) == 2
+            and isinstance(ephemeral_pin[0], str) and isinstance(ephemeral_pin[1], str)
+            and isinstance(channel_pin, tuple) and len(channel_pin) == 2
+        ):
+            return None
+        channel_prompt, parent_chat_id = channel_pin
+        if channel_prompt is not None and not isinstance(channel_prompt, str):
+            return None
+        if parent_chat_id is not None and not isinstance(parent_chat_id, str):
+            return None
+        return {
+            "version": 1,
+            "context_key": ephemeral_pin[0],
+            "context_prompt": ephemeral_pin[1],
+            "channel_prompt": channel_prompt,
+            "parent_chat_id": parent_chat_id,
+        }
+
+    async def _persist_prompt_pins(
+        self, session_key: Optional[str], expected_session_id: Optional[str],
+    ) -> None:
+        """Persist changed human-turn pins before agent execution; failures stay cache-only."""
+        snapshot = self._prompt_pin_snapshot(session_key)
+        if snapshot is None or not session_key:
+            return
+        store = getattr(self, "session_store", None)
+        getter = getattr(store, "get_prompt_pin", None)
+        try:
+            if callable(getter) and getter(session_key) == snapshot:
+                return
+        except Exception:
+            logger.debug("Failed to compare persisted prompt pin for %s", session_key, exc_info=True)
+        try:
+            await self.async_session_store.set_prompt_pin(
+                session_key, snapshot, expected_session_id=expected_session_id,
+            )
+        except Exception:
+            # Durability protects cache continuity; a store outage must not block the user turn.
+            logger.debug("Failed to persist prompt pin for %s", session_key, exc_info=True)
+
     def _pinned_session_context_prompt(
         self, context, redact_pii: bool, session_key: Optional[str], *, internal: bool = False,
     ) -> str:
@@ -631,6 +708,10 @@ class GatewayAgentCacheMixin:
         it reuses an existing pin verbatim; with no pin yet it renders and pins as usual."""
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
+        if internal and _eph_pin is None:
+            self._rehydrate_prompt_pins(session_key)
+            _pin_state = self._peek_session_state(session_key) if session_key else None
+            _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if internal and _eph_pin is not None:
             return _eph_pin[1]
         _eph_key = self._ephemeral_change_key(context, redact_pii)
@@ -658,6 +739,10 @@ class GatewayAgentCacheMixin:
             return channel_prompt, source
         state = self._peek_session_state(session_key)
         pin = state.conversation.channel_pin if state else None
+        if pin is None:
+            self._rehydrate_prompt_pins(session_key)
+            state = self._peek_session_state(session_key)
+            pin = state.conversation.channel_pin if state else None
         if pin is None:
             return channel_prompt, source
         pinned_prompt, pinned_parent = pin

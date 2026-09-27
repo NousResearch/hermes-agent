@@ -1520,6 +1520,68 @@ class TestGatewayRoutingTable:
         assert rehydrated.model_override == {"model": "test-model"}
         restarted._db.close()
 
+    def test_prompt_pin_survives_restart_and_stale_writer_cannot_cross_reset(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        pin = {
+            "version": 1,
+            "context_key": "ctx-key",
+            "context_prompt": "exact session context",
+            "channel_prompt": "Channel hint.",
+            "parent_chat_id": "parent-1",
+        }
+        assert store.set_prompt_pin(
+            entry.session_key, pin, expected_session_id=entry.session_id,
+        )
+        assert store.get_prompt_pin(entry.session_key) == pin
+        assert not store.set_prompt_pin(
+            entry.session_key, {"version": 1}, expected_session_id=entry.session_id,
+        )
+        assert store.get_prompt_pin(entry.session_key) == pin
+
+        # Prove the primary state.db routing index carries the pin by removing the JSON mirror.
+        (tmp_path / "sessions.json").unlink()
+        old_session_id = entry.session_id
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        assert restarted.get_prompt_pin(entry.session_key) == pin
+
+        fresh = restarted.reset_session(entry.session_key)
+        assert fresh is not None and fresh.session_id != old_session_id
+        assert restarted.get_prompt_pin(entry.session_key) is None
+
+        stale = dict(pin, context_prompt="stale old-conversation bytes")
+        assert not restarted.set_prompt_pin(
+            entry.session_key, stale, expected_session_id=old_session_id,
+        )
+        assert restarted.get_prompt_pin(entry.session_key) is None
+        restarted._db.close()
+
+    def test_switch_session_preserves_prompt_pin_unless_boundary_requests_clear(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        pin = {
+            "version": 1,
+            "context_key": "ctx-key",
+            "context_prompt": "exact session context",
+            "channel_prompt": None,
+            "parent_chat_id": None,
+        }
+        assert store.set_prompt_pin(entry.session_key, pin, expected_session_id=entry.session_id)
+
+        moved = store.switch_session(entry.session_key, "internal-repoint")
+        assert moved is not None and moved.prompt_pin == pin
+
+        boundary = store.switch_session(
+            entry.session_key, "resume-target", preserve_prompt_pin=False,
+        )
+        assert boundary is not None and boundary.prompt_pin is None
+        assert store.get_prompt_pin(entry.session_key) is None
+        store._db.close()
+
     def test_write_sessions_json_false_stops_producing_file(self, tmp_path):
         config = GatewayConfig(write_sessions_json=False)
         store = SessionStore(sessions_dir=tmp_path, config=config)

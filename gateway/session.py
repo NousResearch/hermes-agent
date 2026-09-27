@@ -477,6 +477,32 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
     return cleaned or None
 
 
+_PROMPT_PIN_VERSION = 1
+
+
+def sanitize_prompt_pin(pin: Any) -> Optional[Dict[str, Any]]:
+    """Validated durable snapshot of the exact ephemeral inputs reused by internal turns."""
+    if not isinstance(pin, dict) or pin.get("version") != _PROMPT_PIN_VERSION:
+        return None
+    context_key = pin.get("context_key")
+    context_prompt = pin.get("context_prompt")
+    channel_prompt = pin.get("channel_prompt")
+    parent_chat_id = pin.get("parent_chat_id")
+    if not isinstance(context_key, str) or not context_key or not isinstance(context_prompt, str):
+        return None
+    if channel_prompt is not None and not isinstance(channel_prompt, str):
+        return None
+    if parent_chat_id is not None and not isinstance(parent_chat_id, str):
+        return None
+    return {
+        "version": _PROMPT_PIN_VERSION,
+        "context_key": context_key,
+        "context_prompt": context_prompt,
+        "channel_prompt": channel_prompt,
+        "parent_chat_id": parent_chat_id,
+    }
+
+
 @dataclass
 class SessionEntry:
     """Routing-index entry: maps a session key to its current session ID and metadata."""
@@ -533,6 +559,9 @@ class SessionEntry:
     # "default" spelled out). The key namespace only says where the turn RUNS; after a restart this is
     # what says which bot may deliver to it. None = unknown (row predates the field, or standalone).
     transport_profile: Optional[str] = None
+    # Exact session-context/channel inputs from the last human turn. Append-only dataclass field so
+    # older positional construction of transport_profile keeps its meaning.
+    prompt_pin: Optional[Dict[str, Any]] = None
 
     # Fields (de)serialized verbatim, in wire order (``from_dict`` reads them with
     # ``data.get(name, <dataclass default>)``), split around the three ISO-datetime/token keys.
@@ -562,6 +591,9 @@ class SessionEntry:
         if self.model_override:
             # Defence-in-depth against an unsanitized dict stored directly.
             result["model_override"] = sanitize_model_override(self.model_override)
+        if self.prompt_pin:
+            # Same defence-in-depth: routing JSON must never preserve malformed pin state.
+            result["prompt_pin"] = sanitize_prompt_pin(self.prompt_pin)
         if self.transport_profile:
             result["transport_profile"] = self.transport_profile
         if self.origin:
@@ -604,6 +636,7 @@ class SessionEntry:
             last_resume_marked_at=_parse_iso(data.get("last_resume_marked_at")),
             active_turn_token=token, active_turn_started_at=started_at,
             model_override=sanitize_model_override(data.get("model_override")),
+            prompt_pin=sanitize_prompt_pin(data.get("prompt_pin")),
             transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
             **plain,
         )
@@ -1110,6 +1143,42 @@ class SessionStore(
             entry = self._entry_locked(session_key)
             return dict(entry.model_override) if entry and entry.model_override else None
 
+    def set_prompt_pin(
+        self, session_key: str, pin: Optional[Dict[str, Any]], *,
+        expected_session_id: Optional[str] = None,
+    ) -> bool:
+        """Persist effective prompt inputs without letting a stale turn cross a boundary.
+
+        The candidate is durable before the in-memory entry is published. The expected session id
+        is the turn's launch identity: a concurrent reset or resume makes this a no-op instead of
+        writing the old conversation's system bytes onto the new one.
+        """
+        cleaned = sanitize_prompt_pin(pin)
+        if pin is not None and cleaned is None:
+            return False
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None:
+                return False
+            if expected_session_id is not None and entry.session_id != expected_session_id:
+                return False
+            if entry.prompt_pin == cleaned:
+                return True
+            candidate = entry.to_dict()
+            if cleaned is None:
+                candidate.pop("prompt_pin", None)
+            else:
+                candidate["prompt_pin"] = cleaned
+            self._save_entry(session_key, entry_data=candidate, lock_held=True)
+            entry.prompt_pin = dict(cleaned) if cleaned is not None else None
+            return True
+
+    def get_prompt_pin(self, session_key: str) -> Optional[Dict[str, Any]]:
+        """Return a defensive copy of the persisted effective prompt-pin snapshot."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            return dict(entry.prompt_pin) if entry and entry.prompt_pin else None
+
     def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         with self._lock:
@@ -1224,6 +1293,7 @@ class SessionStore(
     # restart-resume freshness gate (#85709).
     def switch_session(
         self, session_key: str, target_session_id: str, *, expected_session_id: Optional[str] = None,
+        preserve_prompt_pin: bool = True,
     ) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
         reopens the target so resume matches the CLI.
@@ -1231,6 +1301,8 @@ class SessionStore(
         ``expected_session_id`` makes the repoint a compare-and-swap: ``None`` is returned when
         the key no longer points at that session, so a caller that resolved against a snapshot
         across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
+        Prompt pins follow non-boundary repoints by default; /resume opts out explicitly because it
+        starts a different conversation on the same routing key.
         """
         with self._lock:
             old_entry = self._entry_locked(session_key)
@@ -1247,6 +1319,10 @@ class SessionStore(
             new_entry = self._replace_route_locked(
                 session_key, old_entry, target_session_id, _now(),
                 display_name=old_entry.display_name, model_override=old_entry.model_override,
+                prompt_pin=(
+                    dict(old_entry.prompt_pin)
+                    if preserve_prompt_pin and old_entry.prompt_pin is not None else None
+                ),
             )
 
         if self._db_for_key(session_key) and old_entry.session_id:

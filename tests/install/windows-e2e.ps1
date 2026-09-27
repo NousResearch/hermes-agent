@@ -582,7 +582,15 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     Push-Location $InstallDir
     try {
-        & $hermesExe desktop 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
+        if ($hermesExe.StartsWith((Join-Path $InstallDir '.hermes'), [StringComparison]::OrdinalIgnoreCase)) {
+            # The PM launcher runs its interpreter with -I, so PYTHONPATH never
+            # imports sitecustomize. Same as installer-script-e2e.sh: ask the
+            # launcher for its own isolated command and inject the hook into it.
+            & python -I (Join-Path $capDir 'pm-launch.py') $hermesExe $spec 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
+        } else {
+            # Pre-PM venv console scripts load sitecustomize from PYTHONPATH.
+            & $hermesExe desktop 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
+        }
         $capExit = $LASTEXITCODE
     } finally {
         Pop-Location

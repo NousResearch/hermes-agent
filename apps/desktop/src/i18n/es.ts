@@ -4,6 +4,34 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  sharedMetrics: {
+    consentTitle: '¿Nos ayudas a mejorar Hermes?',
+    consentBody:
+      'Hermes puede contar cómo se usa —nunca lo que escribes— y, si lo eliges, enviar un resumen diario a Nous Research. No se comparte nada a menos que lo elijas aquí.',
+    whatIsCollected: 'Qué se recopila',
+    collectedIntro: 'Solo contadores acotados, como:',
+    collectedActivity: 'Actividad, sesiones, resultados y tipos de error',
+    collectedModels: 'Nombres de modelos y proveedores, y volumen de tokens',
+    collectedNames: 'Nombres de herramientas, comandos y habilidades integrados',
+    collectedMilestones: 'Hitos de configuración y de uso de funciones',
+    collectedConfig: 'Un resumen diario de tu configuración (solo recuentos)',
+    neverCollected: 'Nunca tus prompts, respuestas, archivos, rutas ni textos de error.',
+    installId: 'Los resúmenes llevan un ID de instalación aleatorio creado para este perfil. No te identifica.',
+    consentWindow:
+      'Solo se envían los datos registrados mientras compartir está activado. Puedes desactivarlo cuando quieras.',
+    readDocs: 'Leer todos los detalles',
+    share: 'Compartir estadísticas de uso con Nous',
+    local: 'Guardarlas solo en este dispositivo',
+    off: 'No, gracias',
+    changeLater: 'Puedes cambiarlo cuando quieras en Ajustes → Seguridad.',
+    saveFailed: 'No se pudo guardar tu elección',
+    collectLabel: 'Recopilar estadísticas de uso',
+    collectDesc:
+      'Guarda contadores de uso acotados en este dispositivo. Nunca prompts, respuestas, archivos, rutas ni textos de error.',
+    sendLabel: 'Enviar estadísticas de uso a Nous',
+    sendDesc: 'Sube un resumen diario a Nous Research para ayudar a mejorar Hermes. Requiere la recopilación activada.',
+    unavailable: 'Actualiza el backend de Hermes para cambiar este ajuste.'
+  },
   intro: introEs,
   connectors: {
     title: 'Conecta tus apps',

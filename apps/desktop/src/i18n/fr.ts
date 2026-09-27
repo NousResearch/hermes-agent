@@ -4,6 +4,36 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  sharedMetrics: {
+    consentTitle: 'Aider à améliorer Hermes ?',
+    consentBody:
+      'Hermes peut compter comment il est utilisé — jamais ce que vous écrivez — et, si vous le souhaitez, envoyer un résumé quotidien à Nous Research. Rien n’est partagé tant que vous ne le choisissez pas ici.',
+    whatIsCollected: 'Ce qui est collecté',
+    collectedIntro: 'Uniquement des compteurs bornés, par exemple :',
+    collectedActivity: 'Activité, sessions, résultats et types d’erreur',
+    collectedModels: 'Noms des modèles et fournisseurs, et volumes de tokens',
+    collectedNames: 'Noms des outils, commandes et compétences intégrés',
+    collectedMilestones: 'Étapes de configuration et d’utilisation des fonctionnalités',
+    collectedConfig: 'Un résumé quotidien de votre configuration (comptes uniquement)',
+    neverCollected: 'Jamais vos prompts, réponses, fichiers, chemins ni textes d’erreur.',
+    installId:
+      'Les résumés portent un identifiant d’installation aléatoire créé pour ce profil. Il ne vous identifie pas.',
+    consentWindow:
+      'Seules les données enregistrées pendant que le partage est actif sont envoyées. Vous pouvez le désactiver à tout moment.',
+    readDocs: 'Lire tous les détails',
+    share: 'Partager les statistiques d’utilisation avec Nous',
+    local: 'Les garder sur cet appareil',
+    off: 'Non merci',
+    changeLater: 'Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
+    saveFailed: 'Impossible d’enregistrer votre choix',
+    collectLabel: 'Collecter les statistiques d’utilisation',
+    collectDesc:
+      'Conserver des compteurs d’utilisation bornés sur cet appareil. Jamais de prompts, réponses, fichiers, chemins ni textes d’erreur.',
+    sendLabel: 'Envoyer les statistiques d’utilisation à Nous',
+    sendDesc:
+      'Envoyer chaque jour un résumé à Nous Research pour aider à améliorer Hermes. Nécessite la collecte activée.',
+    unavailable: 'Mettez à jour le backend Hermes pour modifier ce réglage.'
+  },
   intro: introFr,
   connectors: {
     title: 'Connectez vos applications',

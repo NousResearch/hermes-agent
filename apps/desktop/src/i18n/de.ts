@@ -4,6 +4,36 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  sharedMetrics: {
+    consentTitle: 'Hermes verbessern helfen?',
+    consentBody:
+      'Hermes kann zählen, wie es genutzt wird – nie, was Sie schreiben – und auf Wunsch eine tägliche Zusammenfassung an Nous Research senden. Nichts wird geteilt, solange Sie es hier nicht auswählen.',
+    whatIsCollected: 'Was erfasst wird',
+    collectedIntro: 'Nur begrenzte Zähler, zum Beispiel:',
+    collectedActivity: 'Aktivität, Sessions, Ergebnisse und Fehlerarten',
+    collectedModels: 'Modell- und Anbieternamen sowie Token-Mengen',
+    collectedNames: 'Namen integrierter Tools, Befehle und Skills',
+    collectedMilestones: 'Meilensteine bei Einrichtung und Funktionen',
+    collectedConfig: 'Eine tägliche Übersicht Ihrer Einrichtung (nur Anzahlen)',
+    neverCollected: 'Niemals Ihre Prompts, Antworten, Dateien, Pfade oder Fehlertexte.',
+    installId:
+      'Zusammenfassungen tragen eine zufällige Installations-ID für dieses Profil. Sie identifiziert Sie nicht.',
+    consentWindow:
+      'Gesendet werden nur Daten, die bei aktivierter Freigabe erfasst wurden. Sie können sie jederzeit abschalten.',
+    readDocs: 'Alle Details lesen',
+    share: 'Nutzungsstatistiken mit Nous teilen',
+    local: 'Nur auf diesem Gerät behalten',
+    off: 'Nein, danke',
+    changeLater: 'Sie können das jederzeit unter Einstellungen → Sicherheit ändern.',
+    saveFailed: 'Ihre Auswahl konnte nicht gespeichert werden',
+    collectLabel: 'Nutzungsstatistiken erfassen',
+    collectDesc:
+      'Begrenzte Nutzungszähler auf diesem Gerät speichern. Nie Prompts, Antworten, Dateien, Pfade oder Fehlertexte.',
+    sendLabel: 'Nutzungsstatistiken an Nous senden',
+    sendDesc:
+      'Täglich eine Zusammenfassung an Nous Research hochladen, um Hermes zu verbessern. Erfordert aktive Erfassung.',
+    unavailable: 'Aktualisieren Sie das Hermes-Backend, um diese Einstellung zu ändern.'
+  },
   intro: introDe,
   connectors: {
     title: 'Verbinden Sie Ihre Apps',

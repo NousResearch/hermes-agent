@@ -10,6 +10,32 @@ export const zhHant = defineLocale({
     copyUrl: '複製連結',
     close: '關閉'
   },
+  sharedMetrics: {
+    consentTitle: '協助改進 Hermes？',
+    consentBody:
+      'Hermes 可以統計它的使用方式（絕不記錄你說的內容），並在你同意時每天向 Nous Research 傳送一份摘要。除非你在此選擇，否則不會分享任何內容。',
+    whatIsCollected: '收集哪些內容',
+    collectedIntro: '僅限有上限的計數，例如：',
+    collectedActivity: '活動、工作階段、結果和錯誤類型',
+    collectedModels: '模型與供應商名稱，以及 token 用量',
+    collectedNames: '內建工具、指令和技能的名稱',
+    collectedMilestones: '設定與功能里程碑',
+    collectedConfig: '每日設定摘要（僅計數）',
+    neverCollected: '絕不包含你的提示詞、回覆、檔案、路徑或錯誤文字。',
+    installId: '摘要附帶為此設定檔產生的隨機安裝 ID，它無法識別你的身分。',
+    consentWindow: '只會傳送在分享開啟期間記錄的資料。你可以隨時關閉。',
+    readDocs: '查看完整說明',
+    share: '與 Nous 分享使用統計',
+    local: '僅保存在此裝置上',
+    off: '不用了',
+    changeLater: '你可以隨時在 設定 → 安全性 中變更。',
+    saveFailed: '無法儲存你的選擇',
+    collectLabel: '收集使用統計',
+    collectDesc: '在此裝置上保存有上限的使用計數。絕不包含提示詞、回覆、檔案、路徑或錯誤文字。',
+    sendLabel: '向 Nous 傳送使用統計',
+    sendDesc: '每天向 Nous Research 上傳摘要，協助改進 Hermes。需要先開啟收集。',
+    unavailable: '請更新 Hermes 後端以變更此設定。'
+  },
   intro: introZhHant,
   catalog: {
     add: '新增',

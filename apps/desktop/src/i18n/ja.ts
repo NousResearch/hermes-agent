@@ -10,6 +10,35 @@ export const ja = defineLocale({
     copyUrl: 'リンクをコピー',
     close: '閉じる'
   },
+  sharedMetrics: {
+    consentTitle: 'Hermes の改善に協力しますか？',
+    consentBody:
+      'Hermes は使われ方を集計できます（話した内容は記録しません）。選択した場合は、1 日 1 回の概要を Nous Research に送信します。ここで選ばない限り、何も共有されません。',
+    whatIsCollected: '収集される内容',
+    collectedIntro: '上限付きのカウンターのみ。例：',
+    collectedActivity: 'アクティビティ、セッション、結果、エラーの種類',
+    collectedModels: 'モデル名とプロバイダー名、トークン量',
+    collectedNames: '組み込みツール、コマンド、スキルの名前',
+    collectedMilestones: 'セットアップと機能のマイルストーン',
+    collectedConfig: '設定の日次サマリー（件数のみ）',
+    neverCollected: 'プロンプト、応答、ファイル、パス、エラーテキストは一切含みません。',
+    installId:
+      '概要にはこのプロファイル用に作られたランダムなインストール ID が付きます。あなたを特定するものではありません。',
+    consentWindow: '共有がオンの間に記録されたデータだけが送信されます。いつでもオフにできます。',
+    readDocs: '詳細を読む',
+    share: '利用統計を Nous と共有する',
+    local: 'このデバイスにのみ保存する',
+    off: '共有しない',
+    changeLater: '設定 → 安全性 からいつでも変更できます。',
+    saveFailed: '選択を保存できませんでした',
+    collectLabel: '利用統計を収集する',
+    collectDesc:
+      '上限付きの利用カウンターをこのデバイスに保存します。プロンプト、応答、ファイル、パス、エラーテキストは含みません。',
+    sendLabel: '利用統計を Nous に送信する',
+    sendDesc:
+      'Hermes の改善のため、1 日 1 回の概要を Nous Research にアップロードします。収集がオンである必要があります。',
+    unavailable: 'この設定を変更するには Hermes バックエンドを更新してください。'
+  },
   intro: introJa,
   catalog: {
     add: '追加',

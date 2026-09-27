@@ -53,6 +53,7 @@ import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } fro
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 export function ConfigSettings({
@@ -300,6 +301,7 @@ function ConfigSettingsInner({
 
   const showDesktopSettings = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'desktop')
   const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
+  const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.
@@ -432,7 +434,7 @@ function ConfigSettingsInner({
     visibleFields.length === 0 &&
     (subpage === undefined
       ? activeSectionId !== 'chat'
-      : !showModelSettings && !showDesktopSettings && !showAttachments)
+      : !showModelSettings && !showDesktopSettings && !showAttachments && !showSharedMetrics)
 
   return renderPage(
     <>
@@ -469,6 +471,9 @@ function ConfigSettingsInner({
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
       {showAttachments ? <AttachmentSizeSetting /> : null}
+      {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
+          go through their own RPC rather than the generic field autosave. */}
+      {showSharedMetrics ? <SharedMetricsSettings /> : null}
       {activeSectionId === 'voice' ? (
         <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
       ) : null}

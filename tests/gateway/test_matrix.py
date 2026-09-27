@@ -1658,16 +1658,20 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages():
     from gateway.run import GatewayRunner
 
     adapter = _make_adapter()
+    adapter._room_backfill_limit = 3
     adapter._client = MagicMock()
-    adapter._client.api.request = AsyncMock(return_value={"events_before": [
-        {"event_id": "$newer", "sender": "@bob:example.org", "type": "m.room.encrypted",
-         "content": {"ciphertext": "encrypted"}},
-        {"event_id": "$thread", "sender": "@bob:example.org",
-         "content": {"msgtype": "m.text", "body": "Other discussion",
-                     "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
-        {"event_id": "$older", "sender": "@alice:example.org",
-         "content": {"msgtype": "m.text", "body": "First point @file:private.txt"}},
-    ]})
+    adapter._client.api.request = AsyncMock(side_effect=[
+        {"start": "", "events_before": []},
+        {"events_before": [
+            {"event_id": "$newer", "sender": "@bob:example.org", "type": "m.room.encrypted",
+             "content": {"ciphertext": "encrypted"}},
+            {"event_id": "$thread", "sender": "@bob:example.org",
+             "content": {"msgtype": "m.text", "body": "Other discussion",
+                         "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
+            {"event_id": "$older", "sender": "@alice:example.org",
+             "content": {"msgtype": "m.text", "body": "First point @file:private.txt"}},
+        ]},
+    ])
     adapter._resolve_room_identity = AsyncMock(return_value=types.SimpleNamespace(
         display_name="Room", room_topic=None, server_name="example.org", members_digest=None))
     adapter._is_dm_room = AsyncMock(return_value=False)
@@ -1716,7 +1720,9 @@ async def test_admitted_room_mention_backfills_only_prior_room_messages():
         {"msgtype": "m.text", "body": "Unmentioned"}, {},
     )
     assert rejected is None
-    adapter._client.api.request.assert_awaited_once()
+    assert [call.kwargs["query_params"] for call in adapter._client.api.request.await_args_list] == [
+        {"limit": "0"}, {"limit": "6"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -2026,6 +2032,28 @@ async def test_catch_up_limit_one_reads_one_earlier_room_event():
     entries = await fetch_room_entries(client, MatrixEventContextCache(), room_id, "$current", limit=1)
 
     assert entries == [MatrixEventContext("@alice:example.org", "Earlier")]
+
+
+@pytest.mark.asyncio
+async def test_room_catch_up_without_a_zero_limit_context_cursor():
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+    from plugins.platforms.matrix.room_context import fetch_room_entries
+
+    room_id = "!room:example.org"
+    earlier = {"event_id": "$earlier", "sender": "@alice:example.org",
+               "content": {"msgtype": "m.text", "body": "Earlier"}}
+    client = MagicMock()
+    client.api.request = AsyncMock(side_effect=[
+        {"start": "", "events_before": []},
+        {"events_before": [earlier]},
+    ])
+
+    entries = await fetch_room_entries(client, MatrixEventContextCache(), room_id, "$current", limit=1)
+
+    assert entries == [MatrixEventContext("@alice:example.org", "Earlier")]
+    assert [call.kwargs["query_params"] for call in client.api.request.await_args_list] == [
+        {"limit": "0"}, {"limit": "2"},
+    ]
 
 
 @pytest.mark.asyncio

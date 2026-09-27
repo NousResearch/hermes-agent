@@ -41,7 +41,11 @@ async def fetch_room_entries(
             )
             earlier = response.get("chunk") if isinstance(response, dict) else None
         else:
-            earlier = boundary.get("events_before") if isinstance(boundary, dict) else None
+            response = await asyncio.wait_for(
+                client.api.request(Method.GET, path, query_params={"limit": str(limit * 2)}),
+                timeout=10.0,
+            )
+            earlier = response.get("events_before") if isinstance(response, dict) else None
     except Exception as exc:
         logger.debug("Matrix: could not fetch room context for %s in %s: %s", event_id, room_id, exc)
         return []

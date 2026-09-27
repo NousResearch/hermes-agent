@@ -3557,9 +3557,8 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
       // launcher owns interpreter and generation selection there — same
       // contract as readSourceUpdate and the hand-off script.
       const managed: boolean = directoryExists(path.join(root, 'pm'))
-      const launcher: string | null = managed
-        ? resolveInstallationLauncher(root, IS_WINDOWS, HERMES_HOME)
-        : null
+
+      const launcher: string | null = managed ? resolveInstallationLauncher(root, IS_WINDOWS, HERMES_HOME) : null
 
       if (managed && !launcher) {
         const message =

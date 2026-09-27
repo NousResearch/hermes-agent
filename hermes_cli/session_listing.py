@@ -149,6 +149,6 @@ def format_gateway_session_listing(
         )
     return "\n".join([
         *lines, "", *([notice] if notice else []),
-        "Resume: `/resume <session id>` or `/resume <number>` from `/resume`.",
+        "Resume: `/resume <session id>` or `/resume <number>` shown above.",
         "More: `/sessions all`, `/sessions full`, `/sessions search <query>`.",
     ])

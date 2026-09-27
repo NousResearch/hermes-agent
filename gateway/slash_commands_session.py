@@ -829,19 +829,39 @@ class GatewaySessionCommandsMixin:
         titled = [s for s in sessions if s.get("title")][:10]
         return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
 
+    def _remember_resume_listing(self, source, session_key: str, allow_all: bool, rows: list[dict]) -> None:
+        """Pin the numbered choices that were actually shown in this lane.
+
+        Re-querying on ``/resume N`` makes the number race recency changes between the listing and
+        the user's reply (including the current command's own activity update). Keep the displayed
+        IDs instead; the normal ownership check still re-authorizes the selected row before switching.
+        """
+        snapshots = getattr(self, "_resume_listing_snapshots", None)
+        if snapshots is None:
+            snapshots = self._resume_listing_snapshots = {}
+        widened = bool(allow_all and self._resume_caller_is_admin(source))
+        snapshots[(session_key, widened)] = [
+            (str(row.get("id") or ""), str(row.get("title") or "")) for row in rows[:10]
+        ]
+
     async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
         """``(target_id, name)`` for a numbered choice, session id or title; else the error reply."""
         if name.isdigit():
-            try:
-                titled = await self._list_titled_sessions(source, session_key, allow_all)
-            except Exception as e:
-                logger.debug("Failed to list titled sessions for numeric resume: %s", e)
-                return t("gateway.resume.list_failed", error=e)
+            widened = bool(allow_all and self._resume_caller_is_admin(source))
+            snapshot = getattr(self, "_resume_listing_snapshots", {}).get((session_key, widened))
+            if snapshot is None:
+                try:
+                    titled = await self._list_titled_sessions(source, session_key, allow_all)
+                except Exception as e:
+                    logger.debug("Failed to list titled sessions for numeric resume: %s", e)
+                    return t("gateway.resume.list_failed", error=e)
+                self._remember_resume_listing(source, session_key, allow_all, titled)
+                snapshot = [(str(row.get("id") or ""), str(row.get("title") or "")) for row in titled]
             index = int(name)
-            if index < 1 or index > len(titled):
+            if index < 1 or index > len(snapshot):
                 return t("gateway.resume.out_of_range", index=index)
-            target = titled[index - 1]
-            target_id, name = target.get("id"), target.get("title") or name
+            target_id, shown_title = snapshot[index - 1]
+            name = shown_title or name
         else:  # session id first, then title
             session = await self._session_db.get_session(name)
             target_id = session["id"] if session else await self._session_db.resolve_session_by_title(name)
@@ -887,6 +907,7 @@ class GatewaySessionCommandsMixin:
         if not name:
             try:
                 titled = await self._list_titled_sessions(source, session_key, allow_all)
+                self._remember_resume_listing(source, session_key, allow_all, titled)
                 return self._resume_listing_reply(source, titled, allow_all)
             except Exception as e:
                 logger.debug("Failed to list titled sessions: %s", e)
@@ -1000,6 +1021,7 @@ class GatewaySessionCommandsMixin:
         if not cross_origin:
             rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
         rows = rows[:10]
+        self._remember_resume_listing(source, session_key, include_all, rows)
         if search_query:
             title = t("gateway.sessions.title_matching", query=search_query)
         else:

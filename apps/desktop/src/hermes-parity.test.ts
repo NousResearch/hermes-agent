@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getToolsetModels, searchSkillsHub, testMcpServer } from './hermes'
+import { getToolsetModels, searchSkillsHub, setMcpServerEnabled, testMcpServer } from './hermes'
 
 describe('Hermes REST parity helpers (hub / mcp / maintenance)', () => {
   let api: ReturnType<typeof vi.fn>
@@ -42,6 +42,29 @@ describe('Hermes REST parity helpers (hub / mcp / maintenance)', () => {
 
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({ path: '/api/tools/toolsets/image_gen/models?provider=FAL.ai' })
+    )
+  })
+
+  it('scopes the MCP enable toggle to a named profile', async () => {
+    await setMcpServerEnabled('github', true, { profile: 'bobby' })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/mcp/servers/github/enabled',
+        method: 'PUT',
+        profile: 'bobby'
+      })
+    )
+  })
+
+  it('falls back to the ambient profile scope for the enable toggle', async () => {
+    await setMcpServerEnabled('github', false)
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/mcp/servers/github/enabled',
+        method: 'PUT'
+      })
     )
   })
 })

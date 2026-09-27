@@ -53,6 +53,9 @@ from hermes_cli.config_read_errors import (
     _yaml_error_location)
 
 logger = logging.getLogger(__name__)
+# ``log`` is the save_config G1 guard rail's logger (re-preserve warnings); aliased to the
+# same module logger so callers can filter on either name.
+log = logger
 
 
 def is_uv_tool_install() -> bool:
@@ -72,6 +75,11 @@ def format_unsupported_install_warning(method: str) -> str:
 
 class InvalidUserConfigError(RuntimeError):
     """Raised when a run that cannot repair config finds invalid user YAML."""
+
+
+class ConfigWriteGuardError(RuntimeError):
+    """A config write lost user-data keys despite the re-preservation guard;
+    config.yaml was restored to its pre-write contents."""
 
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -1311,12 +1319,17 @@ def warn_deprecated_cwd_env_vars() -> None:
         sys.stderr.write("\n".join(lines) + "\n\n")
 
 
-def _persist_migration(config: Dict[str, Any]) -> None:
+def _persist_migration(config: Dict[str, Any], removed_keys: Optional[Set[str]] = None) -> None:
     """Persist a migrated config under THE migration write invariant: a migration may only
     persist values that DIFFER from the schema default, plus explicit removals/renames of user
     data. Every migration step MUST write through here (``save_config`` with default-stripping
-    ON, no ``merge_existing``) so the invariant cannot regress one migration at a time."""
-    save_config(config)
+    ON, no ``merge_existing``) so the invariant cannot regress one migration at a time.
+
+    ``removed_keys`` declares the top-level user-data keys this step intentionally pops
+    (e.g. a rename like custom_providers → providers). Any top-level user-data key present on
+    disk but absent from the migrated config AND absent from ``removed_keys`` triggers the G1
+    guard: it is re-preserved with a WARNING, so an accidental drop cannot go silently."""
+    save_config(config, removed_keys=removed_keys)
 
 
 def _prompt_and_save_env(name: str, info: Dict[str, Any], prompt: str, results: Dict[str, Any]) -> bool:
@@ -1723,19 +1736,31 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     return current
 
 
-def _explicit_config_paths(config: Dict[str, Any]) -> Set[Tuple[str, ...]]:
-    """Leaf paths explicitly present in a RAW (un-normalized) config, so values injected by
-    normalisation are never mistaken for user-set ones. Feeds ``_strip_default_values``."""
+def _explicit_config_paths(
+    config: Dict[str, Any], defaults: Dict[str, Any] = DEFAULT_CONFIG
+) -> Set[Tuple[str, ...]]:
+    """Leaf paths — plus unknown dict NODE paths — explicitly present in a RAW
+    (un-normalized) config, so values injected by normalisation are never mistaken
+    for user-set ones. Feeds ``_strip_default_values``.
+
+    A dict node is recorded only when the schema has no dict at that position
+    (e.g. the whole ``mcp_servers`` map): preserving the node then protects a
+    user-data subtree wholesale. Known-defaulted dict subtrees stay leaf-only —
+    a preserved node would otherwise also pin caller-injected default-equal
+    leaves inside it, defeating the strip pass."""
     paths: Set[Tuple[str, ...]] = set()
 
-    def _walk(value: Any, path: Tuple[str, ...]) -> None:
+    def _walk(value: Any, default: Any, path: Tuple[str, ...]) -> None:
         if isinstance(value, dict):
+            if path and not isinstance(default, dict):
+                paths.add(path)
+            default_children = default if isinstance(default, dict) else {}
             for key, child in value.items():
-                _walk(child, path + (key,))
+                _walk(child, default_children.get(key), path + (key,))
         elif path:
             paths.add(path)
 
-    _walk(config, ())
+    _walk(config, defaults, ())
     return paths
 
 
@@ -2056,6 +2081,24 @@ def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_conten
 
     _refuse_failed_read(config_path, data)
     atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+
+
+def _atomic_restore_pre_bytes(config_path: Path, pre_bytes: bytes) -> None:
+    """Atomically put pre-write bytes back (tmp file + rename), then secure."""
+    fd, tmp_path = tempfile.mkstemp(dir=str(config_path.parent), suffix=".tmp", prefix=".cfg_guard_")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(pre_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, config_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    _secure_file(config_path)
 
 
 def load_config() -> Dict[str, Any]:
@@ -2436,9 +2479,25 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
     return "".join(parts) or None
 
 
+def _save_config_caller() -> str:
+    """file:line name of the first caller of ``save_config`` outside this module.
+
+    ``save_config`` is reached both directly and through internal wrappers (e.g.
+    ``_persist_migration``); a fixed frame depth would attribute the guard to the wrapper
+    (itself in this file) instead of the real caller, so walk past every frame in this file."""
+    this_file = os.path.abspath(__file__)
+    frame = sys._getframe(2)
+    while frame is not None and os.path.abspath(frame.f_code.co_filename) == this_file:
+        frame = frame.f_back
+    if frame is None:
+        return "<unknown>"
+    return f"{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}"
+
+
 def save_config(
     config: Dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False):
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    removed_keys: Optional[Set[str]] = None):
     """Save configuration to ~/.hermes/config.yaml.
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
@@ -2452,6 +2511,7 @@ def save_config(
         config_path = get_config_path()
         _refuse_failed_read(config_path, config)
         config = _strip_managed_keys_for_save(config)
+        removed = {str(k) for k in (removed_keys or ())}
 
         ensure_hermes_home()
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
@@ -2475,9 +2535,49 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
+        # G1 guard rail: a full-replace save that omits a user-data root key
+        # (present on disk, unknown to DEFAULT_CONFIG, not explicitly surrendered
+        # via removed_keys) silently deleted it — mcp_servers lost everything on
+        # 2026-09-24 that way. Re-preserve loudly instead of dropping silently.
+        # Capture the caller once: the helper walks out of this module, so the
+        # re-preserve warning and the post-write invariant name the same real caller.
+        _guard_caller = _save_config_caller()
+        protected = set(_raw_for_paths) - set(normalized) - set(DEFAULT_CONFIG) - removed
+        if protected:
+            for key in sorted(protected):
+                log.warning(
+                    "save_config: incoming config omitted user-data key %r present on disk; "
+                    "re-preserving it. If removal is intentional, pass removed_keys={%r}. "
+                    "(caller: %s)", key, key, _guard_caller, stacklevel=2)
+            normalized = {**normalized,
+                          **{key: copy.deepcopy(_raw_for_paths[key]) for key in protected}}
+
+        pre_bytes = config_path.read_bytes() if config_path.exists() else None
         atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
+        # G1 post-write invariant: the file on disk must still carry every
+        # user-data root key it carried before the write. Any missing key is a
+        # defect somewhere below this function — restore and fail loudly. A
+        # verification read that itself fails leaves the result unprovable, so it
+        # is rolled back too: a refused save never leaves a changed file behind.
+        try:
+            post_raw = require_readable_config_before_write(config_path)
+        except BaseException:
+            if pre_bytes is not None:
+                _atomic_restore_pre_bytes(config_path, pre_bytes)
+            _RAW_CONFIG_CACHE.pop(str(config_path), None)
+            raise
+        expected = set(_raw_for_paths) - removed - set(DEFAULT_CONFIG)
+        missing = expected - set(post_raw)
+        if missing:
+            if pre_bytes is not None:
+                _atomic_restore_pre_bytes(config_path, pre_bytes)
+            _RAW_CONFIG_CACHE.pop(str(config_path), None)
+            raise ConfigWriteGuardError(
+                f"config write lost user-data key(s) {sorted(missing)!r}; "
+                "config.yaml was restored to its pre-write contents "
+                f"(caller: {_guard_caller})")
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 

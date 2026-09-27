@@ -387,6 +387,37 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     void refresh({ replaceSelection: true })
   })
 
+  // The Settings "Applies to" chip selects a profile the page edits without
+  // touching the app-wide active gateway, so useOnProfileSwitch above never
+  // fires on a chip click — but the same mounted-component pitfall applies:
+  // selectedProvider/selectedModel keep the previous chip's values, the
+  // `prev || modelInfo.provider` fallback in refresh() never overwrites them,
+  // and the Select trigger paints the WRONG profile's model under the new
+  // chip until the user actively clears it. Clear the draft + force a
+  // replaceSelection refresh, mirroring the app-wide-switch path. Same
+  // `profileEpoch` bump strands any in-flight fetch from the previous chip.
+  // The first-run ref skip mirrors the existing StrictMode replay guard in
+  // useOnProfileSwitch: this effect must NOT fire on the initial mount or it
+  // would clobber the seeded draft before refresh()'s first response lands.
+  const isFirstScopeRun = useRef(true)
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-fires when scopeProfile changes
+  useEffect(() => {
+    if (isFirstScopeRun.current) {
+      isFirstScopeRun.current = false
+
+      return
+    }
+
+    profileEpoch.current += 1
+    setSelectedProvider('')
+    setSelectedModel('')
+    setApiKeyDraft('')
+    void refresh({ replaceSelection: true })
+    // refresh identity is intentionally ignored; it is rebuilt from scopeProfile
+    // and re-firing on identity churn would loop on every parent render.
+  }, [scopeProfile])
+
   const providerOptions = providers.length ? providers : NO_PROVIDERS
 
   // Radix renders a blank trigger when the controlled value has no matching

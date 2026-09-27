@@ -171,6 +171,14 @@ class UpdateReceipt:
         self.data["finished_at"] = _utc_now_iso()
         self.data["post_update"] = _code_identity(refresh=True)
 
+    def verification(self, checks: list[dict[str, Any]], *, rolled_back: bool = False,
+                     failed_check: str = "") -> None:
+        self.data["verification"] = {
+            "checks": [dict(check) for check in checks],
+            "rolled_back": bool(rolled_back),
+            "failed_check": failed_check,
+        }
+
 
 def _receipt_dir() -> Path:
     # ``hermes_constants`` (stdlib-only), never ``hermes_cli.config``: the receipt must be
@@ -235,6 +243,13 @@ def record_skip(name: str, reason: str) -> None:
 def record_gateway_restart(**kwargs: Any) -> None:
     """Record the gateway restart phase outcome (see UpdateReceipt)."""
     _record("gateway_restart_result", "gateway restart result", **kwargs)
+
+
+def record_verification(checks: list[dict[str, Any]], *, rolled_back: bool = False,
+                        failed_check: str = "") -> None:
+    """Record the post-update verification section (see UpdateReceipt)."""
+    _record("verification", f"update verification {failed_check}", checks,
+            rolled_back=rolled_back, failed_check=failed_check)
 
 
 def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason: str = "") -> Optional[Path]:

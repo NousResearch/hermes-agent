@@ -151,4 +151,40 @@ describe('ConfigSettings autosave', () => {
       vi.useRealTimers()
     }
   })
+
+  it('shows only the selected profile values after a mid-mount scope chip switch', async () => {
+    // #90549-class symptom: switching the 套用至 chip while the page is open
+    // must re-read under the NEW profile (the inner component is keyed on
+    // scopeProfile, so it remounts). Before the cache-writer fix the BASE
+    // cache row held the previous profile's snapshot; the post-remount query
+    // was free to land any time, and the row that painted first won.
+    getHermesConfigRecord.mockImplementation((profile?: string) =>
+      Promise.resolve(
+        profile === 'bobby'
+          ? { compression: { codex_gpt55_autoraise: true } }
+          : { compression: { codex_gpt55_autoraise: false } }
+      )
+    )
+    getHermesConfigSchema.mockResolvedValue({
+      fields: { 'compression.codex_gpt55_autoraise': { type: 'boolean' } }
+    })
+
+    scopeProfileMock.set('bobby')
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings('memory')
+
+      await vi.waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalledWith('bobby'))
+      expect(await screen.findByRole('switch')).toBeTruthy()
+
+      // User clicks the Nana chip.
+      scopeProfileMock.set('nana')
+
+      // Inner component remounts (key={scopeProfile}) and re-reads under 'nana'.
+      await vi.waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalledWith('nana'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

@@ -166,6 +166,28 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
     return code
 
 
+def _verify_after_relaunch(request: dict, root: Path) -> None:
+    """G3 guard rail (spec §5.1 phase 3): post-verify, before success is reported.
+
+    Seated HERE rather than in the parent because both halves of the requirement land
+    inside this child: it is the process that relaunches the gateway the update paused
+    (failure mode D — "the update's gateway relaunch was never verified"), and it is the
+    process that holds the receipt open right up to _verify_fleet_after_update's finalize.
+    The parent pops its own receipt as soon as we return ours (_complete_source_update),
+    so a parent-side record_verification no-ops and the section never reaches the file.
+
+    Rolls back and raises SystemExit(1) on the first failing check; _finish's finally still
+    finalizes the receipt, so the section (with failed_check + rolled_back) survives.
+    """
+    pre_state = request.get("verify_pre_state")
+    if not pre_state:
+        return
+    from hermes_cli.update_verification import verify_or_rollback
+
+    if verify_or_rollback(pre_state, checkout=root):
+        raise SystemExit(1)
+
+
 def _complete_selected(request: dict) -> None:
     from hermes_cli import main, update_cmd, update_cmd_config
     from hermes_cli.source_completion import complete_source_checkout
@@ -217,6 +239,10 @@ def _complete_selected(request: dict) -> None:
         return
     restart = update_cmd._restart_gateway_fleet_after_update(plan, request["gateway_mode"])
     update_cmd._resume_windows_gateways_and_merge_outcome(restart, request["windows_resume"], request["gateway_mode"])
+    # G3 guard rail: verify the relaunched fleet against the pre-state BEFORE
+    # _verify_fleet_after_update finalizes the receipt — success may only be written
+    # once config parity, MCP fingerprints, and gateway liveness all match.
+    _verify_after_relaunch(request, root)
     update_cmd._verify_fleet_after_update(
         restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"], update_complete=complete)
 

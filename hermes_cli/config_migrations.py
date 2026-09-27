@@ -47,8 +47,8 @@ def read_raw_config():
     return _cfg().read_raw_config()
 
 
-def _persist_migration(config):
-    _cfg()._persist_migration(config)
+def _persist_migration(config, removed_keys=None):
+    _cfg()._persist_migration(config, removed_keys=removed_keys)
 
 
 def _dict_at(config: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -161,7 +161,7 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
         config["providers"] = providers_dict
         # Runtime reads the list view via get_compatible_custom_providers().
         config.pop("custom_providers", None)
-        _persist_migration(config)
+        _persist_migration(config, removed_keys={"custom_providers"})
         if not quiet:
             print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
             for key in list(providers_dict.keys())[-migrated_count:]:

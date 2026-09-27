@@ -56,6 +56,15 @@ def _error_result(error: str, **extra: Any) -> Dict[str, Any]:
     return {"success": False, "transcript": "", "error": error, **extra}
 
 
+class STTResponseError(ValueError):
+    """A provider answered with a structured object carrying no transcript text.
+
+    Raised by ``_extract_transcript_text`` when an SDK object or JSON body reports an
+    ``error`` (or neither ``text`` nor ``error``) instead of a usable transcript. The
+    message is the provider's own, so the STT failure paths surface it verbatim rather
+    than stringifying the response object into its repr (#78098)."""
+
+
 def _ok_result(transcript: str, provider: str) -> Dict[str, Any]:
     return {"success": True, "transcript": transcript, "provider": provider}
 

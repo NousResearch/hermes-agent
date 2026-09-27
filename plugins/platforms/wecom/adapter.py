@@ -33,6 +33,7 @@ from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendR
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
+from gateway.platforms._shared import extra_or_secret as _shared_extra_or_secret
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
@@ -814,22 +815,34 @@ def interactive_setup() -> None:
 
 
 def _is_connected(config) -> bool:
-    """Connected once bot_id + secret resolve (PlatformConfig.extra first, then env — the
-    wizard's picker hands every plugin platform a synthetic empty config, #120870)."""
+    """Connected once bot_id + secret resolve (extra, then env — the wizard's picker hands
+    every plugin platform a synthetic empty config, #120870). Reads through ``extra_or_secret``
+    so the checker sees blanks the way ``connect()`` does: a blank env value or YAML string is
+    unset, not a working credential."""
     extra = getattr(config, "extra", {}) or {}
     return bool(
-        (extra.get("bot_id") or _get_scoped_secret("WECOM_BOT_ID", ""))
-        and (extra.get("secret") or _get_scoped_secret("WECOM_SECRET", ""))
+        str(_shared_extra_or_secret(extra, "bot_id", "WECOM_BOT_ID")).strip()
+        and str(_shared_extra_or_secret(extra, "secret", "WECOM_SECRET")).strip()
     )
 
 
 def _callback_is_connected(config) -> bool:
-    """Callback mode: corp_id + corp_secret (extra first, then env) or a multi-app `apps` block."""
+    """Callback mode: corp_id + corp_secret (extra, then env) or a multi-app `apps` block.
+    Blank rungs read as unset via ``extra_or_secret`` (mirroring ``connect()``), and every
+    `apps` entry must carry its own corp_id + corp_secret — the token fetch sends
+    ``corpsecret=app["corp_secret"]``, so an entry without one is half-configured, not ready."""
     extra = getattr(config, "extra", {}) or {}
-    return bool(
-        ((extra.get("corp_id") or _get_scoped_secret("WECOM_CALLBACK_CORP_ID", ""))
-         and (extra.get("corp_secret") or _get_scoped_secret("WECOM_CALLBACK_CORP_SECRET", "")))
-        or extra.get("apps")
+    if (
+        str(_shared_extra_or_secret(extra, "corp_id", "WECOM_CALLBACK_CORP_ID")).strip()
+        and str(_shared_extra_or_secret(extra, "corp_secret", "WECOM_CALLBACK_CORP_SECRET")).strip()
+    ):
+        return True
+    apps = extra.get("apps")
+    return bool(apps) and all(
+        isinstance(app, dict)
+        and str(app.get("corp_id") or "").strip()
+        and str(app.get("corp_secret") or "").strip()
+        for app in apps
     )
 
 

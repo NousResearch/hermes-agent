@@ -1,0 +1,25 @@
+name: hermes-tenuo
+repo: https://github.com/tenuo-ai/hermes-tenuo
+sha: 80a980b4932f446c342da764b928772ed7ed9baa
+description: >-
+  Per-call authorization for Hermes Agent tool calls.
+  Each call is checked against a signed, expiring warrant before the
+  handler runs, including argument constraints.
+maintainer: tenuo-ai
+tier: community
+category: tools
+requires_hermes: ">=0.20"
+docs_url: https://github.com/tenuo-ai/hermes-tenuo
+version: "0.1.1"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+    - on_session_end
+    - subagent_start
+  provides_middleware: []
+  requires_env:
+    - TENUO_WARRANT
+    - TENUO_SIGNING_KEY

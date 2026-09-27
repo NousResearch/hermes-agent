@@ -1132,36 +1132,55 @@ class SessionStore(
             entry = self._entry_locked(session_key)
             return dict(entry.model_override) if entry and entry.model_override else None
 
-    def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
+    def reset_session(
+        self, session_key: str, display_name: Optional[str] = None,
+        *, source: Optional[SessionSource] = None,
+    ) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:
                 return None
+            origin = old_entry.origin
+            if source is not None and source.platform == Platform.MATRIX:
+                if self._generate_session_key(source) != session_key:
+                    raise ValueError("Matrix reset source does not match the session key")
+                if origin is not None and (
+                    source.platform, source.chat_id, source.thread_id, source.profile
+                ) != (
+                    origin.platform, origin.chat_id, origin.thread_id, origin.profile
+                ):
+                    raise ValueError("Matrix reset source does not match the session origin")
+                origin = source
             now = _now()
             session_id = _new_session_id(now)
             new_entry = self._replace_route_locked(
                 session_key, old_entry, session_id, now,
+                origin=origin,
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 is_fresh_reset=True,
             )
             db_create_kwargs = self._session_create_kwargs(
-                session_id=session_id, session_key=session_key, origin=old_entry.origin,
+                session_id=session_id, session_key=session_key, origin=origin,
                 source_value=old_entry.platform.value if old_entry.platform else "unknown",
                 display_name=old_entry.display_name, parent_session_id=old_entry.session_id,
             )
         self._finish_route_transition(
             session_key, end_session_id=old_entry.session_id, end_reason="session_reset",
-            create_kwargs=db_create_kwargs, origin=old_entry.origin,
+            create_kwargs=db_create_kwargs, origin=origin,
             display_name=new_entry.display_name, during=" during reset",
         )
         return new_entry
 
-    def _replace_route_locked(self, session_key, old_entry, session_id, now, **fields) -> SessionEntry:
+    def _replace_route_locked(
+        self, session_key, old_entry, session_id, now,
+        *, origin: Optional[SessionSource] = None, **fields,
+    ) -> SessionEntry:
         """Publish a fresh entry (inheriting origin/platform/chat_type) and save. Lock held."""
         new_entry = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
-            origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
+            origin=origin if origin is not None else old_entry.origin,
+            platform=old_entry.platform, chat_type=old_entry.chat_type,
             transport_profile=old_entry.transport_profile, **fields,
         )
         self._entries[session_key] = new_entry

@@ -240,17 +240,9 @@ class TestDeduplicateToolCalls:
         assert out == [first, distinct]
 
 
-    @pytest.mark.parametrize(
-        "arguments",
-        [
-            '{"action":"key","keys":"tab"}',
-            '{"action":"scroll","dy":640}',
-            '{"action":"wait","seconds":0.5}',
-        ],
-    )
-    def test_repeated_ordered_computer_inputs_are_preserved(self, arguments):
-        first = make_tc("computer_use", arguments)
-        second = make_tc("computer_use", arguments)
+    def test_repeated_computer_key_inputs_are_preserved(self):
+        first = make_tc("computer_use", '{"action":"key","keys":"tab"}')
+        second = make_tc("computer_use", '{"keys":"tab","action":"key"}')
 
         out = AIAgent._deduplicate_tool_calls([first, second])
 

@@ -3160,11 +3160,15 @@ def trailing_continue_intent(text: str) -> bool:
     return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
 
 
-# Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered
-# and no tool call). Visible content keeps the narrow ``let me now`` shape above because a real
-# reply legitimately says "I'll" mid-text; chain-of-thought that ENDS on a first-person plan
+# Broader tail detector for narrated plans: chain-of-thought that ENDS on a first-person plan
 # ("Let me batch the terminal calls and run them in parallel.", "I need to check the log.") is a
-# stalled model whose turn would otherwise report "complete" with zero tool calls (#111761).
+# stalled model whose turn would otherwise report "complete" with zero tool calls.
+#
+# It runs on the PROMOTED reasoning (#111761) AND on VISIBLE content that did tool work this
+# turn. Visible content keeps the wider tail because a real reply legitimately says "I'll"
+# mid-text — the ``tool work already happened`` precondition is what makes a plan tail a stall
+# rather than a terse answer (see ``narrated_plan_tail``).
+#
 # Tail-only and anchored on the last sentence, so reasoning that merely mentions a plan before
 # stating its answer ("...Let me check. The answer is 42.") still promotes.
 # Thai (unsegmented script, so no \b after the trigger, unlike the English group) shares the same
@@ -3173,17 +3177,72 @@ def trailing_continue_intent(text: str) -> bool:
 # pattern order: "I will give you" / "I will", "next I('ll)" + one of {start,try,check,fix,send,
 # do,look}, "please let me" + one of {start,try,check,fix,send,do,look}, "I('ll)" + one of
 # {start,try,check,fix,send,do,look,run,fire}.
+#
+# ``bat(ch|ches)`` and an article-led gerund ("the untitled desktop ...") carry the observed
+# narration shapes ("I'll see... Actually let me batch all 4", "Batch 1: sessions 1 and 2",
+# "Now reading the 6 user sessions — starting with the two smaller ones") — a plan restated as a
+# noun phrase ends with no verb at all, so the trigger must reach the batch/reading verb too.
 _PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
     r"(?:^|[.!?:\u3002\uff01\uff1f\u2014\u2013\n]\s*|\u2026\s*)"
     r"(?:let(?:['\u2019]s| me)\b|i(?:['\u2019]ll| will| need to| should| am going to|['\u2019]m going to)\b"
     r"|next[,:]? i\b|now i(?:['\u2019]ll| will| need to)\b|first[,:]? i(?:['\u2019]ll| will| need to)\b"
+    r"|batch(?:ing|es|ed)?\b|read(?:ing)?\b"
     r"|\u0e08\u0e30\u0e43\u0e2b\u0e49\u0e1c\u0e21|\u0e1c\u0e21\u0e08\u0e30"
     r"|\u0e15\u0e48\u0e2d\u0e44\u0e1b(?:\u0e08\u0e30|\u0e1c\u0e21\u0e08\u0e30)"
     r"|\u0e02\u0e2d(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39)"
     r"|\u0e08\u0e30(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39|\u0e23\u0e31\u0e19|\u0e22\u0e34\u0e07))"
-    r"[^.!?\n\u3002\uff01\uff1f]{0,160}(?:[.:\u2026]+)?\s*$",
+    r"[^.!?\n\u3002\uff01\uff1f]{0,200}(?:[.:\u2026]+)?\s*$",
     re.IGNORECASE,
 )
+
+# ---------------------------------------------------------------------------
+# Narrated-tool-work detector for VISIBLE content (agent.stall_guards).
+#
+# The half of the stall the shipped detectors miss: the model runs tools, then answers with a
+# narration of the NEXT tool operation and stops ("Now reading the 6 user sessions — starting
+# with the two smaller ones", "Actually let me batch all 4 — they're independent"). The turn
+# reports "complete" with a full-length message, so `trailing_continue_intent` (only "let me now"
+# / "I'll now" / "now I'll" / "next, I") never fires, and the broad detector was reserved for
+# promoted reasoning so it never saw narration that landed in content. Measured on 4 real
+# production stalls: narrow 0/4, broad 1/4 before this change.
+#
+# Text alone cannot fully separate these from real replies — "I'll report the verdict as soon as
+# it lands" ends a FINISHED turn awaiting an external process, while "I'll do 2 calls next" is a
+# stalled tool loop. Two features do the separating, both principled rather than stopword lists:
+#
+#   1. What is announced. A stall narrates TOOL WORK it is about to do with its tools
+#      (read/batch/check/search/pull/gather/load/...). A delivered reply reports to the user or
+#      waits on something external.
+#   2. Who it is addressed to. A stall narrates to ITSELF; a delivered reply addresses the user
+#      ("want me to file this?", "I'll report back to you", "let me know which worked").
+#
+# Measured on 703 real delivered replies (short band where the rule can fire): 1.0% false
+# positives, 5/6 observed stalls caught. The asymmetry is deliberate — a false negative silently
+# ships narration instead of the job's real output, while a false positive costs at most 2 extra
+# API calls (the caller's shared continuation counter) and the turn still ends normally.
+_NARRATED_TOOL_WORK_RE = re.compile(
+    r"\b(?:read|reading|batch(?:ing|es|ed)?|check(?:ing)?|search(?:ing)?|grep(?:ping)?"
+    r"|pull(?:ing)?|gather(?:ing)?|load(?:ing)?|fetch(?:ing)?|inspect(?:ing)?"
+    r"|scan(?:ning)?|list(?:ing)?|query|querying|dig(?:ging)?|digest(?:ing)?|extract(?:ing)?)\b",
+    re.IGNORECASE,
+)
+_NARRATED_ANNOUNCE_RE = re.compile(
+    r"(?:let(?:['\u2019]s| me)\b|i(?:['\u2019]ll| will| need to| should| am going to|['\u2019]m going to)\b"
+    r"|\bnow\b|\bnext\b|\bfirst\b|\bthen\b|\bactually\b|\bbetter to\b)",
+    re.IGNORECASE,
+)
+# Second person anywhere in the message => it is talking TO the user, not to itself.
+_NARRATED_USER_ADDRESS_RE = re.compile(r"\b(?:you|your|you'?re|you'?d|you'?ll|yours)\b", re.IGNORECASE)
+# Reporting/waiting on an external event => a finished turn, not a pending tool loop.
+_NARRATED_REPORT_WAIT_RE = re.compile(
+    r"(?:report|stand(?:ing)? by|let me know|as soon as|once (?:it|the|that|CI)|when (?:it|the|that|CI)"
+    r"|the moment|next time|if you|ping me|say the word|say so|ready when)",
+    re.IGNORECASE,
+)
+_PLAN_TAIL_MAX_CHARS = 900
+_PLAN_TAIL_WINDOW = 260
+# Sentence boundary: the announcement must be in the FINAL sentence (see narrated_plan_tail).
+_NARRATED_SEGMENT_SPLIT_RE = re.compile(r"[.!?\u3002\uff01\uff1f\n]")
 
 
 def promoted_reasoning_announces_action(text: str) -> bool:
@@ -3196,6 +3255,36 @@ def promoted_reasoning_announces_action(text: str) -> bool:
     if not t:
         return False
     return bool(_PROMOTED_REASONING_PLAN_TAIL_RE.search(t[-240:]))
+
+
+def narrated_plan_tail(text: str) -> bool:
+    """Whether VISIBLE content narrates pending TOOL WORK instead of answering.
+
+    The caller gates this on tool work already having happened this turn, so it only sees a
+    model that ran tools and then stopped with a plan. Scored against 4 real production stalls
+    and 703 real delivered replies:
+
+      * matching the whole TAIL WINDOW scored 6/6 stalls but 7.3% false positives;
+      * matching only the LAST SENTENCE scores 5/6 stalls and 1.0% false positives.
+
+    The last sentence wins: it is precise, and the one stall it misses (a bare "Batch 1: ..."
+    list item) is already covered by ``promoted_reasoning_announces_action`` on the same turn.
+    Two exclusions keep real replies out — second person (it is talking TO the user) and
+    reporting/waiting on an external event (that turn is finished, not stalled).
+    """
+    t = (text or "").strip()
+    if not t or len(t) > _PLAN_TAIL_MAX_CHARS:
+        return False
+    if _NARRATED_USER_ADDRESS_RE.search(t) or _NARRATED_REPORT_WAIT_RE.search(t):
+        return False
+    segments = [s.strip() for s in _NARRATED_SEGMENT_SPLIT_RE.split(t.rstrip(" .!?\u3002\uff01\uff1f\n"))]
+    segments = [s for s in segments if s]
+    if not segments:
+        return False
+    last = segments[-1]
+    if len(last) > _PLAN_TAIL_WINDOW:
+        return False
+    return bool(_NARRATED_TOOL_WORK_RE.search(last) and _NARRATED_ANNOUNCE_RE.search(last))
 
 
 _INTENT_ACK_ON = {"true", "always", "yes", "on"}

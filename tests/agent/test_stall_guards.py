@@ -485,3 +485,73 @@ def test_promoted_reasoning_detector_ignores_thai_stated_answers():
         "พรุ่งนี้จะฝนตกทั่วประเทศ",  # "tomorrow it will rain" — not a first-person action verb
     ):
         assert not promoted_reasoning_announces_action(text), text
+
+
+# ── narrated-tool-work detector (visible content) ──────────────────────────
+#
+# The other half of the same stall: the model runs tools, then answers with a narration of the
+# NEXT tool operation and stops. The turn reports "complete" with a full-length message, so the
+# narrow detector above never fires (it only matches "let me now" / "I'll now" / "now I'll" /
+# "next, I"), and the broad promoted-reasoning detector was never consulted because content was
+# non-empty. All four strings below are verbatim production stalls from the Daily Dreaming job.
+
+
+def test_narrated_plan_tail_catches_real_production_stalls():
+    from agent.agent_runtime_helpers import narrated_plan_tail
+
+    for text in (
+        "Sleep consolidated 9 sessions (32 items \u2192 12 summaries), diagnostics clean, "
+        "vec_working now 1562/1562 complete. Now reading the 6 user sessions \u2014 starting "
+        "with the two smaller ones, then bookends on the big ones.",
+        "I have the context loaded. Now let me read all 7 user sessions from the last 24h "
+        "in parallel, using the discovery shape with `detail=full` to get bookends + "
+        "anchored windows for each (this implements the bookend strategy for the 100+ msg sessions).",
+        "Tool loaded, SOUL.md and both memory files read. Now reading the user sessions \u2014 "
+        "starting with the two smaller ones (36 and 89 msgs) to gauge output shape.",
+        "I'll do 2 calls first to test size: the untitled desktop (207 msgs) and KOAH "
+        "(192 msgs). Actually let me batch all 4 \u2014 they're independent.",
+    ):
+        assert narrated_plan_tail(text), text
+
+
+def test_narrated_plan_tail_ignores_replies_addressed_to_the_user():
+    from agent.agent_runtime_helpers import narrated_plan_tail
+
+    # These END on "I'll <verb>" exactly like a stall, but they address the user or report back
+    # on something external — measured as the 1% false-positive band on 703 real delivered
+    # replies. Re-prompting them would be pure wasted latency.
+    for text in (
+        "I'll report the full verdict as soon as it lands.",
+        "It'll take ~5-8 minutes — I'll report the results when the review posts to the PR.",
+        "Let me know once you've clicked Allow and I'll continue with both submissions.",
+        "The result lands back here automatically — then I'll fold its feedback into the plan doc.",
+        "Say so and I'll stop nudging.",
+        "Ping me once clicked and I'll retry.",
+        "Ready when you are — paste any paywalled article link and I'll extract the full text.",
+    ):
+        assert not narrated_plan_tail(text), text
+
+
+def test_narrated_plan_tail_ignores_short_conclusions_and_silent_token():
+    from agent.agent_runtime_helpers import narrated_plan_tail
+
+    for text in (
+        "Done.",
+        "OK",
+        "[SILENT]",
+        "The answer is 42.",
+        "Your Hertz rate is $84/day.",
+        "Cron Health: \u2705 All 21 jobs healthy.",
+        "Let me check the arithmetic. 6 times 7 is 42, so the answer is 42.",
+    ):
+        assert not narrated_plan_tail(text), text
+
+
+def test_narrated_plan_tail_is_length_bounded():
+    from agent.agent_runtime_helpers import narrated_plan_tail
+
+    # A long final answer that happens to close on a plan-shaped sentence is a real reply.
+    long_answer = ("Here is the full analysis of the cron health situation. " * 25) + (
+        "Now I'll read the remaining logs."
+    )
+    assert not narrated_plan_tail(long_answer)

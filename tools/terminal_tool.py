@@ -992,12 +992,13 @@ def _literal_operands(tokens, options_with_values=frozenset()):
 
 
 def _mutation_target_spans(segment: str):
-    """Return exact mutation target words as ``(start, end, path, prefix)``.
+    """Return exact mutation target words as ``(start, end, path, prefix, inert)``.
 
     Parsing reuses the approval scanner so quoted and escaped shell words retain their source
     spans. ``prefix`` is empty for an argv operand, ``of=`` for dd, or a redirection operator.
     """
     from tools.approval_detection import (
+        _SHELL_REDIRECTION_RE,
         _read_shell_word,
         _scan_shell,
         _shell_tokens_with_spans,
@@ -1008,25 +1009,30 @@ def _mutation_target_spans(segment: str):
         raise _GuardTargetIndeterminate("malformed shell words in device-target projection")
 
     targets = []
+    redirections = []
 
     def add(token, prefix=""):
-        value, start, end, _quoted = token
-        if any(start < stop and end > begin and operator == "> "
-               for begin, stop, _path, operator in targets):
-            return  # redirection syntax is not a positional argv operand
+        value, start, end, inert = token
         path = value[len(prefix):] if prefix else value
         if path:
-            targets.append((start, end, path, prefix))
+            targets.append((start, end, path, prefix, inert))
 
-    # Redirection destinations are mutation targets regardless of the executable.
+    # Parse every redirection before applying utility operand grammars. Shell lexing otherwise
+    # leaves forms such as ``2> err`` in the argv-shaped token stream, where a last-operand rule
+    # can select the redirect destination instead of the utility's real target.
     consumed = -1
     for kind, index, _, quote in _scan_shell(segment, comments=True):
-        if kind != "char" or quote is not None or segment[index] != ">" or index < consumed:
+        if kind != "char" or quote is not None or index < consumed:
             continue
-        end_operator = index + 1
-        suffix = segment[end_operator:end_operator + 1]
-        if suffix in {">", "|", "&"}:
-            end_operator += 1
+        redirect = _SHELL_REDIRECTION_RE.match(segment, index)
+        if redirect is None and segment.startswith("&>", index):
+            end_operator = index + 2
+            operator = "&>"
+        elif redirect is not None:
+            end_operator = redirect.end()
+            operator = redirect.group(0)
+        else:
+            continue
         start = end_operator
         while start < len(segment) and segment[start].isspace():
             start += 1
@@ -1034,14 +1040,18 @@ def _mutation_target_spans(segment: str):
         tokens = _shell_tokens_with_spans(word, 0)
         if not tokens or len(tokens) != 1:
             raise _GuardTargetIndeterminate("redirection target is missing or malformed")
-        path = tokens[0][0]
+        path, _word_start, _word_end, inert = tokens[0]
         consumed = end
-        if suffix == "&" and (path.isdigit() or path == "-" or
-                              (path.endswith("-") and path[:-1].isdigit())):
-            continue  # descriptor duplication/move/close does not name a filesystem target
-        # Canonicalize the operator only in the detection projection; the command passed
-        # to the backend is unchanged. This exposes >| and >& to the raw-device floor.
-        targets.append((index, end, path, "> "))
+        redirections.append((index, end))
+        bare_operator = operator.lstrip("0123456789")
+        descriptor = bare_operator in {">&", "<&"} and (
+            path.isdigit() or path == "-" or
+            (path.endswith("-") and path[:-1].isdigit())
+        )
+        mutates = bare_operator in {">", ">>", ">|", ">&", "&>", "<>"}
+        if mutates and not descriptor:
+            # Canonicalize only in the detection projection; the executed command is unchanged.
+            targets.append((index, end, path, "> ", inert))
 
     mutation_executables = {
         "wipefs", "blkdiscard", "sgdisk", "shred", "dd", "diskutil",
@@ -1054,7 +1064,11 @@ def _mutation_target_spans(segment: str):
         if executable not in mutation_executables and not is_mkfs:
             continue
 
-        args = command_tokens[1:]
+        args = [
+            token for token in command_tokens[1:]
+            if not any(token[1] < stop and token[2] > begin
+                       for begin, stop in redirections)
+        ]
         values = [token[0] for token in args]
 
         if executable == "dd":
@@ -1092,7 +1106,7 @@ def _mutation_target_spans(segment: str):
         )
         if not operands:
             continue
-        if executable in {"shred", "tee"}:
+        if executable in {"shred", "tee", "wipefs"}:
             for token in operands:
                 add(token)
         else:
@@ -1113,6 +1127,20 @@ def _segment_can_change_resolution(segment: str) -> bool:
     )
 
 
+def _substitution_can_change_resolution(segment: str) -> bool:
+    """Whether an executable substitution can retarget a later operand in this segment."""
+    from tools.approval_detection import _scan_shell
+
+    for kind, start, end, _quote in _scan_shell(segment, subst="q"):
+        if kind != "subst":
+            continue
+        body_start = start + (2 if segment.startswith("$(", start) else 1)
+        body_end = end - 1
+        if _segment_can_change_resolution(segment[body_start:body_end]):
+            return True
+    return False
+
+
 def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
                              _depth: int = 0, _prior_context_change: bool = False) -> List[str]:
     """Project exact mutation targets through the backend before approval matching.
@@ -1121,15 +1149,35 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
     closed. An earlier stage that can change cwd or retarget/create an alias invalidates
     preflight identity, including for names below /dev.
     """
-    if not _DISK_MUTATION_HINT_RE.search(command):
-        return []
-
     from tools.approval_detection import (
         _command_parser_limit_exceeded,
         _iter_top_level_shell_segments,
         _bash_exec_payload,
+        _env_split_payload,
+        _normalize_command_for_detection,
         _SHELL_NAMES,
     )
+    textual_hint = (
+        _DISK_MUTATION_HINT_RE.search(command)
+        or _DISK_MUTATION_HINT_RE.search(_normalize_command_for_detection(command))
+    )
+    if not textual_hint:
+        structural_hint = False
+        for hinted_segment in _iter_top_level_shell_segments(command):
+            for executable, _tokens in _device_projection_commands(hinted_segment):
+                if (
+                    executable in {
+                        "wipefs", "blkdiscard", "sgdisk", "shred", "dd", "diskutil",
+                        "cp", "mv", "install", "tee", "mke2fs", "mkswap", "mkfs",
+                    }
+                    or executable.startswith(("mkfs.", "newfs_"))
+                ):
+                    structural_hint = True
+                    break
+            if structural_hint:
+                break
+        if not structural_hint:
+            return []
     if _depth >= 16 or _command_parser_limit_exceeded(command):
         raise _GuardTargetIndeterminate("device-target parser limit exceeded")
 
@@ -1138,8 +1186,6 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
     payload_variants = []
     search_from = 0
     resolver = getattr(env, "fetch_device_identity", None)
-    if not callable(resolver):
-        raise _GuardTargetIndeterminate("execution backend has no device-identity resolver")
 
     prior_can_change_resolution = _prior_context_change
     for segment in _iter_top_level_shell_segments(command):
@@ -1155,6 +1201,8 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
                 _found, payload = _bash_exec_payload(args)
             elif executable == "eval":
                 payload = " ".join(args)
+            elif executable == "env":
+                payload = _env_split_payload([token[0] for token in tokens])
             if payload:
                 payload_variants.extend(_resolved_guard_variants(
                     payload, env, cwd, _depth=_depth + 1,
@@ -1162,23 +1210,29 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
                                            _wrapper_changes_cwd(segment)),
                 ))
 
-        for start, end, raw_path, prefix in _mutation_target_spans(segment):
+        substitution_changes_resolution = _substitution_can_change_resolution(segment)
+        for start, end, raw_path, prefix, inert in _mutation_target_spans(segment):
             if not raw_path or (raw_path == "-" and prefix != "> "):
                 continue
-            if any(char in raw_path for char in "$`*?[]{}"):
+            if not inert and any(char in raw_path for char in "$`*?[]{}"):
                 raise _GuardTargetIndeterminate(
                     f"dynamic mutation target cannot be proven safe: {raw_path!r}"
                 )
             candidate = (
-                posixpath.normpath(raw_path)
+                raw_path
                 if raw_path.startswith("/")
-                else posixpath.normpath(posixpath.join(cwd or "/", raw_path))
+                else posixpath.join(cwd or "/", raw_path)
             )
             # Even /dev/shm can contain aliases created after this probe. Check context
             # before deduplication: a later use of the same path may resolve differently.
-            if prior_can_change_resolution or _wrapper_changes_cwd(segment):
+            if (prior_can_change_resolution or _wrapper_changes_cwd(segment)
+                    or substitution_changes_resolution):
                 raise _GuardTargetIndeterminate(
                     "compound command can change device-target resolution before mutation"
+                )
+            if not callable(resolver):
+                raise _GuardTargetIndeterminate(
+                    "execution backend has no device-identity resolver"
                 )
             try:
                 if candidate not in identities:

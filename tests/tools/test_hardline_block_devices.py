@@ -13,6 +13,8 @@ only PRINT (or that target a file rather than a device) must stay runnable.
 """
 
 import json
+import os
+import posixpath
 
 import pytest
 
@@ -310,7 +312,11 @@ class _FakeDeviceEnv:
         self.queries.append(path)
         if path in self.indeterminate:
             return ("indeterminate", None)
+        # Model the backend's physical-resolution boundary for ordinary paths while allowing
+        # a test to assign a distinct identity to an unresolved symlink/.. spelling.
         resolved = self.devices.get(path)
+        if resolved is None:
+            resolved = self.devices.get(posixpath.normpath(path))
         return ("device", resolved) if resolved else ("not_device", path)
 
 
@@ -339,7 +345,7 @@ def test_relative_device_lookalike_regular_file_stays_runnable():
     env = _FakeDeviceEnv({})  # backend says this is not a block/character device
     command = "shred -u ../dev/sda-notes"
     assert _resolved_guard_variants(command, env, "/tmp") == []
-    assert env.queries == ["/dev/sda-notes"]
+    assert env.queries == ["/tmp/../dev/sda-notes"]
     assert detect_hardline_command(command) == (False, None)
 
 
@@ -381,6 +387,92 @@ def test_backend_probe_failure_fails_closed():
 def test_same_shell_cannot_change_alias_resolution_before_mutation(command):
     with pytest.raises(_GuardTargetIndeterminate, match="compound command"):
         _resolved_guard_variants(command, _FakeDeviceEnv({}), "/work")
+
+
+@pytest.mark.parametrize("command", [
+    "cp src /tmp/alias 2> /tmp/notes",
+    "cp src 2>/tmp/notes /tmp/alias",
+    "cp src < /tmp/input /tmp/alias",
+    "shred /tmp/alias 2>> /tmp/notes",
+    "wipefs -a /tmp/alias /tmp/notes",
+])
+def test_redirections_are_removed_before_mutation_operand_selection(command):
+    env = _FakeDeviceEnv({"/tmp/alias": "/dev/sda"})
+    with pytest.raises(_Rejected):
+        _run_approval_guards(command, "local", {"docker_volumes": []},
+                             force=True, env=env, cwd="/")
+    assert "/tmp/alias" in env.queries
+
+
+@pytest.mark.parametrize("command", [
+    "w''ipefs -a /tmp/alias",
+    r"w\ipefs -a /tmp/alias",
+    "c'p' src /tmp/alias",
+    "env -S 'wipefs -a /tmp/alias'",
+])
+def test_structural_executable_projection_reaches_device_identity_guard(command):
+    env = _FakeDeviceEnv({"/tmp/alias": "/dev/sda"})
+    with pytest.raises(_Rejected):
+        _run_approval_guards(command, "local", {"docker_volumes": []},
+                             force=True, env=env, cwd="/")
+    assert env.queries == ["/tmp/alias"]
+
+
+def test_symlink_parent_components_are_preserved_for_backend_resolution():
+    source_path = "/tmp/link/../sda"
+    env = _FakeDeviceEnv({source_path: "/dev/sda"})
+    variants = _resolved_guard_variants(f"wipefs -a {source_path}", env, "/")
+    assert env.queries == [source_path]
+    assert variants and "/dev/sda" in variants[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX symlink and PTY semantics")
+def test_real_backend_resolves_symlink_parent_components_physically(tmp_path):
+    from tools.environments.local import LocalEnvironment
+
+    master_fd, slave_fd = os.openpty()
+    try:
+        slave_path = os.ttyname(slave_fd)
+        if not slave_path.startswith("/dev/pts/"):
+            pytest.skip("platform PTYs are not exposed below /dev/pts")
+        (tmp_path / "link").symlink_to("/dev/pts")
+        candidate = tmp_path / "link" / ".." / "pts" / os.path.basename(slave_path)
+        env = LocalEnvironment(cwd=str(tmp_path))
+
+        assert env.fetch_device_identity(str(candidate)) == ("device", slave_path)
+        variants = _resolved_guard_variants(f"wipefs -a {candidate}", env, str(tmp_path))
+        assert variants and slave_path in variants[0]
+    finally:
+        os.close(master_fd)
+        os.close(slave_fd)
+
+
+@pytest.mark.parametrize("command", [
+    'cp "$(ln -sfn /dev/sda /tmp/alias; printf src)" /tmp/alias',
+    'echo "$(ln -sfn /dev/sda /tmp/alias)" > /tmp/alias',
+])
+def test_command_substitution_cannot_retarget_same_segment_mutation(command):
+    with pytest.raises(_GuardTargetIndeterminate, match="compound command"):
+        _resolved_guard_variants(command, _FakeDeviceEnv({}), "/")
+
+
+@pytest.mark.parametrize("command,path", [
+    ("cp src '/tmp/notes[1]'", "/tmp/notes[1]"),
+    ("echo x > '/tmp/report$2026'", "/tmp/report$2026"),
+])
+def test_single_quoted_literal_metacharacters_are_probed_as_paths(command, path):
+    env = _FakeDeviceEnv({})
+    assert _resolved_guard_variants(command, env, "/") == []
+    assert path in env.queries
+
+
+@pytest.mark.parametrize("command", [
+    "cp src /tmp/notes[1]",
+    'echo x > "/tmp/report$2026"',
+])
+def test_active_target_expansions_still_fail_closed(command):
+    with pytest.raises(_GuardTargetIndeterminate, match="dynamic mutation target"):
+        _resolved_guard_variants(command, _FakeDeviceEnv({}), "/")
 
 
 @pytest.mark.parametrize("command", [

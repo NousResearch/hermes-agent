@@ -918,9 +918,20 @@ def _get_code_identity_fields() -> dict[str, Any]:
         from hermes_cli.version_info import get_code_identity
 
         identity = get_code_identity()
-        return {"code_sha": identity.get("sha"), "code_version": identity.get("version")}
+        fields: dict[str, Any] = {"code_sha": identity.get("sha"), "code_version": identity.get("version")}
     except Exception:
-        return {}
+        fields = {}
+    # Dispatch-plane boot snapshot (#65 KB-RT-064, t_50d090c0): the dispatcher modules are imported
+    # inside this process, so an edit to one is invisible until a restart. The snapshot rides every
+    # record so `hermes doctor` can judge a live gateway from outside. Absent (never invented) until
+    # this process recorded one — a "now" snapshot would read as fresh forever. Never raises.
+    try:
+        from gateway.dispatch_freshness import boot_stamp_fields
+
+        fields.update(boot_stamp_fields() or {})
+    except Exception:
+        pass
+    return fields
 
 
 def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> bool:

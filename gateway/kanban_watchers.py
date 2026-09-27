@@ -10,6 +10,7 @@ in ``kanban_watchers_common``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any, Optional
 
 from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
+    _board_slugs,
     _kanban_dispatch_allowed,
     _release_singleton_lock,
     _resolve_auto_decompose_settings,
@@ -35,6 +37,32 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
+
+
+def _running_kanban_workers(kb: Any) -> Optional[int]:
+    """Workers currently running across every board, or None when the count cannot be taken.
+
+    ``status='running'`` IS the dispatch plane's own "a worker is on this card" (the claim is released
+    when the worker exits, see ``kanban_db_dispatch.count_running_tasks``). None — never 0 — on any
+    failure: the dispatch-plane auto-reload must not bounce the gateway on a count it could not
+    establish, and it must not reload while a worker is mid-card.
+    """
+    from hermes_cli import kanban_db_connect as _kbc
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    total = 0
+    for slug in _board_slugs(kb):
+        conn = None
+        try:
+            conn = _kbc.connect(board=slug)
+            total += _kbd.count_running_tasks(conn)
+        except Exception:
+            return None
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+    return total
 
 
 class GatewayKanbanWatchersMixin:
@@ -264,6 +292,14 @@ class GatewayKanbanWatchersMixin:
         settings = _resolve_dispatcher_settings(kanban_cfg, _kb)
         interval = settings.interval
 
+        # Dispatch-plane freshness (t_50d090c0). `record_boot` is idempotent and `start_gateway`
+        # already took the snapshot, so this only covers an embedder that never went through it.
+        # These modules are frozen in `sys.modules` from here on: an edit to one is shipped-but-not-live.
+        from gateway import dispatch_freshness as _freshness
+        _freshness.record_boot()
+        auto_reload = _freshness.auto_reload_enabled(kanban_cfg)
+        _restart_request: Any = getattr(self, "request_restart", None)
+
         # Initial delay so adapters are wired before workers spawn (matches the notifier).
         await asyncio.sleep(5)
 
@@ -276,6 +312,8 @@ class GatewayKanbanWatchersMixin:
         dispatcher = _KanbanDispatcher(_kb, settings)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
+        logger.info("kanban dispatcher: dispatch-plane auto-reload is %s (to disable: %s)",
+                    "on" if auto_reload else "off", _freshness.reload_opt_out_hint())
         while self._running:
             try:
                 # Reap zombies before per-board work so a board DB failure
@@ -320,6 +358,19 @@ class GatewayKanbanWatchersMixin:
                 raise
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")
+
+            # Is the dispatch code on disk still the code this process loaded? One stat sweep per tick
+            # until it fires; the probe settles and stops touching the disk for the rest of the process.
+            if not _freshness.settled():
+                try:
+                    _freshness.probe_and_act(
+                        logger, running_workers=lambda: _running_kanban_workers(_kb),
+                        auto_reload=auto_reload,
+                        request_restart=(None if _restart_request is None
+                                         else lambda: _restart_request(detached=False, via_service=True)),
+                    )
+                except Exception:
+                    logger.exception("kanban dispatcher: dispatch-plane freshness probe failed")
 
             await self._sleep_between_ticks(interval)
 

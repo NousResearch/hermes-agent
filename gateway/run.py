@@ -5846,6 +5846,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
 
+    # Snapshot the DISPATCH-plane module mtimes for the same reason (t_50d090c0): those modules are
+    # imported into this process, so an edit to one is shipped-but-not-live until the next restart.
+    # The snapshot is stamped into gateway_state.json for `hermes doctor` and compared every tick.
+    from gateway.dispatch_freshness import record_boot as _record_dispatch_boot
+    _record_dispatch_boot()
+
     # Multiplex-only: the ONE host gateway decides first. Attach to it, make it serve this profile,
     # replace it (--replace) or refuse — before anything below binds a port or claims a PID file.
     _host_decision = await _host_attach_or_none(replace, force)

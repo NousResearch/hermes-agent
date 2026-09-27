@@ -58,6 +58,7 @@ from hermes_cli.doctor_state import (
     _check_skills_hub,
     _check_state_db,
 )
+from hermes_cli.doctor_dispatch import _check_dispatch_freshness
 
 _PROVIDER_ENV_HINTS = (
     "DEEPINFRA_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
@@ -126,6 +127,7 @@ DOCTOR_CHECKS = (
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),
     ('Memory Provider', _check_memory_provider), ('NeMo Relay Plugins', _check_relay_plugins),
     (None, _check_profiles),
+    ('Kanban Dispatch Plane', _check_dispatch_freshness),
 )
 
 

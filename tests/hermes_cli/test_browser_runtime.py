@@ -8,7 +8,7 @@ import pm
 from pm import paths
 
 
-@pytest.mark.parametrize("record_executable", [False, True])
+@pytest.mark.parametrize("record_executable", [False, True, "stale"])
 def test_chromium_resolves_installed_binary_without_mutation(tmp_path, monkeypatch, record_executable):
     from hermes_cli.browser_runtime import chromium_executable
 
@@ -30,6 +30,8 @@ def test_chromium_resolves_installed_binary_without_mutation(tmp_path, monkeypat
     env = {"PLAYWRIGHT_BROWSERS_PATH": str(store)}
     if record_executable:
         env["AGENT_BROWSER_EXECUTABLE_PATH"] = str(binary)
+    if record_executable == "stale":
+        monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(tmp_path / "deleted-chrome"))
     facts = pm.Facts(store / "facts.json")
     facts.record(
         "chromium", version, entry.name, env, store,
@@ -50,6 +52,8 @@ def test_chromium_override_wins_without_installing(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
     override = str(tmp_path / "external browser")
+    (tmp_path / "external browser").write_bytes(b"browser-fixture")
+    (tmp_path / "external browser").chmod(0o755)
     monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", override)
 
     def forbidden(*args, **kwargs):
@@ -64,3 +68,12 @@ def test_chromium_override_wins_without_installing(tmp_path, monkeypatch):
     assert chromium_executable() is None
     assert not store.exists()
     assert "AGENT_BROWSER_EXECUTABLE_PATH" not in os.environ
+
+
+def test_stale_override_without_managed_browser_returns_none(tmp_path, monkeypatch):
+    from hermes_cli.browser_runtime import chromium_executable
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "missing-store"))
+    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(tmp_path / "deleted-chrome"))
+    assert chromium_executable() is None

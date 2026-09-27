@@ -4,6 +4,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
 from tools.mcp_tool_errors import _format_connect_error
@@ -175,6 +176,26 @@ def test_resolve_stdio_command_uvx_unchanged_when_already_on_path():
         command, _env = _resolve_stdio_command("uvx", {"PATH": "/usr/bin"})
 
     assert command == resolved_path
+
+
+@pytest.mark.platforms("posix")
+def test_resolve_stdio_command_keeps_the_child_path_order(tmp_path):
+    """A command found later on the child's PATH must not pull its directory ahead of
+    earlier entries: the child's other bare lookups (node, python3, git) follow the PATH
+    order the user, or pm.activate(), chose. Hoisting it (#124792) handed a brew
+    command's children brew's node/python3/git instead of the pinned store copies."""
+    first, middle, later = tmp_path / "first", tmp_path / "middle", tmp_path / "later"
+    for directory in (first, middle, later):
+        directory.mkdir()
+    tool = later / "mytool"
+    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    tool.chmod(0o755)
+    path = os.pathsep.join([str(first), str(middle), str(later)])
+
+    command, env = _resolve_stdio_command("mytool", {"PATH": path})
+
+    assert command == str(tool)
+    assert env["PATH"] == path
 
 
 def test_resolve_stdio_command_skips_unknown_commands():

@@ -17,13 +17,24 @@ def _image_to_data_url(ref: str, cap: int):
     import os
     try:
         if ref.startswith(("http://", "https://")):
-            import urllib.request
-            req = urllib.request.Request(ref, headers={"User-Agent": "hermes-agent"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                if resp.length is not None and resp.length > cap:
+            # Provider-result URLs are remote-party-controlled — same SSRF guard as
+            # agent/provider_media.save_url (which may have fallen back to the bare URL).
+            from tools.url_safety import create_ssrf_safe_client, is_safe_url
+            if not is_safe_url(ref):
+                return None
+            with create_ssrf_safe_client(timeout=60, follow_redirects=True) as client, \
+                    client.stream("GET", ref, headers={"User-Agent": "hermes-agent"}) as resp:
+                resp.raise_for_status()
+                if resp.headers.get("content-length") and int(resp.headers["content-length"]) > cap:
                     return None
-                data = resp.read(cap + 1)
-                mime = resp.headers.get_content_type() or "image/png"
+                chunks, total = [], 0
+                for chunk in resp.iter_bytes():
+                    total += len(chunk)
+                    if total > cap:
+                        return None
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+                mime = (resp.headers.get("content-type") or "image/png").split(";", 1)[0].strip()
         elif os.path.isfile(ref):
             if os.path.getsize(ref) > cap:
                 return None

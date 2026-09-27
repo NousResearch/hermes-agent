@@ -48,6 +48,11 @@ class LoginBackend(ABC):
     def resolve_password(self, handle: str) -> str:
         """Server-side only; raises ``UnlockRequired`` when locked."""
 
+    def resolve_otp(self, handle: str) -> Optional[str]:
+        """Current one-time code for a login that stores a TOTP seed, else None (the user is asked).
+        Server-side only, like resolve_password."""
+        return None
+
     def resolve_secret(self, handle: str) -> Dict[str, str]:
         """Full payload of a payment/address item (server-side only). External managers list only
         logins, so the base returns the password-only shape."""

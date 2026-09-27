@@ -2,9 +2,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  materializeDesktopHalf,
   migrateProfileScopedDesktopPlugins,
   PACKAGE_MARKER,
   reconcileUnifiedDesktopHalves
@@ -101,6 +102,54 @@ describe('reconcileUnifiedDesktopHalves', () => {
     expect(fs.existsSync(path.join(appRoot, 'media'))).toBe(false)
   })
 
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'skips a package the app cannot read and still materializes its siblings',
+    async () => {
+      // #111804: one unreadable plugin folder rejected the whole reconcile, so the
+      // desktop-plugins root never resolved and no desktop plugin loaded.
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const denied = path.join(home, 'plugins', 'denied', 'desktop', 'plugin.js')
+      write(denied, 'x')
+      write(path.join(home, 'plugins', 'good', 'desktop', 'plugin.js'), 'y')
+      fs.chmodSync(denied, 0)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+      try {
+        expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'good')])
+        expect(warn).toHaveBeenCalled()
+      } finally {
+        warn.mockRestore()
+        fs.chmodSync(denied, 0o600)
+      }
+    }
+  )
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'keeps (and warns about) the desktop half of a package folder it can no longer read',
+    async () => {
+      // A source the app cannot stat (Windows ACL EPERM, mode-000 folder) is not
+      // an uninstall: the ghost-prune loop must not rm the materialized half.
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const denied = path.join(home, 'plugins', 'denied')
+      write(path.join(denied, 'desktop', 'plugin.js'), 'x')
+      await reconcileUnifiedDesktopHalves(home, appRoot)
+      expect(fs.existsSync(path.join(appRoot, 'denied'))).toBe(true)
+      fs.chmodSync(denied, 0)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+      try {
+        expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+        expect(fs.existsSync(path.join(appRoot, 'denied'))).toBe(true)
+        expect(warn).toHaveBeenCalled()
+      } finally {
+        warn.mockRestore()
+        fs.chmodSync(denied, 0o700)
+      }
+    }
+  )
+
   it('stamps the package origin (catalog sidecar, else git remote) so "Install here" can reinstall the agent half', async () => {
     const home = makeHome()
     const appRoot = path.join(home, 'desktop-plugins')
@@ -131,5 +180,60 @@ describe('reconcileUnifiedDesktopHalves', () => {
 
     expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
     expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('user standalone')
+  })
+
+  it('adopts an unmarked copy of its own half that a pre-marker install left behind', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    // What `installDesktopPluginFromGit` used to publish: the package's half,
+    // byte for byte, with no marker. The page showed it as a second, enabled
+    // row while the agent row waited on "copying…".
+    write(path.join(home, 'plugins', 'media', 'desktop', 'plugin.js'), 'package half')
+    write(path.join(appRoot, 'media', 'plugin.js'), 'package half')
+
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'media', PACKAGE_MARKER), 'utf8'))
+    expect(marker.package).toBe('media')
+    // Adoption is a stamp, not a copy: the folder's own files are untouched and
+    // the next pass has nothing left to do.
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('package half')
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+  })
+
+  it('replaces an interrupted marker-less copy, stamps it, and converges on retry', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    write(path.join(home, 'plugins', 'media', 'desktop', 'plugin.js'), 'package half')
+    // A failed pre-marker copy has files but no entry point and is not a
+    // standalone plugin the user can run.
+    write(path.join(appRoot, 'media', 'partial.js'), 'interrupted copy')
+
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('package half')
+    expect(fs.existsSync(path.join(appRoot, 'media', 'partial.js'))).toBe(false)
+    expect(fs.existsSync(path.join(appRoot, 'media', PACKAGE_MARKER))).toBe(true)
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+  })
+
+  it('cleans up failed staging copies without exposing a marker-less target', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    const packageDir = path.join(home, 'plugins', 'media')
+    write(path.join(packageDir, 'desktop', 'plugin.js'), 'package half')
+
+    // Simulate a copy that dies partway: the destination already holds a marker-less
+    // partial tree when the failure surfaces. A direct copy into the final target would
+    // leave that half-tree behind; the staged copy must never let it reach `<appRoot>/media`.
+    const copy = vi.spyOn(fs.promises, 'cp').mockImplementationOnce(async (_src, dest) => {
+      write(path.join(String(dest), 'plugin.js'), 'partial')
+      throw new Error('disk full')
+    })
+
+    await expect(materializeDesktopHalf(packageDir, appRoot)).rejects.toThrow('disk full')
+
+    copy.mockRestore()
+    expect(fs.existsSync(path.join(appRoot, 'media'))).toBe(false)
+    expect(fs.readdirSync(appRoot)).toEqual([])
   })
 })

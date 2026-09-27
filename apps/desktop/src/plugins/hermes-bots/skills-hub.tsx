@@ -6,10 +6,12 @@
  * it reaches back into neither.
  */
 
-import { Button, host, Input } from '@hermes/plugin-sdk'
+import { Button, host, Input, useI18n } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
+import { requestForBot } from './routing'
+import type { RosterRow } from './types'
 
 // ── skills hub section: the REAL hub page (docs) embedded as a picker ──────
 // https://hermes-agent.nousresearch.com/docs/skills?embed=picker hides the
@@ -26,14 +28,15 @@ interface HubSkillResult {
   name: string
 }
 interface HubSkillsSectionProps {
-  /** Install target: a bare profile name, a connection-scoped descriptor for a
-   *  bot on another gateway, or null for the launch profile (create time). */
-  forProfile: null | string | { connectionId?: null | string; profile?: null | string }
+  /** Existing bot to route through; omitted for the launch profile at create time. */
+  bot?: RosterRow
   onInstalled?: (name: string) => void
 }
 
-export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionProps) {
+export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
   const b = useBots()
+  const { t } = useI18n()
+  const h = t.skills.hub
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<HubSkillResult[] | null>(null)
   const [searching, setSearching] = useState(false)
@@ -119,32 +122,30 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
     setInstalling(label)
 
     try {
-      // With forProfile the install lands in that bot's skills dir
-      // (gateway skills.manage profile scoping); null = launch profile,
-      // which is right at create time — the new bot clones/copies from it.
-      await host.request('skills.manage', {
+      // Existing bots must use their owner route; the active gateway is not
+      // necessarily the gateway that owns the bot. Create-time installs stay
+      // ambient because there is no bot row to route yet.
+      const params = {
         action: 'install',
         query: name,
-        ...(forProfile
-          ? {
-              profile: forProfile
-            }
-          : {})
-      })
+        ...(bot ? { profile: bot.name } : {})
+      }
+
+      await (bot ? requestForBot(bot, 'skills.manage', params) : host.request('skills.manage', params))
       setInstalled(prev => ({
         ...prev,
         [label]: true
       }))
       host.notify({
         kind: 'success',
-        message: `Skill "${label}" installed`
+        message: b.tools.installed(label)
       })
 
       if (typeof onInstalled === 'function') {
         onInstalled(label)
       }
     } catch (err) {
-      host.notifyError(err, `Installing "${label}" failed`)
+      host.notifyError(err, b.tools.installFailed(label))
     } finally {
       setInstalling(null)
     }
@@ -155,14 +156,14 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
   return (
     <div className="grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2">
       <div className="flex items-baseline justify-between gap-2">
-        <div className="text-[0.7rem] font-medium text-(--ui-text-secondary)">Skills Hub</div>
+        <div className="text-[0.7rem] font-medium text-(--ui-text-secondary)">{b.tools.skillsHub}</div>
         <Button
           className="text-[0.65rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)"
           onClick={() => setBrowseHub(v => !v)}
           size="inline"
           variant="text"
         >
-          {browseHub ? 'hide the hub browser' : 'browse the full hub ▾'}
+          {browseHub ? h.pickerHide : h.pickerBrowse}
         </Button>
       </div>
       {browseHub ? (
@@ -197,9 +198,7 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
             />
           </div>
           <div className="px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
-            {installing
-              ? `Installing "${installing}"…`
-              : 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above. Drag the corner to resize.'}
+            {installing ? h.installStarted(installing) : `${h.pickerHint} ${b.tools.resizeHint}`}
           </div>
         </div>
       ) : null}
@@ -222,16 +221,12 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
           value={query}
         />
         <Button disabled={searching || !query.trim()} onClick={() => void search()} size="sm" variant="secondary">
-          {searching ? 'Searching…' : 'Search'}
+          {searching ? h.searching : h.search}
         </Button>
       </div>
-      {searching ? (
-        <div className="px-1 text-[0.65rem] text-(--ui-text-quaternary)">
-          Searching community + well-known sources — can take ~10s…
-        </div>
-      ) : null}
+      {searching ? <div className="px-1 text-[0.65rem] text-(--ui-text-quaternary)">{b.tools.searchHint}</div> : null}
       {results === null ? null : results.length === 0 ? (
-        <div className="px-1 py-1.5 text-[0.7rem] text-(--ui-text-quaternary)">No hub skills matched.</div>
+        <div className="px-1 py-1.5 text-[0.7rem] text-(--ui-text-quaternary)">{h.noResults}</div>
       ) : (
         <div
           className="overflow-y-auto overscroll-contain"
@@ -249,14 +244,14 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
                   ) : null}
                 </div>
                 {installed[r.name] ? (
-                  <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">✓ added</span>
+                  <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">✓ {h.installed}</span>
                 ) : (
                   <Button
+                    aria-label={b.tools.installHint(r.name)}
                     className="shrink-0 px-2 font-semibold"
                     disabled={installing !== null}
                     onClick={() => void install(r.name)}
                     size="sm"
-                    title={`Install "${r.name}" and add it to the list above`}
                     variant="ghost"
                   >
                     {installing === r.name ? '…' : '+'}

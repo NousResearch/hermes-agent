@@ -1,6 +1,6 @@
 """Channel directory -- cached map of reachable channels/contacts per platform.
 
-Built on gateway startup, refreshed every 5 min, saved to ~/.hermes/channel_directory.json.
+Built on gateway startup, refreshed every 5 min, saved to ``<HERMES_HOME>/channel_directory.json``.
 send_message reads it for action="list" and to resolve friendly channel names to IDs.
 """
 
@@ -46,7 +46,8 @@ def _aliases_path() -> Path:
 
 
 def _read_json(path: Path) -> Any:
-    with open(path, encoding="utf-8") as f:
+    # utf-8-sig: Windows editors may leave a BOM that plain utf-8 json.load rejects (pm-era fix).
+    with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
 
 
@@ -180,11 +181,16 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
         import discord as _discord  # noqa: F401 — SDK presence check
     except ImportError:
         return channels
+    from gateway.platforms.helpers import is_discord_channel_obfuscated
+
     for guild in client.guilds:
         # Forum channels (type 15): creating a message auto-spawns a thread post.
         forums = getattr(guild, "forum_channels", None) or []
         for chs, ch_type in ((guild.text_channels, "channel"), (forums, "forum")):
             for ch in chs:
+                # Obfuscated placeholders (no VIEW_CHANNEL) can never be posted to. #90154
+                if is_discord_channel_obfuscated(ch):
+                    continue
                 channels.append({"id": str(ch.id), "name": ch.name, "guild": guild.name, "type": ch_type})
     # DM-capable users aren't reachable via guild enumeration; they come from sessions.
     channels.extend(_build_from_sessions("discord"))

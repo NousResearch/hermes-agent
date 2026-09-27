@@ -72,10 +72,12 @@ class LoginControl:
     label: str
     name: str
     type: str
+    max_length: Optional[int] = None
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "LoginControl":
         form_index = raw.get("formIndex", raw.get("form_index"))
+        max_length = raw.get("maxLength", raw.get("max_length"))
         return cls(
             autocomplete=str(raw.get("autocomplete") or ""),
             form_index=int(form_index) if form_index is not None else None,
@@ -83,6 +85,7 @@ class LoginControl:
             label=str(raw.get("label") or ""),
             name=str(raw.get("name") or ""),
             type=str(raw.get("type") or ""),
+            max_length=int(max_length) if max_length is not None else None,
         )
 
 
@@ -123,6 +126,30 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
     if _RE_USERNAME.search(searchable):
         return ClassifiedLoginControl(control, 70, "username")
     return None
+
+
+_RE_OTP = re.compile(
+    r"\b(?:one[\s-]?time|verification|security|auth(?:entication|enticator)?|2fa|two[\s-]?factor|mfa|totp|otp|"
+    r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b"
+)
+
+
+def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginControl]:
+    """The controls that take a second-factor code. ``autocomplete=one-time-code`` is authoritative;
+    otherwise a text/tel/number input whose name/label says code/OTP/2FA/verification. Some sites split
+    the code into one input per digit (``maxlength=1`` boxes): they are returned in DOM order and the
+    fill spreads the code across them."""
+    out: List[ClassifiedLoginControl] = []
+    for c in controls:
+        tokens = c.autocomplete.lower().split()
+        if "one-time-code" in tokens:
+            out.append(ClassifiedLoginControl(c, 100, "one-time-code"))
+            continue
+        if c.type not in ("text", "tel", "number", "password", ""):
+            continue
+        if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))):
+            out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
+    return out
 
 
 def select_password_fill(
@@ -198,6 +225,22 @@ def select_checkout_fills(classified: List[ClassifiedLoginControl], secret: Dict
 INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
 
 
+def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> List[Dict[str, Any]]:
+    """One fill per box. Default: the single best-scoring code field takes the whole code.
+
+    Per-digit entry only when the page unmistakably uses it: exactly len(code) OTP controls that are all
+    ``maxlength=1``, all in the same form, and adjacent in DOM order (the classic N-box widget). Anything
+    looser (several code-like inputs scattered over a page) gets ONE field, never a digit sprayed across
+    unrelated inputs."""
+    best = max(otp_controls, key=lambda c: c.score)
+    boxes = sorted((c for c in otp_controls if c.control.max_length == 1), key=lambda c: c.control.index)
+    if (len(boxes) == len(code)
+            and len({b.control.form_index for b in boxes}) == 1
+            and all(b.control.index - a.control.index == 1 for a, b in zip(boxes, boxes[1:]))):
+        return [{"index": b.control.index, "token": "one-time-code", "value": ch} for b, ch in zip(boxes, code)]
+    return [{"index": best.control.index, "token": "one-time-code", "value": code}]
+
+
 def build_inspection_js(nonce: str) -> str:
     return _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace("__NONCE__", json.dumps(nonce))
 
@@ -222,6 +265,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
       autocomplete: element.autocomplete || "",
       formIndex: resolvedFormIndex >= 0 ? resolvedFormIndex : null,
       index,
+      maxLength: element.maxLength > 0 ? element.maxLength : null,
       label: [
         ...labels,
         element.getAttribute("aria-label") || "",
@@ -277,6 +321,7 @@ _FILL_JS_TEMPLATE = """(() => {
       }
       el.focus();
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      // one-time-code split into single-character boxes: f.value is the slice for THIS box (see build_otp_fills)
       if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
       el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
       el.dispatchEvent(new Event("change", { bubbles: true }));

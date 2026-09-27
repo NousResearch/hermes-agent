@@ -1,0 +1,81 @@
+name: Canary Release
+
+# Automatic canaries are daily: the schedule caps new tags at one per 24h.
+# With no new commits, release.py resumes an existing unpublished canary until
+# its protected head is live; only a published canary makes a quiet day a no-op.
+# workflow_dispatch fires one on demand at any time.
+#
+# Source identity is the exact stable version plus build metadata:
+# v<stable>+canary.<YYYYMMDDTHHMMSSZ>. It compares equal to the stable; only
+# the protected R2 canary head moves subscribers. A dispatch queued behind a
+# running canary has conclusion=cancelled if a newer one supersedes it; only
+# conclusion=failure is a canary failure signal.
+
+on:
+  schedule:
+    - cron: "41 6 * * *" # daily, 06:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write # tag push + release create/delete for prune
+  actions: write # release.py dispatches the desktop build
+
+concurrency:
+  group: canary-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag, draft, and start the canary build
+    runs-on: ubuntu-24.04
+    # A dispatch from a feature branch would tag unmerged code as the canary.
+    if: github.ref_name == github.event.repository.default_branch
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The changelog walks commits since the previous canary tag
+          fetch-depth: 0
+          # the tag math reads the full tag list
+          fetch-tags: true
+
+      - name: Tag and draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 scripts/release.py --canary --publish --remote origin
+
+  prune:
+    name: Prune canaries older than 14 days
+    runs-on: ubuntu-24.04
+    needs: tag
+    environment: release-signing
+    # Prune even when this run had nothing new to tag. The desktop build
+    # runs in its own workflow run, so this does not wait on it — the
+    # window is 14 days, far wider than any build.
+    if: always() && needs.tag.result != 'cancelled' && needs.tag.result != 'skipped'
+    # Job-level so the R2 prune step can gate on `env` (a step `if` cannot
+    # read `secrets`): an unprovisioned release-signing environment skips
+    # the R2 prune instead of failing the canary run.
+    env:
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py --prune-canaries --publish --remote origin
+      - uses: ./.github/actions/setup-pm
+        if: env.CLOUDFLARE_R2_ACCOUNT_ID != ''
+        with:
+          cache-python: false
+      - name: Prune R2 canary objects
+        if: env.CLOUDFLARE_R2_ACCOUNT_ID != ''
+        run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.r2 prune-canaries --keep-days 14

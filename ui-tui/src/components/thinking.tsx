@@ -1,4 +1,5 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
+import { compactNumber } from '@hermes/shared/format'
 import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
@@ -18,8 +19,8 @@ import {
   boundedLiveRenderText,
   compactPreview,
   estimateTokensRough,
-  fmtK,
   formatToolCall,
+  formatToolLabels,
   parseToolTrailResultLine,
   pick,
   splitToolDuration,
@@ -890,7 +891,8 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   for (const tool of tools) {
-    const label = formatToolCall(tool.name, tool.context || '')
+    // A bridged call names its inner calls; anything else is still name + preview.
+    const label = tool.labels?.length ? formatToolLabels(tool.labels) : formatToolCall(tool.name, tool.context || '')
 
     groups.push({
       color: t.color.text,
@@ -934,11 +936,12 @@ export const ToolTrail = memo(function ToolTrail({
 
   const toolTokenCount = toolTokens ?? 0
   const totalTokenCount = tokenCount + toolTokenCount
-  const thinkingTokensLabel = tokenCount > 0 ? `~${fmtK(tokenCount)} tokens` : null
+  const thinkingTokensLabel = tokenCount > 0 ? `~${compactNumber(tokenCount)} tokens` : null
 
-  const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
+  const toolTokensLabel =
+    toolTokens !== undefined && toolTokens > 0 ? `~${compactNumber(toolTokens)} tokens` : undefined
 
-  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
+  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${compactNumber(totalTokenCount)} total` : null
   const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 

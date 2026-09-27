@@ -113,7 +113,8 @@ async def test_send_with_retry_uses_structured_retryable_flag(
     assert result.success is True
     assert result.message_id == "m-2"
     assert calls == 2
-    assert sleeps == [0.25]
+    # base backoff: base_delay * 2**0 plus up to 1s of jitter
+    assert len(sleeps) == 1 and 0.25 <= sleeps[0] <= 1.25
 
 
 # -- Gap 2: typing-indicator cooldown ---------------------------------------

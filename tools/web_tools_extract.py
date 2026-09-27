@@ -18,6 +18,7 @@ from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
 logger = logging.getLogger("tools.web_tools")
 
 _NO_RESULT_ERROR = "Extract backend returned no result for this URL"
+_DEFAULT_EXTRACT_TIMEOUT_S = 120.0
 _EXTRACT_BACKENDS_HINT = "firecrawl, tavily, keenable, exa, or parallel."
 _INVALID_ITEM_ERROR = (
     "Invalid URL item at index {}: expected a URL string or an object with a string 'url' or 'href' field"
@@ -132,19 +133,45 @@ def _resolve_extract_provider(backend: str):
     return provider, None
 
 
+def _extract_timeout_seconds() -> float:
+    """Wall-clock cap for one provider ``extract()`` dispatch (``web.extract_timeout``, default 120s).
+
+    A hanging backend (server keeps the response open without finishing) otherwise stalls the
+    tool call indefinitely. 0 or a negative value disables the cap.
+    """
+    from tools.web_tools import _load_web_config
+    try:
+        return float(_load_web_config().get("extract_timeout", _DEFAULT_EXTRACT_TIMEOUT_S))
+    except (TypeError, ValueError):
+        return _DEFAULT_EXTRACT_TIMEOUT_S
+
+
 async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
     """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
 
-    Rescue fires on a raised exception or when the WHOLE batch failed (backend outage, not per-page
-    problems). Rescued batches are never cached.
+    Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
+    failed (backend outage, not per-page problems). Rescued batches are never cached.
     """
     import inspect
     from tools.web_result_cache import extract_cache_put
+    timeout = _extract_timeout_seconds()
     try:
         if inspect.iscoroutinefunction(provider.extract):
-            results = await provider.extract(fetch_urls, format=format)
+            coro = provider.extract(fetch_urls, format=format)
         else:  # sync extract() runs in a thread so network I/O never blocks the loop
-            results = await asyncio.to_thread(provider.extract, fetch_urls, format=format)
+            coro = asyncio.to_thread(provider.extract, fetch_urls, format=format)
+        if timeout > 0:
+            results = await asyncio.wait_for(coro, timeout=timeout)
+        else:
+            results = await coro
+    except asyncio.TimeoutError as exc:  # hanging backend — bounded, never a stalled tool call
+        logger.warning("web_extract provider '%s' timed out after %.0fs for %d URL(s)",
+                       provider.name, timeout, len(fetch_urls))
+        failed = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")
+                  for u in fetch_urls]
+        if not _rescue_eligible(provider):
+            return failed
+        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
     except Exception as exc:  # noqa: BLE001 — candidate for rescue
         if not _rescue_eligible(provider):
             raise
@@ -153,10 +180,18 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 
-    # Cache each successful fetch's full clean text (best-effort; oversized skipped).
-    for url, fetched in zip(fetch_urls, results):
+    # Cache each successful fetch under the REQUESTED url it reports as its own — never by list
+    # position: providers omit failed URLs or return successes out of request order, and a positional
+    # write filed one page's text under another URL's key for the whole TTL. ``metadata.sourceURL``
+    # counts because Keenable/Firecrawl put the requested URL there when ``url`` is the redirect target.
+    # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
+    requested = set(fetch_urls)
+    for fetched in results:
+        meta = fetched.get("metadata")
+        source = meta.get("sourceURL") if isinstance(meta, dict) else None
+        url = next((u for u in (fetched.get("url"), source) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
-        if _content and not fetched.get("error"):
+        if url and _content and not fetched.get("error"):
             extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
     return results
 

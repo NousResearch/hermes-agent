@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.config import recommended_update_command
+import pytest
+
+from hermes_cli.config import get_managed_system, is_managed, recommended_update_command
 from hermes_cli.main import cmd_update
 from tools.skills_hub_official import OptionalSkillSource
 
@@ -16,6 +18,17 @@ def test_recommended_update_command_defaults_to_hermes_update(monkeypatch):
     # detect_install_method().
     with patch("hermes_cli.config.get_managed_update_command", return_value=None), \
          patch("hermes_cli.config.detect_install_method", return_value="git"):
+        assert recommended_update_command() == "hermes update"
+
+
+@pytest.mark.parametrize("false_value", ["false", "0", "no", "off", "FALSE"])
+def test_get_managed_system_false_values(monkeypatch, false_value):
+    """An explicit opt-out is not a package manager named "false" (#12864)."""
+    monkeypatch.setenv("HERMES_MANAGED", false_value)
+
+    assert get_managed_system() is None
+    assert not is_managed()
+    with patch("hermes_cli.config.detect_install_method", return_value="git"):
         assert recommended_update_command() == "hermes update"
 
 

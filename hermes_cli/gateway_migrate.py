@@ -330,7 +330,7 @@ def _systemd_service_user(home: Path, services: list[tuple[str, bool]]) -> Optio
 
 
 def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: Optional[str] = None) -> None:
-    """``stop`` / ``uninstall`` / ``start`` / ``restart`` / ``install`` on ``home``'s service."""
+    """``stop`` / ``uninstall`` / ``start`` / ``restart`` / ``install`` / ``enable`` on ``home``'s service."""
     if kind == "s6":
         return _s6_slot_op(verb, home)
     from hermes_cli import gateway as gw
@@ -345,6 +345,21 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
                 gww.install(start_now=True, start_on_login=True)
             else:
                 gw.systemd_install(system=system, run_as_user=run_as_user, non_interactive=True)
+            return
+        if verb == "enable":
+            # Boot startability, not serving: the non-systemd backends load at boot by construction
+            # (launchd RunAtLoad, the Windows logon trigger, s6 supervision), so only systemd needs
+            # an explicit verb. Idempotent: enabling an already-enabled unit is a systemctl no-op.
+            if kind == "systemd":
+                from hermes_cli.cli_output import print_warning
+                unit = gw.get_service_name()
+                result = gw._run_systemctl(["enable", unit], system=system, check=False, timeout=30)
+                if result.returncode != 0:
+                    print_warning(
+                        f"could not enable the {gw._service_scope_label(system)} gateway unit for boot "
+                        f"(exit {result.returncode}); after a reboot nothing starts the gateway — "
+                        f"run `systemctl {'--user ' if not system else ''}enable {unit}` by hand"
+                    )
             return
         gw._service_call(kind, verb, system)
 
@@ -862,6 +877,11 @@ def _restart_default(
     if plan_default.service is not None:
         kind, system = plan_default.service
         _service_op(kind, system, "restart", default_home)
+        # The fold makes the survivor's boot enablement load-bearing for the whole host: every
+        # secondary's unit (and with it its default.target.wants symlink) is gone after the removal
+        # phase, so a survivor left disabled turns "N boot-startable gateways" into "0" while the
+        # migration reports success. A bare restart on a disabled unit succeeds and proves nothing.
+        _service_op(kind, system, "enable", default_home)
         return f"restarted the default gateway via {kind}"
     if target is not None:
         kind, system = target

@@ -116,6 +116,25 @@ class TestStripMention:
         result = self.adapter._strip_mention("hermes help me")
         assert result == "hermes help me"
 
+    def test_other_bot_mentions_preserved(self):
+        result = self.adapter._strip_mention(
+            "@hermes @hermes-kelly @hermes+kelly @hermes/kelly "
+            "@hermes..kelly:example.org @hermes.+kelly:example.org "
+            "@hermes.:example.org @hermes:[2001:db8::1] "
+            "@hermes:[2001:db8::1]:8448 @hermes:other.org "
+            "@hermes:EXAMPLE.ORG @hermes:example.org.evil"
+        )
+        assert result == (
+            "@hermes-kelly @hermes+kelly @hermes/kelly "
+            "@hermes..kelly:example.org @hermes.+kelly:example.org "
+            "@hermes.:example.org @hermes:[2001:db8::1] "
+            "@hermes:[2001:db8::1]:8448 @hermes:other.org "
+            "@hermes:EXAMPLE.ORG @hermes:example.org.evil"
+        )
+
+    def test_mention_before_sentence_punctuation_stripped(self):
+        assert self.adapter._strip_mention("Thanks @hermes:example.org.") == "Thanks."
+
 
 # ---------------------------------------------------------------------------
 # Outbound mention payloads
@@ -207,6 +226,55 @@ async def test_require_mention_m_mentions_other_user_ignored(monkeypatch):
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("body", "mentions", "formatted_body"), [
+    ("hey @hermes-kelly:example.org", None, None),
+    ("hey @hermes+kelly:example.org", None, None),
+    ("hey @hermes/kelly:example.org", None, None),
+    ("hey @hermes..kelly:example.org", None, None),
+    ("hey @hermes.+kelly:example.org", None, None),
+    ("hey @hermes.:example.org", None, None),
+    ("hey @hermes:[2001:db8::1]", None, None),
+    ("hey @hermes:[2001:db8::1]:8448", None, None),
+    ("hey @hermes:other.org", None, None),
+    ("hey @hermes:EXAMPLE.ORG", None, None),
+    ("hey @hermes:example.org.evil", None, None),
+    ("@hermes please reply", {"user_ids": ["@hermes-kelly:example.org"]}, None),
+    ("@hermes please reply", {"user_ids": []}, None),
+    ("@hermes please reply", {"user_ids": None}, None),
+    ("@hermes please reply", {}, None),
+    ("please reply", None,
+     '<a href="https://matrix.to/#/@hermes:example.org.evil">Other bot</a>'),
+    ("please reply", None,
+     '<a href="https://matrix.to/#/@hermes:EXAMPLE.ORG">Other bot</a>'),
+])
+@pytest.mark.asyncio
+async def test_other_bot_mentions_do_not_dispatch(body, mentions, formatted_body):
+    adapter = _make_adapter()
+    event = _make_event(body, formatted_body=formatted_body)
+    if mentions is not None:
+        event.content["m.mentions"] = mentions
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize("body", [
+    "Thanks @hermes:example.org.",
+    "hermes: please help",
+    "@hermes: please help",
+    "https://matrix.to/#/@hermes:example.org",
+])
+@pytest.mark.asyncio
+async def test_legacy_mention_forms_still_dispatch(body):
+    adapter = _make_adapter()
+    event = _make_event(body)
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio

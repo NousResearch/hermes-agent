@@ -86,8 +86,9 @@ class SessionUsageMixin:
         self, session_id: str, *, provider: str, base_url: str, billing_mode: Optional[str] = None,
     ) -> None:
         """Unconditionally set the billing route (``update_token_counts`` only COALESCE-fills
-        NULLs) so the dashboard reflects the latest /model switch; also nulls
-        ``system_prompt`` so the cached snapshot header is rebuilt.
+        NULLs) so the dashboard reflects the latest /model switch.
+
+        Route writers never touch the stored prompt; ``_stored_prompt_matches_runtime`` decides staleness.
 
         See #48173, #48248.
         """
@@ -98,11 +99,8 @@ class SessionUsageMixin:
             conn.execute("""UPDATE sessions SET
                    billing_provider = ?,
                    billing_base_url = ?,
-                   billing_mode = COALESCE(?, billing_mode),
-                   system_prompt = NULL,
-                   system_prompt_hash = NULL
+                   billing_mode = COALESCE(?, billing_mode)
                    WHERE id = ?""", (provider, base_url, billing_mode, session_id))
-            self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
     def queue_token_counts(self, session_id: str, **kwargs) -> None:

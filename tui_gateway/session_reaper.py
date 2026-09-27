@@ -307,6 +307,12 @@ def _repair_missing_ws_orphan_reaps() -> None:
 def _reclaim_orphaned_leases() -> None:
     """Hand the registry the lease ids we still own so it can drop the rest."""
     try:
+        # Stale deferred leases first: a settlement callback that never arrived must not
+        # keep vouching for a zombie slot (#62823). Released leases leave _own_live_lease_ids.
+        _reap_stale_deferred_leases()
+    except Exception:
+        logger.debug("stale deferred lease sweep failed", exc_info=True)
+    try:
         from hermes_cli.active_sessions import release_orphaned_leases
         if dropped := release_orphaned_leases(_own_live_lease_ids()):
             logger.info("Reclaimed %d orphaned active-session lease(s)", dropped)

@@ -663,6 +663,53 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     run.assert_not_called()
 
 
+def test_dispatch_failure_opens_incident_and_delivers_failure_notice(
+    execution_ledger, monkeypatch
+):
+    """A failed external-worker handoff must surface like any other job failure: one
+    incident row plus one failure-lane notice, with repeats withheld by the alerted
+    cooldown (#123401) — not a silent outage while executions.db piles up failed rows."""
+    import cron.incidents as incidents
+    import cron.scheduler as scheduler
+
+    def _handoff_boom(_job):
+        raise RuntimeError("worker exited before ownership acknowledgement")
+
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", _handoff_boom)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_a, **_k: True)
+    delivered = []
+    monkeypatch.setattr(
+        scheduler, "_deliver_result",
+        lambda job, content, **_kw: delivered.append(content) or None)
+
+    record = execution_ledger.create_execution("job-dispatch", source="builtin")
+    job = {"id": "job-dispatch", "execution_id": record["id"],
+           "deliver": "telegram:123"}
+    assert scheduler.run_one_job(job, adapters=None) is True
+
+    rows = incidents.list_incidents()
+    assert len(rows) == 1
+    assert rows[0]["job_id"] == "job-dispatch"
+    assert rows[0]["state"] == "alerted"
+    assert "Restart-safe cron worker dispatch failed" in rows[0]["error"]
+    assert len(delivered) == 1 and delivered[0].strip()
+    finished = execution_ledger.get_execution(record["id"])
+    assert finished["status"] == "failed"
+    assert "Restart-safe cron worker dispatch failed" in finished["error"]
+    assert finished["delivery_outcome"] == "delivered"
+
+    # The same dispatch failure again: same signature -> incident dedup, and the
+    # alerted cooldown withholds the repeat ping.
+    repeat = execution_ledger.create_execution("job-dispatch", source="builtin")
+    job2 = {"id": "job-dispatch", "execution_id": repeat["id"],
+            "deliver": "telegram:123"}
+    assert scheduler.run_one_job(job2, adapters=None) is True
+    assert len(incidents.list_incidents()) == 1
+    assert len(delivered) == 1
+    assert execution_ledger.get_execution(repeat["id"])["delivery_outcome"] == \
+        "suppressed_acked"
+
+
 def test_shutdown_does_not_interrupt_restart_safe_waiter():
     import cron.scheduler as scheduler
 
@@ -913,3 +960,37 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             parent.wait(timeout=5)
         if worker_pid is not None and _pid_exists(worker_pid):
             os.kill(worker_pid, signal.SIGKILL)
+
+
+def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
+    execution_ledger, monkeypatch
+):
+    """Once the worker is spawned it may own the row and send its own notice: a
+    waiter failure must only record bookkeeping, never a false dispatch incident."""
+    import cron.incidents as incidents
+    import cron.scheduler as scheduler
+
+    def _body_boom(_process, *, execution_id):
+        raise RuntimeError("cron external worker exited before durable recovery")
+
+    monkeypatch.setattr(scheduler, "_wait_for_external_cron_worker_body", _body_boom)
+    monkeypatch.setattr(
+        scheduler, "_launch_external_cron_worker",
+        lambda job: scheduler._wait_for_external_cron_worker(
+            object(), execution_id=job["execution_id"]))
+    marks = []
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *a, **k: marks.append((a, k)) or True)
+    delivered = []
+    monkeypatch.setattr(
+        scheduler, "_deliver_result",
+        lambda job, content, **_kw: delivered.append(content) or None)
+
+    record = execution_ledger.create_execution("job-post", source="builtin")
+    job = {"id": "job-post", "execution_id": record["id"], "deliver": "telegram:123"}
+    assert scheduler.run_one_job(job, adapters=None) is True
+
+    assert incidents.list_incidents() == []
+    assert delivered == []
+    assert len(marks) == 1 and marks[0][0][1] is False
+    assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
+    assert execution_ledger.get_execution(record["id"])["status"] == "failed"

@@ -4,10 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneLifecycleContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
+import { keybindAction } from '@/lib/keybinds/actions'
 import { setActiveProfile } from '@/store/profile'
 import {
   getThreadScrollPosition,
   requestScrollToBottom,
+  requestThreadPageScroll,
   saveThreadScrollPosition,
   threadScrollStorageKey
 } from '@/store/thread-scroll'
@@ -130,6 +132,7 @@ describe('list session-scroll restore', () => {
     // so streamed growth paints at the stale scrollTop and the viewport drifts
     // up before the re-pin. The transcript ResizeObserver closes that frame.
     const previousObserver = globalThis.ResizeObserver
+
     const observers = new Set<{
       callback: ResizeObserverCallback
       targets: Set<Element>
@@ -252,6 +255,7 @@ describe('list session-scroll restore', () => {
     const { container, unmount } = render(
       <ScrollHarness clampToComposer isRunning messages={sessionMessages('clr')} sessionKey="clr" />
     )
+
     const vp = viewportEl(container)
     const clearance = vp.querySelector('[data-slot="aui_composer-clearance"]')
 
@@ -371,6 +375,36 @@ describe('list session-scroll restore', () => {
       unmount()
       vi.stubGlobal('ResizeObserver', previousObserver)
     }
+  })
+
+  it('pages the requested conversation by exactly one viewport in either direction', async () => {
+    expect(keybindAction('conversation.scrollPageUp')?.defaults).toEqual(['pageup'])
+    expect(keybindAction('conversation.scrollPageDown')?.defaults).toEqual(['pagedown'])
+
+    const { container } = render(<ScrollHarness messages={sessionMessages('a')} sessionKey="a" />)
+    const vp = viewportEl(container)
+
+    await settleScroll()
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+
+    act(() => requestThreadPageScroll(1, 'a'))
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+    expect(vp.dataset.following).toBe('true')
+
+    act(() => requestThreadPageScroll(-1, 'other'))
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+
+    act(() => requestThreadPageScroll(-1, 'a'))
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H * 2)
+    act(() => vp.dispatchEvent(new Event('scroll')))
+    await settleScroll()
+    expect(vp.dataset.following).toBe('false')
+
+    act(() => requestThreadPageScroll(1, 'a'))
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+    act(() => vp.dispatchEvent(new Event('scroll')))
+    await settleScroll()
+    expect(vp.dataset.following).toBe('true')
   })
 
   it('restores a reading offset on return after switching away', async () => {

@@ -156,10 +156,7 @@ function profileStatusLabel(p: Translations['profiles'], summary: ProfileDotSumm
  *  (gateway, profile) the square names. `connectionId` is null for this
  *  machine's primary. The interned summaries keep the selector's bail-out
  *  intact: a square re-renders only when its own counts change. */
-function useProfileStatus(
-  profile: null | string,
-  connectionId: null | string | undefined
-): ProfileDotSummary | null {
+function useProfileStatus(profile: null | string, connectionId: null | string | undefined): ProfileDotSummary | null {
   return useStoreSelector($profileDotStateByScope, byScope =>
     profile ? (profileDotSummaryFor(byScope, connectionId, profile) ?? null) : null
   )
@@ -723,6 +720,7 @@ function EditSoulDialog({
   const { t } = useI18n()
   const p = t.profiles
   const [content, setContent] = useState('')
+  const [missing, setMissing] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -734,9 +732,15 @@ function EditSoulDialog({
     let cancelled = false
     setLoading(true)
     setContent('')
+    setMissing(false)
 
     getProfileSoul(profileName, scope)
-      .then(soul => !cancelled && setContent(soul.content))
+      .then(soul => {
+        if (!cancelled) {
+          setContent(soul.content)
+          setMissing(soul.exists === false)
+        }
+      })
       .catch(err => !cancelled && notifyError(err, p.failedLoadSoul))
       .finally(() => !cancelled && setLoading(false))
 
@@ -769,6 +773,7 @@ function EditSoulDialog({
             {gatewayLabel && profileName ? p.fleet.onGateway(profileName, gatewayLabel) : profileName} · SOUL.md
           </DialogTitle>
         </DialogHeader>
+        {missing && <p className="text-xs text-muted-foreground">{p.soulMissing}</p>}
         <div className="h-80">
           {!loading && profileName && (
             <CodeEditor
@@ -1180,7 +1185,11 @@ function FleetRestGroup({
 }) {
   const { t } = useI18n()
   const p = t.profiles
-  const dividerLabel = group.reachable ? p.fleet.gateway(group.label) : p.fleet.gatewayUnreachable(group.label)
+
+  const dividerLabel = group.reachable
+    ? p.fleet.gateway(group.label)
+    : `${group.needsSignIn ? `${p.fleet.gateway(group.label)} · ${t.settings.toolsets.needsSignIn}` : p.fleet.gatewayUnreachable(group.label)}${group.error ? `\n${group.error}` : ''}`
+
   const defaultKey = fleetRouteKey(group.connectionId, group.defaultAgent.profile)
   // At rest, This device is a backend switch, not Home. The house glyph stays
   // on the active gateway's default profile.

@@ -3470,15 +3470,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
-    command = [
-        sys.executable,
-        "-m",
-        "cron.scheduler",
-        "--external-worker-file",
-        str(payload_path),
-        "--ack-file",
-        str(ack_path),
-    ]
+    repo_root = Path(__file__).resolve().parent.parent
+    from cron.scheduler_worker_env import external_worker_command
+    command = external_worker_command(repo_root, payload_path, ack_path)
 
     from agent.secret_scope import (
         build_profile_secret_scope,
@@ -3558,10 +3552,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
         "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
-    # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
-    # (PYTHONSAFEPATH / stale editable mapping, #112729). See cron/scheduler_worker_env.py.
+    # The launcher activates dependencies, then inserts this checkout. The pin
+    # still covers a process that reaches the module without it
+    # (PYTHONSAFEPATH / stale editable mapping, #112729).
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    repo_root = Path(__file__).resolve().parent.parent
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

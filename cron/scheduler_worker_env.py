@@ -1,16 +1,21 @@
 """Cron: import path of the restart-safe external worker.
 
-The worker is spawned as ``sys.executable -m cron.scheduler``. Its entry module is
-``cron.scheduler``, not ``hermes_cli.main``, so nothing bootstraps the gateway's checkout
-onto its ``sys.path``; historically it imported ``cron`` only through the implicit ``-m``
-cwd entry. That entry is gone under ``PYTHONSAFEPATH`` and useless when the venv's
-editable install maps a moved/deleted checkout -- the worker then dies with
-"No module named 'cron'" before its ownership ack (#112729, hypothesised cause).
+The worker is spawned through the installation launcher (store Python plus
+``hermes_bootstrap``), not a bare ``sys.executable -m cron.scheduler``. The
+gateway's executable is that store interpreter: a bare CPython with no
+third-party packages until bootstrap activates the committed dependency
+generation. A raw ``-m`` dies on the first import (``ruamel``, ``requests``)
+before the job script runs.
 
-The shared subprocess sanitizer strips Hermes-owned PYTHONPATH entries because user
-children must not see our tree. This child IS Hermes, so the pin is applied *after* the
-env is built, on the sanitized env -- the sanitizer's other decisions (dropped runtime
-site-packages, dropped venv markers) stand.
+``pin_hermes_tree_on_pythonpath`` still prepends this checkout. The launcher
+clears ``PYTHONPATH`` and inserts the repo itself; the pin covers a process
+that reaches the module without that launcher. Historically the entry was
+only the implicit ``-m`` cwd, which is gone under ``PYTHONSAFEPATH`` and
+useless when an editable install maps a moved checkout (#112729).
+
+The shared subprocess sanitizer strips Hermes-owned PYTHONPATH entries because
+user children must not see our tree. This child IS Hermes, so the pin is
+applied *after* the env is built, on the sanitized env.
 """
 
 from __future__ import annotations
@@ -25,6 +30,23 @@ def _installed_purelib() -> Path | None:
         return Path(sysconfig.get_paths()["purelib"]).resolve()
     except (KeyError, OSError):
         return None
+
+
+def external_worker_command(repo_root: Path, payload_path: Path, ack_path: Path) -> list[str]:
+    """Argv for the external worker: the same launcher the ``hermes`` command uses.
+
+    Store Python plus ``hermes_bootstrap`` selects the committed dependency
+    generation before ``cron.scheduler`` imports. A bare ``-m`` keeps the store
+    interpreter's empty site-packages, so the worker dies on ``ruamel`` before
+    the job script runs.
+    """
+    from hermes_cli._launchers import runtime_command
+
+    return runtime_command(
+        repo_root,
+        ["--external-worker-file", str(payload_path), "--ack-file", str(ack_path)],
+        module="cron.scheduler",
+    )
 
 
 def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:

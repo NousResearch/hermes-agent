@@ -76,6 +76,7 @@ class LiveGateway:
 class GatewaySettings:
     reply: str = "Matrix live reply"
     max_message_length: int | None = None
+    reply_to_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -378,11 +379,14 @@ def gateway(
     home = tmp_path / "hermes"
     home.mkdir()
     route = _host_route(network)
+    matrix_config = "platforms:\n  matrix:\n    enabled: true\n"
+    if settings.reply_to_mode is not None:
+        matrix_config += f'    reply_to_mode: "{settings.reply_to_mode}"\n'
     with FakeLLMServer([Text(settings.reply)], bind_host=route.bind_host) as model:
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
-            extra_config="platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n",
+            extra_config=matrix_config + "updates:\n  check: false\n",
         )
         with (home / ".env").open("a", encoding="utf-8") as stream:
             stream.write(

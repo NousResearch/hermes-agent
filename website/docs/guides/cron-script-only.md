@@ -187,6 +187,7 @@ Rules:
 
 - The venv is **user-managed**. Hermes does not create, freeze, restore, or install packages into it — it just invokes the path you give.
 - The path must be **absolute or `~`-prefixed** (e.g. `~/venvs/reporting/bin/python3`). Bare names like `python3` are rejected, because they are not stable across `PATH` changes.
+- It must be a **Python executable** (`python`, `python3`, `python3.12`, …), including a symlink's target — `/bin/bash` or other interpreters are refused.
 - Applies **only to Python scripts**. `.sh` / `.bash` always run under bash regardless.
 - The job-level setting applies to both `script` and `monitor_script` when they are Python files.
 - It is validated **at run time**, not at creation — a cron job is long-lived, and the venv may be rebuilt or moved between when you create the job and when it fires. A missing or non-executable interpreter produces a clear script failure that is delivered like any other error.

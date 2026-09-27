@@ -97,6 +97,31 @@ class TestRunJobScript:
         assert success is True
         assert output == "hello from script"
 
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("make_interpreter, expected", [
+        (lambda d: "python3", "absolute or ~-prefixed"),
+        (lambda d: str(d / "missing" / "python3"), "not found"),
+        (lambda d: str(d), "not a file"),
+        (lambda d: (d / "python3").write_text("") or str(d / "python3"), "not executable"),
+        (lambda d: "/bin/bash", "must be a Python executable"),
+        (lambda d: (d / "python").symlink_to("/bin/bash") or str(d / "python"),
+         "must be a Python executable"),
+    ])
+    def test_configured_interpreter_is_refused_unless_a_python_path(
+        self, cron_env, tmp_path, make_interpreter, expected
+    ):
+        """#70500: a bad job ``interpreter`` fails the run with a clear message instead of
+        raising — and never runs a ``.py`` body under a non-Python image, which would let an
+        unscanned script execute as shell."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "job.py"
+        script.write_text('print("ran")\n')
+
+        success, output = _run_job_script(str(script), interpreter=make_interpreter(tmp_path))
+        assert success is False
+        assert expected in output
+
     def test_script_stdout_non_utf8_decoded_lossily(self, cron_env):
         """A stray non-UTF-8 byte in script stdout must not fail the run (#105582).
 

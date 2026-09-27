@@ -289,7 +289,8 @@ def test_monitor_script_uses_configured_interpreter(hermes_env, monkeypatch):
     from cron.jobs import create_job
     from cron.scheduler import run_job
 
-    wrapper = hermes_env / "scripts" / "python-wrapper"
+    wrapper = hermes_env / "venv" / "bin" / "python3"
+    wrapper.parent.mkdir(parents=True)
     wrapper.write_text(
         f"#!{sys.executable}\n"
         "import os, sys\n"

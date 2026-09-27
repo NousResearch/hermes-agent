@@ -369,7 +369,11 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
 def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional[str]]:
     """``(python_exe, error)`` for a job's ``interpreter`` field. Checked at run time, not create
     time: a user venv can be rebuilt or moved while the job lives. Bare names are refused — they
-    silently change meaning with PATH."""
+    silently change meaning with PATH. Only a Python image is accepted (link target included):
+    the lifecycle guard classifies ``.py`` scripts as Python and skips its shell reference walk,
+    so ``interpreter=/bin/bash`` would run an unscanned ``.py`` body as shell."""
+    from cron.lifecycle_guard import _INTERPRETER_IMAGE_RE
+
     raw = interpreter.strip()
     try:
         resolved = Path(raw).expanduser()
@@ -377,6 +381,7 @@ def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional
             return None, (f"Interpreter must be an absolute or ~-prefixed path (got {raw!r}). "
                           "Bare names like 'python3' are not stable across PATH changes.")
         mode = resolved.stat().st_mode
+        names = {resolved.name.lower(), resolved.resolve().name.lower()}
     except FileNotFoundError:
         return None, f"Interpreter not found: {raw}"
     except (RuntimeError, OSError) as exc:  # unknown ~user, broken symlink, unreadable parent
@@ -385,6 +390,8 @@ def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional
         return None, f"Interpreter path is not a file: {resolved}"
     if sys.platform != "win32" and not mode & 0o111:
         return None, f"Interpreter is not executable: {resolved}"
+    if not all(_INTERPRETER_IMAGE_RE.match(name) for name in names):
+        return None, f"Interpreter must be a Python executable (python, python3, python3.12, ...): {resolved}"
     return str(resolved), None
 
 

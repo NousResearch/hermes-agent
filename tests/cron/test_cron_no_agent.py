@@ -291,7 +291,8 @@ def test_run_job_no_agent_uses_configured_interpreter(hermes_env):
     from cron.scheduler import run_job
 
     # A wrapper that re-execs the real interpreter with an env marker.
-    wrapper = hermes_env / "scripts" / "python-wrapper"
+    wrapper = hermes_env / "venv" / "bin" / "python3"
+    wrapper.parent.mkdir(parents=True)
     wrapper.write_text(
         f"#!{sys.executable}\n"
         "import os, sys\n"

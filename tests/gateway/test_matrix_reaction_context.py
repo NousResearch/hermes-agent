@@ -1,6 +1,7 @@
 """Matrix reactions appear in bounded reads without starting a turn."""
 
 import asyncio
+import gc
 import sys
 import types
 from types import SimpleNamespace
@@ -15,7 +16,7 @@ from plugins.platforms.matrix.reaction_context import (
     UndecryptableReaction,
     fetch_event_reactions,
 )
-from plugins.platforms.matrix.reply_context import MatrixEventContext
+from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
 
 
@@ -37,17 +38,19 @@ async def test_event_read_includes_current_reactions_once_per_sender_and_emoji()
     ]
 
     async def request(_method, path, **_kwargs):
+        if path.endswith("/event/%24message"):
+            return {
+                "type": "m.room.message", "event_id": target_id, "sender": "@alice:example.org",
+                "content": {"msgtype": "m.text", "body": "hello"},
+            }
         assert path.endswith("/relations/%24message/m.annotation")
         return {"chunk": reactions}
 
     client = SimpleNamespace(
-        get_event=AsyncMock(return_value={
-            "type": "m.room.message", "event_id": target_id, "sender": "@alice:example.org",
-            "content": {"msgtype": "m.text", "body": "hello"},
-        }),
         api=SimpleNamespace(request=AsyncMock(side_effect=request)),
     )
     adapter = SimpleNamespace(
+        _event_context_cache=MatrixEventContextCache(),
         _client=client, _joined_rooms={room_id}, _user_id="@bot:example.org",
         _is_allowed_matrix_room_event=AsyncMock(return_value=True),
         _is_dm_room=AsyncMock(return_value=True),
@@ -266,6 +269,78 @@ async def test_reaction_batch_keeps_fast_results_when_another_lookup_stalls():
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("eviction", [False, True])
+async def test_reaction_page_retains_later_redaction_during_first_decrypt(eviction: bool):
+    mautrix_types = pytest.importorskip("mautrix.types")
+    room_id = "!room:example.org"
+    sender = "@alice:example.org"
+    target_id = "$original"
+    first_relation = {"rel_type": "m.annotation", "event_id": target_id, "key": "retained reaction"}
+    later_relation = {"rel_type": "m.annotation", "event_id": target_id, "key": "withdrawn reaction"}
+    first = {
+        "room_id": room_id, "event_id": "$first", "sender": sender,
+        "type": "m.room.encrypted", "origin_server_ts": 1,
+        "content": {
+            "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "first",
+            "session_id": "session", "sender_key": "key", "device_id": "device",
+            "m.relates_to": first_relation,
+        },
+    }
+    later = {
+        "room_id": room_id, "event_id": "$later", "sender": sender,
+        "type": "m.reaction", "origin_server_ts": 2,
+        "content": {"m.relates_to": later_relation},
+    }
+    original = {
+        "room_id": room_id, "event_id": target_id, "sender": sender,
+        "type": "m.room.message", "origin_server_ts": 0,
+        "content": {"msgtype": "m.text", "body": "retained text"},
+    }
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def request(_method, path, **_kwargs):
+        return {"chunk": [first, later]} if "/m.annotation" in path else original
+
+    async def decrypt(_event):
+        started.set()
+        await release.wait()
+        return mautrix_types.Event.deserialize({
+            **first, "type": "m.reaction", "content": {"m.relates_to": first_relation},
+        })
+
+    cache = MatrixEventContextCache(max_entries=1)
+    adapter = SimpleNamespace(
+        _client=SimpleNamespace(api=SimpleNamespace(request=request),
+                                crypto=SimpleNamespace(decrypt_megolm_event=decrypt)),
+        _joined_rooms={room_id}, _user_id="@bot:example.org", _event_context_cache=cache,
+        _is_allowed_matrix_room_event=AsyncMock(return_value=True),
+        _is_dm_room=AsyncMock(return_value=False),
+        _is_sender_authorized=lambda *_args, **_kwargs: True,
+    )
+    pending = asyncio.create_task(read_matrix_context(
+        adapter, "event", room_id, target_id, 1, requester=sender,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        cache.redact(room_id, "$later")
+        if eviction:
+            cache.store(room_id, "$pressure", MatrixEventContext(sender, "pressure"))
+            gc.collect()
+    finally:
+        release.set()
+    result = await asyncio.wait_for(pending, timeout=2)
+
+    assert result == {"events": [{
+        "event_id": target_id, "sender": sender, "body": "retained text", "msgtype": "m.text",
+        "thread_id": None, "timestamp": 0, "sender_authorized": True,
+        "reactions": [{
+            "event_id": "$first", "sender": sender, "emoji": "retained reaction",
+            "target_event_id": target_id, "sender_authorized": True,
+        }],
+    }], "errors": [], "skipped": 0}
+
+
 class SessionNotFound(Exception):
     pass
 
@@ -281,7 +356,14 @@ async def test_event_read_reports_incomplete_reactions_against_the_target():
             "content": {"m.relates_to": {"rel_type": "m.annotation", "event_id": target_id, "key": "👍"}},
         }
 
+    target = {
+        "type": "m.room.message", "event_id": target_id, "sender": "@alice:example.org",
+        "content": {"msgtype": "m.text", "body": "hello"},
+    }
+
     async def request(_method, path, **_kwargs):
+        if path.endswith("/event/%24message"):
+            return target
         assert path.endswith("/relations/%24message/m.annotation")
         return {"chunk": [encrypted_reaction("$no-keys"), encrypted_reaction("$broken")], "next_batch": "more"}
 
@@ -292,13 +374,10 @@ async def test_event_read_reports_incomplete_reactions_against_the_target():
 
     client = SimpleNamespace(
         crypto=SimpleNamespace(decrypt_megolm_event=decrypt),
-        get_event=AsyncMock(return_value={
-            "type": "m.room.message", "event_id": target_id, "sender": "@alice:example.org",
-            "content": {"msgtype": "m.text", "body": "hello"},
-        }),
         api=SimpleNamespace(request=AsyncMock(side_effect=request)),
     )
     adapter = SimpleNamespace(
+        _event_context_cache=MatrixEventContextCache(),
         _client=client, _joined_rooms={room_id}, _user_id="@bot:example.org",
         _is_allowed_matrix_room_event=AsyncMock(return_value=True),
         _is_dm_room=AsyncMock(return_value=True),

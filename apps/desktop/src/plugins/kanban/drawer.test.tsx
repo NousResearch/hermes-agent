@@ -427,7 +427,10 @@ describe('blocked task detail', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Unblock task' }))
 
     await waitFor(() =>
-      expect(rest).toHaveBeenCalledWith('/tasks/t_example', expect.objectContaining({ method: 'PATCH', body: { status: 'ready' } }))
+      expect(rest).toHaveBeenCalledWith(
+        '/tasks/t_example',
+        expect.objectContaining({ method: 'PATCH', body: { status: 'ready' } })
+      )
     )
   })
 })

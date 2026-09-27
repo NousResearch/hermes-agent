@@ -444,6 +444,56 @@ def _resolve_profile_db(profile: str):
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
 
 
+def _cross_profile_search_allowed(profile: str) -> bool:
+    """Check both profile owners before opening a foreign session database.
+
+    A profile can refuse outgoing reads or incoming reads with the same setting.
+    Read only the policy leaf. The full config loader initializes profile homes,
+    writes backups, and expands secrets; a denied foreign read must do none of
+    those things. Malformed files deny access instead of falling back to defaults.
+    """
+    from hermes_constants import get_hermes_home
+    from hermes_cli import managed_scope, profiles as profiles_mod
+    from utils import fast_safe_load
+
+    caller_home = get_hermes_home().resolve()
+    target_home = profiles_mod.get_profile_dir(profile).resolve()
+    if caller_home == target_home:
+        return True
+
+    missing = object()
+    managed_dir = managed_scope.get_managed_dir()
+
+    def read_policy(path):
+        try:
+            with path.open(encoding="utf-8-sig") as config_file:
+                config = fast_safe_load(config_file)
+        except FileNotFoundError:
+            return missing
+        except Exception:
+            logging.warning("Cannot verify session_search policy for %s", path, exc_info=True)
+            raise
+        if config is None:
+            return missing
+        if not isinstance(config, dict):
+            raise ValueError(f"Invalid session_search config in {path}")
+        search = config.get("session_search", {})
+        if not isinstance(search, dict):
+            raise ValueError(f"Invalid session_search config in {path}")
+        return search.get("allow_cross_profile", missing)
+
+    try:
+        managed_policy = read_policy(managed_dir / "config.yaml") if managed_dir else missing
+        for home in (caller_home, target_home):
+            local_policy = read_policy(home / "config.yaml")
+            effective_policy = managed_policy if managed_policy is not missing else local_policy
+            if effective_policy is not missing and effective_policy is not True:
+                return False
+    except Exception:
+        return False
+    return True
+
+
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
     """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
     meta = _get_session_meta(db, session_id)
@@ -583,10 +633,18 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
     # split on it and adopt the embedded profile only when none was passed.
     if isinstance(session_id, str) and "/" in session_id:
         emb_profile, _, emb_id = session_id.partition("/")
+        if emb_profile.startswith("@session:"):
+            emb_profile = emb_profile[len("@session:"):]
         if emb_id:
             session_id = emb_id
             if emb_profile and (profile is None or not str(profile).strip()):
                 profile = emb_profile
+    if profile is not None and str(profile).strip():
+        try:
+            if not _cross_profile_search_allowed(profile):
+                return tool_error("Cross-profile session search is disabled for this profile", success=False)
+        except Exception as e:
+            return tool_error(f"profile '{profile}': {e}", success=False)
     # Cross-profile: swap in the named profile's DB (read-only) for every shape;
     # current-lineage guards key off ids that won't collide, so they stay inert.
     try:
@@ -770,7 +828,8 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Optional. Read sessions from another Hermes profile's database "
-                    "(read-only). Use when resolving an `@session:<profile>/<id>` link: "
+                    "(read-only, when both profiles permit cross-profile search). "
+                    "Use when resolving an `@session:<profile>/<id>` link: "
                     "pass the profile segment here with session_id as the id segment. "
                     "Omit to use the current profile."
                 ),

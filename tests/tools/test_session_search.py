@@ -145,6 +145,10 @@ class TestBrowseShape:
             "tools.session_search_tool._resolve_profile_db",
             lambda _profile: profile_db,
         )
+        monkeypatch.setattr(
+            "tools.session_search_tool._cross_profile_search_allowed",
+            lambda _profile: True,
+        )
 
         result = json.loads(session_search(db=shared_db, profile="work"))
 

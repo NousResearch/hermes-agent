@@ -1,5 +1,6 @@
 """Tests for hermes backup and import commands."""
 
+import errno
 import json
 import os
 import socket
@@ -1245,6 +1246,48 @@ class TestBackupEdgeCases:
         out = capsys.readouterr().out
         assert "kanban/workspaces/t_1/chrome-prof/cookies.db: SQLite safe copy failed" in out
         assert "vanished during backup" not in out
+
+    @pytest.mark.parametrize("file_err, parent_err, vanished", [
+        (errno.ENOENT, errno.ENOENT, True),    # workspace rmtree'd: file and dir gone
+        (errno.EACCES, errno.ENOENT, False),   # file existence unknown -> fatal
+        (errno.EIO, errno.ENOENT, False),
+        (errno.ENOENT, errno.EACCES, False),   # dir existence unknown -> fatal
+        (errno.ENOENT, errno.EIO, False),
+        (errno.ENOENT, None, False),           # file gone, dir still present -> fatal
+        (None, None, False),                   # file still present -> fatal
+    ])
+    def test_workspace_db_absence_check_discriminates_enoent(
+            self, tmp_path, monkeypatch, file_err, parent_err, vanished):
+        """Writer-level seam: a failed workspace snapshot is vanished only on a positively
+        established ENOENT for BOTH the file and its directory; EACCES/EIO stay fatal."""
+        import hermes_cli.backup as backup_mod
+
+        ws = tmp_path / "kanban/workspaces/t_1/chrome-prof"
+        abs_path = ws / "cookies.db"
+        rel_path = Path("kanban/workspaces/t_1/chrome-prof/cookies.db")
+        real_lstat = os.lstat
+
+        def _lstat(path, *a, **kw):
+            err = {str(abs_path): file_err, str(ws): parent_err}.get(os.fspath(path), "real")
+            if err == "real":
+                return real_lstat(path, *a, **kw)
+            if err is None:
+                return real_lstat(tmp_path)
+            raise OSError(err, os.strerror(err), os.fspath(path)) if err != errno.ENOENT \
+                else FileNotFoundError(err, os.strerror(err), os.fspath(path))
+
+        monkeypatch.setattr(backup_mod, "_zip_sqlite_snapshot", lambda *a, **kw: None)
+        monkeypatch.setattr(os, "lstat", _lstat)
+        seen = {"vanished": [], "db_failure": [], "error": []}
+        with zipfile.ZipFile(tmp_path / "o.zip", "w") as zf:
+            backup_mod._write_zip_entries(
+                zf, [(abs_path, rel_path)], tmp_path / "o.zip",
+                on_db_failure=seen["db_failure"].append,
+                on_error=lambda r, e: seen["error"].append(r),
+                on_progress=lambda i: None, track_bytes=False,
+                on_vanished=seen["vanished"].append)
+        assert seen == ({"vanished": [rel_path], "db_failure": [], "error": []} if vanished
+                        else {"vanished": [], "db_failure": [rel_path], "error": []})
 
     def test_automatic_zip_tolerates_vanished_workspace_db(self, tmp_path, monkeypatch):
         """The pre-update/pre-migration zip aborts on a failed snapshot; a cleaned-up task

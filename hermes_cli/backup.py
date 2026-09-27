@@ -484,17 +484,34 @@ def _in_kanban_scratch_workspace(rel_path: Path) -> bool:
     return len(parts) >= 6 and parts[:2] == ("kanban", "boards") and parts[3] == "workspaces"
 
 
+def _confirmed_enoent(path: Path) -> bool:
+    """True only when ``lstat(path)`` positively fails with ENOENT.
+
+    Unlike :func:`os.path.lexists`, which reports False for *any* ``OSError``, a permission
+    (EACCES), I/O (EIO) or other error here means existence is unknown, so it returns False
+    and the caller keeps the failure fatal.
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def _db_vanished_since_scan(abs_path: Path, rel_path: Path) -> bool:
     """True when a failed ``*.db`` snapshot is a deleted kanban scratch-workspace file.
 
-    Only a database inside a task scratch workspace whose path is really gone qualifies: the
-    workspace is ephemeral scratch that was cleaned up between scan and write. Every other
-    database (state.db, kanban.db, cron/executions.db, provider stores) and any database that
-    still exists (locked, unreadable, corrupt) stays an ``on_db_failure``. The parent is not
-    required to be gone: ``rmtree`` deletes files before their directory, so a mid-cleanup
-    snapshot legitimately sees the file gone and the directory still present.
+    Only a database inside a task scratch workspace qualifies, and only when both the file and
+    its containing directory are positively gone (ENOENT): the workspace is ephemeral scratch
+    that was cleaned up between scan and write. Every other database (state.db, kanban.db,
+    cron/executions.db, provider stores), any database whose file or directory still exists
+    (locked, unreadable, corrupt, mid-cleanup), and any EACCES/EIO on either check stays an
+    ``on_db_failure``.
     """
-    return _in_kanban_scratch_workspace(rel_path) and not os.path.lexists(abs_path)
+    return (_in_kanban_scratch_workspace(rel_path)
+            and _confirmed_enoent(abs_path) and _confirmed_enoent(abs_path.parent))
 
 
 def _write_zip_entries(

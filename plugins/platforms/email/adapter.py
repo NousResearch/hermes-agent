@@ -62,8 +62,6 @@ _COMMENT_RE = re.compile(r"\([^()]*\)")
 _MAX_FROM_LEN = 2048
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
-# Verdict reason when the message carries no Authentication-Results at all: the one failure that points at a mail
-# server which never stamps the header (the opt-out case), rather than at the message itself.
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
 _UNTRUSTED_AUTHSERV_REASON = "no Authentication-Results from trusted authserv-id"
 # Operator-fixable reasons a granted sender's mail fails authentication, and the fix each log line names.
@@ -715,7 +713,8 @@ class EmailAdapter(BasePlatformAdapter):
             raw = decode_json_list_literal(raw)
             listed.update(str(a).strip().lower() for a in (raw if isinstance(raw, list) else str(raw).split(","))
                           if str(a).strip())
-        if sender_addr.lower() in listed:
+        is_listed = sender_addr.lower() in listed
+        if is_listed:
             granted = True
         elif sender_addr.split("@", 1)[0].lower() in listed:
             # The gateway's check also matches an address by its bare local part (#119446), so an entry like "alice"
@@ -740,7 +739,7 @@ class EmailAdapter(BasePlatformAdapter):
         if self._require_authenticated_sender and not msg_data.get("sender_authenticated", False):
             auth_reason = msg_data.get("auth_reason", "no verdict")
             hint = _DROP_HINTS.get(auth_reason, "")
-            if granted and (hint or sender_addr.lower() in listed):
+            if is_listed or (granted and hint):
                 logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s).%s", sender_addr, auth_reason, hint)
             else:
                 logger.debug("[Email] Dropping %s sender with unauthenticated From: %s (%s)",

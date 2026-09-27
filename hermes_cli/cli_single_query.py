@@ -498,6 +498,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
                 ):
+                    # Sibling call path: one retry right after init covers a transient
+                    # row-creation failure on /new <title> (#124033).
+                    cli._apply_pending_title()
                     _configure_quiet_agent(cli.agent)
                     if emitter is not None:
                         emitter.attach(cli.agent)

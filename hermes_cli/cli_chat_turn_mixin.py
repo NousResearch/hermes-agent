@@ -76,6 +76,8 @@ class CLIChatTurnMixin:
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
                                 request_overrides=turn_route.get("request_overrides")):
             return None
+        # A transient DB-row race on /new <title> keeps _pending_title; retry per turn (#124033).
+        self._apply_pending_title()
         agent = self.agent
         if agent is None:
             return None

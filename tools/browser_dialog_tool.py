@@ -1,29 +1,17 @@
 """Agent-facing tool: respond to a native JS dialog captured by the CDP supervisor.
 
-This tool is response-only — the agent first reads ``pending_dialogs`` from
-``browser_snapshot`` output, then calls ``browser_dialog(action=...)`` to
-accept or dismiss.
-
-Gated on the same ``_browser_cdp_check`` as ``browser_cdp`` so it only
-appears when a CDP endpoint is reachable (Browserbase with a
-``connectUrl``, local Chromium-family browser via ``/browser connect``, or
-``browser.cdp_url`` set in config).
-
-See ``website/docs/developer-guide/browser-supervisor.md`` for the full
-design.
+Response-only: the agent reads ``pending_dialogs`` from ``browser_snapshot``,
+then calls ``browser_dialog(action=...)``. Gated on ``_browser_cdp_check`` so it
+appears together with ``browser_cdp``. Design: ``website/docs/developer-guide/browser-supervisor.md``.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any, Dict, Optional
 
 from tools.browser_supervisor import SUPERVISOR_REGISTRY
 from tools.registry import registry
-
-logger = logging.getLogger(__name__)
-
 
 BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
     "name": "browser_dialog",
@@ -86,50 +74,27 @@ def browser_dialog(
     task_id: Optional[str] = None,
 ) -> str:
     """Respond to a pending dialog on the active task's CDP supervisor."""
-    effective_task_id = task_id or "default"
-    supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+    supervisor = SUPERVISOR_REGISTRY.get(task_id or "default")
     if supervisor is None:
-        return json.dumps(
-            {
-                "success": False,
-                "error": (
-                    "No CDP supervisor is attached to this task. Either the "
-                    "browser backend doesn't expose CDP (Camofox, default "
-                    "Playwright) or no browser session has been started yet. "
-                    "Call browser_navigate or /browser connect first."
-                ),
-            }
-        )
-
-    result = supervisor.respond_to_dialog(
-        action=action,
-        prompt_text=prompt_text,
-        dialog_id=dialog_id,
-    )
+        return json.dumps({
+            "success": False,
+            "error": (
+                "No CDP supervisor is attached to this task. Either the "
+                "browser backend doesn't expose CDP (Camofox, default "
+                "Playwright) or no browser session has been started yet. "
+                "Call browser_navigate or /browser connect first."
+            ),
+        })
+    result = supervisor.respond_to_dialog(action=action, prompt_text=prompt_text, dialog_id=dialog_id)
     if result.get("ok"):
-        return json.dumps(
-            {
-                "success": True,
-                "action": action,
-                "dialog": result.get("dialog", {}),
-            }
-        )
+        return json.dumps({"success": True, "action": action, "dialog": result.get("dialog", {})})
     return json.dumps({"success": False, "error": result.get("error", "unknown error")})
 
 
 def _browser_dialog_check() -> bool:
-    """Gate: same as ``browser_cdp`` — only offered when CDP is reachable.
+    """Gate: same as ``browser_cdp`` so the two tools appear/disappear together."""
+    from tools.browser_cdp_tool import _browser_cdp_check
 
-    Kept identical so the two tools appear and disappear together. The
-    supervisor itself is started lazily by ``browser_navigate`` /
-    ``/browser connect`` / Browserbase session creation, so a reachable
-    CDP URL is enough to commit to showing the tool.
-    """
-    try:
-        from tools.browser_cdp_tool import _browser_cdp_check  # type: ignore[import-not-found]
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("browser_dialog check: browser_cdp_tool import failed: %s", exc)
-        return False
     return _browser_cdp_check()
 
 
@@ -137,12 +102,31 @@ registry.register(
     name="browser_dialog",
     toolset="browser-cdp",
     schema=BROWSER_DIALOG_SCHEMA,
-    handler=lambda args, **kw: browser_dialog(
-        action=args.get("action", ""),
-        prompt_text=args.get("prompt_text"),
-        dialog_id=args.get("dialog_id"),
-        task_id=kw.get("task_id"),
-    ),
+    handler=lambda args, **kw: browser_dialog(action=args.get("action", ""), prompt_text=args.get("prompt_text"),
+                                              dialog_id=args.get("dialog_id"), task_id=kw.get("task_id")),
     check_fn=_browser_dialog_check,
     emoji="💬",
 )
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import logging  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'logger': ('tools.approval', 'logger'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

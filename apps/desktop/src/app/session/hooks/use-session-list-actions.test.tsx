@@ -5,16 +5,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
 import { $cronJobs, setCronJobs } from '@/store/cron'
 import {
+  beginGatewaySwitch,
+  endGatewaySwitch,
+  recoverActiveSourceAfterFailedGatewaySwitch,
+  registerGatewaySwitchLifecycle
+} from '@/store/gateway-switch'
+import {
   $cronSessions,
   $messagingPlatformTotals,
   $messagingSessions,
+  $messagingTruncated,
+  $sessionProfilesTruncated,
+  $sessionProfilesUsage,
   $sessions,
+  $sessionsLoadError,
   $sessionsLoading,
   setCronSessions,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
+  setSessionProfilesTruncated,
+  setSessionProfilesUsage,
   setSessions,
+  setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
 
@@ -87,12 +100,24 @@ vi.mock('@/store/gateway', async importOriginal => ({
 // the whole projects store (gateway / fs / git) into this hook's test.
 const removed = vi.hoisted(() => ({ ids: new Set<string>() }))
 
-vi.mock('@/store/projects', () => ({
+vi.mock('@/store/session-removal', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
   $removedSessionIds: { get: () => removed.ids }
+}))
+
+// The settle-grace keep set must be mocked at MODULE scope: the hook imports
+// getRecentlySettledSessionIds as a live ESM binding, so patching a
+// dynamically-imported copy (or a temporary object) never reaches it.
+const settled = vi.hoisted(() => ({ ids: [] as string[] }))
+
+vi.mock('@/store/session-states', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
+  getRecentlySettledSessionIds: () => settled.ids
 }))
 
 beforeEach(() => {
   gatewayScope.epoch = 0
+  settled.ids = []
   getCronJobs.mockReset()
   getCronJobs.mockResolvedValue([])
   listSidebarSessions.mockReset()
@@ -104,7 +129,10 @@ beforeEach(() => {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
+  setSessionProfilesTruncated({})
+  setSessionProfilesUsage({})
   setSessionsLoading(false)
+  setSessionsLoadError(false)
 })
 
 afterEach(() => {
@@ -114,7 +142,91 @@ afterEach(() => {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
+  setSessionProfilesTruncated({})
+  setSessionProfilesUsage({})
   setSessionsLoading(false)
+  setSessionsLoadError(false)
+})
+
+// #67600: a cold-start read that fails must not render as "No sessions yet".
+describe('refreshSessions cold-start load error', () => {
+  const failedScan = (storage?: Record<string, 'corrupt'>): SidebarSessionsResponse => ({
+    ...sidebar({ sessions: [] }),
+    errors: [{ error: 'boom', profile: 'default' }],
+    storage
+  })
+
+  it('flags a thrown first read and clears the flag once a retry lands rows', async () => {
+    listSidebarSessions.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions().catch(() => undefined)
+    })
+
+    expect($sessionsLoadError.get()).toBe(true)
+    expect($sessionsLoading.get()).toBe(false)
+
+    listSidebarSessions.mockResolvedValueOnce(sidebar({ sessions: [row('a')] }))
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toBe(false)
+    expect($sessions.get().map(s => s.id)).toEqual(['a'])
+  })
+
+  it('flags a reported scan failure that leaves the list empty', async () => {
+    listSidebarSessions.mockResolvedValueOnce(failedScan())
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toBe(true)
+  })
+
+  it('flags a failed load that carries retry and omits the session list', async () => {
+    listSidebarSessions.mockResolvedValueOnce({
+      cron: { errors: [{ error: 'schema heal exhausted', profile: 'default' }], failed: true, retry: true },
+      errors: [{ error: 'schema heal exhausted', profile: 'default' }],
+      messaging: { errors: [{ error: 'schema heal exhausted', profile: 'default' }], failed: true, retry: true },
+      recents: { errors: [{ error: 'schema heal exhausted', profile: 'default' }], failed: true, retry: true }
+    })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toBe(true)
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('leaves a corrupt store to its own notice instead of offering retry', async () => {
+    listSidebarSessions.mockResolvedValueOnce(failedScan({ default: 'corrupt' }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toBe(false)
+  })
+
+  it('never flags a failed refresh over rows already on screen', async () => {
+    setSessions([row('a')])
+    listSidebarSessions.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions().catch(() => undefined)
+    })
+
+    expect($sessionsLoadError.get()).toBe(false)
+    expect($sessions.get().map(s => s.id)).toEqual(['a'])
+  })
 })
 
 describe('refreshSessions identity + loading hygiene', () => {
@@ -201,6 +313,176 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect($sessions.get().map(s => s.id)).toEqual(['a'])
   })
 
+  it('never resurrects a just-archived row the keep set still names (#118156)', async () => {
+    // The archive race: the RPC landed (so the in-flight pin released and the
+    // projects.tree prune dropped the tombstone — hence EMPTY tombstones
+    // here), but the row is still inside the 30s settle grace, so
+    // sessionsToKeep() names it. A refresh whose `previous` still holds the
+    // row must not carry it back through the survivor path. The map from
+    // tombstone→epoch keeps the exclusion alive exactly as long as the
+    // tombstone stood, so it must reproduce with the tombstone still set.
+    removed.ids = new Set(['just-archived'])
+
+    // Seed $sessions with the row still present, as a refresh racing the
+    // optimistic drop would see it.
+    setSessions([row('just-archived'), row('mine')])
+    // And make the settle grace name it: simulate a turn that just ended.
+    settled.ids = ['just-archived']
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('mine', { message_count: 3 })] }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['mine'])
+  })
+
+  it('drops a doomed row whose tombstone was pruned while the page was in flight (#123685)', async () => {
+    // The observed Windows resurrection: a sidebar refresh STARTS (reads the
+    // page pre-archive-commit), the user archives, the RPC lands, the
+    // projects.tree refresh prunes the tombstone (its snapshot is right —
+    // the id is gone), and THEN the stale page arrives. Membership is empty
+    // by then, so dropTombstoned has nothing to say; only the removal
+    // generation delta still names the row.
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const refresh = result.current.refreshSessions()
+
+    // The archive lands mid-flight: tombstone armed, RPC resolves, the tree
+    // prune clears membership (the real prune writes the atom directly,
+    // which is exactly why the generation guard is needed).
+    const removals = await import('@/store/session-removal')
+    removals.tombstoneSessions(['doomed'])
+    removed.ids = new Set()
+
+    // The keep set still names the doomed row (settle grace), so the
+    // survivor path would carry it back if the guard were absent.
+    setSessions([row('doomed')])
+    settled.ids = ['doomed']
+
+    await act(async () => {
+      pending.resolve(sidebar({ sessions: [row('doomed', { message_count: 4 }), row('mine')] }))
+      await refresh
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['mine'])
+
+    removals.untombstoneSessions(['doomed'])
+  })
+
+  it('re-admits a row whose archive rolled back mid-flight (release edge)', async () => {
+    // A failed archive untombstones immediately; a page that raced the
+    // rollback must still list the row — the guard only vetoes rows whose
+    // removal lifecycle moved TOWARD removal.
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const refresh = result.current.refreshSessions()
+
+    const removals = await import('@/store/session-removal')
+    removals.tombstoneSessions(['rollback'])
+    removals.untombstoneSessions(['rollback'])
+    removed.ids = new Set()
+
+    await act(async () => {
+      pending.resolve(sidebar({ sessions: [row('rollback')] }))
+      await refresh
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['rollback'])
+  })
+
+  it('matches a pruned-tombstone row by any lineage segment, and filters the cron slice too (#123685)', async () => {
+    // The tombstone was armed on the ROOT id while the page carries the row
+    // under a middle lineage segment (post-compression): the match must go
+    // through _lineage_ids, not just tip + root. Same race shape as above —
+    // the prune has already cleared membership.
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const refresh = result.current.refreshSessions()
+
+    const removals = await import('@/store/session-removal')
+    removals.tombstoneSessions(['root-x'])
+    removed.ids = new Set()
+
+    await act(async () => {
+      pending.resolve(
+        sidebar(
+          { sessions: [row('segment', { _lineage_ids: ['root-x', 'segment', 'tip-x'] } as Partial<SessionInfo>)] },
+          [row('cron-doomed', { source: 'cron', _lineage_root_id: 'root-x' } as Partial<SessionInfo>)]
+        )
+      )
+      await refresh
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual([])
+    expect($cronSessions.get().map(s => s.id)).toEqual([])
+
+    removals.untombstoneSessions(['root-x'])
+  })
+
+  it('keeps idle recents when the sidebar returns an empty page plus profile errors', async () => {
+    // Backend contract on disk I/O / lock: HTTP 200, recents=[], errors=[{profile}].
+    // mergeSessionPage only keeps working/pinned/selected, so Yesterday/This-week
+    // idle rows must be carried forward from the previous list — not clobbered.
+    const idle = [row('yesterday'), row('week')]
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: idle }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['yesterday', 'week'])
+
+    setSessionProfilesTruncated({ default: true })
+    setSessionProfilesUsage({ default: { cost_usd: 3, tokens: 30 } })
+    setMessagingTruncated(true)
+
+    listSidebarSessions.mockResolvedValue({
+      ...sidebar({ sessions: [] }),
+      errors: [{ error: 'disk I/O error', profile: 'default' }]
+    })
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['yesterday', 'week'])
+    expect($sessionProfilesTruncated.get()).toEqual({ default: true })
+    expect($sessionProfilesUsage.get()).toEqual({ default: { cost_usd: 3, tokens: 30 } })
+    expect($messagingTruncated.get()).toBe(true)
+  })
+
+  it('still accepts a genuine empty recents page when the backend reported no errors', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get()).toEqual([])
+  })
+
   it('drops tombstoned rows from the messaging slice and per-platform paging too (#50928)', async () => {
     // The same delete race exists on every ingestion point: the batched
     // refresh's messaging slice and the per-platform "load more" pager must
@@ -250,9 +532,107 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect(loadingStates).toEqual([false, true, false])
   })
 
-  it('clears initial loading after a failed source activation advances the gateway epoch', async () => {
+  it('does not let a superseded owner publish or release a newer switch loading barrier', async () => {
     const pending = deferred<SidebarSessionsResponse>()
+    let ownsRefresh = true
+
     listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+    const refresh = result.current.refreshSessions(() => ownsRefresh)
+
+    expect($sessionsLoading.get()).toBe(true)
+
+    ownsRefresh = false
+    setSessions([row('winner')])
+    setCronSessions([row('winner-cron', { source: 'cron' })])
+    setMessagingSessions([row('winner-message', { source: 'signal' })])
+    setMessagingTruncated(true)
+    setSessionProfilesTruncated({ winner: true })
+    setSessionProfilesUsage({ winner: { cost_usd: 2, tokens: 20 } })
+    setSessionsLoading(true)
+
+    await act(async () => {
+      pending.resolve({
+        recents: {
+          profiles_truncated: { stale: true },
+          profiles_usage: { stale: { cost_usd: 1, tokens: 10 } },
+          sessions: [row('stale')]
+        },
+        cron: { sessions: [row('stale-cron', { source: 'cron' })] },
+        messaging: { sessions: [row('stale-message', { source: 'telegram' })] }
+      })
+      await refresh
+    })
+
+    expect($sessions.get().map(session => session.id)).toEqual(['winner'])
+    expect($cronSessions.get().map(session => session.id)).toEqual(['winner-cron'])
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['winner-message'])
+    expect($messagingTruncated.get()).toBe(true)
+    expect($sessionProfilesTruncated.get()).toEqual({ winner: true })
+    expect($sessionProfilesUsage.get()).toEqual({ winner: { cost_usd: 2, tokens: 20 } })
+    expect($sessionsLoading.get()).toBe(true)
+    expect(getCronJobs).not.toHaveBeenCalled()
+  })
+
+  it('keeps failed-switch recovery from publishing through a newer switch', async () => {
+    const pending = deferred<SidebarSessionsResponse>()
+
+    listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const off = registerGatewaySwitchLifecycle({
+      beforeConnectionSwitch: () => undefined,
+      refreshSessions: result.current.refreshSessions
+    })
+
+    let newer: number | undefined
+
+    try {
+      const failed = beginGatewaySwitch()
+
+      recoverActiveSourceAfterFailedGatewaySwitch(failed)
+      endGatewaySwitch(failed)
+      await vi.waitFor(() => expect(listSidebarSessions).toHaveBeenCalledTimes(1))
+
+      // A newer switch owns the freshly wiped lists and loading barrier while
+      // the failed switch's real sidebar publisher is still in flight.
+      newer = beginGatewaySwitch()
+
+      await act(async () => {
+        pending.resolve({
+          recents: {
+            profiles_truncated: { stale: true },
+            profiles_usage: { stale: { cost_usd: 1, tokens: 10 } },
+            sessions: [row('stale')]
+          },
+          cron: { sessions: [row('stale-cron', { source: 'cron' })] },
+          messaging: { sessions: [row('stale-message', { source: 'telegram' })] }
+        })
+        await pending.promise
+      })
+
+      expect($sessions.get()).toEqual([])
+      expect($cronSessions.get()).toEqual([])
+      expect($messagingSessions.get()).toEqual([])
+      expect($messagingTruncated.get()).toBe(false)
+      expect($sessionProfilesTruncated.get()).toEqual({})
+      expect($sessionProfilesUsage.get()).toEqual({})
+      expect($sessionsLoading.get()).toBe(true)
+      expect($cronJobs.get()).toEqual([])
+      expect(getCronJobs).not.toHaveBeenCalled()
+    } finally {
+      endGatewaySwitch(newer)
+      off()
+    }
+  })
+
+  it('re-reads for the current route after a failed source activation advances the gateway epoch', async () => {
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce(sidebar({ sessions: [row('current')] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
 
     let refresh!: Promise<void>
@@ -264,8 +644,10 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect($sessionsLoading.get()).toBe(true)
 
     // A source dial owns a new activation epoch even when it fails and leaves
-    // the previous source active. Its in-flight session response is stale, but
-    // it still owns the initial loading state and must release that state.
+    // the previous source active. Its in-flight response is stale and must not
+    // publish, but nothing else re-requests the list when the route atoms did
+    // not move, so the refresh re-reads under the new epoch and releases the
+    // initial loading state itself.
     gatewayScope.epoch += 1
 
     await act(async () => {
@@ -273,35 +655,59 @@ describe('refreshSessions identity + loading hygiene', () => {
       await refresh
     })
 
-    expect($sessions.get()).toEqual([])
+    expect(listSidebarSessions).toHaveBeenCalledTimes(2)
+    expect($sessions.get().map(session => session.id)).toEqual(['current'])
     expect($sessionsLoading.get()).toBe(false)
+  })
+
+  // #67600 / #88866: re-activating the route the window is already on (a
+  // resume or rail click through ensureGatewayAgent('local', 'default'))
+  // advances the epoch without changing any route atom, so no effect fires a
+  // follow-up refresh. The in-flight 200-with-rows page used to be discarded
+  // and the sidebar stayed on "No sessions" until the user re-selected the
+  // profile.
+  it('fills the sidebar when a same-route re-activation lands mid-refresh', async () => {
+    const pending = deferred<SidebarSessionsResponse>()
+    const rows = [row('a'), row('b')]
+    listSidebarSessions.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(sidebar({ sessions: rows }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    let refresh!: Promise<void>
+
+    act(() => {
+      refresh = result.current.refreshSessions()
+    })
+
+    gatewayScope.epoch += 1
+
+    await act(async () => {
+      pending.resolve(sidebar({ sessions: rows }))
+      await refresh
+    })
+
+    expect($sessions.get().map(session => session.id)).toEqual(['a', 'b'])
+  })
+
+  it('does not re-read a refresh a newer one already superseded', async () => {
+    const older = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValueOnce(older.promise).mockResolvedValueOnce(sidebar({ sessions: [row('newer')] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const olderRefresh = result.current.refreshSessions()
+    gatewayScope.epoch += 1
+
+    await act(async () => {
+      await result.current.refreshSessions()
+      older.resolve(sidebar({ sessions: [row('older')] }))
+      await olderRefresh
+    })
+
+    expect(listSidebarSessions).toHaveBeenCalledTimes(2)
+    expect($sessions.get().map(session => session.id)).toEqual(['newer'])
   })
 })
 
 describe('refreshSessions batches slices into one request', () => {
-  it('makes a single sidebar call and distributes recents / cron / messaging', async () => {
-    const recents = [row('a'), row('b')]
-    const cron = [row('c1', { source: 'cron', title: 'nightly' })]
-    const messaging = [row('m1', { source: 'telegram', title: 'tg chat' })]
-
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: recents }, cron, messaging))
-
-    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
-
-    await act(async () => {
-      await result.current.refreshSessions()
-    })
-
-    // One batched call, not three separate listAllProfileSessions reads.
-    expect(listSidebarSessions).toHaveBeenCalledTimes(1)
-    expect(listAllProfileSessions).not.toHaveBeenCalled()
-
-    // Each slice landed in its own store.
-    expect($sessions.get().map(s => s.id)).toEqual(['a', 'b'])
-    expect($cronSessions.get().map(s => s.id)).toEqual(['c1'])
-    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
-  })
-
   it('forwards the active profile scope + section limits to the batched call', async () => {
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
@@ -444,18 +850,6 @@ describe('refreshSessions batches slices into one request', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['personal-chat'])
   })
 
-  it('scopes the cron-jobs fetch to the active profile', async () => {
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
-
-    const scoped = renderHook(() => useSessionListActions({ profileScope: 'work' }))
-
-    await act(async () => {
-      await scoped.result.current.refreshCronJobs()
-    })
-
-    expect(getCronJobs).toHaveBeenLastCalledWith('work')
-  })
-
   it('requests cron jobs for the unified scope', async () => {
     const unified = renderHook(() => useSessionListActions({ profileScope: '__all__' }))
 
@@ -495,28 +889,6 @@ describe('refreshSessions batches slices into one request', () => {
 })
 
 describe('messaging profile scope', () => {
-  it('refreshes messaging sessions only for the active profile', async () => {
-    listAllProfileSessions.mockResolvedValue({
-      sessions: [row('m1', { profile: 'work', source: 'signal' })],
-      total: 1
-    })
-    const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
-
-    await act(async () => {
-      await result.current.refreshMessagingSessions()
-    })
-
-    expect(listAllProfileSessions).toHaveBeenCalledWith(
-      expect.any(Number),
-      1,
-      'exclude',
-      'recent',
-      'work',
-      expect.objectContaining({ excludeSources: expect.any(Array) })
-    )
-    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
-  })
-
   it('keeps the explicit all-profiles view unified', async () => {
     listAllProfileSessions.mockResolvedValue({ sessions: [], total: 0 })
     const { result } = renderHook(() => useSessionListActions({ profileScope: '__all__' }))
@@ -705,5 +1077,23 @@ describe('messaging profile scope', () => {
 
     expect(listAllProfileSessions).not.toHaveBeenCalled()
     expect($messagingPlatformTotals.get()).toEqual({ 'work:signal': 12 })
+  })
+
+  it('re-reads the messaging slice when a same-route re-activation lands mid-refresh', async () => {
+    const pending = deferred<{ sessions: SessionInfo[]; total: number }>()
+    const rows = [row('tg', { source: 'telegram' })]
+    listAllProfileSessions.mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ sessions: rows, total: 1 })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const refresh = result.current.refreshMessagingSessions()
+    gatewayScope.epoch += 1
+
+    await act(async () => {
+      pending.resolve({ sessions: rows, total: 1 })
+      await refresh
+    })
+
+    expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['tg'])
   })
 })

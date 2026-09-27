@@ -271,3 +271,211 @@ def test_final_response_fill_invalidates_flush_scan_cursor():
     )
 
     assert agent._db_flush_scan_prefix is None
+
+
+def test_empty_final_response_recovers_stream_buffer_into_blank_assistant_row(
+    monkeypatch, tmp_path
+):
+    """#95514: empty terminal completion must not persist content='' over a live stream.
+
+    After a tool result the incremental flush can leave a blank assistant tail.
+    If finalize_turn then receives final_response='' while the stream buffer
+    still holds the delivered text, that blank row is the durable transcript —
+    Desktop reload shows nothing even though the user already saw the answer.
+    """
+    from hermes_state import SessionDB
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-test", source="cli")
+    agent = FakeAgent()
+    agent._current_streamed_assistant_text = "Already streamed to the user."
+
+    def persist_to_sqlite(messages, _conversation_history):
+        db.replace_messages(agent.session_id, messages)
+        agent.persisted_messages = db.get_messages_as_conversation(agent.session_id)
+
+    agent._persist_session = persist_to_sqlite
+    messages = [
+        {"role": "user", "content": "summarize"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "terminal", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "t1", "name": "terminal", "content": "ok"},
+        {"role": "assistant", "content": "", "_db_persisted": True},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=2,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="summarize",
+        original_user_message="summarize",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["final_response"] == "Already streamed to the user."
+    assistants = [m for m in agent.persisted_messages if m.get("role") == "assistant"]
+    assert assistants[-1]["content"] == "Already streamed to the user."
+    assert assistants[0].get("tool_calls")
+    assert sum(1 for m in assistants) == 2
+
+    reopened = SessionDB(db_path=tmp_path / "state.db")
+    reloaded = reopened.get_messages_as_conversation("sess-test")
+    assert reloaded[-1]["role"] == "assistant"
+    assert reloaded[-1]["content"] == "Already streamed to the user."
+    assert sum(1 for m in reloaded if m.get("role") == "assistant") == 2
+
+
+def test_failed_turn_does_not_recover_stream_buffer_as_final_response(monkeypatch):
+    """A failed turn must not invent a successful answer from the stream buffer."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._current_streamed_assistant_text = "partial tokens"
+
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=1,
+        interrupted=False,
+        failed=True,
+        messages=[{"role": "user", "content": "q"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="error",
+    )
+
+    assert result["final_response"] in ("", None)
+    assert result["failed"] is True
+
+
+def test_stream_recovered_final_response_survives_persist_step_failure(monkeypatch):
+    """#95514 + #8049 ordering: the stream-recovered ``final_response`` is bound as soon
+    as it is computed, BEFORE the fallible tail-shaping / override / persist calls in the
+    guarded persist step. A raise later in that step (here the persist-override) must not
+    drop text the user already saw — the caller still gets the streamed answer and the
+    failure is reported via ``cleanup_errors``."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._current_streamed_assistant_text = "  streamed answer  "
+
+    def exploding_override(_messages):
+        raise RuntimeError("override exploded")
+
+    agent._apply_persist_user_message_override = exploding_override
+    messages = [{"role": "user", "content": "q"}, {"role": "assistant", "content": ""}]
+
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=2,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["final_response"] == "streamed answer"
+    assert result["cleanup_errors"] == ["persist_session: override exploded"]
+    # The blank tail was filled before the raise (same order as the inline BASE block).
+    assert messages[-1]["content"] == "streamed answer"
+
+
+def test_delivery_only_reasoning_excerpt_does_not_fill_blank_assistant(monkeypatch):
+    """Labeled empty-terminal excerpt is delivery-only, not durable content.
+
+    ``empty_response_exhausted`` sets final_response to a labeled reasoning
+    excerpt while the transcript tail is a blank/sentinel assistant without
+    tool_calls. Filling that tail would persist the excerpt and break replay
+    (test_empty_terminal_reasoning_surface).
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    excerpt = (
+        "⚠️ The model produced only internal reasoning and no final answer, "
+        "despite retries. Its last reasoning, which may contain the answer:\n\n"
+        "The answer is 42"
+    )
+    messages = [
+        {"role": "user", "content": "what is the answer?"},
+        {"role": "assistant", "content": ""},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response=excerpt,
+        api_call_count=6,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="what is the answer?",
+        original_user_message="what is the answer?",
+        _should_review_memory=False,
+        _turn_exit_reason="empty_response_exhausted",
+    )
+
+    assert result["final_response"] == excerpt
+    assert not any(
+        m.get("role") == "assistant"
+        and "only internal reasoning" in (m.get("content") or "")
+        for m in result["messages"]
+    )
+
+
+
+def _finalize(agent, *, exit_reason, final_response, failed=False, api_calls=3):
+    return finalize_turn(
+        agent, final_response=final_response, api_call_count=api_calls, interrupted=False, failed=failed,
+        messages=[{"role": "user", "content": "q"}, {"role": "assistant", "content": final_response or ""}],
+        conversation_history=[], effective_task_id="task", turn_id="turn", user_message="q",
+        original_user_message="q", _should_review_memory=False, _turn_exit_reason=exit_reason,
+    )
+
+
+def test_advisory_exit_reasons_keep_failed_false_but_carry_a_failure_code(monkeypatch):
+    """empty_response_exhausted / local_processing_error: Desktop and TUI get a specific code, yet
+    ``failed`` stays False so cron silence, the kanban breaker and gateway transcript persistence
+    behave exactly as before the code was added."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent_max = FakeAgent().max_iterations
+    for exit_reason, code in (("empty_response_exhausted", "empty_response"),
+                              ("local_processing_error(TypeError: x)", "loop_error")):
+        result = _finalize(FakeAgent(), exit_reason=exit_reason, final_response="the model's last thoughts")
+        assert result["failed"] is False, exit_reason
+        # ``completed`` follows the ordinary rule for a non-failed turn (not forced False here).
+        assert result["completed"] == (result["final_response"] is not None and 3 < agent_max), exit_reason
+        assert result["failure_reason"] == code and isinstance(result["failure_retryable"], bool)
+        assert "error" not in result  # not a failed turn: no error text for the gateway to append a notice to
+
+
+def test_hard_failure_exit_reasons_still_fail_the_turn(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    result = _finalize(FakeAgent(), exit_reason="repeated_outer_errors(RuntimeError)", final_response="stopped")
+    assert result["failed"] is True and result["completed"] is False
+    assert result["failure_reason"] == "loop_error" and result["error"] == "stopped"

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   buildOpaqueProfileRoutes,
   buildRegistryProfileRoutes,
+  isLocalEnumerationFailure,
   localRouteFallbackProfiles,
   type ProfileRouteConfig,
   registryGatewayWsUrl,
@@ -253,6 +254,20 @@ describe('buildRegistryProfileRoutes', () => {
   })
 })
 
+describe('isLocalEnumerationFailure', () => {
+  it('does not treat an intentionally deferred local enumeration as a failure', () => {
+    expect(isLocalEnumerationFailure('connect-on-demand')).toBe(false)
+  })
+
+  it('treats any other enumeration error as a failure', () => {
+    expect(isLocalEnumerationFailure('ECONNREFUSED')).toBe(true)
+  })
+
+  it('treats a missing error as no failure', () => {
+    expect(isLocalEnumerationFailure(undefined)).toBe(false)
+  })
+})
+
 describe('localRouteFallbackProfiles', () => {
   it('restores failed local profiles when another source returned agents', () => {
     const agents = [{ connectionId: 'cloud-prod', profile: 'default' }]
@@ -262,6 +277,18 @@ describe('localRouteFallbackProfiles', () => {
 
   it('does not synthesize local routes after a successful local enumeration', () => {
     expect(localRouteFallbackProfiles([], 'local', ['default'], false)).toEqual([])
+  })
+
+  it('does not synthesize local routes for a deferred connect-on-demand enumeration', () => {
+    expect(
+      localRouteFallbackProfiles([], 'local', ['default'], isLocalEnumerationFailure('connect-on-demand'))
+    ).toEqual([])
+  })
+
+  it('synthesizes local routes for a genuine local enumeration error', () => {
+    expect(localRouteFallbackProfiles([], 'local', ['default'], isLocalEnumerationFailure('ECONNREFUSED'))).toEqual([
+      'default'
+    ])
   })
 })
 

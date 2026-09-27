@@ -100,12 +100,6 @@ export function resolveSurfaceColor(fallback: string): string {
 
 export { isMacPlatform }
 
-export function isAddSelectionShortcut(event: KeyboardEvent) {
-  const mod = isMacPlatform() ? event.metaKey : event.ctrlKey
-
-  return mod && !event.shiftKey && event.key.toLowerCase() === 'l'
-}
-
 export function terminalSelectionLabel(term: Terminal, shellName: string, text: string) {
   const pos = term.getSelectionPosition()
 

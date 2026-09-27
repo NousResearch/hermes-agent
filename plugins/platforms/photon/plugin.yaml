@@ -39,7 +39,7 @@ optional_env:
     prompt: "Auto-start the sidecar?"
     password: false
   - name: PHOTON_NODE_BIN
-    description: "Path to the node binary (default: shutil.which('node'))"
+    description: "Path to the node binary (default: PM's pinned node, then PATH)"
     prompt: "Node executable path"
     password: false
   - name: PHOTON_DASHBOARD_HOST
@@ -57,6 +57,10 @@ optional_env:
   - name: PHOTON_ALLOW_ALL_USERS
     description: "Allow any sender to trigger the bot (dev only — disables allowlist)"
     prompt: "Allow all users? (true/false)"
+    password: false
+  - name: PHOTON_READ_RECEIPTS
+    description: "Mark inbound iMessages read after forwarding to Hermes (true/false, default true)"
+    prompt: "Send read receipts? (true/false)"
     password: false
   - name: PHOTON_REQUIRE_MENTION
     description: "Ignore group-chat messages unless they match a mention wake word (true/false, default false)"

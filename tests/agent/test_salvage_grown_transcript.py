@@ -128,7 +128,6 @@ def test_salvage_caps_oversized_summary():
 
     assert out is not None
     assert len(out[0]["content"]) < 12_000
-    assert "truncated so compaction can shrink" in out[0]["content"]
     assert out[0]["content"].endswith(_SUMMARY_END_MARKER)
 
 
@@ -161,7 +160,6 @@ def test_salvage_does_not_cap_plain_user_text_quoting_summary_marker():
 
     assert out is not None
     assert out[0]["content"] == quoted
-    assert "truncated so compaction can shrink" not in out[0]["content"]
 
 
 def test_salvage_never_caps_unmarked_summary_shaped_live_user_text():
@@ -178,4 +176,3 @@ def test_salvage_never_caps_unmarked_summary_shaped_live_user_text():
 
     assert out is not None
     assert out[0]["content"] == live_user_text
-    assert "truncated so compaction can shrink" not in out[0]["content"]

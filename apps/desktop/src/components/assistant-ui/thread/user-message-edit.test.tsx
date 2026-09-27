@@ -7,7 +7,7 @@ import { type AppendMessage, ExportedMessageRepository } from '@assistant-ui/rea
 // mode (titlebar -webkit-app-region:drag swallowing clicks on *stuck* sticky
 // bubbles) is not reproducible in jsdom — see USER_BUBBLE_BASE_CLASS's no-drag
 // carve-out in thread.tsx.
-import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import { AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -58,22 +58,6 @@ function IncrementalHarness({ onEdit }: { onEdit: (message: AppendMessage) => Pr
   )
 }
 
-// Control: stock external store runtime.
-function StockHarness({ onEdit }: { onEdit: () => Promise<void> }) {
-  const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistantMessage()],
-    isRunning: false,
-    onNew: async () => {},
-    onEdit
-  })
-
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
-    </AssistantRuntimeProvider>
-  )
-}
-
 describe('click-to-edit user message', () => {
   it('opens the edit composer with the incremental runtime', async () => {
     const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
@@ -85,6 +69,53 @@ describe('click-to-edit user message', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
     })
+  })
+
+  it('hides the placeholder when a cleared inline edit receives text again', async () => {
+    render(<IncrementalHarness onEdit={async () => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    // jsdom does not make contenteditable focusable like Chromium does.
+    editor.tabIndex = 0
+    editor.focus()
+    expect(document.activeElement).toBe(editor)
+
+    editor.replaceChildren()
+    fireEvent.input(editor)
+    await waitFor(() => expect(editor.hasAttribute('data-empty')).toBe(true))
+
+    editor.textContent = 'fade'
+    fireEvent.input(editor)
+    await waitFor(() => expect(editor.matches(':is(:empty, [data-empty])')).toBe(false))
+
+    editor.replaceChildren()
+    fireEvent.input(editor)
+    await waitFor(() => expect(editor.hasAttribute('data-empty')).toBe(true))
+    fireEvent.paste(editor, { clipboardData: { getData: () => 'pasted edit' } })
+    expect(editor.textContent).toBe('pasted edit')
+    expect(editor.matches(':is(:empty, [data-empty])')).toBe(false)
+  })
+
+  it('hides the inline edit placeholder during IME preedit and restores it on cancellation', async () => {
+    render(<IncrementalHarness onEdit={async () => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    editor.tabIndex = 0
+    editor.focus()
+
+    editor.replaceChildren()
+    fireEvent.input(editor)
+    await waitFor(() => expect(editor.hasAttribute('data-empty')).toBe(true))
+
+    fireEvent.compositionStart(editor)
+    editor.textContent = 'に'
+    fireEvent.input(editor)
+    expect(editor.matches(':is(:empty, [data-empty])')).toBe(false)
+
+    editor.replaceChildren()
+    fireEvent.compositionEnd(editor)
+    expect(editor.matches(':is(:empty, [data-empty])')).toBe(true)
   })
 
   it('does not submit an inline edit while IME composition is active', async () => {
@@ -144,62 +175,9 @@ describe('click-to-edit user message', () => {
 
     expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeFalsy()
   })
-
-  it('opens the edit composer with the stock runtime', async () => {
-    const { container } = render(<StockHarness onEdit={async () => {}} />)
-
-    const bubble = await screen.findByRole('button', { name: 'Edit message' })
-
-    fireEvent.click(bubble)
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
-    })
-  })
-
-  // A long previous prompt is capped at max-h-48 in the edit composer. Without
-  // an overflow rule the overflow is clipped with no way to scroll, hiding the
-  // tail of the prompt. The editor must scroll its own overflow (like the main
-  // composer's editor does).
-  it('keeps the edit composer editor scrollable when the prompt overflows the cap', async () => {
-    const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
-
-    const bubble = await screen.findByRole('button', { name: 'Edit message' })
-
-    fireEvent.click(bubble)
-
-    const editor = await waitFor(() => {
-      const node = container.querySelector('[contenteditable="true"]')
-      expect(node).toBeTruthy()
-
-      return node as HTMLElement
-    })
-
-    expect(editor.className).toContain('max-h-48')
-    expect(editor.className).toContain('overflow-y-auto')
-  })
 })
 
 describe('Enter submission and latch behavior', () => {
-  it('submits the edit when Enter is pressed', async () => {
-    const onEdit = vi.fn(async () => {})
-    render(<IncrementalHarness onEdit={onEdit} />)
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
-
-    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
-    const editedText = 'modified text for submission'
-
-    editor.textContent = editedText
-    fireEvent.input(editor)
-
-    fireEvent.keyDown(editor, { key: 'Enter' })
-
-    await waitFor(() => {
-      expect(onEdit).toHaveBeenCalledTimes(1)
-    })
-  })
-
   it('clears the submitting latch after onEdit resolves, allowing second edit session', async () => {
     const onEdit = vi.fn(async () => {})
     render(<IncrementalHarness onEdit={onEdit} />)

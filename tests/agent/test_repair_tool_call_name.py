@@ -56,6 +56,33 @@ class TestExistingBehaviorStillWorks:
 
 
 
+class TestOAuthWireNames:
+    @pytest.mark.parametrize(
+        ("wire_name", "valid_names", "expected"),
+        [
+            ("mcp__lcm_doctor", {"lcm_doctor", "mcp__sloom__doctor"}, "lcm_doctor"),
+            ("mcp__read_file", {"read_file"}, "read_file"),
+            ("mcp__linear_get_issue", {"mcp_linear_get_issue"}, "mcp_linear_get_issue"),
+            ("mcp__chat_history_lookup", {"session_search"}, "session_search"),
+            ("mcp__context_notes", {"memory"}, "memory"),
+            # Preserve the transport's exact-name / legacy MCP / bare / alias precedence.
+            ("mcp__context_notes", {"mcp__context_notes", "memory"}, "mcp__context_notes"),
+            ("mcp__context_notes", {"mcp_context_notes", "context_notes", "memory"}, "mcp_context_notes"),
+            ("mcp__context_notes", {"context_notes", "memory"}, "context_notes"),
+            ("mcp__lcm_Doctor", {"lcm_Doctor", "lcm_doctor"}, "lcm_Doctor"),
+            # Unknown wire names must not resolve to a different tool by similarity.
+            ("mcp__lcm_doctor", {"mcp__sloom__doctor"}, None),
+            ("mcp__lcm_doctro", {"lcm_doctor", "mcp__sloom__doctor"}, None),
+            ("mcp__context_notes", {"context_note"}, None),
+            ("terminl", VALID, "terminal"),  # non-wire fuzzy repair is unchanged
+        ],
+    )
+    def test_wire_resolution_requires_an_exact_target(self, wire_name, valid_names, expected):
+        from agent.agent_runtime_helpers import repair_tool_call
+
+        assert repair_tool_call(SimpleNamespace(valid_tool_names=valid_names), wire_name) == expected
+
+
 class TestClassLikeEmissions:
     """Regression coverage for #14784 — CamelCase + _tool suffix variants."""
 

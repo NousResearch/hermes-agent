@@ -94,6 +94,58 @@ class TestAnthropicMcpPrefixStrip:
         assert result.tool_calls[0].name == "mcp__read_file"
 
 
+class TestContextEngineOAuthRoundTrip:
+    def test_unregistered_context_tool_wins_over_similar_mcp_tool(self, monkeypatch, tmp_path):
+        from difflib import get_close_matches
+
+        from agent.agent_init import _inject_context_engine_tools
+        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.transports.anthropic import AnthropicTransport
+        from agent.turn_tool_validation import validate_tool_calls
+        from run_agent import AIAgent
+        from tools.registry import registry
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        context_name = "lcm_doctor"
+        mcp_name = "mcp__sloom__doctor"
+        schema = {"name": context_name, "description": "Context diagnostics", "parameters": {}}
+        agent = SimpleNamespace(
+            tools=[{"type": "function", "function": {**schema, "name": mcp_name}}],
+            valid_tool_names={mcp_name},
+            context_compressor=SimpleNamespace(
+                get_tool_schemas=lambda: [schema], on_session_start=lambda *args, **kwargs: None,
+            ),
+            enabled_toolsets=None, session_id="test-oauth", platform="cli", model="claude-sonnet-4-6",
+            log_prefix="", _vprint=lambda *args, **kwargs: None,
+            _uniquify_tool_call_ids=lambda calls: None,
+        )
+        agent._repair_tool_call = AIAgent._repair_tool_call.__get__(agent, AIAgent)
+        _inject_context_engine_tools(agent)
+        assert context_name in agent.valid_tool_names
+        assert registry.get_entry(context_name) is None
+
+        kwargs = build_anthropic_kwargs(
+            model=agent.model, messages=[{"role": "user", "content": "Check context"}],
+            tools=agent.tools, is_oauth=True, max_tokens=4096, reasoning_config=None,
+        )
+        wire_name = next(t["name"] for t in kwargs["tools"] if t["name"] != mcp_name)
+        assert wire_name == "mcp__" + context_name
+        # Before the fix, the shared prefix makes a different tool the fuzzy winner.
+        assert get_close_matches(wire_name, agent.valid_tool_names, n=1, cutoff=0.7) == [mcp_name]
+        result = AnthropicTransport().normalize_response(
+            _make_response(_make_tool_use_block(wire_name), stop_reason="tool_use"),
+            strip_tool_prefix=True,
+        )
+        verdict = validate_tool_calls(
+            agent, result, result.finish_reason, messages=[], conversation_history=None,
+            api_call_count=1, effective_task_id=None,
+        )
+        assert verdict.action == "ok"
+        assert result.tool_calls is not None
+        assert result.tool_calls[0].name == context_name
+        assert result.tool_calls[0].name in agent._context_engine_tool_names
+
+
 class TestAnthropicOAuthAliasRoundTrip:
     """#65365: session_search / memory schemas alone deterministically trip
     Anthropic's OAuth billing classifier (verified live via the

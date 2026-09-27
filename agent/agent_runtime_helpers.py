@@ -2504,6 +2504,18 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     def _strip_tool_suffix(s: str) -> str | None:
         lc = s.lower()
         return next((s[: -len(sfx)].rstrip("_-") for sfx in ("_tool", "-tool", "tool") if lc.endswith(sfx)), None)
+    # OAuth prefixes every tool, including context-engine tools absent from the
+    # global registry. Resolve against this agent's names before any fuzzy repair.
+    if tool_name.startswith("mcp__"):
+        from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
+
+        bare = tool_name[len("mcp__"):]
+        for candidate in (tool_name, "mcp_" + bare, bare, _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(bare)):
+            if candidate in agent.valid_tool_names:
+                return candidate
+        # An unresolved wire/MCP name must not silently select a different tool
+        # just because their namespace prefixes inflate the similarity score.
+        return None
     # Cheap fast-paths first.
     lowered = tool_name.lower()
     if lowered in agent.valid_tool_names:

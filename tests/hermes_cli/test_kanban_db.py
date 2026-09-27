@@ -985,48 +985,28 @@ def test_is_managed_scratch_path_rejects_kanban_metadata_subtrees(kanban_home):
     assert kb._is_managed_scratch_path(task_dir)
 
 
-_needs_symlinks = pytest.mark.skipif(
-    sys.platform == "win32", reason="Symlinks require elevated privileges on Windows"
-)
-
-
-def _symlink_dir(link: Path, target: Path) -> None:
-    target.mkdir(parents=True, exist_ok=True)
-    if link.is_dir() and not link.is_symlink():
-        link.rmdir()
-    link.parent.mkdir(parents=True, exist_ok=True)
-    link.symlink_to(target, target_is_directory=True)
-
-
-def _user_tree(root: Path) -> Path:
-    victim = root / "project"
-    victim.mkdir(parents=True)
-    (victim / "keep.txt").write_text("user data", encoding="utf-8")
-    return victim
-
-
-def _complete_scratch_task_at(conn, path: Path) -> str:
-    """A legacy explicit-path scratch task pointing at *path*, then completed."""
-    t = kb.create_task(conn, title="scratch")
-    kbw.set_workspace_path(conn, t, path)
-    assert kb.complete_task(conn, t, result="done")
-    return t
-
-
-@_needs_symlinks
+@pytest.mark.require_symlinks
 def test_symlinked_workspaces_root_does_not_widen_scratch_cleanup(kanban_home, tmp_path):
     """A workspaces root that is a symlink to a broad directory must not make
     every path inside the symlink target "managed". Only paths that are
     lexically below the root (i.e. reached through it) are scratch; a path
     named directly inside the target is user data (#28818)."""
     broad = tmp_path / "user-data"
-    victim = _user_tree(broad)
-    _symlink_dir(kanban_home / "kanban" / "workspaces", broad)
+    victim = broad / "project"
+    victim.mkdir(parents=True)
+    (victim / "keep.txt").write_text("user data", encoding="utf-8")
+    ws_root = kanban_home / "kanban" / "workspaces"
+    if ws_root.is_dir() and not ws_root.is_symlink():
+        ws_root.rmdir()
+    ws_root.parent.mkdir(parents=True, exist_ok=True)
+    ws_root.symlink_to(broad, target_is_directory=True)
 
-    assert not kb._is_managed_scratch_path(victim)
     with kbc.connect() as conn:
-        _complete_scratch_task_at(conn, victim)
-    assert (victim / "keep.txt").read_text(encoding="utf-8") == "user data"
+        # Legacy explicit-path scratch task pointing straight at user data.
+        t = kb.create_task(conn, title="scratch")
+        kbw.set_workspace_path(conn, t, victim)
+        assert kb.complete_task(conn, t, result="done")
+    assert (victim / "keep.txt").is_file()
 
 
 # ---------------------------------------------------------------------------

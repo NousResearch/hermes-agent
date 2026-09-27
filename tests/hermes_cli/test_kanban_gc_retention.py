@@ -117,7 +117,7 @@ def test_cmd_gc_never_removes_the_workspaces_root_itself(board):
     root = kb.workspaces_root()
     sibling = root / "t_other"
     sibling.mkdir(parents=True)
-    (sibling / "work.txt").write_text("another task's scratch")
+    (sibling / "work.txt").write_text("another task's scratch", encoding="utf-8")
     with kbc.connect_closing() as conn:
         tid = kb.create_task(conn, title="archived scratch")
         with kb.write_txn(conn):

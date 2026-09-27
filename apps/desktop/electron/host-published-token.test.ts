@@ -43,10 +43,7 @@ function publication(role: string, token: string, overrides: Record<string, unkn
 test('a desktop-serve publication matches the ledger record by pid, port, and fingerprint', () => {
   const token = 'published-session-token'
 
-  assert.equal(
-    publishedTokenForRecord(RECORD, [publication('desktop-serve', token)]),
-    token
-  )
+  assert.equal(publishedTokenForRecord(RECORD, [publication('desktop-serve', token)]), token)
   assert.equal(
     publishedTokenForRecord(RECORD, [publication('desktop-serve', token, { tokenFingerprint: '0'.repeat(16) })]),
     null

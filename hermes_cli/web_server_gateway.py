@@ -319,6 +319,24 @@ def _named_profile_from_action(subcommand: List[str]) -> Optional[str]:
     return None
 
 
+def _is_host_gateway_spawn(subcommand: List[str]) -> bool:
+    """True when *subcommand* starts the host multiplexer, not a named profile's own gateway.
+
+    ``hermes gateway restart`` and ``hermes -p default gateway restart`` are the host.
+    ``hermes -p coder gateway stop`` is not.
+    """
+    profile = _named_profile_from_action(subcommand)
+    if profile not in (None, "default"):
+        return False
+    args = list(subcommand)
+    if profile is not None:
+        if args and args[0] in {"-p", "--profile"}:
+            args = args[2:]
+        elif args and str(args[0]).startswith("--profile="):
+            args = args[1:]
+    return bool(args) and args[0] == "gateway"
+
+
 def _profile_action_environment(
     subcommand: List[str], env_overrides: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
@@ -333,11 +351,16 @@ def _profile_action_environment(
     Named-profile actions therefore start from Hermes' standard scrubbed subprocess env, then drop
     the profile-managed keys plus every key declared by the dashboard/default profile dotenv files
     and their hydrated secret sources, and pin ``HERMES_HOME`` to the target profile. The child's
-    normal startup then loads that profile's own ``.env``. Actions without a profile selector keep
+    normal startup then loads that profile's own ``.env``. A host-gateway verb (bare ``gateway``
+    or ``-p default gateway``) starts from ``host_gateway_child_env`` so a named-profile dashboard
+    cannot donate its dotenv to the multiplexer. Other actions without a profile selector keep
     the historical environment exactly.
     """
     profile = _named_profile_from_action(subcommand)
-    if profile is None:
+    if _is_host_gateway_spawn(subcommand):
+        from tools.environments.local import host_gateway_child_env
+        action_env = host_gateway_child_env()
+    elif profile is None:
         action_env = dict(os.environ)
     else:
         from hermes_cli.env_loader import (

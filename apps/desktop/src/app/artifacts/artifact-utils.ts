@@ -30,7 +30,7 @@ export interface ArtifactLoadResult {
 
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-const URL_RE = /https?:\/\/[^\s<>"')]+/g
+const URL_RE = /https?:\/\/[^\s<>"')`]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~[\\/]|\.\.?[\\/]|\\\\)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
@@ -114,7 +114,21 @@ function artifactSessionTitle(session: SessionInfo): string {
 }
 
 function normalizeValue(value: string): string {
-  return value.trim().replace(/[),.;]+$/, '')
+  let trimmed = value.trim()
+
+  for (let i = 0; i < 3; i += 1) {
+    const quote = trimmed[0]
+
+    if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+      trimmed = trimmed.slice(1, -1).trim()
+
+      continue
+    }
+
+    break
+  }
+
+  return trimmed.replace(/[`*]+$/g, '').replace(/[),.;]+$/, '')
 }
 
 // Chat renders file refs as `[label](#media:<encoded path>)`. Decode before
@@ -437,9 +451,8 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
       // their non-index segments, and with no index the shell-output/explicit
       // key tests match the last real segment. Do NOT switch this to
       // exact-key matching — it would silently stop indexing those shapes.
-      const segments = keyPath
-        .split('.')
-        .filter(segment => segment && !/^\d+$/.test(segment))
+      const segments = keyPath.split('.').filter(segment => segment && !/^\d+$/.test(segment))
+
       const shellOutput = terminalTool && segments.some(segment => SHELL_OUTPUT_KEY_RE.test(segment))
 
       if (!shellOutput && !explicitToolArtifactKey(keyPath, producerTool)) {

@@ -119,6 +119,9 @@ class SessionCreateParams(ProfileParams):
     cols: int | None = None
     source: str | None = None
     cwd: str | None = None
+    # #52589: provenance for ``cwd`` — true only for a deliberate workspace pick;
+    # an inherited app-global workspace must yield to a named profile's terminal.cwd.
+    cwd_explicit: bool | None = None
     messages: list[SeedMessage] | None = None
     parent_session_id: str | None = None
     title: str | None = None

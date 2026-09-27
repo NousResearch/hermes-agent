@@ -1759,7 +1759,14 @@ class GatewayInboundMixin:
                 return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        message_text = self._prepend_inbound_reply_context(event, source, message_text)
+        adapter = self._intake_adapter_for(source)
+        take_channel_context = getattr(type(adapter), "take_turn_channel_context", None)
+        if callable(take_channel_context):
+            context = take_channel_context(adapter, event)
+            if context:
+                message_text = f"{context}\n\n[New message]\n{message_text}"
+        return message_text
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],

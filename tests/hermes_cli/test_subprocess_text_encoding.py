@@ -2,7 +2,11 @@
 
 On Windows, ``text=True`` without ``encoding`` decodes child output with the ANSI
 code page (e.g. 'gbk'), and non-ASCII bytes raise UnicodeDecodeError inside
-``subprocess._readerthread``, killing the backend before it becomes ready.
+``subprocess._readerthread``, killing the backend before it becomes ready. Strict
+decoding is the same crash in disguise — the exception still kills the reader
+thread, ``run()`` returns ``stdout=None``, and call sites' ``OSError``/
+``SubprocessError`` handlers never catch it — so text-mode sites must also pin a
+non-strict ``errors=`` handler.
 """
 
 from __future__ import annotations
@@ -45,3 +49,16 @@ def test_text_mode_subprocess_calls_pin_utf8(path: Path) -> None:
                     "without encoding= — on Windows this decodes with the ANSI code page "
                     "and can raise UnicodeDecodeError on non-ASCII child output (#55658)"
                 )
+                errors_kw = next((k for k in call.keywords if k.arg == "errors"), None)
+                assert errors_kw is not None, (
+                    f"{path.relative_to(REPO_ROOT)}:{kw.lineno}: subprocess text=True "
+                    "without errors= — strict decoding (the default) kills "
+                    "subprocess._readerthread, run() returns stdout=None, and the "
+                    "call site's OSError/SubprocessError handlers never catch it (#122772)"
+                )
+                if isinstance(errors_kw.value, ast.Constant):
+                    assert errors_kw.value.value not in (None, "strict"), (
+                        f"{path.relative_to(REPO_ROOT)}:{kw.lineno}: subprocess text=True "
+                        "with errors=None or 'strict' is the same silent-None crash as "
+                        "omitting errors= (#122772)"
+                    )

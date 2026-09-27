@@ -454,7 +454,7 @@ class SessionMessagesMixin:
 
     def _execute_transcript_write(self, fn, messages: List[Dict[str, Any]], **kwargs):
         """``_execute_write(fn)`` for callbacks that stamp row state onto the caller's *messages* (every
-        :meth:`_insert_message_rows` caller). Each attempt, and a final failure, restores the caller's
+        :meth:`_insert_message_rows` caller that passes caller-owned dicts; rewind and import insert fresh copies). Each attempt, and a final failure, restores the caller's
         ``_row_id`` / digest / timestamp: a rolled-back insert's id is reused by SQLite, so a stale stamp
         would make a later flush adopt another writer's row and drop this message."""
         _absent = object()
@@ -626,9 +626,6 @@ class SessionMessagesMixin:
             msg["timestamp"] = message_timestamp
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
-                # A new row makes any carried CAS version (a clone's parent digest) meaningless; the
-                # stored digest of the new row is stamped below.
-                msg.pop(DB_ROW_SNAPSHOT, None)
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6

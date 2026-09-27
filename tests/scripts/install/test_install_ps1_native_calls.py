@@ -38,6 +38,15 @@ def test_native_stderr_under_stop_leaves_the_exit_code_to_the_caller():
     assert "exit=3 preference=Stop" in result.stdout
 
 
+def test_native_utf8_stderr_under_stop_leaves_the_exit_code_to_the_caller():
+    """The utf8 capture keeps Invoke-Native's contract: its UTF-8 window must not turn a
+    diagnostic-writing native command into a terminating error under the global Stop."""
+    result = _dot_sourced('Invoke-NativeUtf8 { cmd /c "echo soft-failure 1>&2 & exit 3" 2>$null }; '
+                          '"exit=$LASTEXITCODE preference=$ErrorActionPreference"')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "exit=3 preference=Stop" in result.stdout
+
+
 def test_path_uv_must_run_and_meet_the_pin(tmp_path):
     for name, body in {"old": "@echo uv 0.6.17", "new": "@echo uv 99.0.0 (abc 2099-01-01)",
                        "broken": "@echo boom 1>&2 & exit /b 1"}.items():

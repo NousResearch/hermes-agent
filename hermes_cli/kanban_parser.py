@@ -327,7 +327,8 @@ _SPECS = [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason/timing note (also appended as a comment)"),
         _bulk_ids("schedule"),
-    ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
+    ], help="Park one or more tasks in Scheduled (no timer — released only by "
+            "'hermes kanban unblock', same as blocked)"),
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,

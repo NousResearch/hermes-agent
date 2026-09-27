@@ -1286,7 +1286,8 @@ def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monk
     monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kwargs: pending)
 
     result = json.loads(bot_mode_dm._try_relay_delivery(root, "researcher", "hello", "default",
-                                                        task_id=None, agent=None))
+                                                        task_id=None, agent=None,
+                                                        viewer=root / "profiles" / "default"))
 
     assert result["status"] == "queued"
     assert "error" not in result
@@ -1416,37 +1417,29 @@ def test_a_private_teammate_is_neither_addressable_nor_listed(tmp_path, target):
     assert result["teammates"] == ["researcher"]
 
 
-@pytest.mark.parametrize(
-    ("circle", "pass_viewer", "delivered"),
-    [("hobby", True, False), ("work", True, True), ("hobby", False, True)],
-    ids=["other-circle-unreachable", "same-circle-delivered", "no-viewer-keeps-todays-behaviour"],
-)
-def test_relay_delivery_obeys_the_callers_circle(tmp_path, monkeypatch, circle, pass_viewer, delivered):
-    """Cross-machine delivery obeys the caller's circle exactly like the local roster does, and
-    nothing is enqueued for a target in another circle. `_try_relay_delivery` swallows every
-    exception and returns None, so the enqueue call is RECORDED rather than raised from: None
-    alone cannot tell "filtered out" from "failed"."""
-    import tools.bot_relay as relay
+@pytest.mark.parametrize(("circle", "target", "delivered"), [
+    ("hobby", "programmer", False),
+    ("hobby", "programmer@mini", False),
+    ("work", "programmer", True),
+    ("work", "programmer@mini", True),
+], ids=["other-circle-bare", "other-circle-connection-qualified", "same-circle-bare",
+        "same-circle-connection-qualified"])
+def test_relay_delivery_obeys_the_callers_circle(tmp_path, monkeypatch, circle, target, delivered):
+    """Cross-machine delivery obeys the caller's circle exactly like the local roster does, by every
+    target form message_agent sends to the relay: nothing is enqueued for a target in another circle.
+    The connection-qualified row guards the route that reaches the relay before local resolution."""
+    _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("reviewer",))
+    with open(home / "profiles" / "reviewer" / "profile.yaml", "a", encoding="utf-8") as fh:
+        fh.write(f"    circle: {circle}\n")
+    bot_relay.write_remote_roster(home, [
+        {"profile": "programmer", "handle": "programmer", "connection_id": "mini", "connection_label": "mini",
+         "circle": "work"},
+    ])
 
-    home = tmp_path / ".hermes"
-    viewer = home / "profiles" / "reviewer"
-    viewer.mkdir(parents=True)
-    (viewer / "profile.yaml").write_text(
-        f"ui_meta:\n  hermes-bots:\n    shape: cloud\n    circle: {circle}\n", encoding="utf-8")
-    calls: list = []
-    monkeypatch.setattr(relay, "read_remote_roster", lambda root: [
-        {"profile": "programmer", "handle": "programmer", "connection_id": "mini",
-         "connection_label": "mini", "title": "", "description": "", "circle": "work"}])
-    monkeypatch.setattr(relay, "enqueue_envelope", lambda root, **kw: (calls.append(kw), {"id": "env-1"})[1])
-    monkeypatch.setattr(relay, "waiter_command", lambda root, envelope: ["true"])
-    # The real _spawn_delivery answers JSON and the caller parses it, so the fake must too.
-    monkeypatch.setattr(bot_mode_dm, "_spawn_delivery",
-                        lambda cmd, label, **k: json.dumps({"status": "sent", "to": label}))
-    extra = {"viewer": viewer} if pass_viewer else {}
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target=target, message="hi", agent=_FakeAgent(home / "profiles" / "reviewer")))
 
-    result = bot_mode_dm._try_relay_delivery(home, "programmer", "hi", "reviewer",
-                                             task_id=None, agent=None, **extra)
-
-    assert (json.loads(result)["to"] if delivered else result) == ("@programmer on mini" if delivered else None)
-    assert len(calls) == (1 if delivered else 0)
-    assert not calls or calls[0]["target"]["profile"] == "programmer"
+    envelopes = bot_relay.claim_pending_envelopes(home)
+    assert [e["target_connection"] for e in envelopes] == (["mini"] if delivered else []), result
+    assert ("error" in result) is not delivered

@@ -1450,6 +1450,9 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         media_metadata = {"notify": t.notify_delivery}
         if thread_id:
             media_metadata["thread_id"] = thread_id
+        if t.platform == Platform.MATTERMOST and route_thread_id:
+            route_metadata["mattermost_explicit_thread"] = True
+            media_metadata["mattermost_explicit_thread"] = True
 
     # Relay egress needs metadata.scope_id (fail-closed tenant guard; scope cache is COLD after a
     # restart; router stamps HOME only). Origin targets only: a wrong fan-out scope is worse than
@@ -1650,6 +1653,14 @@ def _deliver_via_live_adapter(
             if not adapter_ok and len(unverified_targets) > unverified_before:
                 # Receipt owns this attempt, but cannot confirm the full delivery.
                 # Stop fallback without logging success or seeding a continuation.
+                # Independent attachments still get their own delivery attempt.
+                try:
+                    if media_files:
+                        _live_send_media(t, media_metadata, media_files, delivery_errors)
+                except Exception as e:
+                    _note_target_error(
+                        job, f"live adapter media delivery to {t.where} failed: {e}",
+                        delivery_errors)
                 return True
 
         # Media rides the same DM-topic-aware routing as text. Skipped after a confirmation

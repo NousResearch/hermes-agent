@@ -1,4 +1,4 @@
-"""Mattermost cron must not replay a POST whose acknowledgement was lost."""
+"""Mattermost cron must preserve independent files without replaying uncertain text."""
 
 import asyncio
 from concurrent.futures import Future
@@ -40,15 +40,19 @@ def test_uncertain_live_post_does_not_replay_via_standalone(
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
-    posts = []
+    posts, uploads = [], []
 
     def post(url, **kwargs):
-        assert url == "https://mattermost.example/api/v4/posts"
-        posts.append(kwargs["json"])
         response = AsyncMock()
         response.__aenter__.return_value = response
         response.__aexit__.return_value = False
         response.status = 201
+        if url == "https://mattermost.example/api/v4/files":
+            uploads.append(kwargs["data"])
+            response.json.return_value = {"file_infos": [{"id": "chart-file"}]}
+            return response
+        assert url == "https://mattermost.example/api/v4/posts"
+        posts.append(kwargs["json"])
         response.json.return_value = {"id": f"post-{len(posts)}"}
         if len(posts) == lost_post:
             if rejected:
@@ -76,6 +80,8 @@ def test_uncertain_live_post_does_not_replay_via_standalone(
     job = {"id": "uncertain-mattermost", "name": "Report", "deliver": "origin",
            "origin": {"platform": "mattermost", "chat_id": "channel"}}
     content = "a" * 500 + "b" * 100
+    attachment = tmp_path / "chart.png"
+    attachment.write_bytes(b"chart fixture")
     with patch("gateway.config.load_gateway_config", return_value=config), patch(
         "cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}
     ), patch("asyncio.run_coroutine_threadsafe", side_effect=run_scheduled), patch(
@@ -85,22 +91,29 @@ def test_uncertain_live_post_does_not_replay_via_standalone(
     ) as seed_live_session, patch(
         "cron.scheduler_delivery._maybe_mirror_cron_delivery"
     ), patch.object(aiohttp, "ClientSession", return_value=session) as standalone_session:
-        error = _deliver_result(job, content, adapters={Platform.MATTERMOST: adapter}, loop=loop)
+        error = _deliver_result(job, f"{content}\nMEDIA:{attachment}",
+                                adapters={Platform.MATTERMOST: adapter}, loop=loop)
 
     seed_live_session.assert_not_called()
     assert "via live adapter thread=" not in caplog.text
     assert all(p["props"]["disable_mentions"] for p in posts)
+    file_posts = [p for p in posts if p.get("file_ids")]
     if rejected and lost_post == 1:
         # No content was accepted: a real standalone fallback remains permitted.
         assert [p["message"] for p in posts] == [content[:500], content[:500], content[500:]]
         standalone_session.assert_called_once()
         assert not job.get("last_delivery_unverified")
         assert error is None
+        assert len(uploads) == len(file_posts) == 1
+        assert file_posts[0]["file_ids"] == ["chart-file"]
         return
 
-    assert [p["message"] for p in posts] == [content[:500], content[500:]][:lost_post], (
+    assert [p["message"] for p in posts if not p.get("file_ids")] == [content[:500], content[500:]][:lost_post], (
         "cron replayed an accepted but unacknowledged POST through standalone delivery"
     )
     standalone_session.assert_not_called()
     assert job.get("last_delivery_unverified") == ["mattermost:channel"]
     assert error is not None, "uncertain delivery must not be reported as confirmed success"
+    assert len(uploads) == len(file_posts) == 1, "text uncertainty abandoned an independent attachment"
+    assert file_posts[0]["file_ids"] == ["chart-file"]
+    assert file_posts[0]["message"] in ("", "📎 chart.png"), "attachment delivery must not replay the text as a caption"

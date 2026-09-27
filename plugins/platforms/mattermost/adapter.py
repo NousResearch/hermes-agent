@@ -634,7 +634,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     break
                 if not file_ids:
                     continue
-                explicit_caption = caption_pending or "\n".join(pending_captions)
+                explicit_caption = "\n".join(([caption_pending] if caption_pending else []) + pending_captions)
                 body = _file_post_message(explicit_caption, names)
                 data = await self._post_message(chat_id, body, None, metadata, file_ids)
                 if data:
@@ -669,7 +669,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 delivered += len(file_ids)
                 caption_pending = None
                 pending_captions.clear()
-            caption_pending = caption_pending or "\n".join(pending_captions)
+            caption_pending = "\n".join(([caption_pending] if caption_pending else []) + pending_captions)
             if caption_pending and not error:
                 # Text still belongs to the delivery when every image was missing.
                 data = await self._post_message(chat_id, caption_pending, None, metadata)

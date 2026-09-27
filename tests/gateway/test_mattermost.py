@@ -1084,6 +1084,28 @@ class TestMattermostAuthoritativeFallback:
         assert result.raw_response["partial_failure"]
         assert result.error and "upload" in result.error.lower()
 
+    @pytest.mark.parametrize("outcome", ["normal", "all-missing", "upload-failure", "group-rejected"])
+    @pytest.mark.asyncio
+    async def test_shared_caption_preserves_every_image_caption(self, tmp_path, outcome):
+        adapter, posts, _ = self.transport([400, "ok"] if outcome == "group-rejected" else [])
+        images = [(path, f"  Chart {index}\t")
+                  for index, (path, _) in enumerate(self.images(tmp_path, 6))]
+        if outcome == "all-missing":
+            images = [(str(tmp_path / f"missing-{index}.png"), label)
+                      for index, (_, label) in enumerate(images)]
+        elif outcome == "upload-failure":
+            adapter._upload_file = AsyncMock(return_value=None)
+        result = await adapter.send_multiple_images("channel", images, caption="Quarterly report")
+
+        accepted = posts[1:] if outcome == "group-rejected" else posts
+        messages = [post["message"] for post in accepted]
+        assert messages[0].startswith("Quarterly report\n  Chart 0\t")
+        assert sum(message.count("Quarterly report") for message in messages) == 1
+        for _, label in images:
+            assert sum(message.count(label) for message in messages) == 1
+        assert result.raw_response["delivered_media"] == (
+            0 if outcome in {"all-missing", "upload-failure"} else len(images))
+
     @pytest.mark.parametrize("caption_index", [1, 5])
     @pytest.mark.asyncio
     async def test_upload_rejection_preserves_later_tuple_caption(self, tmp_path, caption_index):

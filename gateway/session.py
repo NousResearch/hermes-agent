@@ -1038,7 +1038,9 @@ class SessionStore(
             try:
                 db = self._db_for_key(session_key)
                 canonical_id = db.get_compression_tip(recovery_session_id) or recovery_session_id
-                row = db.get_session(canonical_id)
+                row = db.get_recoverable_gateway_session(
+                    canonical_id, session_key=session_key, source=source.platform.value,
+                )
                 if row and self._recovered_row_allowed_for_active_profile(
                     requested_session_key=session_key, recovered=row,
                 ):

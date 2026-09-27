@@ -180,6 +180,7 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertEqual(result["status"], "success", result)
         self.assertIn("raw-passthrough", result["output"])
 
+    @pytest.mark.platforms("posix")  # win32 Popen never inherits fd 0 here regardless of the fix
     def test_child_subprocess_does_not_inherit_the_request_pipe(self):
         """A subprocess a cell starts must see closed stdin (EOF), not the
         kernel's JSON request pipe -- else it blocks reading stdin until

@@ -54,7 +54,7 @@ function fixture() {
   stageGetWindows({ source: repo, out: nativeDeps })
   put(join(nativeDeps, 'native/helper-fixture'), 'prepared executable resource')
   const stamp = join(root, 'install-stamp.json')
-  put(stamp, JSON.stringify({ schemaVersion: 1, payload: 'light', updateMechanism: 'external', commit: 'a'.repeat(40), tag: 'v1.2.3' }))
+  put(stamp, JSON.stringify({ schemaVersion: 1, payload: 'light', updateMechanism: 'external', commit: 'a'.repeat(40), tag: 'v1.2.3', builtAt: '2026-01-01T00:00:00.000Z' }))
   return { source, out: join(root, 'result'), icons, nativeDeps, stamp }
 }
 function files(root, dir = root) {
@@ -158,29 +158,33 @@ test('in-tree desktop products rebuild after build exists without replacing prep
   }
 }, 30000)
 
-test('a desktop build survives the build clock rewriting its own stamp, but a real provenance change still invalidates it', async () => {
+test('the mid-compile guard ignores the build clock but still fails on a real provenance change', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
-  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const { buildInputs, recordProduct } = await import('../scripts/build/freshness.mjs')
   const input = fixture()
   await buildDesktop(input)
   const stamp = readFileSync(input.stamp, 'utf8')
   // write-build-stamp.mjs rewrites `builtAt` on EVERY build (build.mjs step 20), so a
   // second build racing the first must not be killed by its own input changing.
+  // This is the mid-compile guard only; productCurrent is covered by the restamp
+  // tests below.
   const clockMoved = { ...JSON.parse(stamp), builtAt: '2027-01-01T00:00:00.000Z' }
   expect(clockMoved).not.toEqual(JSON.parse(stamp))
   put(input.stamp, JSON.stringify(clockMoved))
-  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
-  await expect(buildDesktop(input)).resolves.toBeTruthy()
-  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
-  // The clock is the only ignored field: provenance that reaches the baked bytes must
-  // still invalidate, or a swapped commit would ship as "current". Each value must
-  // actually differ from the fixture stamp (payload there is already 'light').
+  const paths = { icons: join(input.icons, 'apps/desktop/public'), stamp: input.stamp, nativeDeps: input.nativeDeps }
+  // The mid-compile guard compares the prepared inputs, and the clock is not one:
+  // re-recording with a restamped clock must NOT throw, or the racing build dies
+  // again on a change the build machinery made.
+  const inputs = buildInputs(input.source, 'desktop', paths)
+  expect(() => recordProduct({ source: input.source, product: 'desktop', out: input.out, inputs })).not.toThrow()
+  // A real provenance change, by contrast, is a genuine mid-compile change: the
+  // compiler captured inputs BEFORE the stamp moved, so the guard must fire.
   for (const field of [{ commit: 'd'.repeat(40) }, { payload: 'store' }, { tag: 'v9.9.9' }]) {
     put(input.stamp, JSON.stringify({ ...JSON.parse(stamp), ...field }))
-    expect(productCurrent({ ...input, product: 'desktop' }), JSON.stringify(field)).toBe(false)
+    expect(() => recordProduct({ source: input.source, product: 'desktop', out: input.out, inputs }))
+      .toThrow(/inputs changed/)
   }
   put(input.stamp, stamp)
-  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
 }, 60000)
 
 test('a desktop build that another build restamps mid-compile still publishes, and the clock-only rewrite is not what kills it', async () => {
@@ -208,6 +212,51 @@ test('a desktop build that another build restamps mid-compile still publishes, a
     }}] }
   `)
   await expect(buildDesktop(input)).rejects.toThrow(/inputs changed/)
+}, 60000)
+
+test('the pre-build gate still notices a restamp, so packaging cannot ship a bundle whose clock disagrees with the baked one', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  await buildDesktop(input)
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  // What actually gets baked into the shipped main, read from the real bundle.
+  const baked = readFileSync(join(input.out, 'electron-main.mjs'), 'utf8')
+    .match(/builtAt:\s*"([^"]*)"/)?.[1] ?? null
+  expect(baked).toBeTruthy()
+  // A second build's write-build-stamp moves the LIVE stamp. electron-builder's
+  // extraResources copies that live file into the bundle, so skipping the rebuild
+  // here would ship Resources/install-stamp.json disagreeing with the baked main
+  // and make detectBundleSwap offer a relaunch for a bundle never replaced.
+  const restamped = { ...JSON.parse(readFileSync(input.stamp, 'utf8')), builtAt: '2027-04-04T00:00:00.000Z' }
+  put(input.stamp, JSON.stringify(restamped))
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(false)
+  // And rebuilding restores agreement, which is what the next `hermes desktop` does.
+  await buildDesktop(input)
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  const rebaked = readFileSync(join(input.out, 'electron-main.mjs'), 'utf8')
+    .match(/builtAt:\s*"([^"]*)"/)?.[1] ?? null
+  expect(rebaked).toBe(restamped.builtAt)
+}, 60000)
+
+test('the receipt records the clock the output BAKED, so a restamp between the bake and the record still reads as not current', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent, buildInputs, recordProduct } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  await buildDesktop(input)
+  const paths = { icons: join(input.icons, 'apps/desktop/public'), stamp: input.stamp, nativeDeps: input.nativeDeps }
+  const inputs = buildInputs(input.source, 'desktop', paths)
+  const baked = readFileSync(join(input.out, 'electron-main.mjs'), 'utf8').match(/builtAt:\s*"([^"]*)"/)?.[1]
+  // The window that matters: electron-builder's extraResources copies the LIVE
+  // stamp after the receipt exists, so a restamp landing between bundleElectronMain
+  // and recordProduct would otherwise be recorded as if this output had baked it.
+  put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), builtAt: '2028-08-08T00:00:00.000Z' }))
+  expect(() => recordProduct({
+    source: input.source, product: 'desktop', out: input.out, inputs, stampClock: baked,
+  })).not.toThrow()
+  const receipt = JSON.parse(readFileSync(join(input.out, 'hermes-build.json'), 'utf8'))
+  expect(receipt.stampClock).toBe(baked)
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(false)
 }, 60000)
 
 test('a missing or unparsable desktop stamp still hashes to a distinct value instead of failing the build', async () => {

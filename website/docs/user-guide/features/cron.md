@@ -44,6 +44,25 @@ Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron
 
 ## Creating scheduled tasks
 
+### Optional minimum report length
+
+For jobs expected to produce a report, opt in to a per-job length floor:
+
+```bash
+hermes cron create 'every 2h' 'Write the monitoring report' --min-response-chars 20
+hermes cron edit <job-id> --min-response-chars 20
+hermes cron edit <job-id> --min-response-chars 0  # disable
+```
+
+`min_response_chars` defaults to `0` (off). It counts Unicode characters after trimming
+leading/trailing whitespace, before adding any provider-fallback notice. A shorter agent
+report is treated as an empty response: no report is delivered and the run is recorded as
+a soft failure (`last_status: error`), not successful. Existing intentional-silence markers
+remain successful silent runs; explicit `[CRON_FAILURE]` reports retain their failure routing.
+No-agent script output is unchanged. This is a CLI-managed policy, not a new model-tool field.
+It is a length check, not a semantic quality check: choose a floor compatible with valid short
+answers in the job's language, or leave it disabled.
+
 ### In chat with `/cron`
 
 ```bash

@@ -2528,6 +2528,10 @@ def run_job(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        # Check the report before a provider-fallback notice can pad its length.
+        from cron.response_policy import apply_response_floor
+        if _cron_failure_marker_error(final_response) is None:
+            final_response = apply_response_floor(final_response, job)
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
                 and _cron_failure_marker_error(final_response) is None):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the

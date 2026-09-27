@@ -1543,7 +1543,10 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["format"] = "org.matrix.custom.html"
             msg_content["formatted_body"] = f'* {new_content["formatted_body"]}'
         msg_content["m.relates_to"] = {"rel_type": "m.replace", "event_id": message_id}
-        return await self._send_content_event(chat_id, msg_content)
+        result = await self._send_content_event(chat_id, msg_content)
+        if result.success:
+            self._event_context_cache.apply_edit(chat_id, self._user_id or "", msg_content)
+        return result
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
@@ -2085,7 +2088,10 @@ class MatrixAdapter(BasePlatformAdapter):
         identity = await self._resolve_room_identity(room_id)
         is_dm = await self._is_dm_room(room_id)
         chat_type = "dm" if is_dm else "group"
-        thread_id = MatrixRelation.from_content(relates_to).thread_root
+        relation = MatrixRelation.from_content(relates_to)
+        thread_id = relation.thread_root
+        if relation.thread_fallback_target:
+            body = _normalize_matrix_bang_command(_strip_reply_fallback(body))
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
@@ -2116,7 +2122,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
             # and silently dropped the replied-to author (#111233). Only a real reply carries a
             # pill; a hand-typed blockquote in a plain message is stripped whole as before.
-            if MatrixRelation.from_content(relates_to).reply_target:
+            if relation.reply_target:
                 quote_block, reply_text = _split_reply_fallback(body)
                 body = quote_block + self._strip_mention(reply_text)
             else:
@@ -2149,7 +2155,10 @@ class MatrixAdapter(BasePlatformAdapter):
         formatted_body: Any = None,
     ) -> MatrixReplyContext:
         """Resolve an explicit reply and its inline or fetched quoted context."""
-        reply_to = MatrixRelation.from_content(relates_to).reply_target
+        relation = MatrixRelation.from_content(relates_to)
+        reply_to = relation.reply_target
+        if relation.thread_fallback_target:
+            body = _strip_reply_fallback(body)
         reply_to_text = reply_to_author_id = reply_to_author_name = None
         reply_to_is_own_message = False
         reply_to_author_authorized = None

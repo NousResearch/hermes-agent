@@ -43,7 +43,7 @@ def test_a_heartbeat_wake_is_typed_hidden(surface):
     session = _session()
     assert server._notif_claim_turn(session) is True
 
-    server._notif_dispatch_event("sid", session, dict(HEARTBEAT), "beat text")
+    server._notif_dispatch_event("sid", session, dict(HEARTBEAT), "beat text", "claimed")
 
     ((text, kwargs),) = surface
     assert text == "beat text"
@@ -57,13 +57,14 @@ def test_off_mutes_process_wakes_but_subagent_results_still_land(surface, tmp_pa
         yaml.safe_dump({"display": {"background_process_notifications": "off"}}), encoding="utf-8"
     )
     session = _session(tmp_path)
-    registry = SimpleNamespace(completion_queue=queue.Queue(), is_completion_consumed=lambda session_id: False)
+    registry = SimpleNamespace(completion_queue=queue.Queue(), completion_routing_lock=threading.RLock(),
+                               is_completion_consumed=lambda session_id: False)
     completions: list = []
 
     for evt in (HEARTBEAT, COMPLETION):
-        assert server._notif_handle_event("sid", session, dict(evt), set(), registry, lambda e: "t", completions) is True
+        server._notif_handle_event("sid", session, dict(evt), set(), registry, lambda e: "t", "reserved", completions)
     assert completions == [] and surface == [], "a muted wake never reaches a turn"
     assert session["running"] is False, "and never keeps the session claimed"
 
-    assert server._notif_handle_event("sid", session, dict(DELEGATION), set(), registry, lambda e: "t", completions) is True
+    server._notif_handle_event("sid", session, dict(DELEGATION), set(), registry, lambda e: "t", "reserved", completions)
     assert [kw["display_kind"] for _, kw in surface] == ["async_delegation_complete"]

@@ -2,7 +2,7 @@ name: anyrouter
 repo: https://github.com/duyet/hermes-provider-anyrouter
 sha: 86bc17dd61ade9baa6f2fb7d440979b55359a907
 subdir: anyrouter
-description: AnyRouter — unified model gateway (OpenAI-compatible); /model picker filtered to tool-capable routes, first-party meta-models like anyrouter/hermes.
+description: AnyRouter — unified model gateway (OpenAI-compatible); /model picker filtered to tool-capable routes, first-party meta-models like anyrouter/hermes. Disclosure — sends your prompts and ANYROUTER_API_KEY to anyrouter.dev, a third-party relay that forwards to upstream vendors (OpenAI, Anthropic, Google, xAI, …), on some plans through a shared pool of other members' donated free-tier vendor keys; billed in prepaid AnyRouter credits. anyrouter/hermes is AnyRouter's own routing meta-model, not a Nous Research model. Opt-in ANYROUTER_APP_ATTRIBUTION=1 adds Hermes attribution headers.
 maintainer: duyet
 tier: community
 category: models

@@ -1360,6 +1360,9 @@
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
+          // Keyed by task so following a dependency chip remounts: no field,
+          // menu action or late response from the previous task carries over.
+          key: selectedTaskId,
           taskId: selectedTaskId,
           boardSlug: board,
           onClose: function () { setSelectedTaskId(null); },
@@ -4232,6 +4235,8 @@
         h(DependencyEditor, {
           task: t,
           links, allTasks: props.allTasks,
+          linkTasks: props.data.link_tasks || [],
+          onOpenTask: props.onOpenTask,
           onAddParent: props.onAddParent,
           onRemoveParent: props.onRemoveParent,
           onAddChild: props.onAddChild,
@@ -4738,6 +4743,34 @@
     );
   }
 
+  // One dependency chip: the linked task's title (short id fallback) opens
+  // that task; the × removes the link. Long titles truncate. The SDK has no
+  // Tooltip, so the full title rides aria-label AND a native title= for
+  // pointer users.
+  function DependencyChip(props) {
+    const { t } = useI18n();
+    const linked = props.linked;
+    const label = (linked && linked.title) || props.id;
+    const full = linked && linked.title ? `${linked.title} (${props.id})` : props.id;
+    return h("span", { className: "hermes-kanban-dep-chip" },
+      linked ? h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[linked.status]) }) : null,
+      h("button", {
+        type: "button",
+        className: "hermes-kanban-dep-chip-open",
+        "aria-label": full,
+        title: full,
+        onClick: function () { if (props.onOpen) props.onOpen(props.id); },
+      }, label),
+      h("button", {
+        type: "button",
+        className: "hermes-kanban-dep-chip-x",
+        onClick: function () { props.onRemove(props.id); },
+        "aria-label": tx(t, "removeDependency", "Remove dependency") + ": " + label,
+        title: tx(t, "removeDependency", "Remove dependency"),
+      }, "×"),
+    );
+  }
+
   function DependencyEditor(props) {
     const { t } = useI18n();
     const { task, links, allTasks } = props;
@@ -4749,6 +4782,9 @@
         return tk.id !== task.id && !excludeSet.has(tk.id);
       });
     };
+    // Titles for the chips come from GET /tasks/:id's link_tasks
+    // ({id,title,status}); older backends omit it and chips keep the id.
+    const linkById = new Map((props.linkTasks || []).map(function (lt) { return [lt.id, lt]; }));
     const parentExclude = new Set([task.id, ...(links.parents || [])]);
     const childExclude  = new Set([task.id, ...(links.children || [])]);
 
@@ -4760,15 +4796,8 @@
           (links.parents || []).length === 0
             ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
             : (links.parents || []).map(function (id) {
-                return h("span", { key: id, className: "hermes-kanban-dep-chip" },
-                  id,
-                  h("button", {
-                    type: "button",
-                    className: "hermes-kanban-dep-chip-x",
-                    onClick: function () { props.onRemoveParent(id); },
-                    title: tx(t, "removeDependency", "Remove dependency"),
-                  }, "×"),
-                );
+                return h(DependencyChip, { key: id, id: id, linked: linkById.get(id),
+                  onOpen: props.onOpenTask, onRemove: props.onRemoveParent });
               }),
         ),
       ),
@@ -4798,15 +4827,8 @@
           (links.children || []).length === 0
             ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
             : (links.children || []).map(function (id) {
-                return h("span", { key: id, className: "hermes-kanban-dep-chip" },
-                  id,
-                  h("button", {
-                    type: "button",
-                    className: "hermes-kanban-dep-chip-x",
-                    onClick: function () { props.onRemoveChild(id); },
-                    title: tx(t, "removeDependency", "Remove dependency"),
-                  }, "×"),
-                );
+                return h(DependencyChip, { key: id, id: id, linked: linkById.get(id),
+                  onOpen: props.onOpenTask, onRemove: props.onRemoveChild });
               }),
         ),
       ),

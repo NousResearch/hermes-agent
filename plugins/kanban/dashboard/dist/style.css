@@ -810,6 +810,8 @@
   gap: 0.3rem;
   flex-wrap: wrap;
   flex: 1;
+  /* Let long chip titles truncate instead of widening the row. */
+  min-width: 0;
 }
 .hermes-kanban-deps-empty {
   font-size: 0.7rem;
@@ -824,10 +826,32 @@
   background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm, 0.25rem);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  /* Titles read as prose, not ids. */
+  font-family: inherit;
   font-size: 0.68rem;
   color: var(--color-foreground);
+  /* A long title truncates inside the sidebar instead of widening it. */
+  max-width: 100%;
+  min-width: 0;
 }
+.hermes-kanban-dep-chip .hermes-kanban-dot {
+  flex: 0 0 auto;
+}
+.hermes-kanban-dep-chip-open {
+  appearance: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.hermes-kanban-dep-chip-open:hover { text-decoration: underline; }
 .hermes-kanban-dep-chip-x {
   appearance: none;
   background: transparent;

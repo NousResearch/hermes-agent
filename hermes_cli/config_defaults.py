@@ -1872,6 +1872,10 @@ DEFAULT_CONFIG = {
         # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
         # sdlc-review skill. Disable where every review is done manually from the dashboard.
         "review_dispatch": True,
+        # Record a worker's turn/phase budget as run-scoped task events, readable through
+        # `hermes kanban worker-budget <task> [--run N]` (#111303). Off by default; the
+        # HERMES_KANBAN_WORKER_BUDGET_TELEMETRY env var overrides this.
+        "worker_budget_telemetry": False,
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,

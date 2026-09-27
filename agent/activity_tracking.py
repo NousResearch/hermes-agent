@@ -78,6 +78,13 @@ class ActivityTrackingMixin:
                 heartbeat_current_worker_from_env()
                 # Fold new operator notes into the running turn (OUT-OF-BAND steer).
                 inject_new_comments_from_env(self)
+            # Opt-in worker budget checkpoint (#111303): rides the same liveness traffic so a
+            # running worker's turn/phase budget stays queryable. Self-throttled and silent
+            # when telemetry is off; never breaks the loop.
+            with suppress(Exception):
+                from hermes_cli.kanban_worker_budget import PHASE_TURN, emit
+
+                emit(self, phase=PHASE_TURN)
         if force_persist:
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()

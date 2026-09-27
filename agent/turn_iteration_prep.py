@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import random
 import sys
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict
@@ -96,6 +97,7 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     else:
         return False
     agent._iteration_budget_warning_injected = True
+    agent._iteration_budget_warning_at = time.time()
     return True
 
 

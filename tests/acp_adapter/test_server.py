@@ -748,3 +748,19 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+class TestDisabledToolsetsFilterToolSurface:
+    def test_cmd_tools_strips_configured_disabled_toolsets(self, agent, mock_manager):
+        """``/tools`` lists what the session can call: a config-disabled toolset is absent (real get_tool_definitions)."""
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent._memory_manager = None
+
+        def listed() -> set:
+            return {line.strip().split(":", 1)[0] for line in agent._cmd_tools("", state).splitlines()[1:]}
+
+        state.agent.disabled_toolsets = None
+        assert "execute_code" in listed()
+        state.agent.disabled_toolsets = ["code_execution"]
+        assert "execute_code" not in listed()

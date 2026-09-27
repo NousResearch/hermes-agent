@@ -1,5 +1,8 @@
-"""Anthropic long-context-tier (429) recovery: the retry diagnostics buffered
-during recovery must flush correctly (muted vs. unmuted) on terminal failure."""
+"""Overflow recovery handlers (413, context overflow, Anthropic long-context
+tier 429) must hand the compressor an overhead-aware token estimate that counts
+tool schemas, not a messages-only estimate (LCM issue 441). Also: the retry
+diagnostics buffered during long-context recovery must flush correctly (muted
+vs. unmuted) on terminal failure."""
 
 import pytest
 
@@ -82,6 +85,34 @@ def _prefill():
 _SENTINEL_TOKENS = 987_654
 
 
+def _make_413_error():
+    err = Exception("Request entity too large")
+    err.status_code = 413
+    return err
+
+
+def _make_context_overflow_error():
+    """A 400 the classifier routes to context_overflow."""
+    err = Exception(
+        "Error code: 400 - {'error': {'message': "
+        "\"This endpoint's maximum context length is 128000 tokens. "
+        "However, you requested about 200000 tokens. "
+        "Please reduce the length of the messages.\"}}"
+    )
+    err.status_code = 400
+    return err
+
+
+def _make_prompt_too_long_error():
+    """Anthropic's 'prompt is too long' variant of context overflow."""
+    err = Exception(
+        "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+        "'message': 'prompt is too long: 233153 tokens > 200000 maximum'}}"
+    )
+    err.status_code = 400
+    return err
+
+
 def _make_long_context_tier_error():
     """Build a 429 'extra usage required for long context requests' error."""
     err = Exception(
@@ -124,3 +155,61 @@ def test_long_context_retry_carrier_survives_failure_flush(agent, muted, monkeyp
     agent._flush_status_buffer()
     assert bool(printed) is not muted
     assert observed
+
+
+# A tool schema big enough (~10k tokens) to dwarf the tiny test conversation,
+# so a messages-only estimate cannot reach the floor asserted below.
+_HEAVY_TOOL_DESCRIPTION = "Heavy schema padding. " * 2_000
+_TOOL_OVERHEAD_FLOOR = 5_000
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        pytest.param(_make_413_error, id="413"),
+        pytest.param(_make_context_overflow_error, id="context_overflow"),
+        pytest.param(_make_prompt_too_long_error, id="prompt_too_long"),
+        pytest.param(_make_long_context_tier_error, id="long_context_tier_429"),
+    ],
+)
+def test_overflow_recovery_compresses_with_tool_overhead_counted(agent, make_error):
+    """Each recovery path must pass approx_tokens that include tool-schema
+    overhead: a messages-only estimate under-reports the request, so the
+    compressor sizes its target wrong and the retry overflows again."""
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    agent.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "heavy_tool",
+                "description": _HEAVY_TOOL_DESCRIPTION,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    history = _prefill()
+    assert estimate_messages_tokens_rough(history + [{"role": "user", "content": "hello"}]) < 500
+
+    agent.client.chat.completions.create.side_effect = [
+        make_error(),
+        _mock_response(content="Recovered", finish_reason="stop"),
+    ]
+    with (
+        patch.object(agent, "_compress_context") as mock_compress,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        mock_compress.return_value = (
+            [{"role": "user", "content": "compressed"}],
+            "compressed prompt",
+        )
+        result = agent.run_conversation("hello", conversation_history=history)
+
+    assert result["final_response"] == "Recovered"
+    passed = [c.kwargs.get("approx_tokens") for c in mock_compress.call_args_list]
+    assert passed, "recovery never invoked the compressor"
+    assert any(t is not None and t >= _TOOL_OVERHEAD_FLOOR for t in passed), (
+        f"compressor got messages-only estimates {passed}; tool schemas were not counted"
+    )

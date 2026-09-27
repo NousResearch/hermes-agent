@@ -1,10 +1,12 @@
-"""Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
+"""Tests for agent/context_compressor.py — compression logic, thresholds, and fallbacks."""
 
 import json
 import re
 import sqlite3
 import pytest
 import time
+import httpx
+import openai
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (
@@ -12,14 +14,15 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
-    _COMPRESSION_MARKER_PREFIX,
-    _COMPRESSION_MARKER_TEMPLATE,
     _PRUNE_MIN_CHARS,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
-    _truncate_tool_call_args_json,
 )
+from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from hermes_state import SessionDB
+from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
+
+_REQ = httpx.Request("POST", "http://x")
 
 
 class StubProviderError(Exception):
@@ -133,10 +136,12 @@ class TestSummarizeToolResultClarify:
         summary = _summarize_tool_result("clarify", "{}", content)
 
         # Strictly below the prune floor so a later prune pass can never
-        # re-summarize the preserved answer away (idempotency below).
-        assert len(summary) == _PRUNE_MIN_CHARS - 1
+        # re-summarize the preserved answer away (idempotency below). The exact
+        # length varies with the digit width of the elision marker's counts.
+        assert len(summary) <= _PRUNE_MIN_CHARS - 1
         assert summary.startswith('[clarify] user responded: "AAA')
-        assert summary.endswith("...[truncated]")
+        assert _COMPRESSION_MARKER_PREFIX in summary
+        assert summary.endswith("⟫")
         assert (
             _summarize_tool_result("clarify", "{}", summary)
             == "[clarify] asked user a question"
@@ -1034,6 +1039,113 @@ class TestAuthFailureAborts:
         assert c._last_summary_empty_content_failure is True
 
 
+class TestSustainedOverloadEscalation:
+    """#123167: a sustained summary-provider overload must not guarantee a session wipe.
+
+    One overload aborts so a retry can still win (#115906). But when every attempt keeps
+    aborting, the transcript only grows until the session exits compression_exhausted and
+    the gateway auto-resets — total loss, deferred. After 3 consecutive overload aborts the
+    overload stops being terminal and compress() commits the deterministic fallback instead
+    (the same bounded degrade the repeated-stall ladder takes, #112420).
+    """
+
+    def _err(self):
+        return StubProviderError(
+            "Our servers are currently overloaded. Please try again later.",
+            status_code=503,
+        )
+
+    def _compressor(self, **kwargs):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                **kwargs,
+            )
+        c.summary_model = "test/auxiliary"
+        return c
+
+    @pytest.mark.parametrize("access_error", [False, True], ids=["overload", "403_overloaded"])
+    def test_first_overloads_still_abort_then_third_commits_fallback(self, access_error):
+        c = self._compressor(abort_on_summary_failure=False)
+        # A stale terminal flag from one earlier network failure (only a success clears it) must
+        # not pin the long-lived compressor in abort mode: the latest failure class decides.
+        c._last_summary_network_failure = True
+        msgs = self._msgs(12)
+        err = StubProviderError("Error code: 403 - provider overloaded", status_code=403) if access_error else self._err()
+        with patch("agent.context_compressor.call_llm", side_effect=err):
+            first = c.compress(msgs, current_tokens=999999, force=True)
+            second = c.compress(msgs, current_tokens=999999, force=True)
+            # First two: preserve the transcript unchanged (#115906 semantics).
+            assert first == msgs and second == msgs
+            assert c._last_compress_aborted is True
+            third = c.compress(msgs, current_tokens=999999, force=True)
+
+        if access_error:
+            # An auth/quota error that also says "overloaded" never escalates (#29559).
+            assert third == msgs
+            assert c._last_compress_aborted is True
+            assert c._last_compression_telemetry["failure_class"] == "summary_auth_failure"
+            # ...and never bumps the overload budget, so the next real 503 keeps its grace (#115906).
+            assert c._consecutive_overload_aborts == 0
+            return
+        # Third: sustained overload escalates — bounded fallback beats a deferred total wipe.
+        assert third != msgs
+        assert c._last_compress_aborted is False
+        assert c._last_summary_fallback_used is True
+        assert c._last_summary_dropped_count > 0
+        assert c._last_compression_telemetry["failure_class"] == "summary_overload_degraded"
+
+    def test_overload_budget_survives_a_fresh_compressor_bound_to_the_same_session(self, tmp_path):
+        """Review P1: the N=3 budget must be session-scoped, not object-local.
+
+        The gateway binds a fresh compressor to the existing session on every turn /
+        cache eviction, and restart/resume constructs one too. Each of those used to
+        restart the budget at zero, so a sustained outage never escalated (#123167;
+        same contract as the durable fallback streak, #100185).
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "OVERLOAD_FRESH_BIND"
+        db.create_session(session_id, source="telegram")
+        msgs = self._msgs(12)
+
+        first = self._compressor(abort_on_summary_failure=False)
+        first.bind_session_state(db, session_id)
+        with patch("agent.context_compressor.call_llm", side_effect=self._err()):
+            for _ in range(2):  # exactly two aborts — one below the escalation threshold
+                assert first.compress(msgs, current_tokens=999999, force=True) == msgs
+        assert first._consecutive_overload_aborts == 2
+        assert db.get_compression_overload_streak(session_id) == 2
+
+        # Fresh agent, same session (eviction / restart / API-server request construction).
+        second = self._compressor(abort_on_summary_failure=False)
+        second.bind_session_state(db, session_id)
+        assert second._consecutive_overload_aborts == 2  # inherited, not restarted
+        with patch("agent.context_compressor.call_llm", side_effect=self._err()):
+            third = second.compress(msgs, current_tokens=999999, force=True)
+        # Third consecutive abort IN THE SESSION escalates even though this object saw one.
+        # A fresh object's first overload burns the aux→main one-shot retry, which labels the
+        # attempt aux_model_fallback first; the escalated commit must still say what happened.
+        assert third != msgs
+        assert second._last_summary_fallback_used is True
+        assert second._last_summary_overload_degraded is True
+        assert second._last_compression_telemetry["failure_class"] == "summary_overload_degraded"
+        # The committed degraded fallback settles the budget so recovery gets a fresh run
+        # (the boundary caller records the completed compaction, as compress_context does).
+        second.record_completed_compaction(used_fallback=True)
+        assert db.get_compression_overload_streak(session_id) == 0
+
+    def _msgs(self, n=10):
+        return [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(n)
+        ]
+
+
 class TestSummaryFallbackToMainModel:
     """When ``summary_model`` differs from the main model and the summary LLM
     call fails, the compressor should retry once on the main model before
@@ -1184,6 +1296,63 @@ class TestSummaryFallbackToMainModel:
 
 
 
+
+
+class TestStreamingClosedFailure:
+    """httpcore / httpx premature stream-close errors are transient transport
+    failures, not generic summary errors (#18458): they get the short
+    cooldown and flag a network failure so compress() preserves the session,
+    instead of the long generic cooldown. Drives the real classifier."""
+
+    def _msgs(self):
+        return [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    def _fail_on_main(self, err):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+        with patch("agent.context_compressor.call_llm", side_effect=err), \
+             patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(self._msgs())
+        assert result is None
+        return c
+
+    @pytest.mark.parametrize("message", [
+        "RemoteProtocolError: incomplete chunked read",
+        "RemoteProtocolError: response ended prematurely",
+    ])
+    def test_premature_stream_close_is_transient_network_failure(self, message):
+        closed = self._fail_on_main(Exception(message))
+        generic = self._fail_on_main(Exception("something unexpected broke"))
+
+        assert closed._last_summary_network_failure is True
+        assert generic._last_summary_network_failure is False
+        # Short transient cooldown, strictly below the generic-failure cooldown.
+        assert 1000.0 < closed._summary_failure_cooldown_until < generic._summary_failure_cooldown_until
+
+    def test_codex_stall_is_ladder_timeout_not_terminal_network_failure(self):
+        """#124077: a Codex stream-guard mid-stream stall is a retry-ladder timeout."""
+        from agent.auxiliary_client import _CodexStreamGuard
+        guard = _CodexStreamGuard(None, 300.0)
+        guard.saw_content.set()  # mid-stream: content arrived, then the stream went quiet
+        c = self._fail_on_main(TimeoutError(guard.timeout_message()))
+        assert c._last_summary_network_failure is False
+        assert c._consecutive_timeout_failures == 1
+
+    @pytest.mark.parametrize(
+        "err",
+        [
+            openai.APITimeoutError(request=_REQ),
+            openai.APIConnectionError(message=f"upstream {CODEX_STREAM_STALL_MARKER}", request=_REQ),
+        ],
+        ids=["api_timeout", "connection_error_with_stall_text"],
+    )
+    def test_transport_errors_stay_terminal_network_failure(self, err):
+        """Real transport errors stay terminal (#29559/#94448), even when their text
+        happens to contain the stall marker: only a TimeoutError stall is reclassified."""
+        assert self._fail_on_main(err)._last_summary_network_failure is True
 
 
 class TestAuxModelFallbackSurfacedToCallers:
@@ -2122,130 +2291,43 @@ class TestThresholdTokensCap:
 
 
 
-class TestTruncateToolCallArgsJson:
-    """Regression tests for #11762.
+class TestHistoricalToolCallArgumentsStayCanonical:
+    """#122559: pruning may summarize tool results but never rewrites old tool-call arguments."""
 
-    The previous implementation produced invalid JSON by slicing
-    ``function.arguments`` mid-string, which caused non-retryable 400s from
-    strict providers (observed on MiniMax) and stuck long sessions in a
-    re-send loop. The helper here must always emit parseable JSON whose
-    shape matches the original — shrunken, not corrupted.
-    """
+    def test_old_large_arguments_survive_prune_byte_exact(self):
+        c = ContextCompressor(
+            model="test/model", config_context_length=200_000, protect_first_n=1,
+            protect_last_n=2, quiet_mode=True, tail_mode="legacy",
+        )
+        messages = [{"role": "user", "content": "go"}]
+        originals = {}
+        for k in range(6):
+            args = json.dumps({"path": "a.py", "content": "X" * 3000})
+            originals[f"c{k}"] = args
+            messages += [
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": f"c{k}", "type": "function",
+                    "function": {"name": "write_file", "arguments": args},
+                }]},
+                {"role": "tool", "tool_call_id": f"c{k}", "content": "ok"},
+                {"role": "user", "content": f"u{k}"},
+            ]
+        messages.append({"role": "assistant", "content": "done"})
 
-    def _helper(self):
-        from agent.context_compressor import _truncate_tool_call_args_json
-        return _truncate_tool_call_args_json
-
-
-
-
-
-    def test_non_string_leaves_preserved(self):
-        import json as _json
-        shrink = self._helper()
-        payload = _json.dumps({
-            "retries": 3,
-            "enabled": True,
-            "timeout": None,
-            "items": [1, 2, 3],
-            "note": "z" * 500,
-        })
-        parsed = _json.loads(shrink(payload))
-        assert parsed["retries"] == 3
-        assert parsed["enabled"] is True
-        assert parsed["timeout"] is None
-        assert parsed["items"] == [1, 2, 3]
-        assert parsed["note"].startswith("z" * 200)
-        assert parsed["note"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
-
-
-
-    def test_pass3_emits_valid_json_for_downstream_provider(self):
-        """End-to-end: Pass 3 must never produce the exact failure payload
-        that caused the 400 loop (unterminated string, missing brace)."""
-        import json as _json
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(
-                model="test/model",
-                threshold_percent=0.85,
-                protect_first_n=1,
-                protect_last_n=1,
-                quiet_mode=True,
-            )
-        huge_content = "# Shopping Browser Setup Notes\n\n## Overview\n" + "x " * 400
-        args_payload = _json.dumps({
-            "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
-            "content": huge_content,
-        })
-        assert len(args_payload) > 500  # triggers the Pass-3 shrink
-        messages = [
-            {"role": "user", "content": "please write two files"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "call_1", "type": "function",
-                 "function": {"name": "write_file", "arguments": args_payload}},
-            ]},
-            {"role": "tool", "tool_call_id": "call_1",
-             "content": '{"bytes_written": 727}'},
-            {"role": "user", "content": "ok"},
-            {"role": "assistant", "content": "done"},
-        ]
         result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
-        shrunk = result[1]["tool_calls"][0]["function"]["arguments"]
-        # Must parse — otherwise downstream provider returns 400
-        parsed = _json.loads(shrunk)
-        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].startswith(huge_content[:200])
-        assert parsed["content"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
 
+        seen = {
+            m["tool_calls"][0]["id"]: m["tool_calls"][0]["function"]["arguments"]
+            for m in result if m.get("tool_calls")
+        }
+        assert seen == originals
 
-class TestTruncationMarkerNotImitable:
-    """Regression tests for #83714.
-
-    A model replayed its own history containing the bare
-    ``"...[truncated]"`` marker and, in a later turn, imitated it — writing
-    the literal marker into a *new* tool call's ``new_string`` instead of
-    real content. The compressor-side fix is to stop injecting a marker that
-    looks like something the model itself would plausibly write.
-    """
-
-
-    def test_args_without_a_net_gain_leaf_are_left_byte_identical(self):
-        """Leaves the marker would not shrink, and leaves that merely quote the marker.
-
-        Below the break-even (``head_chars`` + marker) replacing a leaf would grow the payload, and
-        re-serialising alone would rewrite compact wire JSON — both read as "this changed" upstream
-        and are counted as reclaimed pressure.
-        """
-        tiny = json.dumps({"new_string": "y" * 201, "pad": "z" * 320})
-        assert _truncate_tool_call_args_json(tiny) == tiny
-        compact = json.dumps({"new_string": "y" * 201, "pad": "z" * 320}, separators=(",", ":"))
-        assert _truncate_tool_call_args_json(compact) == compact
-        # Separator whitespace added by the re-serialise can exceed a single leaf's saving.
-        many_keys = json.dumps(
-            {**{f"k{i}": i for i in range(300)}, "big": "y" * 426}, separators=(",", ":")
-        )
-        assert _truncate_tool_call_args_json(many_keys) == many_keys
-
-        # The guard keys on the marker being the whole tail, so the imitation shape #83714
-        # describes — replayed head+marker followed by new content — is still shrinkable.
-        for leaf in (
-            "x" * 1000 + _COMPRESSION_MARKER_PREFIX + " 5 of 9⟫" + "y" * 500,
-            "x" * 200 + _COMPRESSION_MARKER_PREFIX + " 5 of 9 chars omitted⟫" + "y" * 5000,
-        ):
-            out = _truncate_tool_call_args_json(json.dumps({"new_string": leaf}))
-            assert json.loads(out)["new_string"] == "x" * 200 + _COMPRESSION_MARKER_TEMPLATE.format(
-                omitted=len(leaf) - 200, total=len(leaf)
-            )
-
-    def test_shrunken_leaf_is_head_plus_marker_and_a_fixed_point(self):
-        """Re-shrinking must be a no-op: the marker's counts are its anti-imitation value."""
-        payload = json.dumps({"content": "x" * 2000})
-        once = _truncate_tool_call_args_json(payload)
-        assert len(once) < len(payload)
-        assert json.loads(once)["content"] == "x" * 200 + _COMPRESSION_MARKER_TEMPLATE.format(
-            omitted=1800, total=2000
-        )
-        assert _truncate_tool_call_args_json(once) == once
+        # Full args are redacted before the summarizer cut: a long PEM straddling any pre-redaction
+        # window (behind a shorter one that redaction shrinks) must not leak key body into the summary.
+        pem = "-----BEGIN RSA PRIVATE KEY-----\n{}\n-----END RSA PRIVATE KEY-----"
+        leak_args = json.dumps({"a": pem.format("K" * 3200), "b": pem.format("L" * 6500)})
+        rendered = c._render_tool_call_for_summary({"function": {"name": "write_file", "arguments": leak_args}})
+        assert "KKKK" not in rendered and "LLLL" not in rendered and "BEGIN RSA" not in rendered
 
 
 class TestLazyContextResolution:

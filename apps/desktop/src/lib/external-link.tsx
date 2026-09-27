@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { $alwaysExternalLinks } from '@/store/external-links'
 
 import { resolveBrandIcon } from './brand-icon'
 import { cn } from './utils'
@@ -103,10 +104,19 @@ export function urlSlugTitleLabel(value: string): string {
       continue
     }
 
-    const titled = cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
+    // Title-case word slugs (`some-guide` → `Some Guide`), but keep the
+    // exact casing of a separator-less token that looks like a
+    // case-sensitive identifier — it carries a digit, a dot, or mixed case,
+    // as in a release tag (`v1.0.1`) or a filename (`README.md`) — so the
+    // link never invents a different identifier. A plain lowercase word
+    // (`quantumcomputing` → `Quantumcomputing`) still title-cases. (#121321)
+    const looksLikeIdentifier = /\d/.test(cleaned) || /[A-Z]/.test(cleaned) || cleaned.includes('.')
 
-    if (titled.length >= 4) {
-      return titled
+    const label =
+      looksLikeIdentifier && !cleaned.includes(' ') ? cleaned : cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
+
+    if (label.length >= 4) {
+      return label
     }
   }
 
@@ -244,7 +254,8 @@ export function hudForcesNativeLinks(search = typeof window === 'undefined' ? ''
  *
  * Everything that ISN'T a web page — `mailto:`, `file:`, a custom scheme — has
  * no business in the webview and always hands off to the OS. The HUD has no
- * browser pane, so it always takes the OS path.
+ * browser pane, so it always takes the OS path. The "Always open links in
+ * external browser" setting (`$alwaysExternalLinks`) sends every click there.
  */
 export function openLink(href: string, options: { native?: boolean } = {}): void {
   const target = normalizeExternalUrl(href)
@@ -255,6 +266,7 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
 
   if (
     options.native ||
+    $alwaysExternalLinks.get() ||
     isConnectorAuthorizationLink(target) ||
     hudForcesNativeLinks() ||
     !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')

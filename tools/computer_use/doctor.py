@@ -319,7 +319,7 @@ def cua_daemon_units(config_dir: Optional[str] = None) -> List[Tuple[str, str, s
             continue
         for name in names:
             try:
-                with open(os.path.join(directory, name), encoding="utf-8", errors="replace") as fh:
+                with open(os.path.join(directory, name), encoding="utf-8-sig", errors="replace") as fh:
                     text = fh.read()
             except OSError:
                 continue

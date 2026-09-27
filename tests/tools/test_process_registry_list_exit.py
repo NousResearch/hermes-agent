@@ -9,11 +9,49 @@ import signal
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("posix")
+def test_list_leaves_live_reader_as_completion_owner():
+    from tools.process_registry import ProcessRegistry, ProcessSession
+
+    registry = ProcessRegistry()
+    session = ProcessSession(
+        id="proc_owned_reader",
+        command="owned-reader",
+        task_id="owner-task",
+        owner_task_id="owner-owner",
+        session_key="owner-session",
+        started_at=time.time(),
+        notify_on_complete=True,
+    )
+    session.process = cast(Any, SimpleNamespace(
+        poll=lambda: 0, stdout=None, stderr=None, stdin=None,
+    ))
+    session._reader_selectable = True
+    session._reader_thread = cast(Any, SimpleNamespace(is_alive=lambda: True))
+    registry._running[session.id] = session
+
+    listed = registry.list_sessions(session_key="owner-session")
+
+    assert listed[0]["status"] == "exited"
+    assert session._reader_finish_requested.is_set()
+    assert session.id in registry._running
+    assert registry.completion_queue.empty()
+
+    session.append_output("owner-output")
+    registry._move_to_finished(session)
+    event = registry.completion_queue.get_nowait()
+    assert (event["owner_task_id"], event["output"]) == (
+        "owner-owner", "owner-output",
+    )
+
+
+@pytest.mark.platforms("linux")
 def test_list_reconciles_real_exit_without_consuming_owned_result(tmp_path):
     # A disposable subreaper owns even the orphaned writer; no global pytest
     # process state is changed, and every fixture child is reaped on failure.

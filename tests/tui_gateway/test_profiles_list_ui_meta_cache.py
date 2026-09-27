@@ -17,13 +17,11 @@ import pytest
 import tui_gateway.server as srv
 from tui_gateway import profile_roster_cache as cache
 
-
 @pytest.fixture(autouse=True)
 def _clear_memo():
     cache.invalidate()
     yield
     cache.invalidate()
-
 
 @pytest.fixture
 def home(tmp_path, monkeypatch) -> Path:
@@ -37,11 +35,9 @@ def home(tmp_path, monkeypatch) -> Path:
         "_ui_meta_revisions:\n  hermes-bots: 1\n", encoding="utf-8")
     return tmp_path
 
-
 def _row(name="bob", **params):
     envelope = srv._methods["profiles.list"](1, {"include_sessions": False, **params})
     return next(p for p in envelope["result"]["profiles"] if p["name"] == name)
-
 
 def test_the_cas_writer_round_trips_through_the_listing(home):
     """The real write path: profiles.configure reads the raw document, mutates and writes it back."""
@@ -58,7 +54,6 @@ def test_the_cas_writer_round_trips_through_the_listing(home):
     assert row["ui_meta"]["hermes-bots"]["title"] == "Bobby"
     assert row["ui_meta_revisions"]["hermes-bots"] == before + 1
 
-
 def test_an_avatar_added_without_touching_profile_yaml_is_still_seen(home):
     """``has_avatar`` stays live — that is why it is not part of the cached value."""
     assert _row()["has_avatar"] is False
@@ -68,7 +63,3 @@ def test_an_avatar_added_without_touching_profile_yaml_is_still_seen(home):
     (assets / "avatar.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
     assert _row()["has_avatar"] is True
-
-
-
-

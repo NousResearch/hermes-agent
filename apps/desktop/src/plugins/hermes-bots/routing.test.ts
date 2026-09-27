@@ -256,10 +256,13 @@ describe('requestForBot rides the bot’s own source', () => {
       soul: '# hi'
     })
 
-    expect(hostMock.requestProfile).toHaveBeenCalledWith(MOXIE_ROUTE, 'profiles.configure', {
-      name: 'default',
-      soul: '# hi'
-    })
+    expect(hostMock.requestProfile).toHaveBeenCalledWith(
+      MOXIE_ROUTE,
+      'profiles.configure',
+      { name: 'default', soul: '# hi' },
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
   })
 
   it('fails closed rather than falling back to the ambient request', async () => {

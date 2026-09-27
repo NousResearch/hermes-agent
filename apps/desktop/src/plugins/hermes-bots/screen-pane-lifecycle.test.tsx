@@ -197,6 +197,7 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
     }
 
     const presented = (params as { viewer_id?: string } | undefined)?.viewer_id
+
     const viewer_id =
       presented === 'this-viewer' ? 'this-viewer' : minted++ === 0 ? 'this-viewer' : 'replacement-viewer'
 
@@ -218,8 +219,10 @@ it('re-attaches in watch mode after the bridge evicts us with 4000, with a bound
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(sockets).toHaveLength(1))
   await act(async () => {})
+
   const observes = () =>
     vi.mocked(displayRequest).mock.calls.filter(([, method]) => method === 'display.observe').length
+
   expect(observes()).toBe(1)
 
   act(() => {

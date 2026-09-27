@@ -91,7 +91,12 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
         return cached
     try:
         probe = subprocess.run(
-            [command, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            [command, "--help"],
+            # Explicit codec because text=True alone decodes with the
+            # locale default and crashes on non-ASCII help text under
+            # GBK/CP932 locales.
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=5,
             stdin=subprocess.DEVNULL,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -246,7 +251,7 @@ def _fs_read_text_file(params: dict[str, Any], cwd: str) -> Any:
     if block_error := get_read_block_error(str(path)):
         raise PermissionError(block_error)
     try:
-        content = path.read_text(encoding="utf-8")
+        content = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         content = ""
     line, limit = params.get("line"), params.get("limit")
@@ -393,7 +398,9 @@ class CopilotACPClient:
                 sink(line)
 
         threading.Thread(target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True).start()
-        threading.Thread(target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True).start()
+        stderr_pump = threading.Thread(
+            target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True)
+        stderr_pump.start()
         request_ids = iter(range(1, 1 << 62))
         # One budget for the WHOLE session (initialize + session/new + any prompt), not per
         # request: a hung CLI must not get 2x the caller's timeout on the foreground /model path.
@@ -419,11 +426,14 @@ class CopilotACPClient:
                     err = msg.get("error") or {}
                     raise RuntimeError(f"Copilot ACP {method} failed: {err.get('message') or err}")
                 return msg.get("result")
-            stderr_text = "\n".join(stderr_tail).strip()
-            if proc.poll() is not None and stderr_text:
+            if proc.poll() is not None:
+                # The pump can still hold the crash text when poll() first sees the exit; reading
+                # it too early turned a dead CLI into a TimeoutError, which retries differently.
+                stderr_pump.join(timeout=1.0)
+                stderr_text = "\n".join(stderr_tail).strip()
                 if _is_gh_copilot_deprecation_message(stderr_text):
                     raise RuntimeError(_DEPRECATED_CLI_ERROR + stderr_text)
-                raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
+                raise RuntimeError(f"Copilot ACP process exited early: {stderr_text or f'exit code {proc.returncode}'}")
             raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
 
         try:

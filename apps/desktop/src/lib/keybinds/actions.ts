@@ -44,6 +44,17 @@ const PROFILE_SWITCH_ACTIONS: KeybindActionMeta[] = Array.from({ length: PROFILE
   defaults: [comboForSlot(i + 1)]
 }))
 
+// Positional tab-slot jumps — activate the Nth visible tab in the focused
+// zone's tab strip. No default chords: ⌘1…⌘9 belong to profile switching
+// (#92569), and users who want positional tabs can bind chords in the panel.
+export const TAB_SLOT_COUNT = 9
+
+const TAB_SLOT_ACTIONS: KeybindActionMeta[] = Array.from({ length: TAB_SLOT_COUNT }, (_, i) => ({
+  id: `view.tabSlot.${i + 1}`,
+  category: 'view' as const,
+  defaults: []
+}))
+
 // Positional jumps — ^1…^9, mirroring profiles' ⌘1…⌘9.
 export const SESSION_SLOT_COUNT = 9
 
@@ -61,14 +72,19 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // Open WebUI, and Cherry Studio all ship the same chord). Opens the pill's
   // live dropdown on the pane under the pointer, else the active composer.
   { id: 'composer.modelPicker', category: 'composer', defaults: ['mod+shift+m'] },
-  // Voice conversation toggle. Matches the documented `voice.record_key`
-  // (Ctrl+B). On macOS that's literally ⌃B — distinct from the ⌘B sidebar
-  // toggle. Off macOS `ctrl` folds to `mod`, which IS the ⌘B/Ctrl+B sidebar
-  // chord, so ship it unbound there (rebindable in the panel) rather than
-  // stealing the long-standing sidebar binding.
-  { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : [] },
+  // Voice conversation toggle. On macOS that's literally ⌃B — distinct from
+  // the ⌘B sidebar toggle. Off macOS `ctrl` folds to `mod`, so ⌃B IS the
+  // sidebar chord. Ship ⌃⌥V there ("v" for voice) instead of stealing mod+b
+  // or leaving the action unbound.
+  { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : ['mod+alt+v'] },
+  // Dictation is intentionally unbound: it is available for users who prefer
+  // a keyboard trigger without claiming a chord from text entry by default.
+  { id: 'composer.dictate', category: 'composer', defaults: [] },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
+  // Tab-slot actions BEFORE profile switchers so a user rebinding a chord to
+  // a tab slot wins the combo-index race (first action to claim a combo wins).
+  ...TAB_SLOT_ACTIONS,
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },
   ...PROFILE_SWITCH_ACTIONS,
   { id: 'profile.next', category: 'profiles', defaults: ['mod+shift+]'] },
@@ -91,6 +107,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
+  { id: 'conversation.scrollPageUp', category: 'session', defaults: ['pageup'] },
+  { id: 'conversation.scrollPageDown', category: 'session', defaults: ['pagedown'] },
   // Archive the active session. Ships unbound (like `session.togglePin`) so an
   // irreversible-feeling, mouse-only action doesn't silently claim a chord for
   // every user — surfaced in the panel for opt-in binding (the issue suggests

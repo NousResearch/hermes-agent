@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import os
@@ -764,7 +765,7 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
 
 
 def _write_profile_cfg(home: Path, cwd: str | None) -> Path:
-    import yaml
+    import hermes_yaml as yaml
 
     home.mkdir(parents=True, exist_ok=True)
     cfg = {"terminal": {"cwd": cwd}} if cwd is not None else {}
@@ -1022,8 +1023,58 @@ def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
     home = _write_profile_cfg(tmp_path / "home-c", str(profile_b))
 
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
-    result = server._completion_cwd({"cwd": str(explicit), "profile": "ef-design"})
+    result = server._completion_cwd(
+        {"cwd": str(explicit), "cwd_explicit": True, "profile": "ef-design"}
+    )
     assert result == str(explicit)
+
+
+def test_completion_cwd_profile_overrides_inherited_workspace(monkeypatch, tmp_path):
+    """Issue #52589: the desktop seeds a new chat's cwd from its app-global workspace
+    (the launch profile's configured directory) — that inherited default must NOT
+    override the target profile's own ``terminal.cwd``."""
+    launch_ws = tmp_path / "workspace"
+    launch_ws.mkdir()
+    profile_ws = tmp_path / "products"
+    profile_ws.mkdir()
+    home = _write_profile_cfg(tmp_path / "home-dev", str(profile_ws))
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+    # No cwd_explicit: the client cwd is the inherited app-global workspace.
+    assert (
+        server._completion_cwd({"profile": "dev", "cwd": str(launch_ws)}) == str(profile_ws)
+    )
+
+
+def test_completion_cwd_explicit_pick_wins_over_profile(monkeypatch, tmp_path):
+    """Issue #52589 regression guard: a deliberate workspace pick (``cwd_explicit``)
+    still beats the profile's configured ``terminal.cwd``."""
+    explicit = tmp_path / "explicit-lane"
+    explicit.mkdir()
+    profile_ws = tmp_path / "products"
+    profile_ws.mkdir()
+    home = _write_profile_cfg(tmp_path / "home-dev", str(profile_ws))
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+    assert (
+        server._completion_cwd(
+            {"profile": "dev", "cwd": str(explicit), "cwd_explicit": True}
+        )
+        == str(explicit)
+    )
+
+
+def test_completion_cwd_inherited_workspace_without_profile_cfg_kept(monkeypatch, tmp_path):
+    """An inherited workspace stays when the target profile has NO configured
+    terminal.cwd — the profile override only applies when one exists (#52589)."""
+    launch_ws = tmp_path / "workspace"
+    launch_ws.mkdir()
+    no_cfg_home = tmp_path / "home-plain"
+    no_cfg_home.mkdir()
+    (no_cfg_home / "config.yaml").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: no_cfg_home if name else None)
+    assert server._completion_cwd({"profile": "plain", "cwd": str(launch_ws)}) == str(launch_ws)
 
 
 def test_terminal_task_cwd_local_backend_uses_session_cwd(monkeypatch, tmp_path):
@@ -2365,6 +2416,60 @@ def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
     assert server._load_enabled_toolsets("tui") == ["coding", "figma", "project"]
 
 
+def test_load_enabled_toolsets_honors_disabled_project_on_focus_path(monkeypatch):
+    """#54433: focus/coding posture must not re-add `project` when disabled."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
+
+    result = server._load_enabled_toolsets("tui")
+    assert result == ["coding", "figma"]
+    assert "project" not in result
+
+
+def test_load_enabled_toolsets_honors_disabled_project_on_configured_fallback(
+    monkeypatch,
+):
+    """#54433: configured/fallback path must not re-add disabled `project`."""
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+    import hermes_cli.tools_config as tools_config_mod
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: None)
+    monkeypatch.setattr(
+        tools_config_mod,
+        "_get_platform_tools",
+        lambda *_args, **_kwargs: {"memory", "web"},
+    )
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
+
+    result = server._load_enabled_toolsets("tui")
+    assert result == ["memory", "web"]
+    assert "project" not in result
+
+
+def test_with_session_toolsets_keeps_desktop_ui_when_project_disabled(monkeypatch):
+    """#54433: a disabled name is subtracted from the client-surface fold-in, but
+    ``desktop_ui`` — the client's own control surface — survives the subtraction."""
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["project"])
+
+    assert server._with_session_toolsets(["memory"], "desktop") == [
+        "memory",
+        "desktop_ui",
+    ]
+    # Nothing disabled: the fold-in keeps both client-surface toolsets.
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: None)
+    assert server._with_session_toolsets(["memory"], "desktop") == [
+        "memory",
+        "desktop_ui",
+        "project",
+    ]
+
+
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
     monkeypatch.setitem(
@@ -2460,6 +2565,33 @@ def test_load_enabled_toolsets_all_env_means_all(monkeypatch):
     assert server._load_enabled_toolsets() is None
 
 
+def test_load_disabled_toolsets_reads_agent_config(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"agent": {"disabled_toolsets": ["browser"]}},
+    )
+
+    assert server._load_disabled_toolsets() == ["browser"]
+
+
+def test_load_disabled_toolsets_none_when_unset_or_config_fails(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"agent": {"disabled_toolsets": []}})
+    assert server._load_disabled_toolsets() is None
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    assert server._load_disabled_toolsets() is None
+
+    monkeypatch.setattr(
+        config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    assert server._load_disabled_toolsets() is None
+
+
 
 
 def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, capsys):
@@ -2512,9 +2644,29 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
             "context": "resume",
             "name": "search_files",
             "role": "tool",
+            "tool_call_id": history[2]["tool_call_id"],
         },
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},
+    ]
+
+
+def test_history_to_messages_types_the_failed_turn_boundary_for_resume():
+    """Desktop keys the failed-turn boundary on ``display_kind`` (a room poller must not post it
+    as the member's reply); rows written before the closer typed it are typed on read."""
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+
+    history = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": FAILED_TURN_NOTICE, "display_kind": FAILED_TURN_DISPLAY_KIND},
+        {"role": "user", "content": "b"},
+        {"role": "assistant", "content": PARTIAL_FAILED_TURN_NOTICE},  # legacy untyped row
+        {"role": "user", "content": "c"},
+        {"role": "assistant", "content": f"Quoting Hermes: {FAILED_TURN_NOTICE}"},  # a real reply
+    ]
+
+    assert [m.get("display_kind") for m in server._history_to_messages(history)] == [
+        None, FAILED_TURN_DISPLAY_KIND, None, FAILED_TURN_DISPLAY_KIND, None, None,
     ]
 
 
@@ -4344,6 +4496,29 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     assert captured["platform"] == "tui"
 
 
+def test_make_agent_forwards_agent_disabled_toolsets(monkeypatch):
+    """``agent.disabled_toolsets`` must reach AIAgent in gateway sessions too: only the AIAgent
+    filter strips a toolset out of composite defaults (``hermes-cli``), which the gateway's
+    enabled-list resolver can't reach into (#44499)."""
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["browser"])
+
+    server._make_agent("sid", "session-key")
+
+    assert captured["disabled_toolsets"] == ["browser"]
+
+
+def test_make_agent_disabled_toolsets_none_by_default(monkeypatch):
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: None)
+
+    server._make_agent("sid", "session-key")
+
+    assert captured["disabled_toolsets"] is None
+
+
 def _capture_make_agent_kwargs(monkeypatch) -> dict:
     """Stub AIAgent so ``server._make_agent`` records the kwargs it was built with."""
     captured = {}
@@ -4524,6 +4699,38 @@ def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
     kwargs = server._background_agent_kwargs(agent, "task-id")
 
     assert kwargs["fallback_model"] == []
+
+
+def test_background_agent_kwargs_forwards_agent_disabled_toolsets(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="anthropic",
+        _fallback_chain=[],
+        disabled_toolsets=["browser"],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["disabled_toolsets"] == ["browser"]
+
+
+def test_background_agent_kwargs_falls_back_to_config_disabled_toolsets(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="anthropic",
+        _fallback_chain=[],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["browser"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["disabled_toolsets"] == ["browser"]
 
 
 def test_startup_runtime_resolves_short_alias_without_network(monkeypatch):
@@ -8223,7 +8430,7 @@ def test_config_set_yolo_stale_session_id_is_refused_not_process_scoped(monkeypa
 
 def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
     """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
@@ -8254,7 +8461,7 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
 def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # Point the canonical resolver (load_config → env HERMES_HOME) at the
@@ -8274,7 +8481,7 @@ def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
 def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_value(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # _load_approval_mode delegates to the canonical resolver in
@@ -8293,7 +8500,7 @@ def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_valu
 
 
 def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # See fail-safe test above: the canonical resolver reads via
@@ -8312,7 +8519,7 @@ def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
 def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # config.set writes via server._hermes_home, but the post-write
@@ -8347,7 +8554,7 @@ def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch
     quoted YAML value kept the petdex mascot enabled against the operator's
     explicit intent.
     """
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -8426,7 +8633,7 @@ def test_config_set_approval_mode_rejects_unknown_value():
 
 def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):
     """An explicit value pins global approvals.mode regardless of prior state."""
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
@@ -8668,7 +8875,7 @@ def test_config_get_busy_survives_non_dict_display(monkeypatch):
 
 
 def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"display": "broken"}))
@@ -8688,7 +8895,7 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
 
 
 def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -8718,7 +8925,7 @@ def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
 
 
 def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -8737,7 +8944,7 @@ def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
 
 
 def test_config_set_section_clears_override_on_empty_value(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -11958,7 +12165,7 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
         def interrupt(self, *args, **kwargs):
             calls["interrupt_called"] = True
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    server._sessions["sid"] = _session(agent=_Agent(), running=True)
     try:
         resp = server.handle_request(
             {
@@ -11975,6 +12182,64 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
     assert resp["result"]["text"] == "also check auth.log"
     assert calls["steer_text"] == "also check auth.log"
     assert "interrupt_called" not in calls  # must NOT interrupt
+
+
+class _RecordingSteerAgent:
+    def __init__(self):
+        self.steered = []
+
+    def steer(self, text):
+        self.steered.append(text)
+        return True
+
+
+def test_session_steer_on_idle_session_is_rejected_not_parked():
+    """#64578: with no live turn a steer has no tool call to ride. Accepting it parked the text in
+    the agent's pending-steer slot, where the next turn's pre-API drain spliced it after an OLD tool
+    row. It must come back 'rejected' (clients then send it as a normal prompt) and never reach
+    agent.steer()."""
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=False)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.steer", "params": {"session_id": "sid", "text": "check the logs"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "rejected", resp
+    assert agent.steered == []
+
+
+def test_steer_slash_on_idle_session_sends_as_next_turn():
+    """#64578: idle `/steer <text>` via command.dispatch must go out as a normal next-turn message
+    with a notice saying so, not claim "Steer queued" while stashing the text on the agent."""
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=False)
+    try:
+        res = server._methods["command.dispatch"](
+            "1", {"name": "steer", "arg": "check the logs", "session_id": "sid"})
+    finally:
+        server._sessions.pop("sid", None)
+
+    result = res["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "check the logs"
+    assert result.get("notice")
+    assert agent.steered == []
+
+
+def test_steer_slash_during_live_turn_still_steers():
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=True)
+    try:
+        res = server._methods["command.dispatch"](
+            "1", {"name": "steer", "arg": "check the logs", "session_id": "sid"})
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert res["result"]["type"] == "exec"
+    assert agent.steered == ["check the logs"]
 
 
 def test_session_steer_rejects_empty_text():
@@ -13442,6 +13707,151 @@ def test_interrupt_only_clears_own_session_pending():
         server._sessions.pop("sid_a", None)
         server._sessions.pop("sid_b", None)
         server_requests.reset_for_tests()
+
+
+def _wake_lease_double():
+    """Owner-gated pause/resume stand-in: only the lease holder can re-arm."""
+    from tools import wake_word
+
+    state = {"lease": None, "paused": False, "resumed": []}
+
+    def pause_listening(*, owner):
+        if state["lease"] is not owner:
+            return False
+        state["paused"] = True
+        return True
+
+    def resume_listening(*, owner):
+        if state["lease"] is not owner:
+            return False
+        state["paused"] = False
+        state["resumed"].append(owner)
+        return True
+
+    return wake_word, state, pause_listening, resume_listening
+
+
+def test_accepted_interrupt_resumes_wake_mismatch_does_not(monkeypatch):
+    """An accepted interrupt re-arms the caller's paused detector; a hosted-task mismatch does not."""
+    wake_word, state, pause_listening, resume_listening = _wake_lease_double()
+    owner = types.SimpleNamespace(_closed=False)
+    state["lease"] = owner
+    session = _session(
+        agent=types.SimpleNamespace(interrupt=lambda: None),
+        running=True,
+        _hosted_room_task={"task_id": "active"},
+    )
+    server._sessions["sid"] = session
+    monkeypatch.setattr(wake_word, "pause_listening", pause_listening)
+    monkeypatch.setattr(wake_word, "resume_listening", resume_listening)
+    monkeypatch.setattr(server, "_voice_wake_owner", None)
+    try:
+        paused = _dispatch_sync(
+            {"id": "pause", "method": "wake.pause", "params": {}}, transport=owner
+        )
+        mismatch = _dispatch_sync(
+            {
+                "id": "mismatch",
+                "method": "session.interrupt",
+                "params": {"session_id": "sid", "expected_hosted_task_id": "stale"},
+            },
+            transport=owner,
+        )
+        assert paused["result"]["paused"] is True
+        assert mismatch["result"] == {"status": "not_interrupted", "interrupted": False}
+        assert state["paused"] is True
+        assert state["resumed"] == []
+
+        accepted = _dispatch_sync(
+            {"id": "ok", "method": "session.interrupt", "params": {"session_id": "sid"}},
+            transport=owner,
+        )
+        assert accepted.get("result", {}).get("status") == "interrupted"
+        assert state == {"lease": owner, "paused": False, "resumed": [owner]}
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_interrupt_error_after_tts_stop_still_resumes_wake(monkeypatch):
+    """TTS is cut before session lookup and the compute-host call; a later error must still re-arm."""
+    wake_word, state, pause_listening, resume_listening = _wake_lease_double()
+    owner = types.SimpleNamespace(_closed=False)
+    state["lease"] = owner
+    session = _session(agent=types.SimpleNamespace(interrupt=lambda: None), running=True)
+    server._sessions["sid"] = session
+    monkeypatch.setattr(wake_word, "pause_listening", pause_listening)
+    monkeypatch.setattr(wake_word, "resume_listening", resume_listening)
+    monkeypatch.setattr(server, "_voice_wake_owner", None)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
+
+    def _host_failed(*_args, **_kwargs):
+        raise RuntimeError("host failed")
+
+    monkeypatch.setattr(server, "_interrupt_session_turn", _host_failed)
+    try:
+        paused = _dispatch_sync(
+            {"id": "pause", "method": "wake.pause", "params": {}}, transport=owner
+        )
+        missing = _dispatch_sync(
+            {"id": "missing", "method": "session.interrupt", "params": {"session_id": "gone"}},
+            transport=owner,
+        )
+        assert paused["result"]["paused"] is True
+        assert missing["error"]["code"] == 4001
+        assert state["paused"] is False
+        assert state["resumed"] == [owner]
+
+        _dispatch_sync({"id": "pause-2", "method": "wake.pause", "params": {}}, transport=owner)
+        failed = _dispatch_sync(
+            {"id": "host", "method": "session.interrupt", "params": {"session_id": "sid"}},
+            transport=owner,
+        )
+        assert failed["error"]["code"] == 5019
+        assert state["paused"] is False
+        assert state["resumed"] == [owner, owner]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_interrupt_resumes_voice_wake_owner_not_a_foreign_lease(monkeypatch):
+    """Interrupt resumes a voice-owned pause even when the caller differs, and leaves a foreign lease paused."""
+    wake_word, state, pause_listening, resume_listening = _wake_lease_double()
+    voice_owner = types.SimpleNamespace(_closed=False, role="voice")
+    caller = types.SimpleNamespace(_closed=False, role="caller")
+    foreign = types.SimpleNamespace(_closed=False, role="foreign")
+    state["lease"] = voice_owner
+    session = _session(agent=types.SimpleNamespace(interrupt=lambda: None), running=True)
+    server._sessions["sid"] = session
+    monkeypatch.setattr(wake_word, "pause_listening", pause_listening)
+    monkeypatch.setattr(wake_word, "resume_listening", resume_listening)
+    monkeypatch.setattr(server, "_voice_wake_owner", voice_owner)
+    try:
+        paused = _dispatch_sync(
+            {"id": "pause", "method": "wake.pause", "params": {}}, transport=voice_owner
+        )
+        accepted = _dispatch_sync(
+            {"id": "ok", "method": "session.interrupt", "params": {"session_id": "sid"}},
+            transport=caller,
+        )
+        assert paused["result"]["paused"] is True
+        assert accepted.get("result", {}).get("status") == "interrupted"
+        assert state["paused"] is False
+        assert any(item is voice_owner for item in state["resumed"])
+        assert all(item is not caller for item in state["resumed"])
+
+        state["lease"] = foreign
+        state["paused"] = True
+        state["resumed"] = []
+        monkeypatch.setattr(server, "_voice_wake_owner", None)
+        foreign_held = _dispatch_sync(
+            {"id": "foreign", "method": "session.interrupt", "params": {"session_id": "sid"}},
+            transport=caller,
+        )
+        assert foreign_held.get("result", {}).get("status") == "interrupted"
+        assert state["paused"] is True
+        assert state["resumed"] == []
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
@@ -14937,7 +15347,7 @@ def test_session_delete_refuses_active_session(monkeypatch):
     called: list[str] = []
 
     class _DB:
-        def delete_session(self, sid, sessions_dir=None):
+        def delete_session(self, sid, sessions_dir=None, **_kw):
             called.append(sid)
             return True
 
@@ -14986,7 +15396,7 @@ def test_session_delete_fails_closed_when_active_snapshot_raises(monkeypatch):
 
 def test_session_delete_returns_4007_when_missing(monkeypatch):
     class _DB:
-        def delete_session(self, sid, sessions_dir=None):
+        def delete_session(self, sid, sessions_dir=None, **_kw):
             return False
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -15001,7 +15411,7 @@ def test_session_delete_returns_4007_when_missing(monkeypatch):
 
 def test_session_delete_propagates_db_exception(monkeypatch):
     class _DB:
-        def delete_session(self, sid, sessions_dir=None):
+        def delete_session(self, sid, sessions_dir=None, **_kw):
             raise RuntimeError("disk full")
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -15022,7 +15432,7 @@ def test_session_delete_success_returns_deleted_id(monkeypatch):
     captured: dict = {}
 
     class _DB:
-        def delete_session(self, sid, sessions_dir=None):
+        def delete_session(self, sid, sessions_dir=None, **_kw):
             captured["sid"] = sid
             captured["sessions_dir"] = sessions_dir
             return True
@@ -15249,7 +15659,7 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
         def __init__(self, db_path=None):
             captured["db_path"] = db_path
 
-        def delete_session(self, sid, sessions_dir=None):
+        def delete_session(self, sid, sessions_dir=None, **_kw):
             captured["sid"] = sid
             captured["sessions_dir"] = sessions_dir
             return True
@@ -15621,7 +16031,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         resp = server.handle_request(
             {
                 "id": "1",
-                "method": "session.branch",
+                "method": "session.branch_whole",
                 "params": {"session_id": "parent", "name": "forked"},
             }
         )
@@ -15631,6 +16041,8 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # The branch row is self-describing: stamped with the parent's owning
         # profile, not left NULL for aggregators to mis-tag as "default".
         assert seen.get("profile_name") == "mlperf"
+        assert resp["result"].get("messages_omitted") is True
+        assert "messages" not in resp["result"]
         assert seen.get("title") == (seen["created"], "forked")
         assert len(seen["msgs"]) == 1
         assert seen.get("launch") is None
@@ -15736,6 +16148,61 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert server._sessions[runtime_sid]["pending_title"] is None
 
     server._sessions.pop(runtime_sid, None)
+
+
+def test_session_branch_stored_copies_parent_history_without_returning_transcript(monkeypatch):
+    """Whole-session desktop branches read the parent in the gateway, not in the renderer."""
+
+    class _Scope:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class _FakeDB:
+        def get_resume_conversations(self, key):
+            assert key == "parent"
+            return [], [
+                {"role": "user", "content": "first question", "timestamp": 1},
+                {"role": "assistant", "content": "first answer", "timestamp": 2},
+            ]
+
+    class _FakeAgent:
+        model = "test-model"
+
+    seen: dict = {}
+    db = _FakeDB()
+
+    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(db))
+    monkeypatch.setattr(
+        server,
+        "_seed_branch_row",
+        lambda _record, _key, _parent, history, *_args: seen.update(history=list(history)),
+    )
+    monkeypatch.setattr(server, "_make_agent", lambda *_args, **_kwargs: _FakeAgent())
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {"model": "test-model"})
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.branch_stored",
+            "params": {
+                "cols": 96,
+                "parent_session_id": "parent",
+                "source": "desktop",
+            },
+        }
+    )
+
+    assert "result" in resp, resp
+    assert [message["content"] for message in seen["history"]] == ["first question", "first answer"]
+    assert resp["result"]["message_count"] == 2
+    assert resp["result"].get("messages_omitted") is True
+    assert "messages" not in resp["result"]
 
 
 def test_session_create_branch_seed_failure_does_not_break_create(monkeypatch):
@@ -16383,7 +16850,7 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     save_credential.assert_called_once_with(env_var, fake_key)
 
 
-def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch):
+def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch, tmp_path):
     """The gated picker's own chat waits on ``setup.status``, which answers from the boot record:
     a key saved for the launch profile must flip a ``False`` record (+ ``setup.ready``) at once;
     a key saved for another profile (``profile`` param) must leave the launch record alone."""
@@ -16399,6 +16866,9 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
     monkeypatch.setattr(fb, "_resolve_inference", lambda: "test-provider")
     broadcasts = []
     monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
+    other_home = tmp_path / "profiles" / "other"  # model.save_key is profile scoped: "other" must exist
+    other_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda name: other_home if name == "other" else None)
     fb.reset_for_tests()
     stale = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
                            has_identity=False, other_providers=False)
@@ -16422,6 +16892,60 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_path):
+    """The post-turn heap trim must run after the turn's pre-turn history snapshots are dropped:
+    malloc_trim cannot return pages still referenced, so a retained snapshot of a large tool
+    result pins them for the life of the process. Observed through a weak reference to the old
+    message, not by reading the finisher's local variable names."""
+    import contextlib
+    import gc
+    import weakref
+
+    class _Msg(dict):
+        """dict itself is not weakref-able."""
+
+    observed = {}
+    order = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kw):
+            return {"final_response": "reply", "messages": [{"role": "assistant", "content": "reply"}]}
+
+    def _trim(**_kwargs):
+        order.append("trim")
+        gc.collect()
+        observed["alive_at_trim"] = old_ref() is not None
+
+    old = _Msg(role="tool", tool_call_id="old", content="x" * 20_000)
+    old_ref = weakref.ref(old)
+    session = _session(agent=_Agent())
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    session["profile_home"] = str(profile_home)
+    session["history"] = [old]
+    del old
+    server._sessions["sid_trim"] = session
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "set_hermes_home_override", lambda _home: object())
+        monkeypatch.setattr(server, "reset_hermes_home_override", lambda _token: order.append("reset_home"))
+        monkeypatch.setattr(server, "_session_profile_runtime_scope", lambda _session, **_kw: contextlib.nullcontext())
+        monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", _trim)
+
+        resp = server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid_trim", "text": "hi"}})
+
+        assert resp is not None and resp.get("result")
+        assert order == ["trim", "reset_home"]
+        assert observed["alive_at_trim"] is False, "a pre-turn history snapshot survived to the heap trim"
+    finally:
+        server._sessions.pop("sid_trim", None)
 
 
 class _ImmediateThread:
@@ -16919,6 +17443,41 @@ def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
         def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
             return [{"id": "tool-1", "source": "tool", "started_at": 1}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] is None
+
+
+def test_session_most_recent_skips_unknown_source_rows(monkeypatch):
+    """#54320: a token-accounting guard placeholder (source='unknown') must never be
+    picked for auto-resume — the row can outrank the session the user actually opened."""
+
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+            return [
+                {"id": "guard-1", "source": "unknown", "title": "", "started_at": 101},
+                {"id": "tui-1", "source": "tui", "title": "real", "started_at": 100},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "tui-1"
+    assert resp["result"]["source"] == "tui"
+
+
+def test_session_most_recent_returns_null_when_only_unknown_rows(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+            return [{"id": "guard-1", "source": "unknown", "started_at": 1}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 
@@ -20675,7 +21234,7 @@ def test_save_cfg_preserves_user_comments(tmp_path, monkeypatch):
     assert "# provider rationale" in text
     assert "# trailing skin note" in text
 
-    import yaml as _yaml
+    import hermes_yaml as _yaml
 
     parsed = _yaml.safe_load(text)
     assert parsed["display"]["skin"] == "mono"
@@ -21473,6 +22032,19 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
         server._sessions.pop(sid, None)
 
 
+def _join_turn_thread(sess, timeout=10.0):
+    """Join the real turn ``prompt.submit`` started, so nothing it does races the
+    assertions or leaks into the next test. The submit's dispatch thread hands off to a
+    ``prompt-turn-*`` worker that replaces ``_run_thread``: follow the handle until it
+    stops changing."""
+    deadline = time.monotonic() + timeout
+    while isinstance(run_thread := sess.get("_run_thread"), threading.Thread):
+        run_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        assert not run_thread.is_alive(), "prompt.submit turn thread did not finish"
+        if sess.get("_run_thread") is run_thread:
+            return
+
+
 @pytest.mark.parametrize("turn_isolation", [False, True])
 def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
     monkeypatch, tmp_path, turn_isolation
@@ -21551,7 +22123,12 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
             str(original_row_ids[5]): None,
         }
         assert "999999" not in row_id_map
-        sess["running"] = False
+        # Wait for rewind 1's real turn thread to end (it clears ``running`` itself)
+        # instead of forcing the flag: a still-live turn 1 overlapping rewind 2 is a
+        # state production's ``running`` gate never allows, and its
+        # _adopt_out_of_band_turns then read rewind 2's user row as a foreign turn.
+        _join_turn_thread(sess)
+        assert sess["running"] is False
 
         # Rewind 2: the id the client cached BEFORE rewind 1 is still the live row
         # (no 4018 refusal, no rebind dance) — the user-facing point of #82956.
@@ -21569,6 +22146,7 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
             }
         )
         assert resp2.get("error") is None, resp2
+        _join_turn_thread(sess)
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
         active = db.get_messages_as_conversation(session_key)
@@ -21992,3 +22570,103 @@ def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, t
     shutil.copy2(other, cfg)
     os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
     assert server._load_cfg_raw()["model"]["default"] == "aaaa-route"
+
+
+def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_path):
+    """The regression: launch profile is LOCAL, the session is bound to an SSH profile.
+    session.create must read the BOUND profile's backend, keep the remote cwd, and mark it
+    explicit — not drop it to the launch dir."""
+    remote = "/home/felix/projects/xsd-parser"
+    assert not os.path.isdir(remote)
+    # Launch process looks local; only the bound profile is ssh.
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+
+    resp = server._methods["session.create"]("r1", {"cols": 80, "cwd": remote, "profile": "felix"})
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+    try:
+        assert session["cwd"] == remote  # not dropped to getcwd()
+        assert session["explicit_cwd"] is True
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tmp_path):
+    """session.workspace.move must not reject a remote project dir that does not
+    exist on the host when the bound profile is ssh (the 'working directory does
+    not exist' error the user hit). Local profiles keep the isdir guard."""
+    remote = "/home/felix/projects/xsd-parser"
+    assert not os.path.isdir(remote)
+    monkeypatch.setenv("TERMINAL_ENV", "local")  # launch looks local
+    (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
+
+    class _DB:
+        def get_session(self, key):
+            return {"session_key": key}
+        def update_session_cwd(self, *a, **k):
+            return 1
+    monkeypatch.setattr(server, "_profile_db", lambda params, **_kw: contextlib.nullcontext(_DB()))
+    monkeypatch.setattr(server.git_probe, "branch", lambda c: None)
+    monkeypatch.setattr(server.git_probe, "common_repo_root", lambda c: None)
+
+    resp = server._methods["session.workspace.move"](
+        "r1", {"session_key": "sk1", "cwd": remote, "profile": "felix"})
+    assert "result" in resp, resp
+    assert resp["result"]["cwd"] == remote
+
+
+@pytest.mark.parametrize("launch_backend", ["ssh", "local"])
+def test_ssh_named_profile_cwd_beats_launch_terminal_cwd(monkeypatch, tmp_path, launch_backend):
+    """A named SSH profile's terminal.cwd is on the remote. The desktop must use
+    it even when that path does not exist on this host and the process
+    TERMINAL_CWD still names the launch profile."""
+    remote = "/home/kali"
+    launch = "/home/ubuntu/hermes_sync"
+    assert not os.path.isdir(remote)
+    home = tmp_path / "hunter"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "terminal:\n  backend: ssh\n  cwd: /home/kali\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TERMINAL_ENV", launch_backend)
+    monkeypatch.setenv("TERMINAL_CWD", launch)
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "hunter" else None)
+
+    assert server._completion_cwd(
+        {"profile": "hunter", "cwd": launch, "cwd_explicit": False}
+    ) == remote
+    assert server._terminal_task_cwd(
+        {"cwd": launch, "explicit_cwd": False, "profile_home": str(home)}
+    ) == remote
+    assert server._terminal_task_cwd(
+        {"cwd": "/opt/picked", "explicit_cwd": True, "profile_home": str(home)}
+    ) == "/opt/picked"
+    # A local launch profile must not "heal" the remote dir to its nearest host ancestor (/home).
+    assert server._display_session_cwd({"cwd": remote, "profile_home": str(home)}) == remote
+    # "~" names the REMOTE user's home, never this host's.
+    (home / "config.yaml").write_text("terminal:\n  backend: ssh\n  cwd: ~/proj\n", encoding="utf-8")
+    assert server._completion_cwd({"profile": "hunter", "cwd": launch, "cwd_explicit": False}) == "~/proj"
+    # No terminal.cwd: the remote default is ~, never the launch profile's host cwd.
+    (home / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
+    assert server._completion_cwd({"profile": "hunter"}) == "~"
+    assert server._terminal_task_cwd({"cwd": launch, "explicit_cwd": False, "profile_home": str(home)}) == "~"
+
+
+def test_named_profile_without_backend_stays_local_under_ssh_launch(monkeypatch, tmp_path):
+    """A named profile that declares no terminal.backend is local; the launch profile's ssh backend must not
+    turn its terminal.cwd into a remote path."""
+    home = tmp_path / "plain"
+    home.mkdir()
+    (home / "config.yaml").write_text("terminal:\n  cwd: /srv/not-on-this-host\n", encoding="utf-8")
+    launch = str(tmp_path)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "plain" else None)
+
+    assert server._completion_cwd({"profile": "plain", "cwd": launch, "cwd_explicit": False}) == launch

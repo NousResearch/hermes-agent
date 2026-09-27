@@ -819,6 +819,89 @@ class TestDeliverCrossPlatformThreadId:
         )
 
 
+class TestCrossPlatformDeliveryMirror:
+    """An opted-in route's delivered response is appended to the TARGET chat's session (real state.db),
+    so a follow-up reply there has context; without the opt-in the target transcript is untouched."""
+
+    _CHAT = "5135545282"
+
+    @staticmethod
+    def _seed_dm(home, sid, chat):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=home / "state.db")
+        db.create_session(sid, source="telegram")
+        db._conn.execute("UPDATE sessions SET session_key=?, chat_id=?, user_id=? WHERE id=?",
+                         (f"agent:main:telegram:dm:{chat}", chat, chat, sid))
+        db._conn.commit()
+        db.close()
+
+    @staticmethod
+    def _transcript(home, sid):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=home / "state.db")
+        rows = db._conn.execute("SELECT role, content FROM messages WHERE session_id=? ORDER BY id", (sid,)).fetchall()
+        db.close()
+        return [(r[0], r[1]) for r in rows]
+
+    @pytest.fixture
+    def homes(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        import hermes_state
+        from hermes_cli.profiles import get_profile_dir
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        # The hermetic conftest pins DEFAULT_DB_PATH when hermes_state is already imported; un-pin it so
+        # state.db resolves from the active (profile-scoped) home at call time, as in production.
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+        work_home = get_profile_dir("work")
+        work_home.mkdir(parents=True)
+        # A DM chat_id is the user's id on every bot, so both profiles hold a session for it.
+        self._seed_dm(default_home, "dm-default", self._CHAT)
+        self._seed_dm(work_home, "dm-work", self._CHAT)
+        return default_home, work_home
+
+    @staticmethod
+    def _attach_target(adapter):
+        target = AsyncMock()
+        target.send = AsyncMock(return_value=SendResult(success=True))
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner._authorization_adapter = lambda platform, profile=None: target
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_opted_in_delivery_mirrors_into_the_routed_profiles_chat_session(self, homes):
+        default_home, work_home = homes
+        adapter = self._attach_target(_make_adapter())
+        delivery = {"deliver": "telegram", "route": "ambush-nfl", "profile": "work", "mirror": True,
+                    "deliver_extra": {"chat_id": self._CHAT}}
+        result = await adapter._deliver_cross_platform("telegram", "Henderson OUT Wednesday", delivery)
+        assert result.success is True
+        assert self._transcript(work_home, "dm-work") == [
+            ("user", "[Webhook delivery: ambush-nfl]\nHenderson OUT Wednesday")]
+        assert self._transcript(default_home, "dm-default") == []
+
+    @pytest.mark.asyncio
+    async def test_route_without_opt_in_never_touches_the_target_transcript(self, homes):
+        default_home, _ = homes
+        routes = {"plain": {"secret": _INSECURE_NO_AUTH, "prompt": "p", "deliver": "telegram",
+                            "deliver_extra": {"chat_id": self._CHAT}},
+                  "yaml-str": {"secret": _INSECURE_NO_AUTH, "prompt": "p", "deliver": "telegram",
+                               "deliver_extra": {"chat_id": self._CHAT}, "mirror_to_session": "false"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            for route in routes:
+                resp = await cli.post(f"/webhooks/{route}", json={"a": 1}, headers={"X-Request-ID": route})
+                assert resp.status == 202
+        self._attach_target(adapter)
+        for route in routes:
+            delivery = adapter._delivery_info[f"webhook:{route}:{route}"]
+            assert (await adapter._deliver_cross_platform("telegram", "hi", delivery)).success is True
+        assert self._transcript(default_home, "dm-default") == []
+
+
 class TestInsecureNoAuthSafetyRail:
     """connect() refuses to start when INSECURE_NO_AUTH is combined with a
     non-loopback bind. Guards against accidentally exposing an unauthenticated

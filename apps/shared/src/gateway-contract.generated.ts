@@ -2062,10 +2062,10 @@ export interface SessionForeignImportResult {
   session_id: string
   already_imported?: boolean
 }
-/** ``delegations`` is reserved for async delegation records and is currently always empty. */
+/** ``delegations``: recently failed async delegation tasks for the session (durable store), newest first. */
 export interface SubagentListResult {
   subagents?: SubagentSnapshot[]
-  delegations?: Record<string, unknown>[]
+  delegations?: FailedDelegation[]
 }
 /** ``methods_subagents._SUBAGENT_SNAPSHOT_FIELDS`` projection of one live child record. */
 export interface SubagentSnapshot {
@@ -2083,6 +2083,16 @@ export interface SubagentSnapshot {
 }
 /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
+/** ``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation. */
+export interface FailedDelegation {
+  delegation_id: string
+  task_index?: number
+  status: string
+  goal?: string
+  error?: string | null
+  dispatched_at?: number | null
+  completed_at?: number | null
+}
 export interface SubagentIdParams {
   session_id: string
   profile?: string | null
@@ -2281,6 +2291,7 @@ export interface ProjectTreeLane {
   path?: string | null
   isMain?: boolean
   isKanban?: boolean
+  isGit?: boolean
   sessions?: ProjectTreeSession[]
 }
 /** ``methods_projects._project_tree_row`` + ``project_tree.stamp_profile``: the minimal row the sidebar renders, stamped with the profile it belongs to. */
@@ -2311,6 +2322,7 @@ export interface ProjectTreeSession {
   handoff_state?: string | null
   _lineage_root_id?: string | null
   _lineage_ids?: string[] | null
+  continuation_kind?: string | null
   profile?: string | null
   [key: string]: unknown
 }
@@ -2761,6 +2773,7 @@ export interface SessionCreateParams {
   cols?: number | null
   source?: string | null
   cwd?: string | null
+  cwd_explicit?: boolean | null
   messages?: SeedMessage[] | null
   parent_session_id?: string | null
   title?: string | null
@@ -2788,10 +2801,12 @@ export interface SessionCreateResult {
   messages: TranscriptMessage[]
   info: SessionLiveInfo
 }
-/** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
+/** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
 export interface TranscriptMessage {
   role: string
   text?: string | null
+  content?: unknown | null
+  tool_call_id?: string | null
   timestamp?: number | null
   row_id?: number | null
   display_kind?: string | null
@@ -2815,6 +2830,20 @@ export interface ToolLabel {
 }
 /** Which surface one inner call of a bridged ``tool_call`` runs on. */
 export type ToolLabelKind = 'connector' | 'mcp' | 'tool'
+export interface SessionBranchStoredParams {
+  profile?: string | null
+  parent_session_id: string
+  cols?: number | null
+  source?: string | null
+  cwd?: string | null
+}
+export interface SessionBranchStoredResult {
+  session_id: string
+  stored_session_id: string
+  message_count: number
+  messages_omitted: boolean
+  info: SessionLiveInfo
+}
 /** ``session_id`` is the STORED id (or an exact title); the reply's ``session_id`` is the runtime id. */
 export interface SessionResumeParams {
   session_id: string
@@ -3065,6 +3094,20 @@ export interface SessionBranchResult {
   parent: string
   message_count: number
   messages: TranscriptMessage[]
+  info: SessionLiveInfo
+}
+export interface SessionBranchWholeParams {
+  session_id: string
+  profile?: string | null
+  name?: string | null
+}
+export interface SessionBranchWholeResult {
+  session_id: string
+  stored_session_id: string
+  title: string
+  parent: string
+  message_count: number
+  messages_omitted: boolean
   info: SessionLiveInfo
 }
 export interface SessionUndoParams {
@@ -4051,7 +4094,7 @@ export interface PluginServerRow {
   state: PluginServerState
   sentence: string
 }
-export type PluginServerState = 'connected' | 'app_not_running' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
+export type PluginServerState = 'connected' | 'app_not_running' | 'hermes_not_connected' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
 /** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. */
 export interface PluginSettingField {
   key: string
@@ -4189,6 +4232,7 @@ export interface PreviewActRequestParams {
   to?: string | null
   amount?: number | null
   max?: number | null
+  allow_shortcut?: boolean | null
 }
 /** ``tools/tour_tool.py`` field set. */
 export interface TourRequestParams {
@@ -4329,6 +4373,7 @@ export interface MessageCompletePayload {
   reasoning?: string | null
   warning?: string | null
   response_previewed?: boolean | null
+  response_transformed?: boolean | null
   billing?: BillingBlock | null
   failure_reason?: string | null
   rendered?: string | null
@@ -4970,6 +5015,10 @@ export interface RpcMethods {
   'session.active_list': { params: SessionActiveListParams; result: SessionActiveListResult }
   /** Fork a live session into a new stored child that shares the parent's history so far. */
   'session.branch': { params: SessionBranchParams; result: SessionBranchResult }
+  /** Whole-session branch of a stored parent: the owning backend reads and copies the transcript, which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty branch). */
+  'session.branch_stored': { params: SessionBranchStoredParams; result: SessionBranchStoredResult }
+  /** session.branch of the whole history without echoing the copied transcript back. */
+  'session.branch_whole': { params: SessionBranchWholeParams; result: SessionBranchWholeResult }
   /** Tear down a live session (its stored row stays resumable). */
   'session.close': { params: SessionCloseParams; result: SessionCloseResult }
   /** Manual /compress of an idle session, optionally focused on a topic. */
@@ -5277,6 +5326,8 @@ export const RPC_METHODS = [
   'session.activate',
   'session.active_list',
   'session.branch',
+  'session.branch_stored',
+  'session.branch_whole',
   'session.close',
   'session.compress',
   'session.context_breakdown',
@@ -5476,6 +5527,8 @@ export interface BackendGatewayEventMap {
   'preview.restart.complete': SideAgentCompletePayload
   /** Progress line from the preview-restart agent. */
   'preview.restart.progress': PreviewRestartProgressPayload
+  /** projects.db moved; refetch the project list + tree. */
+  'projects.changed': ChangeSignalPayload
   /** Affection reaction detected in the user's message (hearts etc.). */
   reaction: ReactionPayload
   /** A completed reasoning block (non-streaming providers). */
@@ -5585,6 +5638,7 @@ export const GATEWAY_EVENT_TYPES = [
   'preview.open',
   'preview.restart.complete',
   'preview.restart.progress',
+  'projects.changed',
   'reaction',
   'reasoning.available',
   'reasoning.delta',

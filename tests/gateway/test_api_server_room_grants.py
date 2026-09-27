@@ -8,7 +8,6 @@ import pytest
 from gateway.platforms import api_server
 from gateway.platforms import api_server_room_grants as room_grants
 
-
 def test_grant_refresh_rejects_execution_policy_drift():
     claims = {"execution_policy_digest": "a" * 64}
 
@@ -21,7 +20,6 @@ def test_grant_refresh_rejects_execution_policy_drift():
             {"policy_digest": "b" * 64},
         )
 
-
 def test_grant_refresh_accepts_the_authorized_execution_policy():
     claims = {"execution_policy_digest": "a" * 64}
 
@@ -32,7 +30,6 @@ def test_grant_refresh_accepts_the_authorized_execution_policy():
         )
         is None
     )
-
 
 def test_room_grant_secret_stays_gateway_owned_on_named_profile(
     tmp_path, monkeypatch
@@ -47,7 +44,6 @@ def test_room_grant_secret_stays_gateway_owned_on_named_profile(
         assert adapter._room_grant_secret() == gateway_room_grant_secret()
     finally:
         api_server._api_request_profile.reset(profile_token)
-
 
 def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch):
     from gateway import hosted_rooms
@@ -114,5 +110,3 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="no longer current"):
         adapter._room_grant_claims(request, permission="status")
-
-

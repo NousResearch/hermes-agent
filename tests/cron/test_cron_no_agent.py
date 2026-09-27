@@ -83,7 +83,7 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     from cron.scheduler import run_job
 
     script_path = hermes_env / "scripts" / "alert.sh"
-    script_path.write_text("#!/bin/bash\necho 'RAM 92% on host'\n")
+    script_path.write_text("#!/usr/bin/env bash\necho 'RAM 92% on host'\n")
 
     job = create_job(
         prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
@@ -113,7 +113,7 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load)
 
     script_path = hermes_env / "scripts" / "probe.sh"
-    script_path.write_text('#!/bin/bash\necho "ok"\n')
+    script_path.write_text('#!/usr/bin/env bash\necho "ok"\n')
 
     job = create_job(
         prompt=None, schedule="every 5m", script="probe.sh", no_agent=True, deliver="local"
@@ -126,7 +126,7 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
 
 
 _PRESENCE_PROBE = (
-    "#!/bin/bash\n"
+    "#!/usr/bin/env bash\n"
     'for n in JOB_SVC_TOKEN LAUNCH_ONLY_TOKEN; do [ -n "${!n}" ] && echo "$n=set" || echo "$n=MISSING"; done\n'
 )
 
@@ -270,3 +270,53 @@ def test_agent_job_provider_classification_unchanged(error, expected):
 
     job = {"name": "daily-digest", "no_agent": False}
     assert expected in _summarize_cron_failure_for_delivery(job, error)
+
+
+# ---------------------------------------------------------------------------
+# no_agent jobs honoring a configured Python interpreter
+# ---------------------------------------------------------------------------
+
+
+def test_run_job_no_agent_uses_configured_interpreter(hermes_env):
+    """A no-agent job's script must run through the configured interpreter.
+
+    Proves the override survives the no_agent branch of ``run_job`` →
+    ``_run_job_script_with_claim_heartbeat`` → ``_run_job_script``.
+    """
+    import stat as _stat
+    import sys
+
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    # A wrapper that re-execs the real interpreter with an env marker.
+    wrapper = hermes_env / "venv" / "bin" / "python3"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "env = os.environ.copy()\n"
+        'env["CRON_WRAPPER_USED"] = "1"\n'
+        "os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)\n"
+    )
+    wrapper.chmod(wrapper.stat().st_mode | _stat.S_IXUSR)
+
+    script_path = hermes_env / "scripts" / "marker.py"
+    script_path.write_text(
+        'import os\nprint(os.environ.get("CRON_WRAPPER_USED", "0"))\n'
+    )
+
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="marker.py",
+        no_agent=True,
+        deliver="local",
+        interpreter=str(wrapper),
+    )
+
+    success, doc, final_response, error = run_job(job)
+    assert success is True
+    assert error is None
+    assert final_response == "1"
+    assert "1" in doc

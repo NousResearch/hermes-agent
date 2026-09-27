@@ -157,6 +157,23 @@ def test_deliver_failure_reports_both_streams_labeled():
     assert "stdout: banner out" in err
 
 
+def test_deliver_failure_banner_only_stdout_names_exit_code_not_banner():
+    """The reported shape: empty stderr, stdout holding only the resume
+    banner — the recorded error must say what happened (exit code, banner-only
+    stdout) instead of echoing the banner as if it were a reason (#104056)."""
+    banner = ('↻ Resumed session 20260905_121420_8084c7 "Bot Chat" (1 user message, 1 total messages)'
+              '\n\nsession_id: 20260905_121420_8084c7')
+    with mock.patch.object(
+        sched_delivery, "_run_bot_chat_turn",
+        return_value=_completed(returncode=1, stdout=banner, stderr=""),
+    ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+    assert err is not None
+    assert "exit code 1" in err
+    assert "stdout was only the resume banner" in err
+    assert "Resumed session" not in err
+    assert "stderr:" not in err
+
 
 
 def test_deliver_failure_persisted_stdout_tail_is_short_and_redacted():
@@ -243,7 +260,7 @@ def test_turn_report_books_the_delivery_while_the_child_still_lingers(tmp_path):
             proc.wait(timeout=10)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_delivery_child_runs_in_the_target_home_not_the_schedulers_cwd(tmp_path, monkeypatch):
     """The spawn pins ``cwd`` to the target home: a scheduler left in a reaped kanban scratch
     workspace must not hand its dead cwd to the child, which then dies before argv (#102941)."""
@@ -277,7 +294,7 @@ def test_turn_that_never_ends_is_still_killed_at_the_cap(tmp_path):
 
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_bot_chat_turn_failure_tail_decodes_lossily(tmp_path):
     """The exit-1 tail is still surfaced (with U+FFFD for the bad byte) instead of
     vanishing when the drain thread dies at the first undecodable byte (#105582)."""
@@ -289,7 +306,7 @@ def test_bot_chat_turn_failure_tail_decodes_lossily(tmp_path):
     assert result.stderr == "boom before \ufffd after\n"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_bot_chat_turn_roundtrips_accented_utf8_reply(tmp_path):
     """The delivery child writes UTF-8 unconditionally — hermes_cli reconfigures its
     own streams via hermes_bootstrap on Windows even under PYTHONIOENCODING=cp1252 —

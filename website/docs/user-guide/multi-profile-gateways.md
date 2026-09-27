@@ -104,22 +104,30 @@ settles at boot, never a verdict. Each start it runs the same preflight as
 [`hermes gateway migrate --multiplex`](#migrating-from-per-profile-gateways) and
 multiplexes only when the fold would have been safe — two
 or more profiles, no secondary still running its own gateway (live process or
-installed service), no duplicate bot credential, no port-binding platform
-without a `/p/<profile>/` ingress, and a host the migration understands (not an
-s6 container or Windows Scheduled Tasks). Otherwise it comes up exactly as
-before — serving the default profile only — and logs the blocker plus the
-`hermes gateway migrate --multiplex` one-liner. Nothing is changed on disk.
+installed service, or under s6 a per-profile slot that is actually *up*), no
+duplicate bot credential, and no port-binding platform without a `/p/<profile>/`
+ingress. **Unset means on**: when nothing blocks, the gateway multiplexes and
+writes `gateway.multiplex_profiles: true` into the default profile's
+`config.yaml` (comments preserved) so the file says what the runtime does.
+Otherwise it comes up serving the default profile only and says so **loudly** on
+a host with other profiles: a boxed warning at gateway start naming the profiles
+that are not served, the blocker, and the fix; the same box in the `hermes
+update` summary and `hermes gateway status`; a banner in the dashboard
+(`/api/status` carries `multiplex_standalone_reason`). A single-profile install
+is not warned — there is nothing to serve. Nothing is written on a refusal.
 
 An **explicit** `true` bypasses migration preflight, except for a launching
 profile that opts out with `gateway.standalone: true`:
 
 - `gateway.multiplex_profiles: true` (what the migration writes) multiplexes
   regardless of the preflight — you, or the migration, made the call.
-- `gateway.multiplex_profiles: false` is **retired**. It used to keep
-  per-profile gateways for good; now it resolves exactly like an unset key and
-  the gateway logs a warning pointing at `hermes gateway migrate --multiplex`.
-  `--force` remains the path for the boundary cases below; `gateway.standalone:
-  true` is a temporary shim for fleets the switch broke, not a supported topology.
+- `gateway.multiplex_profiles` has **one valid value right now: `true`**, and
+  it is written for you. An unset key resolves on and is made explicit in the
+  default profile's `config.yaml`. `false` is **retired**: the gateway rewrites
+  it to `true` in place and prints a one-time boxed notice at that start and in
+  the next `hermes update` summary — never a silent flip. A per-profile gateway
+  is `gateway.standalone: true` in that profile's own config (a temporary shim,
+  not a supported topology) or `--force` for the boundary cases below.
 - `GATEWAY_MULTIPLEX_PROFILES` in the process environment overrides the
   unset-key decision the same way an explicit `true` does.
 - `gateway.standalone: true` in a **named** profile's own `config.yaml`
@@ -1094,6 +1102,20 @@ keeps `hermes -p <name> gateway install --force` as its path — or opts out of
 the host gateway with `gateway.standalone: true` (see
 [No new per-profile gateways](#no-new-per-profile-gateways)), which
 `hermes gateway migrate --multiplex` respects.
+
+### Docker / Hermes Cloud (s6-supervised container)
+
+Inside the official image every profile has an s6 slot
+(`/run/service/gateway-<profile>`). The container's boot registers every *named*
+slot down and folds its autostart intent into the root slot, so a fresh boot
+already multiplexes. An **in-place** update no longer needs a container restart
+to converge either: `hermes gateway migrate --multiplex` (and the hook `hermes
+update` runs) parks any named slot that is still up (`s6-svc -d` plus a `down`
+file so a supervisor restart does not revive it), folds its intent into the root
+slot through the same rule the boot uses, and restarts the root slot. A
+registered-down slot is never a blocker — only a slot that is actually up is.
+The one thing the command still cannot do from inside is create a root slot the
+boot never registered; that case names itself and asks for a container restart.
 
 ### What `hermes update` does
 

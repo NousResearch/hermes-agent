@@ -52,6 +52,27 @@ describe('renderer heap flags', () => {
     ])
   })
 
+  it('reads the renderer_accessibility opt-out for packaged launches (#118271)', () => {
+    expect(readDesktopLaunchConfig('desktop:\n  renderer_accessibility: false\n').rendererAccessibility).toBe(false)
+    expect(readDesktopLaunchConfig('desktop:\n  renderer_accessibility: "off"  # perf\n').rendererAccessibility).toBe(
+      false
+    )
+    expect(readDesktopLaunchConfig('desktop:\n  renderer_accessibility: true\n').rendererAccessibility).toBe(true)
+    // Bare `0` is the string '0' to this reader (no YAML parser), but the
+    // unquoted form a user actually writes must opt out like the quoted one.
+    expect(readDesktopLaunchConfig('desktop:\n  renderer_accessibility: 0\n').rendererAccessibility).toBe(false)
+    // `disabled`/`enabled` mirror the launcher's word list so both launch
+    // paths accept the same vocabulary (#118271 review).
+    expect(readDesktopLaunchConfig('desktop:\n  renderer_accessibility: disabled\n').rendererAccessibility).toBe(false)
+    expect(readDesktopLaunchConfig('desktop:\n  renderer_accessibility: "Disabled"\n').rendererAccessibility).toBe(
+      false
+    )
+    expect(readDesktopLaunchConfig('desktop:\n  renderer_accessibility: enabled\n').rendererAccessibility).toBe(true)
+    // Absent or unreadable: unset, so the app keeps its own default.
+    expect(readDesktopLaunchConfig('desktop:\n  font_family: ""\n').rendererAccessibility).toBeUndefined()
+    expect(readDesktopLaunchConfig('desktop:\n  renderer_accessibility: maybe\n').rendererAccessibility).toBeUndefined()
+  })
+
   it('warns once when a desktop block names the keys in an indentation it cannot read', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 

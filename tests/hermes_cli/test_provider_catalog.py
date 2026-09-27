@@ -11,11 +11,6 @@ from hermes_cli.provider_catalog import (
     provider_catalog_by_slug,
 )
 
-
-
-
-
-
 def test_profileless_providers_still_present():
     """Providers without a ProviderProfile must still resolve via fallbacks.
 
@@ -28,7 +23,6 @@ def test_profileless_providers_still_present():
         assert slug in by, f"{slug} dropped from catalog (profile-less provider)"
         assert by[slug].label, f"{slug} has empty label despite canonical fallback"
         assert by[slug].description, f"{slug} has empty description despite fallback"
-
 
 def test_copilot_surfaces_as_a_provider_with_its_own_token_var():
     """Regression for the reported bug: a GitHub Copilot login showed up under
@@ -48,7 +42,6 @@ def test_copilot_surfaces_as_a_provider_with_its_own_token_var():
         "Copilot's primary var must be the provider-owned token, not shared GITHUB_TOKEN"
     )
 
-
 def test_api_key_providers_expose_a_credential_env_var():
     """Every keys-tab provider that authenticates via a pasted API key must
     surface at least one env var to write the key into (otherwise the GUI can't
@@ -62,7 +55,3 @@ def test_api_key_providers_expose_a_credential_env_var():
     for d in provider_catalog():
         if d.auth_type == "api_key" and d.slug not in exempt:
             assert d.api_key_env_vars, f"{d.slug} is api_key but exposes no env var"
-
-
-
-

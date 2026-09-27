@@ -44,7 +44,7 @@ def _load_receipts(adapter, bot_id) -> None:
     adapter._update_receipts_loaded.add(bot_id)
     path = _receipt_path(adapter, bot_id)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return
     except (OSError, ValueError):

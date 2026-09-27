@@ -1,5 +1,6 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -8,7 +9,6 @@ from gateway.config import Platform, StreamingConfig
 from gateway.platforms.base import resolve_proxy_url
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-
 
 def _make_runner(proxy_url=None):
     """Create a minimal GatewayRunner for proxy tests."""
@@ -23,7 +23,6 @@ def _make_runner(proxy_url=None):
     runner._agent_cache_lock = None
     return runner
 
-
 def _make_source(platform=Platform.MATRIX):
     return SessionSource(
         platform=platform,
@@ -34,7 +33,6 @@ def _make_source(platform=Platform.MATRIX):
         user_name="testuser",
         thread_id=None,
     )
-
 
 class _FakeSSEResponse:
     """Simulates an aiohttp response with SSE streaming."""
@@ -60,7 +58,6 @@ class _FakeSSEResponse:
     async def __aexit__(self, *args):
         pass
 
-
 class _FakeSession:
     """Simulates an aiohttp.ClientSession with captured request args."""
 
@@ -82,14 +79,13 @@ class _FakeSession:
     async def __aexit__(self, *args):
         pass
 
-
 def _patch_aiohttp(session):
-    """Patch aiohttp.ClientSession to return our fake session."""
-    return patch(
-        "aiohttp.ClientSession",
-        return_value=session,
+    """Install the optional aiohttp boundary without requiring the extra."""
+    module = types.SimpleNamespace(
+        ClientSession=MagicMock(return_value=session),
+        ClientTimeout=MagicMock(),
     )
-
+    return patch.dict("sys.modules", {"aiohttp": module})
 
 class TestGetProxyUrl:
     """Test _get_proxy_url() config resolution."""
@@ -100,14 +96,12 @@ class TestGetProxyUrl:
         with patch("gateway.run._load_gateway_config", return_value={}):
             assert runner._get_proxy_url() is None
 
-
     def test_reads_from_config_yaml(self, monkeypatch):
         monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
         runner = _make_runner()
         cfg = {"gateway": {"proxy_url": "http://10.0.0.1:8642"}}
         with patch("gateway.run._load_gateway_config", return_value=cfg):
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
-
 
 class _SelectiveScope(dict):
     """Bound scope that resolves GATEWAY_PROXY_URL but fails on the KEY read."""
@@ -134,8 +128,9 @@ class TestProxyKeyScopeFailure:
         ss.set_multiplex_active(True)
         token = ss.set_secret_scope(_SelectiveScope())
         try:
-            with pytest.raises(RuntimeError, match="resolver boom"):
-                await runner._run_agent_via_proxy("hi", "ctx", [], _make_source(), "sess-1")
+            with _patch_aiohttp(MagicMock()):
+                with pytest.raises(RuntimeError, match="resolver boom"):
+                    await runner._run_agent_via_proxy("hi", "ctx", [], _make_source(), "sess-1")
         finally:
             ss.reset_secret_scope(token)
             ss.set_multiplex_active(False)
@@ -160,6 +155,45 @@ class TestResolveProxyUrl:
         monkeypatch.setenv("NO_PROXY", "149.154.160.0/20")
 
         assert resolve_proxy_url(target_hosts=["149.154.167.220"]) is None
+
+@pytest.mark.platforms("macos")
+class TestMacosProxyProbeCache:
+    """``scutil --proxy`` is a ~11 ms fork and resolve_proxy_url runs it on the SEND path —
+    per chunk of an outbound message and per media attachment."""
+
+    SCUTIL_OUT = "<dictionary> {\n  HTTPEnable : 1\n  HTTPProxy : 10.0.0.1\n  HTTPPort : 3128\n}"
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self):
+        import gateway.platforms.base as base
+        base.reset_macos_proxy_cache()
+        yield
+        base.reset_macos_proxy_cache()
+
+    def _count_forks(self, monkeypatch):
+        import gateway.platforms.base as base
+        calls = []
+
+        def fake(*a, **kw):
+            calls.append(a)
+            return self.SCUTIL_OUT
+        monkeypatch.setattr(base.subprocess, "check_output", fake)
+        return base, calls
+
+    def test_repeated_probes_fork_scutil_once(self, monkeypatch):
+        base, calls = self._count_forks(monkeypatch)
+        results = [base._detect_macos_system_proxy() for _ in range(10)]
+        assert len(calls) == 1, f"expected 1 scutil fork for 10 probes, got {len(calls)}"
+        assert results == ["http://10.0.0.1:3128"] * 10
+
+    def test_expired_ttl_re_reads(self, monkeypatch):
+        base, calls = self._count_forks(monkeypatch)
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(base.time, "monotonic", lambda: clock["t"])
+        base._detect_macos_system_proxy()
+        clock["t"] += base._MACOS_PROXY_TTL_SECONDS + 1
+        base._detect_macos_system_proxy()
+        assert len(calls) == 2
 
 
 class TestRunAgentProxyDispatch:
@@ -196,7 +230,6 @@ class TestRunAgentProxyDispatch:
         assert result["final_response"] == "Hello from remote!"
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
-
 
 class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
@@ -254,7 +287,6 @@ class TestRunAgentViaProxy:
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
 
-
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://unreachable:8642")
@@ -273,7 +305,7 @@ class TestRunAgentViaProxy:
                 pass
 
         with patch("gateway.run._load_gateway_config", return_value={}):
-            with patch("aiohttp.ClientSession", return_value=_ErrorSession()):
+            with _patch_aiohttp(_ErrorSession()):
                 with patch("aiohttp.ClientTimeout"):
                     result = await runner._run_agent_via_proxy(
                         message="hi",
@@ -285,7 +317,6 @@ class TestRunAgentViaProxy:
 
         assert "Connection refused" in result["final_response"]
         assert result["api_calls"] == 0
-
 
     @pytest.mark.asyncio
     async def test_no_system_message_when_context_empty(self, monkeypatch):
@@ -316,7 +347,6 @@ class TestRunAgentViaProxy:
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "hello"
-
 
 class TestStreamingResilience:
     """Tests for SSE streaming robustness — hang avoidance and malformed-chunk tolerance."""
@@ -508,6 +538,3 @@ class TestStreamingResilience:
                     )
 
         assert result["final_response"] == "Hello world"
-
-
-

@@ -12,6 +12,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.run import GatewayRunner
 from gateway.status import flush_runtime_status
 
@@ -186,6 +187,7 @@ class _SecondaryRecoveryAdapter:
         self.fatal_error_message = "Gateway transport stale"
         self.connected = False
         self.disconnected = False
+        self._dedup = MessageDeduplicator()
 
     async def disconnect(self):
         self.disconnected = True
@@ -395,6 +397,23 @@ class TestSecondaryProfileFatalRecovery:
         assert redelivery_homes
         assert all(path != Path("/profiles/reviewer") for path in redelivery_homes)
 
+
+    @pytest.mark.asyncio
+    async def test_secondary_reconnect_keeps_inbound_dedup(self, monkeypatch):
+        """A secondary profile's rebuilt adapter still drops an inbound ID the stale one admitted."""
+        runner = _secondary_recovery_runner()
+        stale, replacement = _SecondaryRecoveryAdapter(), _SecondaryRecoveryAdapter()
+        runner._profile_adapters["reviewer"] = {Platform.DISCORD: stale}
+        _install_secondary_reconnect_context(monkeypatch, runner, replacement)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", AsyncMock(return_value=True))
+        assert stale._dedup.is_duplicate("m1") is False
+
+        await runner._handle_profile_adapter_fatal_error("reviewer", Platform.DISCORD, stale)
+        await asyncio.gather(*runner._background_tasks)
+
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+        assert replacement._dedup.is_duplicate("m1") is True
+        assert replacement._dedup.is_duplicate("m2") is False
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("connect_result", [True, False], ids=["success", "failure"])

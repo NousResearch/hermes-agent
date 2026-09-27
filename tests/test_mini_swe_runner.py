@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-
 def test_run_task_kimi_omits_temperature():
     """Kimi models should NOT have client-side temperature overrides.
 
@@ -30,5 +29,3 @@ def test_run_task_kimi_omits_temperature():
 
     assert result["completed"] is True
     assert "temperature" not in client.chat.completions.create.call_args.kwargs
-
-

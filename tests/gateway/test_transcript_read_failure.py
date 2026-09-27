@@ -29,17 +29,14 @@ from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_transcript import TranscriptReadError
 
-
 @pytest.fixture
 def store(tmp_path):
     return SessionStore(sessions_dir=tmp_path / "gw", config=GatewayConfig())
-
 
 # --------------------------------------------------------------------------
 # A. read failure != empty transcript (landed on main via #100910; kept as
 #    the contract the slash-command handlers below rely on)
 # --------------------------------------------------------------------------
-
 
 class TestLoadTranscriptReadFailure:
     def test_read_failure_raises_instead_of_returning_empty(self, store, monkeypatch):
@@ -74,13 +71,11 @@ class TestLoadTranscriptReadFailure:
         store._db = None
         assert store.load_transcript("nope") == []
 
-
 # --------------------------------------------------------------------------
 # B. slash-command handlers surface the failure instead of dying silently.
 #    Before: the handler raised, base.py's dispatch wrapper logged
 #    "Command '/x' dispatch failed" and the user got NO reply at all.
 # --------------------------------------------------------------------------
-
 
 class TestSlashCommandsOnUnreadableTranscript:
 
@@ -103,4 +98,3 @@ class TestSlashCommandsOnUnreadableTranscript:
 
         result = await runner._handle_btw_command(_make_event(text="/btw what?"))
         assert result == HISTORY_UNREADABLE
-

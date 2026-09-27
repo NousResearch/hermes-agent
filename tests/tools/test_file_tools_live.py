@@ -10,17 +10,14 @@ asserts zero contamination from shell noise via _assert_clean().
 
 import pytest
 
-
 import os
 import sys
 from pathlib import Path
-
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
-
 
 # ── Shared noise detection ───────────────────────────────────────────────
 # Known shell noise patterns that should never appear in command output.
@@ -36,7 +33,6 @@ _ALL_NOISE_PATTERNS = [
     "Auto-suggestions:",
 ]
 
-
 def _assert_clean(text: str, context: str = "output"):
     """Assert text contains zero shell noise contamination."""
     if not text:
@@ -47,7 +43,6 @@ def _assert_clean(text: str, context: str = "output"):
             f"{text[:500]}"
         )
 
-
 # ── Fixtures ─────────────────────────────────────────────────────────────
 
 # Deterministic file content used across tests. Every byte is known,
@@ -57,18 +52,15 @@ MULTIFILE_A = "def func_alpha():\n    return 42\n"
 MULTIFILE_B = "def func_bravo():\n    return 99\n"
 MULTIFILE_C = "nothing relevant here\n"
 
-
 @pytest.fixture
 def env(tmp_path):
     """A real LocalEnvironment rooted in a temp directory."""
     return LocalEnvironment(cwd=str(tmp_path), timeout=15)
 
-
 @pytest.fixture
 def ops(env, tmp_path):
     """ShellFileOperations wired to the real local environment."""
     return ShellFileOperations(env, cwd=str(tmp_path))
-
 
 @pytest.fixture
 def populated_dir(tmp_path):
@@ -78,7 +70,6 @@ def populated_dir(tmp_path):
     (tmp_path / "notes.txt").write_text(MULTIFILE_C)
     (tmp_path / "data.csv").write_text("col1,col2\n1,2\n3,4\n")
     return tmp_path
-
 
 # ── LocalEnvironment.execute() ───────────────────────────────────────────
 
@@ -95,7 +86,6 @@ class TestLocalEnvironmentExecute:
         assert result["output"] == "exact"
         _assert_clean(result["output"])
 
-
     def test_cat_deterministic_content(self, env, tmp_path):
         f = tmp_path / "det.txt"
         f.write_text(SIMPLE_CONTENT)
@@ -104,17 +94,14 @@ class TestLocalEnvironmentExecute:
         assert result["output"] == SIMPLE_CONTENT
         _assert_clean(result["output"])
 
-
 # ── _has_command ─────────────────────────────────────────────────────────
 
 class TestHasCommand:
     def test_finds_echo(self, ops):
         assert ops._has_command("echo") is True
 
-
     def test_missing_command(self, ops):
         assert ops._has_command("nonexistent_tool_xyz_abc_999") is False
-
 
 # ── read_file ────────────────────────────────────────────────────────────
 
@@ -131,7 +118,6 @@ class TestReadFile:
         assert result.total_lines == 3
         _assert_clean(result.content)
 
-
 # ── write_file ───────────────────────────────────────────────────────────
 
 class TestWriteFile:
@@ -142,7 +128,6 @@ class TestWriteFile:
         assert result.bytes_written == len(SIMPLE_CONTENT.encode())
         assert Path(path).read_text() == SIMPLE_CONTENT
 
-
 # ── patch_replace ────────────────────────────────────────────────────────
 
 class TestPatchReplace:
@@ -152,7 +137,6 @@ class TestPatchReplace:
         result = ops.patch_replace(path, "world", "earth")
         assert result.error is None
         assert Path(path).read_text() == "hello earth\n"
-
 
     def test_identical_replacement_explains_no_change(self, ops, tmp_path):
         path = str(tmp_path / "unchanged.txt")
@@ -171,7 +155,6 @@ class TestPatchReplace:
         assert result.error is None
         assert Path(path).read_text() == "line1\nREPLACED\nline3\n"
 
-
 # ── search ───────────────────────────────────────────────────────────────
 
 class TestSearch:
@@ -184,7 +167,6 @@ class TestSearch:
             _assert_clean(m.content)
             _assert_clean(m.path)
 
-
 # ── _expand_path ─────────────────────────────────────────────────────────
 
 class TestExpandPath:
@@ -193,7 +175,6 @@ class TestExpandPath:
         expected = f"{Path.home()}/test.txt"
         assert result == expected
         _assert_clean(result)
-
 
     def test_tilde_injection_blocked(self, ops):
         """Paths like ~; rm -rf / must NOT execute shell commands."""
@@ -213,6 +194,4 @@ class TestExpandPath:
             assert result.endswith("/file.txt")
             assert "~" not in result
 
-
 # ── Terminal output cleanliness ──────────────────────────────────────────
-

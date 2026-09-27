@@ -54,11 +54,45 @@ def test_memory_info_takes_the_tighter_of_cgroup_and_host(tmp_path, monkeypatch)
     monkeypatch.setattr(resources, "_CGROUP_V1", tmp_path / "nope")
     meminfo = tmp_path / "meminfo"
     monkeypatch.setattr(resources, "_MEMINFO", meminfo)
-    meminfo.write_text("MemTotal:       4194304 kB\nMemAvailable:   3145728 kB\n")
-    (v2 / "memory.max").write_text(str(16 * 1024 ** 3)); (v2 / "memory.current").write_text(str(1024 ** 3))
+    meminfo.write_text("MemTotal:       4194304 kB\nMemAvailable:   3145728 kB\n", encoding="utf-8")
+    (v2 / "memory.max").write_text(str(16 * 1024 ** 3), encoding="utf-8"); (v2 / "memory.current").write_text(str(1024 ** 3), encoding="utf-8")
     assert resources.memory_info().available_mb == 3072
-    (v2 / "memory.max").write_text(str(2 * 1024 ** 3))
+    (v2 / "memory.max").write_text(str(2 * 1024 ** 3), encoding="utf-8")
     info = resources.memory_info()
     assert info.available_mb == 1024 and info.limit_mb == 2048
-    (v2 / "memory.max").write_text("max")  # no limit: host numbers
+    (v2 / "memory.max").write_text("max", encoding="utf-8")  # no limit: host numbers
     assert resources.memory_info() == resources.MemoryInfo(available_mb=3072, limit_mb=4096)
+
+
+def _cgroup(monkeypatch, tmp_path, *, v2=True, limit, usage, cache):
+    """A cgroup tree: ``usage`` consumed, ``cache`` of it reclaimable."""
+    root = tmp_path / "cg"
+    root.mkdir(exist_ok=True)
+    monkeypatch.setattr(resources, "_MEMINFO", tmp_path / "no-meminfo")  # cgroup numbers only
+    if v2:
+        monkeypatch.setattr(resources, "_CGROUP_V2", root)
+        monkeypatch.setattr(resources, "_CGROUP_V1", tmp_path / "nope")
+        (root / "memory.max").write_text(str(limit))
+        (root / "memory.current").write_text(str(usage))
+        (root / "memory.stat").write_text(f"anon 123\ninactive_file {cache}\nslab 7\n")
+    else:
+        monkeypatch.setattr(resources, "_CGROUP_V2", tmp_path / "nope")
+        monkeypatch.setattr(resources, "_CGROUP_V1", root)
+        (root / "memory.limit_in_bytes").write_text(str(limit))
+        (root / "memory.usage_in_bytes").write_text(str(usage))
+        (root / "memory.stat").write_text(f"total_inactive_file {cache}\n")
+
+
+@pytest.mark.parametrize("v2", [True, False], ids=["cgroup-v2", "cgroup-v1"])
+def test_page_cache_does_not_count_against_the_limit(tmp_path, monkeypatch, v2):
+    """643 MiB of mostly page cache must not read as 643 MiB consumed: charging it would tighten the gate
+    over uptime, and refuse to restart a screen the idle auto-stop had just stopped."""
+    MB = 1024 * 1024
+    _cgroup(monkeypatch, tmp_path, v2=v2, limit=4096 * MB, usage=643 * MB, cache=340 * MB)
+    assert resources.memory_info().available_mb == 4096 - (643 - 340)
+
+
+def test_a_zero_floor_disables_the_gate(monkeypatch):
+    """config_defaults documents "0 disables the check"."""
+    monkeypatch.setattr(resources, "min_free_mb", lambda: 0)
+    assert resources.memory_blocker(resources.MemoryInfo(available_mb=10, limit_mb=4096)) is None

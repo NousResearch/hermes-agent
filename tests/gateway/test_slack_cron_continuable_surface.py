@@ -20,7 +20,6 @@ D1/D4/D5/D6.
 import sys
 from unittest.mock import MagicMock
 
-
 # ---------------------------------------------------------------------------
 # Mock slack-bolt if not installed (same pattern as test_slack_mention.py)
 # ---------------------------------------------------------------------------
@@ -49,14 +48,12 @@ def _ensure_slack_mock():
     ]:
         sys.modules.setdefault(name, mod)
 
-
 _ensure_slack_mock()
 
 import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
 _slack_mod.SLACK_AVAILABLE = True
 
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
-
 
 def _make_adapter(extra):
     """object.__new__ skips __init__ (heavy setup) — established slack-test
@@ -67,23 +64,13 @@ def _make_adapter(extra):
     adapter.config = cfg
     return adapter
 
-
 # --- capability flag -------------------------------------------------------
 
-
-
 # --- surface resolver ------------------------------------------------------
-
 
 def test_surface_unrecognised_value_coerces_to_thread():
     """Fail safe: any value that isn't 'in_channel' resolves to 'thread'."""
     adapter = _make_adapter({"cron_continuable_surface": "bogus"})
     assert adapter._cron_continuable_surface() == "thread"
 
-
 # --- pairing warning (D5: warn, not hard-require) --------------------------
-
-
-
-
-

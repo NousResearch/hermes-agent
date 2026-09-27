@@ -15,6 +15,7 @@ import pytest
 from hermes_cli import plugin_catalog as pc_cat
 from hermes_cli import plugins_cmd as pc
 from hermes_cli import plugins_cmd_catalog as cat
+from tests.pm._fixtures import client, isolated_python  # noqa: F401
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
@@ -29,7 +30,7 @@ def _commit(repo: Path, msg: str) -> str:
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch):
+def world(client, tmp_path, monkeypatch):
     """A file:// plugin repo with two commits, a catalog pinned to the FIRST, an isolated plugins dir."""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -40,11 +41,30 @@ def world(tmp_path, monkeypatch):
     (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v2\n")
     sha2 = _commit(repo, "v2")
 
-    plugins_dir = tmp_path / "plugins"
-    plugins_dir.mkdir()
+    home = tmp_path / "home"
+    plugins_dir = home / "plugins"
+    plugins_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
     monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: False)
     monkeypatch.setattr(pc, "_console", lambda: type("C", (), {"print": lambda *a, **k: None})())
+
+    def publish_without_environment(*_args, plugins=None, **_kwargs):
+        from hermes_cli.runtime_state import finish_publication
+        from pm import paths
+        from pm.plugin_inputs import Selection, StagedUpdate
+        from pm.publication import PluginSelection, StagedPlugin
+
+        if isinstance(plugins, StagedUpdate):
+            change = StagedPlugin(dict(plugins.data))
+        else:
+            assert isinstance(plugins, Selection)
+            change = PluginSelection(dict(plugins.data))
+        change.publish(paths.repo_root())
+        finish_publication(paths.repo_root())
+
+    # Catalog behavior is independent of dependency-environment construction.
+    monkeypatch.setattr("pm.client.sync_venv", publish_without_environment)
 
     # Catalog: one entry pinned to sha1, mutable via state["pin"]; kill list via state["removed"]. The
     # real loader is https-only, so the fixture entry is built directly (file:// repo).
@@ -84,7 +104,7 @@ def test_catalog_name_installs_pinned_sha_with_sidecar_then_update_repins(world,
     target, _m, name = cat.install_catalog_entry(entry, force=False)
     assert name == "cat-plugin"
     assert _head(target) == world["sha1"] != world["sha2"]  # pinned, not HEAD
-    sidecar = json.loads((target / cat.CATALOG_SIDECAR).read_text())
+    sidecar = cat.catalog_install_record(target)
     assert (sidecar["catalog_name"], sidecar["sha"]) == ("cat-plugin", world["sha1"])
     assert cat.catalog_annotation(target) == f"catalog:community@{world['sha1'][:8]}"
 
@@ -109,7 +129,7 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
     with pytest.raises(SystemExit):
         pc.cmd_install("cat-plugin", enable=False)
     pc.cmd_install("cat-plugin", enable=False, allow_removed=True)
-    assert (world["plugins_dir"] / "cat-plugin" / cat.CATALOG_SIDECAR).exists()
+    assert cat.catalog_install_record(world["plugins_dir"] / "cat-plugin") is not None
     assert cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin",
                                   cat.resolved_removed_entries()) == "malware"
 
@@ -168,7 +188,7 @@ def test_repin_keeps_local_files_backs_up_edits_and_follows_manifest_rename(worl
     target, _m, _n = cat.install_catalog_entry(entry, force=False)
     (target / "config.yaml").write_text("api_key: real\n")                      # installer/user data
     (target / "__init__.py").write_text("def register(ctx):\n    pass  # mine\n")  # tracked edit
-    pc._save_enabled_set({"cat-plugin"})
+    pc._write_config_value("plugins", "enabled", ["cat-plugin"])
     # New pin renames the manifest.
     repo = world["repo"]
     (repo / "plugin.yaml").write_text("name: cat-plugin-v2\nversion: 2.0.0\ndescription: d\n")
@@ -182,6 +202,104 @@ def test_repin_keeps_local_files_backs_up_edits_and_follows_manifest_rename(worl
     backups = list((world["plugins_dir"].parent / "plugins-backup").glob("cat-plugin-*/__init__.py"))
     assert backups and "# mine" in backups[0].read_text()
     assert any("plugins-backup" in w for w in result["warnings"]) and any("renamed" in w for w in result["warnings"])
+
+
+@pytest.mark.parametrize("via", ["url", "catalog"])
+def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world, tmp_path, monkeypatch, via):
+    """A subdirectory install carries no ``.git``; both update paths must preserve user config/data."""
+    mono = tmp_path / "mono"
+    src = mono / "plugins" / "sub-plugin"
+    src.mkdir(parents=True)
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 1.0.0\ndescription: d\n")
+    (src / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    (src / "config.yaml.example").write_text("endpoint: default\n")
+    (src / "desktop").mkdir()
+    (src / "desktop" / "plugin.js").write_text("export default { id: \"v1\" }\n")
+    (src / "server.js").write_text("console.log('v1')\n")
+    (src / "dashboard").mkdir()
+    (src / "dashboard" / "manifest.json").write_text("{}")
+    (src / "hooks").mkdir()
+    (src / "hooks" / "run.cjs").write_text("module.exports = 1\n")
+    sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
+    pin = {"sha": _commit(mono, "v1")}
+
+    def entry():
+        return pc_cat.PluginCatalogEntry(
+            name="sub-plugin",
+            repo=mono.as_uri(),
+            sha=pin["sha"],
+            description="d",
+            maintainer="t",
+            subdir="plugins/sub-plugin",
+        )
+
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [entry()])
+    if via == "catalog":
+        target = cat.install_catalog_entry(entry(), force=False)[0]
+    else:
+        target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/sub-plugin", force=False)[0]
+    assert not (target / ".git").exists()
+
+    (target / "config.yaml").write_text("endpoint: mine\n")
+    (target / "data").mkdir()
+    (target / "data" / "state.json").write_text("{}")
+
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 2.0.0\ndescription: d\n")
+    (src / "config.yaml.example").write_text("endpoint: new-default\n")
+    shutil.rmtree(src / "desktop")
+    (src / "server.js").unlink()
+    shutil.rmtree(src / "dashboard")
+    shutil.rmtree(src / "hooks")
+    pin["sha"] = _commit(mono, "v2")
+    assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
+
+    assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
+    assert (target / "config.yaml").read_text() == "endpoint: mine\n"
+    assert (target / "data" / "state.json").read_text() == "{}"
+    assert not (target / "desktop").exists()
+    assert not (target / "server.js").exists()
+    assert not (target / "dashboard").exists() and not (target / "hooks" / "run.cjs").exists()
+
+
+def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
+    """A single ``!! data/`` status entry must preserve every file below that ignored directory."""
+    repo = world["repo"]
+    (repo / ".gitignore").write_text("data/\n.venv/\nnode_modules/\n")
+    world["state"]["pin"] = _commit(repo, "ignore data")
+    target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)[0]
+    assert (target / ".git").exists()
+
+    (target / "data" / "db").mkdir(parents=True)
+    (target / "data" / "db" / "index.db").write_text("user data")
+    # An ignored venv always holds symlinks (bin/python); it is a reproducible artefact, not user state.
+    (target / ".venv" / "bin").mkdir(parents=True)
+    (target / ".venv" / "bin" / "python").symlink_to("/usr/bin/python3")
+    (target / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin")
+    (target / "node_modules" / "x").mkdir(parents=True)
+    (target / "node_modules" / "x" / "index.js").write_text("module.exports = 1")
+
+    (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v3\n")
+    world["state"]["pin"] = _commit(repo, "v3")
+    assert pc.dashboard_update_user_plugin("cat-plugin")["unchanged"] is False
+
+    assert _head(target) == world["state"]["pin"]
+    assert (target / "data" / "db" / "index.db").read_text() == "user data"
+    # Excluded dependency dirs are not carried at all: a partial copy would be a broken install.
+    assert not (target / ".venv").exists() and not (target / "node_modules").exists()
+
+    # A symlink in the ignored set is never followed into the update: it fails closed, naming the path,
+    # and the live plugin stays at its current revision with its user data.
+    published = world["state"]["pin"]
+    outside = repo.parent / "outside.yaml"
+    outside.write_text("secret")
+    (target / "data" / "link.yaml").symlink_to(outside)
+    (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v4\n")
+    world["state"]["pin"] = _commit(repo, "v4")
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["ok"] is False and "data/link.yaml" in result["error"]
+    assert _head(target) == published
+    assert (target / "data" / "link.yaml").is_symlink()
+    assert (target / "data" / "db" / "index.db").read_text() == "user data"
 
 
 def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, tmp_path, monkeypatch):

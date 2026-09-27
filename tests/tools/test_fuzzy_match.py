@@ -229,6 +229,28 @@ class TestUnicodeNormalized:
         assert new == expected, f"Got {new!r}"
 
 
+    def test_equal_boundary_inside_expansion_keeps_region_text(self):
+        """An edit boundary falling inside a multi-char expansion (em-dash ->
+        '--') must snap to the expansion, not copy text from the region start.
+
+        SequenceMatcher splits old/new so that the second equal block begins
+        at the expansion's second '-': a norm index with no direct original
+        position. The old fallback (position 0) spliced the whole region text
+        into the replacement, duplicating it after every edit.
+        """
+        content = "value = x\u2014y\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "value = x--y", "value = x-@-y")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert new == "value = x\u2014@\u2014y\n", f"Got {new!r}"
+
+        # Same boundary class for a 3-char expansion (ellipsis -> '...').
+        new, count, strategy, err = fuzzy_find_and_replace("a\u2026b\n", "a...b", "a..X.b")
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert new == "a\u2026X\u2026b\n", f"Got {new!r}"
+
 
 class TestUnicodeSpaceAndMinusNormalized:
     """Space-separator family + Unicode minus normalization.

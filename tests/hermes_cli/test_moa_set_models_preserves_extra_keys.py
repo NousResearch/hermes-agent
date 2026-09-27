@@ -91,7 +91,7 @@ def test_moa_save_writes_only_the_moa_section(tmp_path, monkeypatch):
     out-of-band (or was simply stale) rewrote ``fallback_providers`` too. Real config pipeline,
     temp HERMES_HOME.
     """
-    import yaml
+    import hermes_yaml as yaml
     from hermes_cli.config import get_config_path, load_config, read_raw_config
 
     home = tmp_path / ".hermes"

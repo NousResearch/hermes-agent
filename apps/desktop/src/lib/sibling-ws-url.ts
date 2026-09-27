@@ -81,6 +81,7 @@ export async function resolveSiblingWsUrl(
     RESOLVE_TIMEOUT_MS,
     'Timed out minting the gateway WebSocket URL'
   )
+
   const url = new URL(wsUrl)
 
   if (!url.pathname.endsWith('/api/ws')) {

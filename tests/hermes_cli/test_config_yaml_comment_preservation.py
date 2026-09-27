@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 REPO = Path(__file__).resolve().parents[2]
 

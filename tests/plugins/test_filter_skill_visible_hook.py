@@ -7,6 +7,7 @@ the skill visible; stock gates still apply first, so a plugin can only ADD hidin
 """
 
 import json
+import sys
 
 import pytest
 
@@ -115,16 +116,18 @@ class TestFindAllSkills:
             names = {s["name"] for s in _find_all_skills()}
         assert names == {"plain-skill"}
 
+    @pytest.mark.platforms("any")
     def test_stock_gates_still_apply_without_hook(self, monkeypatch, tmp_path):
         _no_hook(monkeypatch)
         monkeypatch.setattr("tools.skills_tool._SKILLS_CACHE", {})
         _make_skill(tmp_path, "visible")
-        # windows-only skill on a non-windows host is hidden by the STOCK platform gate
-        _make_skill(tmp_path, "win-only", frontmatter_extra="platforms: [windows]\n")
+        # The stock gate hides a skill for a different OS on every real host.
+        other_platform = "linux" if sys.platform == "win32" else "windows"
+        _make_skill(tmp_path, "other-platform", frontmatter_extra=f"platforms: [{other_platform}]\n")
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             names = {s["name"] for s in _find_all_skills()}
         assert "visible" in names
-        assert "win-only" not in names
+        assert "other-platform" not in names
 
     def test_signature_tracks_hook_registration(self, surface_gate, monkeypatch, tmp_path):
         dirs = [tmp_path]

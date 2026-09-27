@@ -199,7 +199,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     signature = _skills_scan_signature(dirs_to_scan, disabled)
     now = time.monotonic()
     cached = _SKILLS_CACHE.get(cache_key)
-    if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
+    # Active callbacks can change without changing the boolean registration signature.
+    filter_gated = signature[-1]
+    if (cached is not None and not filter_gated and cached[0] == signature
+            and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS):
         # Shallow copies: callers mutate the returned dicts (web_server annotates
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
         return [dict(s) for s in cached[2]]

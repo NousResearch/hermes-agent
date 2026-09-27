@@ -33,10 +33,10 @@ def checkout(tmp_path, monkeypatch):
     return root, old, tip
 
 
-def prepare(root):
+def prepare(root, *, is_fork=False):
     return update_cmd._prepare_checkout_for_update(
         ["git"], "main", update_cmd._current_branch_name(["git"], check=True),
-        is_fork=False, assume_yes=True, gateway_mode=False, gw_input_fn=None,
+        is_fork=is_fork, assume_yes=True, gateway_mode=False, gw_input_fn=None,
         switch_branch=False, _windows_gateway_resume=None,
     )
 
@@ -159,6 +159,41 @@ def test_fork_sync_after_stale_branch_repair(checkout, monkeypatch, upstream_res
         assert request["expected_sha"] == (upstream_tip if upstream_result == "original" else tip)
         assert git(root, "rev-parse", "main") == (upstream_tip if upstream_result == "original" else tip)
         assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
+def test_early_fork_sync_without_push_still_completes(checkout, monkeypatch):
+    root, old, tip = checkout
+    git(root, "checkout", "-q", "main")
+    git(root, "commit", "--allow-empty", "-qm", "upstream")
+    upstream_tip = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "-q", "--detach", tip)
+    git(root, "branch", "-f", "main", tip)
+
+    def sync(*args, **kwargs):
+        git(root, "merge", "--ff-only", upstream_tip)
+        # Successful local sync need not push the new SHA to origin.
+        return True
+
+    monkeypatch.setattr(update_cmd._m(), "_sync_with_upstream_if_needed", sync)
+    plan = prepare(root, is_fork=True)
+    assert plan.upstream_checked
+    assert git(root, "rev-parse", "HEAD") == upstream_tip
+    assert git(root, "rev-parse", "origin/main") == tip
+    before_pull = update_cmd._pull_updates(
+        ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
+        gw_input_fn=None, discard_local_changes=False, keep_stash=False,
+        pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch,
+        sync_upstream=True,
+    )
+    completed = []
+    monkeypatch.setattr(update_cmd, "_complete_source_update", completed.append)
+    request = {}
+    update_cmd._apply_pulled_update(
+        ["git"], "main", before_pull, plan,
+        _windows_gateway_resume=None, completion_request=request,
+    )
+    assert completed == [request]
+    assert request["expected_sha"] == upstream_tip
 
 
 def test_command_hands_off_after_existing_main_switch(update_tree, monkeypatch, capsys):

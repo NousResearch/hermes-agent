@@ -215,12 +215,20 @@ def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
 
 
 def _discard_previous_entry(store: Store, previous_entry) -> None:
-    # A stale previous entry is only a restore point. A locked file
-    # (mapped DLL, AV hold) must not fail the install that replaced it.
+    # Garbage collection only: the new entry is published, verified and
+    # committed by the time this runs. On Windows a still-mapped DLL in
+    # the displaced entry can outlive the whole retry window — failing
+    # here reports a broken update that actually succeeded (#124807).
+    # The leftover is retried by _settle_previous_entry on the next
+    # install once the hold is gone.
     try:
         _remove_entry(store, previous_entry.name)
     except OSError as e:
-        LOG.warning("keeping %s: %s (will retry on next install; delete manually once unlocked)", previous_entry.name, e)
+        LOG.warning(
+            "previous entry %s could not be removed (%s); "
+            "it will be retried on the next install",
+            previous_entry.name, e,
+        )
 
 
 def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:

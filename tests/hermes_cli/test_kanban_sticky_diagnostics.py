@@ -67,3 +67,37 @@ def test_ordinary_threshold_and_error_fallback_are_preserved():
     diagnostics = _diagnostics({}, failures=7)
     assert len(diagnostics) == 1
     assert "ModuleNotFoundError" in diagnostics[0].title
+
+
+def test_systemic_trip_round_trips_through_real_board_and_clears_on_unblock(tmp_path, monkeypatch):
+    from pathlib import Path
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli.kanban_db_dispatch import _account_crashes, _DeadWorker
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        task_ids = [kb.create_task(conn, title=f"worker {i}", assignee="default")
+                    for i in range(3)]
+        kb.recompute_ready(conn)
+        error = "ModuleNotFoundError: No module named 'hermes_cli.main'"
+        dead = _DeadWorker("unknown", None, error, "crashed", {})
+        assert set(_account_crashes(conn, [(tid, 0, "fixture", dead) for tid in task_ids])) == set(task_ids)
+        for tid in task_ids:
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
+            events = kb.list_events(conn, tid)
+            assert row["status"] == "blocked"
+            assert row["consecutive_failures"] == 1
+            assert not any(e.kind == "blocked" for e in events)
+            diagnostics = compute_task_diagnostics(row, events, kb.list_runs(conn, tid))
+            assert [d.kind for d in diagnostics] == ["repeated_failures"]
+            assert diagnostics[0].severity == "error"
+            assert error in diagnostics[0].detail
+            assert kb.unblock_task(conn, tid)
+            assert compute_task_diagnostics(kb.get_task(conn, tid), kb.list_events(conn, tid),
+                                            kb.list_runs(conn, tid)) == []
+    finally:
+        conn.close()

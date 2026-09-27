@@ -119,7 +119,7 @@ class TestSlackExecApproval:
         assert "hermes_deny" in action_ids
         # Each button carries the session key as value
         for e in elements:
-            assert e["value"] == "agent:main:slack:group:C1:1111"
+            assert e["value"] == "agent:main:slack:group:C1:1111|"  # "session_key|request_id"
 
     @pytest.mark.asyncio
     async def test_smart_deny_owner_override_hides_persistent_buttons(self):

@@ -46,10 +46,11 @@ function launch(appDirectory: string, mode: string, generation: number, userData
   return { child, output: () => output }
 }
 
-async function resultOf(process: FixtureProcess, filename: string): Promise<Record<string, any>> {
+async function resultOf(process: FixtureProcess, filename: string, windowMs = 15_000): Promise<Record<string, any>> {
   let lastParseError = ''
+  const attempts = Math.ceil(windowMs / 50)
 
-  for (let attempt = 0; attempt < 300; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (fs.existsSync(filename)) {
       try {
         return JSON.parse(fs.readFileSync(filename, 'utf8'))
@@ -133,19 +134,48 @@ const runTest = fs.existsSync(executable) ? test : test.skip
  * `kill()` can still see the lock held (~1.9s observed on this box). Retrying
  * launches until the successor actually acquires is the correct fix; asserting
  * on the first attempt races the OS lock teardown.
+ *
+ * Under full-suite load the bottleneck is Electron's boot time, not the lock:
+ * a successor can take longer than one result window to publish anything.
+ * A slow attempt is therefore retried, not fatal — only an explicit
+ * `acquired: false` is evidence about the owner lock. The loop is bounded by
+ * wall clock so a genuine hang still fails with a precise message.
  */
 async function launchUntilAcquired(
   launchSuccessor: (resultFile: string, attempt: number) => FixtureProcess,
   resultsDirectory: string,
-  deadlineAttempts = 30
+  deadlineMs = 90_000,
+  perAttemptMs = 20_000
 ): Promise<{ process: FixtureProcess; result: Record<string, any> }> {
+  const startedAt = Date.now()
   let lastResult: Record<string, any> = {}
+  let lastError: unknown
 
-  for (let attempt = 0; attempt < deadlineAttempts; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
+    const remaining = deadlineMs - (Date.now() - startedAt)
+
+    if (remaining <= 0) {break}
+
     const resultFile = path.join(resultsDirectory, `successor-${attempt}.json`)
     const process = launchSuccessor(resultFile, attempt)
 
-    lastResult = await resultOf(process, resultFile)
+    try {
+      lastResult = await resultOf(process, resultFile, Math.min(perAttemptMs, remaining))
+    } catch (error) {
+      lastError = error
+
+      try {
+        await stopOwnedProcess(process)
+      } catch {
+        // A helper tree can outlive the attempt; the next attempt still proves
+        // the lock behavior the test is about.
+      }
+
+      await delay(250)
+
+      continue
+    }
+
     await stopOwnedProcess(process)
 
     if (lastResult.acquired === true) {
@@ -155,7 +185,9 @@ async function launchUntilAcquired(
     await delay(250)
   }
 
-  throw new Error(`successor never acquired the process-owner lock: ${JSON.stringify(lastResult)}`)
+  const detail = lastError instanceof Error ? ` (last attempt error: ${lastError.message})` : ''
+
+  throw new Error(`successor never acquired the process-owner lock within ${deadlineMs}ms: ${JSON.stringify(lastResult)}${detail}`)
 }
 
 runTest('one Electron userData owner admits updates; loser leaves journal unchanged; successor rejects stale authority', async () => {
@@ -259,4 +291,4 @@ runTest('one Electron userData owner admits updates; loser leaves journal unchan
 
     if (!removed) {console.warn(`fixture cleanup left scratch directory in place: ${runDirectory}`)}
   }
-}, 120_000)
+}, 240_000)

@@ -936,9 +936,24 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Register a lifecycle hook callback (``PluginDispatchMixin.track_hook``)."""
         return self._manager.track_hook(self, hook_name, callback, hold_stream=hold_stream)
 
-    def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
+    def register_middleware(self, kind: str, callback: Callable, *,
+                            failure_mode: str = "open") -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
+        if failure_mode not in {"open", "closed"}:
+            raise ValueError("middleware failure_mode must be open or closed")
+        if failure_mode == "closed":
+            if kind not in {"tool_execution", "llm_execution"}:
+                raise ValueError("closed failure mode requires execution middleware")
+
+            original_callback = callback
+
+            @wraps(original_callback)
+            def closed_callback(**kwargs):
+                return original_callback(**kwargs)
+
+            closed_callback.hermes_failure_mode = "closed"
+            callback = closed_callback
         return self._track_callback(
             "middleware", kind, callback, self._manager._middleware, VALID_MIDDLEWARE
         )

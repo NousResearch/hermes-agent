@@ -327,7 +327,7 @@ export default function ChannelsPage() {
         disabled={restarting}
         prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
       >
-        {restarting ? "Restarting…" : "Restart gateway"}
+        {restarting ? t.channels.restarting : t.channels.restartGateway}
       </Button>,
     );
     return () => setEnd(null);
@@ -368,7 +368,7 @@ export default function ChannelsPage() {
               disabled={restarting}
               prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
             >
-              {restarting ? "Restarting…" : "Restart now"}
+              {restarting ? t.channels.restarting : t.channels.restartNow}
             </Button>
           </CardContent>
         </Card>
@@ -624,7 +624,10 @@ export default function ChannelsPage() {
                         <Switch
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
-                          aria-label={`Enable ${platform.name}`}
+                          aria-label={t.channels.enablePlatform.replace(
+                            "{name}",
+                            platform.name,
+                          )}
                         />
                       )}
                     </div>
@@ -641,7 +644,7 @@ export default function ChannelsPage() {
                         )
                       }
                     >
-                      Test
+                      {t.channels.testButton}
                     </Button>
                     {platform.id !== "telegram" && (
                       <Button
@@ -650,7 +653,7 @@ export default function ChannelsPage() {
                         onClick={() => openConfig(platform)}
                         prefix={<Settings2 className="h-4 w-4" />}
                       >
-                        Configure
+                        {t.channels.configureButton}
                       </Button>
                     )}
                   </div>
@@ -1325,7 +1328,7 @@ function TelegramOnboardingPanel({
     <div className="rounded-sm border border-border bg-background/35 p-4">
       <div className="grid gap-1">
         <span className="font-mondwest text-sm text-foreground">
-          Choose how to connect your Telegram bot
+          {t.channels.telegramChooseHow}
         </span>
         <span className="text-xs text-muted-foreground">
           {t.channels.telegramBothOptionsHint}

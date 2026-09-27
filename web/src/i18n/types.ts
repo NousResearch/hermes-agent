@@ -1498,6 +1498,13 @@ export interface Translations {
     telegramAllowedUsers: string;
     telegramOwnerDetected: string;
     telegramOpen: string;
+    restartGateway: string;
+    restartNow: string;
+    restarting: string;
+    enablePlatform: string;
+    testButton: string;
+    configureButton: string;
+    telegramChooseHow: string;
   };
 
   // ── Kanban ──

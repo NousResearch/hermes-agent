@@ -1734,5 +1734,12 @@ export const en: Translations = {
     telegramAllowedUsers: "Allowed users",
     telegramOwnerDetected: "owner detected",
     telegramOpen: "Open Telegram",
+    restartGateway: "Restart gateway",
+    restartNow: "Restart now",
+    restarting: "Restarting…",
+    enablePlatform: "Enable {name}",
+    testButton: "Test",
+    configureButton: "Configure",
+    telegramChooseHow: "Choose how to connect your Telegram bot",
   },
 };

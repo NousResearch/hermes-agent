@@ -91,7 +91,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
-    _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
+    _normalize_managed_eol, _park_detached_head, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
     _sync_with_upstream_if_needed)
@@ -824,8 +824,7 @@ def _pull_updates(
             if merge_ref != f"origin/{branch}":
                 # Keep detached local commits reachable, too. Named branches are
                 # untouched by checkout --detach; an autostash protects dirty files.
-                if pre_pull_sha and not _git_run(git_cmd, ["branch", "--show-current"]).stdout.strip():
-                    _git_run(git_cmd, ["update-ref", f"refs/hermes/pre-release/{pre_pull_sha}", pre_pull_sha], check=True)
+                _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
                 _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
             elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
                 _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
@@ -946,6 +945,8 @@ def _prepare_checkout_for_update(
 
     if not release_tag and not in_place_update and current_branch == "HEAD" != branch:
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
+        # Before the stash: its refs/stash would contain HEAD until it is dropped.
+        _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
     auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
     if (
         not release_tag and not in_place_update and current_branch != branch
@@ -1103,6 +1104,9 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
         print("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash")
         sys.exit(1)
 
+    from hermes_cli._subprocess_compat import expose_pm_git
+
+    expose_pm_git(_m().PROJECT_ROOT)
     git_cmd = _base_git_cmd()
     if sys.platform == "win32" and git_dir.exists():
         _git_run(git_cmd, ["config", "windows.appendAtomically", "false"])
@@ -1305,6 +1309,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     target_repository = None
     selected_channel = _source_update_channel(args)
     if not getattr(args, "branch", None):
+        from hermes_cli.release_channels import retrying_reads
         from hermes_cli.source_releases import resolve_source_target
 
         from copy import deepcopy
@@ -1315,8 +1320,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             Path(completion_request["home"]) / "config.yaml"), _m().PROJECT_ROOT))
         print(f"→ Update channel: {selected_channel}")
         try:
-            target = resolve_source_target(
-                selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
+            with retrying_reads():
+                target = resolve_source_target(
+                    selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             print(f"✗ Could not resolve the {selected_channel} source channel: {exc}. No update was applied.")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

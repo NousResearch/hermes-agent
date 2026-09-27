@@ -75,6 +75,22 @@ describe('applyRuntimeInfo approval mode', () => {
     expect(approvalModeForProfile('work')).toBe('smart')
     expect(approvalModeForProfile('default')).toBe('smart')
   })
+
+  it('never lets another backend runtime set the active profile approval chip', () => {
+    applyRuntimeInfo({ approval_mode: 'manual' })
+
+    // A bot tile, a branch of a bot chat, an All-profiles resume, and a
+    // same-named profile on another connection all report THEIR config.
+    applyRuntimeInfo({ approval_mode: 'off' }, { foreground: false, owner: { connectionId: 'local', profile: 'bot' } })
+    applyRuntimeInfo({ approval_mode: 'off' }, { owner: 'bot' })
+    applyRuntimeInfo({ approval_mode: 'off' }, { owner: { connectionId: 'ssh-box', profile: 'work' } })
+
+    expect(approvalModeForProfile('work')).toBe('manual')
+
+    applyRuntimeInfo({ approval_mode: 'off' }, { owner: { connectionId: 'local', profile: 'work' } })
+
+    expect(approvalModeForProfile('work')).toBe('off')
+  })
 })
 
 const initialOnboardingState = $desktopOnboarding.get()

@@ -1,11 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  $composerAttachments,
-  addComposerAttachment,
-  type ComposerAttachment,
-  mainComposerScope
-} from './composer'
+import { $composerAttachments, addComposerAttachment, type ComposerAttachment, mainComposerScope } from './composer'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -56,18 +51,21 @@ describe('composer queue store', () => {
     // Mirrors use-composer-queue: enqueue → clear({ retainPreviewUrls }).
     const revokeObjectURL = stubRevokeObjectURL()
     const blobUrl = 'blob:hermes-queued-1'
+
     const image = {
       id: 'image:drop',
       kind: 'image' as const,
       label: 'Lattice.png',
       previewUrl: blobUrl
     }
+
     addComposerAttachment(image)
 
     const queued = enqueueQueuedPrompt(SESSION_KEY, {
       text: 'look at this',
       attachments: $composerAttachments.get()
     })
+
     mainComposerScope.clear({ retainPreviewUrls: true })
 
     expect(queued).not.toBeNull()
@@ -82,6 +80,7 @@ describe('composer queue store', () => {
   it('drain handoff retains blob previews when the queued entry is removed after submit owns them', () => {
     const revokeObjectURL = stubRevokeObjectURL()
     const blobUrl = 'blob:hermes-drain-1'
+
     const queued = enqueueQueuedPrompt(SESSION_KEY, {
       text: 'drain me',
       attachments: [{ id: 'image:drop', kind: 'image', label: 'shot.png', previewUrl: blobUrl }]
@@ -96,6 +95,7 @@ describe('composer queue store', () => {
     const revokeObjectURL = stubRevokeObjectURL()
     const oldUrl = 'blob:hermes-old'
     const newUrl = 'blob:hermes-new'
+
     const queued = enqueueQueuedPrompt(SESSION_KEY, {
       text: 'edit me',
       attachments: [{ id: 'image:old', kind: 'image', label: 'old.png', previewUrl: oldUrl }]
@@ -341,7 +341,7 @@ describe('cross-window sync (#46732)', () => {
     window.dispatchEvent(new StorageEvent('storage', { key, newValue }))
   }
 
-  it('adopts another window\'s write from the storage event', () => {
+  it("adopts another window's write from the storage event", () => {
     window.localStorage.setItem(
       QUEUE_STORAGE_KEY,
       JSON.stringify({ 'session-other': [storedEntry('q1', 'from other window')] })
@@ -352,14 +352,17 @@ describe('cross-window sync (#46732)', () => {
     expect(getQueuedPrompts('session-other').map(entry => entry.text)).toEqual(['from other window'])
   })
 
-  it('does not clobber another window\'s entries when saving its own (same-frame race)', () => {
+  it("does not clobber another window's entries when saving its own (same-frame race)", () => {
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'mine first' })
 
     // Another window queues into its own session directly in storage, faster
     // than any storage event could reach us.
     window.localStorage.setItem(
       QUEUE_STORAGE_KEY,
-      JSON.stringify({ ...JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!), 'session-other': [storedEntry('q2', 'theirs')] })
+      JSON.stringify({
+        ...JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!),
+        'session-other': [storedEntry('q2', 'theirs')]
+      })
     )
 
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'mine second' })

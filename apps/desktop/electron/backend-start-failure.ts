@@ -138,7 +138,9 @@ export function isSshAuthFailedBootFailure(error: unknown): boolean {
 
   const message = error instanceof Error ? error.message : String(error ?? '')
 
-  return /SSH authentication to .+ failed|Permission denied \((?:publickey|password|keyboard-interactive)/i.test(message)
+  return /SSH authentication to .+ failed|Permission denied \((?:publickey|password|keyboard-interactive)/i.test(
+    message
+  )
 }
 
 /**
@@ -183,7 +185,10 @@ export function shouldLatchHostKeyChangedFailure(context: RemoteBootRetryContext
  */
 export function isRetryableRemoteBootFailure(context: RemoteBootRetryContext): boolean {
   return (
-    context.attemptedRemote && !context.isReauth && context.isHostKeyChanged !== true && context.isSshAuthFailed !== true
+    context.attemptedRemote &&
+    !context.isReauth &&
+    context.isHostKeyChanged !== true &&
+    context.isSshAuthFailed !== true
   )
 }
 

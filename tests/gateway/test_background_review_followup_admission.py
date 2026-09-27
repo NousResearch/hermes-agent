@@ -365,7 +365,7 @@ async def test_base_delivery_completes_gateway_review_with_actual_outcome(
     adapter._active_sessions[session_key] = asyncio.Event()
     if handoff:
         adapter._pending_messages[session_key] = _event(text="queued follow-up")
-        adapter._spawn_drain_task = lambda _pending, _key: None
+        adapter._spawn_drain_task = lambda _pending, _key, **_kwargs: None
 
     await adapter._process_message_background(event, session_key)
 
@@ -417,7 +417,7 @@ async def test_drain_handoff_completes_only_its_own_review_ownership(monkeypatch
 
     adapter.set_message_handler(_handler)
     adapter.send = _send
-    adapter._spawn_drain_task = lambda pending, _key: drained.append(pending)
+    adapter._spawn_drain_task = lambda pending, _key, **_kwargs: drained.append(pending)
     adapter._stop_typing_refresh = _stop_typing
 
     await adapter._process_message_background(_event(), session_key)

@@ -828,6 +828,7 @@ export function ApiKeyForm({
 
     setSaving(true)
     setError(null)
+
     const result = await onSave(
       option.envKey,
       value,

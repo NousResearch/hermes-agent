@@ -149,6 +149,20 @@ def step_state_db_guard() -> dict:
     return {"ok": False, "error": message}
 
 
+def step_drop_live_plugin_catalog() -> dict:
+    """Drop the active home's cached live plugin catalog after a code change.
+
+    Bundled/sealed app updates never run ``hermes update``'s maintenance tail,
+    so without this a pre-update snapshot out-votes the newer in-tree catalog
+    for the rest of its TTL (#119340). Per home, like the boot record.
+    """
+    from hermes_constants import get_hermes_home
+    from hermes_cli.plugin_catalog import invalidate_live_cache_for_home
+
+    invalidate_live_cache_for_home(get_hermes_home())
+    return {"ok": True}
+
+
 def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
     """One-time adoption of shipped stampless installs (birth certificate).
 
@@ -285,6 +299,7 @@ HOME_STEPS: tuple = (
     ("migrate_config", step_migrate_config),
     ("sync_skills", step_sync_skills),
     ("state_db_guard", step_state_db_guard),
+    ("drop_live_plugin_catalog", step_drop_live_plugin_catalog),
     ("expose_cli", expose_cli),
 )
 

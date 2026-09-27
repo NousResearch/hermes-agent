@@ -18,6 +18,36 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process'
 export type ExternalOpenResult =
   { ok: true } | { ok: false; reason: 'invalid' } | { ok: false; reason: 'failed'; message: string }
 
+export interface FileOpenGuardDeps {
+  log: (line: string) => void
+  reportMissing: (rawUrl: string, message: string) => void
+}
+
+/**
+ * Decide what a pre-open stat failure means for a file open (#122027). Lives
+ * here, not inline in main.ts, so the classification is unit-tested without
+ * loading electron — same injected-deps shape as the rest of the module.
+ *
+ * Returns true when the failure was a MISS: it has been reported through
+ * reportMissing and the caller must NOT hand the path to the OS (a reveal of
+ * a non-existent path is silently a no-op on macOS; an open of one reads as
+ * "No application found" on LaunchServices). Returns false for every other
+ * stat failure (EACCES on a locked volume, ELOOP, Windows EPERM): those are
+ * logged and the caller still proceeds to the OS, so an existing-but-locked
+ * file keeps its real error and a stat failure never fabricates a miss.
+ */
+export function reportPreOpenStatFailure(error: unknown, rawUrl: string, deps: FileOpenGuardDeps): boolean {
+  if (error && typeof error === 'object' && (error as { code?: string }).code === 'missing-file') {
+    deps.reportMissing(rawUrl, externalOpenErrorMessage(error))
+
+    return true
+  }
+
+  deps.log(`[file] pre-open stat failed: ${externalOpenErrorMessage(error)}`)
+
+  return false
+}
+
 export interface ExternalOpenDeps {
   isWsl: boolean
   spawn: (cmd: string, args: readonly string[], opts: SpawnOptions) => ChildProcess

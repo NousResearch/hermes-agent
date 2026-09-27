@@ -178,7 +178,7 @@ const rpc = (
  */
 const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
-  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
+  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset', '/clear'], surface: action('new') },
   {
     name: '/stop',
     description: 'Stop the active turn and background processes',
@@ -579,10 +579,7 @@ export function isDesktopSlashSuggestion(command: string): boolean {
  * executes it (#57641). Gated on `isDesktopSlashCommand` so aliases whose
  * canonical has no desktop surface (e.g. `/reload_mcp`) stay hidden.
  */
-export function isDesktopSlashSuggestionWithOptions(
-  command: string,
-  options: { exactAlias?: string } = {}
-): boolean {
+export function isDesktopSlashSuggestionWithOptions(command: string, options: { exactAlias?: string } = {}): boolean {
   const normalized = normalizeCommand(command)
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.

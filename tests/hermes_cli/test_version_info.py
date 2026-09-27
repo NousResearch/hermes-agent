@@ -31,6 +31,31 @@ def test_display_version_names_the_distance_without_the_commit():
     assert VersionInfo("0.21.5", "0.21.5", 0, None, None, "git").display_version == "0.21.5"
 
 
+def test_display_version_names_the_commit_of_a_tagless_install(tmp_path, monkeypatch):
+    """No reachable release tag: the stamp's own ``displayVersion`` is the label
+    (``git.<short>``, see scripts/write_install_stamp.py). Re-deriving it from
+    ``base_version`` alone answered "unknown", which consumers read as "no
+    version at all" — the desktop About/updates panel filters ``unknown`` as a
+    placeholder and rendered "version unavailable" beside a known commit."""
+    stamp = {
+        "schemaVersion": 2,
+        "commit": "d" * 40,
+        "branch": "main",
+        "baseVersion": "unknown",
+        "displayVersion": "git.ddddddd",
+        "source": "git",
+        "updateMechanism": "self",
+    }
+    stamp_file = tmp_path / "install-stamp.json"
+    stamp_file.write_text(json.dumps(stamp))
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+
+    info = get_version_info()
+
+    assert info.base_version == "unknown"
+    assert info.display_version == "git.ddddddd"
+
+
 def test_stamp_version_info_reads_nix_stamp(tmp_path, monkeypatch):
     stamp = {
         "schemaVersion": 2,
@@ -119,6 +144,7 @@ def test_get_version_info_unknown_when_no_stamp_and_no_git(monkeypatch):
 
     assert info.base_version == "unknown"
     assert info.derived_version == "unknown"
+    assert info.display_version == "unknown"
     assert info.distance is None
     assert info.commit is None
     assert info.source == "unknown"

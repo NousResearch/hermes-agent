@@ -37,8 +37,20 @@ class VersionInfo:
     @property
     def display_version(self) -> str:
         """``<base>+<distance>``: the short form surfaces label a version by.
-        The commit is shown beside it where there is room, never inside it."""
-        return _derived_version(self.base_version, self.distance)
+        The commit is shown beside it where there is room, never inside it.
+
+        A tagless checkout has no release number to name, and both resolvers
+        already put that identity in ``derived_version`` — the stamp's
+        ``displayVersion`` (``git.<short>``, see scripts/write_install_stamp.py)
+        or the live-git equivalent. Re-deriving from ``base_version`` alone
+        would throw it away and answer ``unknown``, which consumers read as
+        "no version at all": the desktop About/updates panel filters ``unknown``
+        as a placeholder and renders its localized "version unavailable" copy
+        while the commit is plainly known."""
+        label = _derived_version(self.base_version, self.distance)
+        if not self.base_version or self.base_version == "unknown":
+            return self.derived_version or label
+        return label
 
 
 def _derived_version(

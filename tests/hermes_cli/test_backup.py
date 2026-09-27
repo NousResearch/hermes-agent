@@ -1859,6 +1859,7 @@ class TestFailedZipMemberRecovery:
             assert zf.read("config.yaml") == b"model: test\n"
             assert zf.testzip() is None
 
+
 class TestPreUpdateBackup:
     """Tests for create_pre_update_backup — the auto-backup ``hermes update``
     runs before touching anything."""

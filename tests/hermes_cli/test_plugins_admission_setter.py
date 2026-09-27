@@ -93,7 +93,8 @@ def test_ui_conflict_is_reported_without_changing_selection(plugin_world, surfac
         assert not result["ok"] and "plugin-proof-dep" in result["error"]
     else:
         with pytest.raises(AdmissionRefused, match="plugin-proof-dep"):
-            plugins_cmd._persist_plugin_selection(["plugin-worker-proof", "conflicting-ui-plugin"], {0, 1}, set())
+            # plugin-worker-proof is ticked on open; ticking the conflicting plugin is the refused flip.
+            plugins_cmd._persist_plugin_selection(["plugin-worker-proof", "conflicting-ui-plugin"], {0, 1}, set(), {0})
     assert {path: path.read_bytes() for path in watched} == before
     world.imports()
 

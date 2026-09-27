@@ -78,6 +78,7 @@ import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } 
 import {
   cronEditorUpdates,
   cronModelChoiceValue,
+  jobDescription,
   jobIsScriptOnly,
   lastErrorSummary,
   parseCronDeliveryTargets,
@@ -796,6 +797,8 @@ function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onT
   const isPaused = state === 'paused'
   const deliver = jobDeliver(job)
   const prompt = jobPrompt(job)
+  const scriptOnly = jobIsScriptOnly(job)
+  const description = jobDescription(job)
   const modelOverride = jobModel(job)
 
   return (
@@ -804,6 +807,7 @@ function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onT
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{jobTitle(job)}</h3>
+            {scriptOnly && <PanelPill tone="muted">{c.scriptBadge}</PanelPill>}
             <PanelPill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</PanelPill>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
@@ -849,10 +853,10 @@ function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onT
         ) : null}
       </header>
 
-      {prompt ? (
+      {description ? (
         <section className="space-y-1.5">
-          <PanelSectionLabel>{c.promptLabel}</PanelSectionLabel>
-          <PanelBlock>{prompt}</PanelBlock>
+          <PanelSectionLabel>{scriptOnly && !prompt ? c.scriptLabel : c.promptLabel}</PanelSectionLabel>
+          <PanelBlock>{description}</PanelBlock>
         </section>
       ) : null}
 
@@ -869,6 +873,13 @@ function formatRunTime(seconds?: null | number): string {
   const date = new Date(seconds * 1000)
 
   return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString()
+}
+
+// Script-only (no_agent) jobs have no agent sessions; the runs endpoint
+// surfaces their per-fire output docs as rows with source='cron_output'
+// (see _list_cron_output_runs in hermes_cli/web_routers/cron.py).
+function isSyntheticCronOutputRun(run: SessionInfo): boolean {
+  return run.source === 'cron_output'
 }
 
 // Runs are produced by the background scheduler tick. cron.changed /
@@ -948,19 +959,34 @@ function CronJobRuns({
         <div className="py-1 text-xs text-muted-foreground">{c.noRuns}</div>
       ) : (
         <div className="flex flex-col gap-px">
-          {runs.map(run => (
-            <button
-              className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-              key={run.id}
-              onClick={() => onOpenSession?.(run.id)}
-              type="button"
-            >
-              <span className="truncate text-foreground/85">{run.title?.trim() || run.preview?.trim() || run.id}</span>
-              <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
-                {formatRunTime(run.last_active || run.started_at)}
-              </span>
-            </button>
-          ))}
+          {runs.map(run =>
+            isSyntheticCronOutputRun(run) ? (
+              // Output-doc rows have no backing session to open; show the
+              // recorded output preview without a chat-navigation affordance.
+              <div className="flex items-center justify-between gap-3 rounded-md px-2 py-1 text-xs" key={run.id}>
+                <span className="truncate text-foreground/85">
+                  {run.title?.trim() || run.preview?.trim() || run.id}
+                </span>
+                <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
+                  {formatRunTime(run.last_active || run.started_at)}
+                </span>
+              </div>
+            ) : (
+              <button
+                className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                key={run.id}
+                onClick={() => onOpenSession?.(run.id)}
+                type="button"
+              >
+                <span className="truncate text-foreground/85">
+                  {run.title?.trim() || run.preview?.trim() || run.id}
+                </span>
+                <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
+                  {formatRunTime(run.last_active || run.started_at)}
+                </span>
+              </button>
+            )
+          )}
         </div>
       )}
     </div>

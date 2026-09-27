@@ -36,7 +36,7 @@ from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
-from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
+from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (  # noqa: F401
@@ -132,6 +132,11 @@ def _resolve_ws_orphan_reap_grace() -> float:
 
 
 _WS_ORPHAN_REAP_GRACE_S = _resolve_ws_orphan_reap_grace()
+# A reap Timer whose wall-clock wait outlasted its awake-time (monotonic) wait by more than
+# this fired early because the host slept through it (#44183); re-arm for the remaining
+# awake grace instead of reaping. Large enough to ignore timer jitter and NTP slew, small
+# relative to any real sleep.
+_WS_ORPHAN_REAP_SLEEP_SLACK_S = 0.5
 # A detached RUNNING turn is interrupted only once its activity clock (API waits, stream tokens, tool
 # heartbeats) idled this long; 600s = the turn-liveness watchdog so "wedged" means the same. 0 disables.
 _WS_ORPHAN_ACTIVITY_STALE_S = _ws_orphan_setting("HERMES_TUI_WS_ORPHAN_ACTIVITY_STALE_S", "ws_orphan_activity_stale_s", 600.0)
@@ -227,12 +232,18 @@ def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str, profile_home: str | None = None):
+    def __init__(self, session_key: str, model: str, profile_home: str | None = None,
+                 provider: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] + (["--model", model] if model else [])
+        # ``--provider`` pins the child to the parent agent's virtual provider: without it the
+        # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
+        # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
+            + (["--model", model] if model else []) \
+            + (["--provider", provider] if provider else [])
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
@@ -1859,12 +1870,22 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
 def _with_session_toolsets(selection, platform: str | None) -> list[str]:
     """*selection* plus what the session carries whatever its config says (the client surface's
     toolsets when *platform* is given; the ones its PROFILE's role reserves, from the backend-written
-    profile.yaml under the session's home override), minus toolsets reserved for another role."""
+    profile.yaml under the session's home override), minus toolsets reserved for another role.
+
+    The fold-in happens after ``_get_platform_tools`` already subtracted ``agent.disabled_toolsets``,
+    so the same subtraction is applied to the fold-in itself — otherwise ``disabled_toolsets:
+    [project]`` is a no-op on desktop/TUI, the only surfaces where the client toolsets exist
+    (#54433). ``desktop_ui`` is kept regardless: it is the client's own control surface, not a
+    model toolset."""
     from toolsets import profile_role_toolsets
     granted, denied = profile_role_toolsets()
     surface = _gui_surface_toolsets(platform) if platform is not None else set()
     kept = [name for name in selection if name not in denied]
-    return [*kept, *sorted((surface | granted) - set(kept))]
+    fold_in = (surface | granted) - set(kept)
+    disabled = set(_load_disabled_toolsets() or [])
+    if disabled:
+        fold_in -= disabled - {"desktop_ui"}
+    return [*kept, *sorted(fold_in)]
 
 
 def _tui_notice(text: str) -> None:
@@ -1955,6 +1976,28 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         return None
 
 
+def _load_disabled_toolsets() -> list[str] | None:
+    """``agent.disabled_toolsets`` from config.yaml, or ``None``.
+
+    The classic CLI (``cli_init_mixin``) and the messaging gateway both forward this list to
+    AIAgent, where ``get_tool_definitions`` strips the named toolsets even out of composite
+    defaults like ``hermes-cli`` (#17309). The desktop/TUI gateway historically dropped it, so
+    e.g. ``disabled_toolsets: [browser]`` silently had no effect on Desktop — the only consumer
+    was ``_get_platform_tools``'s name-level subtraction, which can't reach inside a composite
+    default toolset (#44499).
+    """
+    try:
+        from agent.skill_utils import parse_config_string_list
+
+        from hermes_cli.config import load_config
+
+        agent_cfg = load_config().get("agent") or {}
+        disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets"))
+        return [str(ts) for ts in disabled] or None
+    except Exception:
+        return None
+
+
 def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
 
@@ -1963,13 +2006,47 @@ def _session_verbose(sid: str) -> bool:
     return _session_tool_progress_mode(sid) == "verbose"
 
 
+def _session_show_reasoning(sid: str) -> bool:
+    """Session display flag. Missing means the config default, not hidden."""
+    session = _sessions.get(sid) or {}
+    if "show_reasoning" in session:
+        return bool(session["show_reasoning"])
+    return _load_show_reasoning()
+
+
+def _process_tool_chrome_enabled(sid: str) -> bool:
+    """Non-essential tool rows follow display.show_reasoning, not reasoning_effort."""
+    return _session_show_reasoning(sid) and _tool_progress_enabled(sid)
+
+
 def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
+# Names whose lifecycle a UI renders as a card even in answer-only mode. `isCardTool` /
+# `isFileEditTool` in apps/desktop/src/lib/tool-render-class.ts must stay in sync with this
+# set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
+_TOOL_LIFECYCLE_UI_TOOLS = frozenset({
+    "clarify", "manage_connections", "setup_mcp",
+    "image_generate", "manage_catalog", "delegate_task",
+    # File edits are the turn's deliverable — the diff card the user reviews.
+    "edit_file", "patch", "write_file",
+})
+
+
 def _tool_lifecycle_required_for_ui(name: str) -> bool:
-    """Interactive UI, not optional chrome: Desktop renders clarify / connection cards from the tool-call part."""
-    return name in ("clarify", "manage_connections", "setup_mcp")
+    """Interactive UI / card surfaces, not optional chrome.
+
+    Desktop renders these from the tool-call part itself, so suppressing the
+    lifecycle hides the turn's deliverable entirely (`isCardTool` /
+    `isFileEditTool` in apps/desktop/src/lib/tool-render-class.ts must stay in
+    sync with `_TOOL_LIFECYCLE_UI_TOOLS`): clarify / connection cards are
+    consent surfaces, image_generate / manage_catalog / delegate_task draw the
+    thing the user asked for, and file edits are the diff the user reviews.
+    The start and complete guards both consult this set, so a card's
+    `tool.complete` can never arrive without its `tool.start`.
+    """
+    return name in _TOOL_LIFECYCLE_UI_TOOLS
 
 
 def _restart_slash_worker(sid: str, session: dict):
@@ -1986,7 +2063,8 @@ def _restart_slash_worker(sid: str, session: dict):
         worker.close()
     try:
         new_worker = _SlashWorker(session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
-                                  profile_home=session.get("profile_home"))
+                                  profile_home=session.get("profile_home"),
+                                  provider=getattr(session.get("agent"), "provider", None) or None)
     except Exception:
         session["slash_worker"] = None
         return
@@ -2080,8 +2158,10 @@ def _current_profile_name() -> str:
 
 
 # Monotonic GUI<->backend contract version: the desktop refuses a backend reporting less (or none) with a
-# one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
-# v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
+# one-click "update to align" prompt. The desktop also warns in the reverse direction: a backend reporting
+# MORE than the GUI's required value means the GUI build predates this backend (e.g. a long-running app
+# across a backend update) and should be updated. Bump whenever the desktop's backend contract changes.
+# v2 file.attach; v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
 # v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
 # backend still emits `<kind>.request` notifications the renderer no longer listens for.
@@ -2133,6 +2213,23 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     return str(model), str(provider or "")
 
 
+def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool) -> bool:
+    """Whether a priority tier reaches this session's route. Every request builder asks the same gate, so a
+    profile-wide ``service_tier: fast`` sends nothing to a local server or a proxy, and the session must not
+    report Fast there either. ``route_known`` is False while a switch is pending: the agent's base URL still
+    belongs to the old route."""
+    from hermes_cli.models import resolve_fast_mode_overrides
+    base_url = None
+    if route_known and agent is not None:
+        if getattr(agent, "api_mode", None) == "anthropic_messages":
+            base_url = getattr(agent, "_anthropic_base_url", None)
+        base_url = base_url or getattr(agent, "base_url", None)
+    try:
+        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url) is not None
+    except Exception:
+        return False
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
@@ -2178,7 +2275,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "model": model,
         "provider": pending_provider or provider,
         "reasoning_effort": reasoning_effort, "reasoning_effort_wire": reasoning_effort_wire,
-        "service_tier": service_tier, "fast": service_tier == "priority",
+        "service_tier": service_tier,
+        "fast": service_tier == "priority" and _fast_tier_applies(agent, model, pending_provider or provider,
+                                                                  route_known=not pending_provider),
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
@@ -2470,6 +2569,7 @@ def _make_agent(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(platform),
+        disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
@@ -2482,7 +2582,7 @@ def _make_agent(
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
-        **_agent_cbs(sid))
+        prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
@@ -2510,9 +2610,14 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
             if row and row.get("cwd"):
+                # An ssh session's stored cwd is its workspace: explicit, so the remote terminal uses it instead of
+                # the profile's ~. Other backends keep main's semantics (resolved outside the sessions lock: I/O).
+                remote = _cwd_is_remote(profile_home)
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
+                        if remote:
+                            _sessions[sid]["explicit_cwd"] = True
             elif hasattr(db, "update_session_cwd"):
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)
@@ -3302,8 +3407,8 @@ def _skill_usage_lookup():
     "hub" / "bundled" / "local" (``/api/skills`` ``provenance``, "local" spelled "agent"). Failure → 0 / "local"."""
     try:
         from tools.skill_usage import (
-            _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
-        records, bundled, hub = load_usage(), _read_bundled_manifest_names(), _read_hub_installed_names()
+            _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
+        records, bundled, hub = load_usage(), _read_bundled_names(), _read_hub_installed_names()
     except Exception as e:
         logger.debug("skill usage lookup unavailable: %s", e)
         return (lambda _name: 0), (lambda _name: "local")

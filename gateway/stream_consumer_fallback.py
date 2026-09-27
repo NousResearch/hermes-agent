@@ -58,7 +58,9 @@ class StreamFallbackMixin:
             # the continuation re-sends the broken word's tail and reads as an
             # ordinary continuation.  A prefix with no boundary (one very long
             # token) keeps the original cut rather than re-sending the whole reply.
-            if cut < len(final_text):
+            # A prefix that already ends on a whole word needs no back-up: doing it
+            # re-sent that word at the seam.
+            if cut < len(final_text) and not final_text[cut].isspace() and not final_text[cut - 1].isspace():
                 boundary = max(
                     final_text.rfind(" ", 0, cut),
                     final_text.rfind("\n", 0, cut),

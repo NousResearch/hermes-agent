@@ -93,6 +93,11 @@ interface MentionCompletionItem {
   display: string
   insert: string
   meta: string
+  /** Handles that resolve to this same bot — the raw profile name and the
+   *  roster handle — so the popover can drop the gateway's own row for that
+   *  name instead of listing the bot twice (once under its title slug,
+   *  once under the raw name). */
+  handles?: string[]
 }
 
 /** The draft a `composer.middleware` handler rewrites, passes through, or
@@ -190,7 +195,12 @@ export default {
             items.push({
               insert,
               display: insert,
-              meta: `Bot · ${display}${source}`
+              meta: `Bot · ${display}${source}`,
+              // The live gateway's own `@` rows list this backend's profiles
+              // by raw name; claim ours so the popover drops that twin row.
+              // Remote rows are NOT ours to claim — the local gateway's
+              // same-named row resolves locally, not to the remote bot.
+              ...(profile.remoteSource ? {} : { handles: [`@${profile.name}`] })
             })
           }
 
@@ -635,6 +645,11 @@ export default {
       // a failed re-resume (backend still down) leaves the lazy recovery on
       // next send as the backstop. Feature-detected — older shells have no
       // host.onEvent.
+      //
+      // This is a BACKGROUND wake: it refreshes in place (refreshInPlace
+      // through openBotCanonicalChat) and never navigates, so a user
+      // reading the Kanban board — or any other route — keeps their view
+      // (issue 121874).
       const stopReclaimSync =
         typeof host.onEvent === 'function'
           ? host.onEvent('session.reclaimed', event => {
@@ -667,7 +682,7 @@ export default {
               }
 
               const generation = getBotOpenGeneration()
-              void openBotCanonicalChat(bot)
+              void openBotCanonicalChat(bot, { background: true })
                 .then(opened => {
                   // A user action while the re-resume ran owns the center now.
                   if (!opened || generation !== getBotOpenGeneration()) {

@@ -742,6 +742,8 @@ cronjob(action="create", name="daily-digest",
 
 任务存储在 `~/.hermes/cron/jobs.json`。任务运行的输出保存到 `~/.hermes/cron/output/{job_id}/{timestamp}.md`。
 
+如果手动编辑使 `jobs.json` 格式出错，调度器会在下次加载时修复它，而不是停止运行：`jobs` 列表中不是 JSON 对象的条目会被丢弃，不是非负整数的 `repeat.completed` 会被规范化为非负整数（无法解析时为 0）。每次修复都会记录一条警告（只记录值的类型，不记录内容）。
+
 任务可能将 `model` 和 `provider` 存储为 `null`。省略这些字段时，Hermes 在执行时从全局配置中解析它们。只有设置了单任务覆盖时，这些字段才会出现在任务记录中。
 
 存储使用原子文件写入，因此中断的写入不会留下部分写入的任务文件。

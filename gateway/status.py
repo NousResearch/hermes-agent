@@ -2120,13 +2120,22 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         return None
     if not _is_gateway_runtime_lock_active_strict(resolved_lock_path):
         return None
-    if not pid_exists:
-        raise RuntimeError("active gateway lock has no PID metadata")
-    records = (_read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path))
-    if not all(records):
-        raise RuntimeError("gateway PID or lock metadata is malformed")
+    lock_record = _read_gateway_lock_record(resolved_lock_path)
+    pid_record = _read_pid_record(resolved_pid_path) if pid_exists else None
+    if pid_record is None and not pid_exists:
+        # Launcher-shim installs persist gateway.lock only (#124893): the active lock's own
+        # record (pid/kind/argv/start_time, written by acquire_gateway_runtime_lock) is then
+        # the PID metadata, not a wedge. Identity below is still fully verified: live PID,
+        # start-time agreement, and command-line/record match.
+        if not lock_record or _pid_from_record(lock_record) is None:
+            raise RuntimeError("active gateway lock has no PID metadata")
+        records = (lock_record,)
+    else:
+        if not lock_record or pid_record is None:
+            raise RuntimeError("gateway PID or lock metadata is malformed")
+        records = (pid_record, lock_record)
     pid = _pid_from_record(records[0])
-    if pid is None or pid <= 0 or _pid_from_record(records[1]) != pid:
+    if pid is None or pid <= 0 or _pid_from_record(records[-1]) != pid:
         raise RuntimeError("gateway PID and lock identities disagree")
     if not _pid_exists(pid):
         raise RuntimeError("gateway identity is not live")

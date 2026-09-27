@@ -1722,6 +1722,42 @@ def test_strict_gateway_identity_raises_on_malformed_active_metadata(
         status.get_running_pid_identity_strict(pid_path)
 
 
+def test_strict_gateway_identity_accepts_lock_only_metadata(tmp_path, monkeypatch):
+    """A shim-launched gateway persists gateway.lock (with a full pid/kind/argv record) but no
+    gateway.pid (#124893). The strict probe must read the PID metadata from the active lock's own
+    record instead of aborting with 'active gateway lock has no PID metadata' — that abort is
+    fatal for the updater's fleet check."""
+    lock_path = tmp_path / "gateway.lock"
+    record = {
+        "pid": 4668, "kind": "hermes-gateway",
+        "argv": ["python", "-m", "hermes_cli.main", "gateway", "run", "--replace"],
+        "start_time": 1234,
+    }
+    lock_path.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(status, "_get_gateway_lock_path", lambda _path=None: lock_path)
+    monkeypatch.setattr(status, "_is_gateway_runtime_lock_active_strict", lambda _path=None: True)
+    monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == 4668)
+    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 1234)
+    monkeypatch.setattr(
+        status, "_read_process_cmdline",
+        lambda _pid: "python -m hermes_cli.main gateway run --replace",
+    )
+
+    assert status.get_running_pid_identity_strict(tmp_path / "gateway.pid") == (4668, 1234.0)
+
+
+def test_strict_gateway_identity_lock_without_pid_metadata_still_refuses(tmp_path, monkeypatch):
+    """An active lock whose record carries no usable PID (legacy lockfile shape) stays a refusal:
+    the lock-only path may not widen into accepting unidentified runtime state."""
+    lock_path = tmp_path / "gateway.lock"
+    lock_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(status, "_get_gateway_lock_path", lambda _path=None: lock_path)
+    monkeypatch.setattr(status, "_is_gateway_runtime_lock_active_strict", lambda _path=None: True)
+
+    with pytest.raises(RuntimeError, match="no PID metadata"):
+        status.get_running_pid_identity_strict(tmp_path / "gateway.pid")
+
+
 def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
     pid_path = tmp_path / "gateway.pid"
     lock_path = tmp_path / "gateway.lock"

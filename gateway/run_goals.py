@@ -12,6 +12,7 @@ import dataclasses
 import logging
 import time
 from contextlib import nullcontext, suppress
+from functools import partial
 from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
@@ -328,10 +329,14 @@ class GatewayGoalsMixin:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
         # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
-        # still needs to be released and rescheduled.
-        hooks = [("loop completion", self._post_turn_loop_completion)]
+        # still needs to be released, or paused when compression cannot continue.
         skip_goal = (getattr(event, "_gateway_skip_goal_continuation", False) is True
                      or getattr(session_entry, "compression_paused", False) is True)
+        loop_completion = self._post_turn_loop_completion
+        if skip_goal:
+            loop_completion = partial(loop_completion, compression_session_id=(
+                getattr(event, "_gateway_compression_session_id", None) or session_entry.session_id))
+        hooks = [("loop completion", loop_completion)]
         if final_text.strip() and not skip_goal:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
@@ -356,16 +361,20 @@ class GatewayGoalsMixin:
 
     async def _post_turn_loop_completion(
         self, *, session_entry: Any, source: Any, final_response: str,
+        compression_session_id: Optional[str] = None,
     ) -> None:
         """Complete a /loop wakeup tick after a gateway turn. No-op unless a tick is in flight
         (``awaiting_response``, set when the wakeup was injected); applies the LOOP_COMPLETE marker
         / --until judge / caps and schedules the next tick for the idle wakeup watcher."""
         def _load():
             from hermes_cli.loops import LoopManager
-            return lambda sid: LoopManager(session_id=sid)
+            return lambda sid: LoopManager(session_id=compression_session_id or sid)
 
         mgr = await self._post_turn_manager(session_entry, "loop completion", "loops", _load)
         state = mgr.state if mgr is not None else None
+        if state is not None and compression_session_id:
+            await self._run_in_executor_with_context(mgr.pause, "compression_exhausted")
+            return
         if state is None or not state.awaiting_response:
             return
         # The --until judge is a sync aux-LLM call — keep it off the event loop, but carry the

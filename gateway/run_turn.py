@@ -1891,6 +1891,7 @@ class GatewayTurnMixin:
         if event is not None:
             event._gateway_skip_goal_continuation = True
             event._gateway_preserve_pending = True
+            event._gateway_compression_session_id = session_entry.session_id
         expected_id = session_entry.session_id
         action = await self._compression_exhaustion_action(source)
         if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
@@ -2282,6 +2283,7 @@ class GatewayTurnMixin:
         if getattr(session_entry, "compression_paused", False) is True:
             event._gateway_skip_goal_continuation = True
             event._gateway_preserve_pending = True
+            event._gateway_compression_session_id = session_entry.session_id
             action = await self._compression_exhaustion_action(source)
             if action == "reset" and self._is_session_run_current(_quick_key, run_generation):
                 try:
@@ -3827,7 +3829,8 @@ class GatewayTurnMixin:
             logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
 
         # Safety net: a pending slash command is never passed to the agent as user input.
-        if pending and pending.strip().startswith("/"):
+        if (pending and pending.strip().startswith("/")
+                and (pending_event is None or pending_event.allow_gateway_control)):
             _pending_cmd_word = pending.strip().split(None, 1)[0][1:].lower()
             if _pending_cmd_word:
                 with suppress(Exception):
@@ -4461,6 +4464,13 @@ class GatewayTurnMixin:
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             terminal_exhaustion = (result and result.get("compression_exhausted")
                                    and not result.get("compression_deferred"))
+            if (terminal_exhaustion and result.get("pending_steer") and adapter and session_key
+                    and turn_ctx._run_still_current()):
+                # The model owns late steering until finalization. Hand it back to the
+                # existing FIFO before reset/pause, without granting slash-command authority.
+                self._enqueue_fifo(session_key, MessageEvent(
+                    text=result["pending_steer"], source=source, allow_gateway_control=False,
+                ), adapter)
             pending_event, pending = (None, None) if terminal_exhaustion else await self._run_agent_drain_pending(
                 result, adapter, source, session_key,
             )

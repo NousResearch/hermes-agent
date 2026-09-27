@@ -137,6 +137,25 @@ class TestCodeBlockExclusion:
         assert paths == []
         assert "`/tmp/image.png`" in cleaned
 
+    # The same path in prose AND in code: the prose one is delivered and stripped, the code
+    # sample keeps its copy (a global replace emptied it too).
+    def test_code_copy_survives_when_the_path_is_also_in_prose(self):
+        paths, cleaned = _extract("Saved ~/out.csv. Load it with `pd.read_csv('~/out.csv')`.")
+        assert paths == ["/home/user/out.csv"]
+        assert cleaned == "Saved . Load it with `pd.read_csv('~/out.csv')`."
+
+    def test_fenced_copy_survives_when_the_path_is_also_in_prose(self):
+        text = "Saved /tmp/out.csv.\n```python\ndf = pd.read_csv('/tmp/out.csv')\n```"
+        paths, cleaned = _extract(text)
+        assert paths == ["/tmp/out.csv"]
+        assert cleaned == "Saved .\n```python\ndf = pd.read_csv('/tmp/out.csv')\n```"
+
+    def test_a_url_ending_in_the_same_path_is_left_whole(self):
+        text = "Rendered /tmp/chart.png, mirrored at https://cdn.example.com/tmp/chart.png"
+        paths, cleaned = _extract(text, existing_files={"/tmp/chart.png"})
+        assert paths == ["/tmp/chart.png"]
+        assert cleaned == "Rendered , mirrored at https://cdn.example.com/tmp/chart.png"
+
 
 # ---------------------------------------------------------------------------
 # Deduplication

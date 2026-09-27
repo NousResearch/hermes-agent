@@ -12,11 +12,14 @@ from tools.registry import registry
 
 async def _matrix_followup(args: dict[str, Any]) -> str:
     session_key = get_session_env("HERMES_SESSION_KEY")
+    room_id = get_session_env("HERMES_SESSION_CHAT_ID")
+    requester = get_session_env("HERMES_SESSION_USER_ID")
     adapter, owner_loop = get_session_transport()
     if (
         get_session_env("HERMES_SESSION_PLATFORM") != "matrix"
         or not session_key
-        or not get_session_env("HERMES_SESSION_USER_ID")
+        or not room_id
+        or not requester
         or adapter is None
     ):
         return json.dumps({"error": "Matrix follow-ups require a live Matrix session"})
@@ -35,7 +38,11 @@ async def _matrix_followup(args: dict[str, Any]) -> str:
     if owner_loop is None or not owner_loop.is_running():
         return json.dumps({"error": "Matrix gateway loop is unavailable"})
     selected = tuple(dict.fromkeys(value.strip() for value in emoji)) if enabled else ()
-    action = adapter.configure_reaction_followups(session_key, enabled, selected)
+    action = adapter.configure_reaction_followups(
+        session_key, enabled, selected, room_id=room_id, requester=requester,
+        thread_id=get_session_env("HERMES_SESSION_THREAD_ID"),
+        profile=get_session_env("HERMES_SESSION_PROFILE"),
+    )
     if owner_loop is not asyncio.get_running_loop():
         try:
             future = asyncio.run_coroutine_threadsafe(action, owner_loop)

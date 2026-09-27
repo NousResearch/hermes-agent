@@ -1,6 +1,6 @@
-r"""Windows-path viability and venv CLI resolution for bot relay (#93590).
+r"""Windows-path viability and PM runtime selection for bot relay (#93590).
 
-Two failures on a Windows desktop install talking to a remote gateway:
+Runtime and path failures covered here:
 
 1. ``waiter_command`` used to embed the reply path into generated ``python -c``
    source, where the Windows execution layer's backslash folding turned
@@ -12,13 +12,18 @@ Two failures on a Windows desktop install talking to a remote gateway:
 2. ``local_delivery_command`` hardcoded ``"hermes"``, relying on PATH —
    which service contexts (systemd units, desktop launchers, non-login
    SSH shells) do not provide, so delivery died with ENOENT. It now
-   resolves the CLI next to this gateway's own interpreter (the venv
-   bin/Scripts sibling), falling back to the bare name. The #93091
+   prefers this install's published launcher, then the interpreter's venv
+   bin/Scripts sibling, PATH, and the bare name. The #93091
    turn-lock recognition in bot_mode_dm matches the CLI element by
    basename so resolved absolute paths (and ``hermes.exe``) still take
    the per-profile lock.
+
+3. A bare store or legacy interpreter can lack the committed dependencies or
+   load them with the wrong ABI. Delivery and reply-waiter commands select
+   PM's committed Python; unmanaged installs retain the caller's interpreter.
 """
 
+import json
 import shlex
 from pathlib import Path
 
@@ -30,6 +35,76 @@ import pytest
 
 
 ENV = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_runner_commands_select_committed_python_and_published_cli(tmp_path, monkeypatch, committed):
+    """Resolve real PM facts: neither a legacy sibling nor PATH owns a committed install."""
+    from pm.environments import install_state_dir, runtime_facts_path, venv_python
+
+    root = tmp_path / "source"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(bot_mode_dm, "__file__", str(root / "tools" / "bot_mode_dm.py"))
+    monkeypatch.setattr(bot_relay, "__file__", str(root / "tools" / "bot_relay.py"))
+    legacy_python = tmp_path / "legacy" / ("python.exe" if bot_relay.sys.platform == "win32" else "python")
+    legacy_python.parent.mkdir()
+    legacy_python.touch()
+    monkeypatch.setattr(bot_relay.sys, "executable", str(legacy_python))
+    cli_name = "hermes.exe" if bot_relay.sys.platform == "win32" else "hermes"
+    legacy_cli = legacy_python.parent / cli_name
+    legacy_cli.touch()
+    monkeypatch.setattr(bot_relay.shutil, "which", lambda name: str(legacy_cli))
+
+    expected_python = legacy_python
+    expected_cli = legacy_cli
+    if committed:
+        environment = install_state_dir(root) / "environments" / "current" / "venv"
+        environment.mkdir(parents=True)
+        (environment / "pyvenv.cfg").touch()
+        expected_python = venv_python(environment)
+        expected_python.parent.mkdir(parents=True)
+        expected_python.touch()
+        runtime_facts_path(root).write_text(
+            json.dumps({"packages": {"venv": {"environment": str(environment)}}}), encoding="utf-8"
+        )
+        expected_cli = root / ".hermes" / "bin" / cli_name
+        expected_cli.parent.mkdir(parents=True)
+        expected_cli.touch()
+
+    def native_arg(path):
+        value = str(path)
+        return value.replace("\\", "/") if bot_relay.sys.platform == "win32" else value
+
+    child_argv = bot_relay.local_delivery_command("ops", "query.json")
+    assert child_argv[0] == str(expected_cli)
+    assert child_argv[1:3] == ["-p", "ops"]
+    for stdin_file in (False, True):
+        parts = shlex.split(bot_mode_dm._delivery_command(child_argv, "query.json", stdin_file=stdin_file))
+        assert parts[0] == native_arg(expected_python)
+        assert parts[2:5] == ["--run-delivery", "stdin" if stdin_file else "query-file", "query.json"]
+        assert parts[5] == native_arg(expected_cli)
+    waiter = shlex.split(bot_relay.waiter_command(tmp_path / "home", ENV))
+    assert waiter[0] == native_arg(expected_python)
+    assert waiter[2] == "--wait-reply"
+
+
+def test_runner_commands_reject_a_missing_committed_generation(tmp_path, monkeypatch):
+    """An invalid committed selection cannot silently run an older dependency set."""
+    from pm.environments import install_state_dir, runtime_facts_path
+
+    root = tmp_path / "source"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(bot_mode_dm, "__file__", str(root / "tools" / "bot_mode_dm.py"))
+    facts = runtime_facts_path(root)
+    facts.parent.mkdir(parents=True)
+    facts.write_text(json.dumps({"packages": {"venv": {
+        "environment": str(install_state_dir(root) / "environments" / "missing" / "venv")
+    }}}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="dependency environment is missing"):
+        bot_mode_dm._delivery_command(["hermes", "-p", "ops"], "query.json", stdin_file=False)
+    with pytest.raises(RuntimeError, match="dependency environment is missing"):
+        bot_relay.waiter_command(tmp_path / "home", ENV)
 
 
 @pytest.mark.platforms("windows")

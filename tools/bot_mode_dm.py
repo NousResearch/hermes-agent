@@ -581,11 +581,20 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         _unlink_dm_file(dm_file)
 
 
+def _delivery_python() -> str:
+    """Use PM's committed interpreter: the caller may have bare or legacy Python."""
+    from pm.environments import committed_venv, venv_python
+
+    root = Path(__file__).resolve().parent.parent
+    environment = committed_venv(root)
+    return str(venv_python(environment)) if environment is not None else sys.executable
+
+
 def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
                       profile_home: Path | None = None, author: Optional[dict] = None) -> str:
     """Build an argv-safe command for the cleanup-owning background runner:
     ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``."""
-    runner_argv = [sys.executable, str(Path(__file__).resolve()), "--run-delivery",
+    runner_argv = [_delivery_python(), str(Path(__file__).resolve()), "--run-delivery",
                    "stdin" if stdin_file else "query-file", dm_file]
     if profile_home is not None:
         runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])

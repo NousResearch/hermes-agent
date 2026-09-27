@@ -199,6 +199,10 @@ def completion(tmp_path, monkeypatch):
                     fleet._print_legacy_units_warning = lambda: None
                     maint._refresh_dashboard_after_update = lambda **kwargs: None
                     gateway_migrate.maybe_auto_migrate_after_update = lambda: None
+                    # The SQLite verdict depends on the HOST interpreter's SQLite version
+                    # (a vulnerable build intentionally completes with exit 1). These tests
+                    # target the lock/build/receipt mechanics, not that policy; pin it safe.
+                    update._post_update_sqlite_runtime_status = lambda: (True, None)
                     update._surviving_pre_update_serve_runtimes = lambda plan: []
                     fleet._collect_fleet_snapshot = lambda *args: []
                     def restart(plan, gateway_mode):

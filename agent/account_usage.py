@@ -697,7 +697,7 @@ def _fetch_nano_gpt_account_usage(
     balance: dict = {}
     balance_unavailable = False
     try:
-        with httpx.Client(timeout=PLUGIN_USAGE_HOOK_DEADLINE_S, follow_redirects=True) as client:
+        with httpx.Client(timeout=PLUGIN_USAGE_HOOK_DEADLINE_S, follow_redirects=False) as client:
             sub_resp = client.get(
                 f"{base}/v1/subscription/usage", headers=headers, timeout=PLUGIN_USAGE_HOOK_DEADLINE_S,
             )

@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { $sidebarShowAllSessions } from '@/store/layout'
-import { $projects, $projectTree } from '@/store/projects'
+import { $projectOwnerBySessionId, $projects, $projectTree } from '@/store/projects'
 
 import { EnteredProjectContent } from './entered-content'
 import type * as ProjectModel from './model'
@@ -101,33 +101,44 @@ it('evicts stale hydrated rows only when current ownership explicitly moves thei
   $projects.set(projects)
   $sidebarShowAllSessions.set(true)
 
-  for (const project of snapshots().filter(project => project.id === 'career' || project.isNoProject)) {
-    const lane = project.repos[0].groups[0]
-    lane.sessions.push(
-      { ...row('moved-tip', project.path, null), _lineage_root_id: 'moved-root' },
-      { ...row('moved-chain-tip', project.path, null), _lineage_ids: ['moved-chain-root', 'moved-chain-tip'] },
-      row('newer-hydrated', '/workspace/hermes', null)
-    )
-    $projectTree.set([])
+  // Keep the computed ownership map active across the per-project unmounts,
+  // just as the sidebar does while switching between entered projects.
+  const unsubscribe = $projectOwnerBySessionId.subscribe(() => {})
 
-    const view = render(<EnteredProjectContent project={project} renderRows={renderRows} />)
-    expect(membership()).toHaveLength(4)
+  try {
+    for (const project of snapshots().filter(project => project.id === 'career' || project.isNoProject)) {
+      const lane = project.repos[0].groups[0]
+      lane.sessions.push(
+        { ...row('moved-tip', project.path, null), _lineage_root_id: 'moved-root' },
+        { ...row('moved-chain-tip', project.path, null), _lineage_ids: ['moved-chain-root', 'moved-chain-tip'] },
+        row('newer-hydrated', '/workspace/hermes', null)
+      )
+      $projectTree.set([])
 
-    act(() => {
-      $projectTree.set([
-        { ...project, repos: [], sessionIds: [lane.sessions[0].id] },
-        {
-          id: 'hermes', label: 'Hermes', path: '/workspace/hermes', repos: [],
-          sessionCount: 2, sessionIds: ['moved-root', 'moved-chain-root']
-        }
-      ])
-    })
+      const view = render(<EnteredProjectContent project={project} renderRows={renderRows} />)
+      expect(membership()).toHaveLength(4)
 
-    expect(membership()).toEqual([
-      `${lane.sessions[0].id}:${lane.sessions[0].title}`,
-      'newer-hydrated:newer-hydrated'
-    ].sort())
-    view.unmount()
+      act(() => {
+        $projectTree.set([
+          { ...project, repos: [], sessionIds: [lane.sessions[0].id] },
+          {
+            id: 'hermes',
+            label: 'Hermes',
+            path: '/workspace/hermes',
+            repos: [],
+            sessionCount: 2,
+            sessionIds: ['moved-root', 'moved-chain-root']
+          }
+        ])
+      })
+
+      expect(membership()).toEqual(
+        [`${lane.sessions[0].id}:${lane.sessions[0].title}`, 'newer-hydrated:newer-hydrated'].sort()
+      )
+      view.unmount()
+    }
+  } finally {
+    unsubscribe()
   }
 })
 

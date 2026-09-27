@@ -77,6 +77,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.voice_mention import ParkedVoices, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
 
@@ -398,7 +399,6 @@ def _resolve_max_message_length(config) -> int:
 # identity in one crypto.db.
 # Store directory for E2EE keys and sync state. Mirrors the pairing-store fix (a6397c379). See #89168.
 from hermes_constants import get_hermes_dir as _get_hermes_dir
-from plugins.platforms.matrix.voice_mention import ParkedVoices, has_voice_marker, is_voice_event
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
 
@@ -2141,15 +2141,18 @@ class MatrixAdapter(BasePlatformAdapter):
         body = source_content.get("body", "") or ""
         if not body:
             return
-        # Dict lookup first: the mention regexes only run when a voice is actually parked.
-        if (self._require_mention and self._parked_voices.has(room_id, sender)
+        # Dict lookup first: the mention regexes only run when a voice is parked or being gated
+        # (both only happen under require_mention).
+        if (self._parked_voices.pending(room_id, sender)
                 and not self._strip_mention(body).strip() and self._content_mentions_bot(body, source_content)):
+            await self._parked_voices.settle(room_id, sender)  # same-/sync-batch voice still gating
             parked = self._parked_voices.claim(room_id, sender)
             if parked:  # answer the voice this bare mention was typed for, not an empty text
                 voice_id, voice_content, voice_relates = parked
                 await self._handle_media_message(
                     room_id, sender, voice_id, event_ts, voice_content, voice_relates, "m.audio",
                     mention_claimed=True)
+                self._background_read_receipt(room_id, event_id)  # the claim receipted the voice
                 return
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
@@ -2191,8 +2194,15 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
         # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
         # non-allowlisted room must not pull media onto the host only to drop it.
-        ctx = await self._resolve_message_context(
-            room_id, sender, event_id, body, source_content, relates_to, mention_claimed=mention_claimed)
+        # First await: mark a parkable voice in-flight so a concurrent bare mention waits for it.
+        gate = (self._parked_voices.begin(room_id, sender)
+                if self._require_mention and not mention_claimed and is_voice_event(source_content) else None)
+        try:
+            ctx = await self._resolve_message_context(
+                room_id, sender, event_id, body, source_content, relates_to, mention_claimed=mention_claimed)
+        finally:
+            if gate is not None:
+                self._parked_voices.release(room_id, sender, gate)
         if ctx is None:
             return
         # Cache locally so downstream tools get a real file path.

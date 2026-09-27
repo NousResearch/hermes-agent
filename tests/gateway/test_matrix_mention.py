@@ -243,33 +243,51 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mention_room, mention_body, claims", [
-    ("!room1:example.org", "@hermes:example.org", True),
-    ("!room2:example.org", "@hermes:example.org", False),
-    ("!room1:example.org", "@hermes:example.org hi", False),
+@pytest.mark.parametrize("mention_room, mention_body, claims, same_sync_batch", [
+    ("!room1:example.org", "@hermes:example.org", True, False),
+    ("!room2:example.org", "@hermes:example.org", False, False),
+    ("!room1:example.org", "@hermes:example.org hi", False, False),
+    ("!room1:example.org", "@hermes:example.org", True, True),
 ])
-async def test_bare_mention_claims_parked_voice_only_in_same_room(monkeypatch, mention_room, mention_body, claims):
+async def test_bare_mention_claims_parked_voice_only_in_same_room(
+        monkeypatch, mention_room, mention_body, claims, same_sync_batch):
     """An unmentioned MSC3245 voice (empty m.mentions) is answered by the sender's bare @mention
     typed right after it in the SAME room; a bare mention in another room never pulls it across,
-    and a mention carrying text is answered as that text."""
+    and a mention carrying text is answered as that text. mautrix runs one /sync batch's events as
+    concurrent tasks, so the claim must also win while the voice still awaits a room-identity fetch."""
+    import asyncio
+
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
     adapter._download_and_cache_media = AsyncMock(return_value="/tmp/voice.ogg")
+    adapter._background_read_receipt = MagicMock()
     voice = _make_event("voice message", event_id="$voice")
     voice.content.update({"msgtype": "m.audio", "url": "mxc://example.org/v", "info": {"mimetype": "audio/ogg"},
                           "org.matrix.msc3245.voice": {}, "m.mentions": {}})
+    mention = _make_event(mention_body, event_id="$text", room_id=mention_room,
+                          mention_user_ids=["@hermes:example.org"])
 
-    await adapter._on_room_message(voice)
-    adapter.handle_message.assert_not_awaited()
-    adapter._download_and_cache_media.assert_not_awaited()  # parked voice is never downloaded
-    await adapter._on_room_message(_make_event(
-        mention_body, event_id="$text", room_id=mention_room, mention_user_ids=["@hermes:example.org"]))
+    if same_sync_batch:
+        resolve_identity = adapter._resolve_room_identity
+
+        async def slow_identity(room_id):  # stale 60s cache -> homeserver round-trip
+            await asyncio.sleep(0.01)
+            return await resolve_identity(room_id)
+        adapter._resolve_room_identity = slow_identity
+        await asyncio.gather(adapter._on_room_message(voice), adapter._on_room_message(mention))
+    else:
+        await adapter._on_room_message(voice)
+        adapter.handle_message.assert_not_awaited()
+        adapter._download_and_cache_media.assert_not_awaited()  # parked voice is never downloaded
+        await adapter._on_room_message(mention)
 
     dispatched = [(m.args[0].source.chat_id, m.args[0].message_id) for m in adapter.handle_message.await_args_list]
     assert dispatched == ([("!room1:example.org", "$voice")] if claims else [(mention_room, "$text")])
+    if claims:  # the bare mention is the newest event; the read marker must reach it
+        adapter._background_read_receipt.assert_any_call("!room1:example.org", "$text")
 
 
 # ---------------------------------------------------------------------------

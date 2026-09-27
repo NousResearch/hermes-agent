@@ -1228,7 +1228,9 @@ def runtime_status_pid_is_live(record: Optional[dict[str, Any]]) -> bool:
 # window, `gateway status` still reports the process as not running; what is dropped is only
 # the "likely an ungraceful shutdown" hint. Pre-multiplex leftover files and retired profiles
 # carry week-old 'running' claims that read as false incidents on every `gateway status`
-# call (#122439).
+# call (#122439). Watchdog-stamped terminal records (``exit_reason`` in
+# ``WATCHDOG_EXIT_REASONS``) are exempt from the window — a crash stamp ages, the incident
+# does not (#122462 review).
 _STALE_RECORD_NOTICE_WINDOW_S = 24 * 60 * 60
 
 
@@ -1237,7 +1239,13 @@ def runtime_status_record_is_abandoned(
 ) -> bool:
     """True when the snapshot's ``updated_at`` is provably older than ``window_s`` — old enough
     that a dead-PID live claim is history, not a fresh ungraceful shutdown. An unparseable stamp
-    answers False: unknown age must not silence the warning."""
+    answers False: unknown age must not silence the warning. A watchdog-stamped record
+    (``exit_reason`` in ``WATCHDOG_EXIT_REASONS``) never answers True: shutdown_watchdog writes
+    that stamp as a terminal crash record just before the process exits, so its age dates the
+    crash, not the file — abandoning it would silence a real incident the dashboard
+    deliberately retains via ``retained_gateway_state``."""
+    if isinstance(record, dict) and record.get("exit_reason") in WATCHDOG_EXIT_REASONS:
+        return False
     age = runtime_status_heartbeat_age_s(record)
     return age is not None and age > window_s
 

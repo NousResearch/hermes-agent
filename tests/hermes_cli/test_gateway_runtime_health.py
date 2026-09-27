@@ -144,6 +144,43 @@ def test_runtime_health_lines_abandoned_dead_pid_record_stays_silent(monkeypatch
     assert not any("draining" in ln.lower() for ln in lines), lines
 
 
+def test_runtime_health_lines_watchdog_degraded_survives_abandonment_window(monkeypatch):
+    """The abandonment window is liveness-claim-blind, but a watchdog-stamped ``degraded``
+    record is a terminal crash stamp (shutdown_watchdog writes it just before ``os._exit``),
+    never a pre-multiplex leftover: its age dates the crash, not the file. Past the notice
+    window with a dead PID it must still render the contradiction line -- agreeing with the
+    dashboard, which deliberately retains that state via ``retained_gateway_state``."""
+    from gateway import status as status_mod
+
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda: {
+            "gateway_state": "degraded",
+            "exit_reason": "loop_liveness_watchdog",
+            "pid": 4242,
+            "start_time": 111,
+            "updated_at": _iso_age(30 * 24 * 3600),  # 30 days old: past the window, still a crash
+            "active_agents": 0,
+        },
+    )
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: False)
+    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: None)
+
+    lines = _runtime_health_lines()
+
+    stale = _stale_lines(lines)
+    assert len(stale) == 1, lines
+    assert "recorded state 'degraded'" in stale[0]
+
+    from gateway.status import WATCHDOG_EXIT_REASONS, runtime_status_record_is_abandoned
+
+    for reason in WATCHDOG_EXIT_REASONS:
+        assert not runtime_status_record_is_abandoned(
+            {"gateway_state": "degraded", "exit_reason": reason,
+             "updated_at": _iso_age(365 * 24 * 3600)}
+        )
+
+
 def test_runtime_health_lines_recent_dead_pid_still_warns(monkeypatch):
     """Invariant (the warning is narrowed, not deleted): a live-claiming record with a dead PID
     inside the notice window is still the ungraceful-shutdown signal (#113372's sibling case)."""

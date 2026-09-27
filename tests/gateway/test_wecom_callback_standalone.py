@@ -80,6 +80,58 @@ async def test_fresh_callback_delivery(monkeypatch, mode):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('target,mapping,expected_agent', [
+    ('alice', {}, None),
+    ('unknown:alice', {}, None),
+    ('b:', {}, None),
+    ('b:alice', {}, 2),
+    ('alice', {'b:alice': 'b'}, 2),
+    ('alice', {'a:alice': 'a', 'b:alice': 'b'}, None),
+    ('b:alice', {'b:alice': 'b'}, 2),
+])
+async def test_live_callback_routing_never_guesses_first_app(monkeypatch, target, mapping, expected_agent):
+    import json
+    from types import SimpleNamespace
+    from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+    from tools import send_message_tool as send
+    from tools.send_message_targets import resolve_send_target
+
+    root = Path(__file__).resolve().parents[2] / 'plugins/platforms/wecom'
+    manifest = parse_manifest_file(root / 'plugin.yaml', root, 'bundled', 'platforms')
+    manager = PluginManager()
+    config = PlatformConfig(enabled=True, extra={'apps': [
+        {'name': 'a', 'corp_id': 'a', 'corp_secret': 'fixture', 'agent_id': '1'},
+        {'name': 'b', 'corp_id': 'b', 'corp_secret': 'fixture', 'agent_id': '2'},
+    ]})
+    adapter = WecomCallbackAdapter(config)
+    adapter._user_app_map.update(mapping)
+    calls = []
+
+    def transport(request):
+        calls.append(request)
+        if request.method == 'GET':
+            return httpx.Response(200, json={'errcode': 0, 'access_token': 'fixture', 'expires_in': 7200})
+        return httpx.Response(200, json={'errcode': 0, 'msgid': 'fixture'})
+
+    adapter._http_client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    monkeypatch.setattr(send, '_live_adapter', lambda platform: (SimpleNamespace(), adapter))
+    try:
+        manager._register_deferred_platform(manifest)
+        resolved, _, error = resolve_send_target('wecom_callback', target)
+        assert error is None
+        result = await send._send_to_platform(Platform.WECOM_CALLBACK, config, resolved, 'hello')
+        if expected_agent is None:
+            assert result.get('error'), result
+            assert calls == []
+        else:
+            assert result.get('success'), result
+            assert json.loads(calls[-1].content)['agentid'] == expected_agent
+    finally:
+        await adapter.aclose_http_client()
+        manager.unload(manifest)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('target,extra', [
     ('alice', {}),
     ('unknown:alice', {'corp_id': 'corp', 'corp_secret': 'fixture', 'agent_id': '1'}),

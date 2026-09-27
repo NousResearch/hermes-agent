@@ -206,8 +206,8 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         await self.aclose_http_client()
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        app = self._resolve_app_for_chat(chat_id)
         try:
+            app = self._resolve_app_for_chat(chat_id)
             payload = {"touser": chat_id.split(":", 1)[-1], "msgtype": "text", "agentid": int(str(app.get("agent_id") or 0)), "text": {"content": content[:2048]}, "safe": 0}
             for _attempt in range(2):
                 token = await self._get_access_token(app)
@@ -224,11 +224,25 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     def _resolve_app_for_chat(self, chat_id: str) -> Dict[str, Any]:
+        apps = self._apps
+        if ":" in chat_id:
+            corp_id, user_id = chat_id.split(":", 1)
+            if not corp_id or not user_id:
+                raise ValueError("WeCom Callback recipient is empty.")
+            apps = [app for app in apps if app.get("corp_id") == corp_id]
+        elif not chat_id:
+            raise ValueError("WeCom Callback recipient is empty.")
         app_name = self._user_app_map.get(chat_id)
         if not app_name and ":" not in chat_id:  # legacy bare user_id — unique match only
             matching = [k for k in self._user_app_map if k.endswith(f":{chat_id}")]
-            app_name = self._user_app_map.get(matching[0]) if len(matching) == 1 else app_name
-        return self._get_app_by_name(app_name) or self._apps[0]
+            if len(matching) > 1:
+                raise ValueError("WeCom Callback target must identify exactly one configured app.")
+            app_name = self._user_app_map.get(matching[0]) if matching else None
+        if app_name:
+            apps = [app for app in apps if app.get("name") == app_name]
+        if len(apps) != 1:
+            raise ValueError("WeCom Callback target must identify exactly one configured app.")
+        return apps[0]
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "dm"}

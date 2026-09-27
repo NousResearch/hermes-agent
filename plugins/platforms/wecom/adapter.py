@@ -797,17 +797,8 @@ async def _callback_standalone_send(
         }
     try:
         adapter = _build_callback_adapter(pconfig)
-        # A fresh sender has no inbound routing map. Never guess the first app
-        # when a scoped recipient belongs to a different corporation.
-        apps = adapter._apps
-        if ":" in chat_id:
-            corp_id, user_id = chat_id.split(":", 1)
-            apps = [app for app in apps if app.get("corp_id") == corp_id]
-            if not user_id:
-                return send_error("WeCom Callback recipient is empty.")
-        if len(apps) != 1:
-            return send_error("WeCom Callback target must identify exactly one configured app.")
-        adapter._apps = apps  # Ephemeral adapter: constrain routing to the selected app.
+        # Share the live adapter's fail-closed routing before opening transport.
+        adapter._resolve_app_for_chat(chat_id)
         adapter._ensure_http_client()
         try:
             result = await adapter.send(chat_id, message)

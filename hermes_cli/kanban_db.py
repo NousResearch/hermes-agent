@@ -24,7 +24,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from toolsets import get_toolset_names
 
@@ -327,6 +327,146 @@ _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # per comment
+_CTX_MAX_TOTAL_BYTES    = 96 * 1024  # aggregate UTF-8 worker-context ceiling
+
+
+def _budget_worker_context(
+    mandatory_text: str,
+    optional_text: str,
+    done_parent_ids: list[str],
+    task_id: str,
+    structure_marker: str,
+) -> str:
+    """Fit complete optional records around mandatory task text."""
+    section_prefix = f"{structure_marker}SECTION:"
+    record_marker = f"{structure_marker}RECORD"
+    sections: list[dict[str, Any]] = []
+    current_section: Optional[dict[str, Any]] = None
+    current_record: Optional[list[str]] = None
+
+    def flush_record() -> None:
+        nonlocal current_record
+        if current_section is not None and current_record is not None:
+            current_section["records"].append("\n".join(current_record).strip())
+        current_record = None
+
+    for line in optional_text.splitlines():
+        if line.startswith(section_prefix):
+            flush_record()
+            current_section = {
+                "kind": line[len(section_prefix):],
+                "heading": "",
+                "intro": [],
+                "records": [],
+            }
+            sections.append(current_section)
+        elif line == record_marker:
+            flush_record()
+            current_record = []
+        elif current_section is not None and not current_section["heading"]:
+            current_section["heading"] = line
+        elif current_section is not None and current_record is None:
+            current_section["intro"].append(line)
+        elif current_record is not None:
+            current_record.append(line)
+    flush_record()
+
+    all_keys = [
+        (section_index, record_index)
+        for section_index, section in enumerate(sections)
+        for record_index, _record in enumerate(section["records"])
+    ]
+
+    def parent_id_for(record: str) -> Optional[str]:
+        first = record.splitlines()[0] if record else ""
+        return first[4:].split()[0] if first.startswith("### ") else None
+
+    def omitted_counts(selected: set[tuple[int, int]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for key in all_keys:
+            if key not in selected:
+                kind = sections[key[0]]["kind"]
+                counts[kind] = counts.get(kind, 0) + 1
+        return counts
+
+    def parent_inventory(selected_parent_ids: set[str]) -> str:
+        lines = [
+            "## Parent task inventory",
+            "Every done parent is detailed below or directly retrievable by ID:",
+        ]
+        lines.extend(
+            f"- `{parent_id}` — detailed below"
+            if parent_id in selected_parent_ids
+            else (
+                f"- `{parent_id}` — omitted; retrieve with "
+                f'kanban_show(task_id="{parent_id}")'
+            )
+            for parent_id in done_parent_ids
+        )
+        return "\n".join(lines)
+
+    def render(selected: set[tuple[int, int]], *, compact_inventory: bool = False) -> str:
+        selected_parent_ids = {
+            parent_id
+            for section_index, record_index in selected
+            if sections[section_index]["kind"] == "parent handoffs"
+            for parent_id in [parent_id_for(sections[section_index]["records"][record_index])]
+            if parent_id is not None
+        }
+        blocks = [mandatory_text.strip()]
+        if done_parent_ids:
+            if compact_inventory:
+                blocks.append(
+                    "## Parent task inventory\n"
+                    f"{len(done_parent_ids):,} done parents; IDs omitted inline to preserve the "
+                    "96 KiB worker-context ceiling.\n"
+                    "Deterministic retrieval: call "
+                    f'kanban_show(task_id="{task_id}") and read its `parents` field, then call '
+                    'kanban_show(task_id="<parent-id>") for the complete handoff.'
+                )
+            else:
+                blocks.append(parent_inventory(selected_parent_ids))
+        for section_index, section in enumerate(sections):
+            chosen = [
+                record
+                for record_index, record in enumerate(section["records"])
+                if (section_index, record_index) in selected
+            ]
+            if chosen:
+                blocks.append(
+                    "\n".join([section["heading"], *section["intro"], *chosen]).strip()
+                )
+        counts = omitted_counts(selected)
+        if counts:
+            accounting = "; ".join(f"{kind}={count}" for kind, count in counts.items())
+            blocks.append(
+                "## Worker context budget\n"
+                f"_Omitted complete records: {accounting}. Structured records are omitted whole, "
+                "never cut. Use the parent inventory, kanban_show(task_id=...), or "
+                "kanban_attachments to retrieve omitted detail._"
+            )
+        return "\n\n".join(block for block in blocks if block) + "\n"
+
+    compact_inventory = len(render(set()).encode("utf-8")) > _CTX_MAX_TOTAL_BYTES
+    selected: set[tuple[int, int]] = set()
+    priority = {
+        "parent handoffs": 0,
+        "prior attempts": 1,
+        "attachments": 2,
+        "comments": 3,
+        "recent work": 4,
+    }
+    for key in sorted(
+        all_keys,
+        key=lambda item: (priority.get(sections[item[0]]["kind"], 9), item[0], item[1]),
+    ):
+        candidate = selected | {key}
+        if len(render(candidate, compact_inventory=compact_inventory).encode("utf-8")) <= _CTX_MAX_TOTAL_BYTES:
+            selected = candidate
+    result = render(selected, compact_inventory=compact_inventory)
+    if len(result.encode("utf-8")) > _CTX_MAX_TOTAL_BYTES:
+        raise ValueError("mandatory worker context exceeds 96 KiB")
+    return result
 
 
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
@@ -3992,22 +4132,66 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     now = int(time.time())
     lines: list[str] = []
     _ctx_header(lines, task)
-    _ctx_attachments(lines, list_attachments(conn, task_id))
-    _ctx_prior_attempts(lines, conn, task_id, now)
-    _ctx_parent_results(lines, conn, task_id, now)
-    _ctx_role_history(lines, conn, task, now)
-    _ctx_comments(lines, list_comments(conn, task_id), now)
-    return "\n".join(lines).rstrip() + "\n"
+    mandatory_text = "\n".join(lines).rstrip() + "\n"
+    lines = []
+    structure_marker = f"\x00worker-context-{id(lines)}\x00"
+    _ctx_attachments(lines, list_attachments(conn, task_id), structure_marker)
+    _ctx_prior_attempts(lines, conn, task_id, now, structure_marker)
+    done_parent_ids = _ctx_parent_results(lines, conn, task_id, now, structure_marker)
+    _ctx_role_history(lines, conn, task, now, structure_marker)
+    _ctx_comments(lines, list_comments(conn, task_id), now, structure_marker)
+    optional_text = "\n".join(lines).rstrip() + "\n"
+    return _budget_worker_context(
+        mandatory_text,
+        optional_text,
+        done_parent_ids,
+        task_id,
+        structure_marker,
+    )
+
+
+def _ctx_fit_utf8(text: str, limit: int, suffix: Callable[[int], str]) -> str:
+    """Shorten text without splitting a code point; keep the suffix inside ``limit`` bytes."""
+    if len(text.encode("utf-8")) <= limit:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        midpoint = (low + high + 1) // 2
+        candidate = text[:midpoint] + suffix(len(text) - midpoint)
+        if len(candidate.encode("utf-8")) <= limit:
+            low = midpoint
+        else:
+            high = midpoint - 1
+    return text[:low] + suffix(len(text) - low)
 
 
 def _ctx_cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:
-    """Truncate to ``limit`` chars with a visible ellipsis."""
+    """Shorten to ``limit`` UTF-8 bytes with visible omission accounting."""
     if not s:
         return ""
-    s = s.strip()
-    if len(s) <= limit:
-        return s
-    return s[:limit] + f"… [truncated, {len(s) - limit} chars omitted]"
+    text = s.strip()
+    return _ctx_fit_utf8(
+        text,
+        limit,
+        lambda omitted: f"… [shortened, {omitted} chars omitted]",
+    )
+
+
+def _ctx_task_field(
+    value: Optional[str], field: str, task_id: str, limit: int = _CTX_MAX_FIELD_BYTES
+) -> str:
+    """Bound persisted task detail while naming its deterministic retrieval path."""
+    if not value:
+        return ""
+    text = value.strip()
+    return _ctx_fit_utf8(
+        text,
+        limit,
+        lambda omitted: (
+            f"… [shortened, {omitted} chars omitted; read `task.{field}` from "
+            f"kanban_show(task_id={json.dumps(task_id)})]"
+        ),
+    )
 
 
 def _ctx_stamp(ts: int, now: int) -> str:
@@ -4038,13 +4222,19 @@ def _ctx_tail(items: list, cap: int, noun: str) -> tuple[list, Optional[str]]:
 
 
 def _ctx_header(lines: list[str], task: Task) -> None:
-    lines.append(f"# Kanban task {task.id}: {task.title}")
+    lines.append(f"# Kanban task {task.id}: {_ctx_task_field(task.title, 'title', task.id)}")
     lines.append("")
-    lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
-    lines.append(f"Status:   {task.status}")
+    lines.append(
+        f"Assignee: {_ctx_task_field(task.assignee or '(unassigned)', 'assignee', task.id)}"
+    )
+    lines.append(f"Status:   {_ctx_task_field(task.status, 'status', task.id)}")
     if task.tenant:
-        lines.append(f"Tenant:   {task.tenant}")
-    lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+        lines.append(f"Tenant:   {_ctx_task_field(task.tenant, 'tenant', task.id)}")
+    workspace_kind = _ctx_task_field(task.workspace_kind, "workspace_kind", task.id)
+    workspace_path = _ctx_task_field(
+        task.workspace_path or "(unresolved)", "workspace_path", task.id
+    )
+    lines.append(f"Workspace: {workspace_kind} @ {workspace_path}")
     if task.max_runtime_seconds is not None:
         terminal_timeout = _worker_terminal_timeout_env(
             task.max_runtime_seconds, os.environ.get("TERMINAL_TIMEOUT"),
@@ -4052,27 +4242,33 @@ def _ctx_header(lines: list[str], task: Task) -> None:
         effective_terminal_timeout = terminal_timeout or os.environ.get("TERMINAL_TIMEOUT")
         lines.append(f"Max runtime: {task.max_runtime_seconds}s")
         if effective_terminal_timeout:
-            lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
+            lines.append(f"Terminal timeout: {_ctx_cap(effective_terminal_timeout)}s")
     if task.branch_name:
-        lines.append(f"Branch:   {task.branch_name}")
+        lines.append(
+            f"Branch:   {_ctx_task_field(task.branch_name, 'branch_name', task.id)}"
+        )
     lines.append("")
     if task.body and task.body.strip():
         lines.append("## Body")
-        lines.append(_ctx_cap(task.body, _CTX_MAX_BODY_BYTES))
+        lines.append(_ctx_task_field(task.body, "body", task.id, _CTX_MAX_BODY_BYTES))
         lines.append("")
 
 
-def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
+def _ctx_attachments(
+    lines: list[str], attachments: list[Attachment], structure_marker: str
+) -> None:
     """Absolute on-disk paths so the worker's file tools read them directly
     (remote terminal backends need the attachments dir mounted)."""
     if not attachments:
         return
+    lines.append(f"{structure_marker}SECTION:attachments")
     lines.append("## Attachments")
     lines.append(
         "Files attached to this task. Read them with the file/terminal "
         "tools at the absolute paths below:"
     )
     for att in attachments:
+        lines.append(f"{structure_marker}RECORD")
         size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
         size_str = f", {size_kb} KB" if size_kb else ""
         ctype = f", {att.content_type}" if att.content_type else ""
@@ -4080,7 +4276,10 @@ def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
     lines.append("")
 
 
-def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
+def _ctx_prior_attempts(
+    lines: list[str], conn: sqlite3.Connection, task_id: str, now: int,
+    structure_marker: str,
+) -> None:
     """Closed runs on this task (the active run is this worker), newest
     ``_CTX_MAX_PRIOR_ATTEMPTS`` in full, older ones as a one-line marker."""
     all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
@@ -4088,10 +4287,12 @@ def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str
     if not shown:
         return
     first_shown_idx = len(all_prior) - len(shown) + 1
+    lines.append(f"{structure_marker}SECTION:prior attempts")
     lines.append("## Prior attempts on this task")
     if omitted_note:
         lines.append(omitted_note)
     for offset, run in enumerate(shown):
+        lines.append(f"{structure_marker}RECORD")
         profile = run.profile or "(unknown)"
         outcome = run.outcome or run.status
         lines.append(
@@ -4107,7 +4308,10 @@ def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str
         lines.append("")
 
 
-def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
+def _ctx_parent_results(
+    lines: list[str], conn: sqlite3.Connection, task_id: str, now: int,
+    structure_marker: str,
+) -> list[str]:
     """Done-parent handoffs: newest ``completed`` run's summary+metadata,
     falling back to ``task.result`` for pre-runs-table data. Stamped with a
     relative age so the worker re-verifies stale upstream results."""
@@ -4115,14 +4319,17 @@ def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str
         "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id", (task_id,),
     ).fetchall()
     wrote_header = False
+    done_parent_ids: list[str] = []
     for pid in (r["parent_id"] for r in parent_rows):
         pt = get_task(conn, pid)
         if not pt or pt.status != "done":
             continue
+        done_parent_ids.append(pid)
         runs = [r for r in list_runs(conn, pid) if r.outcome == "completed"]
         runs.sort(key=lambda r: r.started_at, reverse=True)
         run = runs[0] if runs else None
         if not wrote_header:
+            lines.append(f"{structure_marker}SECTION:parent handoffs")
             lines.append("## Parent task results")
             lines.append(
                 "_Handoffs from upstream tasks, captured when each parent "
@@ -4134,6 +4341,7 @@ def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str
             wrote_header = True
         done_ts = run.ended_at if run is not None and run.ended_at else (pt.completed_at or None)
         age = _relative_age(done_ts, now)
+        lines.append(f"{structure_marker}RECORD")
         lines.append(f"### {pid}" + (f" (completed {age})" if age else ""))
         if run is not None and run.summary and run.summary.strip():
             lines.append(_ctx_cap(run.summary))
@@ -4145,9 +4353,13 @@ def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str
         if meta_line:
             lines.append(meta_line)
         lines.append("")
+    return done_parent_ids
 
 
-def _ctx_role_history(lines: list[str], conn: sqlite3.Connection, task: Task, now: int) -> None:
+def _ctx_role_history(
+    lines: list[str], conn: sqlite3.Connection, task: Task, now: int,
+    structure_marker: str,
+) -> None:
     """The assignee's 5 most recent completed runs on OTHER tasks — implicit
     role continuity without wiring anything into SOUL.md / MEMORY.md."""
     if not task.assignee:
@@ -4161,8 +4373,10 @@ def _ctx_role_history(lines: list[str], conn: sqlite3.Connection, task: Task, no
     ).fetchall()
     if not role_rows:
         return
+    lines.append(f"{structure_marker}SECTION:recent work")
     lines.append(f"## Recent work by @{task.assignee}")
     for row in role_rows:
+        lines.append(f"{structure_marker}RECORD")
         first = _first_line(row["summary"], 200) or "(no summary)"
         lines.append(
             f"- {row['id']} — {row['title']} ({_ctx_stamp(int(row['ended_at']), now)}): {first}"
@@ -4170,7 +4384,9 @@ def _ctx_role_history(lines: list[str], conn: sqlite3.Connection, task: Task, no
     lines.append("")
 
 
-def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
+def _ctx_comments(
+    lines: list[str], comments: list[Comment], now: int, structure_marker: str
+) -> None:
     """Newest ``_CTX_MAX_COMMENTS`` comments. The explicit "comment from
     worker" framing stops an operator-controlled HERMES_PROFILE like
     "hermes-system" being read as a system directive above an
@@ -4178,10 +4394,12 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
     shown, omitted_note = _ctx_tail(comments, _CTX_MAX_COMMENTS, "comment")
     if not shown:
         return
+    lines.append(f"{structure_marker}SECTION:comments")
     lines.append("## Comment thread")
     if omitted_note:
         lines.append(omitted_note)
     for c in shown:
+        lines.append(f"{structure_marker}RECORD")
         # Render author with explicit "comment from worker" framing so operator-controlled HERMES_PROFILE
         # values like "hermes-system" or "operator" can't be misread by the next worker as a system
         # directive above the (attacker-influenceable) comment body. Defense-in-depth — the LLM-controlled

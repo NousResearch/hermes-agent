@@ -63,6 +63,64 @@ def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
     assert captured["env"]["HERMES_SESSION_SOURCE"] == "kanban"
 
 
+def test_worker_spawn_drops_parent_prompt_and_prefill_env(monkeypatch, tmp_path):
+    """A fresh worker keeps task/profile pins but not parent interactive overlays."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    captured = {}
+
+    class _Proc:
+        pid = 4322
+
+    def _fake_popen(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["env"] = kwargs["env"]
+        return _Proc()
+
+    monkeypatch.setenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "parent-only-prompt")
+    monkeypatch.setenv("HERMES_PREFILL_MESSAGES_FILE", "parent-prefill.json")
+    monkeypatch.setenv("HERMES_TUI_SKILLS", "parent-only-skill")
+    monkeypatch.setenv("HERMES_SESSION_ID", "parent-interactive-session")
+    monkeypatch.setattr("subprocess.Popen", _fake_popen)
+    monkeypatch.setattr(kbd, "_retag_legacy_worker_sessions", lambda _root: None)
+    monkeypatch.setattr(kb, "worker_logs_dir", lambda board=None: tmp_path / "logs")
+
+    task = kb.Task(
+        id="t_bounded",
+        title="bounded worker",
+        body=None,
+        assignee="default",
+        status="in_progress",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=None,
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    workspace = str(tmp_path / "ws")
+    os.makedirs(workspace, exist_ok=True)
+
+    kbd._default_spawn(task, workspace)
+
+    env = captured["env"]
+    assert env["HERMES_SESSION_SOURCE"] == "kanban"
+    assert env["HERMES_KANBAN_TASK"] == "t_bounded"
+    assert env["HERMES_PROFILE"] == "default"
+    assert env["HERMES_KANBAN_BOARD"] == "default"
+    assert "HERMES_EPHEMERAL_SYSTEM_PROMPT" not in env
+    assert "HERMES_PREFILL_MESSAGES_FILE" not in env
+    assert "HERMES_TUI_SKILLS" not in env
+    assert "HERMES_SESSION_ID" not in env
+    query = captured["cmd"][captured["cmd"].index("-q") + 1]
+    assert query == "work kanban task t_bounded"
+
+
 def test_kanban_rows_stay_out_of_the_session_list(db):
     """A `kanban` row is filtered by the same exclude the sidebar sends."""
     db.create_session(session_id="chat", source="desktop")
@@ -84,12 +142,24 @@ def test_retag_reclaims_legacy_worker_rows(db, tmp_path):
     workspaces = tmp_path / "kanban" / "workspaces"
     db.create_session(session_id="legacy", source="cli", cwd=str(workspaces / "t_b21733fb"))
     db.create_session(session_id="legacy2", source="cli", cwd=str(workspaces / "t_c0ffee"))
+    db.create_session(session_id="slash", source="cli", cwd=f"{workspaces.as_posix()}/t_slash")
+    db.create_session(
+        session_id="lookalike",
+        source="cli",
+        cwd=f"{workspaces}-other\\t_not_a_child",
+    )
     db.create_session(session_id="mine", source="cli", cwd=str(tmp_path / "www" / "repo"))
 
-    assert db.retag_kanban_worker_sessions(str(workspaces)) == 2
+    assert db.retag_kanban_worker_sessions(str(workspaces)) == 3
 
     sources = {row[0]: row[1] for row in db._conn.execute("SELECT id, source FROM sessions")}
-    assert sources == {"legacy": "kanban", "legacy2": "kanban", "mine": "cli"}
+    assert sources == {
+        "legacy": "kanban",
+        "legacy2": "kanban",
+        "slash": "kanban",
+        "lookalike": "cli",
+        "mine": "cli",
+    }
 
 
 def test_retag_runs_once_per_workspaces_root(db, tmp_path):

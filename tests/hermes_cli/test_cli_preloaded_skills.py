@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 
@@ -87,5 +89,25 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     # finalized (agent init), preserving the fail-loud contract.
     with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-skill"):
         _real_finalize(created["cli"])
+
+
+def test_kanban_worker_skips_all_unknown_task_skills(monkeypatch, caplog):
+    """Unavailable forced skills must not block a worker from reporting its board outcome."""
+    cli_obj = _DummyCLI()
+    cli_obj._preload_skills_thread = MagicMock()
+    cli_obj._preload_skills_error = None
+    cli_obj._preload_skills_result = (
+        "",
+        [],
+        ["client-website-delivery-planning", "orchestrator-core"],
+    )
+    cli_obj._preload_skills_finalized = False
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_735aee88")
+    _real_finalize(cli_obj)
+
+    assert cli_obj.system_prompt == "base prompt"
+    assert cli_obj.preloaded_skills == []
+    assert "Kanban worker continuing without unavailable task skill(s)" in caplog.text
 
 

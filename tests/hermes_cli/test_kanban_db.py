@@ -42,6 +42,102 @@ def _init_git_repo(repo: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Worker context budgeting
+# ---------------------------------------------------------------------------
+
+
+def test_worker_context_budget_preserves_mandatory_text_and_parent_retrieval(kanban_home):
+    """Aggregate UTF-8 budgeting keeps mandatory text and whole, retrievable records."""
+    body = "## SAFETY\nInspect every upstream handoff before changing production. 安全"
+    with kbc.connect_closing() as conn:
+        parents = []
+        for index in range(80):
+            parent = kb.create_task(conn, title=f"parent {index}", assignee="parent-worker")
+            kb.complete_task(
+                conn,
+                parent,
+                result=(
+                    f"BEGIN-{index}-🧭 "
+                    + ("界" * 700)
+                    + f" END-{index}-🧭"
+                ),
+                metadata={"record": f"META-BEGIN-{index} META-END-{index}"},
+            )
+            parents.append(parent)
+        child = kb.create_task(
+            conn,
+            title="bounded child 🚦",
+            body=body,
+            assignee="worker",
+            parents=parents,
+        )
+        for index in range(kb._CTX_MAX_COMMENTS):
+            kb.add_comment(
+                conn,
+                child,
+                "reviewer",
+                f"COMMENT-BEGIN-{index} " + ("語" * 700) + f" COMMENT-END-{index}",
+            )
+
+        context = kb.build_worker_context(conn, child)
+
+    assert len(context.encode("utf-8")) <= 96 * 1024
+    assert "\x00worker-context-" not in context
+    assert f"# Kanban task {child}: bounded child 🚦" in context
+    assert body in context
+    assert "## Parent task inventory" in context
+    detailed = 0
+    omitted = 0
+    for index, parent in enumerate(parents):
+        if f"- `{parent}` — detailed below" in context:
+            detailed += 1
+            assert f"BEGIN-{index}-🧭" in context
+            assert f"END-{index}-🧭" in context
+            assert f"META-BEGIN-{index} META-END-{index}" in context
+        else:
+            omitted += 1
+            assert (
+                f"- `{parent}` — omitted; retrieve with "
+                f'kanban_show(task_id="{parent}")'
+            ) in context
+    assert detailed > 0
+    assert omitted > 0
+    assert f"parent handoffs={omitted}" in context
+    assert "records are omitted whole, never cut" in context
+    for index in range(kb._CTX_MAX_COMMENTS):
+        assert (f"COMMENT-BEGIN-{index}" in context) == (f"COMMENT-END-{index}" in context)
+
+
+def test_worker_context_multibyte_identity_is_bounded_and_retrievable(kanban_home):
+    """Mandatory task fields use byte-safe shortening with exact retrieval guidance."""
+    huge = "🧭" * 25_000
+    body = "## SAFETY\nPreserve these instructions before taking any action."
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(
+            conn,
+            title=huge,
+            body=body,
+            assignee=huge,
+            tenant=huge,
+            workspace_kind="worktree",
+            workspace_path=f"C:/proof/{huge}",
+            branch_name=f"feature/{huge}",
+        )
+
+        context = kb.build_worker_context(conn, task_id)
+
+    assert len(context.encode("utf-8")) <= kb._CTX_MAX_TOTAL_BYTES
+    assert context.encode("utf-8").decode("utf-8") == context
+    assert f"# Kanban task {task_id}:" in context
+    assert body in context
+    for field in ("title", "assignee", "tenant", "workspace_path", "branch_name"):
+        assert (
+            f"read `task.{field}` from kanban_show(task_id=\"{task_id}\")"
+            in context
+        )
+
+
+# ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------
 

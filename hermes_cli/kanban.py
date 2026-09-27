@@ -10,7 +10,6 @@ import argparse
 import contextlib
 import json
 import os
-import shlex
 import sys
 import time
 from pathlib import Path
@@ -32,6 +31,7 @@ from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
 from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: hermes_cli.main, run_slash)
+from hermes_cli._subprocess_compat import split_command_line
 
 
 # --- Flag parsing helpers ---
@@ -1371,7 +1371,7 @@ def run_slash(rest: str) -> str:
     stdout/stderr. Shared by the interactive CLI and the gateway so formatting is identical."""
     import io
 
-    tokens = shlex.split(rest) if rest and rest.strip() else []
+    tokens = split_command_line(rest) if rest and rest.strip() else []
     # Bare ``/kanban`` / ``help`` / ``-h``: curated short block, not argparse's full tree (garbage
     # in a chat bubble). ``/kanban foo -h`` still works.
     if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:

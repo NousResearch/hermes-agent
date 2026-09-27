@@ -323,3 +323,34 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
         assert kb.list_attachments(conn, task_id) == []
     finally:
         conn.close()
+
+
+@pytest.mark.windows_only
+def test_cli_attach_preserves_native_windows_paths(kanban_home, tmp_path, monkeypatch):
+    """Quoted, unquoted, relative, and Unicode native paths reach the attachment layer intact."""
+    from hermes_cli.kanban import run_slash
+
+    sources = [
+        (tmp_path / "plain.txt", None),
+        (tmp_path / "folder with spaces" / "résumé-安全.txt", None),
+        (tmp_path / "relative.txt", r".\relative.txt"),
+    ]
+    for index, (source, explicit_argument) in enumerate(sources):
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f"payload-{index}", encoding="utf-8")
+        with kbc.connect_closing() as conn:
+            task_id = _make_task(conn, title=f"windows-cli-attach-{index}")
+        if explicit_argument is not None:
+            monkeypatch.chdir(tmp_path)
+            argument = explicit_argument
+        else:
+            native_path = str(source)
+            argument = f'"{native_path}"' if " " in native_path else native_path
+
+        out = run_slash(f"attach {task_id} {argument}")
+
+        assert "Attached" in out, out
+        with kbc.connect_closing() as conn:
+            attachment = kb.list_attachments(conn, task_id)[0]
+        assert attachment.filename == source.name
+        assert Path(attachment.stored_path).read_bytes() == source.read_bytes()

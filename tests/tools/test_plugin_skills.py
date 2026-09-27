@@ -8,6 +8,8 @@ Covers:
 
 import json
 import logging
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -215,7 +217,9 @@ class TestSkillViewQualifiedName:
         reference.write_text("API details.")
 
         main = json.loads(skill_view("superpowers:writing-plans"))
-        assert main["linked_files"] == {"references": ["references/api.md"]}
+        assert main["linked_files"] == {
+            "references": [str(Path("references") / "api.md")]
+        }
         result = json.loads(
             skill_view("superpowers:writing-plans", file_path="references/api.md")
         )
@@ -225,11 +229,12 @@ class TestSkillViewQualifiedName:
     def test_platform_gate_applies_before_supporting_file(self, tmp_path):
         from tools.skills_tool import skill_view
 
+        unsupported_platform = "linux" if sys.platform == "win32" else "windows"
         md = self._register_skill(
             tmp_path,
             content=(
                 "---\nname: writing-plans\ndescription: desc\n"
-                "platforms: [windows]\n---\nBody.\n"
+                f"platforms: [{unsupported_platform}]\n---\nBody.\n"
             ),
         )
         reference = md.parent / "references" / "guide.md"

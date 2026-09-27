@@ -66,6 +66,8 @@ def _fake_supervisor_registry(monkeypatch):
 
 def _fake_cli(tmp_path, body):
     """Write an executable fake browser-use CLI and return its path."""
+    if os.name == "nt":
+        pytest.skip("POSIX shell-script fixture is not executable on Windows")
     script = tmp_path / "browser-use"
     script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
@@ -945,6 +947,19 @@ class TestBrowserExec:
         assert 'got:print("hi")' in result["output"]
         assert "session" not in result
 
+    def test_utf8_stdout_round_trips_without_locale_decoding(self, tmp_path, monkeypatch):
+        cli = tmp_path / "browser_use_unicode.py"
+        cli.write_text(
+            "import sys\nsys.stdin.read()\nprint('café — 🐴 安全')\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [sys.executable, str(cli)])
+
+        result = json.loads(bu_cli.browser_exec("print('payload')"))
+
+        assert result["success"] is True
+        assert result["output"].strip() == "café — 🐴 安全"
+
     def test_session_sets_bu_name(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -969,6 +984,7 @@ class TestBrowserExec:
 
 
 
+@pytest.mark.skipif(os.name == "nt", reason="uses extensionless POSIX executable fixtures")
 class TestFindCliManagedBin:
     """MANAGED-FIRST: _find_cli probes $HERMES_HOME/bin before PATH and
     ~/.local/bin, so the Hermes-installed copy always wins."""
@@ -1050,6 +1066,7 @@ class TestFindCliManagedBin:
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="uses extensionless POSIX executable fixtures")
 class TestInstallCli:
     def test_path_install_does_not_short_circuit(self, tmp_path, monkeypatch):
         """MANAGED-FIRST: a browser-use on PATH is a user-level side install

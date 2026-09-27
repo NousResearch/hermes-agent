@@ -2806,6 +2806,14 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from gateway.session_context import _VAR_MAP
     for key in _VAR_MAP:
         env.pop(key, None)
+    # Prompt/prefill overlays are launch inputs for the parent conversation,
+    # never durable profile state for a fresh board worker.
+    for key in (
+        "HERMES_EPHEMERAL_SYSTEM_PROMPT",
+        "HERMES_PREFILL_MESSAGES_FILE",
+        "HERMES_TUI_SKILLS",
+    ):
+        env.pop(key, None)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml:
     # without it the child's get_hermes_home() falls back to the DEFAULT

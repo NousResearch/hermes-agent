@@ -1043,6 +1043,12 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                     missing_display,
                     ", ".join(loaded_skills),
                 )
+            elif os.environ.get("HERMES_KANBAN_TASK"):
+                logger.warning(
+                    "Kanban worker continuing without unavailable task skill(s): %s. "
+                    "Install them on the assignee profile to restore the requested context.",
+                    missing_display,
+                )
             else:
                 raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:

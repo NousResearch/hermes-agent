@@ -344,7 +344,9 @@ _SSH_RUNTIME_PURELIB: Optional[Tuple[str, int, int]] = None
 _SSH_RUNTIME_MARKER: Optional[str] = None
 _SSH_RUNTIME_MARKER_OWNER_PID: Optional[int] = None
 _SSH_RUNTIME_MARKER_PAYLOAD: Optional[str] = None
-_SSH_RUNTIME_MARKER_NAME = re.compile(r"\.hermes-ssh-runtime-[0-9a-f]{16}")
+_SSH_RUNTIME_MARKER_NAME = re.compile(
+    r"\.hermes-ssh-runtime-[0-9a-f]{16}(?:-[1-9][0-9]*-[0-9a-f]{16})?"
+)
 _SSH_RUNTIME_MARKER_PAYLOAD_RE = re.compile(
     r"pid=([1-9][0-9]*)\n(?:create_time=([0-9]+(?:\.[0-9]+)?)\n?)?"
 )
@@ -439,8 +441,11 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
         # snapshot alone is NOT enough: ext4 reuses directory inodes at once,
         # so `rm -rf venv && uv venv` can land on the same inode undetected.
         try:
-            marker = os.path.join(purelib, f".hermes-ssh-runtime-{nonce}")
             owner_pid = os.getpid()
+            marker = os.path.join(
+                purelib,
+                f".hermes-ssh-runtime-{nonce}-{owner_pid}-{secrets.token_hex(8)}",
+            )
             try:
                 create_time = _process_create_time(owner_pid)
             except Exception:
@@ -451,13 +456,26 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
             try:
                 fh = open(marker, "x", encoding="utf-8")
             except FileExistsError:
-                # Another live dashboard owns this nonce. Do not anchor this
-                # process to a marker that its creator will remove on exit;
-                # use the purelib stat snapshot recorded below instead.
+                # An impossible-in-practice random-name collision must not
+                # overwrite another process's marker. Fall back to the
+                # purelib stat snapshot recorded below.
                 pass
             else:
-                with fh:
-                    fh.write(payload)
+                marker_stat = os.fstat(fh.fileno())
+                try:
+                    with fh:
+                        fh.write(payload)
+                except OSError:
+                    try:
+                        current_stat = os.stat(marker, follow_symlinks=False)
+                        if (current_stat.st_dev, current_stat.st_ino) == (
+                            marker_stat.st_dev,
+                            marker_stat.st_ino,
+                        ):
+                            os.unlink(marker)
+                    except OSError:
+                        pass
+                    raise
                 _SSH_RUNTIME_MARKER = marker
                 _SSH_RUNTIME_MARKER_OWNER_PID = owner_pid
                 _SSH_RUNTIME_MARKER_PAYLOAD = payload

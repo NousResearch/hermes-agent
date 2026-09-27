@@ -41,7 +41,8 @@ def test_restart_watcher_relaunches_from_an_interpreter_without_site_packages(tm
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.chdir(REPO)
+    # The watcher must find the checkout on its own, not through an inherited cwd.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "executable", str(bare))
     relaunch = [str(bare), "-c", f"open({str(marker)!r}, 'w').write('ok')"]
 

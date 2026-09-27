@@ -23,8 +23,6 @@ from typing import Any, Callable, NamedTuple, Optional
 
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
-from hermes_cli._subprocess_compat import posix_is_zombie as _posix_is_zombie  # noqa: F401 - historical name
-from hermes_cli._subprocess_compat import win32_pid_exists as _pid_exists_win32_ctypes  # noqa: F401 - historical name
 from utils import atomic_json_write
 
 if sys.platform == "win32":

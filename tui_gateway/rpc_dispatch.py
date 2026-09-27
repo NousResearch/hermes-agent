@@ -39,7 +39,24 @@ def _handle_admitted_request(req: dict) -> dict | None:
     if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
         _contracts.check_params_accepted(contract, params)
         _contracts.check_result(contract, response["result"])
+    _count_slash_command(method, params, response)
     return response
+
+
+# Client RPCs carrying a user-typed slash command -> the param naming it. Counted here, at the
+# client boundary, so slash.exec's internal command.dispatch hops and session.control intents
+# never count; a refused slash.exec (4018) counts on the client's command.dispatch fallback.
+_SLASH_COMMAND_RPC_PARAM = {"slash.exec": "command", "command.dispatch": "name"}
+
+
+def _count_slash_command(method: str, params: dict, response) -> None:
+    key = _SLASH_COMMAND_RPC_PARAM.get(method)
+    result = response.get("result") if key and isinstance(response, dict) else None
+    # An alias directive is re-dispatched by the client as its target, which counts then.
+    if not isinstance(result, dict) or result.get("type") == "alias":
+        return
+    from hermes_cli.observability.shared_metrics_events import record_slash_command
+    record_slash_command(command=str(params.get(key) or ""), surface=_resolve_session_platform())
 
 
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:

@@ -75,6 +75,7 @@ it('a native click reveals the existing remote Bot tab without changing its owne
     useDesktopIntegrations({
       activeProfile: 'default',
       chatOpen: false,
+      focusedTileStoredSessionId: null,
       hasPreview: false,
       locationPathname: '/settings',
       navigate,

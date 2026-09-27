@@ -628,7 +628,15 @@ function Clear-HistoricalInstallerChurn {
         }
     }
     Assert-True ($other.Count -eq 0) "installed source has only installer-generated changes (other: $($other -join '; '))"
-    if ($locks.Count) { Invoke-Git (@("-C", $InstallDir, "checkout", "--") + $locks) | Out-Null }
+    if ($locks.Count) {
+        # From a file: a v2026.7.1 clone churns hundreds of paths, and passing
+        # them as arguments overflows the Windows command line ("The filename
+        # or extension is too long"). NUL-separated, literal: no quoting or
+        # glob magic applies to a path.
+        $pathspecs = Join-Path $WorkRoot "installer-churn.pathspec"
+        [System.IO.File]::WriteAllText($pathspecs, (($locks -join "`0") + "`0"), (New-Object System.Text.UTF8Encoding $false))
+        Invoke-Git @("--literal-pathspecs", "-C", $InstallDir, "checkout", "--pathspec-from-file=$pathspecs", "--pathspec-file-nul") | Out-Null
+    }
     $left = @((Invoke-Git @("-C", $InstallDir, "status", "--porcelain", "--untracked-files=all")) -split "\r?\n" |
         Where-Object { $_ })
     Assert-True ($left.Count -eq 0) "undid only installer-generated source churn before the GUI update"

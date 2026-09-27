@@ -17,7 +17,8 @@ from typing import Any, Callable, Deque, Optional
 import acp
 from acp.schema import (
     AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
-    Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
+    Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpCapabilities,
+    McpServerHttp, McpServerSse,
     McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
     SessionMode, SessionModeState, SessionModelState, SessionResumeCapabilities, SetSessionConfigOptionResponse,
@@ -537,6 +538,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=get_version_info().base_version),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
+                # The adapter registers client-provided HTTP and SSE MCP servers in
+                # new_session/resume_session (_register_session_mcp_servers -> _mcp_server_config
+                # builds {"url", "headers"} configs), so advertise that support. Clients that
+                # gate MCP-over-HTTP on this capability (e.g. qwen-audio-agent) currently drop
+                # Hermes as a backend (#124910).
+                mcp_capabilities=McpCapabilities(http=True, sse=True),
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(), list=SessionListCapabilities(), resume=SessionResumeCapabilities(),

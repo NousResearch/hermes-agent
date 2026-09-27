@@ -453,7 +453,7 @@ jobs:
     if: always()
     needs: [leg-player, pick-releases, linux, windows, macos, bundle-inputs, windows-bundled, macos-bundled]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -465,15 +465,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # The repo's GITHUB_TOKEN shares one hourly API budget with every
+          # other workflow; a busy hour answered "API rate limit exceeded for
+          # installation" and turned a green matrix red here. Retry, then
+          # say the chart is missing instead of failing the run.
+          fetch() {
+            local out=$1; shift
+            for wait in 30 60 90 0; do
+              gh api "$@" > "$out" && return 0
+              [ "$wait" -eq 0 ] || sleep "$wait"
+            done
+            return 1
+          }
+          if ! fetch /tmp/e2e-jobs.ndjson "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+                --paginate --jq '.jobs[] | {name, conclusion}' \
+             || ! fetch /tmp/e2e-artifacts.ndjson "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?per_page=100" \
+                --paginate --jq '.artifacts[] | {name, id}'; then
+            echo "::warning::Result chart unavailable: the GitHub API refused the job list; each leg's own conclusion stands."
+            echo "Result chart unavailable: the GitHub API refused the job list; each leg's own conclusion stands." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           {
             echo "OS jobs: linux ${{ needs.linux.result }}, windows ${{ needs.windows.result }}, macos ${{ needs.macos.result }}"
             echo
             # The tag annotations let the chart say WHY a cell skipped
             # (pre-desktop vs declared TODO) instead of a flat "skip".
-            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
-              --paginate --jq '.jobs[] | {name, conclusion}' > /tmp/e2e-jobs.ndjson
-            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?per_page=100" \
-              --paginate --jq '.artifacts[] | {name, id}' > /tmp/e2e-artifacts.ndjson
             echo 'Legend: ✅ upgrade passed · known [n] = exact historical failure, see footnote · ❌ unexpected failure · pre-desktop / TODO = why a leg skipped · 📼 opens the leg player (recording + synced logs)'
             echo
             node scripts/sandbox/generate-e2e-matrix.mjs --format results \

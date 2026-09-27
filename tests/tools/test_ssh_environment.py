@@ -144,6 +144,8 @@ class TestControlSocketPath:
     # the NUL terminator, so the usable path length is 103 bytes.
     _SSH_CONTROLMASTER_SUFFIX = 17
     _MAX_SUN_PATH = 103
+    # Linux sun_path is 108 bytes (including NUL).
+    _LINUX_SUN_PATH = 108
 
     def test_fits_under_macos_socket_limit_with_ipv6_host(self, monkeypatch):
         """A realistic macOS $TMPDIR + IPv6 host must still produce a
@@ -185,6 +187,44 @@ class TestControlSocketPath:
         assert SSHEnvironment(host="h", user="u", port=23).control_socket != base
         assert SSHEnvironment(host="h", user="v", port=22).control_socket != base
         assert SSHEnvironment(host="g", user="u", port=22).control_socket != base
+
+    def test_linux_deep_profile_tmpdir_stays_under_sun_path(self, monkeypatch):
+        """A deep per-profile scratch TMPDIR must not push the ControlMaster
+        socket past Linux's 108-byte sun_path once OpenSSH appends its
+        16-char temp-listener suffix.
+
+        Regression for the ryan-server-admin incident: with TMPDIR set to a
+        profile scratch dir (~59 bytes), the old ``tempfile.gettempdir() /
+        "hermes-ssh"`` base made the OpenSSH ControlMaster listener land at
+        109 bytes -> "unix_listener: path ... too long for Unix domain
+        socket". The fix routes the socket root through
+        ``hermes_constants.socket_safe_tmpdir()`` (-> ``/tmp``), keeping the
+        full path under the limit.
+        """
+        import tools.environments.ssh as ssh_mod
+
+        # Deep profile-scratch TMPDIR, as a per-profile process sees it.
+        deep_scratch = "/home/user/.hermes/profiles/long-profile-name/cache/scratch"
+        monkeypatch.setattr(ssh_mod.tempfile, "gettempdir", lambda: deep_scratch)
+        # socket_safe_tmpdir() resolves the deep scratch to /tmp on Linux.
+        # raising=False: on unfixed code the module has no such attribute, so
+        # this must not error — the real check is the path assertions below.
+        monkeypatch.setattr(ssh_mod, "socket_safe_tmpdir", lambda: "/tmp", raising=False)
+        from pathlib import Path as _Path
+        monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
+
+        env = SSHEnvironment(host="ryan-server.local", user="ryan", port=22)
+
+        # The socket must live under the short /tmp root, not the deep scratch.
+        assert str(env.control_dir) == "/tmp/hermes-ssh", (
+            f"control socket dir should use the socket-safe root, got {env.control_dir}"
+        )
+        total_len = len(str(env.control_socket)) + self._SSH_CONTROLMASTER_SUFFIX
+        assert total_len <= self._LINUX_SUN_PATH, (
+            f"control socket path would exceed the {self._LINUX_SUN_PATH}-byte "
+            f"Linux sun_path limit once SSH appends its 16-byte suffix: "
+            f"{env.control_socket} (+{self._SSH_CONTROLMASTER_SUFFIX} = {total_len})"
+        )
 
 
 class TestTerminalToolConfig:

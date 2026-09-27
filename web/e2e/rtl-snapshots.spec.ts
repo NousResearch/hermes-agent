@@ -51,23 +51,119 @@ const VAZIRMATN_CSS = `@font-face {
   src: url('https://fonts.gstatic.com/vazirmatn-test.woff2') format('woff2');
 }`;
 
-/** Routes covered. Keep the list to stable, content-light pages. */
-const PAGES: Array<{ path: string; name: string }> = [
-  { path: "/sessions", name: "sessions" },
-  { path: "/models", name: "models" },
-  { path: "/chat", name: "chat" },
-  { path: "/skills", name: "skills" },
-  { path: "/profiles", name: "profiles" },
-  { path: "/docs", name: "docs" },
-  { path: "/channels", name: "channels" }, // localized since 6fef7145510 — the full-page shot only covers the default view; the conditional per-platform panels (Telegram QR flow, allowed-users field) are pinned separately by the DOM assertions in the channels test below.
-  { path: "/config", name: "config" },
-  { path: "/env", name: "env" },
-  // NEW-SURFACE baselines (a378d64eaf9 round). Both render meaningful rows so
-  // the diff catches RTL regressions in real content, not just empty states.
-  // Dates inside rows are TZ-sensitive — the config pins timezoneId UTC.
-  { path: "/files", name: "files" }, // entry rows: Latin file names, byte sizes, Jalali dates.
-  { path: "/cron", name: "cron" }, // job rows: humanized schedule sentences, repeat counters, last/next timestamps — the sharpest mixed-direction text on the dashboard.
-];
+/** Fixed offsets from run start; both stay inside the hour bucket of
+ *  timeAgo ("N hours ago") so the rendered words are stable for hours.
+ *  SessionInfo/ModelsAnalytics timestamps are Unix SECONDS. */
+const HOUR = 3_600_000;
+const TS = {
+  yesterday: Math.floor((Date.now() - 3 * HOUR) / 1000),
+  fiveDaysAgo: Math.floor((Date.now() - 8 * HOUR) / 1000),
+};
+
+export const CHAT_API_OVERRIDES: Record<string, { status: number; body: string }> = {
+  "/api/sessions": stubJson({
+    sessions: [
+      {
+        id: "sess-ingest",
+        source: "cli",
+        model: "stub-model",
+        title: "Refactor the ingest pipeline",
+        started_at: TS.yesterday - 1_800_000,
+        ended_at: TS.yesterday,
+        last_active: TS.yesterday,
+        is_active: false,
+        message_count: 14,
+        tool_call_count: 3,
+        input_tokens: 0,
+        output_tokens: 0,
+        preview: null,
+      },
+      {
+        id: "sess-weekly",
+        source: "cli",
+        model: "stub-model",
+        title: "گزارش هفتگی",
+        started_at: TS.fiveDaysAgo - 600_000,
+        ended_at: TS.fiveDaysAgo,
+        last_active: TS.fiveDaysAgo,
+        is_active: false,
+        message_count: 7,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        preview: null,
+      },
+    ],
+    total: 2,
+    limit: 20,
+    offset: 0,
+  }),
+};
+
+export const MODELS_API_OVERRIDES: Record<string, { status: number; body: string }> = {
+  "/api/analytics/models": stubJson({
+    models: [
+      {
+        model: "stub-model",
+        provider: "stub",
+        input_tokens: 48_210,
+        output_tokens: 9_120,
+        cache_read_tokens: 0,
+        reasoning_tokens: 0,
+        estimated_cost: 1.24,
+        actual_cost: 0,
+        sessions: 9,
+        api_calls: 132,
+        tool_calls: 21,
+        last_used_at: TS.yesterday,
+        avg_tokens_per_session: 6_367,
+        capabilities: {
+          supports_tools: true,
+          supports_vision: false,
+          supports_reasoning: true,
+          context_window: 200_000,
+          max_output_tokens: 8_192,
+          model_family: "stub",
+        },
+      },
+      {
+        model: "stub-vision",
+        provider: "stub",
+        input_tokens: 12_400,
+        output_tokens: 2_210,
+        cache_read_tokens: 0,
+        reasoning_tokens: 0,
+        estimated_cost: 0.42,
+        actual_cost: 0,
+        sessions: 3,
+        api_calls: 28,
+        tool_calls: 0,
+        last_used_at: TS.fiveDaysAgo,
+        avg_tokens_per_session: 4_870,
+        capabilities: {
+          supports_tools: false,
+          supports_vision: true,
+          supports_reasoning: false,
+          context_window: 128_000,
+          max_output_tokens: 4_096,
+          model_family: "stub",
+        },
+      },
+    ],
+    totals: {
+      distinct_models: 2,
+      total_input: 60_610,
+      total_output: 11_330,
+      total_cache_read: 0,
+      total_reasoning: 0,
+      total_estimated_cost: 1.66,
+      total_actual_cost: 0,
+      total_sessions: 12,
+      total_api_calls: 160,
+    },
+    period_days: 7,
+  }),
+};
 
 /**
  * Deterministic stub responses for every `/api/*` endpoint the covered pages
@@ -81,6 +177,38 @@ function stubJson(body: unknown): { status: number; body: string } {
 const API_DEFAULT = stubJson({});
 
 /** Per-endpoint stubs where an empty object would break a page's render. */
+/** Routes covered. Keep the list to stable, content-light pages. */
+const PAGES: Array<{
+  path: string;
+  name: string;
+  /** Extra per-page stubs merged over API_STUBS (e.g. fixture rows that make
+   *  locale-sensitive chips render for this surface only). */
+  apiOverrides?: Record<string, { status: number; body: string }>;
+}> = [
+  { path: "/sessions", name: "sessions" },
+  // Chat + models render locale-sensitive relative-time chips (timeAgo →
+  // Intl.RelativeTimeFormat, «دیروز»/«۵ روز پیش» under fa). Their default
+  // stubs are empty lists, so the per-page overrides below seed fixture
+  // rows — bucketed at "yesterday"/"5 days ago" so the rendered words stay
+  // stable for the whole run (minute-level buckets would drift mid-capture).
+  { path: "/chat", name: "chat", apiOverrides: CHAT_API_OVERRIDES },
+  { path: "/models", name: "models", apiOverrides: MODELS_API_OVERRIDES },
+  { path: "/skills", name: "skills" },
+  { path: "/profiles", name: "profiles" },
+  // NEW-SURFACE baselines. Both render meaningful rows so the diff catches
+  // RTL regressions in real content, not just empty states.
+  // Dates inside rows are TZ-sensitive — the config pins timezoneId UTC.
+  { path: "/docs", name: "docs" },
+  { path: "/channels", name: "channels" }, // localized since 6fef7145510 — the full-page shot only covers the default view; the conditional per-platform panels (Telegram QR flow, allowed-users field) are pinned separately by the DOM assertions in the channels test below.
+  { path: "/config", name: "config" },
+  { path: "/env", name: "env" },
+  // NEW-SURFACE baselines (a378d64eaf9 round). Both render meaningful rows so
+  // the diff catches RTL regressions in real content, not just empty states.
+  // Dates inside rows are TZ-sensitive — the config pins timezoneId UTC.
+  { path: "/files", name: "files" }, // entry rows: Latin file names, byte sizes, Jalali dates.
+  { path: "/cron", name: "cron" }, // job rows: humanized schedule sentences, repeat counters, last/next timestamps — the sharpest mixed-direction text on the dashboard.
+];
+
 const API_STUBS: Record<string, { status: number; body: string }> = {
   // Array-shaped endpoints (consumers call .length/.filter directly):
   "/api/dashboard/plugins": stubJson([]),
@@ -255,6 +383,16 @@ const API_STUBS: Record<string, { status: number; body: string }> = {
   // rejected fetches, not 200-with-an-object).
   "/api/tools/toolsets": stubJson([]),
   // Object-shaped endpoints (shape mismatches crash pages):
+  // ChatWorkspacesResponse shape — ChatPage boots reading data.projects, so
+  // the `{}` default crashes /chat ("projects is not iterable") and the side
+  // panel never mounts.
+  "/api/chat/workspaces": stubJson({
+    projects: [],
+    repos: [],
+    default_cwd: "D:\\hermes-test-home",
+    home: "D:\\hermes-test-home",
+    scan_enabled: false,
+  }),
   "/api/sessions": stubJson({ sessions: [], total: 0 }),
   "/api/sessions/stats":
     stubJson({ total: 0, active_store: 0, archived: 0, messages: 0, by_source: {} }),
@@ -275,11 +413,15 @@ const API_STUBS: Record<string, { status: number; body: string }> = {
 /**
  * Install route interception for the given page. Runs BEFORE any app script
  * (routes apply to subsequent requests), so boot-time fetches are covered.
+ * `overrides` wins over the shared API_STUBS for its exact pathname.
  */
-export async function stubBackend(page: Page): Promise<void> {
+export async function stubBackend(
+  page: Page,
+  overrides: Record<string, { status: number; body: string }> = {},
+): Promise<void> {
   await page.route("**/api/**", (route) => {
     const url = new URL(route.request().url());
-    const stub = API_STUBS[url.pathname] ?? API_DEFAULT;
+    const stub = overrides[url.pathname] ?? API_STUBS[url.pathname] ?? API_DEFAULT;
     void route.fulfill({ status: stub.status, contentType: "application/json", body: stub.body });
   });
   // Plugin manifest scripts: none, so nothing else loads.
@@ -351,9 +493,9 @@ async function rtlSnapshot(page: Page, name: string): Promise<void> {
 }
 
 test.describe("Persian RTL visual snapshots", () => {
-  for (const { path, name } of PAGES) {
+  for (const { path, name, apiOverrides } of PAGES) {
     test(`locale=fa ${name} renders RTL`, async ({ page }) => {
-      await stubBackend(page);
+      await stubBackend(page, apiOverrides);
       await seedPersian(page);
       await page.setViewportSize(VIEWPORT);
       await page.goto(path, { waitUntil: "domcontentloaded" });

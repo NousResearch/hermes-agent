@@ -65,7 +65,7 @@ def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
         captured["tmp_dir"] = d
         return d
 
-    def fake_urlretrieve(url, dest):
+    def fake_urlretrieve(url, dest, reporthook=None):
         # Copy our malicious zip into the destination dest path.
         with open(zip_path, "rb") as src, open(dest, "wb") as dst:
             dst.write(src.read())
@@ -116,7 +116,7 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
 
     args = type("Args", (), {})()
 
-    def fake_urlretrieve(url, dest):
+    def fake_urlretrieve(url, dest, reporthook=None):
         with open(zip_path, "rb") as src, open(dest, "wb") as dst:
             dst.write(src.read())
         return dest, None

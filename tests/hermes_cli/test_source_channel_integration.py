@@ -377,10 +377,13 @@ def test_tagless_zip_apply_uses_pinned_source_archive(source, monkeypatch, dirty
     git(source.origin, "archive", "--format=zip", "--prefix=hermes-agent-fixture/",
         "--output=" + str(archive), source.commits[1])
     urls = []
-    def download(url, filename):
+    def download(url, filename, reporthook=None):
         import shutil
         urls.append(url)
         shutil.copyfile(archive, filename)
+        if reporthook is not None:
+            size = Path(filename).stat().st_size
+            reporthook(1, size, size)
     monkeypatch.setattr(urllib.request, "urlretrieve", download)
     monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (True, ["git"], False))
     completed = []

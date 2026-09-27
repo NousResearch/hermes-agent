@@ -133,14 +133,6 @@ export function ConfirmDialog({
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent
         className="max-w-md"
-        onKeyDown={event => {
-          // Enter/Space confirm regardless of which button holds focus
-          // (preventDefault stops a focused Cancel from swallowing it).
-          if ((event.key === 'Enter' || event.key === ' ') && !busy) {
-            event.preventDefault()
-            void run()
-          }
-        }}
         onCloseAutoFocus={event => {
           // Radix's own restore needs a DialogTrigger, which a controlled
           // dialog has none of; restore the opener explicitly instead of
@@ -150,6 +142,14 @@ export function ConfirmDialog({
 
           if (target?.isConnected) {
             target.focus()
+          }
+        }}
+        onKeyDown={event => {
+          // Enter/Space confirm regardless of which button holds focus
+          // (preventDefault stops a focused Cancel from swallowing it).
+          if ((event.key === 'Enter' || event.key === ' ') && !busy) {
+            event.preventDefault()
+            void run()
           }
         }}
         onOpenAutoFocus={event => {

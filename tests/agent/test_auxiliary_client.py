@@ -3033,6 +3033,57 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         assert captured["output_config"] == {"effort": "medium"}
         assert "extra_body" not in captured
 
+    def test_bedrock_client_never_receives_output_config_format(self):
+        """AnthropicBedrock's InvokeModel endpoint rejects the translated
+        output_config.format with 400 'Extra inputs are not permitted' (every
+        Claude model) and the per-process rejection memo forgets it on every
+        restart, so the adapter must skip the translation up front rather than
+        burn a 400 per structured-output call per process (#124923)."""
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        captured = {}
+
+        class _Messages:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="ok")],
+                    stop_reason="end_turn",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                )
+
+        bedrock_client = type("AnthropicBedrock", (), {"messages": _Messages()})()
+        adapter = _AnthropicCompletionsAdapter(bedrock_client, "anthropic.claude-opus-5-5", is_oauth=False)
+
+        response_format = {"type": "json_schema", "json_schema": {
+            "name": "session_title", "strict": True, "schema": {"type": "object"}}}
+        adapter.create(
+            model="anthropic.claude-opus-5-5",
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"response_format": response_format},
+        )
+
+        # No output_config.format on the wire; the call itself succeeds and the
+        # passthrough extra_body no longer carries response_format either.
+        assert captured.get("output_config", {}).get("format") is None
+        assert "response_format" not in captured.get("extra_body", {})
+
+    def test_non_bedrock_client_still_gets_output_config_format(self):
+        """The skip must be scoped to AnthropicBedrock: direct/partner Anthropic
+        and Messages-wire gateways accept output_config.format, and dropping it
+        there would silently degrade structured output to prompt compliance."""
+        adapter, captured = self._build_adapter()
+
+        adapter.create(
+            model="claude-fable-5",
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"response_format": {"type": "json_schema", "json_schema": {
+                "name": "session_title", "strict": True, "schema": {"type": "object"}}}},
+        )
+
+        assert captured["output_config"]["format"] == {
+            "type": "json_schema", "schema": {"type": "object"}}
+
     def test_build_call_kwargs_private_reasoning_only_for_anthropic_messages(self):
         anthropic_kwargs = _build_call_kwargs(
             "anthropic",

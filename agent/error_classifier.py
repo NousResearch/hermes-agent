@@ -1011,6 +1011,47 @@ def _off_route_host(c: _Ctx) -> str:
 # default so the configured retry budget applies and no credential is benched.
 _403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
 
+# Machine-readable ``type``/``code`` values that DO name a credential/permission
+# refusal: a 403 carrying one of them keeps the auth verdict (#125058).
+_403_AUTH_ERROR_TYPES = frozenset({
+    "authentication_error", "authentication", "auth_error", "auth", "unauthenticated",
+    "invalid_api_key", "invalid_token", "token_expired", "token_revoked", "unauthorized",
+    "forbidden", "permission_denied", "permission_error",
+})
+
+
+def _structured_policy_refusal(c: _Ctx) -> Optional[Verdict]:
+    """A 403 whose body is a structured error object naming a NON-auth refusal (#125058).
+
+    A policy/budget gateway in front of a custom endpoint answers with its own
+    machine-readable ``type``/``code`` and a human-readable ``reason``/``detail`` — the
+    credential was never rejected (the same key answers the turns before and after), so
+    the API-key copy and credential rotation are wrong. Kept narrower than "any unknown
+    code": the code must be symbolic (Azure stamps a bare numeric ``"403"``) and must not
+    name an auth type, and the body must carry readable detail. The detail is screened
+    against the wording tables first — a gateway that words its refusal as billing, a
+    WAF block or an auth refusal keeps that verdict, because ``_status_403``'s earlier
+    checks only see ``error.message``, not ``reason``/``detail``. A code-less or
+    wording-only 403 keeps the auth verdict.
+    """
+    code = c.code
+    if not code or code.isdigit() or code in _403_AUTH_ERROR_TYPES:
+        return None
+    err = _error_obj(c.body)
+    text = " ".join(
+        str(t) for t in (err.get("message"), err.get("reason"), err.get("detail"))
+        if isinstance(t, str) and t.strip()
+    ).strip().lower()
+    if not text:
+        return None
+    if any(p in text for p in _UPSTREAM_BLOCKED_PATTERNS):
+        return _V_UPSTREAM_BLOCKED
+    if any(p in text for p in _BILLING_PATTERNS):
+        return _billing_hints(text)
+    if any(p in text for p in _AUTH_PATTERNS):
+        return None
+    return _v(_R.provider_policy_blocked, **_ABORT_FALLBACK, error_context={"policy_refusal": text[:500]})
+
 
 def _status_403(c: _Ctx) -> Verdict:
     if c.code in _403_TRANSIENT_CODES:
@@ -1025,6 +1066,9 @@ def _status_403(c: _Ctx) -> Verdict:
     # 403 and on established block/challenge markers; any other 403 stays auth.
     if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    policy = _structured_policy_refusal(c)
+    if policy is not None:
+        return policy
     return _V_AUTH_FALLBACK
 
 
@@ -1357,6 +1401,10 @@ def _body_message_candidates(body: dict) -> Iterator[Any]:
     yield body.get("errorMessage")
     args = body.get("errorArgs")
     yield args.get("reason") if isinstance(args, dict) else None
+    # Policy gateways put the human-readable refusal in ``error.reason`` while ``message``
+    # is absent (#125058); without this candidate the raw str(error) JSON is all the
+    # terminal copy can show.
+    yield _error_obj(body).get("reason")
     # FastAPI/Starlette relays and the Codex gateway answer {"detail": "..."} (or a nested
     # OpenAI-ish object); without it a descriptive rejection reads as a bare 400 and the
     # large-session heuristic sends it into compression (#81558). A list here is pydantic's

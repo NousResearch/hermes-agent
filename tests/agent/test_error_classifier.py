@@ -2146,3 +2146,72 @@ class TestStreamingRenderFormatError:
         e = MockAPIError("Error rendering prompt with jinja template: ...", status_code=500)
         result = classify_api_error(e, provider="lm-studio", model="x")
         assert result.reason != FailoverReason.format_error
+
+
+class TestPolicyGateway403:
+    """#125058: a 403 from a policy gateway in front of a custom endpoint carries a
+    machine-readable non-auth ``type``/``code`` plus a human-readable ``reason`` — the key
+    was never rejected, so the verdict is provider_policy_blocked, never the API-key copy."""
+
+    def test_policy_denial_403_is_policy_blocked(self):
+        body = {"error": {"type": "wardryx_denied",
+                          "reason": 'estimated cost $0.02 exceeds policy "deny-beta" hard ceiling; '
+                                    'no approval can authorize this',
+                          "retryable": False, "policy_version": "v3"}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.is_auth is False
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is False
+
+    def test_approval_pending_403_is_policy_blocked(self):
+        body = {"error": {"type": "policy_hold", "approval_id": "ap_1", "approval_token_required": True,
+                          "detail": "resubmit this request with header x-fuse-approval-token after approval",
+                          "reason": "estimated cost $0.02 exceeds policy threshold; human approval required",
+                          "retryable": False}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.is_auth is False
+
+    def test_policy_refusal_reason_surfaces_in_message(self):
+        body = {"error": {"type": "wardryx_denied",
+                          "reason": "estimated cost $0.02 exceeds policy threshold"}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.message == "estimated cost $0.02 exceeds policy threshold"
+
+    def test_403_auth_type_code_keeps_auth(self):
+        body = {"error": {"message": "You don't have access to this model.",
+                          "type": "permission_denied", "param": None, "code": None}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="openai")
+        assert result.reason == FailoverReason.auth
+
+    def test_403_numeric_string_code_keeps_auth(self):
+        # Azure stamps the HTTP status itself as the code; a numeric string is not a
+        # symbolic refusal type.
+        body = {"error": {"code": "403", "message": "Request rejected by the calling policy."}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="azure")
+        assert result.reason == FailoverReason.auth
+
+    def test_403_auth_wording_in_refusal_keeps_auth(self):
+        body = {"error": {"type": "gateway_denied", "reason": "Access denied due to invalid subscription key."}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.auth
+
+    def test_403_billing_wording_in_refusal_keeps_billing(self):
+        body = {"error": {"type": "gateway_denied", "reason": "insufficient credits for this request"}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.billing
+
+    def test_403_code_without_readable_detail_keeps_auth(self):
+        body = {"error": {"type": "wardryx_denied"}}
+        result = classify_api_error(MockAPIError("Error code: 403", status_code=403, body=body),
+                                    provider="custom")
+        assert result.reason == FailoverReason.auth

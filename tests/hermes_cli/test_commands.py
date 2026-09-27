@@ -235,6 +235,48 @@ class TestSlackNativeSlashes:
         )
 
 
+    def test_via_hermes_only_never_return_as_native_slashes(self):
+        """At zero headroom the ceiling assertion is tautological: the
+        generator skips at the cap, so len <= 25 cannot fail while the
+        constant is pinned at 25. The live failure mode is *which* 25 win —
+        no _SLACK_VIA_HERMES_ONLY name may leak back into a native slot."""
+        native = {n for n, _d, _h in slack_native_slashes()}
+        leaked = native & _SLACK_VIA_HERMES_ONLY
+        assert not leaked, f"demoted commands back as native slashes: {sorted(leaked)}"
+
+
+    def test_every_demoted_name_still_resolves_via_hermes(self):
+        """Demotion must not mean removal: every _SLACK_VIA_HERMES_ONLY
+        name has to stay reachable through the /hermes handler, or the
+        parity exemption above would be hiding a dead command."""
+        subcommands = slack_subcommand_map()
+        dead = sorted(_SLACK_VIA_HERMES_ONLY - subcommands.keys())
+        assert not dead, f"demoted names unreachable via /hermes: {dead}"
+
+
+    def test_plugin_commands_win_freed_slots_ahead_of_aliases(self, monkeypatch):
+        """The canonical -> plugins -> aliases order only becomes observable
+        once slots free up mid-list: with two kept commands demoted, two
+        installed plugin commands must take the freed slots before generated
+        aliases do (a dropped plugin command loses its only entry point; an
+        alias stays reachable via its canonical slash and /hermes)."""
+        import hermes_cli.commands_platforms as commands_platforms
+
+        monkeypatch.setattr(
+            commands_platforms, "_SLACK_VIA_HERMES_ONLY",
+            frozenset(set(_SLACK_VIA_HERMES_ONLY) | {"kanban", "memory"}))
+        monkeypatch.setattr(
+            commands_platforms, "_iter_plugin_command_entries",
+            lambda: [("plug-alpha", "First plugin command", ""),
+                     ("plug-beta", "Second plugin command", "")])
+
+        native = [n for n, _d, _h in slack_native_slashes()]
+        assert native[-2:] == ["plug-alpha", "plug-beta"], (
+            f"plugins did not win the freed slots ahead of aliases: {native[-4:]}"
+        )
+        assert "reset" not in native and "fork" not in native
+
+
 class TestSlackAppManifest:
     """Generated Slack app manifest (used by `hermes slack manifest`)."""
 

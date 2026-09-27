@@ -1383,6 +1383,45 @@ async def test_reply_context_uses_edit_and_never_resurfaces_redacted_text():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("pause_at", ["get_event", "image_loader"])
+async def test_redaction_during_reply_image_resolution_returns_no_context(tmp_path, pause_at):
+    from plugins.platforms.matrix.reply_context import MatrixEventContextCache
+
+    room_id = "!room:example.org"
+    event_id = "$image"
+    started = asyncio.Event()
+    release = asyncio.Event()
+    image = tmp_path / "photo.png"
+    image.write_bytes(b"png")
+    event = types.SimpleNamespace(
+        sender="@alice:example.org",
+        content={"msgtype": "m.image", "body": "photo.png", "url": "mxc://example.org/photo"},
+    )
+
+    async def get_event(_room_id, _event_id):
+        if pause_at == "get_event":
+            started.set()
+            await release.wait()
+        return event
+
+    async def load_image(_content, _event_id):
+        if pause_at == "image_loader":
+            started.set()
+            await release.wait()
+        return str(image), "image/png"
+
+    client = MagicMock()
+    client.get_event = AsyncMock(side_effect=get_event)
+    cache = MatrixEventContextCache()
+    resolving = asyncio.create_task(cache.resolve(client, room_id, event_id, load_image))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    cache.redact(room_id, event_id)
+    release.set()
+
+    assert (await resolving, await cache.resolve(None, room_id, event_id)) == (None, None)
+
+
+@pytest.mark.asyncio
 async def test_sent_matrix_message_is_available_as_reply_context():
     from plugins.platforms.matrix.reply_context import MatrixEventContext
 
@@ -1608,6 +1647,36 @@ async def test_thread_image_cache_can_retry_explicit_reply_download(tmp_path, im
     assert (first.media_path, second.media_path, second.media_type, loader.await_count) == (
         None, str(image), "image/png", 2,
     )
+
+
+@pytest.mark.asyncio
+async def test_thread_backfill_omits_child_redacted_during_relations_fetch():
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+    from plugins.platforms.matrix.thread_context import fetch_thread_entries
+
+    room_id = "!room:example.org"
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def relations(_method, _path, **_kwargs):
+        started.set()
+        await release.wait()
+        return {"chunk": [{
+            "event_id": "$child", "sender": "@alice:example.org",
+            "content": {"msgtype": "m.text", "body": "redacted child"},
+        }]}
+
+    client = MagicMock()
+    client.api.request = AsyncMock(side_effect=relations)
+    cache = MatrixEventContextCache()
+    root = MatrixEventContext("@alice:example.org", "root")
+    cache.store(room_id, "$root", root)
+    fetching = asyncio.create_task(fetch_thread_entries(client, cache, room_id, "$root", limit=5))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    cache.redact(room_id, "$child")
+    release.set()
+
+    assert await fetching == [root]
 
 
 # ---------------------------------------------------------------------------

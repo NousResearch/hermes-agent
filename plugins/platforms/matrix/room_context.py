@@ -34,6 +34,22 @@ def room_state_change_note(event: Any) -> tuple[str, RoomStateNote] | None:
     event_type = str(getattr(event, "type", ""))
     content = _content_dict(event)
 
+    if event_type == "m.room.member":
+        user_id = str(getattr(event, "state_key", "") or "").strip()
+        display_name = str(content.get("displayname") or "").strip()
+        membership = str(content.get("membership") or "").strip()
+        details = []
+        if user_id:
+            details.append(f"member {_format_untrusted_prompt_value(user_id)}")
+        if display_name:
+            details.append(f"display name {_format_untrusted_prompt_value(display_name)}")
+        if membership:
+            details.append(f"membership {_format_untrusted_prompt_value(membership)}")
+        suffix = f": {', '.join(details)}" if details else "."
+        return "members", RoomStateNote(
+            f"Room membership or member profile changed{suffix}", quotes_untrusted_value=bool(details),
+        )
+
     if event_type == "m.room.topic":
         topic = str(content.get("topic") or "").strip()
         if not topic:

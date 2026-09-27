@@ -59,9 +59,14 @@ const PAGES: Array<{ path: string; name: string }> = [
   { path: "/skills", name: "skills" },
   { path: "/profiles", name: "profiles" },
   { path: "/docs", name: "docs" },
-  { path: "/channels", name: "channels" }, // NOTE: copy is still English-hardcoded (no i18n on ChannelsPage yet) — this baseline pins that pre-localization state; the diff will visualize the Persian conversion when it lands.
+  { path: "/channels", name: "channels" }, // localized since 6fef7145510 — the full-page shot only covers the default view; the conditional per-platform panels (Telegram QR flow, allowed-users field) are pinned separately by the DOM assertions in the channels test below.
   { path: "/config", name: "config" },
   { path: "/env", name: "env" },
+  // NEW-SURFACE baselines (a378d64eaf9 round). Both render meaningful rows so
+  // the diff catches RTL regressions in real content, not just empty states.
+  // Dates inside rows are TZ-sensitive — the config pins timezoneId UTC.
+  { path: "/files", name: "files" }, // entry rows: Latin file names, byte sizes, Jalali dates.
+  { path: "/cron", name: "cron" }, // job rows: humanized schedule sentences, repeat counters, last/next timestamps — the sharpest mixed-direction text on the dashboard.
 ];
 
 /**
@@ -80,7 +85,10 @@ const API_STUBS: Record<string, { status: number; body: string }> = {
   // Array-shaped endpoints (consumers call .length/.filter directly):
   "/api/dashboard/plugins": stubJson([]),
   "/api/dashboard/themes": stubJson([]),
-  "/api/profiles": stubJson([]),
+  // ProfileListResponse shape — MUST be { profiles: [...] }: CronPage does
+  // setProfiles(res.profiles) and renders profiles.map, so the `{}` default
+  // (or a bare array) crashes the whole page.
+  "/api/profiles": stubJson({ profiles: [] }),
   "/api/analytics": stubJson([]),
   // AuxiliaryModelsResponse shape; an empty object crashes ModelSettingsPanel
   // reading aux.main.provider (aux?.main is undefined, .provider throws).
@@ -120,8 +128,132 @@ const API_STUBS: Record<string, { status: number; body: string }> = {
     period_days: 7,
   }),
   "/api/skills": stubJson([]),
+  // SkillHubSourcesResponse shape — SkillsPage boots with
+  // setSources/setFeatured/setInstalled from this response; the `{}` default
+  // leaves them undefined and the resolve-vs-paint race was flipping the
+  // rendered landing between runs (skills.png diffing ~2% run to run).
+  "/api/skills/hub/sources": stubJson({
+    sources: [],
+    index_available: true,
+    featured: [],
+    installed: {},
+  }),
   "/api/model/options": stubJson([]),
   "/api/messaging/platforms": stubJson({ platforms: [] }),
+  // ManagedFilesResponse shape — an empty object crashes FilesPage reading
+  // listing.entries; the fixture pins dir/file rows with Persian-safe names.
+  "/api/files": stubJson({
+    root: "D:\\hermes-test-home",
+    path: "D:\\hermes-test-home\\memory",
+    parent: "D:\\hermes-test-home",
+    locked_root: null,
+    can_change_path: true,
+    entries: [
+      {
+        name: "MEMORY.md",
+        path: "D:\\hermes-test-home\\memory\\MEMORY.md",
+        is_directory: false,
+        size: 2048,
+        mtime: 1758900000,
+        mime_type: "text/markdown",
+      },
+      {
+        name: "USER.md",
+        path: "D:\\hermes-test-home\\memory\\USER.md",
+        is_directory: false,
+        size: 1024,
+        mtime: 1758800000,
+        mime_type: "text/markdown",
+      },
+      {
+        name: "اطلاعات",
+        path: "D:\\hermes-test-home\\memory\\اطلاعات",
+        is_directory: true,
+        size: null,
+        mtime: 1758700000,
+        mime_type: null,
+      },
+    ],
+  }),
+  // CronJob[] — two rows (paused + active, one with an enabled-toolsets chip)
+  // so the enabled/paused badges, profile chip and next-run column all render.
+  "/api/cron/jobs": stubJson([
+    {
+      id: "job-daily-digest",
+      profile: "default",
+      profile_name: "default",
+      hermes_home: null,
+      is_default_profile: true,
+      name: "گزارش روزانه",
+      prompt: "Summarize today's session activity.",
+      script: null,
+      skills: null,
+      schedule: { kind: "recurring", expr: "0 9 * * *", display: "daily at 09:00" },
+      schedule_display: "daily at 09:00",
+      repeat: null,
+      enabled: true,
+      state: "scheduled",
+      deliver: null,
+      model: null,
+      provider: null,
+      base_url: null,
+      no_agent: false,
+      context_from: null,
+      enabled_toolsets: ["web_search"],
+      workdir: null,
+      last_run_at: "2026-09-26T09:00:00Z",
+      next_run_at: "2026-09-27T09:00:00Z",
+      scheduler_heartbeat_age_s: 42,
+      last_status: "ok",
+      last_error: null,
+      last_delivery_error: null,
+      last_fire_error: null,
+    },
+    {
+      id: "job-inbox-pause",
+      profile: "work",
+      profile_name: "work",
+      hermes_home: null,
+      is_default_profile: false,
+      name: "Inbox triage",
+      prompt: "Triage the mailbox.",
+      script: null,
+      skills: null,
+      schedule: { kind: "recurring", expr: "0 */2 * * *", display: "every 2 hours" },
+      schedule_display: "every 2 hours",
+      repeat: null,
+      enabled: false,
+      state: "paused",
+      deliver: "telegram",
+      model: null,
+      provider: null,
+      base_url: null,
+      no_agent: false,
+      context_from: null,
+      enabled_toolsets: null,
+      workdir: null,
+      last_run_at: null,
+      next_run_at: null,
+      scheduler_heartbeat_age_s: null,
+      last_status: null,
+      last_error: null,
+      last_delivery_error: null,
+      last_fire_error: null,
+    },
+  ]),
+  // CronDeliveryTarget[] — fetched on boot; only the (closed) create modal
+  // renders them, but an empty object would set the state to undefined.
+  "/api/cron/delivery-targets": stubJson({
+    targets: [
+      { id: "local", name: "Local", home_target_set: true, home_env_var: null },
+      { id: "telegram", name: "Telegram", home_target_set: false, home_env_var: "HERMES_TELEGRAM_HOME" },
+    ],
+  }),
+  // ToolsetInfo[] — MUST be an array: CronPage boots with
+  // `[...toolsets].sort(...)`, so the `{}` default (no stub) crashes the
+  // whole page with "toolsets is not iterable" (its .catch only guards
+  // rejected fetches, not 200-with-an-object).
+  "/api/tools/toolsets": stubJson([]),
   // Object-shaped endpoints (shape mismatches crash pages):
   "/api/sessions": stubJson({ sessions: [], total: 0 }),
   "/api/sessions/stats":
@@ -304,6 +436,75 @@ test.describe("Persian RTL visual snapshots", () => {
     } finally {
       mkdirSync(info.outputDir, { recursive: true });
       writeFileSync(info.outputPath("docs-guide-open-actual.png"), shot);
+    }
+  });
+
+  test("files entry row pins mixed-content chrome (Latin name, size, Jalali date)", async ({
+    page,
+  }) => {
+    // The memory/MEMORY.md row is the densest mixed-content row on the
+    // dashboard: a Latin file name, tabular byte counts and a Jalali date
+    // (Persian digits) sharing one grid row. The full-page /files snapshot
+    // covers the whole surface; this element baseline isolates the row so
+    // a column-order or date-format regression is reviewable in isolation.
+    await stubBackend(page);
+    await seedPersian(page);
+    await page.setViewportSize(VIEWPORT);
+    await page.goto("/files", { waitUntil: "domcontentloaded" });
+    await assertRtlBoot(page);
+    await page.waitForLoadState("networkidle");
+
+    // The stubbed listing actually rendered (names from the fixture).
+    await expect(page.getByText("MEMORY.md")).toBeVisible();
+    await expect(page.getByText("اطلاعات")).toBeVisible();
+
+    const row = page
+      .locator("div.grid.items-center")
+      .filter({ hasText: "MEMORY.md" })
+      .first();
+    await expect(row).toBeVisible();
+    const shot = await row.screenshot({ animations: "disabled" });
+    const info = test.info();
+    try {
+      await expect(shot).toMatchSnapshot("files-entry-row.png");
+    } finally {
+      mkdirSync(info.outputDir, { recursive: true });
+      writeFileSync(info.outputPath("files-entry-row-actual.png"), shot);
+    }
+  });
+
+  test("cron job-row meta strip pins schedule sentence, repeat and timestamps", async ({
+    page,
+  }) => {
+    // The meta strip under each job title carries the humanized schedule
+    // sentence, the repeat counter and the last/next timestamps — Latin
+    // digits inside Persian prose, plus TZ-sensitive Intl formatting
+    // (pinned to UTC in the config). The daily-digest fixture row renders
+    // the active state; the full-page /cron snapshot covers both rows and
+    // the paused badge.
+    await stubBackend(page);
+    await seedPersian(page);
+    await page.setViewportSize(VIEWPORT);
+    await page.goto("/cron", { waitUntil: "domcontentloaded" });
+    await assertRtlBoot(page);
+    await page.waitForLoadState("networkidle");
+
+    // Both fixture jobs rendered (Persian + Latin names, both states).
+    await expect(page.getByText("گزارش روزانه")).toBeVisible();
+    await expect(page.getByText("Inbox triage")).toBeVisible();
+
+    const strip = page
+      .locator("div.text-xs.text-muted-foreground")
+      .filter({ hasText: "repeat:" })
+      .first();
+    await expect(strip).toBeVisible();
+    const shot = await strip.screenshot({ animations: "disabled" });
+    const info = test.info();
+    try {
+      await expect(shot).toMatchSnapshot("cron-job-meta.png");
+    } finally {
+      mkdirSync(info.outputDir, { recursive: true });
+      writeFileSync(info.outputPath("cron-job-meta-actual.png"), shot);
     }
   });
 });

@@ -48,6 +48,9 @@ export default defineConfig({
       reducedMotion: "reduce",
       deviceScaleFactor: 1,
       locale: "fa-IR",
+      // Files/cron baselines render Intl dates (Jalali file mtimes, cron
+      // last/next runs) — pin the zone or CI (UTC) and local (+03:30) drift.
+      timezoneId: "UTC",
     },
   },
   expect: {

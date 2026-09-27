@@ -19,19 +19,25 @@ def _no_host_browser_use_cli():
 
     Browser Use mode is default-on when the CLI is runnable, so a developer
     machine with uvx on PATH would silently flip every built-in-browser test
-    into CLI mode. Pin discovery to "not installed"; tests that exercise the
-    CLI path monkeypatch ``bu_cli._find_cli`` themselves.
+    into CLI mode. Pin discovery to "not installed" — both finders, since the
+    unset-backend default decision reads ``_find_installed_cli()`` while
+    ``_find_cli()`` (installed + uvx fallback) serves the downgrade notice and
+    explicit-backend callers. Tests that exercise the CLI path monkeypatch
+    ``bu_cli._find_cli`` themselves.
     """
     try:
         import tools.browser_use_cli as bu_cli
     except Exception:
         yield
         return
-    # Keep a handle to the real discovery function so TestFindCli (and any
-    # test that wants genuine PATH probing) can restore it explicitly.
+    # Keep handles to the real discovery functions so TestFindCli (and any
+    # test that wants genuine PATH probing) can restore them explicitly.
     if not hasattr(bu_cli, "_find_cli_unpatched"):
         bu_cli._find_cli_unpatched = bu_cli._find_cli
-    with patch.object(bu_cli, "_find_cli", lambda: None):
+    if not hasattr(bu_cli, "_find_installed_cli_unpatched"):
+        bu_cli._find_installed_cli_unpatched = bu_cli._find_installed_cli
+    with patch.object(bu_cli, "_find_cli", lambda: None), \
+            patch.object(bu_cli, "_find_installed_cli", lambda: None):
         yield
 
 

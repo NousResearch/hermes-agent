@@ -72,6 +72,16 @@ def _fake_cli(tmp_path, body):
     return str(script)
 
 
+@pytest.fixture
+def _real_cli_discovery(monkeypatch):
+    """Restore the discovery pair the tests/tools conftest pins to None.
+
+    The real ``_find_cli()`` resolves ``_find_installed_cli()`` through the
+    module namespace, so both must come back together for genuine probing."""
+    monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
+    monkeypatch.setattr(bu_cli, "_find_installed_cli", bu_cli._find_installed_cli_unpatched)
+
+
 class TestModeDetection:
     def test_default_on_when_cli_available(self, monkeypatch):
         """Backend unset: Browser Use mode is the default when the CLI is installed."""
@@ -121,7 +131,7 @@ class TestModeDetection:
             raise RuntimeError("config unreadable")
 
         monkeypatch.setattr("hermes_cli.config.read_raw_config", boom)
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        monkeypatch.setattr(bu_cli, "_find_installed_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
 
@@ -302,26 +312,26 @@ class TestVaultEgressRedaction:
 
 
 class TestFindCli:
-    """The tests/tools conftest pins _find_cli to None (host isolation);
-    exercise the real function via the preserved _find_cli_unpatched."""
+    """The tests/tools conftest pins _find_cli/_find_installed_cli to None
+    (host isolation); exercise the real pair via _real_cli_discovery."""
 
-    def test_prefers_installed_binary(self, monkeypatch):
+    def test_prefers_installed_binary(self, monkeypatch, _real_cli_discovery):
         monkeypatch.setattr(
             bu_cli.shutil, "which",
             lambda name, path=None: "/usr/local/bin/browser-use" if name == "browser-use" and path is None else ("/usr/local/bin/uvx" if path is None else None),
         )
-        assert bu_cli._find_cli_unpatched() == ["/usr/local/bin/browser-use"]
+        assert bu_cli._find_cli() == ["/usr/local/bin/browser-use"]
 
-    def test_falls_back_to_uvx(self, monkeypatch):
+    def test_falls_back_to_uvx(self, monkeypatch, _real_cli_discovery):
         monkeypatch.setattr(
             bu_cli.shutil, "which",
             lambda name, path=None: "/usr/local/bin/uvx" if name == "uvx" and path is None else None,
         )
-        assert bu_cli._find_cli_unpatched() == ["/usr/local/bin/uvx", "browser-use"]
+        assert bu_cli._find_cli() == ["/usr/local/bin/uvx", "browser-use"]
 
-    def test_none_when_neither_available(self, monkeypatch):
+    def test_none_when_neither_available(self, monkeypatch, _real_cli_discovery):
         monkeypatch.setattr(bu_cli.shutil, "which", lambda name, path=None: None)
-        assert bu_cli._find_cli_unpatched() is None
+        assert bu_cli._find_cli() is None
 
 
 class TestLegacyCloudMigration:
@@ -342,12 +352,12 @@ class TestLegacyCloudMigration:
             lambda: {"browser": {"cloud_provider": "browser-use", "use_gateway": True}},
         )
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        monkeypatch.setattr(bu_cli, "_find_installed_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_no_api_key_stays_on_legacy_path(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: self._LEGACY)
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        monkeypatch.setattr(bu_cli, "_find_installed_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_camofox_user_does_not_migrate(self, monkeypatch):
@@ -389,7 +399,7 @@ class TestLegacyCloudMigration:
             lambda: {"browser": {"cloud_provider": "browserbase"}},
         )
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        monkeypatch.setattr(bu_cli, "_find_installed_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_explicit_local_does_not_migrate(self, monkeypatch):
@@ -398,7 +408,7 @@ class TestLegacyCloudMigration:
             lambda: {"browser": {"cloud_provider": "local"}},
         )
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        monkeypatch.setattr(bu_cli, "_find_installed_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_auto_detect_with_key_migrates(self, monkeypatch):
@@ -414,7 +424,7 @@ class TestLegacyCloudMigration:
     def test_auto_detect_without_key_does_not_migrate(self, monkeypatch):
         """No key, no CLI: nothing to migrate and no default flip."""
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
-        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        monkeypatch.setattr(bu_cli, "_find_installed_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_migrated_config_gets_bu_autospawn(self, tmp_path, monkeypatch):
@@ -1058,26 +1068,26 @@ class TestFindCliManagedBin:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
 
-    def test_managed_bin_browser_use_found(self, tmp_path, monkeypatch):
+    def test_managed_bin_browser_use_found(self, tmp_path, _real_cli_discovery):
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         bu = bin_dir / "browser-use"
         bu.write_text("#!/bin/sh\n", encoding="utf-8")
         bu.chmod(bu.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(bu)]
+        assert bu_cli._find_cli() == [str(bu)]
 
-    def test_managed_bin_uvx_fallback(self, tmp_path, monkeypatch):
+    def test_managed_bin_uvx_fallback(self, tmp_path, _real_cli_discovery):
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         uvx = bin_dir / "uvx"
         uvx.write_text("#!/bin/sh\n", encoding="utf-8")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
+        assert bu_cli._find_cli() == [str(uvx), "browser-use"]
 
-    def test_nothing_found(self, tmp_path, monkeypatch):
-        assert bu_cli._find_cli_unpatched() is None
+    def test_nothing_found(self, tmp_path, _real_cli_discovery):
+        assert bu_cli._find_cli() is None
 
-    def test_user_local_bin_browser_use_found(self, tmp_path, monkeypatch):
+    def test_user_local_bin_browser_use_found(self, tmp_path, _real_cli_discovery):
         """#83788: Desktop/TUI workers spawn with a minimal PATH that omits
         ~/.local/bin, where `uv tool install browser-use` links the binary
         by default — _find_cli must probe it explicitly."""
@@ -1086,9 +1096,9 @@ class TestFindCliManagedBin:
         cli = cli_dir / "browser-use"
         cli.write_text("#!/bin/sh\n", encoding="utf-8")
         cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(cli)]
+        assert bu_cli._find_cli() == [str(cli)]
 
-    def test_managed_bin_precedes_user_local_bin(self, tmp_path, monkeypatch):
+    def test_managed_bin_precedes_user_local_bin(self, tmp_path, _real_cli_discovery):
         """MANAGED-FIRST: Hermes' managed copy wins over a user-level side
         install — every backend selection provisions/updates the managed
         copy, so resolution must land on the binary we control (no version
@@ -1103,9 +1113,9 @@ class TestFindCliManagedBin:
         managed_cli = managed_dir / "browser-use"
         managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
+        assert bu_cli._find_cli() == [str(managed_cli)]
 
-    def test_managed_bin_precedes_path(self, tmp_path, monkeypatch):
+    def test_managed_bin_precedes_path(self, tmp_path, monkeypatch, _real_cli_discovery):
         """MANAGED-FIRST: the managed copy also wins over one on PATH."""
         path_dir = tmp_path / "onpath"
         path_dir.mkdir()
@@ -1118,15 +1128,15 @@ class TestFindCliManagedBin:
         managed_cli = managed_dir / "browser-use"
         managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
+        assert bu_cli._find_cli() == [str(managed_cli)]
 
-    def test_user_local_bin_uvx_fallback(self, tmp_path, monkeypatch):
+    def test_user_local_bin_uvx_fallback(self, tmp_path, _real_cli_discovery):
         cli_dir = tmp_path / "userhome" / ".local" / "bin"
         cli_dir.mkdir(parents=True)
         uvx = cli_dir / "uvx"
         uvx.write_text("#!/bin/sh\n", encoding="utf-8")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
+        assert bu_cli._find_cli() == [str(uvx), "browser-use"]
 
 
 class TestInstallCli:
@@ -1172,15 +1182,14 @@ class TestInstallCli:
         assert ok is False
         assert "uv" in msg
 
-    def test_successful_install_via_fake_uv(self, tmp_path, monkeypatch):
+    def test_successful_install_via_fake_uv(self, tmp_path, monkeypatch, _real_cli_discovery):
         home = tmp_path / "home"
         bin_dir = home / "bin"
         bin_dir.mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        # install_cli verifies via _find_cli(), which the tests/tools conftest
-        # pins to None — restore the real resolver for this test.
-        monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
+        # install_cli verifies via _find_cli() — the real discovery pair is
+        # restored by _real_cli_discovery (the conftest pins both to None).
         # fake uv: `uv tool install browser-use` drops a binary into UV_TOOL_BIN_DIR.
         # Absolute /bin/chmod: PATH is emptied above, so bare chmod won't resolve.
         uv = tmp_path / "uv"
@@ -1525,9 +1534,8 @@ class TestUvxFallbackSelection:
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/uvx", "browser-use"])
         assert bu_cli.is_browser_use_cli_mode() is False
 
-    def test_find_installed_cli_never_returns_uvx(self, monkeypatch):
+    def test_find_installed_cli_never_returns_uvx(self, monkeypatch, _real_cli_discovery):
         """Only a real browser-use binary counts as installed."""
-        monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
         monkeypatch.setattr(
             bu_cli.shutil, "which",
             lambda name, path=None: "/usr/bin/uvx" if name == "uvx" else None,
@@ -1536,8 +1544,7 @@ class TestUvxFallbackSelection:
         # The full finder still hands back the uvx zero-install run.
         assert bu_cli._find_cli() == ["/usr/bin/uvx", "browser-use"]
 
-    def test_find_cli_prefers_installed_binary_over_uvx(self, monkeypatch):
-        monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
+    def test_find_cli_prefers_installed_binary_over_uvx(self, monkeypatch, _real_cli_discovery):
         monkeypatch.setattr(
             bu_cli.shutil, "which",
             lambda name, path=None: f"/usr/bin/{name}",

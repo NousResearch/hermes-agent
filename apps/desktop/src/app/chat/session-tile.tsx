@@ -62,6 +62,7 @@ import {
   $sessionTileDelegateRevision,
   $sessionTiles,
   closeSessionTile,
+  discardSessionTile,
   patchSessionTile,
   type SessionTile,
   sessionTileDelegate
@@ -673,7 +674,7 @@ export function startUnrestoredTileTitleBackfill(lookup = probeStoredSession): (
               !draft.text.trim() &&
               draft.attachments.length === 0
             ) {
-              closeSessionTile(tile.storedSessionId)
+              discardSessionTile(tile.storedSessionId)
             }
           })
           .catch(() => undefined)

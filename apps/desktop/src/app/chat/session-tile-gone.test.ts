@@ -7,7 +7,7 @@ import { stashSessionDraft, clearSessionDraft, takeSessionDraft } from '@/store/
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $connection, $gatewayState, $sessions } from '@/store/session'
-import { $sessionTiles, openSessionTile } from '@/store/session-states'
+import { $sessionTiles, openSessionTile, reopenLastClosedTile, closeSessionTile } from '@/store/session-states'
 
 import { startUnrestoredTileTitleBackfill } from './session-tile'
 
@@ -42,6 +42,18 @@ afterEach(() => {
 })
 
 describe('restored dead tile backfill', () => {
+  it('does not resurrect a dead tile ahead of a user-closed tab on reopen', async () => {
+    openSessionTile('user-closed')
+    closeSessionTile('user-closed')
+    openSessionTile('deleted-chat')
+    get.mockRejectedValue(new Error('404: Session not found'))
+    stop = startUnrestoredTileTitleBackfill()
+    $gatewayState.set('open')
+    await vi.waitFor(() => expect($sessionTiles.get()).toEqual([]))
+    reopenLastClosedTile()
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['user-closed'])
+  })
+
   it('releases scope subscriptions on cancellation even while lookup is pending', async () => {
     openSessionTile('deleted-chat')
     const released = vi.fn()

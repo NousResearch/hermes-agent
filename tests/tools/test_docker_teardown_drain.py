@@ -8,7 +8,6 @@ import threading
 import tools.environments.docker as docker_env
 import tools.terminal_tool as terminal_tool
 
-
 def _env_with_slow_teardown(monkeypatch, release: threading.Event, seen: list):
     docker_env._cgroup_limits_ok = True
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
@@ -29,7 +28,6 @@ def _env_with_slow_teardown(monkeypatch, release: threading.Event, seen: list):
     return docker_env.DockerEnvironment(
         image="python:3.11", cwd="/root", timeout=5, task_id="t-detach", persistent_filesystem=False,
         persist_across_processes=False)
-
 
 def test_atexit_drain_joins_worker_of_env_already_popped_from_registry(monkeypatch):
     release, seen = threading.Event(), []
@@ -54,5 +52,3 @@ def test_atexit_drain_joins_worker_of_env_already_popped_from_registry(monkeypat
     drainer.join(5)
     assert joined["result"] is True and seen == ["stop", "rm"]
     assert not env._cleanup_thread.is_alive()
-
-

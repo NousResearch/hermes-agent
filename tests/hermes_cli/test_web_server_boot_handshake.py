@@ -23,7 +23,6 @@ import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 SLOW_SECONDS = 1  # represents the Defender worst-case (scaled down for CI speed)
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -89,7 +88,6 @@ def test_hosted_room_recovery_cannot_block_or_abort_backend_startup(monkeypatch)
         assert time.perf_counter() - before < 1.0
         release.set()
 
-
 def test_lifespan_shutdown_joins_statedb_reconcile_worker(monkeypatch):
     """The eager state.db reconcile runs off the startup path but never outlives
     the lifespan: shutdown joins it, so its sqlite connection is only ever closed
@@ -116,7 +114,6 @@ def test_lifespan_shutdown_joins_statedb_reconcile_worker(monkeypatch):
 
     assert finished.is_set(), "lifespan shutdown returned before the reconcile worker finished"
     assert not any(t.name == "statedb-eager-reconcile" for t in threading.enumerate())
-
 
 # ---------------------------------------------------------------------------
 # Test 2 — get_status run_in_executor keeps event loop free for other requests
@@ -181,8 +178,6 @@ def test_get_status_does_not_block_event_loop():
         f"/api/status returned {results.get('status_code')} instead of 200"
     )
 
-
 # ---------------------------------------------------------------------------
 # Test 3 — no orphan accumulation: concurrent probes all receive 200
 # ---------------------------------------------------------------------------
-

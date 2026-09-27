@@ -135,8 +135,73 @@ class TestCreateSession:
             session_id="rebuilt", cwd=".", enabled_toolsets=["hermes-acp", "mcp-acp-server"], disabled_toolsets=["browser"],
         )
 
-        assert (seen[0]["enabled_toolsets"], seen[0]["disabled_toolsets"]) == (["hermes-acp", "mcp-cfg-server"], None)
+        assert "mcp-cfg-server" in seen[0]["enabled_toolsets"] and seen[0]["disabled_toolsets"] is None
         assert (seen[1]["enabled_toolsets"], seen[1]["disabled_toolsets"]) == (["hermes-acp", "mcp-acp-server"], ["browser"])
+
+    @pytest.mark.parametrize("config, offered, withheld", [
+        # agent.disabled_toolsets, in the JSON-string shape `hermes config set` stores (#74582).
+        ({"agent": {"disabled_toolsets": "['code_execution']"}}, "file", "code_execution"),
+        # platform_toolsets.acp narrows the surface like every other platform (#79516).
+        ({"platform_toolsets": {"acp": ["file"]}}, "file", "code_execution"),
+    ])
+    def test_fresh_agent_tool_surface_honours_toolset_config(self, monkeypatch, config, offered, withheld):
+        """A fresh ACP agent resolves its tools like the gateway/cron: the real tool surface built from its
+        kwargs carries the offered toolset and none of the withheld one."""
+        from model_tools import get_tool_definitions
+        from toolsets import resolve_toolset
+
+        seen: list[dict] = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                seen.append(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "m"}, **config})
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {})
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        SessionManager(db=None)._make_agent(session_id="fresh", cwd=".")
+
+        def surface(enabled, disabled=None) -> set:
+            return {t["function"]["name"] for t in get_tool_definitions(
+                enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True)}
+
+        assert set(resolve_toolset(withheld)) <= surface(["hermes-acp"])  # non-vacuous: offered by default
+        names = surface(seen[0]["enabled_toolsets"], seen[0]["disabled_toolsets"])
+        assert set(resolve_toolset(offered)) <= names
+        assert not names & set(resolve_toolset(withheld))
+
+    @pytest.mark.parametrize("acp_toolsets, expected_mcp", [
+        (None, {"mcp-alpha", "mcp-beta"}),              # default: every enabled config server
+        (["hermes-acp", "alpha"], {"mcp-alpha"}),       # listed server names are an allowlist
+        (["hermes-acp", "no_mcp"], set()),              # the no_mcp sentinel drops them all
+    ])
+    def test_fresh_agent_mcp_servers_follow_platform_toolsets(self, monkeypatch, acp_toolsets, expected_mcp):
+        """Config MCP servers reach a fresh ACP agent by the gateway's rules for ``platform_toolsets.<platform>``,
+        not unconditionally; a disabled server never does."""
+        seen: list[dict] = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                seen.append(kwargs)
+
+        config = {"model": {"default": "m"},
+                  "mcp_servers": {"alpha": {"command": "a"}, "beta": {"command": "b"}, "off": {"enabled": False}}}
+        if acp_toolsets is not None:
+            config["platform_toolsets"] = {"acp": acp_toolsets}
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_kw: {})
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        SessionManager(db=None)._make_agent(session_id="fresh", cwd=".")
+
+        enabled = seen[0]["enabled_toolsets"]
+        assert {t for t in enabled if t.startswith("mcp-")} == expected_mcp
+        assert not {"alpha", "beta", "no_mcp"} & set(enabled)
 
     def test_make_agent_surfaces_the_provider_resolution_failure(self, monkeypatch):
         """#91090: when ``resolve_runtime_provider`` fails, the bare-AIAgent fallback dies with the
@@ -244,6 +309,7 @@ class TestSymlinkAliasNormalization:
     ``/private/tmp``) must compare equal, or ACP history filters silently drop
     a workspace's own sessions."""
 
+    @pytest.mark.require_symlinks
     def test_symlink_alias_compares_equal(self, tmp_path):
         real = tmp_path / "real"
         real.mkdir()
@@ -268,8 +334,9 @@ class TestSymlinkAliasNormalization:
         # exactly as the old normpath comparison did.
         assert acp_session._normalize_cwd_for_compare(
             "/nonexistent-hermes-test/x/../y"
-        ) == "/nonexistent-hermes-test/y"
+        ) == acp_session._normalize_cwd_for_compare("/nonexistent-hermes-test/y")
 
+    @pytest.mark.require_symlinks
     def test_list_sessions_matches_symlink_alias_cwd(self, manager, tmp_path):
         real = tmp_path / "proj"
         real.mkdir()
@@ -366,6 +433,75 @@ class TestPersistence:
         db.create_session(session_id="cli-session-123", source="cli", model="test")
         # Should not be found via ACP SessionManager.
         assert manager.get_session("cli-session-123") is None
+
+    def test_end_all_sessions_stamps_ended_and_unlocks_prune(self, tmp_path):
+        """#118216: the adapter's stdio shutdown is the ACP session end. Without the
+        ended_at writer, source='acp' rows are invisible to prune/archive forever (the
+        maintenance filter only ever selects ended sessions) and the desktop sidebar
+        accumulates one auto-titled row per editor wake."""
+        agent = SimpleNamespace(model="test-model", provider=None, base_url=None, api_mode=None)
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=lambda: agent, db=db)
+        ended_earlier = manager.create_session(cwd="/work")
+        live_one = manager.create_session(cwd="/work")
+        live_two = manager.create_session(cwd="/work")
+        for state in (ended_earlier, live_one, live_two):
+            state.history.append({"role": "user", "content": "hello"})
+            manager.save_session(state.session_id)
+        # A row already ended by an earlier boundary keeps its first end_reason
+        # (end_session is first-writer-wins).
+        db.end_session(ended_earlier.session_id, "compression")
+
+        # Before the shutdown writer, only the already-ended row is a prune
+        # candidate — the two live acp rows are invisible to maintenance.
+        assert {row["id"] for row in db.list_prune_candidates(source="acp", older_than_days=0)} == {
+            ended_earlier.session_id}
+
+        ended = manager.end_all_sessions()
+
+        assert ended == 3
+        rows = {sid: db.get_session(sid) for sid in
+                (ended_earlier.session_id, live_one.session_id, live_two.session_id)}
+        assert all(row is not None for row in rows.values())
+        assert rows[ended_earlier.session_id]["end_reason"] == "compression"
+        for sid in (live_one.session_id, live_two.session_id):
+            assert rows[sid]["ended_at"] is not None
+            assert rows[sid]["end_reason"] == "acp_disconnect"
+        candidates = db.list_prune_candidates(source="acp", older_than_days=0)
+        assert {row["id"] for row in candidates} == {
+            ended_earlier.session_id, live_one.session_id, live_two.session_id}
+
+    def test_restore_reopens_a_session_ended_by_previous_process(self, tmp_path):
+        """#118216: an ACP row stamped ended at a previous adapter's shutdown is
+        reopened when a later process resumes it — the same contract as the TUI
+        gateway's cold resume."""
+        agent = SimpleNamespace(model="test-model", provider=None, base_url=None, api_mode=None)
+        db = SessionDB(tmp_path / "state.db")
+        first = SessionManager(agent_factory=lambda: agent, db=db)
+        state = first.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "hello"})
+        first.save_session(state.session_id)
+        first.end_all_sessions()
+        assert db.get_session(state.session_id)["ended_at"] is not None
+
+        second = SessionManager(agent_factory=lambda: agent, db=db)
+        restored = second.get_session(state.session_id)
+
+        assert restored is not None
+        row = db.get_session(state.session_id)
+        assert row is not None
+        assert row["ended_at"] is None
+        assert row["end_reason"] is None
+
+    def test_end_all_sessions_without_db_is_a_noop(self):
+        """Teardown must never raise; a DB-unavailable process just ends nothing."""
+        manager = SessionManager(
+            agent_factory=_mock_agent,
+            db=None,
+        )
+        manager._db_instance = None
+        with patch.object(manager, "_get_db", return_value=None):
+            assert manager.end_all_sessions() == 0
 
     def test_sessions_searchable_via_fts(self, manager):
         """ACP sessions stored in SessionDB are searchable via FTS5."""

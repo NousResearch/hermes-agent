@@ -26,7 +26,7 @@ import hermes_state
 from hermes_state import SessionDB, preflight_db_writability
 
 pytestmark = [
-    pytest.mark.skipif(sys.platform == "win32", reason="POSIX chmod semantics"),
+    pytest.mark.platforms("posix"),  # POSIX chmod semantics
     pytest.mark.skipif(
         hasattr(os, "geteuid") and os.geteuid() == 0,
         reason="root bypasses file permission checks",

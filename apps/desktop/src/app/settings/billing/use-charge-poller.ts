@@ -328,6 +328,7 @@ function localizeChargeOutcome(outcome: ChargeFlowOutcome, b: Translations['sett
       if (!outcome.refusal) {
         return outcome
       }
+
       const resolved = resolveRefusal(outcome.refusal, b.errors)
 
       return { ...outcome, message: resolved.message, title: resolved.title }

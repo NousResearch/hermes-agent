@@ -65,7 +65,7 @@ def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> Non
 def _resolve_modal_image(image_spec: Any) -> Any:
     """Convert registry references or snapshot ids into Modal image objects. Registry images
     get pip repaired (ensurepip) before Modal's bootstrap; ubuntu/debian also get python3."""
-    ensure_lazy_dep("terminal.modal")
+    ensure_lazy_dep("modal")
     import modal as _modal
 
     if not isinstance(image_spec, str):
@@ -82,9 +82,10 @@ def _resolve_modal_image(image_spec: Any) -> Any:
 
 
 async def _stream_stdin(proc, payload: str, chunk_size: int) -> None:
-    """Write ``payload`` to ``proc.stdin`` in ``chunk_size`` pieces, draining after each, then EOF."""
-    for offset in range(0, len(payload), chunk_size):
-        proc.stdin.write(payload[offset:offset + chunk_size])
+    """Write byte-exact UTF-8 payload chunks to ``proc.stdin``, then EOF."""
+    data = payload.encode("utf-8", "surrogateescape")
+    for offset in range(0, len(data), chunk_size):
+        proc.stdin.write(data[offset:offset + chunk_size])
         await proc.stdin.drain.aio()
     proc.stdin.write_eof()
     await proc.stdin.drain.aio()
@@ -131,7 +132,7 @@ class ModalEnvironment(BaseEnvironment):
     """Modal cloud execution via native Modal sandboxes: spawn-per-call via _ThreadedProcessHandle
     wrapping async SDK calls, cancel_fn wired to sandbox.terminate for interrupt support."""
 
-    _stdin_mode = "heredoc"
+    _stdin_mode = "payload"
     _snapshot_timeout = 60  # Modal cold starts can be slow
     # Modal SDK stdin buffer limit: the command-router path allows 16 MB but the legacy server
     # path caps at 2 MB, so chunks stay under 2 MB and each is flushed individually via drain().
@@ -149,7 +150,7 @@ class ModalEnvironment(BaseEnvironment):
             _get_snapshot_restore_candidate(self._task_id) if self._persistent else (None, False))
         if restored_snapshot_id:
             logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
-        ensure_lazy_dep("terminal.modal")
+        ensure_lazy_dep("modal")
         import modal as _modal
         cred_mounts = []
         try:
@@ -253,6 +254,8 @@ class ModalEnvironment(BaseEnvironment):
         def exec_fn() -> tuple[str, int]:
             async def _do():
                 process = await sandbox.exec.aio(*bash_argv(cmd_string, login), timeout=timeout)
+                if stdin_data is not None:
+                    await _stream_stdin(process, stdin_data, self._STDIN_CHUNK_SIZE)
                 stdout = _as_text(await process.stdout.read.aio())
                 stderr = _as_text(await process.stderr.read.aio())
                 exit_code = await process.wait.aio()

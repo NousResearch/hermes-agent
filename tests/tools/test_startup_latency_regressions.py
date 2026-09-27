@@ -15,7 +15,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 class TestAuxProbeMode:
     def test_probe_mode_returns_stub_without_openai_import(self):
         import agent.auxiliary_client as aux
@@ -87,9 +86,6 @@ class TestAuxProbeMode:
             t.join()
         assert seen["active"] is False
 
-
-
-
 class TestVisionCheckUsesProbeMode:
     def test_check_vision_requirements_enters_probe_mode(self):
         from tools import vision_tools
@@ -104,7 +100,6 @@ class TestVisionCheckUsesProbeMode:
         with patch.object(aux, "resolve_vision_provider_client", fake_resolver):
             assert vision_tools.check_vision_requirements() is True
         assert states and all(states)
-
 
 class TestLazyMcpSdk:
     def test_module_import_does_not_import_mcp_sdk(self):
@@ -124,9 +119,6 @@ class TestLazyMcpSdk:
         assert proc.returncode == 0, proc.stderr
         assert "ok" in proc.stdout
 
-
-
-
     def test_lazy_symbol_getattr_resolves_via_ensure(self):
         import importlib.util
         from tools import mcp_tool
@@ -136,7 +128,6 @@ class TestLazyMcpSdk:
         # getattr through the module (what mock.patch does when saving the
         # original) must materialize the symbol instead of AttributeError.
         assert getattr(mcp_tool, "StdioServerParameters") is not None
-
 
 class TestBannerUpdateCheckNonBlocking:
     def test_banner_does_not_block_on_pending_update_check(self):
@@ -177,4 +168,3 @@ class TestBannerUpdateCheckNonBlocking:
         visible = "".join(text for _style, text, *_ in to_formatted_text(printed[0]))
         assert "3 commits behind" in visible
         assert "\x1b" not in visible and "[bold" not in visible
-

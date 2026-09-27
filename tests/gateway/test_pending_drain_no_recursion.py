@@ -32,7 +32,6 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
-
 class _StubAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False):
         pass
@@ -46,12 +45,10 @@ class _StubAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id):
         return {}
 
-
 def _make_adapter():
     adapter = _StubAdapter(PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM)
     adapter._send_with_retry = AsyncMock(return_value=None)
     return adapter
-
 
 def _make_event(text="hi", chat_id="42"):
     return MessageEvent(
@@ -60,12 +57,10 @@ def _make_event(text="hi", chat_id="42"):
         source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
     )
 
-
 def _sk(chat_id="42"):
     return build_session_key(
         SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm")
     )
-
 
 def _count_pmb_frames() -> int:
     """Walk the current call stack and count nested
@@ -78,7 +73,6 @@ def _count_pmb_frames() -> int:
             n += 1
         f = f.f_back
     return n
-
 
 @pytest.mark.asyncio
 async def test_in_band_drain_does_not_grow_stack():
@@ -129,7 +123,6 @@ async def test_in_band_drain_does_not_grow_stack():
         f"stack depth grew with chain length: {depths!r}"
     )
 
-
 # ---------------------------------------------------------------------------
 # Follow-up guardrails (belt-and-suspenders on top of the #17758 fix).
 #
@@ -137,7 +130,6 @@ async def test_in_band_drain_does_not_grow_stack():
 # that the original fix reasoned about but didn't test directly.  These
 # tests pin each invariant so future refactors can't silently regress them.
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.asyncio
 async def test_normal_path_releases_session_guard():
@@ -177,7 +169,6 @@ async def test_normal_path_releases_session_guard():
         "normal-path unwind left _session_tasks[sk] populated — "
         "stale-lock detection will treat a dead task as alive"
     )
-
 
 @pytest.mark.asyncio
 async def test_drain_task_cancellation_releases_session():
@@ -239,5 +230,3 @@ async def test_drain_task_cancellation_releases_session():
         "cancelled drain task did not release _session_tasks[sk] — "
         "stale-lock detection will treat the dead task as alive"
     )
-
-

@@ -163,7 +163,7 @@ class TestRunJobScript:
         assert success is True
         assert output == "ABSENT"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
         # Windows-only: the fake ``sys.platform`` could not reproduce the
         # ``Scripts/python.exe`` launcher layout or the CREATE_NO_WINDOW
@@ -305,8 +305,85 @@ class TestRunJobScript:
         )
         assert argv == [sys.executable, str(script)]
 
+    @pytest.mark.platforms("posix")
+    def test_posix_managed_store_script_runs_on_venv_with_live_checkout(
+        self, cron_env, tmp_path, monkeypatch
+    ):
+        """#123044/#123440: on a POSIX managed-store install a cron ``.py`` script imports the
+        selected venv's packages, resolves Hermes from the LIVE checkout ahead of the venv's
+        workspace snapshot, keeps ``python script.py`` path and ``__main__`` semantics, and
+        leaves no ``PYTHONPATH`` for its own children to inherit."""
+        from cron import scheduler_script
+        from pm.environments import site_packages
 
+        venv = tmp_path / "selected-venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin" / "python").symlink_to(sys.executable)
+        (venv / "pyvenv.cfg").write_text(
+            f"home = {Path(sys.base_prefix) / 'bin'}\ninclude-system-site-packages = false\n",
+            encoding="utf-8",
+        )
+        deps = site_packages(venv)
+        deps.mkdir(parents=True)
+        (deps / "probe_pkg.py").write_text("VALUE = 42\n", encoding="utf-8")
+        snapshot = tmp_path / "workspace-snapshot"
+        snapshot.mkdir()
+        (snapshot / "hermes_constants.py").write_text("STALE = True\n", encoding="utf-8")
+        (deps / "snapshot.pth").write_text(f"{snapshot}\n", encoding="utf-8")
 
+        monkeypatch.setattr(
+            "hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable)
+        )
+        monkeypatch.setattr("pm.environments.selected_venv", lambda repo: venv)
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text(
+            "import atexit, os, pickle, sys, probe_pkg, hermes_constants\n"
+            "class Probe: pass\n"
+            "atexit.register(lambda: print('pickled', bool(pickle.dumps(Probe()))))\n"
+            "print(probe_pkg.VALUE)\n"
+            "print(hermes_constants.__file__)\n"
+            "print(sys.path[0])\n"
+            "print('PYTHONPATH=' + (os.environ.get('PYTHONPATH') or ''))\n",
+            encoding="utf-8",
+        )
+
+        success, output = scheduler_script._run_job_script("probe.py")
+        assert success is True, output
+        value, constants_file, path0, pythonpath, pickled = output.splitlines()
+        assert value == "42"
+        repo = Path(scheduler_script.__file__).resolve().parents[1]
+        assert Path(constants_file).resolve() == repo / "hermes_constants.py"
+        assert Path(path0).resolve() == script.parent.resolve()
+        assert pythonpath == "PYTHONPATH="
+        assert pickled == "pickled True"  # __main__ outlives the body, as in a plain run
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("broken", ["selection_raises", "interpreter_missing"])
+    def test_posix_unusable_store_selection_fails_the_run_not_the_tick(
+        self, cron_env, tmp_path, monkeypatch, broken
+    ):
+        """An unusable PM selection (broken record, or a venv whose interpreter is gone) is
+        reported as a failed run naming the cause: never a silent run on the bare store Python,
+        and never an exception escaping ``_run_job_script`` to strand the execution row."""
+        from cron.scheduler_script import _run_job_script
+
+        def _broken(repo):
+            raise RuntimeError("dependency environment is missing or outside this install")
+
+        monkeypatch.setattr(
+            "hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable)
+        )
+        monkeypatch.setattr(
+            "pm.environments.selected_venv",
+            _broken if broken == "selection_raises" else (lambda repo: tmp_path / "gone-venv"),
+        )
+        (cron_env / "scripts" / "probe.py").write_text('print("ok")\n', encoding="utf-8")
+
+        success, output = _run_job_script("probe.py")
+        assert success is False
+        assert "dependency environment" in output
 
     def test_emoji_stdout_round_trips_through_script_capture(self, cron_env):
         """Emoji in script stdout must reach the caller intact (#42384).

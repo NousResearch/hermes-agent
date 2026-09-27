@@ -160,16 +160,17 @@ class SubagentMonitor:
         if self.collapsed:
             count = self._counts()
             # Keep both controls before spending scarce cells on activity. Ctrl+T opens the
-            # subagent/process monitor, so a goal/queue-only dock offers just F7.
+            # subagent/process monitor, so a goal/queue-only dock offers just the
+            # collapse/restore shortcut.
             if self.entries or self.processes:
                 headings = (
-                    f'{self._title()} · {count} · Ctrl+T expand · F7 restore',
-                    f'{count} · Ctrl+T expand · F7 restore',
-                    f'{count} · Ctrl+T · F7',
+                    f'{self._title()} · {count} · Ctrl+T expand · Ctrl+R restore',
+                    f'{count} · Ctrl+T expand · Ctrl+R restore',
+                    f'{count} · Ctrl+T · Ctrl+R',
                     count,
                 )
             else:
-                headings = (f'{count} · F7 restore', f'{count} · F7', count)
+                headings = (f'{count} · Ctrl+R restore', f'{count} · Ctrl+R', count)
             width = max(0, columns - 1)
             heading = next((text for text in headings if get_cwidth(text) <= width), count)
             activity = self._collapsed_activity()
@@ -186,7 +187,7 @@ class SubagentMonitor:
         agent_count = min(len(self.entries), agent_budget)
         if self.entries:
             hidden = len(self.entries) - agent_count
-            lines.append(_clip(f' Subagents · {len(self.entries)} live · Ctrl+T expand · F7 collapse', columns))
+            lines.append(_clip(f' Subagents · {len(self.entries)} live · Ctrl+T expand · Ctrl+R collapse', columns))
             for row in self.entries[:agent_count]:
                 activity = f"{row['elapsed']}s · " + (f"last: {row['last_tool']}" if row['last_tool'] else row.get('status') or 'starting')
                 # Reserve activity even on narrow terminals; task names use the remainder.
@@ -199,7 +200,7 @@ class SubagentMonitor:
             running = sum(r['status'] == 'running' for r in self.processes)
             done = len(self.processes) - running
             summary = ' · '.join(p for p in (f'{running} running' if running else '', f'{done} done' if done else '') if p)
-            controls = ' · Ctrl+T expand · F7 collapse' if not self.entries else ''
+            controls = ' · Ctrl+T expand · Ctrl+R collapse' if not self.entries else ''
             lines.append(_clip(f' Processes · {summary}{controls}', columns))
             for row in self.processes[:proc_count]:
                 activity = procs.process_activity(row)
@@ -210,7 +211,7 @@ class SubagentMonitor:
         if self.queued:
             # Last, so the next prompt to run sits right above the input it came from.
             shown = min(len(self.queued), session_rows.QUEUE_ROWS if rows >= 24 else 1)
-            controls = '' if self.entries or self.processes else ' · F7 collapse'
+            controls = '' if self.entries or self.processes else ' · Ctrl+R collapse'
             lines.append(_clip(f' Queue · {len(self.queued)} queued · /queue list{controls}', columns))
             for index, text in enumerate(self.queued[:shown], 1):
                 lines.append(_clip(f'  {index}. {text}', columns))

@@ -26,12 +26,10 @@ from hermes_cli.providers import determine_api_mode
 from hermes_cli.providers import normalize_provider as normalize_overlay_provider
 from providers import get_provider_profile
 
-
 def _clear_actual_env(monkeypatch):
     monkeypatch.delenv("ACTUAL_API_KEY", raising=False)
     monkeypatch.delenv("ACTUAL_BASE_URL", raising=False)
     monkeypatch.delenv("ACTUAL_API_MODE", raising=False)
-
 
 def _clear_ca_bundle_env(monkeypatch):
     # Importing gateway.run (any earlier test in the same process) writes
@@ -61,7 +59,6 @@ def test_actual_aliases_and_profile_metadata():
     assert _normalize_aux_provider("aci") == "actual"
     assert determine_api_mode("actual", "https://api.actual.inc") == "chat_completions"
 
-
 def test_actual_base_url_normalization():
     assert (
         normalize_actual_base_url("https://api.actual.inc") == DEFAULT_ACTUAL_BASE_URL
@@ -83,7 +80,6 @@ def test_actual_base_url_normalization():
         == "http://localhost:8080/v1"
     )
 
-
 def test_actual_credentials_default_to_hosted_api(monkeypatch):
     _clear_actual_env(monkeypatch)
     monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
@@ -93,7 +89,6 @@ def test_actual_credentials_default_to_hosted_api(monkeypatch):
     assert creds["provider"] == "actual"
     assert creds["api_key"] == "actual-test-key"
     assert creds["base_url"] == DEFAULT_ACTUAL_BASE_URL
-
 
 def test_actual_local_loopback_allows_no_auth(monkeypatch):
     _clear_actual_env(monkeypatch)
@@ -110,7 +105,6 @@ def test_actual_local_loopback_allows_no_auth(monkeypatch):
     assert status["key_source"] == "local-offline"
     assert status["base_url"] == DEFAULT_ACTUAL_LOCAL_BASE_URL
 
-
 def test_actual_runtime_uses_hosted_default(monkeypatch):
     _clear_actual_env(monkeypatch)
     monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
@@ -126,7 +120,6 @@ def test_actual_runtime_uses_hosted_default(monkeypatch):
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["api_key"] == "actual-test-key"
     assert resolved["base_url"] == DEFAULT_ACTUAL_BASE_URL
-
 
 def test_actual_runtime_repairs_stale_responses_mode(monkeypatch, caplog):
     _clear_actual_env(monkeypatch)
@@ -152,7 +145,6 @@ def test_actual_runtime_repairs_stale_responses_mode(monkeypatch, caplog):
     assert resolved["api_mode"] == "chat_completions"
     assert explicit["api_mode"] == "chat_completions"
 
-
 def test_actual_runtime_ignores_legacy_mode_environment(monkeypatch):
     _clear_actual_env(monkeypatch)
     monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
@@ -166,7 +158,6 @@ def test_actual_runtime_ignores_legacy_mode_environment(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="actual")
 
     assert resolved["api_mode"] == "chat_completions"
-
 
 def test_actual_hostname_detection_repairs_custom_responses_route():
     from hermes_cli.providers import is_actual_route
@@ -192,7 +183,6 @@ def test_actual_hostname_detection_repairs_custom_responses_route():
             == "codex_responses"
         )
 
-
 def test_actual_runtime_uses_local_env_without_key(monkeypatch):
     _clear_actual_env(monkeypatch)
     monkeypatch.setenv("ACTUAL_BASE_URL", "http://127.0.0.1:8080")
@@ -208,7 +198,6 @@ def test_actual_runtime_uses_local_env_without_key(monkeypatch):
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["api_key"] == ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
     assert resolved["base_url"] == DEFAULT_ACTUAL_LOCAL_BASE_URL
-
 
 def test_actual_runtime_uses_local_config_without_key(monkeypatch):
     _clear_actual_env(monkeypatch)
@@ -229,7 +218,6 @@ def test_actual_runtime_uses_local_config_without_key(monkeypatch):
     assert resolved["api_key"] == ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
     assert resolved["base_url"] == DEFAULT_ACTUAL_LOCAL_BASE_URL
 
-
 def test_actual_runtime_normalizes_explicit_hosted_base_url(monkeypatch):
     _clear_actual_env(monkeypatch)
     monkeypatch.setattr(
@@ -249,7 +237,6 @@ def test_actual_runtime_normalizes_explicit_hosted_base_url(monkeypatch):
     assert resolved["api_key"] == "actual-test-key"
     assert resolved["base_url"] == DEFAULT_ACTUAL_BASE_URL
     assert resolved["source"] == "explicit"
-
 
 def test_actual_profile_fetch_models_normalizes_env_base_url(monkeypatch):
     _clear_actual_env(monkeypatch)
@@ -279,7 +266,6 @@ def test_actual_profile_fetch_models_normalizes_env_base_url(monkeypatch):
     assert seen["url"] == DEFAULT_ACTUAL_LOCAL_BASE_URL + "/models"
     assert seen["auth"] is None
     assert seen["timeout"] == 1.5
-
 
 def test_actual_profile_fetch_models_sends_credential_only_to_original_origin(
     monkeypatch,
@@ -359,7 +345,6 @@ def test_actual_profile_fetch_models_sends_credential_only_to_original_origin(
         "Authorization header leaked to a different origin after a redirect"
     )
 
-
 def test_actual_provider_model_ids_use_local_profile_catalog(monkeypatch):
     _clear_actual_env(monkeypatch)
     monkeypatch.setenv("ACTUAL_BASE_URL", "http://127.0.0.1:8080")
@@ -374,7 +359,6 @@ def test_actual_provider_model_ids_use_local_profile_catalog(monkeypatch):
         api_key=ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
         base_url=DEFAULT_ACTUAL_LOCAL_BASE_URL,
     )
-
 
 def test_actual_hosted_model_ids_send_resolved_credential(monkeypatch):
     _clear_actual_env(monkeypatch)
@@ -391,7 +375,6 @@ def test_actual_hosted_model_ids_send_resolved_credential(monkeypatch):
         base_url=DEFAULT_ACTUAL_BASE_URL,
     )
 
-
 def test_actual_hosted_model_ids_do_not_probe_without_credentials(monkeypatch):
     _clear_actual_env(monkeypatch)
     profile = get_provider_profile("actual")
@@ -400,7 +383,6 @@ def test_actual_hosted_model_ids_do_not_probe_without_credentials(monkeypatch):
         assert provider_model_ids("actual") == []
 
     fetch.assert_not_called()
-
 
 def test_actual_profile_translates_explicit_reasoning_controls():
     profile = get_provider_profile("actual")
@@ -430,8 +412,7 @@ def test_actual_profile_translates_explicit_reasoning_controls():
         else:
             assert top_level["reasoning_effort"] == expected_effort
 
-
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_actual_hosted_client_uses_scoped_macos_certifi(monkeypatch):
     import certifi
 
@@ -446,8 +427,7 @@ def test_actual_hosted_client_uses_scoped_macos_certifi(monkeypatch):
         profile.build_client_kwargs_extras(base_url=DEFAULT_ACTUAL_LOCAL_BASE_URL) == {}
     )
 
-
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch):
     from agent.agent_runtime_helpers import create_openai_client
 
@@ -501,7 +481,6 @@ def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch
     assert defaults["http_client"] == "http-client"
     assert explicit["http_client"] == "http-client"
 
-
 def test_actual_oneshot_reasoning_override_reaches_agent(monkeypatch):
     from hermes_cli import oneshot
 
@@ -552,7 +531,6 @@ def test_actual_oneshot_reasoning_override_reaches_agent(monkeypatch):
     assert response == "ok"
     assert captured["reasoning_config"] == {"enabled": True, "effort": "ultra"}
 
-
 def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():
     from run_agent import AIAgent
 
@@ -561,7 +539,6 @@ def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():
             model,
             provider=" Actual ",
         )
-
 
 def test_actual_agent_init_repairs_stale_responses_mode():
     from run_agent import AIAgent
@@ -583,7 +560,6 @@ def test_actual_agent_init_repairs_stale_responses_mode():
         )
 
     assert agent.api_mode == "chat_completions"
-
 
 def test_actual_chat_completions_wire_replays_reasoning_through_tool_turn(
     monkeypatch,

@@ -1,5 +1,6 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
+import json
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -279,6 +280,19 @@ def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
     assert _stored_prompt_matches_runtime(agent, legacy)
 
 
+def test_stored_prompt_stamped_for_another_session_is_not_restored(monkeypatch, tmp_path):
+    """With the Session ID trailer on, a prompt persisted for another session (a /branch child
+    copies its parent's bytes) must rebuild instead of telling the model the parent's id."""
+    from agent.conversation_loop import _stored_prompt_matches_runtime
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    fields = dict(platform="cli", model="test-model", provider="test-provider", pass_session_id=True)
+    parent_prompt = build_system_prompt(_make_agent(session_id="parent-sid", **fields))
+    assert _stored_prompt_matches_runtime(_make_agent(session_id="parent-sid", **fields), parent_prompt)
+    assert not _stored_prompt_matches_runtime(_make_agent(session_id="child-sid", **fields), parent_prompt)
+
+
 class TestExecutionGuidanceInjection:
     """Injection gate for OPENAI_MODEL_EXECUTION_GUIDANCE via
     ``agent.execution_guidance`` (auto/true/false/list).
@@ -344,6 +358,31 @@ class TestExecutionGuidanceInjection:
     def test_no_tools_no_guidance(self):
         assert "Execution discipline" not in self._prompt(
             "deepseek/deepseek-v4-pro", valid_tool_names=())
+
+
+class TestAsyncDelegationHandoffGuidance:
+    """A background child cannot re-enter until the parent yields its current turn (#124072)."""
+
+    def _prompt(self, valid_tool_names):
+        return _stable_prompt(_make_agent(
+            valid_tool_names=list(valid_tool_names),
+            model="openai/gpt-5.5",
+            _tool_use_enforcement="auto",
+            _execution_guidance="auto",
+        ))
+
+    @pytest.mark.parametrize("tools,expected", [
+        (("delegate_task", "execute_code"), True),
+        (("execute_code",), False),
+    ])
+    def test_handoff_injected_only_with_delegate_task(self, tools, expected):
+        stable = self._prompt(tools)
+        assert ("Async handoff" in stable) is expected
+        if expected:
+            assert stable.count("Async handoff") == 1
+            # Must follow the generic "keep working" blocks so it reads as their exception.
+            assert stable.index("Async handoff") > stable.index("Tool-use enforcement")
+            assert stable.index("Async handoff") > stable.index("Execution discipline")
 
 
 class TestNamedProfileHintIntegration:
@@ -848,6 +887,17 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(self._agent(sid))
         assert "Conversation started:" in vol
         assert "as of the last context rebuild" not in vol
+
+    def test_surrogate_zone_name_does_not_abort_prompt(self):
+        # Windows cp1252 zone name decoded under a UTF-8 LC_CTYPE; strftime("%Z") raised (#102910).
+        from datetime import timedelta, timezone
+        current = datetime(2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=2), "Paris, Madrid (heure d'\udce9t\udce9)"))
+        with patch("hermes_time.now", return_value=current):
+            vol = self._volatile(self._agent("20260714_090000_fresh"))
+
+        json.dumps(vol, ensure_ascii=False).encode("utf-8")
+        assert "Conversation started: Tuesday, July 14, 2026" in vol
+        assert "Paris, Madrid (heure d'" in vol and "UTC+02:00" in vol
 
     def test_timeless_bot_chat_unaffected(self):
         agent = self._agent("20200110_090000_old")

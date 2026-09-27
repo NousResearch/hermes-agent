@@ -82,6 +82,10 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         observed["session_id"] = _agent.session_id
         return {"final_response": "ok", "messages": history, "failed": False}
 
+    def resolve_relay_cwds(_agent, _task_id, session_id, _platform):
+        observed["relay_cwd_session_id"] = session_id
+        return "", ""
+
     # Simulate a contended wait so the resume status path is covered.
     def acquire_with_wait(session_id, holder, **kwargs):
         db.events.append(("acquire", session_id, holder))
@@ -93,6 +97,7 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
     db.acquire_session_turn_lease = acquire_with_wait
 
     monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    monkeypatch.setattr("agent.relay_cwd.resolve_relay_scope_cwds", resolve_relay_cwds)
     result = AIAgent.run_conversation(
         agent,
         "new message",
@@ -103,6 +108,7 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
     assert observed == {
         "history": [{"role": "user", "content": "durable latest"}],
         "session_id": "compressed-tip",
+        "relay_cwd_session_id": "compressed-tip",
     }
     assert [event[0] for event in db.events] == [
         "acquire",

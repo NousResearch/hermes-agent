@@ -375,6 +375,36 @@ def test_friendly_names_and_desktop_slugs_resolve_to_folder_ids(tmp_path, monkey
     assert argv[1:3] == ["-p", expected]
 
 
+@pytest.mark.parametrize(("target", "local_name", "relayed"), [
+    ("hermes@mini", "Hermes Mini", True),
+    ("@hermes@mini", "HermesMini", True),
+    ("Ops@Home", "Ops@Home", False),  # an '@' friendly name no connection answers to stays local (#100671)
+])
+def test_connection_qualified_target_reaches_the_relay_not_a_look_alike_local_bot(
+        tmp_path, monkeypatch, target, local_name, relayed):
+    """'hermes@mini' is the form the relay hands out, and stamps on replies, for a remote row whose bare forms
+    collide. Resolved locally first, a local bot whose friendly name slugs to 'hermes-mini' captured it: the DM
+    and its reply thread landed in the wrong bot's transcript and memory."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("ops",))
+    _rename(home, "ops", display_name=local_name)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "hermes", "connection_id": "mini", "connection_label": "Mini"},
+    ])
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="status?", agent=_FakeAgent(home)))
+
+    local = [_runner_parts(c["command"])[2][1:3] for c in calls if "--run-delivery" in c["command"]]
+    envelopes = bot_relay.claim_pending_envelopes(home)
+    if relayed:
+        assert [e["target_connection"] for e in envelopes] == ["mini"], result
+        assert local == []
+    else:
+        assert envelopes == [] and result["to"] == "@ops"
+        assert local == [["-p", "ops"]]
+
+
 def test_ambiguous_friendly_name_fails_closed(tmp_path, monkeypatch):
     """Two bots titled the same must not let a DM land on whichever sorts first; the
     reserved @hermes alias can never be hijacked by a rename."""
@@ -604,6 +634,37 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
 # ── plaintext tempfile lifecycle ─────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("stdin_file", [False, True])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file, encoding):
+    dm_file = tmp_path / "message with spaces.txt"
+    dm_file.write_bytes("secret λ $(not shell)".encode(encoding))
+    observed = tmp_path / "observed.txt"
+    child = tmp_path / "child.py"
+    child.write_text(
+        textwrap.dedent(
+            """\
+            import pathlib
+            import sys
+
+            source = sys.stdin if sys.argv[1] == "-" else open(sys.argv[1], encoding="utf-8-sig")
+            with source:
+                pathlib.Path(sys.argv[2]).write_text(source.read(), encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    source_arg = "-" if stdin_file else str(dm_file)
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child), source_arg, str(observed)],
+        str(dm_file),
+        stdin_file=stdin_file,
+    )
+
+    assert returncode == 0
+    assert observed.read_text(encoding="utf-8") == "secret λ $(not shell)"
+    assert not dm_file.exists()
 
 
 
@@ -771,6 +832,21 @@ def test_delivery_main_maps_launch_exception_to_one_and_unlinks(tmp_path, monkey
     assert not dm_file.exists()
 
 
+def test_local_turn_decodes_utf8_reply_without_locale_default(tmp_path, monkeypatch, capsys):
+    child = tmp_path / "reply.py"
+    child.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write('réponse 世界'.encode('utf-8'))\n"
+        "sys.stderr.buffer.write('diagnostic café'.encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "ascii")
+    assert bot_mode_dm._run_local_turn([sys.executable, str(child)], str(tmp_path / "unused")) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "réponse 世界"
+    assert captured.err == "diagnostic café"
+
+
 @pytest.mark.parametrize("stdin_file", [False, True])
 def test_real_delivery_command_round_trip(tmp_path, stdin_file):
     dm_file = tmp_path / "message with spaces.txt"
@@ -798,7 +874,7 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
     assert not dm_file.exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
     """Native runner paths must survive the Git Bash process boundary."""
     from tools.environments.local import _find_shell
@@ -912,6 +988,7 @@ def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeyp
 
 
 
+@pytest.mark.platforms("linux")
 def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
 
@@ -924,6 +1001,7 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.platforms("linux")
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
     uid = os.getuid() if hasattr(os, "getuid") else None
@@ -1102,3 +1180,33 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
     assert kw["display_kind"] == "process_complete"
     assert "PAYLOAD_SENTINEL_42" in kw["content"]
     assert procs[0].id in kw["content"]
+
+
+def test_local_turn_survives_undecodable_transport_output(tmp_path, capsys):
+    """A transport that exits 0 while printing a non-UTF-8 byte must still deliver.
+
+    A strict decode raised UnicodeDecodeError inside subprocess.run — a ValueError, so no
+    handler caught it and the delivery crashed instead of re-emitting the transport's
+    streams (stdout is the reply text the completion notification carries back).
+    """
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    argv = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'reply \\377')"]
+
+    assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
+    assert "reply" in capsys.readouterr().out
+
+
+def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkeypatch, capsys):
+    """#83851: the transport is a Hermes CLI child, which always writes UTF-8 stdio. Decoding it with
+    the host's default codec (cp936 on zh-CN Windows) crashed or garbled the reply; it must round-trip."""
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    reply = "✅ 已完成…"
+    argv = [sys.executable, "-c", f"import sys; sys.stdout.buffer.write({reply.encode('utf-8')!r})"]
+    # subprocess resolves an unspecified text-mode codec through _text_encoding() → locale.getencoding();
+    # patch that seam since run_tests.sh's PYTHONUTF8=1 short-circuits the locale lookup.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
+
+    assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
+    assert reply in capsys.readouterr().out

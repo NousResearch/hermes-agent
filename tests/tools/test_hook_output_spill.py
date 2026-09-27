@@ -65,8 +65,6 @@ class SpillIfOversizedTests(unittest.TestCase):
                 # Also patch get_hermes_home to the env var to mirror production.
                 cfg = self._cfg(directory=None, max_chars=5)
                 hos.spill_if_oversized("x" * 200, session_id="sess", config=cfg)
-            # Spill directory exists somewhere under test_home OR default
-            # ~/.hermes/hook_outputs depending on get_hermes_home behaviour.
             candidates = [Path(test_home) / "hook_outputs" / "sess"]
             # At least one of the candidate dirs now exists and has a file.
             existing = [c for c in candidates if c.is_dir() and list(c.iterdir())]

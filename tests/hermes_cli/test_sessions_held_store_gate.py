@@ -15,7 +15,7 @@ import pytest
 
 import hermes_cli.sessions_cmd as sessions_cmd
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="holder scan is unavailable on Windows")
+pytestmark = pytest.mark.platforms("posix")  # holder scan is unavailable on Windows
 
 
 _HOLDER = (

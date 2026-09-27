@@ -70,5 +70,5 @@ def _run_checkpoint_auto_maintenance() -> None:
     """Checkpoint store retention on a daemon thread: its ``git gc`` can block for tens of seconds
     on a large store, which used to stall the prompt once a day. ``auto_prune_from_config`` owns the
     config gate and the 24h marker and never raises."""
-    from tools.checkpoint_manager import auto_prune_from_config
+    from tools.checkpoint_maintenance import auto_prune_from_config
     threading.Thread(target=auto_prune_from_config, name="checkpoint-auto-prune", daemon=True).start()

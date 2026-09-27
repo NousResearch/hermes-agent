@@ -5,7 +5,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
-import { normalize } from '@/lib/text'
+import { foldPersonalityName } from '@/lib/personalities'
 import type { ComposerAttachment } from '@/store/composer'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -43,10 +43,22 @@ export function createClientSessionState(
     interrupted: false,
     interimBoundaryPending: false,
     needsInput: false,
+    runtimeStartedAt: Date.now(),
     turnStartedAt: null,
     turnLive: false,
     usage: null
   }
+}
+
+/**
+ * Mark a freshly resumed slice's effort as not-yet-known. The deferred-build
+ * resume reply has no `reasoning_effort`, and falling through to the profile
+ * default would paint a level the built agent's `session.info` then replaces
+ * (#79807). A slice whose effort was already reported (a fast build can beat
+ * the resume reply) keeps it.
+ */
+export function markReasoningEffortPending(state: ClientSessionState): ClientSessionState {
+  return state.reasoningEffortPending === false ? state : { ...state, reasoningEffortPending: true }
 }
 
 export function sessionTitle(session: SessionInfo): string {
@@ -210,7 +222,8 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
  * URL renders inline with zero network, while an `@image:<localpath>` ref would
  * route through `/api/media` and can 403 in remote mode. Full-resolution bytes
  * are loaded separately for the model and on-demand lightbox, not retained in
- * the optimistic message.
+ * the optimistic message. `blob:` previews from OS drops bypass the data-URL
+ * extract path and render as a markdown image instead (#63682).
  *
  * Everything else (files, folders, terminals, post-sync `@file:` refs) falls
  * through to `attachmentDisplayText`.
@@ -221,9 +234,35 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
   }
 
   if (attachment.kind === 'image') {
+    // Object-URL previews from OS drops take precedence over the path ref:
+    // markdown image keeps them out of the data-URL extract path while still
+    // rendering inline in the optimistic bubble (#63682).
+    if (attachment.previewUrl?.startsWith('blob:')) {
+      // Percent-encode the alt text: a filename with `]` or parens in it would
+      // otherwise break the Markdown-image form the directive parser matches
+      // below, and the raw expression would leak into visible text (#123368).
+      const alt = encodeURIComponent(attachment.label || 'image')
+
+      return `![${alt}](${attachment.previewUrl})`
+    }
+
+    // Prefer a filesystem-backed `@image:<path>` ref so the in-flight bubble
+    // renders through the same DirectiveImage path as a reloaded turn. That
+    // component shows a bounded thumbnail inline (no full-resolution paint, so
+    // the multi-image send freeze this design guards against does not return)
+    // and hands the full-resolution file to the lightbox/download — fixing the
+    // live-vs-reload fidelity gap where a sent screenshot stayed 512px until a
+    // session reload rehydrated it (#93204). Remote gateways resolve the same
+    // path over the authenticated media API, so no /api/media 403.
+    const pathRef = attachment.path || attachment.detail
+
+    if (pathRef) {
+      return `@image:${formatRefValue(pathRef)}`
+    }
+
     if (attachment.thumbnailUrl?.startsWith('data:')) {
-      // The pill and the in-flight bubble render the bounded thumbnail. Full
-      // bytes are read separately for lightbox/download and model upload.
+      // No path to rehydrate from (e.g. pasted bytes): render the bounded
+      // thumbnail inline. Full bytes remain available for the model upload.
       return attachment.thumbnailUrl
     }
 
@@ -233,10 +272,9 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
       return attachment.previewUrl
     }
 
-    // A newly attached image has no thumbnail while its queued resize is still
-    // pending. Do not fall through to @image:<path>: the optimistic bubble would
-    // fetch and paint the full source, recreating the freeze if Send wins the
-    // race. The model upload remains path/byte based and is unaffected.
+    // A newly attached image with no path and no thumbnail yet: the queued
+    // resize is still pending. Render nothing rather than paint the full source
+    // and recreate the freeze if Send wins the race.
     return null
   }
 
@@ -246,17 +284,34 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
 export function personalityNamesFromConfig(config: unknown): string[] {
   const root = config && typeof config === 'object' ? (config as Record<string, unknown>) : {}
   const agent = root.agent && typeof root.agent === 'object' ? (root.agent as Record<string, unknown>) : {}
-  const personalities = agent.personalities
 
-  return personalities && typeof personalities === 'object' && !Array.isArray(personalities)
-    ? Object.keys(personalities as Record<string, unknown>)
-    : []
+  // The Python runtime (`hermes_cli.personality.available_personalities`) overlays
+  // built-ins with the root-level `personalities` block, then `agent.personalities`
+  // (agent wins on a name clash). Read both here so a root-registered persona the
+  // CLI/gateway honour also reaches the GUI (#123297).
+  // Fold each key the way the runtime does (`available_personalities`:
+  // `str(name).strip().lower()`, dropping neutral spellings) so a case-variant,
+  // whitespace-padded, or neutral-named block doesn't surface a row the runtime
+  // can never resolve, and a root/agent case clash dedupes to one canonical name.
+  const names = new Set<string>()
+  for (const block of [root.personalities, agent.personalities]) {
+    if (block && typeof block === 'object' && !Array.isArray(block)) {
+      for (const name of Object.keys(block as Record<string, unknown>)) {
+        const key = foldPersonalityName(name)
+        if (key) {
+          names.add(key)
+        }
+      }
+    }
+  }
+
+  return [...names]
 }
 
 export function normalizePersonalityValue(value: string): string {
-  const trimmed = normalize(value)
-
-  return !trimmed || trimmed === 'default' || trimmed === 'none' ? '' : trimmed
+  // Share the runtime's canonical form with the dropdown reader (foldPersonalityName),
+  // which also folds the `neutral` spelling this previously missed.
+  return foldPersonalityName(value)
 }
 
 export function quickModelOptions(

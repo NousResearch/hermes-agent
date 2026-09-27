@@ -13,7 +13,7 @@ import pytest
 from tools.environments import local as local_mod
 from tools.environments.local import _append_missing_sane_path_entries, _make_run_env
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX PATH completion only")
+pytestmark = pytest.mark.platforms("posix")  # POSIX PATH completion only
 
 
 def test_existing_user_local_bin_appended_after_inherited_entries(monkeypatch, tmp_path):

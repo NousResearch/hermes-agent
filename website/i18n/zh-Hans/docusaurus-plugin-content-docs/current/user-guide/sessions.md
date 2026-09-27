@@ -382,6 +382,8 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
 
+删除一个仍在运行中的对话所使用的 session 并不会结束该对话：它下一次保存时会以同一个 id 重建 session，并写入完整的内存中对话记录。如果希望该 session 彻底消失，请先关闭对话。
+
 ### 重命名 Session
 
 ```bash
@@ -412,6 +414,7 @@ hermes sessions prune --older-than 30 --yes
 
 :::info
 清理仅删除**已结束**的 session（已被显式结束或自动重置的 session）。活跃 session 永远不会被清理。
+被压缩拆分成多个 session 的对话作为一个整体清理：只要后续任一段仍保留，较早的段就会保留。
 :::
 
 ### Session 统计
@@ -589,7 +592,7 @@ sessions:
   min_interval_hours: 24    # 清理间隔不短于此值
 ```
 
-活跃 session 永远不会被自动清理，无论时间多长。
+活跃 session 永远不会被自动清理，无论时间多长。被压缩拆分成多个 session 的对话同样如此：只要后续任一段仍保留，其较早的段就会保留，并在整个对话符合条件后一起清理。
 
 ### 手动清理
 

@@ -25,14 +25,17 @@ from gateway.status import (
     multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness,
     retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
+from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_messaging import (
     _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
-from hermes_cli.web_routers._common import http_failure
+from hermes_cli.web_routers._common import (
+    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
+    redacted_credential_preview,
+)
 from hermes_cli.web_models import (
     MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
@@ -232,7 +235,7 @@ def _messaging_platform_payload(
     env_vars = [
         {
             "key": key, "required": key in entry["required_env"], "is_set": bool(value),
-            "redacted_value": redact_key(value) if value else None, **_messaging_env_info(key),
+            "redacted_value": redacted_credential_preview(value), **_messaging_env_info(key),
         }
         for key, value in ((key, env_value(key)) for key in entry["env_vars"])
     ]
@@ -352,7 +355,7 @@ def _first_str(candidate: Any, keys: tuple[str, ...]) -> str | None:
 
 def _whatsapp_linked_account_from_session(session_path: Path) -> tuple[str | None, str | None, str | None]:
     try:
-        payload = json.loads((session_path / "creds.json").read_text(encoding="utf-8"))
+        payload = json.loads((session_path / "creds.json").read_text(encoding="utf-8-sig"))
     except Exception:
         return None, None, None
     candidates = (payload.get("me"), payload.get("account"), payload)
@@ -368,22 +371,28 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
 
     from hermes_constants import find_node_executable, with_hermes_node_path
     from utils import env_int
+    import pm
 
     npm = find_node_executable("npm")
-    if not npm:
-        raise HTTPException(status_code=500, detail="npm was not found. WhatsApp setup needs Node.js and npm.")
 
     try:
+        env = with_hermes_node_path()
+        if npm is None:
+            env = pm.ensure("npm", explicit=True).env
+            installed = pm.installed_package("npm")
+            if installed is None or installed.binary is None:
+                raise pm.InstallError("npm", "npm binary is missing after preparation")
+            npm = str(installed.binary)
         # npm output is UTF-8; encoding= guards the Windows ANSI-code-page
         # default against undefined bytes crashing the reader thread.
         result = subprocess.run(
             [npm, "install", "--silent"], cwd=str(bridge_dir), capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
-            env=with_hermes_node_path(), creationflags=windows_hide_flags(),
+            env=env, creationflags=windows_hide_flags(),
         )
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=500, detail="Installing WhatsApp bridge dependencies timed out.") from exc
-    except OSError as exc:
+    except (pm.InstallError, OSError) as exc:
         raise HTTPException(status_code=500, detail=f"Failed to install WhatsApp bridge dependencies: {exc}") from exc
 
     if result.returncode != 0:
@@ -399,11 +408,19 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
     bridge_script = bridge_dir / "bridge.js"
     if not bridge_script.exists():
         raise HTTPException(status_code=500, detail=f"WhatsApp bridge script was not found at {bridge_script}.")
+    _ensure_whatsapp_bridge_dependencies(bridge_dir)
     node = find_node_executable("node")
     if not node:
-        raise HTTPException(status_code=500, detail="Node.js was not found. WhatsApp setup needs Node.js.")
+        import pm
 
-    _ensure_whatsapp_bridge_dependencies(bridge_dir)
+        try:
+            pm.ensure("node", explicit=True)
+            installed = pm.installed_package("node")
+            if installed is None or installed.binary is None:
+                raise pm.InstallError("node", "Node.js binary is missing after preparation")
+            node = str(installed.binary)
+        except pm.InstallError as exc:
+            raise HTTPException(status_code=500, detail=f"Node.js preparation failed: {exc}") from exc
     session_path.mkdir(parents=True, exist_ok=True)
 
     env = with_hermes_node_path()
@@ -872,16 +889,25 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 
     def _apply():
         with _profile_scope(target_profile):
+            updates: dict[str, str] = {}
+
+            # Validate the whole request before clearing or replacing anything.
             for key in body.clear_env:
                 _check_allowed(key)
-                remove_env_value(key)
-
             for key, value in body.env.items():
                 _check_allowed(key)
                 trimmed = value.strip()
-                if trimmed:
-                    _validate_messaging_env_value(platform_id, key, trimmed)
-                    save_env_value(key, trimmed)
+                if not trimmed:
+                    continue
+                if is_redacted_credential_preview(trimmed):
+                    raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
+                _validate_messaging_env_value(platform_id, key, trimmed)
+                updates[key] = trimmed
+
+            for key in body.clear_env:
+                remove_env_value(key)
+            for key, value in updates.items():
+                save_env_value(key, value)
 
             if body.enabled is not None:
                 _write_platform_enabled(platform_id, body.enabled)

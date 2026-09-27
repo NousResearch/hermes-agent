@@ -57,7 +57,7 @@ def _no_db(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_persist_session_git_meta", lambda *_a: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _s: None)
-    monkeypatch.setattr(server, "_is_local_terminal_backend", lambda: True)
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
 
 
 def test_settling_in_a_worktree_reanchors_the_session(session, repo_with_worktree):
@@ -167,7 +167,7 @@ def test_a_settle_adopted_cwd_can_keep_following(session, repo_with_worktree):
 def test_remote_backends_do_not_reanchor(session, repo_with_worktree, monkeypatch):
     """A remote cwd names a path on the host, not one this gateway can probe."""
     repo, worktree = repo_with_worktree
-    monkeypatch.setattr(server, "_is_local_terminal_backend", lambda: False)
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "ssh")
     terminal_tool.record_session_cwd(session["session_key"], str(worktree))
 
     assert server._reconcile_session_cwd_from_terminal(session) is False

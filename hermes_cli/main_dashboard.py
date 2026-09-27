@@ -174,7 +174,7 @@ def _pid_unified_cgroup_entries(pid: int):
         cgroup_path = Path(f"/proc/{pid}/cgroup")
         if not cgroup_path.is_file():
             return
-        text = cgroup_path.read_text(encoding="utf-8", errors="replace")
+        text = cgroup_path.read_text(encoding="utf-8-sig", errors="replace")
     except (OSError, PermissionError):
         return
     for line in text.splitlines():
@@ -503,16 +503,21 @@ def _report_dashboard_status() -> int:
     ``--status`` let an operator kill what they couldn't see.
 
     Ledger-registered serves (profiled launches the argv scan can't match) surface via the spawn-ledger
-    augmentation in _scan_dashboard_processes. See #81564.
+    augmentation in _scan_dashboard_processes, and the ledger's recorded bind replaces the argv port so
+    ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
     """
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
+    from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
     from gateway.status import _pid_exists
+    binds = _ledger_serve_binds()
     live: list[tuple[int, str, str]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
+        if pid in binds:
+            ledger_host, port = binds[pid]
+            host = ledger_host or host
         if port <= 0 or not _pid_exists(pid) or not _dashboard_listening(host, port):
             continue
         live.append((pid, command, mode))
@@ -723,7 +728,7 @@ def _read_ssh_session_token_file(path: str) -> str:
         if uid is not None and (file_stat.st_mode & 0o777) & ~0o600:
             raise SystemExit("--ssh-session-token-file has unsafe permissions")
 
-        with os.fdopen(file_fd, "r", encoding="utf-8") as token_stream:
+        with os.fdopen(file_fd, "r", encoding="utf-8-sig") as token_stream:
             file_fd = -1
             token = token_stream.read(65)
 

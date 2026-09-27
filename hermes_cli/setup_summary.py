@@ -28,7 +28,7 @@ _BROWSER_MISSING_HINTS = {
     "Browserbase": "npm install -g agent-browser and set BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID",
     "Browser Use": "npm install -g agent-browser and set BROWSER_USE_API_KEY",
     "Camofox": "CAMOFOX_URL",
-    "Local browser": "npm install -g agent-browser && agent-browser install --with-deps"}
+    "Local browser": "hermes pm install agent-browser"}
 _BROWSER_MISSING_DEFAULT = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
 _WEB_MISSING = ("EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, "
                 "PERPLEXITY_API_KEY, KEENABLE_API_KEY, or SEARXNG_URL")

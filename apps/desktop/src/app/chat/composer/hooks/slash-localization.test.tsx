@@ -114,7 +114,7 @@ describe('desktop slash description localization', () => {
     )
 
     for (const query of ['', 'ne']) {
-      for (const locale of ['en', 'zh', 'ja', 'zh-hant', 'ar', 'ru', 'en'] as const) {
+      for (const locale of ['en', 'zh', 'ja', 'zh-hant', 'ar', 'ru', 'fr', 'de', 'es', 'en'] as const) {
         await act(async () => {
           await api.setLocale!(locale)
         })

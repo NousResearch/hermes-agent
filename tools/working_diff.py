@@ -15,7 +15,7 @@ import subprocess
 from contextlib import suppress
 from typing import Dict, List
 
-from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env, selected_git_env
 
 _GIT_TIMEOUT = 15
 _MAX_UNTRACKED_FILES = 50  # sanity cap so a node_modules explosion can't hang us
@@ -29,14 +29,23 @@ VALID_MODES = tuple(_MODE_ARGS)
 
 
 def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
-    """Run git, returning (returncode, stdout). Never raises on git failure. Hardened against a
-    malicious repo's ``.git/config`` (GHSA-7x36-8jrh-v4pw): ``noninteractive_git_env`` disables
-    fsmonitor/hooks/pager/editor/credential sinks and ``harden_git_argv`` appends ``--no-ext-diff
-    --no-textconv`` to diff-rendering subcommands so attribute-scoped drivers can't execute either."""
+    """Run git, returning (returncode, stdout). Never raises on git failure.
+
+    Hardened against a malicious repo's ``.git/config`` (GHSA-7x36-8jrh-v4pw):
+    ``noninteractive_git_env`` disables fsmonitor/hooks/pager/editor/credential
+    sinks, and ``harden_git_argv`` appends ``--no-ext-diff --no-textconv`` to
+    the diff-rendering subcommands so attribute-scoped diff/textconv drivers
+    can't execute either.
+    """
+    env = noninteractive_git_env(selected_git_env())
+    command = shutil.which("git", path=env.get("PATH", ""))
+    if command is None:
+        return 127, ""
     proc = subprocess.run(
-        ["git", "-c", "core.quotePath=false", *harden_git_argv(args)],
-        cwd=cwd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
-        stdin=subprocess.DEVNULL, env=noninteractive_git_env(),
+        [command, "-c", "core.quotePath=false", *harden_git_argv(args)],
+        cwd=cwd, capture_output=True, text=True, timeout=timeout,
+        encoding="utf-8", errors="replace",
+        stdin=subprocess.DEVNULL, env=env,
     )
     return proc.returncode, proc.stdout
 
@@ -51,8 +60,11 @@ def _untracked_diff(cwd: str, files: List[str]) -> str:
     chunks: List[str] = []
     for rel in files[:_MAX_UNTRACKED_FILES]:
         with suppress(subprocess.TimeoutExpired, OSError):
-            # --no-index exits 1 when files differ — the success path, so the code is ignored.
-            _, out = _run(["diff", "--no-index", "--", os.devnull, rel], cwd)
+            # --no-index exits 1 when the files differ — that's the success
+            # path here, so ignore the return code and keep the output.
+            _, out = _run(
+                ["diff", "--no-ext-diff", "--no-index", "--", os.devnull, rel], cwd,
+            )
             if out.strip():
                 chunks.append(out.rstrip("\n"))
     if len(files) > _MAX_UNTRACKED_FILES:
@@ -60,22 +72,35 @@ def _untracked_diff(cwd: str, files: List[str]) -> str:
     return "\n".join(chunks)
 
 
-def collect_working_diff(cwd: str, mode: str = "working", paths: List[str] | None = None) -> Dict:
-    """Collect a git diff of the working directory: ``{"success", "stat", "diff", "untracked", "empty"}``
-    on success or ``{"success": False, "error": ...}`` when git is unavailable / not a repo. ``paths``
-    restricts the diff to pathspecs (passed verbatim); untracked files are then skipped."""
-    if mode not in _MODE_ARGS:
-        return {"success": False, "error": f"Unknown mode '{mode}'. Use: {', '.join(VALID_MODES)}"}
-    if not shutil.which("git"):
-        return {"success": False, "error": "git is not installed or not on PATH."}
+def collect_working_diff(cwd: str, mode: str = "working",
+                         paths: List[str] | None = None) -> Dict:
+    """Collect a git diff of the working directory.
+
+    Returns ``{"success", "stat", "diff", "untracked", "empty"}`` on success or
+    ``{"success": False, "error": ...}`` when git is unavailable / not a repo.
+    ``paths`` optionally restricts the diff to specific pathspecs (passed
+    through to git verbatim, so quoted paths with spaces survive).
+    """
+    if mode not in VALID_MODES:
+        return {"success": False,
+                "error": f"Unknown mode '{mode}'. Use: {', '.join(VALID_MODES)}"}
+
     try:
         code, _ = _run(["rev-parse", "--is-inside-work-tree"], cwd, timeout=5)
     except (subprocess.TimeoutExpired, OSError) as e:
         return {"success": False, "error": f"git failed: {e}"}
+    if code == 127:
+        return {"success": False, "error": "git is not installed or not on PATH."}
     if code != 0:
         return {"success": False, "error": "Not a git repository."}
 
-    base_args = _MODE_ARGS[mode]
+    # --no-ext-diff: a user-configured external differ (diff.external in
+    # gitconfig, e.g. difftastic) replaces the unified-diff format that the
+    # CLI/gateway renderers and truncation logic parse. Force the internal
+    # diff engine so the collected output shape is stable for all users.
+    # (_run's harden_git_argv also enforces this; explicit here for clarity.)
+    base_args = [a for a in _MODE_ARGS[mode] if a != "diff"]
+    base_args = ["diff", "--no-ext-diff", *base_args]
     pathspec = ["--", *paths] if paths else []
     try:
         _, stat_out = _run([*base_args, "--stat", *pathspec], cwd)

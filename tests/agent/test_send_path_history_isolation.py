@@ -32,7 +32,6 @@ TRUNCATED_ARGS = '{"content": "# chapter draft\\nline one'  # unrepairable
 VALID_ARGS = json.dumps({"path": "a.txt", "text": "héllo"})
 LONE_SURROGATE = "hello \ud83d world"
 
-
 def _adversarial_history():
     """Every nested container + every dirty-leaf shape the transforms touch."""
     return [
@@ -69,11 +68,9 @@ def _adversarial_history():
         {"role": "tool", "tool_call_id": "c1", "content": "done"},
     ]
 
-
 def _api_copy(history):
     """Exactly the send path's build shape."""
     return [cl._clone_message_for_send(m) for m in history]
-
 
 # Every send-path transform that rewrites api_messages in place. Add new
 # transforms here when the pipeline grows — the invariant is class-wide.
@@ -84,7 +81,6 @@ def _run_full_pipeline(api_messages):
     cl._canonicalize_api_tool_calls(api_messages)
     _sanitize_messages_surrogates(api_messages)
     _sanitize_messages_non_ascii(api_messages)
-
 
 class TestSendPathNeverMutatesHistory:
     def test_full_pipeline_leaves_history_byte_identical(self):
@@ -154,5 +150,3 @@ class TestSendPathNeverMutatesHistory:
         assert cl._clone_message_for_send(sentinel) is sentinel
         assert cl._clone_message_for_send("plain") == "plain"
         assert cl._clone_message_for_send(None) is None
-
-

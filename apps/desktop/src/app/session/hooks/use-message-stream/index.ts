@@ -32,12 +32,14 @@ import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos } from '@/store/todos'
+import { broadcastTranscriptChanged } from '@/store/transcript-sync'
 
 import type { ClientSessionState } from '../../../types'
 
 import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
+import { extendInterruptedReply } from './interrupted-reply'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
@@ -623,7 +625,9 @@ export function useMessageStream({
       responsePreviewed?: boolean,
       failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
       occurredAt = Date.now() / 1000,
-      persistedTurn?: PersistedTurn | null
+      persistedTurn?: PersistedTurn | null,
+      responseTransformed?: boolean,
+      status?: string
     ) => {
       let shouldHydrate = false
 
@@ -631,10 +635,13 @@ export function useMessageStream({
         // Late completion from an already-cancelled turn: cancelRun has
         // already finalized the bubble (kept the partial text, dropped it if
         // empty). Re-running the dedupe below would replace the partial with
-        // the just-cancelled full text, so we settle and bail instead.
+        // the just-cancelled full text, so we settle and bail instead — only
+        // extending the bubble to the partial the agent persisted (#121594).
         if (state.interrupted) {
           return {
             ...state,
+            messages:
+              status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
             awaitingResponse: false,
             busy: false,
             needsInput: false,
@@ -800,9 +807,21 @@ export function useMessageStream({
               (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
             )
 
-            if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
+            // A bare `error` event (e.g. the agent build failing) already
+            // painted this turn's error card; the turn's terminal error frame
+            // is the same failure, so it settles onto that card.
+            const failureRepeatsErrorCard = Boolean(completionError && existing.error && !existingText)
+
+            if (
+              existing.pending ||
+              failureRepeatsErrorCard ||
+              (!interimBoundaryPending && finalText && existingText === finalText)
+            ) {
               nextMessages = settleAt(index)
-            } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
+            } else if (
+              (interimBoundaryPending && (responsePreviewed || responseTransformed)) ||
+              finalContinuesInterim
+            ) {
               // Settle the interim in place instead of creating a duplicate —
               // the DB has one row, so the live UI must agree. Two distinct
               // settle paths with different boundary requirements:
@@ -817,6 +836,10 @@ export function useMessageStream({
               //   (otherwise interim('old') → message.start →
               //   complete({response_previewed: true, text: 'new'}) would
               //   silently destroy 'old').
+              //
+              // • responseTransformed (a transform_llm_output hook rewrote the
+              //   final after streaming, e.g. pseudonym restore) shares the
+              //   same no-continuity shape, so it takes the same boundary gate.
               //
               // • finalContinuesInterim (prefix-either-way continuity, same
               //   text or one a prefix of the other) is safe to settle
@@ -892,7 +915,7 @@ export function useMessageStream({
           // locally, so the user-tail guard keeps applying there.
           (!unresolvedUserTail || !finalText) &&
           !(localVisibleText && !finalText) &&
-          (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
+          (state.adoptedRunningTurn || !state.sawAssistantPayload)
 
         return {
           ...state,
@@ -922,6 +945,13 @@ export function useMessageStream({
       }
 
       scheduleSessionsRefresh()
+
+      if (completedState.storedSessionId) {
+        broadcastTranscriptChanged({
+          messageCount: completedState.messages.length,
+          sessionId: completedState.storedSessionId
+        })
+      }
 
       if (compactedTurnRef.current.delete(sessionId)) {
         shouldHydrate = false
@@ -957,9 +987,26 @@ export function useMessageStream({
           ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
           : undefined
 
-        const nextMessages = prev.some(m => m.id === streamId)
+        const lastUserIndex = prev.findLastIndex(message => message.role === 'user')
+
+        // The turn's terminal error frame may already have painted this
+        // failure's card; a trailing bare `error` event updates that card.
+        const repeatedCard = state.streamId
+          ? undefined
+          : prev.findLast(
+              (message, index) =>
+                index > lastUserIndex &&
+                message.role === 'assistant' &&
+                !message.hidden &&
+                message.error &&
+                !chatMessageText(message).trim()
+            )
+
+        const targetId = repeatedCard?.id ?? streamId
+
+        const nextMessages = prev.some(m => m.id === targetId)
           ? prev.map(message =>
-              message.id === streamId
+              message.id === targetId
                 ? {
                     ...message,
                     completedAt: occurredAt,

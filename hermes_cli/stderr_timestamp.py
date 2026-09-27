@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import BinaryIO, Sequence, TextIO
 
 EXTERNAL_SUPERVISOR_FLAG = "--external-supervisor"
-
+_LAUNCHD_LABEL_ENV = "HERMES_LAUNCHD_LABEL"
+# gateway.restart.GATEWAY_FATAL_CONFIG_EXIT_CODE. This wrapper is a launcher boot
+# file: it runs from a source slice and stays stdlib-only.
+_GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
 
 _TIMESTAMP_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?:\s|$)")
 
@@ -96,10 +99,12 @@ def _child_launchd_label_env(environ: Mapping[str, str] | None = None) -> dict[s
     via ``gateway.restart.launchd_job_label``). Only ``ai.hermes.*`` labels are exported;
     app-coalition labels are meaningless as a job identity.
     """
-    from gateway.restart import LAUNCHD_LABEL_ENV, launchd_job_label
-
-    label = launchd_job_label(os.environ if environ is None else environ)
-    return {LAUNCHD_LABEL_ENV: label} if label else {}
+    env = os.environ if environ is None else environ
+    for variable in ("XPC_SERVICE_NAME", _LAUNCHD_LABEL_ENV):
+        label = str(env.get(variable, "") or "").strip()
+        if label.startswith("ai.hermes"):
+            return {_LAUNCHD_LABEL_ENV: label}
+    return {}
 
 
 def _prepare_child_command(command: Sequence[str], environ: Mapping[str, str] | None = None) -> list[str]:
@@ -127,10 +132,8 @@ def _child_returncode_for_supervisor(command: Sequence[str], returncode: int) ->
     """
     if returncode < 0:
         return 128 + abs(returncode)
-    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, map_fatal_config_exit_for_launchd
-
-    if returncode == GATEWAY_FATAL_CONFIG_EXIT_CODE and _is_hermes_gateway_run_argv(command):
-        return map_fatal_config_exit_for_launchd(returncode)
+    if returncode == _GATEWAY_FATAL_CONFIG_EXIT_CODE and _is_hermes_gateway_run_argv(command):
+        return 0
     return returncode
 
 

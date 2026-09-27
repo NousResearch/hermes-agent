@@ -588,6 +588,36 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+#: The managed-store runtime launcher (``hermes_cli/_launchers.py::runtime_command``) publishes this
+#: exact pair in its ``-c`` source: it loads hermes_bootstrap, then runs the entrypoint IN this
+#: process. The ``code=`` form (``… ; import hermes_bootstrap; exec(<watcher>)``) has no
+#: ``runpy.run_module`` and stays an opaque spawn-later wrapper (#107002).
+_RUNTIME_LAUNCHER_BOOTSTRAP_MARK = "import hermes_bootstrap; runpy.run_module("
+_RUNTIME_LAUNCHER_MODULE_RE = re.compile(r"runpy\.run_module\((?P<q>['\"])(?P<module>[^'\"]+)(?P=q)")
+
+
+def runtime_launcher_argv(cased_tokens: list[str]) -> list[str] | None:
+    """This process's OWN argv when the inline source is Hermes' store runtime launcher, else None.
+
+    ``runtime_command`` appends the real argv after the ``-c`` source and hands it to
+    ``runpy.run_module(..., alter_sys=True)``, so the launcher process IS the program its trailing
+    tokens name (``… -c <bootstrap> gateway run``) — on Windows that is how the gateway service and
+    the desktop backend start. Returns ``[<module>, *trailing]`` so the callers' entrypoint guard
+    sees the module the bootstrap runs. Any other inline source (a script path, ``exec(<src>)``, a
+    hand-written ``-c``) keeps the caller's refusal: its trailing argv is data, not identity.
+    """
+    index = inline_source_flag_index(cased_tokens)
+    if index is None or index + 1 >= len(cased_tokens):
+        return None
+    source = cased_tokens[index + 1]
+    if _RUNTIME_LAUNCHER_BOOTSTRAP_MARK not in source:
+        return None
+    match = _RUNTIME_LAUNCHER_MODULE_RE.search(source)
+    if match is None:
+        return None
+    return [match.group("module"), *cased_tokens[index + 2 :]]
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -610,7 +640,17 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
     if command_line_runs_inline_source(cased_tokens):
-        return None
+        # Except the store runtime launcher, which runs the entrypoint in THIS process — there the
+        # trailing argv IS this process's argv. Without this the Windows gateway service (started
+        # via hermes_cli/_launchers.py) was invisible to status/update/restart: `get_running_pid`
+        # and the process scan found nothing, and the updater's post-relaunch liveness poll
+        # reported "gateway restart could not be verified" over a healthy gateway.
+        launcher_argv = runtime_launcher_argv(cased_tokens)
+        if launcher_argv is None:
+            return None
+        cased_tokens = launcher_argv
+        tokens = [t.lower() for t in cased_tokens]
+        basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":

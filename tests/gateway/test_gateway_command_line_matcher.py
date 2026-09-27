@@ -86,6 +86,36 @@ INLINE_SOURCE_REJECT = [
 ]
 
 
+# The store runtime launcher (hermes_cli/_launchers.py::runtime_command) uses python -I -c to
+# run hermes_bootstrap and then runpy.run_module('hermes_cli.main', alter_sys=True) IN THE SAME
+# PROCESS. Its trailing argv is therefore this process's own identity, NOT data for a later spawn.
+# Without this carve-out the Windows service and desktop-spawned backends are invisible to status,
+# update verification, and restart handoff.
+RUNTIME_LAUNCHER_ACCEPT = [
+    r'"C:\Users\me\AppData\Local\hermes\tools\python-3.14.7\python.exe" -I -c "'
+    r'import os, sys, runpy; sys.path.insert(0, \"C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent\"); '
+    r'import hermes_bootstrap; runpy.run_module(\"hermes_cli.main\", run_name=\"__main__\", alter_sys=True)" '
+    r'gateway run',
+    r'"C:\Users\me\AppData\Local\hermes\tools\python-3.14.7\python.exe" -I -S -B -c "'
+    r'import os, sys, runpy; sys.path.insert(0, \"C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent\"); '
+    r'import hermes_bootstrap; runpy.run_module(\"hermes_cli.main\", run_name=\"__main__\", alter_sys=True)" '
+    r'gateway run --replace',
+]
+
+
+# Any other inline source, including exec(<src>) wrappers, must keep being rejected: its trailing
+# argv is data, not identity.
+RUNTIME_LAUNCHER_REJECT = [
+    # Same argv tail as RUNTIME_LAUNCHER_ACCEPT but using exec(<code>) instead of runpy.run_module.
+    r'"C:\Users\me\AppData\Local\hermes\tools\python-3.14.7\python.exe" -I -c "'
+    r'import os, sys; exec(\"import time; time.sleep(1)\")" '
+    r'gateway run',
+    # A hand-written -c that merely carries a gateway argv for a child it plans to spawn.
+    r'"C:\Users\me\AppData\Local\hermes\tools\python-3.14.7\python.exe" -I -c "'
+    r'import sys; print(sys.argv[1:])" gateway run',
+]
+
+
 # Real gateways whose interpreter carries operand-taking options must STILL be recognised — the
 # value-aware walk must not over-reject. Mirror image of INLINE_SOURCE_REJECT.
 INTERPRETER_OPTION_ACCEPT = [
@@ -116,6 +146,20 @@ def test_operand_taking_options_do_not_manufacture_a_gateway(cmd):
 
 @pytest.mark.parametrize("cmd", INLINE_SOURCE_REJECT)
 def test_rejects_interpreter_running_inline_source(cmd):
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False
+
+
+@pytest.mark.parametrize("cmd", RUNTIME_LAUNCHER_ACCEPT)
+def test_accepts_store_runtime_launcher_gateway_identity(cmd):
+    """The Windows service and desktop backends run the gateway inside the store launcher's -c process."""
+    assert matches(cmd) is True
+    assert matches_runtime(cmd) is True
+
+
+@pytest.mark.parametrize("cmd", RUNTIME_LAUNCHER_REJECT)
+def test_rejects_other_inline_source_even_with_gateway_argv(cmd):
+    """Only the runtime launcher's runpy.run_module shape gets the identity carve-out."""
     assert matches(cmd) is False
     assert matches_runtime(cmd) is False
 

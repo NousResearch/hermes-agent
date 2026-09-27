@@ -3,9 +3,11 @@ error-text sanitising, numeric/bool coercion, timeouts and jitter. No origin sta
 
 import logging
 import math
+import ntpath
 import os
 import random
 import re
+import sys
 from typing import Any, Optional
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -94,14 +96,29 @@ def _exc_str(exc: BaseException) -> str:
     return text or repr(exc)
 
 
+def _path_comparison_key(entry: str) -> str:
+    """Normalize a PATH entry under the active platform's path semantics, so
+    ``C:\\Node\\`` and ``c:\\node`` compare equal on Windows and stay distinct on POSIX."""
+    path_module = ntpath if sys.platform == "win32" else os.path
+    return path_module.normcase(path_module.normpath(entry))
+
+
 def _prepend_path(env: dict, directory: str) -> dict:
-    """Prepend *directory* to env PATH if it is not already present."""
+    """Make *directory* the FIRST PATH entry, collapsing existing variants of it.
+
+    Prepending only when *directory* was absent left a directory that is already
+    on PATH — the Hermes installer appends its managed Node dir — behind an older
+    system Node. npm lifecycle children (`node install.js`) then resolve the
+    system Node through PATH and die with ERR_REQUIRE_ESM (#82309). Every
+    existing case/trailing-separator variant is stripped first, so this entry is
+    the one that wins and PATH does not grow duplicates.
+    """
     updated = dict(env or {})
     if directory:
         parts = [part for part in updated.get("PATH", "").split(os.pathsep) if part]
-        if directory not in parts:
-            parts = [directory, *parts]
-        updated["PATH"] = os.pathsep.join(parts) if parts else directory
+        key = _path_comparison_key(directory)
+        remaining = [part for part in parts if _path_comparison_key(part) != key]
+        updated["PATH"] = os.pathsep.join([directory, *remaining])
     return updated
 
 

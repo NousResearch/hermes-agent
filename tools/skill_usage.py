@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
@@ -608,6 +609,11 @@ def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwa
         except Exception as e:
             return False, f"failed to {action}: {e}"
     archiving = action == "archive"
+    if archiving:
+        # `curator purge` ages archives by mtime; a move keeps the skill's last-edit mtime, so an
+        # idle skill archived today would already look older than any TTL.
+        with suppress(OSError):
+            os.utime(dest)
     if not archiving or is_bundled(skill_name):  # pruning a built-in only sticks if the re-seeder skips it
         _toggle_suppressed_name(skill_name, add=archiving)
     set_state(skill_name, STATE_ARCHIVED if archiving else STATE_ACTIVE)

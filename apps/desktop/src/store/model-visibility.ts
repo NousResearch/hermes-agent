@@ -132,16 +132,44 @@ function persistKnownModels(known: Set<string>): void {
 }
 
 /** One-time adoption for a visible set persisted before the known snapshot
- *  existed: everything in the catalog at that moment counts as judged (the
- *  user's hide choices are honoured verbatim); only models that appear later are
- *  new. Never a running union — that would mark a newcomer judged on the very
- *  render that first shows it. Call when the catalog has loaded. */
+ *  existed. The old store predates the snapshot machinery, so "absent from the
+ *  allowlist" is ambiguous: a deliberate hide and a model that arrived after
+ *  the user last curated look identical. Recording everything in the catalog
+ *  as judged therefore strands catalog-present defaults behind a stale
+ *  allowlist forever (https://github.com/NousResearch/hermes-agent/issues/122053)
+ *  — so the curated defaults the old allowlist does NOT contain stay unknown,
+ *  and the default rule re-admits them on the next resolve. The one-time cost
+ *  is that a deliberately hidden default comes back once; the user's next save
+ *  records the re-hide properly and it locks. Non-default models keep the
+ *  verbatim-hide semantics — the default rule never showed them anyway — and
+ *  a provider hidden outright (sentinel) is skipped entirely. Never a running
+ *  union — that would mark a newcomer judged on the very render that first
+ *  shows it. Call when the catalog has loaded. */
 export function seedKnownModels(providers: readonly ModelOptionProvider[]): void {
-  if ($knownModels.get() !== null || $visibleModels.get() === null || providers.length === 0) {
+  const stored = $visibleModels.get()
+
+  if ($knownModels.get() !== null || stored === null || providers.length === 0) {
     return
   }
 
-  persistKnownModels(allFamilyKeys(providers))
+  const known = allFamilyKeys(providers)
+
+  for (const provider of providers) {
+    if (stored.has(emptyProviderSentinelKey(provider.slug))) {
+      continue
+    }
+
+    const defaults = new Set<string>()
+    expandProviderDefaults(provider, defaults)
+
+    for (const key of defaults) {
+      if (!stored.has(key)) {
+        known.delete(key)
+      }
+    }
+  }
+
+  persistKnownModels(known)
 }
 
 export function setModelVisibilityOpen(open: boolean): void {

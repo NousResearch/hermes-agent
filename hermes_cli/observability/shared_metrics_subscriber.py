@@ -11,6 +11,7 @@ from agent.relay_runtime import RUNTIME_INSTANCE_KEY
 from hermes_cli.config import detect_install_method
 
 from .shared_metrics import SharedMetricsStore
+from .shared_metrics_fields import milestones_for
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
     INSTALL_SNAPSHOT_METRIC,
@@ -19,8 +20,10 @@ from .shared_metrics_contract import (
     TOOL_USAGE_METRIC,
     client_active_counter,
     client_resource,
+    decision_counter,
     install_snapshot_counter,
     model_call_dimensions,
+    model_token_counters,
     skill_counter,
     task_counter,
     tool_approval_counter,
@@ -41,6 +44,7 @@ _COUNTERS = (
     task_counter,
     tool_approval_counter,
     skill_counter,
+    decision_counter,
 )
 
 
@@ -68,6 +72,7 @@ class SharedMetricsSubscriber:
         self._runtime_id = runtime_id
         self._active = True
         self._lock = threading.RLock()
+        self._milestones_done: set[str] = set(store.recorded_milestones())
 
     def deactivate(self) -> None:
         """Stop accepting events before telemetry is disabled or torn down."""
@@ -75,9 +80,22 @@ class SharedMetricsSubscriber:
             self._active = False
 
     @staticmethod
-    def _classify(event: Any) -> list[tuple[str, dict]]:
-        """Return every ``(metric_name, dimensions)`` the event satisfies."""
-        return [m for m in (project(event) for project in _COUNTERS) if m is not None]
+    def _classify(event: Any) -> list[tuple[str, dict, int]]:
+        """Return every ``(metric_name, dimensions, amount)`` the event satisfies."""
+        counted = [(*m, 1) for m in (project(event) for project in _COUNTERS) if m is not None]
+        return counted + model_token_counters(event)
+
+    def _record_milestones(self, metric_name: str, dimensions: dict) -> None:
+        """Latch every install milestone this counter reaches (each once per install, ever)."""
+        reached = [m for m in milestones_for(metric_name, dimensions) if m not in self._milestones_done]
+        if not reached:
+            return
+        from .shared_metrics_snapshot import install_age_bucket
+
+        age = install_age_bucket()
+        for milestone in reached:
+            self.store.record_milestone(milestone, age, self._client_resource)
+            self._milestones_done.add(milestone)
 
     def __call__(self, event: Any) -> None:
         if self._runtime_id is not None:
@@ -87,7 +105,7 @@ class SharedMetricsSubscriber:
                 or metadata.get(RUNTIME_INSTANCE_KEY) != self._runtime_id
             ):
                 return
-        for metric_name, dimensions in self._classify(event):
+        for metric_name, dimensions, amount in self._classify(event):
             with self._lock:
                 if not self._active:
                     return
@@ -97,7 +115,8 @@ class SharedMetricsSubscriber:
                     elif metric_name == INSTALL_SNAPSHOT_METRIC:
                         self.store.record_install_snapshot(dimensions, self._client_resource)
                     else:
-                        self.store.record_counter(metric_name, dimensions, self._client_resource)
+                        self.store.record_counter(metric_name, dimensions, self._client_resource, amount)
+                    self._record_milestones(metric_name, dimensions)
                 except Exception:
                     logger.warning(
                         "Unable to persist the Hermes shared metric: %s", metric_name, exc_info=True

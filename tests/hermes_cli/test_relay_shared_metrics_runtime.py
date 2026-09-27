@@ -390,6 +390,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "model": "claude-sonnet",
         "outcome": "success",
         "provider": "anthropic",
+        "ttft_bucket": "unknown",
     }
     serialized_events = json.dumps(direct_runtime.events)
     assert "sensitive-prompt" not in serialized_events
@@ -409,6 +410,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     metrics = {metric["name"]: metric for metric in package["metrics"]}
     assert set(metrics) == {
         "hermes.client.active",
+        "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_route.count",
         "hermes.task_run.finished",
@@ -434,6 +436,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "model": "claude-sonnet",
         "outcome": "success",
         "provider": "anthropic",
+        "ttft_bucket": "unknown",
     }
     assert metrics["hermes.model_route.count"]["value"] == 1
     assert metrics["hermes.tool_call.count"] == {
@@ -673,6 +676,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
             "model": model_canary,
             "outcome": outcome,
             "provider": "custom",
+            "ttft_bucket": route_by_outcome[outcome]["dimensions"]["ttft_bucket"],
         }
         assert route_by_outcome[outcome]["value"] == 1
     assert {
@@ -1290,6 +1294,7 @@ def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     assert [row["metric_name"] for row in store.counter_snapshot()] == [
         "hermes.client.active",
+        "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.task_run.started"
     ]
@@ -1710,6 +1715,7 @@ def test_terminal_model_error_retains_the_failed_route(direct_runtime):
         "model": "claude-sonnet",
         "outcome": "failed",
         "provider": "anthropic",
+        "ttft_bucket": "unknown",
     }
 
 
@@ -1755,6 +1761,7 @@ def test_nonretryable_provider_error_can_recover_within_one_logical_call(
         "model": "gpt-5",
         "outcome": "success",
         "provider": "openai-api",
+        "ttft_bucket": "unknown",
     }
 
 
@@ -2748,7 +2755,9 @@ def test_install_snapshot_is_daily_and_carries_only_bucketed_counts(
 
     [snapshot] = _stored_counters(tmp_path)["hermes.install.snapshot"]
     assert snapshot == {
-        "cron_job_count_bucket": "0", "mcp_server_count_bucket": "1",
-        "memory_provider": "plugin", "plugin_count_bucket": "3_to_5",
+        "cron_job_count_bucket": "0", "display_language": "en", "install_age_bucket": snapshot["install_age_bucket"],
+        "main_provider": "none", "mcp_server_count_bucket": "1", "memory_provider": "plugin",
+        "messaging_platform_count_bucket": "0", "plugin_count_bucket": "3_to_5",
         "profile_count_bucket": snapshot["profile_count_bucket"], "skill_count_bucket": "0",
+        "terminal_backend": "local",
     }

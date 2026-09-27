@@ -258,6 +258,7 @@ def test_auxiliary_provider_fallback_records_one_terminal_model_route(
         "model": "accepted/model",
         "outcome": "success",
         "provider": "openrouter",
+        "ttft_bucket": "unknown",
     }
     assert snapshot[0]["value"] == 1
     assert snapshot[0]["packaged_value"] == 0

@@ -26,6 +26,14 @@ TOOL_APPROVAL_MARK = "hermes.tool_approval"
 SKILL_LIFECYCLE_MARK = "hermes.skill.lifecycle"
 SKILL_LOAD_MARK = "hermes.skill.load"
 INSTALL_SNAPSHOT_MARK = "hermes.install.snapshot"
+SESSION_MARK = "hermes.session"
+SETUP_COMPLETED_MARK = "hermes.setup.completed"
+MODEL_TOKENS_MARK = "hermes.model_tokens"
+COMPRESSION_MARK = "hermes.compression"
+MODEL_SWITCH_MARK = "hermes.model_switch"
+FALLBACK_MARK = "hermes.fallback"
+SLASH_COMMAND_MARK = "hermes.slash_command"
+EXTENSION_INSTALL_MARK = "hermes.extension.install"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
 CLIENT_ACTIVE_METRIC = "hermes.client.active"
 LEGACY_MODEL_CALL_METRIC = "hermes.model_call.count"
@@ -38,6 +46,15 @@ SKILL_LIFECYCLE_METRIC = "hermes.skill.lifecycle.count"
 SKILL_LOAD_METRIC = "hermes.skill.load.count"
 TOOL_USAGE_METRIC = "hermes.tool.usage.count"
 INSTALL_SNAPSHOT_METRIC = "hermes.install.snapshot"
+SESSION_METRIC = "hermes.session.count"
+MILESTONE_METRIC = "hermes.install.milestone"
+SETUP_COMPLETED_METRIC = "hermes.setup.completed"
+MODEL_TOKENS_METRIC = "hermes.model_tokens.sum"
+COMPRESSION_METRIC = "hermes.compression.count"
+MODEL_SWITCH_METRIC = "hermes.model_switch.count"
+FALLBACK_METRIC = "hermes.fallback.count"
+SLASH_COMMAND_METRIC = "hermes.slash_command.count"
+EXTENSION_INSTALL_METRIC = "hermes.extension.install.count"
 MODEL_IDENTIFIER_MAX_LENGTH = 256
 PROVIDER_IDENTIFIER_MAX_LENGTH = 64
 _METRIC_IDENTIFIER_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._:/@+-")
@@ -119,6 +136,52 @@ def _bundled_memory_providers() -> frozenset[str]:
 
 
 MEMORY_PROVIDERS = _bundled_memory_providers() | {"builtin", "plugin"}
+
+
+class _CatalogValues:
+    """A closed enum backed by a public catalog (see shared_metrics_catalog), loaded on first use."""
+
+    def __init__(self, *loaders: str, extra: frozenset[str]) -> None:
+        self.loaders, self.extra = loaders, extra
+
+    def values(self) -> frozenset[str]:
+        from . import shared_metrics_catalog as catalog
+
+        return self.extra.union(*(catalog._safe(getattr(catalog, name)) for name in self.loaders))
+
+    def __contains__(self, value: object) -> bool:
+        return value in self.extra or value in self.values()
+
+
+# ---- decision-data taxonomies ----------------------------------------------------------------
+SESSION_DURATION_BUCKETS = frozenset({"lt_1m", "1m_to_5m", "5m_to_30m", "30m_to_2h", "2h_to_8h", "gte_8h"})
+INSTALL_AGE_BUCKETS = frozenset({
+    "lt_1h", "1h_to_1d", "1d_to_7d", "7d_to_30d", "30d_to_90d", "gte_90d", "unknown",
+})
+MILESTONES = frozenset({
+    "setup_completed", "first_task_started", "first_task_success", "first_tool_success",
+    "first_gateway_message", "first_scheduled_task", "first_delegation", "first_skill_created",
+    "first_skill_reused", "first_mcp_tool_success", "first_long_session",
+})
+SETUP_SURFACES = frozenset({"cli", "desktop", "other"})
+TOKEN_TYPES = frozenset({"input", "output", "cache_read", "cache_write", "reasoning"})
+TTFT_BUCKETS = frozenset({
+    "lt_500ms", "500ms_to_1s", "1s_to_2s", "2s_to_5s", "5s_to_15s", "gte_15s", "not_streamed", "unknown",
+})
+COMPRESSION_TRIGGERS = frozenset({"auto", "manual", "other", "overflow"})
+COMPRESSION_OUTCOMES = frozenset({"failed", "skipped", "success"})
+CONTEXT_FILL_BUCKETS = frozenset({"lt_50", "50_to_75", "75_to_90", "90_to_100", "gte_100", "unknown"})
+EXTENSION_KINDS = frozenset({"mcp_server", "plugin", "skill"})
+EXTENSION_SOURCES = frozenset({"bundled", "catalog", "hub", "local", "other", "url"})
+EXTENSION_OUTCOMES = frozenset({"failed", "success"})
+TERMINAL_BACKENDS = frozenset({"daytona", "docker", "local", "modal", "other", "singularity", "ssh"})
+AUX_TASKS = _CatalogValues("aux_task_names", extra=frozenset({"none", "other"}))
+SLASH_COMMANDS = _CatalogValues("slash_command_names", extra=frozenset({"plugin", "skill", "unknown"}))
+SKILL_NAMES = _CatalogValues("bundled_skill_names", extra=frozenset({"custom"}))
+EXTENSION_NAMES = _CatalogValues(
+    "bundled_skill_names", "mcp_catalog_names", "plugin_catalog_names", extra=frozenset({"custom"})
+)
+DISPLAY_LANGUAGES = _CatalogValues("display_languages", extra=frozenset({"other"}))
 
 _ARCHITECTURE_ALIASES = {
     "amd64": "x86_64", "x64": "x86_64", "x86_64": "x86_64",
@@ -212,6 +275,10 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "retry_count_bucket": COUNT_BUCKETS, "termination": TASK_TERMINATIONS,
         "tool_call_count_bucket": COUNT_BUCKETS,
     },
+    MODEL_ROUTE_METRIC: {
+        "call_role": MODEL_CALL_ROLES, "error_class": MODEL_ERROR_CLASSES, "outcome": MODEL_OUTCOMES,
+        "ttft_bucket": TTFT_BUCKETS,
+    },
     TOOL_CALL_METRIC: {
         "approval_outcome": TOOL_APPROVAL_OUTCOMES, "latency_bucket": TOOL_LATENCY_BUCKETS,
         "outcome": TOOL_OUTCOMES, "retry_count_bucket": TOOL_RETRY_BUCKETS,
@@ -227,53 +294,92 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     SKILL_LIFECYCLE_METRIC: {"action": SKILL_LIFECYCLE_ACTIONS, "provenance": SKILL_PROVENANCES},
     SKILL_LOAD_METRIC: {
         "post_patch_state": SKILL_POST_PATCH_STATES, "provenance": SKILL_PROVENANCES,
-        "reuse_state": SKILL_REUSE_STATES, "use_count_bucket": COUNT_BUCKETS,
+        "reuse_state": SKILL_REUSE_STATES, "skill_name": SKILL_NAMES, "use_count_bucket": COUNT_BUCKETS,
     },
     INSTALL_SNAPSHOT_METRIC: {
-        "cron_job_count_bucket": SIZE_BUCKETS, "mcp_server_count_bucket": SIZE_BUCKETS,
-        "memory_provider": MEMORY_PROVIDERS, "plugin_count_bucket": SIZE_BUCKETS,
-        "profile_count_bucket": SIZE_BUCKETS, "skill_count_bucket": SIZE_BUCKETS,
+        "cron_job_count_bucket": SIZE_BUCKETS, "display_language": DISPLAY_LANGUAGES,
+        "install_age_bucket": INSTALL_AGE_BUCKETS, "mcp_server_count_bucket": SIZE_BUCKETS,
+        "memory_provider": MEMORY_PROVIDERS, "messaging_platform_count_bucket": SIZE_BUCKETS,
+        "plugin_count_bucket": SIZE_BUCKETS, "profile_count_bucket": SIZE_BUCKETS,
+        "skill_count_bucket": SIZE_BUCKETS, "terminal_backend": TERMINAL_BACKENDS,
+    },
+    SESSION_METRIC: {
+        "active_duration_bucket": SESSION_DURATION_BUCKETS, "entrypoint": TASK_ENTRYPOINTS,
+        "execution_surface": EXECUTION_SURFACES, "failed_turn_count_bucket": COUNT_BUCKETS,
+        "last_outcome": TASK_OUTCOMES, "platform": GATEWAY_PLATFORMS, "turn_count_bucket": SIZE_BUCKETS,
+    },
+    MILESTONE_METRIC: {"install_age_bucket": INSTALL_AGE_BUCKETS, "milestone": MILESTONES},
+    SETUP_COMPLETED_METRIC: {"surface": SETUP_SURFACES},
+    MODEL_TOKENS_METRIC: {"aux_task": AUX_TASKS, "call_role": MODEL_CALL_ROLES, "token_type": TOKEN_TYPES},
+    COMPRESSION_METRIC: {
+        "context_fill_bucket": CONTEXT_FILL_BUCKETS, "outcome": COMPRESSION_OUTCOMES,
+        "trigger": COMPRESSION_TRIGGERS,
+    },
+    MODEL_SWITCH_METRIC: {"execution_surface": EXECUTION_SURFACES},
+    FALLBACK_METRIC: {"error_class": MODEL_ERROR_CLASSES},
+    SLASH_COMMAND_METRIC: {"command": SLASH_COMMANDS, "execution_surface": EXECUTION_SURFACES},
+    EXTENSION_INSTALL_METRIC: {
+        "kind": EXTENSION_KINDS, "name": EXTENSION_NAMES, "outcome": EXTENSION_OUTCOMES,
+        "source": EXTENSION_SOURCES,
     },
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
 }
-_MODEL_ROUTE_OUTCOME_VALUES = {
-    "call_role": MODEL_CALL_ROLES, "error_class": MODEL_ERROR_CLASSES, "outcome": MODEL_OUTCOMES,
+# metric -> {field: max length} for provider/model identifiers, validated by shape (no catalog).
+_IDENTIFIER_FIELDS: dict[str, dict[str, int]] = {
+    MODEL_ROUTE_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    MODEL_TOKENS_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    SETUP_COMPLETED_METRIC: {"provider": PROVIDER_IDENTIFIER_MAX_LENGTH},
+    MODEL_SWITCH_METRIC: dict.fromkeys(("from_provider", "to_provider"), PROVIDER_IDENTIFIER_MAX_LENGTH),
+    FALLBACK_METRIC: dict.fromkeys(("from_provider", "to_provider"), PROVIDER_IDENTIFIER_MAX_LENGTH),
+    INSTALL_SNAPSHOT_METRIC: {"main_provider": PROVIDER_IDENTIFIER_MAX_LENGTH},
 }
-# metric -> closed dimension field set (model-route identifiers are validated by shape)
+# metric -> closed dimension field set
 _METRIC_FIELDS: dict[str, frozenset[str]] = {
-    **{name: frozenset(contract) for name, contract in _COUNTER_DIMENSION_VALUES.items()},
-    MODEL_ROUTE_METRIC: frozenset(_MODEL_ROUTE_MAX_LENGTHS) | frozenset(_MODEL_ROUTE_OUTCOME_VALUES),
+    name: frozenset(contract) | frozenset(_IDENTIFIER_FIELDS.get(name, ()))
+    for name, contract in _COUNTER_DIMENSION_VALUES.items()
 }
 # Older field sets still accepted at packaging so counters recorded before an upgrade drain.
-_LEGACY_METRIC_FIELDS: dict[str, frozenset[str]] = {
-    MODEL_ROUTE_METRIC: frozenset(_MODEL_ROUTE_MAX_LENGTHS),
-    TASK_STARTED_METRIC: _METRIC_FIELDS[TASK_STARTED_METRIC] - {"platform"},
-    TASK_FINISHED_METRIC: _METRIC_FIELDS[TASK_FINISHED_METRIC] - {"failure_class", "platform"},
+_LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
+    MODEL_ROUTE_METRIC: (
+        frozenset(_MODEL_ROUTE_MAX_LENGTHS), _METRIC_FIELDS[MODEL_ROUTE_METRIC] - {"ttft_bucket"},
+    ),
+    TASK_STARTED_METRIC: (_METRIC_FIELDS[TASK_STARTED_METRIC] - {"platform"},),
+    TASK_FINISHED_METRIC: (_METRIC_FIELDS[TASK_FINISHED_METRIC] - {"failure_class", "platform"},),
+    SKILL_LOAD_METRIC: (_METRIC_FIELDS[SKILL_LOAD_METRIC] - {"skill_name"},),
+    INSTALL_SNAPSHOT_METRIC: (_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - {
+        "display_language", "install_age_bucket", "main_provider", "messaging_platform_count_bucket",
+        "terminal_backend",
+    },),
 }
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
+# Counters whose value is a summed quantity rather than an event count.
+SUM_METRICS = frozenset({MODEL_TOKENS_METRIC})
 _SKILL_MARK_METRICS = {
     SKILL_LIFECYCLE_MARK: SKILL_LIFECYCLE_METRIC, SKILL_LOAD_MARK: SKILL_LOAD_METRIC,
+}
+# Marks projected one-to-one onto a counter of the same contract.
+_DECISION_MARK_METRICS = {
+    SESSION_MARK: SESSION_METRIC, SETUP_COMPLETED_MARK: SETUP_COMPLETED_METRIC,
+    COMPRESSION_MARK: COMPRESSION_METRIC, MODEL_SWITCH_MARK: MODEL_SWITCH_METRIC,
+    FALLBACK_MARK: FALLBACK_METRIC, SLASH_COMMAND_MARK: SLASH_COMMAND_METRIC,
+    EXTENSION_INSTALL_MARK: EXTENSION_INSTALL_METRIC,
 }
 
 
 def counter_dimensions_are_valid(metric_name: str, dimensions: dict[str, Any]) -> bool:
     """Return whether dimensions match one closed shared-metric contract (current or legacy)."""
-    fields = set(dimensions)
-    if fields != _METRIC_FIELDS.get(metric_name) and fields != _LEGACY_METRIC_FIELDS.get(metric_name):
+    fields = frozenset(dimensions)
+    if fields != _METRIC_FIELDS.get(metric_name) and fields not in _LEGACY_METRIC_FIELDS.get(metric_name, ()):
         return False
-    if metric_name == MODEL_ROUTE_METRIC:
-        return all(
-            dimensions[field] == _metric_identifier(dimensions[field], max_length=max_length)
-            for field, max_length in _MODEL_ROUTE_MAX_LENGTHS.items()
-        ) and all(
-            isinstance(dimensions[field], str) and dimensions[field] in _MODEL_ROUTE_OUTCOME_VALUES[field]
-            for field in fields & set(_MODEL_ROUTE_OUTCOME_VALUES)
-        )
+    identifiers = _IDENTIFIER_FIELDS.get(metric_name, {})
     contract = _COUNTER_DIMENSION_VALUES[metric_name]
     return all(
-        isinstance(dimensions[field], str) and dimensions[field] in contract[field]
+        isinstance(value := dimensions[field], str) and (
+            value == _metric_identifier(value, max_length=identifiers[field]) if field in identifiers
+            else value in contract[field]
+        )
         for field in fields
     )
 
@@ -451,6 +557,35 @@ def skill_counter(event: Any) -> tuple[str, dict[str, str]] | None:
     return _mark_counter(event, _SKILL_MARK_METRICS)
 
 
+def decision_counter(event: Any) -> tuple[str, dict[str, str]] | None:
+    """Return the counter for one session/setup/compression/switch/fallback/command/install mark."""
+    return _mark_counter(event, _DECISION_MARK_METRICS)
+
+
+_TOKEN_MARK_DIMENSIONS = frozenset({"aux_task", "call_role", "model", "provider"})
+
+
+def model_token_counters(event: Any) -> list[tuple[str, dict[str, str], int]]:
+    """Expand one token-usage mark into ``(metric, dimensions, amount)`` sums, one per token type."""
+    if not _valid_shape(event, **_MARK_SHAPE) or _event_text(event, "name") != MODEL_TOKENS_MARK:
+        return []
+    data = getattr(event, "data", None)
+    if not isinstance(data, dict) or set(data) != _TOKEN_MARK_DIMENSIONS | TOKEN_TYPES:
+        return []
+    base = {field: data[field] for field in _TOKEN_MARK_DIMENSIONS}
+    counters = []
+    for token_type in sorted(TOKEN_TYPES):
+        amount = data[token_type]
+        if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
+            return []
+        dimensions = {**base, "token_type": token_type}
+        if not counter_dimensions_are_valid(MODEL_TOKENS_METRIC, dimensions):
+            return []
+        if amount:
+            counters.append((MODEL_TOKENS_METRIC, dimensions, amount))
+    return counters
+
+
 def skill_lifecycle_fields(kwargs: dict[str, Any]) -> dict[str, str] | None:
     """Build bounded fields for one successful non-load skill transition."""
     action = _norm(kwargs.get("action"))
@@ -477,8 +612,15 @@ def skill_load_fields(kwargs: dict[str, Any]) -> dict[str, str] | None:
         ),
         "provenance": skill_provenance(kwargs.get("provenance")),
         "reuse_state": "reused" if reused else "first_use",
+        "skill_name": _skill_metric_name(kwargs.get("skill_name")),
         "use_count_bucket": count_bucket(use_count),
     }
+
+
+def _skill_metric_name(value: Any) -> str:
+    from .shared_metrics_catalog import skill_metric_name
+
+    return skill_metric_name(value)
 
 
 def skill_provenance(value: Any) -> str:
@@ -787,7 +929,8 @@ def model_call_fields(kwargs: dict[str, Any]) -> dict[str, str]:
 
 
 def model_route_fields(
-    kwargs: dict[str, Any], *, call_role: str, outcome: str, error_class: str
+    kwargs: dict[str, Any], *, call_role: str, outcome: str, error_class: str,
+    ttft_bucket: str = "unknown",
 ) -> dict[str, str]:
     """The terminal route plus how the logical call ended. ``error_class`` is the last
     classified attempt error, so ``success`` + ``rate_limit`` reads as "recovered from a 429"."""
@@ -796,6 +939,7 @@ def model_route_fields(
         "call_role": _allowlisted(call_role, MODEL_CALL_ROLES),
         "error_class": error_class if error_class in MODEL_ERROR_CLASSES else "unknown",
         "outcome": outcome if outcome in MODEL_OUTCOMES else "failed",
+        "ttft_bucket": ttft_bucket if ttft_bucket in TTFT_BUCKETS else "unknown",
     }
 
 
@@ -819,18 +963,28 @@ def size_bucket(count: int) -> str:
 
 def install_snapshot_fields(
     *, memory_provider: Any, mcp_servers: int, plugins: int, skills: int, cron_jobs: int,
-    profiles: int,
+    profiles: int, messaging_platforms: int, install_age_bucket: str, main_provider: Any,
+    terminal_backend: Any, display_language: Any,
 ) -> dict[str, str]:
-    """Bounded daily configuration snapshot: counts only, plus a bundled memory provider name."""
+    """Bounded daily configuration snapshot: counts, closed enums and public names only."""
+    from .shared_metrics_catalog import display_language_metric_name
+
     provider = _norm(memory_provider)
+    backend = _norm(terminal_backend) or "local"
     return {
         "cron_job_count_bucket": size_bucket(cron_jobs),
+        "display_language": display_language_metric_name(display_language),
+        "install_age_bucket": install_age_bucket if install_age_bucket in INSTALL_AGE_BUCKETS else "unknown",
+        "main_provider": _metric_identifier(main_provider, max_length=PROVIDER_IDENTIFIER_MAX_LENGTH)
+        if main_provider else "none",
         "mcp_server_count_bucket": size_bucket(mcp_servers),
         "memory_provider": "builtin" if not provider
         else provider if provider in MEMORY_PROVIDERS else "plugin",
+        "messaging_platform_count_bucket": size_bucket(messaging_platforms),
         "plugin_count_bucket": size_bucket(plugins),
         "profile_count_bucket": size_bucket(profiles),
         "skill_count_bucket": size_bucket(skills),
+        "terminal_backend": backend if backend in TERMINAL_BACKENDS else "other",
     }
 
 

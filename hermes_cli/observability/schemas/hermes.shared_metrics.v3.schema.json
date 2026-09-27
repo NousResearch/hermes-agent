@@ -123,6 +123,33 @@
           },
           {
             "$ref": "#/$defs/install_snapshot_counter"
+          },
+          {
+            "$ref": "#/$defs/session_counter"
+          },
+          {
+            "$ref": "#/$defs/install_milestone_counter"
+          },
+          {
+            "$ref": "#/$defs/setup_completed_counter"
+          },
+          {
+            "$ref": "#/$defs/model_tokens_sum"
+          },
+          {
+            "$ref": "#/$defs/compression_counter"
+          },
+          {
+            "$ref": "#/$defs/model_switch_counter"
+          },
+          {
+            "$ref": "#/$defs/fallback_counter"
+          },
+          {
+            "$ref": "#/$defs/slash_command_counter"
+          },
+          {
+            "$ref": "#/$defs/extension_install_counter"
           }
         ]
       }
@@ -296,6 +323,18 @@
                 "failed",
                 "success"
               ]
+            },
+            "ttft_bucket": {
+              "enum": [
+                "1s_to_2s",
+                "2s_to_5s",
+                "500ms_to_1s",
+                "5s_to_15s",
+                "gte_15s",
+                "lt_500ms",
+                "not_streamed",
+                "unknown"
+              ]
             }
           },
           "dependentRequired": {
@@ -315,7 +354,7 @@
               "outcome"
             ]
           },
-          "description": "v3 rows carry call_role/error_class/outcome; rows counted by an older build carry only model/provider."
+          "description": "v3 rows carry call_role/error_class/outcome (and ttft_bucket from the decision-data build); rows counted by an older build carry only model/provider."
         },
         "value": {
           "type": "integer",
@@ -760,8 +799,12 @@
             },
             "use_count_bucket": {
               "$ref": "#/$defs/count_bucket"
+            },
+            "skill_name": {
+              "$ref": "#/$defs/catalog_identifier"
             }
-          }
+          },
+          "description": "skill_name is a bundled/optional skill name or 'custom'; absent on rows counted before it existed."
         },
         "value": {
           "type": "integer",
@@ -900,6 +943,170 @@
             },
             "skill_count_bucket": {
               "$ref": "#/$defs/size_bucket"
+            },
+            "display_language": {
+              "$ref": "#/$defs/catalog_identifier"
+            },
+            "install_age_bucket": {
+              "$ref": "#/$defs/install_age_bucket"
+            },
+            "main_provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "messaging_platform_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            },
+            "terminal_backend": {
+              "enum": [
+                "daytona",
+                "docker",
+                "local",
+                "modal",
+                "other",
+                "singularity",
+                "ssh"
+              ]
+            }
+          },
+          "description": "The five decision-data fields are absent on snapshots counted before they existed."
+        },
+        "value": {
+          "const": 1
+        }
+      }
+    },
+    "session_duration_bucket": {
+      "enum": [
+        "1m_to_5m",
+        "2h_to_8h",
+        "30m_to_2h",
+        "5m_to_30m",
+        "gte_8h",
+        "lt_1m"
+      ]
+    },
+    "install_age_bucket": {
+      "enum": [
+        "1d_to_7d",
+        "1h_to_1d",
+        "30d_to_90d",
+        "7d_to_30d",
+        "gte_90d",
+        "lt_1h",
+        "unknown"
+      ]
+    },
+    "provider_identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+    },
+    "session_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.session.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "active_duration_bucket",
+            "entrypoint",
+            "execution_surface",
+            "failed_turn_count_bucket",
+            "last_outcome",
+            "platform",
+            "turn_count_bucket"
+          ],
+          "properties": {
+            "active_duration_bucket": {
+              "$ref": "#/$defs/session_duration_bucket"
+            },
+            "entrypoint": {
+              "$ref": "#/$defs/task_entrypoint"
+            },
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            },
+            "failed_turn_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "last_outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "success",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "platform": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            },
+            "turn_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "install_milestone_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.install.milestone"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "install_age_bucket",
+            "milestone"
+          ],
+          "properties": {
+            "install_age_bucket": {
+              "$ref": "#/$defs/install_age_bucket"
+            },
+            "milestone": {
+              "enum": [
+                "first_delegation",
+                "first_gateway_message",
+                "first_long_session",
+                "first_mcp_tool_success",
+                "first_scheduled_task",
+                "first_skill_created",
+                "first_skill_reused",
+                "first_task_started",
+                "first_task_success",
+                "first_tool_success",
+                "setup_completed"
+              ]
             }
           }
         },
@@ -907,6 +1114,356 @@
           "const": 1
         }
       }
+    },
+    "setup_completed_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.setup.completed"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "surface"
+          ],
+          "properties": {
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "surface": {
+              "enum": [
+                "cli",
+                "desktop",
+                "other"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_tokens_sum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_tokens.sum"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "aux_task",
+            "call_role",
+            "model",
+            "provider",
+            "token_type"
+          ],
+          "properties": {
+            "aux_task": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            },
+            "call_role": {
+              "enum": [
+                "auxiliary",
+                "primary"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "token_type": {
+              "enum": [
+                "cache_read",
+                "cache_write",
+                "input",
+                "output",
+                "reasoning"
+              ]
+            }
+          },
+          "description": "value is the summed token count for the day, not an event count."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "compression_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.compression.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "context_fill_bucket",
+            "outcome",
+            "trigger"
+          ],
+          "properties": {
+            "context_fill_bucket": {
+              "enum": [
+                "50_to_75",
+                "75_to_90",
+                "90_to_100",
+                "gte_100",
+                "lt_50",
+                "unknown"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "failed",
+                "skipped",
+                "success"
+              ]
+            },
+            "trigger": {
+              "enum": [
+                "auto",
+                "manual",
+                "other",
+                "overflow"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_switch_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_switch.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "execution_surface",
+            "from_provider",
+            "to_provider"
+          ],
+          "properties": {
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            },
+            "from_provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "to_provider": {
+              "$ref": "#/$defs/provider_identifier"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "fallback_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.fallback.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "error_class",
+            "from_provider",
+            "to_provider"
+          ],
+          "properties": {
+            "error_class": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            },
+            "from_provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "to_provider": {
+              "$ref": "#/$defs/provider_identifier"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "slash_command_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.slash_command.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command",
+            "execution_surface"
+          ],
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/catalog_identifier"
+            },
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "extension_install_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.extension.install.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "outcome",
+            "source"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "mcp_server",
+                "plugin",
+                "skill"
+              ]
+            },
+            "name": {
+              "$ref": "#/$defs/catalog_identifier"
+            },
+            "outcome": {
+              "enum": [
+                "failed",
+                "success"
+              ]
+            },
+            "source": {
+              "enum": [
+                "bundled",
+                "catalog",
+                "hub",
+                "local",
+                "other",
+                "url"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "catalog_identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$",
+      "description": "A public name Nous publishes (slash-command registry, bundled/optional skills, optional-mcps/ and plugin-catalog/ entries, shipped locales), or the placeholder custom/plugin/skill/unknown/other."
     }
   }
 }

@@ -20,7 +20,9 @@ from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
     COUNTER_METRICS,
     INSTALL_SNAPSHOT_METRIC,
+    MILESTONE_METRIC,
     MODEL_ROUTE_METRIC,
+    SUM_METRICS,
     client_resource_is_valid,
     counter_dimensions_are_valid,
 )
@@ -33,6 +35,7 @@ _SCHEMA_BUSY_TIMEOUT_MS = 5_000
 _LOCAL_HISTORY_RETENTION_DAYS = 30
 _ACTIVE_INSTALL_STATE_KEY = "client_active_recorded_at"
 _INSTALL_SNAPSHOT_STATE_KEY = "install_snapshot_recorded_at"
+_MILESTONE_STATE_PREFIX = "milestone:"
 _ACTIVE_INSTALL_INTERVAL = timedelta(hours=24)
 # Column order of the client resource in every counter_aggregates statement.
 _RESOURCE_COLUMNS = ("hermes_version", "os_family", "architecture", "install_method")
@@ -116,12 +119,12 @@ _INCREMENT_COUNTER_SQL = """
             INSERT INTO counter_aggregates(
                 period_start, metric_name, hermes_version, os_family, architecture,
                 install_method, dimensions_json, value, packaged_value
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
             ON CONFLICT(
                 period_start, metric_name, hermes_version, os_family, architecture,
                 install_method, dimensions_json
             )
-            DO UPDATE SET value = value + 1
+            DO UPDATE SET value = value + excluded.value
             """
 # (column, declaration) added to package_outbox for transmission bookkeeping.
 _SEND_COLUMNS = (
@@ -246,14 +249,44 @@ class SharedMetricsStore:
         return True
 
     def record_counter(
-        self, metric_name: str, dimensions: dict[str, str], resource: dict[str, str]
+        self, metric_name: str, dimensions: dict[str, str], resource: dict[str, str],
+        amount: int = 1,
     ) -> None:
-        """Increment one allowlisted counter for the current UTC day."""
+        """Add ``amount`` (1 for event counters, a token count for sums) for the current UTC day."""
         self._validate_counter(metric_name, dimensions, resource)
+        if isinstance(amount, bool) or not isinstance(amount, int) or amount < 1 or (
+            amount != 1 and metric_name not in SUM_METRICS
+        ):
+            raise ValueError(f"Unsupported amount for shared metric: {metric_name}")
         with self._connection() as connection:
             self._record_counter_in_transaction(
-                connection, metric_name, dimensions, resource, _utc_now().date().isoformat()
+                connection, metric_name, dimensions, resource, _utc_now().date().isoformat(), amount
             )
+
+    def recorded_milestones(self) -> frozenset[str]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT key FROM telemetry_state WHERE key LIKE ?", (f"{_MILESTONE_STATE_PREFIX}%",)
+            ).fetchall()
+        return frozenset(row["key"][len(_MILESTONE_STATE_PREFIX):] for row in rows)
+
+    def record_milestone(self, milestone: str, install_age_bucket: str, resource: dict[str, str]) -> bool:
+        """Record an install milestone at most once, ever (compare-and-set across processes)."""
+        dimensions = {"install_age_bucket": install_age_bucket, "milestone": milestone}
+        self._validate_counter(MILESTONE_METRIC, dimensions, resource)
+        now = _utc_now()
+        with self._write() as connection:
+            inserted = connection.execute(
+                "INSERT INTO telemetry_state(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
+                (f"{_MILESTONE_STATE_PREFIX}{milestone}", _isoformat(now)),
+            ).rowcount
+            if not inserted:
+                return False
+            self._install_id(connection)
+            self._record_counter_in_transaction(
+                connection, MILESTONE_METRIC, dimensions, resource, now.date().isoformat()
+            )
+        return True
 
     @staticmethod
     def _validate_counter(
@@ -273,12 +306,13 @@ class SharedMetricsStore:
         dimensions: dict[str, str],
         resource: dict[str, str],
         period_start: str,
+        amount: int = 1,
     ) -> None:
         connection.execute(
             _INCREMENT_COUNTER_SQL,
             (
                 period_start, metric_name, *(resource[column] for column in _RESOURCE_COLUMNS),
-                _compact_json(dimensions),
+                _compact_json(dimensions), amount,
             ),
         )
 

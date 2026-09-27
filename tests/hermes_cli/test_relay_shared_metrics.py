@@ -498,7 +498,7 @@ def test_package_schema_matches_the_model_call_contract():
     properties = _package_dimension_schema()["properties"]
 
     assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v3"
-    assert set(properties) == {"call_role", "error_class", "model", "outcome", "provider"}
+    assert set(properties) == {"call_role", "error_class", "model", "outcome", "provider", "ttft_bucket"}
     # Rows counted before the v3 upgrade carry only model/provider and must still drain.
     assert set(_package_dimension_schema()["required"]) == {"model", "provider"}
     assert properties["model"]["maxLength"] == MODEL_IDENTIFIER_MAX_LENGTH
@@ -767,6 +767,7 @@ def test_auxiliary_logical_scope_projects_one_normalized_terminal_route():
         "model": "accepted/model",
         "outcome": "success",
         "provider": "openrouter",
+        "ttft_bucket": "unknown",
     }
 
     event.data.update({
@@ -779,6 +780,7 @@ def test_auxiliary_logical_scope_projects_one_normalized_terminal_route():
         "model": "configured/model",
         "outcome": "success",
         "provider": "openrouter",
+        "ttft_bucket": "unknown",
     }
 
     event.metadata["hermes.call_role"] = "primary"
@@ -907,14 +909,16 @@ def test_skill_subscriber_contract_accepts_only_bounded_marks():
             "post_patch_state": "reused_after_patch",
             "provenance": "agent_created",
             "reuse_state": "reused",
+            "skill_name": "custom",
             "use_count_bucket": "3_to_5",
         },
     })
     assert skill_counter(load) == ("hermes.skill.load.count", load.data)
 
+    # Only bundled/optional skill names (public) may appear; a local name is refused.
     load.data["skill_name"] = "privacy-canary"
     assert skill_counter(load) is None
-    load.data.pop("skill_name")
+    load.data["skill_name"] = "custom"
     load.data["provenance"] = "private-repository"
     assert skill_counter(load) is None
     lifecycle.metadata["skill_name"] = "privacy-canary"
@@ -937,16 +941,19 @@ def test_skill_event_fields_are_bounded_and_reject_malformed_usage():
         "post_patch_state": "no_new_patch",
         "provenance": "unknown",
         "reuse_state": "reused",
+        "skill_name": "custom",
         "use_count_bucket": "2",
     }
     assert skill_load_fields({
         "use_count": 1,
         "reused": False,
         "reuse_after_patch": False,
+        "skill_name": "codex",
     }) == {
         "post_patch_state": "not_applicable",
         "provenance": "unknown",
         "reuse_state": "first_use",
+        "skill_name": "codex",
         "use_count_bucket": "1",
     }
     assert (

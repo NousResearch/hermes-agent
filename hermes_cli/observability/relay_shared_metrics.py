@@ -17,6 +17,7 @@ from hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
+from . import shared_metrics_fields as fields_
 from .shared_metrics_contract import MODEL_CALL_SCOPE, SUBSCRIBER_NAME, TASK_SCOPE
 from .shared_metrics_subscriber import SharedMetricsSubscriber
 
@@ -106,6 +107,7 @@ class _ModelCall:
     task_id: str
     fields: dict[str, str]
     error_class: str = "none"
+    ttft_bucket: str = "unknown"
 
 
 @dataclass
@@ -143,6 +145,13 @@ class _MetricsSession:
     tasks: dict[str, _TaskRun] = field(default_factory=dict)
     tool_calls: dict[tuple[str, str, str, str], _ToolCall] = field(default_factory=dict)
     retired_turn_ids: deque[str] = field(default_factory=lambda: deque(maxlen=256))
+    # Session-level aggregation, emitted once as hermes.session.count when the session closes.
+    start_fields: dict[str, str] | None = None
+    turns: int = 0
+    failed_turns: int = 0
+    last_outcome: str = "unknown"
+    first_turn_ns: int = 0
+    last_turn_ns: int = 0
 
 
 class _Runtime:
@@ -342,7 +351,16 @@ class _Runtime:
                 return
             model_call.fields = contract.model_call_fields(event)
             if finish:
+                model_call.ttft_bucket = fields_.ttft_bucket(event)
                 self._finish_model_call(session, model_call_key, "success")
+                tokens = fields_.model_token_fields(
+                    event.get("usage"), call_role="primary", **model_call.fields
+                )
+                if tokens is not None:
+                    self._guarded(
+                        "Hermes shared-metrics token mark failed", self._mark,
+                        session, session.tasks.get(model_call.task_id), contract.MODEL_TOKENS_MARK, tokens,
+                    )
             else:
                 model_call.error_class = contract.model_error_class(event)
 
@@ -472,6 +490,7 @@ class _Runtime:
             session, {**event, **_ABORTED, "completed": False, "interrupted": False}
         ):
             return
+        self._emit_session_summary(session)
         try:
             self.relay.subscribers.flush()
         except Exception as exc:
@@ -725,7 +744,8 @@ class _Runtime:
         if outcome == "failed" and error_class == "none":
             error_class = "unknown"
         fields = contract.model_route_fields(
-            model_call.fields, call_role="primary", outcome=outcome, error_class=error_class
+            model_call.fields, call_role="primary", outcome=outcome, error_class=error_class,
+            ttft_bucket=model_call.ttft_bucket,
         )
         self._guarded(
             "Hermes shared-metrics model call close failed",
@@ -769,6 +789,7 @@ class _Runtime:
             tool_call_count=len(task.tool_call_ids) + task.unidentified_tool_calls,
             retry_count=task.retry_count,
         )
+        self._count_session_turn(session, task, fields["outcome"])
         try:
             popped = self._guarded(
                 "Hermes shared-metrics task close failed",
@@ -785,6 +806,47 @@ class _Runtime:
                 for turn_id in task.turn_ids:
                     _forget(self._turn_sessions, (session.session_id, turn_id), session)
         return True
+
+    @staticmethod
+    def _count_session_turn(session: _MetricsSession, task: _TaskRun, outcome: str) -> None:
+        if session.start_fields is None:
+            session.start_fields = dict(task.start_fields)
+            session.first_turn_ns = task.started_ns
+        session.turns += 1
+        session.failed_turns += outcome == "failed"
+        session.last_outcome = outcome
+        session.last_turn_ns = monotonic_ns()
+
+    def _emit_session_summary(self, session: _MetricsSession) -> None:
+        """One hermes.session.count row per closed top-level session (delegated children excluded)."""
+        start = session.start_fields
+        if not session.turns or start is None or start.get("entrypoint") == "delegated":
+            return
+        summary = fields_.session_fields(
+            start, turns=session.turns, failed_turns=session.failed_turns,
+            last_outcome=session.last_outcome,
+            active_ms=max(0, session.last_turn_ns - session.first_turn_ns) // 1_000_000,
+        )
+        self._guarded(
+            "Hermes shared-metrics session summary failed", self._mark,
+            session, None, contract.SESSION_MARK, summary,
+        )
+
+    def record_process_mark(self, mark: str, data: dict[str, Any]) -> None:
+        """A process-level fact with no owning task (setup, installs, commands, switches)."""
+        # No flush here: the next task close or the atexit shutdown drains the subscriber.
+        self._with_scope_stack(self.relay.scope.event, mark, data=data, metadata=self._event_metadata())
+
+    def record_auxiliary_tokens(self, event: dict[str, Any]) -> None:
+        tokens = fields_.model_token_fields(
+            event.get("usage"), call_role="auxiliary", aux_task=event.get("aux_task"),
+            model=event.get("response_model") or event.get("model"), provider=event.get("provider"),
+        )
+        if tokens is not None:
+            self._with_scope_stack(
+                self.relay.scope.event, contract.MODEL_TOKENS_MARK, data=tokens,
+                metadata=self._event_metadata(),
+            )
 
     def _export(self) -> None:
         exported = self._safe(self.subscriber.store.create_and_export_package_if_due)
@@ -975,6 +1037,7 @@ _HOOK_HANDLERS: dict[str, Callable[[_Runtime, dict[str, Any]], Any]] = {
     "post_approval_response": lambda rt, kw: rt.record_approval(kw),
     "on_skill_lifecycle": lambda rt, kw: rt.record_skill_lifecycle(kw),
     "post_api_request": lambda rt, kw: rt.update_model_call(kw, finish=True),
+    "post_auxiliary_call": lambda rt, kw: rt.record_auxiliary_tokens(kw),
     "api_request_error": lambda rt, kw: rt.update_model_call(kw, finish=False),
     "on_session_end": lambda rt, kw: rt.finish_task(kw),
     "subagent_stop": _close_child_session,
@@ -1010,6 +1073,15 @@ def finish_task_run(
         "finish_task", session_id=session_id, task_id=task_id, platform=platform,
         **_terminal_flags(result, error),
     )
+
+
+def record_process_mark(mark: str, data: dict[str, Any]) -> None:
+    """Emit one process-level decision mark when shared metrics are on (never raises)."""
+    if not enabled() or not relay_runtime.relay_instrumentation_enabled():
+        return
+    runtime = _get_runtime(retry_failed=True)
+    if runtime is not None:
+        runtime._safe(runtime.record_process_mark, mark, data)
 
 
 def _run_task_hook(method: str, *, retry_failed: bool = False, **event: Any) -> None:

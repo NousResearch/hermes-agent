@@ -1,0 +1,5 @@
+name: jev-provider
+kind: model-provider
+version: 1.0.0
+description: TypeSafe Jev (System One typed decisions)
+author: kvnloo

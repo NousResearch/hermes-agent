@@ -722,7 +722,10 @@ class SessionCompressionMixin:
         current = session_id
         chain = [current] if current else []
         seen = set(chain)
-        for _ in range(100):  # defensive bound; chains this deep are pathological
+        # Defensive bound; ``seen`` guards cycles. 100 truncated real
+        # compression lineages (~180 deep), stranding root→tip walks on a
+        # stale mid id (#125041).
+        for _ in range(1000):
             with self._read_ctx() as conn:
                 row = conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
             child_id = row["id"] if row is not None else None

@@ -335,13 +335,18 @@ async def search_sessions(
 
             tip_cache: dict = {}
 
-            def lineage_tip(root_id: str) -> str:
-                if root_id not in tip_cache:
+            def lineage_tip(session_id: str) -> str:
+                # Resolve the tip from the MATCHED id, never from the lineage
+                # root: the forward chain walk is defensively bounded, so a
+                # lineage deeper than the bound truncates to a stale mid id
+                # when started at the root. Resuming from the matched id is
+                # what the CLI does and always reaches the live tip (#125041).
+                if session_id not in tip_cache:
                     try:
-                        tip_cache[root_id] = db.get_compression_tip(root_id) or root_id
+                        tip_cache[session_id] = db.get_compression_tip(session_id) or session_id
                     except Exception:
-                        tip_cache[root_id] = root_id
-                return tip_cache[root_id]
+                        tip_cache[session_id] = session_id
+                return tip_cache[session_id]
 
             # One keyspace for id-hits and content-hits, keyed by lineage root;
             # first hit wins, and ID matches run first.
@@ -354,7 +359,7 @@ async def search_sessions(
                 if root in seen or len(seen) >= safe_limit:
                     return
                 payload = dict(payload)
-                sid = lineage_tip(root)
+                sid = lineage_tip(raw_sid)
                 payload["session_id"] = sid
                 payload["lineage_root"] = root
                 payload["profile"] = row_profile

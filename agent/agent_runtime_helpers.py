@@ -603,6 +603,8 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # The current turn can be absorbed into an unanswered persisted user row.
             # Record the preserved prefix so a clean-text persist override cannot
             # erase the older unanswered request, even on a second replay pass.
+            # Keep this marker after the override: a replay pass needs the same
+            # prefix to avoid overwriting the older unanswered turn again.
             # Private scaffolding is stripped from the wire.
             if prev_content and new_content:
                 prev["_merged_turn_prefix"] = prev_content + "\n\n"

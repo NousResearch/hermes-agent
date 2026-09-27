@@ -1562,7 +1562,16 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    argv = kbd._resolve_hermes_argv()
+    # The module/launcher form boots this install's own interpreter and never
+    # the attacker-planted PATH shim...
+    assert argv[0] == sys.executable
+    assert "/tmp/planted/hermes" not in argv
+    # ...and the plain ``-m`` fallback is only used when the launcher command
+    # itself cannot be built (#125121).
+    assert argv != [sys.executable, "-m", "hermes_cli.main"] or (
+        kbd._module_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    )
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]

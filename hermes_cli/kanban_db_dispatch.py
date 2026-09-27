@@ -2469,8 +2469,27 @@ def _rotate_worker_log(
 
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    console-script target — there is no top-level ``hermes`` package).
+
+    A bare ``sys.executable -m hermes_cli.main`` only works when the child
+    interpreter can import ``hermes_cli`` on its own. On managed-runtime
+    installs the gateway's ``sys.executable`` is the bare store interpreter,
+    which cannot (#125121): the running process found ``hermes_cli`` through
+    the launcher shim's ``sys.path`` seed, and the worker env intentionally
+    strips that PYTHONPATH entry from children. Boot the child exactly the
+    way the installed launcher does — ``_launchers.runtime_command`` emits an
+    isolated ``-c`` preamble that re-inserts this install's root and imports
+    ``hermes_bootstrap``, so the selected dependency generation resolves
+    inside the child regardless of what the spawn env carried. The plain
+    module form stays as a last-resort fallback.
+    """
+    try:
+        from hermes_cli._launchers import runtime_command
+
+        repo_root = Path(__file__).resolve().parents[1]
+        return runtime_command(repo_root)
+    except Exception:
+        return [sys.executable, "-m", "hermes_cli.main"]
 
 
 def _absolute_hermes_path(path: str) -> str:

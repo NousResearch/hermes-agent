@@ -1329,6 +1329,27 @@ class TestStreamingClosedFailure:
         # Short transient cooldown, strictly below the generic-failure cooldown.
         assert 1000.0 < closed._summary_failure_cooldown_until < generic._summary_failure_cooldown_until
 
+    def test_codex_stall_is_ladder_timeout_not_terminal_network_failure(self):
+        """#124077: a Codex stream-guard mid-stream stall is a retry-ladder timeout."""
+        from agent.auxiliary_client import _CodexStreamGuard
+        guard = _CodexStreamGuard(None, 300.0)
+        guard.saw_content.set()  # mid-stream: content arrived, then the stream went quiet
+        c = self._fail_on_main(TimeoutError(guard.timeout_message()))
+        assert c._last_summary_network_failure is False
+        assert c._consecutive_timeout_failures == 1
+
+    @pytest.mark.parametrize("kind", ["api_timeout", "connection_error_with_stall_text"])
+    def test_api_timeout_still_flags_terminal_network_failure(self, kind):
+        """Real transport errors stay terminal (#29559/#94448), even when their text
+        happens to contain the stall marker: only a TimeoutError stall is reclassified."""
+        import httpx
+        import openai
+        from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
+        req = httpx.Request("POST", "http://x")
+        err = (openai.APITimeoutError(request=req) if kind == "api_timeout"
+               else openai.APIConnectionError(message=f"upstream {CODEX_STREAM_STALL_MARKER}", request=req))
+        assert self._fail_on_main(err)._last_summary_network_failure is True
+
 
 class TestAuxModelFallbackSurfacedToCallers:
     """When summary_model fails but retry-on-main succeeds, compress() must
@@ -3693,30 +3714,3 @@ class TestSanitizeToolPairsWhitespace:
         tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
         assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
         assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"
-
-
-class TestSummaryFailureClassification124077:
-    """#124077: a Codex stream-guard stall is a retry-ladder timeout, while real
-    transport timeouts keep the terminal network-failure abort (#29559/#94448)."""
-
-    def _run_summary_failure(self, exc):
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True)
-        msgs = [{"role": "user", "content": "msg 1"}, {"role": "assistant", "content": "msg 2"}]
-        with patch("agent.context_compressor.call_llm", side_effect=exc):
-            c._generate_summary(msgs)
-        return c
-
-    def test_codex_stall_is_ladder_timeout_not_terminal_network_failure(self):
-        from agent.auxiliary_client import _CodexStreamGuard
-        guard = _CodexStreamGuard(None, 300.0)
-        guard.saw_content.set()  # mid-stream: content arrived, then the stream went quiet
-        c = self._run_summary_failure(TimeoutError(guard.timeout_message()))
-        assert c._last_summary_network_failure is False
-        assert c._consecutive_timeout_failures == 1
-
-    def test_api_timeout_still_flags_terminal_network_failure(self):
-        import httpx
-        import openai
-        c = self._run_summary_failure(openai.APITimeoutError(request=httpx.Request("POST", "http://x")))
-        assert c._last_summary_network_failure is True

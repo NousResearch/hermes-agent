@@ -858,6 +858,13 @@ def main(argv=None) -> int:
     except InstallError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 1
+    except PermissionError as exc:
+        from pm.environments import install_state_permission_message
+
+        if message := install_state_permission_message(repo_root(), exc):
+            print(f"✗ {message}", file=sys.stderr)
+            return 1
+        raise
 
 
 if __name__ == "__main__":

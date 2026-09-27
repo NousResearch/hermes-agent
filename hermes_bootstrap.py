@@ -518,7 +518,7 @@ if _legacy_post_swap is not None:
     raise SystemExit(_continue_legacy_post_swap(_handoff_path, argv_tail=_argv_tail))
 
 
-from pm.environments import activate_dependencies
+from pm.environments import activate_dependencies, install_state_permission_message
 from hermes_cli._early_recovery import recover_if_needed
 
 from hermes_cli._parser import command_argv
@@ -542,6 +542,9 @@ if not _pm_repair:
                 raise SystemExit(subprocess.call(_command))
             os.execv(str(_launch_python), _command)
     except Exception as exc:
+        if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):
+            print(f"hermes: {message}", file=sys.stderr)
+            raise SystemExit(1) from None
         # Degrade, never brick the CLI: the previous dependency generation is still selected
         # (a failed sync commits nothing), so an offline or half-finished update leaves a
         # usable Hermes plus a warning. Activation below is the real gate — a tree whose
@@ -549,10 +552,13 @@ if not _pm_repair:
         print(f"hermes: source-update completion failed: {exc}; "
               "running with the previous dependencies — run `hermes update` to finish it",
               file=sys.stderr)
-    recover_if_needed(_root)
     try:
+        recover_if_needed(_root)
         activate_dependencies(_root)
     except (RuntimeError, OSError) as exc:
+        if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):
+            print(f"hermes: {message}", file=sys.stderr)
+            raise SystemExit(1) from None
         if command_argv(sys.argv[1:])[:1] != ["pm"]:
             print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
             raise SystemExit(1) from None

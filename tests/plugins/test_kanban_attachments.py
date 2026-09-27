@@ -323,3 +323,82 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
         assert kb.list_attachments(conn, task_id) == []
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Replacement: one declared filename == one attachment record
+# ---------------------------------------------------------------------------
+
+
+def test_reupload_same_filename_replaces_the_record(kanban_home):
+    """Re-uploading the same declared filename must UPDATE the existing record.
+
+    Appending ``doc (1).txt`` left two rows describing the same logical
+    artifact, so the listing kept advertising the superseded bytes/size and the
+    next reader could open the wrong file.
+    """
+    conn = kbc.connect()
+    try:
+        task_id = _make_task(conn)
+        first = kb.store_attachment_bytes(
+            conn, task_id, "partner-kit.pdf", b"first render", uploaded_by="tester")
+        second = kb.store_attachment_bytes(
+            conn, task_id, "partner-kit.pdf", b"second render, longer",
+            uploaded_by="tester")
+        assert second == first, "the record must be reused, not appended"
+
+        atts = kb.list_attachments(conn, task_id)
+        assert [a.filename for a in atts] == ["partner-kit.pdf"]
+        assert atts[0].size == len(b"second render, longer")
+        assert Path(atts[0].stored_path).read_bytes() == b"second render, longer"
+        assert Path(atts[0].stored_path).name == "partner-kit.pdf"
+    finally:
+        conn.close()
+
+
+def test_reupload_keeps_distinct_filenames(kanban_home):
+    """Replacement is keyed on the filename: a genuinely different artifact is
+    still a second attachment."""
+    conn = kbc.connect()
+    try:
+        task_id = _make_task(conn)
+        kb.store_attachment_bytes(conn, task_id, "partner-kit.pdf", b"kit")
+        kb.store_attachment_bytes(conn, task_id, "contact-sheet.png", b"png")
+        assert [a.filename for a in kb.list_attachments(conn, task_id)] == [
+            "partner-kit.pdf", "contact-sheet.png"]
+    finally:
+        conn.close()
+
+
+def test_redeclared_handoff_artifact_replaces_in_place(kanban_home, tmp_path, monkeypatch):
+    """A handoff (kanban_request_review / kanban_complete) that re-declares the
+    same artifact filename replaces the previous copy instead of staging
+    ``name_1.ext`` beside it."""
+    workspaces = tmp_path / "workspaces"
+    ws = workspaces / "task-a"
+    ws.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(workspaces))
+
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(
+            conn, title="handoff", workspace_kind="scratch", workspace_path=str(ws))
+        rendered = ws / "partner-kit.pdf"
+
+        rendered.write_bytes(b"round one")
+        kb._stage_completion_artifacts(
+            conn, task_id, {"artifacts": [str(rendered)]}, 1,
+            uploaded_by="kanban_request_review")
+        rendered.write_bytes(b"round two, re-rendered")
+        kb._stage_completion_artifacts(
+            conn, task_id, {"artifacts": [str(rendered)]}, 2,
+            uploaded_by="kanban_request_review")
+
+        atts = kb.list_attachments(conn, task_id)
+        assert [a.filename for a in atts] == ["partner-kit.pdf"]
+        assert atts[0].size == len(b"round two, re-rendered")
+        assert Path(atts[0].stored_path).read_bytes() == b"round two, re-rendered"
+        assert list(kb.task_attachments_dir(task_id).iterdir()) == [
+            Path(atts[0].stored_path)]
+    finally:
+        conn.close()

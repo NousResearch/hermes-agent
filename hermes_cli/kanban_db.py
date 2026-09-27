@@ -1841,6 +1841,57 @@ def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
     return dest_dir / candidate
 
 
+def _existing_attachment_for_filename(
+    conn: sqlite3.Connection, task_id: str, filename: str,
+) -> Optional[Attachment]:
+    """Newest attachment row on *task_id* stored under *filename*, else None.
+
+    The declared filename identifies a logical artifact, so a second handoff of
+    the same name is a REPLACEMENT of that artifact, not a new one beside it.
+    """
+    row = conn.execute(
+        "SELECT * FROM task_attachments WHERE task_id = ? AND filename = ? "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id, filename),
+    ).fetchone()
+    return None if row is None else Attachment.from_row(row)
+
+
+def _replace_attachment_blob(
+    conn: sqlite3.Connection, attachment_id: int, *, data: Optional[bytes] = None,
+    source: Optional[Path] = None, content_type: Optional[str] = None,
+    uploaded_by: Optional[str] = None,
+) -> int:
+    """Overwrite an existing attachment in place and return its (unchanged) id.
+
+    Blob first, row second: the row keeps its id, stored path and filename, so
+    ``kanban_attachments`` still reports one entry for the artifact -- with the
+    size/timestamp of the bytes actually on disk.
+    """
+    att = get_attachment(conn, attachment_id)
+    if att is None:
+        raise ValueError(f"no such attachment: {attachment_id}")
+    if data is None:
+        if source is None:
+            raise ValueError("attachment replacement needs bytes or a source path")
+        data = source.read_bytes()
+    dest = Path(att.stored_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    with write_txn(conn, allow_nested=True):
+        conn.execute(
+            "UPDATE task_attachments SET size = ?, created_at = ?, "
+            "content_type = COALESCE(?, content_type), "
+            "uploaded_by = COALESCE(?, uploaded_by) WHERE id = ?",
+            (len(data), int(time.time()), content_type, uploaded_by, attachment_id),
+        )
+        _append_event(
+            conn, att.task_id, "attachment_replaced",
+            {"filename": att.filename, "size": len(data), "by": uploaded_by},
+        )
+    return int(attachment_id)
+
+
 def store_attachment_bytes(
     conn: sqlite3.Connection, task_id: str, filename: str, data: bytes, *,
     content_type: Optional[str] = None, uploaded_by: Optional[str] = None,
@@ -1857,6 +1908,15 @@ def store_attachment_bytes(
     safe_name = _safe_attachment_name(filename)
     dest_dir = task_attachments_dir(task_id, board=board)
     dest_dir.mkdir(parents=True, exist_ok=True)
+    existing = _existing_attachment_for_filename(conn, task_id, safe_name)
+    if existing is not None:
+        # Re-uploading the same filename REPLACES the attachment: the previous
+        # behaviour appended ``name (1).pdf`` and left the old record (with its
+        # old size/timestamp) in the listing, so the next reader could be handed
+        # a superseded artifact.
+        return _replace_attachment_blob(
+            conn, existing.id, data=data, content_type=content_type,
+            uploaded_by=uploaded_by)
     dest_path = _collision_free_path(dest_dir, safe_name)
     dest_path.write_bytes(data)
     try:
@@ -3029,10 +3089,14 @@ def _persist_scratch_completion_artifacts(
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
     used_destinations: set[Path] = set()
+    # Blobs that already existed under this name (a replacement in place). They
+    # are not this call's to delete: discarding one on a later failure would
+    # remove the previous round's artifact.
+    replaced_destinations: set[Path] = set()
     changed = False
 
     def _discard_copies() -> None:
-        _discard_staged_copies(used_destinations, attachment_dir)
+        _discard_staged_copies(used_destinations - replaced_destinations, attachment_dir)
 
     for item in raw_artifacts:
         artifact = str(item).strip() if isinstance(item, str) else ""
@@ -3062,10 +3126,16 @@ def _persist_scratch_completion_artifacts(
             raise ArtifactPreservationError(problem)
 
         dest: Optional[Path] = None
+        replacing = _existing_attachment_for_filename(conn, task_id, resolved_src.name)
         try:
             attachment_dir.mkdir(parents=True, exist_ok=True)
-            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
-            _copy_capped(resolved_src, dest, artifact)
+            if replacing is not None:
+                # Re-declared artifact: overwrite the blob it already owns
+                # instead of staging ``name_1.ext`` beside it.
+                dest = Path(replacing.stored_path)
+            else:
+                dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
+            _copy_capped(resolved_src, dest, artifact, replace=replacing is not None)
         except Exception as exc:
             if dest is not None:
                 with contextlib.suppress(OSError):
@@ -3077,6 +3147,8 @@ def _persist_scratch_completion_artifacts(
                 f"could not preserve declared scratch artifact {artifact}: {exc}"
             ) from exc
         used_destinations.add(dest)
+        if replacing is not None:
+            replaced_destinations.add(dest)
         persisted.append(str(dest.resolve()))
         changed = True
 
@@ -3097,9 +3169,12 @@ def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None
         attachment_dir.rmdir()
 
 
-def _copy_capped(src: Path, dest: Path, artifact: str) -> None:
-    """Chunked copy that aborts if the file grows past the attachment cap mid-copy."""
-    with src.open("rb") as source_file, dest.open("xb") as destination_file:
+def _copy_capped(src: Path, dest: Path, artifact: str, *, replace: bool = False) -> None:
+    """Chunked copy that aborts if the file grows past the attachment cap mid-copy.
+    ``replace=True`` overwrites an existing blob (a same-filename re-handoff)
+    instead of refusing on ``O_EXCL``."""
+    mode = "wb" if replace else "xb"
+    with src.open("rb") as source_file, dest.open(mode) as destination_file:
         copied = 0
         while chunk := source_file.read(1024 * 1024):
             copied += len(chunk)
@@ -3114,7 +3189,29 @@ def _insert_completion_attachment(
     conn: sqlite3.Connection, task_id: str, *, filename: str, stored_path: str, size: int,
     created_at: int, uploaded_by: str = "kanban_complete",
 ) -> None:
-    """Record a worker-produced artifact in the existing attachment table."""
+    """Record a worker-produced artifact in the existing attachment table.
+
+    A filename already on the card is UPDATED in place -- one row per artifact.
+    Appending was the round-3 bug on card t_400b5911: the second handoff of
+    ``roam-partner-kit.pdf`` became ``roam-partner-kit_1.pdf`` while the first
+    record went on advertising the superseded size.
+    """
+    existing = conn.execute(
+        "SELECT id FROM task_attachments WHERE task_id = ? AND filename = ? "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id, filename),
+    ).fetchone()
+    if existing is not None:
+        conn.execute(
+            "UPDATE task_attachments SET stored_path = ?, size = ?, created_at = ?, "
+            "uploaded_by = ? WHERE id = ?",
+            (stored_path, int(size), created_at, uploaded_by, int(existing["id"])),
+        )
+        _append_event(
+            conn, task_id, "attachment_replaced",
+            {"filename": filename, "size": int(size), "by": uploaded_by},
+        )
+        return
     conn.execute(
         "INSERT INTO task_attachments "
         "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "

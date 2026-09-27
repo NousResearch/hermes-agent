@@ -780,6 +780,8 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
             file_ids: List[str] = []
             for media in media_files or []:
                 file_path = media.get("path") if isinstance(media, dict) else media
+                if isinstance(file_path, (tuple, list)):
+                    file_path = file_path[0] if file_path else None
                 if not file_path or not os.path.exists(file_path):
                     continue
                 form = aiohttp.FormData()
@@ -822,7 +824,10 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
                 if not isinstance(data, dict) or not isinstance(data.get("id"), str) or not data["id"].strip():
                     return {**receipt(_POST_DELIVERY_UNCERTAIN), "_delivery_uncertain": True}
                 message_ids.append(data["id"])
-            return receipt()
+            result = receipt()
+            if file_ids:
+                result["media_delivered"] = True
+            return result
     except aiohttp.ClientError as exc:
         return receipt(f"Mattermost send failed (network): {exc}")
     except Exception as exc:  # noqa: BLE001

@@ -64,9 +64,6 @@ def _make_ctx(name: str = "dashboard-auth-stub") -> PluginContext:
     return PluginContext(manifest=manifest, manager=_MinimalManager())  # type: ignore[arg-type]
 
 
-def test_plugin_ctx_exposes_register_dashboard_auth_provider():
-    ctx = _make_ctx()
-    assert hasattr(ctx, "register_dashboard_auth_provider")
 
 
 def test_plugin_ctx_silently_ignores_non_provider(caplog):

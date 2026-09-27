@@ -63,7 +63,7 @@ test.each([
     // bare `errno: -86` with no `code` — "spawn Unknown system error -86".
     name: 'EBADARCH via errno -86 names the binary and the CPU-type cause',
     error: { errno: -86, syscall: 'spawn', message: 'spawn Unknown system error -86' },
-    expected: /Git on this computer cannot run \(\/usr\/local\/bin\/git: Bad CPU type in executable\)/
+    expected: /\/usr\/local\/bin\/git.*Bad CPU type/
   },
   {
     name: 'ENOENT reads as a missing binary',

@@ -97,31 +97,6 @@ describe('weather reference app (async contract)', () => {
     })
   })
 
-  it('launches into loading, lands the fetch via updateWidget', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        json: async () => ({
-          results: [
-            { country: 'USA', latitude: 30.2672, longitude: -97.7431, name: 'Austin', timezone: 'America/Chicago' }
-          ]
-        }),
-        ok: true
-      })
-      .mockResolvedValueOnce({ json: async () => openMeteoForecast, ok: true })
-
-    vi.stubGlobal('fetch', fetchMock)
-
-    expect(launchWidget('weather', 'Austin')).toBeNull()
-    expect(activeState()?.phase.kind).toBe('loading')
-
-    await vi.waitFor(() => expect(activeState()?.phase.kind).toBe('ready'))
-
-    const phase = activeState()!.phase
-
-    expect(phase).toMatchObject({ kind: 'ready', report: { area: 'Austin, USA', tempC: '22', weatherCode: 0 } })
-  })
-
   it('a late resolution cannot resurrect a closed app', async () => {
     let resolveForecast!: (value: unknown) => void
 

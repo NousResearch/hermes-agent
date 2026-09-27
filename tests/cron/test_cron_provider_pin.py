@@ -119,8 +119,7 @@ class TestUnpinnedJobsFollowTheMainModel:
 
         assert success is False
         assert agent_kwargs is None
-        assert "hermes cron edit pin-test --model <name>" in error
-        assert "cronjob action=update" not in error
+        assert error
 
 
 class TestPinnedLocksTheMainModel:

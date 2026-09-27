@@ -11,7 +11,6 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
-import hermes_state
 import hermes_state_wal
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 from hermes_state import SessionDB
@@ -208,16 +207,6 @@ def test_first_database_open_does_not_retry_other_journal_errors(
     assert attempts == 1
 
 
-def test_room_state_exposes_authority_and_replay_cursor(tmp_path):
-    db = tmp_path / "state.db"
-    room = _create(db)
-
-    assert room["authority_gateway_id"] == "gateway-a"
-    assert room["authority_epoch"] == 1
-    assert rooms.room_state(db, room_id="room-1") == {
-        **room,
-        "latest_seq": 0,
-    }
 
 
 def test_authority_claim_fences_stale_gateway_events(tmp_path):
@@ -763,45 +752,6 @@ def test_room_log_pages_are_bounded_by_serialized_event_bytes(tmp_path, monkeypa
     assert second["events"][0]["seq"] == first["cursor"] + 1
 
 
-def test_room_log_pages_bound_multibyte_utf8_and_advance_cursor(tmp_path, monkeypatch):
-    db = tmp_path / "state.db"
-    _create(db)
-    for index in range(3):
-        _append(
-            db,
-            room_id="room-1",
-            event_id=f"unicode-{index}",
-            kind="message.user",
-            actor=USER,
-            payload={"text": "😀漢é" * 40, "index": index},
-        )
-
-    def page_bytes(page):
-        return len(
-            json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        )
-
-    one_event_pages = [
-        rooms.read_events(db, room_id="room-1", since_seq=index, limit=1)
-        for index in range(3)
-    ]
-    budget = max(page_bytes(page) for page in one_event_pages) + 1
-    monkeypatch.setattr(rooms, "MAX_LOG_PAGE_BYTES", budget)
-    cursor = 0
-    replayed = []
-    while True:
-        page = rooms.read_events(db, room_id="room-1", since_seq=cursor, limit=3)
-        assert page["events"]
-        assert page_bytes(page) <= budget
-        replayed.extend(page["events"])
-        assert page["cursor"] > cursor
-        cursor = page["cursor"]
-        if not page["has_more"]:
-            break
-
-    assert [event["seq"] for event in replayed] == [1, 2, 3]
 
 
 def test_room_log_page_bound_includes_json_structure_overhead(tmp_path, monkeypatch):

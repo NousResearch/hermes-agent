@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, lazy_ensure, search_fail, search_ok, setup_schema
+from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, search_fail, search_ok, setup_schema
 from tools import managed_tool_gateway as _gateway
 from tools import tool_backend_helpers as _backend_helpers
 from tools.url_safety import is_safe_url
@@ -31,8 +31,15 @@ def _load_firecrawl_cls() -> type:
     """Import and cache ``firecrawl.Firecrawl`` (lazy_deps install hint → ImportError)."""
     global _FIRECRAWL_CLS_CACHE
     if _FIRECRAWL_CLS_CACHE is None:
-        lazy_ensure("search.firecrawl")
-        from firecrawl import Firecrawl as _cls
+        try:
+            from pm import ensure_import as _lazy_ensure
+
+            _lazy_ensure("firecrawl")
+        except ImportError:
+            pass
+        except Exception as exc:  # noqa: BLE001 — surface install hint
+            raise ImportError(str(exc))
+        from firecrawl import Firecrawl as _cls  # noqa: WPS433 — deliberately lazy
         _FIRECRAWL_CLS_CACHE = _cls
     return _FIRECRAWL_CLS_CACHE
 

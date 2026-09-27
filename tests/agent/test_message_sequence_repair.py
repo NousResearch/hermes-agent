@@ -1,8 +1,8 @@
 """Tests for pre-API-call message-sequence repair.
 
-Covers ``_repair_message_sequence`` and the extended
-``_drop_trailing_empty_response_scaffolding`` behavior that rewinds past
-orphan tool-result tails. Together these prevent the self-reinforcing empty-
+Covers ``_repair_message_sequence`` and
+``_drop_trailing_empty_response_scaffolding`` (which keeps the executed
+tool pair under the scaffolding). Together these prevent the self-reinforcing empty-
 response loop observed in session 20260507_044111_fa7e65, where a tool-result
 followed directly by a user message produced silent empty responses from
 providers (violating role alternation), which retriggered the empty-retry
@@ -18,26 +18,23 @@ def _bare_agent():
 
 # ── _drop_trailing_empty_response_scaffolding ──────────────────────────────
 
-def test_drop_scaffolding_rewinds_orphan_tool_tail():
-    """When scaffolding is stripped, also rewind the orphan assistant+tool pair."""
+def test_drop_scaffolding_keeps_executed_tool_pair():
+    """Only the sentinel goes: the assistant+tool pair already ran and was saved."""
     agent = _bare_agent()
-    messages = [
+    executed = [
         {"role": "user", "content": "task"},
         {"role": "assistant", "content": "",
          "tool_calls": [{"id": "t1", "type": "function",
                          "function": {"name": "f", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "t1", "content": "out"},
+    ]
+    messages = executed + [
         {"role": "assistant", "content": "(empty)",
          "_empty_terminal_sentinel": True},
     ]
 
     AIAgent._drop_trailing_empty_response_scaffolding(agent, messages)
-
-    assert messages == [{"role": "user", "content": "task"}]
-
-
-
-
+    assert messages == executed
 
 
 # ── _repair_message_sequence ───────────────────────────────────────────────
@@ -155,18 +152,6 @@ def test_repair_keeps_tool_matching_only_call_id():
 
     assert repairs == 0
     assert any(m.get("role") == "tool" for m in messages)
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_repair_keeps_tool_result_keyed_by_response_item_id():
@@ -387,7 +372,6 @@ def test_repair_merge_preserves_api_content_sidecar_with_multimodal_content():
     assert messages[1]["api_content"] == "wire bytes"
 
 
-
 def test_sanitize_consumes_all_responses_id_variants_for_duplicate_result():
     """A sibling-id replay must not replace the first real result."""
     from agent.agent_runtime_helpers import sanitize_api_messages
@@ -427,7 +411,6 @@ def test_tool_executor_uses_canonical_responses_pairing_id():
     assert _pairing_tool_call_id(
         SimpleNamespace(id="call_ABC|fc_123")
     ) == "call_ABC"
-
 
 
 # ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
@@ -473,9 +456,6 @@ def test_cursor_rewinds_when_compaction_happens_before_cursor():
     assert messages[agent._last_flushed_db_idx] is unflushed_assistant
 
 
-
-
-
 def test_flush_guard_clamps_overshooting_cursor():
     """_flush_messages_to_session_db safety net: an overshooting cursor must
     not produce a negative-start slice that skips everything (#44837)."""
@@ -512,19 +492,9 @@ def test_flush_guard_clamps_overshooting_cursor():
 # ── Pass 0: merge consecutive assistant messages (issue #29148, #49147) ─────
 
 
-
-
-
-
-
-
-
-
 # ── tool_call_id de-duplication (#58327) ────────────────────────────────────
 # Strict providers (DeepSeek) reject a payload where the same tool_call_id
 # appears more than once with HTTP 400 "Duplicate value for 'tool_call_id'".
-
-
 
 
 def test_sanitize_deduplicates_duplicate_tool_results():
@@ -820,10 +790,6 @@ def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
     assert tool_msg["content"] == "file contents"
 
 
-
-
-
-
 # ── Self-recovery: heal empty-content non-final messages ──────────────────
 # Repro of the production incident: a dead stream persisted an empty-content
 # assistant stub mid-transcript, and every later request 400'd with
@@ -1073,14 +1039,6 @@ def test_compressor_sanitize_keeps_composite_keyed_pair():
 
 # ── _classify_tool_call_orphans ─────────────────────────────────────────
 
-def test_classify_orphans_empty():
-    from agent.agent_runtime_helpers import _classify_tool_call_orphans
-    sv, rs, orphaned, missing = _classify_tool_call_orphans([])
-    assert sv == set()
-    assert rs == set()
-    assert orphaned == []
-    assert missing == []
-
 
 def test_classify_orphans_clean_pair():
     from agent.agent_runtime_helpers import _classify_tool_call_orphans
@@ -1093,26 +1051,6 @@ def test_classify_orphans_clean_pair():
     assert rs == {"call_1"}
     assert orphaned == []
     assert missing == []
-
-
-def test_classify_orphans_detects_orphaned_result():
-    from agent.agent_runtime_helpers import _classify_tool_call_orphans
-    messages = [
-        {"role": "tool", "tool_call_id": "orphan_1", "content": "no matching call"},
-    ]
-    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
-    assert [m["tool_call_id"] for m in orphaned] == ["orphan_1"]
-    assert missing == []
-
-
-def test_classify_orphans_detects_missing_result():
-    from agent.agent_runtime_helpers import _classify_tool_call_orphans
-    messages = [
-        {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
-    ]
-    sv, rs, orphaned, missing = _classify_tool_call_orphans(messages)
-    assert orphaned == []
-    assert [tc["id"] for tc in missing] == ["call_1"]
 
 
 def test_classify_orphans_mixed():
@@ -1388,8 +1326,6 @@ def test_sanitize_stubs_interrupted_first_occurrence_keeps_replay_pair():
     assert out[5]["content"] == "real result"
 
 
-
-
 # ── Bridged tool_call: wire-visible response name must echo the call name ──
 # Google matches functionResponse.name against functionCall.name and rejects a
 # mismatch with HTTP 400 INVALID_ARGUMENT. #72089 fixed this for the native
@@ -1523,7 +1459,6 @@ def test_repair_user_merge_pops_persist_marker_on_stamped_survivor():
     assert _DB_PERSISTED_MARKER not in messages[0]
 
 
-
 def test_repair_assistant_merge_pops_persist_marker_on_content_rewrite():
     agent = _bare_agent()
     stamped = {"role": "assistant", "content": "first reply", _DB_PERSISTED_MARKER: True}
@@ -1538,7 +1473,6 @@ def test_repair_assistant_merge_pops_persist_marker_on_content_rewrite():
     assert repairs == 1
     assert messages[1]["content"] == "first reply\nsecond reply"
     assert _DB_PERSISTED_MARKER not in messages[1]
-
 
 
 def test_repair_prune_unanswered_tool_calls_pops_persist_marker():

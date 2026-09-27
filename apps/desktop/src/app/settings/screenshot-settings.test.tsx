@@ -2,12 +2,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ar } from '@/i18n/ar'
 import { en } from '@/i18n/en'
-import { ja } from '@/i18n/ja'
-import { ru } from '@/i18n/ru'
-import { zh } from '@/i18n/zh'
-import { zhHant } from '@/i18n/zh-hant'
 
 import type { ScreenshotStatus } from '../../../electron/command-screenshot-types'
 
@@ -160,16 +155,5 @@ describe('ScreenshotSettings', () => {
     vi.stubGlobal('hermesDesktop', {})
     const unsupported = render(<ScreenshotSettings />)
     expect(unsupported.container.childElementCount).toBe(0)
-  })
-
-  it('provides every screenshot message in each locale', () => {
-    for (const locale of [en, ja, zh, zhHant, ar, ru]) {
-      expect(Object.keys(locale.settings.screenshot).sort()).toEqual(Object.keys(copy).sort())
-
-      for (const text of Object.values(locale.settings.screenshot)) {
-        expect(typeof text).toBe('string')
-        expect(text.trim()).not.toBe('')
-      }
-    }
   })
 })

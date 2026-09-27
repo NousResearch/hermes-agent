@@ -2,12 +2,7 @@ import { resolveGatewayWsUrl } from '@hermes/shared'
 
 import type { OwnerScope } from '@/api/client'
 import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/hermes'
-import {
-  cutSentences,
-  directTtsConfig,
-  type DirectTtsConfig,
-  synthesizeSpeechClientDirect
-} from '@/lib/voice-client-direct'
+import { directTtsConfig, type DirectTtsConfig, synthesizeSpeechClientDirect } from '@/lib/voice-client-direct'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $voicePlayback,
@@ -16,7 +11,7 @@ import {
   type VoicePlaybackState
 } from '@/store/voice-playback'
 
-import { sanitizeTextForSpeech } from './speech-text'
+import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 
 // Free Edge TTS occasionally hands back audio that never fires `playing`/`ended`
 // nor `error` — leaving voice mode stuck "speaking" forever. Reject if playback
@@ -27,6 +22,8 @@ const PLAYBACK_STALL_MS = 15_000
 let currentAudio: HTMLAudioElement | null = null
 let currentStop: (() => void) | null = null
 let sequence = 0
+let claimTurnKey: string | null = null
+let inFlight: { done: Promise<boolean>; turnKey: string } | null = null
 
 // A shared, lazily-created AudioContext used only to nudge the browser's
 // autoplay state out of "suspended". A wake-word-started voice turn has no
@@ -77,10 +74,17 @@ function currentState(
  *  halves → the active (connection, profile). */
 export interface VoicePlaybackOptions extends OwnerScope {
   messageId?: string | null
+  /** Skip the client-direct/stream rungs and POST straight to /api/audio/speak.
+   *  For callers whose stream path (client-direct, else WS relay) already
+   *  answered `fallback` this reply; the relay may not have been probed. */
+  syncOnly?: boolean
   source: VoicePlaybackSource
+  /** Stable across a live-id rewrite. A second start of this turn must not stop the first. */
+  turnKey?: string
 }
 
 export function stopVoicePlayback() {
+  inFlight = null
   sequence += 1
   currentStop?.()
   currentStop = null
@@ -664,8 +668,36 @@ async function playSpeechDataUrl(
 }
 
 export async function playSpeechText(text: string, options: VoicePlaybackOptions): Promise<boolean> {
-  stopVoicePlayback()
+  if (options.turnKey && (claimTurnKey === options.turnKey || inFlight?.turnKey === options.turnKey)) {
+    return inFlight?.turnKey === options.turnKey ? inFlight.done : Promise.resolve(true)
+  }
 
+  const previousClaim = claimTurnKey
+  claimTurnKey = options.turnKey ?? null
+
+  try {
+    stopVoicePlayback()
+
+    const done = startSpeechText(text, options)
+
+    if (options.turnKey) {
+      inFlight = { done, turnKey: options.turnKey }
+      void done.finally(() => {
+        if (inFlight?.done === done) {
+          inFlight = null
+        }
+      })
+    }
+
+    return done
+  } finally {
+    if (claimTurnKey === (options.turnKey ?? null)) {
+      claimTurnKey = previousClaim
+    }
+  }
+}
+
+async function startSpeechText(text: string, options: VoicePlaybackOptions): Promise<boolean> {
   const speakableText = sanitizeTextForSpeech(text)
 
   if (!speakableText) {
@@ -680,7 +712,7 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
   try {
     // Ladder: client-direct synthesis (profile's own TTS, no gateway audio
     // hop) → streaming WS relay → POST data-URL fallback.
-    const direct = await directTtsConfig(options).catch(() => null)
+    const direct = options.syncOnly ? null : await directTtsConfig(options).catch(() => null)
 
     if (direct && isCurrent()) {
       const session = openClientDirectSpeechSession(direct, options)
@@ -704,7 +736,7 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
       return false
     }
 
-    const streamUrl = await resolveSpeakStreamUrl(options)
+    const streamUrl = options.syncOnly ? null : await resolveSpeakStreamUrl(options)
 
     if (streamUrl && isCurrent()) {
       const outcome = await playSpeechStream(streamUrl, speakableText, options)

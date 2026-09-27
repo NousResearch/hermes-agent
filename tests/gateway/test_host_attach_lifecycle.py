@@ -159,10 +159,45 @@ def test_a_standalone_owner_is_the_per_profile_topology_not_a_refusal(tmp_path, 
     monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
                         lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["tank"]})
 
-    with caplog.at_level("WARNING", logger="gateway.host_attach"):
+    with caplog.at_level("INFO", logger="gateway.host_attach"):
         assert host_attach.decide(tmp_path / "root" / "profiles" / "nous").outcome == host_attach.START
     assert any("migrate --multiplex" in r.getMessage() for r in caplog.records), "the converge hint is logged"
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None
+
+
+def test_replace_starts_beside_a_standalone_owner_it_does_not_belong_to(tmp_path, monkeypatch, owner_pid):
+    """Generated launchd/s6 units all run ``gateway run --replace``. When ANOTHER profile's standalone
+    gateway holds the host lock, ``--replace`` must not target it: that owner never serves us, the
+    ownership guard refuses to signal it, and the gateway exits, so every unit but the lock holder
+    respawn-storms. It must start beside the owner exactly as the non-replace path does."""
+    owner_home = tmp_path / "root" / "profiles" / "tank"
+    _publish(owner_pid, owner_home, ("tank",))
+    _answer_identify(monkeypatch, owner_pid, owner_home, ["tank"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path / "root" / "profiles" / "nous")
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["tank"]})
+    signalled: list[int] = []
+
+    async def _replace(pid, replace):
+        signalled.append(pid)
+        return False  # what the ownership guard answers for another profile's gateway
+
+    monkeypatch.setattr(gateway_run, "_start_gateway_replace_existing_instance", _replace)
+
+    assert host_attach.decide(tmp_path / "root" / "profiles" / "nous", replace=True).outcome == host_attach.START
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=True)) is None
+    assert signalled == [], "--replace must not target a standalone owner that does not serve this profile"
+
+
+def test_replace_still_targets_an_owner_whose_served_set_is_not_known_yet(tmp_path, monkeypatch, owner_pid):
+    """Boot race: the claim-time record carries no served set until the owner's channel answers.
+    ``--replace`` must keep its authority over that owner rather than fall into the attach path
+    and stand down; the per-target ownership guard still decides whether it may be signalled."""
+    owner_home = tmp_path / "root"
+    _publish(owner_pid, owner_home, ())  # record only: no identify answer, served set unknown
+    decision = host_attach.decide(owner_home / "profiles" / "other", replace=True)
+    assert decision.outcome == host_attach.REPLACE_HOST
+    assert decision.owner is not None and decision.owner.pid == owner_pid
 
 
 def test_replace_signals_the_owner_instead_of_standing_down(tmp_path, monkeypatch, owner_pid):
@@ -231,8 +266,7 @@ def test_served_profiles_ignores_the_retired_opt_out_but_honours_an_explicit_arg
     assert asked == [True, False]
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="POSIX ownership check; Windows has no st_uid to compare")
+@pytest.mark.platforms("posix")  # POSIX ownership check; Windows has no st_uid to compare
 def test_a_foreign_record_is_not_a_record(tmp_path, monkeypatch, owner_pid):
     """A record this OS user did not write must never decide our lifecycle (forgery/DoS)."""
     _publish(owner_pid, tmp_path / "root", ("default", "other"))

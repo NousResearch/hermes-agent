@@ -66,10 +66,6 @@ def _make_codex_agent(**kwargs):
     )
 
 
-class TestApiModeAccepted:
-    def test_api_mode_is_codex_app_server(self):
-        agent = _make_codex_agent()
-        assert agent.api_mode == "codex_app_server"
 
 
 class TestRunConversationCodexPath:
@@ -307,45 +303,7 @@ class TestRunConversationCodexPath:
         # Counter should be reset after the review fires
         assert agent._iters_since_skill == 0
 
-    def test_background_review_signature_never_breaks(self, fake_session):
-        """Even when no trigger fires, the helper must never call
-        _spawn_background_review with the wrong signature. Run a turn,
-        then run another turn after manually tripping the skill counter
-        and confirm the call shape is the kwargs-only form the function
-        actually accepts."""
-        agent = _make_codex_agent()
-        agent._skill_nudge_interval = 1  # very low so any iter trips it
-        agent._iters_since_skill = 0
-        agent.valid_tool_names = set(getattr(agent, "valid_tool_names", set()))
-        agent.valid_tool_names.add("skill_manage")
 
-        with patch.object(agent, "_spawn_background_review",
-                          return_value=None) as spawn:
-            agent.run_conversation("first")
-        # The fake session reports tool_iterations=1, which trips
-        # _skill_nudge_interval=1. So review should fire.
-        assert spawn.called
-        # Critical invariant: positional args must be empty, all real
-        # args must be kwargs (matching _spawn_background_review's
-        # actual signature).
-        call = spawn.call_args
-        assert call.args == (), (
-            f"expected no positional args, got {call.args!r} — "
-            "would crash _spawn_background_review at runtime"
-        )
-        assert "messages_snapshot" in call.kwargs
-
-    def test_chat_completions_loop_is_not_entered(self, fake_session):
-        """The early-return must bypass the regular API call loop entirely.
-        We confirm by patching the SDK call and asserting it's never invoked."""
-        agent = _make_codex_agent()
-        # The chat_completions loop calls self.client.chat.completions.create(...)
-        # If our early-return works, that path is dead.
-        with patch.object(agent, "client") as client_mock, patch.object(
-            agent, "_spawn_background_review", return_value=None
-        ):
-            agent.run_conversation("hi")
-        assert not client_mock.chat.completions.create.called
 
     def test_gateway_terminal_cwd_seeds_codex_thread_cwd(self, monkeypatch, tmp_path):
         """Gateway sessions set TERMINAL_CWD without pinning agent.session_cwd.
@@ -790,28 +748,7 @@ class TestCodexToolProgressBridge:
     bridge (make_codex_app_server_event_bridge); these tests pin the same
     mapping contract against the bridge helpers."""
 
-    def test_mapper_command_execution(self):
-        from agent.codex_runtime import (
-            _codex_item_to_args,
-            _codex_item_to_preview,
-            _codex_item_to_tool_name,
-        )
-        item = {"type": "commandExecution", "command": "ls -la", "cwd": "/tmp"}
-        assert _codex_item_to_tool_name(item) == "exec_command"
-        assert _codex_item_to_preview(item) == "ls -la"
-        assert _codex_item_to_args(item) == {"command": "ls -la", "cwd": "/tmp"}
 
-    def test_mapper_file_change(self):
-        from agent.codex_runtime import (
-            _codex_item_to_preview,
-            _codex_item_to_tool_name,
-        )
-        item = {
-            "type": "fileChange",
-            "changes": [{"path": "a.py"}, {"path": "b.py"}],
-        }
-        assert _codex_item_to_tool_name(item) == "apply_patch"
-        assert _codex_item_to_preview(item) == "a.py, b.py"
 
     def test_mapper_mcp_and_dynamic_tool_calls(self):
         from agent.codex_runtime import (

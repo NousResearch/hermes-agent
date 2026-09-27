@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 import time
-import yaml
+import hermes_yaml as yaml
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -146,7 +146,7 @@ def mount_spa(application: FastAPI):
         and /api/ws (ticket vs token).
         """
         try:
-            html = (WEB_DIST / "index.html").read_text(encoding="utf-8")
+            html = (WEB_DIST / "index.html").read_text(encoding="utf-8-sig")
         except OSError:
             # Partial build / wiped dist / permissions: same JSON 404 as a fully-missing dist.
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
@@ -191,7 +191,7 @@ def mount_spa(application: FastAPI):
         if not css_path.is_file() or not css_path.resolve().is_relative_to(WEB_DIST.resolve()):
             return JSONResponse({"error": "not found"}, status_code=404)
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
-        css = css_path.read_text(encoding="utf-8")
+        css = css_path.read_text(encoding="utf-8-sig")
         if prefix:
             for asset_dir in ("/fonts/", "/fonts-terminal/", "/ds-assets/", "/assets/"):
                 for quote in ("", '"', "'"):
@@ -423,7 +423,7 @@ def _discover_user_themes() -> list:
     result = []
     for f in sorted(themes_dir.glob("*.yaml")):
         try:
-            data = yaml.safe_load(f.read_text(encoding="utf-8"))
+            data = yaml.safe_load(f.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         normalised = _normalise_theme_definition(data)
@@ -564,7 +564,7 @@ def _discover_dashboard_plugins() -> list:
             try:
                 if not child.is_dir() or not manifest_file.exists():
                     continue
-                data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                data = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
                 name = data.get("name", child.name)
                 if name in seen_names:
                     continue
@@ -584,16 +584,15 @@ def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _PLUGINS_HUB_CACHE_TTL_SECONDS = 5.0
-_plugins_hub_cache: Optional[Dict[str, Any]] = None
-_plugins_hub_cache_expires_at = 0.0
+_plugins_hub_cache: Dict[str, Dict[str, Any]] = {}
+_plugins_hub_cache_expires_at: Dict[str, float] = {}
 _plugins_hub_cache_lock = threading.Lock()
 
 
 def _invalidate_plugins_hub_cache() -> None:
-    global _plugins_hub_cache, _plugins_hub_cache_expires_at
     with _plugins_hub_cache_lock:
-        _plugins_hub_cache = None
-        _plugins_hub_cache_expires_at = 0.0
+        _plugins_hub_cache.clear()
+        _plugins_hub_cache_expires_at.clear()
 
 
 _plugins_hub_probe_inflight: set = set()
@@ -668,21 +667,26 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     from hermes_cli.web_server_memory import _discover_memory_provider_statuses, _normalize_memory_provider_name
     from hermes_cli.web_server import _get_dashboard_plugins
     from hermes_cli.config import get_hermes_home, load_config
-    global _plugins_hub_cache, _plugins_hub_cache_expires_at
+    from hermes_constants import hermes_home_key
+
+    cache_key = hermes_home_key(get_hermes_home())
     now = time.monotonic()
     if not force_refresh:
         with _plugins_hub_cache_lock:
-            if _plugins_hub_cache is not None and now < _plugins_hub_cache_expires_at:
-                return _plugins_hub_cache
+            cached = _plugins_hub_cache.get(cache_key)
+            if cached is not None and now < _plugins_hub_cache_expires_at.get(cache_key, 0.0):
+                return cached
 
     started_at = time.monotonic()
     from hermes_cli.plugins_cmd import (
+        _category_active_names,
         _discover_all_plugins,
         _get_current_context_engine,
         _get_current_memory_provider,
         _discover_context_engines,
         _get_disabled_set,
         _get_enabled_set,
+        _plugin_status,
         _read_manifest as _read_plugin_manifest_at,
     )
     from hermes_cli.plugins_cmd_catalog import removed_annotation
@@ -699,12 +703,16 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     # One kill-list resolution for the whole rebuild: resolving per row costs a live-catalog
     # fetch per installed plugin when the catalog host is slow or unreachable.
     removed_entries = resolved_removed_entries()
+    active = _category_active_names()
 
     for name, version, description, source, dir_str, key in _discover_all_plugins():
-        # Both the path-derived key (nested category plugins) and the bare manifest name
-        # count for enabled/disabled state, matching the runtime loader's back-compat lookup.
-        aliases = {name, key} if key else {name}
-        runtime_status = _plugin_runtime_status(aliases, enabled_set, disabled_set)
+        # Same verdict as `hermes plugins list` / the TUI hub: name+key aliases for the lists, bundled
+        # backends/platforms/providers and the live memory provider count as enabled without a list
+        # entry (#73131, #82898).
+        runtime_status = _plugin_status(
+            name, enabled_set, disabled_set, key=key, source=source, dir_path=dir_str, active=active)
+        if runtime_status == "not enabled":
+            runtime_status = "inactive"
 
         dir_path = Path(dir_str)
         dm = dash_by_name.get(name)
@@ -759,8 +767,8 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "plugins/hub rebuilt in %.3fs (plugins=%d memory_options=%d)", duration, len(rows), len(memory_providers)
         )
     with _plugins_hub_cache_lock:
-        _plugins_hub_cache = payload
-        _plugins_hub_cache_expires_at = time.monotonic() + _PLUGINS_HUB_CACHE_TTL_SECONDS
+        _plugins_hub_cache[cache_key] = payload
+        _plugins_hub_cache_expires_at[cache_key] = time.monotonic() + _PLUGINS_HUB_CACHE_TTL_SECONDS
     return payload
 
 

@@ -58,6 +58,31 @@ def emit_terminal_post_tool_call(
         pass
 
 
+def apply_transform_tool_result(
+    agent,
+    *,
+    function_name: str,
+    function_args: dict,
+    result: Any,
+    effective_task_id: str,
+    tool_call_id: Optional[str],
+    duration_ms: int = 0,
+) -> Any:
+    """Apply ``transform_tool_result`` to an inline-dispatched tool's result.
+
+    Registry tools get this inside ``handle_function_call``; inline executors never
+    reach it, so the agent paths call the same helper (after the terminal
+    ``post_tool_call``) to keep the hook's "every tool" contract. Fail-open."""
+    try:
+        from model_tools import _CallIds, _apply_transform_tool_result_hook
+        return _apply_transform_tool_result_hook(
+            function_name, function_args, result, duration_ms,
+            _CallIds(**tool_hook_ids(agent, effective_task_id, tool_call_id)),
+        )
+    except Exception:
+        return result
+
+
 @dataclass
 class InlineToolContext:
     """Per-call state an inline executor may need beyond its arguments."""
@@ -186,6 +211,17 @@ def _scope_in_connected_mcp_servers(agent, result: Any) -> None:
         agent.enabled_toolsets = [*enabled, *added]
 
 
+def _manage_catalog(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The card callback lives on the agent; only a desktop chat draws catalog rows.
+    from tools.connectors.catalog_tool import manage_catalog
+
+    return manage_catalog(
+        args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
+        connection_callback=getattr(agent, "connection_callback", None),
+        card_surface=getattr(agent, "platform", None) == "desktop",
+    )
+
+
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     # Replay shim for conversations whose cached prompt still names setup_mcp.
     # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
@@ -238,6 +274,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
     ),
     "manage_connections": _manage_connections,
+    "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
 }

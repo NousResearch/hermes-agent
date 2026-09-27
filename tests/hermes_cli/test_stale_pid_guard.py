@@ -1,19 +1,16 @@
 # -*- coding: utf-8 -*-
 """Regression tests for the fail-closed PID-ownership guard.
 
-Refs #90471 / #89614.  The three patched Windows ``taskkill`` boundaries:
+Refs #90471 / #89614.  The shared Windows ``taskkill`` boundaries:
 
 - ``hermes_cli/_subprocess_compat.pid_is_hermes`` / ``kill_process_tree``
 - ``hermes_cli/dashboard_procs._kill_stale_dashboard_processes`` (win32)
-- ``hermes_cli/update_cmd._stop_process_trees``
 
 Acceptance from #90471:
 1. missing / unreadable / non-matching identity fails closed -> no taskkill
 2. a recycled or foreign PID control process remains untouched
 3. probe failure or timeout is never converted into permission to kill
 """
-import subprocess
-import sys
 from pathlib import Path
 from unittest import mock
 
@@ -21,7 +18,6 @@ import pytest
 
 from hermes_cli import _subprocess_compat
 from hermes_cli import dashboard_procs
-from hermes_cli import update_cmd
 
 
 def _probe_stdout(value: str) -> mock.Mock:
@@ -96,19 +92,13 @@ class TestPidIsHermes:
         ):
             assert _subprocess_compat.pid_is_hermes(1234) is False
 
-    def test_probe_timeout_fails_closed(self):
-        with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
-            _subprocess_compat, "_process_start_time", return_value=None
-        ):
-            assert _subprocess_compat.pid_is_hermes(1234) is False
-
     def test_probe_oserror_fails_closed(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
             _subprocess_compat, "_process_start_time", side_effect=OSError("broken pipe")
         ):
             assert _subprocess_compat.pid_is_hermes(1234) is False
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="real probe is windows-only")
+    @pytest.mark.platforms("windows")  # real probe is windows-only
     def test_missing_pid_real_probe_fails_closed(self):
         # A PID that cannot exist must never be judged Hermes-owned.
         assert _subprocess_compat.pid_is_hermes(2**24) is False
@@ -140,40 +130,8 @@ class TestKillProcessTree:
             assert str(4321) in argv
 
 
-class TestStopProcessTrees:
-    """update_cmd._stop_process_trees guard behaviour."""
-
-    def test_foreign_pids_only_probed(self):
-        with mock.patch(
-            "gateway.status.get_process_start_time", return_value=123
-        ), mock.patch(
-            "hermes_cli._subprocess_compat.pid_is_hermes", return_value=False
-        ), mock.patch.object(update_cmd.subprocess, "run") as run:
-            update_cmd._stop_process_trees([1111, 2222])
-        run.assert_not_called()
-
-    def test_hermes_pid_probed_then_taskkilled(self):
-        with mock.patch(
-            "gateway.status.get_process_start_time", return_value=123
-        ), mock.patch(
-            "hermes_cli._subprocess_compat.pid_is_hermes", return_value=True
-        ), mock.patch.object(
-            update_cmd.subprocess, "run", return_value=mock.Mock(returncode=0)
-        ) as run:
-            update_cmd._stop_process_trees([1111])
-        assert len(run.call_args_list) == 1
-        assert run.call_args.args[0][0] == "taskkill"
-
-    def test_probe_timeout_skips_taskkill(self):
-        with mock.patch(
-            "gateway.status.get_process_start_time", return_value=123
-        ), mock.patch(
-            "hermes_cli._subprocess_compat.pid_is_hermes", return_value=False
-        ), mock.patch.object(update_cmd.subprocess, "run") as run:
-            update_cmd._stop_process_trees([1111, 2222])  # must not raise
-        run.assert_not_called()
-
-
+# taskkill dispatch must execute on Windows, not under a fake sys.platform.
+@pytest.mark.platforms("windows")
 class TestKillStaleDashboardProcesses:
     """dashboard_procs win32 kill branch guard behaviour."""
 
@@ -183,9 +141,7 @@ class TestKillStaleDashboardProcesses:
         return mock.patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=list(pids))
 
     def test_foreign_pid_reported_not_killed(self):
-        with self._patch_find(), mock.patch.object(
-            dashboard_procs.sys, "platform", "win32"
-        ), mock.patch(
+        with self._patch_find(), mock.patch(
             "gateway.status.get_process_start_time", return_value=123
         ), mock.patch(
             "hermes_cli._subprocess_compat.pid_is_hermes", return_value=False
@@ -198,9 +154,7 @@ class TestKillStaleDashboardProcesses:
         run.assert_not_called()
 
     def test_hermes_pid_killed(self):
-        with self._patch_find(), mock.patch.object(
-            dashboard_procs.sys, "platform", "win32"
-        ), mock.patch(
+        with self._patch_find(), mock.patch(
             "gateway.status.get_process_start_time", return_value=123
         ), mock.patch(
             "hermes_cli._subprocess_compat.pid_is_hermes", return_value=True
@@ -215,36 +169,39 @@ class TestKillStaleDashboardProcesses:
         assert result["killed"] == [12345]
         assert result["failed"] == []
 
-    def test_stop_only_targets_the_invoking_hermes_home(self, monkeypatch):
-        """An argv match from another profile is never a ``--stop`` target."""
-        own_home = "/tmp/hermes-own"
-        foreign_home = "/tmp/hermes-foreign"
-        monkeypatch.setenv("HERMES_HOME", own_home)
 
-        with mock.patch.object(
-            dashboard_procs, "_scan_dashboard_processes",
-            return_value=[(12345, "hermes serve"), (12346, "hermes serve"), (12347, "hermes serve")],
-        ), mock.patch.object(dashboard_procs, "_caller_ancestor_pids", return_value=set()), mock.patch.object(
-            dashboard_procs, "_hermes_home_for_pid",
-            side_effect=lambda pid: {
-                12345: own_home,
-                12346: foreign_home,
-                12347: None,
-            }[pid],
-        ), mock.patch.object(
-            dashboard_procs, "_kill_pids_posix"
-        ) as kill:
-            result = dashboard_procs._kill_stale_dashboard_processes(scope_home=own_home)
+# The POSIX kill path (the Windows class above is host-gated on taskkill).
+@pytest.mark.platforms("posix")
+def test_stop_only_targets_the_invoking_hermes_home(monkeypatch):
+    """An argv match from another profile is never a ``--stop`` target."""
+    own_home = "/tmp/hermes-own"
+    foreign_home = "/tmp/hermes-foreign"
+    monkeypatch.setenv("HERMES_HOME", own_home)
 
-        kill.assert_called_once()
-        assert kill.call_args.args[0] == [12345]
-        assert result["matched"] == [12345]
+    with mock.patch.object(
+        dashboard_procs, "_scan_dashboard_processes",
+        return_value=[(12345, "hermes serve"), (12346, "hermes serve"), (12347, "hermes serve")],
+    ), mock.patch.object(dashboard_procs, "_caller_ancestor_pids", return_value=set()), mock.patch.object(
+        dashboard_procs, "_hermes_home_for_pid",
+        side_effect=lambda pid: {
+            12345: own_home,
+            12346: foreign_home,
+            12347: None,
+        }[pid],
+    ), mock.patch.object(
+        dashboard_procs, "_kill_pids_posix"
+    ) as kill:
+        result = dashboard_procs._kill_stale_dashboard_processes(scope_home=own_home)
+
+    kill.assert_called_once()
+    assert kill.call_args.args[0] == [12345]
+    assert result["matched"] == [12345]
 
 
 class TestHermesHomeForPid:
     """Tri-state owner resolution: a readable environment always names a home."""
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX default home is $HOME/.hermes")
+    @pytest.mark.platforms("posix")  # POSIX default home is $HOME/.hermes
     def test_readable_env_without_var_resolves_to_that_process_default_home(self, monkeypatch, tmp_path):
         """The common install shape exports no HERMES_HOME: the backend lives in its user's
         platform default home, and a default-home ``--stop`` must still find it (#113978)."""

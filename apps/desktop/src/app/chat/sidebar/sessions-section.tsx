@@ -126,6 +126,8 @@ interface SidebarSessionsSectionProps {
   headerAction?: React.ReactNode
   footer?: React.ReactNode
   groups?: SidebarSessionGroup[]
+  // Owner groups inside a messaging platform: the section's footer pages them.
+  embeddedGroups?: boolean
   tree?: SidebarWorkspaceTree[]
   // Project overview: when present, render a drill-in list of project rows
   // instead of sessions. Clicking a row enters that project (onEnterProject),
@@ -218,6 +220,7 @@ export function SidebarSessionsSection({
   headerAction,
   footer,
   groups,
+  embeddedGroups = false,
   projectOverview,
   projectOverviewPreviews,
   projectOverviewHidden,
@@ -566,6 +569,7 @@ export function SidebarSessionsSection({
   } else if (groups?.length && groups.every(group => group.mode === 'profile' && group.profile)) {
     inner = (
       <GatewayProfileGroups
+        embedded={embeddedGroups}
         groups={groups}
         onNewSessionSplit={onNewSessionSplit}
         renderRows={renderRows}

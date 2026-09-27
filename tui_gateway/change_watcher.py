@@ -20,7 +20,9 @@ def resolve_skin() -> dict:
             "light_colors": skin.light_colors, "dark_colors": skin.dark_colors,
             "branding": skin.branding, "banner_logo": skin.banner_logo,
             "banner_hero": skin.banner_hero, "tool_prefix": skin.tool_prefix,
-            "help_header": (skin.branding or {}).get("help_header", "")}
+            "help_header": (skin.branding or {}).get("help_header", ""),
+            # Raw user CSS for the desktop GUI's <style> tag (32 KiB cap in the skin engine).
+            "customCSS": skin.custom_css}
     except Exception:
         return {}
 
@@ -129,6 +131,17 @@ def _sessions_sig():
         for name in ("state.db", "state.db-wal"))
 
 
+def _projects_sig():
+    """Newest mtime across projects.db (+ WAL) for the watcher home and every served
+    sibling profile. The CLI and other windows write projects.db directly — nothing in
+    their process touches this gateway's transports — so the file is the only shared
+    signal, exactly like state.db (#53046, #56757)."""
+    return _newest_mtime_ns(
+        root / name
+        for root in (_watcher_home(), *_served_profile_homes)
+        for name in ("projects.db", "projects.db-wal"))
+
+
 def _pairing_sig():
     """Newest mtime across every profile's pairing ledgers (legacy ``pairing/`` and
     ``platforms/pairing/``): the gateway process writes pending codes, so the files are the only
@@ -198,7 +211,11 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
     "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), lambda: {}),
     "sessions.changed": (0.5, _sessions_sig, lambda: {}),
+    # Projects created/switched by CLI or agent tooling write projects.db without any
+    # state.db movement, so sessions.changed never fires and the desktop Projects
+    # sidebar goes stale until a manual refresh (#56757).
     "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), lambda: {}),
+    "projects.changed": (2.0, _projects_sig, lambda: {}),
     "pairing.changed": (2.0, _pairing_sig, lambda: {}),
     # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.
     "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, lambda: {})}

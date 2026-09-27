@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence, coalesce_tool_call_id
 from agent.turn_failure_copy import site_copy, stamp_failure
+from hermes_constants import FINISH_REASON_LENGTH
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -177,8 +178,14 @@ def validate_tool_calls(
             )
             agent._invalid_json_retries = 0
             agent._cleanup_task_resources(effective_task_id)
+            # Blame the output cap only when the model reported one; otherwise the args
+            # were cut by a stream break or a router rewriting finish_reason (#91717).
+            _copy = (
+                site_copy("truncated") if finish_reason == FINISH_REASON_LENGTH
+                else site_copy("truncated_unreported")
+            )
             return _verdict("return", _partial_exit(
-                agent, messages, conversation_history, api_call_count, site_copy("truncated"),
+                agent, messages, conversation_history, api_call_count, _copy,
             ))
 
         agent._invalid_json_retries += 1

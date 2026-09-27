@@ -726,7 +726,11 @@ export function desktopSlashCommandSequenceSegments(input: string): DesktopSlash
     const canonical = canonicalDesktopSlashCommand(token.token)
     const spec = resolveDesktopCommand(token.token)
 
-    return spec ? { end: token.end, local: SPEC_BY_NAME.has(canonical), spec } : null
+    // Registry-offered placeholders are catalog-owned (see resolveDesktopCommand),
+    // so only Desktop-curated specs count as local grammar here.
+    const local = SPEC_BY_NAME.has(canonical) && !REGISTRY_OFFERED_NAMES.has(canonical)
+
+    return spec ? { end: token.end, local, spec } : null
   }
 
   const nextKnownCommand = (from: number): number => {

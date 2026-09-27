@@ -20,10 +20,14 @@ from agent.transports.chat_completions import (
     "model,expect_budget_zero,expect_level",
     [
         ("gemini-2.5-flash", True, None),
-        # Gemini 3 cannot disable thinking: Flash takes MINIMAL, others LOW. (#123512)
+        # Gemini 3 cannot disable thinking: MINIMAL where the API documents it,
+        # LOW otherwise (3.7/3.8 Flash and Pro take no MINIMAL). (#123512)
         ("gemini-3.6-flash", False, "minimal"),
         ("gemini-3.5-flash-lite", False, "minimal"),
         ("gemini-3.1-pro", False, "low"),
+        ("gemini-3.7-flash", False, "low"),
+        ("gemini-3.8-flash", False, "low"),
+        ("gemini-3.1-flash-lite-image", False, "minimal"),
         ("gemini-flash-latest", True, None),
         ("gemini-1.5-flash", False, None),  # pre-2.5: thinkingBudget undocumented
     ],

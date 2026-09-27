@@ -282,9 +282,31 @@ const ROUTE_OSES = /** @type {Record<string, Os[]>} */ ({
 });
 
 /**
- * Narrow the matrices to a route: a preset keeps whole OS matrices; anything else selects
- * legs by name, so a leg name, a fragment of one, or a pasted job name ("<leg> / e2e") runs
- * just those legs. A route that selects nothing throws rather than yielding a green empty run.
+ * The pull_request subset: the script install updated by `hermes update`, on every OS,
+ * from the two starts that catch a regression before it ships -- the newest release
+ * updating to the PR (the jump every user makes next) and the PR updating to a synthetic
+ * NEXT (the updater the PR itself ships). One leg per {os, start} worth its runner:
+ * linux both starts, windows the PR's own updater, macos the release jump.
+ * @type {{os: Os, to: UpdateTarget}[]}
+ */
+const PR_SUBSET = [
+  { os: 'linux', to: 'HEAD' },
+  { os: 'linux', to: 'NEXT' },
+  { os: 'windows', to: 'NEXT' },
+  { os: 'macos', to: 'HEAD' },
+];
+
+/** @param {Os} os @param {MatrixEntry} entry */
+function inPrSubset(os, entry) {
+  return entry.install_method === 'installer-script' && entry.update_method === 'hermes-update' &&
+    PR_SUBSET.some((leg) => leg.os === os && leg.to === entry.update_ref);
+}
+
+/**
+ * Narrow the matrices to a route: a preset keeps whole OS matrices; `pr` keeps the
+ * PR_SUBSET legs; anything else selects legs by name, so a leg name, a fragment of one, or
+ * a pasted job name ("<leg> / e2e") runs just those legs. A route that selects nothing
+ * throws rather than yielding a green empty run.
  *
  * @param {Record<Os, {include: MatrixEntry[]}>} matrices
  * @param {string} route
@@ -293,9 +315,11 @@ const ROUTE_OSES = /** @type {Record<string, Os[]>} */ ({
 export function selectRoute(matrices, route) {
   const oses = ROUTE_OSES[route];
   /** @type {(os: Os, entry: MatrixEntry) => boolean} */
-  const keep = oses
-    ? (os) => oses.includes(os)
-    : (_os, entry) => entry.name.includes(route) || route.startsWith(`${entry.name} /`);
+  const keep = route === 'pr'
+    ? inPrSubset
+    : oses
+      ? (os) => oses.includes(os)
+      : (_os, entry) => entry.name.includes(route) || route.startsWith(`${entry.name} /`);
   /** @type {Record<Os, {include: MatrixEntry[]}>} */
   const picked = { linux: { include: [] }, windows: { include: [] }, macos: { include: [] } };
   for (const os of /** @type {Os[]} */ (Object.keys(picked))) {

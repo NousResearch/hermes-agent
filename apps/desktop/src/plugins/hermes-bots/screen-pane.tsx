@@ -24,6 +24,7 @@ import {
   type DisplayStatus,
   isDisplayUnavailable,
   isEventForBotScreen,
+  isManagedBackend,
   leaseHeldBy,
   resolveScreenWsUrl,
   retainBotScreen,
@@ -364,7 +365,13 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   )
 
   if (state?.unavailable) {
-    return <EmptyState description={t.screen.portalUnavailable} title={t.screen.unavailableTitle} />
+    // A managed (Hermes Cloud) backend cannot be self-updated: its release is the platform's
+    // choice, so say Screen has not reached it yet instead of an update instruction (#120852).
+    const description = isManagedBackend(bot)
+      ? t.screen.portalUnavailableManaged
+      : t.screen.portalUnavailable
+
+    return <EmptyState description={description} title={t.screen.unavailableTitle} />
   }
 
   if (status && !status.supported) {

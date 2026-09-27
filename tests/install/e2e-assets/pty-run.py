@@ -24,41 +24,69 @@ Exits with the child's exit code (124 if the timeout killed it).
 from __future__ import annotations
 
 import argparse
-import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 
 
 def _run_under_pty(argv: list[str], out_path: str, cwd: str | None, cols: int, rows: int,
                    timeout: float | None) -> int | None:
-    """Return the child's exit code, or None when pywinpty is unavailable."""
+    """Return the child's exit code, or None when pywinpty is unavailable.
+
+    ``PtyProcess.read`` blocks until the child writes, so the deadline cannot be
+    checked between reads: a child that sits idle (an interactive prompt waiting
+    for input) would never return control and the step would hang until the
+    job's own timeout cancelled it with no diagnosis. A daemon thread drains the
+    pty into a queue instead, and this thread waits on the queue with the
+    deadline, so ``--timeout`` holds no matter what the child does.
+    """
     try:
         from winpty import PtyProcess
     except ImportError:
         return None
 
     proc = PtyProcess.spawn(argv, cwd=cwd, dimensions=(rows, cols))
+    chunks: queue.Queue[str | None] = queue.Queue()
+
+    def _drain() -> None:
+        try:
+            while True:
+                chunk = proc.read(4096)
+                if not chunk and not proc.isalive():
+                    break
+                if chunk:
+                    chunks.put(chunk)
+        except EOFError:
+            pass
+        finally:
+            chunks.put(None)
+
+    threading.Thread(target=_drain, name="pty-run-drain", daemon=True).start()
     deadline = None if timeout is None else time.monotonic() + timeout
     timed_out = False
     with open(out_path, "w", encoding="utf-8", errors="replace") as log:
         while True:
-            if deadline is not None and time.monotonic() > deadline:
-                timed_out = True
-                proc.terminate(force=True)
-                break
+            wait = None if deadline is None else max(0.0, deadline - time.monotonic())
             try:
-                chunk = proc.read(4096)
-            except EOFError:
+                chunk = chunks.get(timeout=wait)
+            except queue.Empty:
+                timed_out = True
                 break
-            if not chunk:
+            if chunk is None:
                 break
             log.write(chunk)
             log.flush()
             sys.stdout.write(chunk)
             sys.stdout.flush()
-            if not proc.isalive():
-                break
+        if timed_out:
+            note = (f"\npty-run: TIMEOUT after {timeout:g}s: the child was still running and had "
+                    "stopped writing (waiting for input?); killing it.\n")
+            log.write(note)
+            sys.stdout.write(note)
+            sys.stdout.flush()
+            proc.terminate(force=True)
     proc.wait()
     if timed_out:
         return 124

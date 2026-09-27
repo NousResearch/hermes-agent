@@ -9,6 +9,7 @@ arbitrary failure text.
 """
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -50,6 +51,28 @@ def test_hold_seconds_only_from_rate_limited_auth_error_in_cause_chain():
     assert qh.hold_seconds_from_failure(relogin) is None
     structured = AuthError("quota", code=CODEX_RATE_LIMITED_CODE, retry_after=900)
     assert qh.hold_seconds_from_failure(structured) == 900.0
+
+
+def test_mishima_busy_holds_only_pre_admission_with_an_explicit_delay():
+    class RouterError(Exception):
+        status_code = 429
+        body = {"error": {"code": "mishima_busy", "retry_after": 76}}
+
+    busy = RouterError("Mishima cannot start this request")
+    assert qh.hold_seconds_from_failure(busy, SimpleNamespace(session_api_calls=0)) == 76
+    assert qh.hold_seconds_from_failure(busy, SimpleNamespace(session_api_calls=1)) is None
+
+    wrapped = RuntimeError(
+        "HTTP 429: Mishima cannot start this request within its 240 s budget "
+        "(estimated 315 s: queue 223 s + prefill 92 s). Retry after 76 s."
+    )
+    assert qh.hold_seconds_from_failure(wrapped, SimpleNamespace(session_api_calls=0)) == 76
+    assert qh.hold_seconds_from_failure(
+        RuntimeError("HTTP 429: retry after 76 s"), SimpleNamespace(session_api_calls=0)
+    ) is None
+    too_long = RouterError("Mishima cannot fit this prompt")
+    too_long.body = {"error": {"code": "mishima_too_long", "retry_after": 300}}
+    assert qh.hold_seconds_from_failure(too_long, SimpleNamespace(session_api_calls=0)) is None
 
 
 def test_weekly_cron_retries_when_quota_recovers_before_next_occurrence(

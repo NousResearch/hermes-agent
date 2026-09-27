@@ -83,7 +83,7 @@ def test_credential_resolution_fallback_reaches_agent_notice_not_agent_kwargs():
          patch("gateway.run._load_gateway_config",
                return_value={"fallback_providers": [{"provider": "anthropic", "model": "claude-sonnet-5"}]}), \
          patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"), \
-         patch("gateway.run._get_channel_override", return_value=None):
+         patch("gateway.channel_matching.get_channel_override", return_value=None):
         result = TurnRunner(runner, ctx).run_sync()
 
     assert result["final_response"] == "ok"

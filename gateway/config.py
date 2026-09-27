@@ -427,6 +427,10 @@ class PlatformConfig:
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
 
+    def __post_init__(self) -> None:
+        from gateway.channel_matching import prepare_name_patterns
+        prepare_name_patterns(self.channel_overrides)
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "enabled": self.enabled, "extra": self.extra, "reply_to_mode": self.reply_to_mode,

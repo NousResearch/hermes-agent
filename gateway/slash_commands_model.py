@@ -352,14 +352,16 @@ class GatewayModelCommandsMixin:
 
     def _channel_override_for(self, source):
         """This chat's ``channel_overrides`` entry (model/provider), or None."""
-        from gateway.run import _get_channel_override
+        from gateway.channel_matching import get_channel_override
+        from gateway.channel_names import name_resolver_for_source
         cfg = getattr(self, "config", None)
         if not cfg or source is None:
             return None
-        return _get_channel_override(
+        return get_channel_override(
             cfg, source.platform, str(source.chat_id) if source.chat_id else "",
             thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
             parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            name_resolver=name_resolver_for_source(source, self),
         )
 
     def _model_switch_lock(self) -> asyncio.Lock:

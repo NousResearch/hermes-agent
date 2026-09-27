@@ -803,7 +803,7 @@ channel. To give one person a privileged profile and everyone else a restricted 
 the privileged sender route first, add a platform-wide catch-all route to the restricted
 profile after it, and keep the platform's own ingress allowlist in place.
 
-A route discriminator may be a guild/channel **name** or a **regex pattern**
+The `guild_id`, `chat_id`, and `thread_id` discriminators may be a **name** or a **regex pattern**
 instead of an opaque id — handy when ids change or a naming convention applies
 to many channels:
 
@@ -820,12 +820,29 @@ to many channels:
       profile: acme
 ```
 
-Matching tries the exact id first and only then resolves the inbound chat/guild
-name from the cached channel directory (`~/.hermes/channel_directory.json`,
-rebuilt every 5 minutes), so id-based routes read nothing extra. A value
-containing regex metacharacters (`^ $ + ? [ ] ( ) { } | \`) is a pattern
-anchored at the **start** of the resolved name; a channel the bot has not
-discovered yet cannot match by name.
+The existing specificity weights still decide first: sender 16, thread 8,
+channel 4, guild/workspace 2, added for all declared discriminators. Within
+each specificity group, the matcher tries all-ID rules first, then rules that
+also need exact names, then rules that need regex. Configuration order breaks
+remaining ties. All discriminators must hold; a guild-ID rule does not override
+a more specific thread-name rule. `user_id` and `bot_profile` retain their
+existing identity semantics and never match names or patterns.
+
+Names are case-sensitive and come from the receiving bot's platform metadata
+or in-memory channel directory, including its profile's directory aliases.
+The five-minute refresh covers every served bot. Routing to another profile
+does not change the directory used for the message. A missing/expired name
+does not match, and normal route/default handling continues. An explicitly
+matched route to an unserved profile is still rejected.
+
+After exact matching, values containing `^ $ + ? [ ] ( ) { } | \` are regex
+candidates, anchored at the **start** of the resolved name. A dot or star alone
+does not opt in; use `^work-.*`. Signed numeric IDs remain IDs. Invalid regex
+warns when prepared and disables only that pattern match. This works across
+platforms where the requested name exists; platforms without named threads
+or workspaces retain ID matching for those fields. Use a guild/workspace ID
+alongside a channel name when same-named channels should route differently
+in different servers. Routing does not replace the receiving bot's access checks.
 
 A route applies only to messages received by the **default profile's bot**
 unless it names another bot with `bot_profile: <profile>`. Telegram DMs use the

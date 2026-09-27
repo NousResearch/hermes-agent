@@ -6,10 +6,11 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
-from pm.environment import PythonEnvironment, _base_environment
+from pm.environment import PythonEnvironment, _base_environment, _registries_in_lock_text, lockfile_registries
 from pm.package import InstallError
 
 
@@ -88,47 +89,76 @@ def test_uv_timeout_names_the_mirror_knobs(tmp_path, monkeypatch):
     assert "timed out after 7s" in str(info.value)
 
 
+def _recording_uv(directory: Path, record: Path) -> Path:
+    """uv stand-in that appends one JSON row per invocation.
+
+    A ``#!`` script is not a Win32 image (WinError 193). Windows gets a
+    ``.bat`` shim, which CreateProcess hands to cmd; POSIX keeps the shebang.
+    """
+    body = "\n".join([
+        "import json, os, sys",
+        "from pathlib import Path",
+        "row = {",
+        "    'args': sys.argv[1:],",
+        "    'UV_INDEX_URL': os.environ.get('UV_INDEX_URL'),",
+        "    'UV_DEFAULT_INDEX': os.environ.get('UV_DEFAULT_INDEX'),",
+        "    'UV_HTTP_TIMEOUT': os.environ.get('UV_HTTP_TIMEOUT'),",
+        "    'UV_INDEX': os.environ.get('UV_INDEX'),",
+        "}",
+        f"Path({str(record)!r}).open('a', encoding='utf-8').write(json.dumps(row) + '\\n')",
+        "",
+    ])
+    if sys.platform == "win32":
+        script = directory / "record_uv.py"
+        script.write_text(body, encoding="utf-8")
+        bat = directory / "uv.bat"
+        bat.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        return bat
+    exe = directory / "uv"
+    exe.write_text(f"#!{sys.executable}\n{body}", encoding="utf-8")
+    exe.chmod(0o755)
+    return exe
+
+
+def _index_args(args: list[str]) -> list[str]:
+    return [args[i + 1] for i, token in enumerate(args[:-1]) if token == "--index"]
+
+
 def test_lock_verification_keeps_the_recorded_registry(clean_index_env, tmp_path, monkeypatch):
     """Regression for #122740: a bridged default index must not make a valid lock look stale.
 
     The installer hands uv ``_base_environment()``. A pip mirror becomes
     ``UV_INDEX_URL``, and ``uv sync --locked`` / ``uv lock --check`` then
     re-resolve against that registry and reject a lock that still records
-    the one it was built from. Verification drops the override and still
-    passes ``--locked``; a resolving sync keeps the mirror.
+    the one it was built from. Verification drops the override.
+    ``uv lock --check`` re-resolves, so the registry recorded in the lock
+    (including a private or mirror-only one) is passed as ``--index``.
+    ``uv sync --locked`` installs from the lock's absolute urls and does not
+    get that flag. A resolving sync keeps the mirror.
     """
     monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.example/simple")
     monkeypatch.setenv("UV_HTTP_TIMEOUT", "120")
     record = tmp_path / "calls.jsonl"
-    uv = tmp_path / "uv"
-    uv.write_text(
-        "\n".join([
-            f"#!{sys.executable}",
-            "import json, os, sys",
-            "from pathlib import Path",
-            "row = {",
-            "    'args': sys.argv[1:],",
-            "    'UV_INDEX_URL': os.environ.get('UV_INDEX_URL'),",
-            "    'UV_DEFAULT_INDEX': os.environ.get('UV_DEFAULT_INDEX'),",
-            "    'UV_HTTP_TIMEOUT': os.environ.get('UV_HTTP_TIMEOUT'),",
-            "    'UV_INDEX': os.environ.get('UV_INDEX'),",
-            "}",
-            f"Path({str(record)!r}).open('a', encoding='utf-8').write(json.dumps(row) + '\\n')",
-            "",
-        ]),
-        encoding="utf-8",
-    )
-    uv.chmod(0o755)
+    uv = _recording_uv(tmp_path, record)
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
         '[project]\nname = "lock-index"\nversion = "0"\n', encoding="utf-8")
     lock = project / "uv.lock"
+    # Same registry twice, plus a non-registry source: one --index, not three.
+    private = "https://private.example/simple"
     lock.write_text(
-        'version = 1\n[[package]]\nname = "demo"\n'
-        'source = { registry = "https://pypi.org/simple" }\n',
+        "version = 1\n"
+        "[[package]]\nname = \"root\"\nsource = { virtual = \".\" }\n"
+        "[[package]]\nname = \"demo\"\n"
+        f"source = {{ registry = \"{private}\" }}\n"
+        "[[package]]\nname = \"other\"\n"
+        f"source = {{ registry = \"{private}\" }}\n",
         encoding="utf-8",
     )
+    assert lockfile_registries(lock) == [private]
+    assert _registries_in_lock_text(lock.read_text(encoding="utf-8")) == [private]
+    assert lockfile_registries(project / "missing.lock") == []
     lock_bytes = lock.read_bytes()
 
     env = _base_environment()
@@ -157,6 +187,9 @@ def test_lock_verification_keeps_the_recorded_registry(clean_index_env, tmp_path
         assert row["UV_INDEX"] == "https://extra.example/simple"
         assert "--no-config" in row["args"]
     assert "--frozen" not in locked["args"]
+    assert _index_args(locked["args"]) == []
+    assert _index_args(checked["args"]) == [private]
+    assert _index_args(frozen["args"]) == []
     assert frozen["UV_INDEX_URL"] == "https://mirror.example/simple"
     assert frozen["UV_DEFAULT_INDEX"] == "https://other-mirror.example/simple"
     assert frozen["UV_HTTP_TIMEOUT"] == "120"

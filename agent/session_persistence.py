@@ -23,7 +23,7 @@ from agent.memory_manager import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
-from agent.transcript_repair import _DB_ROW_SNAPSHOT, sync_flushed_message_markers
+from agent.transcript_repair import _DB_ROW_SNAPSHOT, REPAIR_BOOKKEEPING_FIELDS, sync_flushed_message_markers
 
 
 logger = logging.getLogger("run_agent")  # origin module's name: log records / caplog filters unchanged
@@ -370,9 +370,10 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
         # A replaced/quarantined handle will not take this batch again — keep it on disk.
         try:
-            # The CAS digest is local repair bookkeeping, not transcript payload.
+            # The CAS digest / adopted row are local repair bookkeeping, not transcript payload.
             divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "",
-                                            [{k: v for k, v in r.items() if k != _DB_ROW_SNAPSHOT} for r in batch_rows])
+                                            [{k: v for k, v in r.items() if k not in REPAIR_BOOKKEEPING_FIELDS}
+                                             for r in batch_rows])
         except Exception:
             logger.warning("JSONL divert failed after state.db %s for %s",
                            agent._last_persistence_error_cause, getattr(agent, "session_id", None), exc_info=True)

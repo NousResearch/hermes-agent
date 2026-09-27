@@ -22,8 +22,8 @@ read snapshots captured at flush time, so removing any production flush call
 makes the corresponding assertion fail.
 """
 
-import sqlite3
 import copy
+import sqlite3
 from types import SimpleNamespace
 from pathlib import Path
 import tempfile
@@ -782,6 +782,8 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     other.close()
     # A same-process metadata write (reaction) changes the user row's digest but not its content.
     assert db.set_message_reaction(session_id, durable_ids[0], "\U0001F44D")
+    # ...followed by a real in-place live edit: the row is still ours, so the edit must win and be persisted.
+    messages[0]["content"][0]["text"] += " EDITED"
 
     assert _sanitize_messages_surrogates(messages) is True
     assert not any(message.get("_db_persisted") for message in (messages[0], messages[2]))
@@ -793,6 +795,9 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     assert [row["id"] for row in rows] == durable_ids
     assert [message["_row_id"] for message in messages] == durable_ids
     assert rows[0]["content"].startswith("hi \ufffd there")
+    assert " EDITED" in rows[0]["content"]
+    assert messages[0]["content"][0]["text"].endswith(" EDITED")
+    assert messages[0]["message_id"] == 12345 and "platform_message_id" not in messages[0]
     # Neither our own rewrite nor a metadata-only change copies the lossy durable projection back: the live
     # image part survives while the reaction metadata is synced.
     assert messages[0]["content"][1]["type"] == "image_url"

@@ -429,7 +429,20 @@ class SessionMessagesMixin:
                     compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
                     turn_lease_ttl_seconds=turn_lease_ttl_seconds)
                 for start in range(0, len(messages), chunk_rows))
+        # _execute_write re-runs _do after a rollback: every attempt must start from the caller's state, or a
+        # rolled-back attempt's stamped _row_id could resolve to a row another writer took meanwhile.
+        _absent = object()
+        pre_state = [{k: m.get(k, _absent) for k in ("_row_id", "_db_row_snapshot", "timestamp")}
+                     for m in messages]
+
         def _do(conn):
+            for msg, state in zip(messages, pre_state):
+                msg.pop("_canonical_row", None)
+                for key, value in state.items():
+                    if value is _absent:
+                        msg.pop(key, None)
+                    else:
+                        msg[key] = value
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             from agent.transcript_repair import resolve_and_repair_transcript_batch, stamp_inserted_row_snapshots
@@ -599,6 +612,9 @@ class SessionMessagesMixin:
             msg["timestamp"] = message_timestamp
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
+                # A new row makes any carried CAS version (a clone's parent digest) meaningless; the flush
+                # path restamps the stored digest right after this insert.
+                msg.pop("_db_row_snapshot", None)
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6

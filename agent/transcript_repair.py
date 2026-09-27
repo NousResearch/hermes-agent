@@ -20,11 +20,25 @@ _CANONICAL_ROW = "_canonical_row"
 # role, active flag and the ones owned by the display index / timestamp / session linkage.
 _NON_PAYLOAD_COLUMNS = frozenset({"session_id", "role", "timestamp", "active", "display_identity"})
 _REPAIR_COLUMNS = tuple(c for c in _MESSAGE_WRITE_COLUMNS if c not in _NON_PAYLOAD_COLUMNS)
-_SYNC_FIELDS = ("role", "message_id") + _REPAIR_COLUMNS
+# Columns same-process writers update after our flush (reactions / display-kind stamps, api_content
+# backfill, codex reasoning backfill + checkpoint pruning, platform message ids). They are not part of the
+# ownership version: a metadata write must never make our own row look like a foreign winner.
+_METADATA_COLUMNS = frozenset(
+    {"display_kind", "display_metadata", "api_content", "codex_reasoning_items", "platform_message_id"}
+)
+# The ownership version: what we last committed for the payload the sanitizer / live edits change.
+_OWNED_COLUMNS = tuple(c for c in _REPAIR_COLUMNS if c not in _METADATA_COLUMNS)
+# Presentation-only metadata a matched (ours) row may hand to a live dict that lacks it.
+_LIVE_MISSING_METADATA = ("display_kind", "display_metadata")
+# ``message_id`` is identity the flush derived from the live dict (int there, TEXT in SQLite): never synced.
+_SYNC_FIELDS = ("role",) + _REPAIR_COLUMNS
+# Local repair bookkeeping riding on batch rows / live dicts; never transcript payload.
+REPAIR_BOOKKEEPING_FIELDS = frozenset({_DB_ROW_SNAPSHOT, _CANONICAL_ROW})
+_METADATA_ONLY = "_metadata_only"
 
 
 def transcript_row_snapshot(row: Mapping[str, Any]) -> str:
-    """Fixed-size digest of the durable repair columns (the CAS version) of a ``SELECT *`` messages row.
+    """Fixed-size digest of the owned (non-metadata) columns (the CAS version) of a ``SELECT *`` messages row.
 
     Callers pass rows read back from SQLite, never Python bind values: column affinity rewrites values on
     storage (int ``platform_message_id`` -> TEXT, float ``token_count`` -> INTEGER), so hashing bind values
@@ -32,7 +46,7 @@ def transcript_row_snapshot(row: Mapping[str, Any]) -> str:
     dicts, so a full copy would double transcript memory and anything that prices dict bytes.
     """
     digest = hashlib.blake2b(digest_size=16)
-    for column in _REPAIR_COLUMNS:
+    for column in _OWNED_COLUMNS:
         value = row[column]
         if value is None:
             digest.update(b"N")
@@ -97,16 +111,24 @@ def resolve_and_repair_transcript_batch(
         target_id = int(target_row["id"])
         msg["_row_id"] = target_id
         expected = msg.get(_DB_ROW_SNAPSHOT)
+        canonical = None
         if isinstance(expected, str):
-            # Digest match: the row is still the version we last committed, so our live dict is the source of
-            # truth (the DB holds its lossy durable projection, multimodal parts -> text, which must never flow
-            # back). The caller holds BEGIN IMMEDIATE, so the row cannot change between compare and UPDATE.
-            # Digest mismatch: someone changed the row after our flush; adopt the durable version.
+            # The digest covers only the columns we own, so it answers "is the row still what we last
+            # committed?". Match: the live dict is the source of truth (the DB holds its lossy durable
+            # projection, multimodal parts -> text, which must never flow back): write the live owned values
+            # and leave same-process metadata writes (reactions, backfills) alone. The caller holds BEGIN
+            # IMMEDIATE, so the row cannot change between compare and UPDATE. Mismatch: another writer changed
+            # the payload after our flush; adopt its durable version.
             adopt = transcript_row_snapshot(target_row) != expected
             if not adopt:
                 serialized = serialize_message_fn(msg, float(target_row["timestamp"]))
-                if any(target_row[column] != serialized[column] for column in _REPAIR_COLUMNS):
+                if any(target_row[column] != serialized[column] for column in _OWNED_COLUMNS):
                     _rewrite_row(conn, session_id, target_row, serialized)
+                missing = {c: target_row[c] for c in _LIVE_MISSING_METADATA if msg.get(c) is None}
+                if any(value is not None for value in missing.values()):
+                    decoded = decode_row_fn(target_row)
+                    canonical = {c: decoded[c] for c in missing if c in decoded}
+                    canonical[_METADATA_ONLY] = True
         elif role == "assistant" and is_content_blank(decode_content_fn(target_row["content"])):
             # Legacy dict (no digest) over a blank assistant row: the interrupted-stream repair. Fill the row
             # from live content with a content-only CAS and never adopt the blank row onto the live dict.
@@ -126,11 +148,7 @@ def resolve_and_repair_transcript_batch(
         msg[_DB_ROW_SNAPSHOT] = transcript_row_snapshot(final_row)
         if adopt:
             canonical = decode_row_fn(final_row)
-            # Same-process metadata writers (reactions, display kind, api_content backfill, codex reasoning)
-            # change the digest without touching content. When the stored content is just the durable form
-            # of the live content, sync metadata only and keep the live (possibly multimodal) content.
-            if canonical.get("content") == decode_content_fn(encode_content_fn(msg.get("content"))):
-                canonical.pop("content", None)
+        if canonical:
             msg[_CANONICAL_ROW] = canonical
         else:
             msg.pop(_CANONICAL_ROW, None)
@@ -154,10 +172,11 @@ def _rewrite_row(
         ).fetchall()
     ] if old_identity is not None else []
 
-    assignments = ", ".join(f"{column} = ?" for column in _REPAIR_COLUMNS)
+    # Owned columns only: same-process metadata writes (a reaction, a backfill) stay as committed.
+    assignments = ", ".join(f"{column} = ?" for column in _OWNED_COLUMNS)
     conn.execute(
         f"UPDATE messages SET {assignments} WHERE id = ? AND session_id = ?",
-        [*(serialized[column] for column in _REPAIR_COLUMNS), int(target_row["id"]), session_id],
+        [*(serialized[column] for column in _OWNED_COLUMNS), int(target_row["id"]), session_id],
     )
     _restore_display_index(conn, session_id, target_row, serialized, old_identity, old_peer_ids)
 
@@ -252,7 +271,12 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
         if isinstance(row.get(_DB_ROW_SNAPSHOT), str):
             written[_DB_ROW_SNAPSHOT] = row[_DB_ROW_SNAPSHOT]
         canonical = row.get(_CANONICAL_ROW)
-        if isinstance(canonical, dict):
+        if isinstance(canonical, dict) and canonical.get(_METADATA_ONLY):
+            # Our own row: only hand over presentation metadata the live dict lacks, never payload.
+            for key in _LIVE_MISSING_METADATA:
+                if canonical.get(key) is not None and written.get(key) is None:
+                    written[key] = canonical[key]
+        elif isinstance(canonical, dict):
             for key in _SYNC_FIELDS:
                 if key in canonical and canonical[key] is not None:
                     written[key] = canonical[key]

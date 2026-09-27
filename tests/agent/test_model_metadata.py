@@ -176,7 +176,86 @@ class TestEstimateMessagesTokensRough:
 
         # Raw base64 would be ~100K tokens; the flat per-image model is ~1.5K.
         assert estimate_messages_tokens_rough([msg]) < 5_000
+    def setup_method(self):
+        # Clear cache before each test to prevent cross-test interference
+        from agent.model_metadata import _MSG_TOKENS_CACHE
+        _MSG_TOKENS_CACHE.clear()
 
+    def test_image_flat_cost_not_base64_length(self):
+        """Images should use flat cost, not base64 string length."""
+        from agent.model_metadata import estimate_messages_tokens_rough
+        from agent.image_token_cost import current_image_token_cost
+        image_cost = current_image_token_cost()
+
+        small_messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + "A" * 100}}
+            ]
+        }]
+
+        large_messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + "B" * 100_000}}
+            ]
+        }]
+
+        small_tokens = estimate_messages_tokens_rough(small_messages)
+        large_tokens = estimate_messages_tokens_rough(large_messages)
+
+        assert abs(small_tokens - large_tokens) <= 5, (
+            f"Image cost not flat: small={small_tokens}, large={large_tokens}"
+        )
+        expected_max = 10 + image_cost + 100
+        assert small_tokens <= expected_max, f"Image overcounted: expected <= {expected_max}, got {small_tokens}"
+
+    def test_cache_consistency_on_mutation(self):
+        """Cache must update when message content is mutated in-place."""
+        from agent.model_metadata import estimate_messages_tokens_rough
+
+        msg = {"role": "user", "content": [{"type": "text", "text": "initial text"}]}
+        tokens1 = estimate_messages_tokens_rough([msg])
+
+        msg["content"].append({
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,dGVzdA=="}
+        })
+
+        tokens2 = estimate_messages_tokens_rough([msg])
+
+        assert tokens2 > tokens1, f"Cache failed to detect in-place mutation: {tokens1} vs {tokens2}"
+
+        fresh_msg = {"role": "user", "content": [{"type": "text", "text": "initial text"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,dGVzdA=="}}]}
+        fresh_tokens = estimate_messages_tokens_rough([fresh_msg])
+        assert tokens2 == fresh_tokens, f"Cached ({tokens2}) != fresh ({fresh_tokens})"
+
+    def test_tool_calls_are_counted(self):
+        """Tool call schemas and arguments should contribute to token count."""
+        from agent.model_metadata import estimate_messages_tokens_rough
+        import copy
+
+        base_message = {"role": "assistant", "content": "I will use the tool."}
+
+        msg_without = [base_message]
+        tokens_without = estimate_messages_tokens_rough(msg_without)
+
+        msg_with = [copy.deepcopy(base_message)]
+        msg_with[0]["tool_calls"] = [{
+            "id": "call_123",
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "arguments": '{"location": "Istanbul", "unit": "celsius"}'
+            }
+        }]
+        tokens_with = estimate_messages_tokens_rough(msg_with)
+
+        assert tokens_with > tokens_without, (
+            f"Tool calls did not add tokens: without={tokens_without}, with={tokens_with}"
+        )
 
 class TestResponsesItemImageAccounting:
     """Responses ``function_call_output`` items carry tool-result images under

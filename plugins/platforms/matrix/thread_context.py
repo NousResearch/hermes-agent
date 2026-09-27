@@ -100,7 +100,8 @@ async def fetch_thread_entries(
             continue
         sender = str(raw.get("sender") or "")
         entry = MatrixEventContext(sender, text, is_image=msgtype == "m.image")
-        cache.store(room_id, event_id, entry)
-        entries.append(entry)
+        stored = cache.store(room_id, event_id, entry)
+        if stored is not None:
+            entries.append(stored)
 
     return entries

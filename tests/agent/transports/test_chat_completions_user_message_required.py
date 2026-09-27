@@ -47,6 +47,44 @@ class TestEnsureUserMessageHelper:
         assert roles[-1] == "user", f"expected last role=user, got {roles}"
         assert out[-1].get(_injected_user_continuation_marker) is True
 
+    def test_injected_row_is_allowlist_only(self):
+        """The injected row carries NO tool-row fields (tool_call_id, tool_calls) — only
+        role / content / marker. Copying the predecessor would put ``tool_call_id`` on a
+        ``role:"user"`` row, which is off-schema for the strict endpoints this fix targets.
+        """
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "I will answer", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "x", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "result"},
+        ]
+        out = _ensure_has_user_message(messages)
+        injected = out[-1]
+        assert set(injected) <= {"role", "content", _injected_user_continuation_marker}, (
+            f"injected row carries off-schema keys: {sorted(set(injected))}"
+        )
+        assert injected["role"] == "user"
+        assert injected["content"] == "result"  # content copied from last row's string
+        assert injected.get(_injected_user_continuation_marker) is True
+
+    def test_injected_row_content_empty_when_last_content_not_string(self):
+        """When last content is not a plain string (e.g. a list of blocks), the injected
+        user row gets an empty content rather than copying the structured payload."""
+        messages = [
+            {"role": "assistant", "content": "thinking", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "x", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1",
+             "content": [{"type": "text", "text": "structured"}]},
+        ]
+        out = _ensure_has_user_message(messages)
+        injected = out[-1]
+        assert injected["content"] == ""
+        assert set(injected) <= {"role", "content", _injected_user_continuation_marker}
+
     def test_real_user_message_is_pass_through(self):
         messages = [
             {"role": "system", "content": "sys"},
@@ -65,6 +103,8 @@ class TestEnsureUserMessageHelper:
         out = _ensure_has_user_message(messages)
         roles = [m["role"] for m in out]
         assert "user" in roles, f"missing user injection, got {roles}"
+        # system-only last row: no content to copy
+        assert out[-1]["content"] == ""
 
 
 class TestBuildKwargsRequiresUserMessage:

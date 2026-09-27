@@ -332,14 +332,17 @@ _injected_user_continuation_marker = "_injected_user_continuation"
 
 
 def _ensure_has_user_message(messages: list) -> list:
-    """Inject a synthetic continuation user turn when a tool-only payload would otherwise ship
-    to a provider that rejects empty-message lists (Ollama/Qwen, strict OpenAI-compat). Every
-    native /v1/chat/completions endpoint expects at least one ``role:"user"`` row, and Hermes's
-    continue-after-tool-call / retry-of-failed-stream paths can drop the last user row under a
-    few known conditions (#120828). Pass-through is identity when a user row is already present.
+    """Inject a synthetic continuation user turn when the payload carries no ``role:"user"``
+    row (Ollama/Qwen and other strict OpenAI-compat endpoints reject a user-less payload).
+    Hermes's continue-after-tool-call / retry-of-failed-stream paths can drop the last user
+    row under a few known conditions (#120828). Pass-through is identity when a user row is
+    already present.
 
-    The synthetic row is marked with ``_injected_user_continuation_marker`` so downstream
-    consumers (cache key, replay) can tell it apart from a real user turn if they need to.
+    The synthetic row is built from an allowlist (``role`` / ``content`` / marker) instead of
+    copying the predecessor — copying would carry ``tool_call_id`` or ``tool_calls`` onto a
+    ``role:"user"`` row, which is itself off-schema for the strict endpoints this fix targets.
+    The marker marks the row for downstream consumers (cache key, replay) that need to tell it
+    apart from a real user turn.
     """
     if not isinstance(messages, list) or not messages:
         return messages
@@ -347,8 +350,12 @@ def _ensure_has_user_message(messages: list) -> list:
         if isinstance(msg, dict) and msg.get("role") == "user":
             return messages
     last = messages[-1] if isinstance(messages[-1], dict) else {}
-    injected = dict(last)
-    injected["role"] = "user"
+    injected: dict = {"role": "user", "content": ""}
+    # Copy the predecessor's content only for tool/assistant rows (the continuation
+    # cases this guard targets); a system-only payload injects an empty user turn
+    # rather than echoing the system prompt.
+    if last.get("role") in ("tool", "assistant") and isinstance(last.get("content"), str) and last["content"].strip():
+        injected["content"] = last["content"]
     injected[_injected_user_continuation_marker] = True
     return messages + [injected]
 

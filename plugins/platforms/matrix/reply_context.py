@@ -188,7 +188,7 @@ class MatrixEventContextCache:
                 self._entries.pop(key)
             else:
                 cached = entry
-                if not entry.is_image or entry.media_path or image_loader is None:
+                if not entry.state_error and (not entry.is_image or entry.media_path or image_loader is None):
                     return entry if entry.text or entry.media_path else None
         if client is None:
             return cached
@@ -231,6 +231,7 @@ class MatrixEventContextCache:
             media_path=media[0] if media else None,
             media_type=media[1] if media else None,
             is_image=msgtype == "m.image",
+            state_error=state.error["error"] if state.error else None,
         )
         stored = self.store(room_id, event_id, entry)
         return stored if stored is not None and not stored.redacted else None

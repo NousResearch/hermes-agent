@@ -3,6 +3,7 @@
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from urllib.parse import quote
 
 import pytest
 
@@ -259,6 +260,66 @@ async def test_encrypted_edit_is_visible_in_room_catch_up():
     assert [call.args[0] for call in crypto.decrypt_megolm_event.await_args_list] == [
         raw, raw["unsigned"]["m.relations"]["m.replace"],
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["original", "edit"])
+async def test_reply_retries_catch_up_event_after_decryption_keys_arrive(missing: str):
+    raw = {
+        "room_id": ROOM, "event_id": "$target", "sender": SENDER,
+        "type": "m.room.encrypted", "content": {"ciphertext": "original"},
+    }
+    edit = {
+        "room_id": ROOM, "event_id": "$edit", "sender": SENDER,
+        "type": "m.room.encrypted", "content": {
+            "ciphertext": "replacement",
+            "m.relates_to": {"rel_type": "m.replace", "event_id": "$target"},
+        },
+    }
+    if missing == "edit":
+        raw["unsigned"] = {"m.relations": {"m.replace": edit}}
+    decrypted_original = SimpleNamespace(content={"msgtype": "m.text", "body": "before"})
+    decrypted_edit = SimpleNamespace(content={
+        "msgtype": "m.text", "body": "* after",
+        "m.new_content": {"msgtype": "m.text", "body": "after"},
+        "m.relates_to": {"rel_type": "m.replace", "event_id": "$target"},
+    })
+    missing_key = (None, {"event_id": "$target" if missing == "original" else "$edit",
+                          "error": "missing decryption keys"})
+    decryptions = (
+        [missing_key, (decrypted_original, None)] if missing == "original" else
+        [(decrypted_original, None), missing_key,
+         (decrypted_original, None), (decrypted_edit, None)]
+    )
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "boundary"}
+        if "/messages" in path:
+            return {"chunk": [raw]}
+        if "/event/" in path:
+            return raw
+        if "/m.annotation" in path:
+            return {"chunk": []}
+        raise AssertionError(path)
+
+    client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)))
+    cache = MatrixEventContextCache()
+    with patch("plugins.platforms.matrix.effective_event._decrypt", new_callable=AsyncMock) as decrypt:
+        decrypt.side_effect = decryptions
+        earlier = await fetch_room_entries(client, cache, ROOM, "$current", limit=1)
+        reply = await cache.resolve(client, ROOM, "$target")
+
+    expected_earlier = (
+        "[encrypted message could not be decrypted]" if missing == "original" else "before"
+    )
+    assert earlier == [MatrixEventContext(SENDER, expected_earlier,
+                                          state_error="missing decryption keys")]
+    assert reply == MatrixEventContext(SENDER, "before" if missing == "original" else "after")
+    assert [call.args[1] for call in client.api.request.await_args_list if "/event/" in call.args[1]] == [
+        f"/_matrix/client/v3/rooms/{quote(ROOM, safe='')}/event/%24target"
+    ]
+    assert decrypt.await_count == len(decryptions)
 
 
 @pytest.mark.asyncio

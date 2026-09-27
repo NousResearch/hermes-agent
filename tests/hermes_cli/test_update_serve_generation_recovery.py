@@ -487,6 +487,19 @@ def test_dashboard_unit_is_restarted_and_verified_by_the_serve_pass(linux_system
     }
 
 
+def test_default_profile_dashboard_unit_is_restarted_by_the_serve_pass(linux_systemctl):
+    """#125297: the unprofiled ``hermes-dashboard.service`` — the exact unit from the
+    report's receipts — is enumerated and restarted alongside serve units."""
+    fake = _Systemctl(
+        listed=["hermes-dashboard.service"],
+        active={"hermes-dashboard.service": True},
+        main_pids={"hermes-dashboard.service": 9},
+    )
+    out = recovery.restart_serve_units(run=fake, sleep=lambda _: None)
+    assert fake.restarted == ["hermes-dashboard.service"]
+    assert out == {"verified": ["user/hermes-dashboard"], "failed": []}
+
+
 def test_no_systemctl_means_no_serve_pass(monkeypatch):
     monkeypatch.setattr(recovery.shutil, "which", lambda name: None)
 

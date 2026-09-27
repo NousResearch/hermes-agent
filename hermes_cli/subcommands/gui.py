@@ -23,7 +23,9 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         help="Enable deterministic desktop boot delays for validating startup UI")
     gui_parser.add_argument(
         "--ignore-existing", action="store_true",
-        help="Force Desktop to ignore any hermes CLI already on PATH during backend resolution")
+        help="Skip the installed Hermes runtime (~/.hermes/hermes-agent) so no local "
+             "backend starts and Desktop offers connect or install instead. --hermes-root "
+             "and the bundled runtime still win; a runtime installed during this launch is used.")
     gui_parser.add_argument(
         "--hermes-root",
         help="Override the Hermes source root used by Desktop (sets HERMES_DESKTOP_HERMES_ROOT)")

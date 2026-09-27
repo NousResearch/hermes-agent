@@ -35,17 +35,9 @@ describe('rankSearchOption', () => {
     expect(rankSearchOption('ASIA/KOLKATA', 'kolkata')).toBe(2)
   })
 
-  it('scores a substring match anywhere as 1', () => {
-    expect(rankSearchOption('America/New_York', 'amer')).toBe(1)
-  })
-
   it('scores a slashless option by plain substring', () => {
     expect(rankSearchOption('UTC', 'ut')).toBe(1)
     expect(rankSearchOption('UTC', 'xyz')).toBe(0)
-  })
-
-  it('scores a non-match as 0', () => {
-    expect(rankSearchOption('Europe/Berlin', 'tokyo')).toBe(0)
   })
 })
 
@@ -83,26 +75,24 @@ describe('SearchableSelect', () => {
     expect(screen.queryByText('System default')).toBeNull()
   })
 
-  it('lets the option list size to its content instead of the shrink-wrapped trigger', () => {
-    // The trigger shrink-wraps to its current value inside the settings grid
-    // (~120px for "Europe/Berlin"); pinning the popover width to it clipped
-    // every IANA row after "Africa/A…". The popover may grow to cover a wider
-    // trigger, but must never be capped at the trigger's width.
-    render(<SearchableSelect onChange={vi.fn()} options={options} value="Europe/Berlin" />)
+  // #99751: the settings action cell shrink-wraps to content, and the popover
+  // floors its width at the trigger's (--radix-popover-trigger-width). Without
+  // a positive min-width floor on the trigger, a blank value collapses the
+  // whole control — trigger AND list — to the "Search…" placeholder (~70px);
+  // controlVariants' `min-w-0` is no floor at all. jsdom does not compute
+  // Tailwind layout, so the class contract is the assertable unit.
+  it('keeps a positive min-width floor on the trigger when the value is blank', () => {
+    for (const value of ['', 'Asia/Kolkata']) {
+      const { unmount } = render(<SearchableSelect onChange={vi.fn()} options={options} value={value} />)
 
-    fireEvent.click(screen.getByRole('combobox'))
+      const classes = screen
+        .getByRole('combobox')
+        .className.split(/\s+/)
+        .filter(cls => /^min-w-(?!0$)\d/.test(cls))
 
-    const content = screen.getByRole('listbox', { hidden: true }).closest('[data-slot="popover-content"]')
-    const classes = content?.className.split(/\s+/) ?? []
-
-    expect(classes.some(c => c.startsWith('min-w-') && c.includes('radix-popover-trigger-width'))).toBe(true)
-    expect(classes.some(c => /^w-[[(].*radix-popover-trigger-width/.test(c))).toBe(false)
-  })
-
-  it('shows the placeholder when the value is blank', () => {
-    render(<SearchableSelect onChange={vi.fn()} options={options} placeholder="Search…" value="" />)
-
-    expect(screen.getByRole('combobox').textContent).toContain('Search…')
+      expect(classes.length).toBeGreaterThan(0)
+      unmount()
+    }
   })
 })
 

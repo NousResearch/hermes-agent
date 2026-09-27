@@ -650,6 +650,85 @@ export default { id: 'quoted-spec', register: () => { globalThis.__captured = do
     }
   })
 
+  it('a backtick inside a regex literal does not flip code/string classification (#120208)', async () => {
+    // The regex backtick must not open a template: the react import after it
+    // stays code and is rewritten to the shim, not left bare.
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "const backtick = /`/\nimport { useState } from 'react'\nconst label = `ok`\nexport default { id: 'repro', register() { void useState; void label; void backtick } }",
+        'repro'
+      )
+
+      expect(id).toBe('repro')
+      expect($pluginRecords.get()['repro']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('repro')
+      restore()
+    }
+  })
+
+  it('rewrites imports after the entities htmlReplacer regex (#120208)', async () => {
+    // entities 6.0.1 encode.js (via the hermes-toolsmith bundle): the
+    // character class contains a backtick, then SDK/react imports follow.
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "var htmlReplacer = /[\\t\\n\\f!-,./:-@[-`{-}\\^@-\\uFFFF]/g;\nimport { host } from '@hermes/plugin-sdk'\nconst label = `ok`\nexport default { id: 'entities-re', register() { void host; void label; void htmlReplacer } }",
+        'entities-re'
+      )
+
+      expect(id).toBe('entities-re')
+      expect($pluginRecords.get()['entities-re']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('entities-re')
+      restore()
+    }
+  })
+
+  it('divisions stay code: imports after real division still rewrite (#120208)', async () => {
+    // The other direction: `/` between two values is a division, not a
+    // pattern, so the import below must still be seen and rewritten.
+    const restore = withBlobReroute()
+
+    try {
+      const id = await loadRuntimePlugin(
+        "const total = 10, count = 4, earned = 6\nconst half = total / count + earned / 2\nimport { host } from '@hermes/plugin-sdk'\nconst label = `n=${half}`\nexport default { id: 'division', register() { void host; void label } }",
+        'division'
+      )
+
+      expect(id).toBe('division')
+      expect($pluginRecords.get()['division']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('division')
+      restore()
+    }
+  })
+
+  it('does not read import syntax inside a regex literal (#120208)', async () => {
+    // A regex body is not code: `from 'react'` inside it must not be
+    // rewritten in place (which would corrupt the pattern).
+    const restore = withBlobReroute()
+
+    try {
+      ;(globalThis as unknown as { __capturedRe?: unknown }).__capturedRe = undefined
+
+      const id = await loadRuntimePlugin(
+        "const re = /from 'react'/\nexport default { id: 'regex-spec', register: () => { globalThis.__capturedRe = re.source } }",
+        'regex-spec'
+      )
+
+      expect(id).toBe('regex-spec')
+      expect((globalThis as unknown as { __capturedRe?: string }).__capturedRe).toBe("from 'react'")
+    } finally {
+      unloadRuntimePlugin('regex-spec')
+      delete (globalThis as unknown as { __capturedRe?: unknown }).__capturedRe
+      restore()
+    }
+  })
+
   it('still rewrites a real mapped import', async () => {
     // The fix must not swing the other way: the SDK import is the load path.
     const restore = withBlobReroute()
@@ -768,6 +847,198 @@ describe('remote static imports are refused (catalog trust)', () => {
     expect(importer).not.toHaveBeenCalled()
     expect($pluginRecords.get()['remote-import']).toMatchObject({ status: 'error' })
     expect($pluginRecords.get()['remote-import']?.error).toContain('unsupported import')
+  })
+})
+
+describe('loader hardening: hangs, leaks, duplicate ids, stale incarnations', () => {
+  const root = '/local/.hermes/desktop-plugins'
+  const counters = globalThis as unknown as Record<string, number | undefined>
+
+  const withBlobReroute = () => {
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    return () => {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+    }
+  }
+
+  /** Root listing of standalone folders (listed in the given order) whose
+   *  plugin.js text comes from `sources[folder]`. */
+  const rootWith = (sources: Record<string, () => string>, order = Object.keys(sources)) => {
+    desktopPluginsRoot.mockResolvedValue(root)
+    readDir.mockImplementation(async dir => {
+      if (dir === root) {
+        return { entries: order.map(name => ({ isDirectory: true, name, path: `${root}/${name}` })) }
+      }
+
+      const name = order.find(folder => dir === `${root}/${folder}`)
+
+      return name
+        ? { entries: [{ isDirectory: false, name: 'plugin.js', path: `${root}/${name}/plugin.js` }] }
+        : { entries: [] }
+    })
+    readFileText.mockImplementation(async file => ({ text: sources[file.split('/').at(-2)!]() }))
+    watchPreviewFile.mockImplementation(async file => ({ id: `w-${file}` }))
+  }
+
+  /** Yield until the loader has armed its import deadline (the scan reaches
+   *  `import()` through a chain of awaited mocks, all microtasks). */
+  const untilTimerArmed = async () => {
+    for (let i = 0; i < 1_000 && vi.getTimerCount() === 0; i += 1) {
+      await Promise.resolve()
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('a plugin whose import never settles times out as ITS error; the rest of the scan still loads', async () => {
+    const restore = withBlobReroute()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    counters.__afterHangRegister = 0
+
+    try {
+      rootWith({
+        'aaa-hang': () => 'await new Promise(() => {})\nexport default { id: "hang", register() {} }',
+        'bbb-ok': () => 'export default { id: "after-hang", register() { globalThis.__afterHangRegister++ } }'
+      })
+
+      const scan = discoverRuntimePlugins()
+      await untilTimerArmed()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await scan
+
+      expect($pluginRecords.get()['aaa-hang']).toMatchObject({ status: 'error', file: `${root}/aaa-hang/plugin.js` })
+      expect($pluginRecords.get()['aaa-hang']?.error).toMatch(/import timed out/)
+      expect(counters.__afterHangRegister).toBe(1)
+      expect($pluginRecords.get()['after-hang']).toMatchObject({ status: 'loaded' })
+    } finally {
+      unloadRuntimePlugin('after-hang')
+      delete counters.__afterHangRegister
+      restore()
+    }
+  })
+
+  it('ctx.setInterval / ctx.addEventListener registrations die with the plugin on unload', async () => {
+    const restore = withBlobReroute()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    counters.__scopedTicks = 0
+    counters.__scopedEvents = 0
+
+    try {
+      await loadRuntimePlugin(
+        `export default {
+          id: 'scoped-lifetime',
+          register(ctx) {
+            ctx.setInterval(() => { globalThis.__scopedTicks++ }, 1000)
+            ctx.addEventListener(window, 'hermes-probe', () => { globalThis.__scopedEvents++ })
+          }
+        }`,
+        'scoped-lifetime'
+      )
+
+      expect($pluginRecords.get()['scoped-lifetime']).toMatchObject({ status: 'loaded' })
+      await vi.advanceTimersByTimeAsync(3_000)
+      window.dispatchEvent(new Event('hermes-probe'))
+      expect(counters.__scopedTicks).toBe(3)
+      expect(counters.__scopedEvents).toBe(1)
+
+      unloadRuntimePlugin('scoped-lifetime')
+      await vi.advanceTimersByTimeAsync(3_000)
+      window.dispatchEvent(new Event('hermes-probe'))
+      expect(counters.__scopedTicks).toBe(3)
+      expect(counters.__scopedEvents).toBe(1)
+    } finally {
+      unloadRuntimePlugin('scoped-lifetime')
+      delete counters.__scopedTicks
+      delete counters.__scopedEvents
+      restore()
+    }
+  })
+
+  it('two folders claiming one id: the first (sorted) owns it, the later one errors on its own row', async () => {
+    const restore = withBlobReroute()
+    counters.__dupAlpha = 0
+    counters.__dupBeta = 0
+
+    try {
+      // Listed beta-first: the loader sorts, so alpha still wins deterministically.
+      rootWith(
+        {
+          alpha: () => 'export default { id: "dup", register() { globalThis.__dupAlpha++ } }',
+          beta: () => 'export default { id: "dup", register() { globalThis.__dupBeta++ } }'
+        },
+        ['beta', 'alpha']
+      )
+
+      await discoverRuntimePlugins()
+
+      expect(counters.__dupAlpha).toBe(1)
+      expect(counters.__dupBeta).toBe(0)
+      expect($pluginRecords.get().dup).toMatchObject({ status: 'loaded', file: `${root}/alpha/plugin.js` })
+      expect($pluginRecords.get().beta).toMatchObject({ status: 'error', file: `${root}/beta/plugin.js` })
+      expect($pluginRecords.get().beta?.error).toMatch(/duplicate id "dup", already loaded from .*alpha\/plugin\.js/)
+    } finally {
+      unloadRuntimePlugin('dup')
+      delete counters.__dupAlpha
+      delete counters.__dupBeta
+      restore()
+    }
+  })
+
+  it('a save that no longer loads retires the previous incarnation instead of leaving it live', async () => {
+    const restore = withBlobReroute()
+    counters.__staleHits = 0
+
+    let source = `
+      import { host } from '@hermes/plugin-sdk'
+      export default {
+        id: 'stale',
+        register() { host.onEvent('bot_relay.outbox.pending', () => { globalThis.__staleHits++ }) }
+      }
+    `
+
+    try {
+      rootWith({ 'stale-folder': () => source })
+
+      await discoverRuntimePlugins()
+      emitGatewayEvent({ type: 'bot_relay.outbox.pending' } as never)
+      expect(counters.__staleHits).toBe(1)
+      expect($pluginRecords.get().stale).toMatchObject({ status: 'loaded' })
+
+      // Mid-edit save: the file on disk is now broken.
+      source = 'export default {'
+      await discoverRuntimePlugins()
+
+      emitGatewayEvent({ type: 'bot_relay.outbox.pending' } as never)
+      expect(counters.__staleHits).toBe(1)
+      expect($pluginRecords.get().stale).toBeUndefined()
+      expect($pluginRecords.get()['stale-folder']).toMatchObject({ status: 'error' })
+    } finally {
+      unloadRuntimePlugin('stale')
+      delete counters.__staleHits
+      restore()
+    }
   })
 })
 

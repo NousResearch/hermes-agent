@@ -1,4 +1,9 @@
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
+import {
+  abortPreviewTyping,
+  releasePreviewTyping,
+  trackPreviewTyping
+} from '@/app/chat/right-rail/preview-typing-abort'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
@@ -266,6 +271,19 @@ const sudo: Handler = ctx => {
   notifyInput(ctx, translateNow('notifications.native.inputBody'))
 }
 
+/** Bot Screen package install (`tui_gateway/methods_display.py`): the same masked card as `sudo`,
+ *  but app-level. The gateway sends it sessionless — it belongs to the connection that clicked
+ *  Install, not to a chat — so it is stored under the null session and survives a chat switch. */
+const displayInstallSudo: Handler = ctx => {
+  rememberServerRequest(ctx.request)
+  setSudoRequest({
+    description: translateNow('prompts.sudoInstallDesc'),
+    requestId: ctx.request.id,
+    sessionId: null
+  })
+  notifyInput(ctx, translateNow('prompts.sudoInstallDesc'))
+}
+
 const secret: Handler = ctx => {
   const p = ctx.request.params
   const envVar = str(p.env_var)
@@ -323,7 +341,7 @@ const previewRead: Handler = ({ request }) => {
   )
 }
 
-const previewAct: Handler = ({ isActiveSession, request }) => {
+const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // drive_preview tool: click/type/scroll/press inside the guest page. Active
   // session only: a background turn (including one in a tile this window hosts)
   // must never reach into the page the user is working in (desktop AGENTS.md:
@@ -340,24 +358,48 @@ const previewAct: Handler = ({ isActiveSession, request }) => {
     return
   }
 
+  // The keystroke loop has to be able to stop when this request is withdrawn
+  // (tool timeout or turn interrupt). The local interrupted flag can flip
+  // before request.cancel arrives; poll it so Stop cuts the loop off too.
+  const signal = trackPreviewTyping(request.id)
+
+  const watch = sessionId
+    ? setInterval(() => {
+        if (deps.sessionInterrupted(sessionId)) {
+          abortPreviewTyping(request.id, 'interrupted')
+        }
+      }, 50)
+    : undefined
+
   void loadPreviewEngine()
     .then(run =>
-      run({
-        amount: p.amount as never,
-        key: p.key as never,
-        kind: (str(p.action) || '') as never,
-        max: p.max as never,
-        ref: p.ref as never,
-        selector: p.selector as never,
-        submit: p.submit as never,
-        text: p.text as never,
-        to: p.to as PreviewActAction['to']
-      })
+      run(
+        {
+          allowShortcut: p.allow_shortcut === true,
+          amount: p.amount as never,
+          key: p.key as never,
+          kind: (str(p.action) || '') as never,
+          max: p.max as never,
+          ref: p.ref as never,
+          selector: p.selector as never,
+          submit: p.submit as never,
+          text: p.text as never,
+          to: p.to as PreviewActAction['to']
+        },
+        signal
+      )
     )
     .then(
       result => answerValue(request, result),
       error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
     )
+    .finally(() => {
+      if (watch !== undefined) {
+        clearInterval(watch)
+      }
+
+      releasePreviewTyping(request.id)
+    })
 }
 
 const windowRead: Handler = ({ request }) => {
@@ -417,6 +459,7 @@ const tour: Handler = ({ isActiveSession, request }) => {
 export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   approval,
   clarify,
+  'display.install.sudo': displayInstallSudo,
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,

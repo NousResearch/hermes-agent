@@ -366,18 +366,10 @@ _BINARY_MAGICS = (
 # --- profile identity -------------------------------------------------------------------------
 
 def _current_profile_name() -> Optional[str]:
-    """Profile running the guard: ``HERMES_PROFILE_NAME``/``HERMES_PROFILE`` env first, then
-    ``hermes_cli.profiles.get_active_profile_name`` (from ``HERMES_HOME``); ``None`` if neither."""
-    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
-        value = os.environ.get(env_name)
-        if value and value.strip():
-            return value.strip()
-    try:
-        from hermes_cli.profiles import get_active_profile_name
+    """Profile running the guard (``hermes_cli.profiles.current_profile_name``); ``None`` if none."""
+    from hermes_cli.profiles import current_profile_name
 
-        return get_active_profile_name() or None
-    except Exception:
-        return None
+    return current_profile_name()
 
 
 def _named_profile_is_current(named: str) -> bool:

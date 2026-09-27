@@ -49,4 +49,3 @@ jobs:
         --lockfile=scripts/whatsapp-bridge/package-lock.json
       results-file-name: osv-results.sarif
       fail-on-vuln: false
-

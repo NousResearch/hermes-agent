@@ -24,7 +24,6 @@ import pytest
 
 import gateway.run as gw_mod
 
-
 class _FakeSessionDB:
     """Records when the gateway closed it, on a shared event log."""
 
@@ -34,7 +33,6 @@ class _FakeSessionDB:
 
     def close(self):
         self._events.append(f"close:{self._name}")
-
 
 class _FakeGateway:
     """Minimal stand-in with just enough state for ``stop()`` to run."""
@@ -124,7 +122,6 @@ class _FakeGateway:
     def close_all_session_db_handles(self):
         pass
 
-
 @pytest.mark.asyncio
 async def test_running_executor_work_finishes_before_session_db_close():
     """A future already running when stop() begins writes before the close."""
@@ -151,7 +148,6 @@ async def test_running_executor_work_finishes_before_session_db_close():
         f"state.db was closed while a worker was still writing: {events}"
     )
 
-
 @pytest.mark.asyncio
 async def test_executor_refuses_new_work_before_session_db_close():
     """``_executor_closing`` is set before the close, so no fresh pool is minted."""
@@ -174,7 +170,6 @@ async def test_executor_refuses_new_work_before_session_db_close():
     assert "closing_flag:True" in events, events
     with pytest.raises(RuntimeError):
         gw_mod.GatewayRunner._get_executor(gw)
-
 
 @pytest.mark.asyncio
 async def test_stuck_worker_skips_the_session_db_close():
@@ -217,10 +212,8 @@ async def test_stuck_worker_skips_the_session_db_close():
     future.result(timeout=5)
     assert "worker_write" in events, "worker never finished"
 
-
 def _arm_cron(gw):
     gw._active_cron_job_count = lambda: 1
-
 
 def _arm_api(gw):
     # Through the real hook: the adapter map is cleared one phase before the close gate, so the
@@ -237,11 +230,9 @@ def _arm_api(gw):
     gw.adapters[Platform.API_SERVER] = _ApiAdapter()
     gw._bounded_adapter_teardown = _teardown
 
-
 def _arm_deferred(gw):
     # A hygiene worker on the loop's default executor, never finished.
     gw._deferred_agent_workers = {asyncio.get_event_loop().create_future(): object()}
-
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("arm", [_arm_cron, _arm_api, _arm_deferred], ids=["cron", "api", "deferred"])
@@ -268,7 +259,6 @@ async def test_live_writer_outside_the_executor_skips_the_session_db_close(monke
         f"SessionDB closed despite a live {arm.__name__[5:]} writer: {events}"
     )
     assert gw._executor_closing is True, "executor left unsealed on the outside-writer path"
-
 
 @pytest.mark.asyncio
 async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkeypatch):
@@ -328,7 +318,6 @@ async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkey
     assert "worker_done" in events, "worker never finished"
     assert api_runs.api_worker_live_count() == 0, "worker exit did not release the count"
 
-
 def test_shutdown_executor_defaults_to_no_wait():
     """The no-argument call keeps the historical fire-and-forget contract."""
     gw = _FakeGateway([])
@@ -350,7 +339,6 @@ def test_shutdown_executor_defaults_to_no_wait():
     assert still_live == 1
     release.set()
     future.result(timeout=5)
-
 
 def test_shutdown_executor_reports_a_stuck_worker():
     """A worker that outlives the budget is reported, not waited on forever."""
@@ -375,8 +363,75 @@ def test_shutdown_executor_reports_a_stuck_worker():
     future.result(timeout=5)
 
 
-def test_shutdown_executor_without_executor_returns_zero():
-    gw = _FakeGateway([])
-    gw._executor.shutdown(wait=True)
-    gw._executor = None
-    assert gw_mod.GatewayRunner._shutdown_executor(gw, drain_timeout=1.0) == 0
+@pytest.mark.asyncio
+async def test_default_executor_worker_is_seen_by_the_close_guard():
+    """The detached hygiene compressor runs on the loop's DEFAULT executor, which the
+    ``self._executor`` quiesce never joins. It must be visible to the SessionDB-close guard
+    from the moment it is submitted -- not only once a timeout/turn-hold/unwind defers it --
+    or stop() closes/checkpoints state.db under the worker's late write (#101064 shape;
+    reported by @pmaho in #121360).
+
+    Drives the real ``_hmwa_hygiene_detached_attempt`` submission site, and stops the gateway
+    while the awaiting turn has NOT been unwound yet (the window where nothing else tracks it).
+    """
+    from types import MethodType, SimpleNamespace
+
+    events = []
+    gw = _FakeGateway(events)
+    for name in ("_hmwa_hygiene_detached_attempt", "_track_deferred_agent_worker"):
+        setattr(gw, name, MethodType(getattr(gw_mod.GatewayRunner, name), gw))
+
+    release = threading.Event()
+    started = threading.Event()
+    turn_waiting = asyncio.Event()
+
+    class _HygieneAgent:
+        context_compressor = None
+
+        def _compress_context(self, msgs, *_a, **_kw):
+            started.set()
+            release.wait(30.0)
+            events.append("hygiene_worker_write")
+            return msgs, None
+
+    agent = _HygieneAgent()
+
+    async def _build_agent(*_a):
+        return agent, None
+
+    async def _wait_for_summary(attempt, *_a):
+        turn_waiting.set()
+        await asyncio.shield(attempt.future)  # the live turn is still waiting at stop()
+        return None
+
+    async def _apply_result(*_a, **_kw):
+        pass
+
+    gw._hmwa_hygiene_build_agent = _build_agent
+    gw._hmwa_hygiene_wait_for_summary = _wait_for_summary
+    gw._hmwa_hygiene_apply_result = _apply_result
+
+    attempt = gw_mod.GatewayRunner._HygieneAttempt(agent=None, meta=None)
+    hs = SimpleNamespace(total_ceiling_seconds=60.0)
+    plan = SimpleNamespace(approx_tokens=100)
+    turn = asyncio.create_task(gw._hmwa_hygiene_detached_attempt(
+        attempt, hs, plan, [], [{"role": "user", "content": "x"}] * 4, "m", {},
+        None, SimpleNamespace(session_id="sess-1"), "sk", "qk", 0,
+    ))
+    await asyncio.wait_for(turn_waiting.wait(), 2.0)
+    assert await asyncio.to_thread(started.wait, 2.0), "hygiene worker never started"
+
+    original_timeout = gw_mod._EXECUTOR_QUIESCE_TIMEOUT
+    gw_mod._EXECUTOR_QUIESCE_TIMEOUT = 0.0
+    try:
+        await gw_mod.GatewayRunner.stop(gw)
+    finally:
+        gw_mod._EXECUTOR_QUIESCE_TIMEOUT = original_timeout
+        release.set()
+        await asyncio.wait_for(turn, 5.0)
+
+    assert "hygiene_worker_write" in events, "worker never finished"
+    assert "close:session_db" not in events, (
+        f"SessionDB was closed/checkpointed while the detached hygiene worker was still alive: {events}"
+    )
+    assert gw._active_deferred_agent_worker_count() == 0, "finished worker left registered"

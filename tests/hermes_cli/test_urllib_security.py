@@ -411,75 +411,37 @@ def test_hermes_owned_opener_uses_resolved_https_context(monkeypatch):
     assert getattr(https_handlers[0], "_context", None) is context
 
 
-def test_resolved_https_context_prefers_configured_ca_bundle(monkeypatch, tmp_path):
+def test_resolved_https_context_defers_to_the_platform_store(monkeypatch, tmp_path):
+    """Hermes-owned urllib openers verify against the OS certificate store.
+
+    None means "urllib's default context", which — with truststore installed
+    process-wide — IS the platform verifier. There is no CA-bundle ladder
+    here any more: a stale or bogus env var must not steer or break trust,
+    which is precisely what the removed env/certifi ladder used to do.
+    """
     import hermes_cli.urllib_security as urllib_security
-
-    _clear_ca_bundle_env(monkeypatch)
-    ca_bundle = tmp_path / "corporate-ca.pem"
-    ca_bundle.touch()
-    expected_context = ssl.create_default_context()
-    seen: list[str | None] = []
-
-    def create_default_context(*, cafile=None):
-        seen.append(cafile)
-        return expected_context
-
-    monkeypatch.setenv("HERMES_CA_BUNDLE", str(ca_bundle))
-    monkeypatch.setattr(ssl, "create_default_context", create_default_context)
-
-    assert urllib_security._resolved_https_context() is expected_context
-    assert seen == [str(ca_bundle)]
-
-
-def test_resolved_https_context_uses_certifi_on_macos(monkeypatch):
-    import certifi
-    import hermes_cli.urllib_security as urllib_security
-
-    _clear_ca_bundle_env(monkeypatch)
-    expected_context = ssl.create_default_context()
-    seen: list[str | None] = []
-
-    def create_default_context(*, cafile=None):
-        seen.append(cafile)
-        return expected_context
-
-    monkeypatch.setattr(urllib_security.sys, "platform", "darwin")
-    monkeypatch.setattr(certifi, "where", lambda: "/certifi/cacert.pem")
-    monkeypatch.setattr(ssl, "create_default_context", create_default_context)
-
-    assert urllib_security._resolved_https_context() is expected_context
-    assert seen == ["/certifi/cacert.pem"]
-
-
-def test_invalid_ca_bundle_falls_back_to_certifi_on_macos(monkeypatch, tmp_path):
-    import certifi
-    import hermes_cli.urllib_security as urllib_security
-
-    _clear_ca_bundle_env(monkeypatch)
-    missing_bundle = tmp_path / "missing-ca.pem"
-    expected_context = ssl.create_default_context()
-    seen: list[str | None] = []
-
-    def create_default_context(*, cafile=None):
-        seen.append(cafile)
-        return expected_context
-
-    monkeypatch.setenv("HERMES_CA_BUNDLE", str(missing_bundle))
-    monkeypatch.setattr(urllib_security.sys, "platform", "darwin")
-    monkeypatch.setattr(certifi, "where", lambda: "/certifi/cacert.pem")
-    monkeypatch.setattr(ssl, "create_default_context", create_default_context)
-
-    assert urllib_security._resolved_https_context() is expected_context
-    assert seen == ["/certifi/cacert.pem"]
-
-
-def test_resolved_https_context_keeps_stdlib_default_off_macos(monkeypatch):
-    import hermes_cli.urllib_security as urllib_security
-
-    _clear_ca_bundle_env(monkeypatch)
-    monkeypatch.setattr(urllib_security.sys, "platform", "linux")
 
     assert urllib_security._resolved_https_context() is None
+
+    for var in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        monkeypatch.setenv(var, str(tmp_path / "nope.pem"))
+    assert urllib_security._resolved_https_context() is None
+
+
+def test_resolved_https_context_installs_the_platform_verifier():
+    """Resolving trust for a Hermes opener must put truststore in force.
+
+    A stdlib urllib request is the call path certifi never covered (the
+    llama.cpp engine download among them), so the install has to happen here
+    and not only on the httpx side.
+    """
+    import ssl
+
+    import hermes_cli.urllib_security as urllib_security
+
+    urllib_security._resolved_https_context()
+
+    assert ssl.SSLContext.__module__.startswith("truststore")
 
 
 def test_installed_https_context_is_preserved(monkeypatch):

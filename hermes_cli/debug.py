@@ -45,7 +45,7 @@ def _pending_file() -> Path:
 
 def _load_pending() -> list[dict]:
     try:
-        data = json.loads(_pending_file().read_text(encoding="utf-8"))
+        data = json.loads(_pending_file().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return []
     if not isinstance(data, list):

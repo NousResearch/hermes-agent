@@ -22,6 +22,7 @@ _PHASE_TEXT = {
     # Codex Responses (non-stream request path)
     "first_event": "{n}s waiting for the first provider event",
     "reconnect": "{n}s waiting for the first provider event after reconnect",
+    "pre_progress": "provider stream open; {n}s without substantive model progress",
     "post_event": "provider stream active; {n}s without stream events",
     # Chat-completions streaming path
     "first_chunk": "{n}s waiting for the first stream chunk",
@@ -43,18 +44,19 @@ def wait_notice_text(model: str, silence_secs: float, phase: str,
 def codex_watchdog_deadline(*, stale_timeout: float, ttfb_enabled: bool, ttfb_timeout: float,
     last_event_ts: Optional[float], last_progress_ts: Optional[float],
     retry_started_ts: Optional[float], call_start: float, idle_enabled: bool,
-    idle_timeout: float, idle_requires_progress: bool, elapsed: float) -> Optional[tuple[str, float]]:
+    idle_timeout: float, idle_requires_progress: bool, elapsed: float,
+    progress_timeout: float = 0.0) -> Optional[tuple[str, float]]:
     """Earliest enabled Codex watchdog as ``(label, seconds_until_it_fires)``; None when
     none applies (disabled/infinite, or its deadline already passed)."""
     deadlines: list[tuple[str, float]] = []
     if math.isfinite(stale_timeout):
         deadlines.append(("wall-clock stale", stale_timeout))
-    if retry_started_ts is not None:
+    attempt_offset = max(0.0, retry_started_ts - call_start) if retry_started_ts is not None else 0.0
+    if last_event_ts is None:
         if ttfb_enabled and math.isfinite(ttfb_timeout):
-            deadlines.append(("TTFB", max(0.0, retry_started_ts - call_start) + ttfb_timeout))
-    elif last_event_ts is None:
-        if ttfb_enabled and math.isfinite(ttfb_timeout):
-            deadlines.append(("TTFB", ttfb_timeout))
+            deadlines.append(("TTFB", attempt_offset + ttfb_timeout))
+    elif progress_timeout > 0 and last_progress_ts is None:
+        deadlines.append(("first progress", attempt_offset + progress_timeout))
     elif (not idle_requires_progress or last_progress_ts is not None) and idle_enabled and math.isfinite(idle_timeout):
         deadlines.append(("stream idle", max(0.0, last_event_ts - call_start) + idle_timeout))
     if not deadlines:

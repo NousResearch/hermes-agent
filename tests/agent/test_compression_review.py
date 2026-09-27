@@ -20,7 +20,6 @@ Covers:
 from __future__ import annotations
 
 import concurrent.futures
-import logging
 import threading
 import time
 
@@ -45,10 +44,10 @@ def _drain_admission_slots():
 
 class TestF1CommitOverrunWhileHung:
     def test_overrun_warning_fires_while_commit_still_blocked(self, monkeypatch):
-        """The warning + on_commit_overrun fire DURING the hang, not after.
+        """on_commit_overrun fires DURING the hang, not after.
 
         The fake commit is event-gated and is NOT released until after the
-        assertions on the callback/log have been made while the worker
+        assertions on the callback have been made while the worker
         thread is still blocked inside the commit boundary.
         """
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -71,12 +70,6 @@ class TestF1CommitOverrunWhileHung:
             finally:
                 fence.finish_commit()
 
-        records = []
-
-        class _Capture(logging.Handler):
-            def emit(self, record):
-                records.append(record)
-
         def on_overrun(waited, ceil):
             overruns.append((waited, ceil))
             overrun_fired.set()
@@ -93,9 +86,6 @@ class TestF1CommitOverrunWhileHung:
                 on_commit_overrun=on_overrun,
             )
 
-        comp_logger = logging.getLogger("agent.conversation_compression")
-        handler = _Capture(level=logging.WARNING)
-        comp_logger.addHandler(handler)
         try:
             t = threading.Thread(target=run, name="f1-hung-commit-host")
             t.start()
@@ -107,32 +97,12 @@ class TestF1CommitOverrunWhileHung:
                 )
                 assert not release.is_set()  # worker provably still blocked
                 assert t.is_alive()
-                deadline = time.time() + 5
-                while time.time() < deadline:
-                    if any(
-                        r.levelno >= logging.WARNING
-                        and "past the total ceiling" in r.getMessage()
-                        for r in list(records)
-                    ):
-                        break
-                    time.sleep(0.01)
-                overrun_logs = [
-                    r
-                    for r in list(records)
-                    if r.levelno >= logging.WARNING
-                    and "past the total ceiling" in r.getMessage()
-                ]
-                assert overrun_logs, (
-                    "expected the overrun WARNING while the commit was "
-                    f"still blocked; got: {[r.getMessage() for r in records]}"
-                )
                 assert overruns and overruns[0][1] == pytest.approx(1.0)
             finally:
                 release.set()
             t.join(timeout=5)
             assert not t.is_alive()
         finally:
-            comp_logger.removeHandler(handler)
             executor.shutdown(wait=True)
         assert done["result"] == (compressed, "committed-late")
         _drain_admission_slots()

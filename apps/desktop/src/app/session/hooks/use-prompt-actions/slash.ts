@@ -20,6 +20,7 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning-slash'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
+import { markCompressDeferred } from '@/store/compaction'
 import { setComposerDraft } from '@/store/composer'
 import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
@@ -363,7 +364,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             renderSlashOutput(
               queued === 'queued'
                 ? 'session busy — message queued to send when the current turn finishes'
-                : 'session busy — /interrupt the current turn before sending this command'
+                : 'session busy — stop the current reply first (Stop button or Esc), then send this command'
             )
 
             return
@@ -596,6 +597,58 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
+        // /background (alias /bg) starts a detached background turn via the
+        // gateway's prompt.background RPC — the TUI's path
+        // (ui-tui/src/app/slash/commands/session.ts). It must NOT go through
+        // runExec: the slash worker's HermesCLI prints the completion from a
+        // fire-and-forget thread after process_command already returned, past
+        // the worker's stdout capture window, so the result never reached the
+        // conversation that started the task (#97635, #57444). The RPC replies
+        // immediately with the task id; the response itself arrives later as a
+        // background.complete gateway event, which the gateway-event dispatcher
+        // appends to this session.
+        background: async ctx => {
+          const text = ctx.arg.trim()
+
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if (!text) {
+            renderSlashOutput(
+              'Usage: /background <prompt> — the task runs in a separate session and the result appears here when done.'
+            )
+
+            return
+          }
+
+          try {
+            const result = await requestGateway<{ task_id?: string }>('prompt.background', {
+              session_id: sessionId,
+              text
+            })
+
+            renderSlashOutput(
+              result.task_id
+                ? `Background task ${result.task_id} started — you can continue chatting; the result will appear here when done.`
+                : 'Background task started — you can continue chatting; the result will appear here when done.'
+            )
+          } catch (err) {
+            // Older gateways without the dedicated RPC still have the
+            // slash-worker route — same compatibility fallback as runRpc.
+            if (isMissingRpcMethod(err)) {
+              await runExec(ctx)
+
+              return
+            }
+
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
         // /compress (alias /compact) runs the gateway's dedicated
         // session.compress RPC — the TUI's path
         // (ui-tui/src/app/slash/commands/session.ts). It must NOT go through
@@ -676,6 +729,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // running there; it pushes session.info + a `compacted` status edge
             // when the host finishes. Not an error (#97948).
             if (result?.status === 'pending') {
+              // Hand the completion off to the status edge: this reply carries
+              // no summary and the host is still working, so nothing below
+              // runs for a deferred compress.
+              markCompressDeferred(sessionId)
+
               const pendingMessage = result.message || 'compression still running in the background'
               notify({ durationMs: 8_000, id: noticeId, kind: 'info', message: pendingMessage })
 

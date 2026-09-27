@@ -156,6 +156,7 @@ class ProfileRow(Result):
     display_name: str = ""
     skill_count: int = 0
     previous_names: list[str] = Field(default_factory=list)
+    role: Literal["setup"] | None = None
     last_session: ProfileSessionPreview | None = None
     worker_session: ProfileWorkerSession | None = None
     canonical_session: ProfileCanonicalSession | None = None
@@ -356,6 +357,7 @@ class OnboardingAnswers(Params):
     layout: str | None = None
     focus: list[str] | None = None
     connectors: list[str] | None = None
+    plugins: list[str] | None = None
     # The onboarding store may carry extra UI-only keys; the writer ignores unknown ones.
     model_config = Params.model_config | {"extra": "allow"}
 
@@ -373,6 +375,32 @@ class ProfilesRememberOnboardingResult(Result):
 method("profiles.remember_onboarding", params=ProfilesRememberOnboardingParams,
        result=ProfilesRememberOnboardingResult,
        doc="Write the onboarding facts into the default profile's user memory and confirm they landed.")
+
+
+# ── onboarding (methods_onboarding) ───────────────────────────────────────────────────────────
+
+
+class OnboardingEnsureSetupProfileResult(Result):
+    """``created`` is false when an existing setup profile was found (and returned untouched)."""
+
+    name: str
+    path: str
+    created: bool
+    role: Literal["setup"] = "setup"
+
+
+method("onboarding.ensure_setup_profile", params=Params, result=OnboardingEnsureSetupProfileResult,
+       doc="Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role.")
+
+
+class OnboardingResetSetupProfileResult(Result):
+    name: str
+    path: str
+    reset: bool = True
+
+
+method("onboarding.reset_setup_profile", params=Params, result=OnboardingResetSetupProfileResult,
+       doc="Restore the setup profile to its created state in place (soul, memories, skills, sessions).")
 
 
 # ── vault (methods_vault) ─────────────────────────────────────────────────────────────────────
@@ -586,11 +614,23 @@ class SubagentSnapshot(Result):
     accepting_steer: bool | None = None
 
 
+class FailedDelegation(Result):
+    """``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation."""
+
+    delegation_id: str
+    task_index: int = 0
+    status: str
+    goal: str = ""
+    error: str | None = None
+    dispatched_at: float | None = None
+    completed_at: float | None = None
+
+
 class SubagentListResult(Result):
-    """``delegations`` is reserved for async delegation records and is currently always empty."""
+    """``delegations``: recently failed async delegation tasks for the session (durable store), newest first."""
 
     subagents: list[SubagentSnapshot] = Field(default_factory=list)
-    delegations: list[dict[str, JsonValue]] = Field(default_factory=list)
+    delegations: list[FailedDelegation] = Field(default_factory=list)
 
 
 method("subagent.list", params=SessionParams, result=SubagentListResult,

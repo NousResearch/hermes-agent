@@ -295,7 +295,8 @@ def fire_overdue_jobs(
         return 0
 
     from cron.jobs import (
-        ONESHOT_GRACE_SECONDS, _ensure_aware, _hermes_now, is_job_runnable, load_jobs,
+        ONESHOT_GRACE_SECONDS, _elapsed_seconds, _ensure_aware, _hermes_now,
+        is_job_runnable, load_jobs,
     )
 
     if now is None:
@@ -312,7 +313,7 @@ def fire_overdue_jobs(
             due_dt = _ensure_aware(datetime.fromisoformat(next_run_at))
         except (ValueError, TypeError):
             continue
-        overdue_seconds = (now - due_dt).total_seconds()
+        overdue_seconds = _elapsed_seconds(now, due_dt)
         if overdue_seconds < grace_minutes * 60:
             continue
         job_id = str(job.get("id") or "")

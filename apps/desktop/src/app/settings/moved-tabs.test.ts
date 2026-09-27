@@ -8,7 +8,7 @@ describe('movedSettingsTabRedirect', () => {
     expect(movedSettingsTabRedirect('?tab=plugins&plugin=demo%2Fplugin')).toBe(
       '/capabilities?tab=plugins&plugin=demo%2Fplugin'
     )
-    expect(movedSettingsTabRedirect('?tab=mcp&server=github')).toBe('/capabilities?tab=mcp&server=github')
+    expect(movedSettingsTabRedirect('?tab=mcp&server=github')).toBe('/capabilities?tab=connectors&server=github')
   })
 
   it('leaves live Settings tabs alone', () => {

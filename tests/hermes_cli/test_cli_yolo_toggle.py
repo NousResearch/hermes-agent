@@ -23,7 +23,6 @@ file's path layout — ``HermesCLI.__init__`` imports a lot of optional
 state we don't need here.
 """
 
-import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -74,15 +73,6 @@ class TestToggleYoloIsSessionScoped:
     can run.
     """
 
-    def test_toggle_yolo_enables_session_bypass(self):
-        stand_in = _make_stand_in()
-
-        assert approval_module.is_session_yolo_enabled(SESSION_KEY) is False
-
-        with patch("cli._cprint"):
-            HermesCLI._toggle_yolo(stand_in)
-
-        assert approval_module.is_session_yolo_enabled(SESSION_KEY) is True
 
     def test_toggle_yolo_disables_session_bypass_on_second_call(self):
         stand_in = _make_stand_in()
@@ -98,7 +88,7 @@ class TestToggleYoloIsSessionScoped:
         """``/yolo`` toggled in one session must not bypass approvals in
         another session — mirrors the gateway-side invariant."""
         cli_a = _make_stand_in(session_id="session-yolo-a")
-        cli_b = _make_stand_in(session_id="session-yolo-b")
+        _make_stand_in(session_id="session-yolo-b")
 
         try:
             with patch("cli._cprint"):

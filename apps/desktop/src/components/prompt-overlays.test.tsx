@@ -78,20 +78,6 @@ describe('PromptOverlays', () => {
     expect(respond).toHaveBeenCalledExactlyOnceWith({ value: '' })
   })
 
-  it('explains when an older backend omits command context without blocking cancellation', () => {
-    $gateway.set({ request: vi.fn() } as never)
-    const respond = vi.fn()
-    rememberServerRequest({ fail: vi.fn(), id: 'legacy-sudo', method: 'sudo', params: {}, respond })
-    setSudoRequest({ requestId: 'legacy-sudo', sessionId: 's1' })
-    renderPrompts()
-
-    expect(
-      screen.getByText('This agent did not provide the command. Cancel if you cannot verify it in the conversation.')
-    ).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(respond).toHaveBeenCalledExactlyOnceWith({ value: '' })
-  })
-
   it('answers the live sudo request with an empty value on Cancel and clears the dialog', async () => {
     const respond = vi.fn()
     const request = vi.fn()

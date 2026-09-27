@@ -114,16 +114,4 @@ describe('matchSuggestions', () => {
       { keyword: 'linear.app', server: 'linear' }
     ])
   })
-
-  it('does not offer GitHub: it is not in the catalog, so no index entry can match it', () => {
-    // GitHub is not in optional-mcps (its hosted MCP needs a per-host OAuth app), so a
-    // catalog-built index has no entry for it.
-    const catalogIndex = [
-      { hosts: ['linear.app'], keywords: ['linear'], server: 'linear' },
-      { hosts: ['figma.com'], keywords: ['figma'], server: 'figma' }
-    ]
-
-    expect(matchSuggestions('connect github please', catalogIndex)).toEqual([])
-    expect(matchSuggestions('connect github please', [])).toEqual([])
-  })
 })

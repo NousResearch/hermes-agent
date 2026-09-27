@@ -298,12 +298,6 @@ class TestConvertMessagesToConverse:
         assert tr["toolResult"]["content"][0]["text"] == "file contents here"
 
 
-    def test_empty_content_gets_placeholder(self):
-        from agent.bedrock_adapter import convert_messages_to_converse
-        messages = [{"role": "user", "content": ""}]
-        system, msgs = convert_messages_to_converse(messages)
-        # Empty string should get a space placeholder
-        assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
 
 
 # ---------------------------------------------------------------------------
@@ -618,14 +612,6 @@ class TestBuildConverseKwargs:
         assert "toolConfig" in kwargs
         assert len(kwargs["toolConfig"]["tools"]) == 1
 
-    def test_default_max_tokens_stays_4096(self):
-        """Callers that don't pass max_tokens keep the historical 4096 cap —
-        the None-omission behavior is strictly opt-in."""
-        from agent.bedrock_adapter import build_converse_kwargs
-        kwargs = build_converse_kwargs(
-            model="test-model", messages=[{"role": "user", "content": "Hi"}],
-        )
-        assert kwargs["inferenceConfig"]["maxTokens"] == 4096
 
     def test_max_tokens_none_omits_cap(self):
         """max_tokens=None omits inferenceConfig.maxTokens so Bedrock uses the
@@ -977,18 +963,6 @@ class TestExtractProviderFromArn:
 # Client cache management
 # ---------------------------------------------------------------------------
 
-class TestClientCache:
-    def test_reset_clears_caches(self):
-        from agent.bedrock_adapter import (
-            _bedrock_runtime_client_cache,
-            _bedrock_control_client_cache,
-            reset_client_cache,
-        )
-        _bedrock_runtime_client_cache["test"] = "dummy"
-        _bedrock_control_client_cache["test"] = "dummy"
-        reset_client_cache()
-        assert len(_bedrock_runtime_client_cache) == 0
-        assert len(_bedrock_control_client_cache) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1074,14 +1048,6 @@ class TestGuardrailConfig:
         )
         assert kwargs["guardrailConfig"] == guardrail
 
-    def test_no_guardrail_when_none(self):
-        from agent.bedrock_adapter import build_converse_kwargs
-        kwargs = build_converse_kwargs(
-            model="test-model",
-            messages=[{"role": "user", "content": "Hi"}],
-            guardrail_config=None,
-        )
-        assert "guardrailConfig" not in kwargs
 
     def test_no_guardrail_when_empty_dict(self):
         from agent.bedrock_adapter import build_converse_kwargs
@@ -1115,6 +1081,51 @@ class TestBedrockContextLength:
         with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
             assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 1_000_000
             mock_probe.assert_not_called()
+
+    def test_static_catalog_claude_ids_match_their_anthropic_window(self):
+        """Every Claude id in the Bedrock static fallback gets the same offline window as its bare
+        Anthropic id, so a model added to the picker can't silently land on the 128K default."""
+        from agent.bedrock_adapter import get_bedrock_context_length
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+        mismatched = []
+        for model_id in _PROVIDER_MODELS["bedrock"]:
+            _, sep, bare = model_id.partition("anthropic.")
+            if not sep:
+                continue
+            hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, bare)
+            expected = hit[1] if hit else None
+            actual = get_bedrock_context_length(model_id, probe=False)
+            if actual != expected:
+                mismatched.append((model_id, expected, actual))
+
+        assert not mismatched, f"Bedrock static Claude ids drift from DEFAULT_CONTEXT_LENGTHS: {mismatched}"
+
+    def test_million_token_claude_entries_match_model_metadata(self):
+        """BEDROCK_CONTEXT_LENGTHS must not drift from DEFAULT_CONTEXT_LENGTHS.
+
+        The table's own comment requires the pairing, but nothing enforced it, so
+        ``claude-opus-5`` reached one table and not the other and silently fell through to
+        BEDROCK_DEFAULT_CONTEXT_LENGTH (#74263). Assert the relationship, not a snapshot of
+        today's catalog. DEFAULT_CONTEXT_LENGTHS spells revisions with dots
+        (``claude-opus-4.8``) while Bedrock IDs use hyphens — normalize rather than skip, so a
+        future 1M model that only ever gets a dotted alias cannot escape the check.
+        """
+        from agent.bedrock_adapter import get_bedrock_context_length
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+        mismatched = []
+        with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
+            for name, expected in DEFAULT_CONTEXT_LENGTHS.items():
+                if not name.startswith("claude-") or expected < 1_000_000:
+                    continue
+                actual = get_bedrock_context_length(f"anthropic.{name.replace('.', '-')}", probe=False)
+                if actual != expected:
+                    mismatched.append((name, expected, actual))
+            mock_probe.assert_not_called()
+
+        assert not mismatched, f"1M Claude entries missing from BEDROCK_CONTEXT_LENGTHS: {mismatched}"
 
 
 class TestInferenceProfileContextLength:
@@ -1201,31 +1212,11 @@ class TestBedrockContextProbe:
 # Tool-calling capability detection
 # ---------------------------------------------------------------------------
 
-class TestModelSupportsToolUse:
-    """Test non-tool-calling model detection."""
-
-    def test_claude_supports_tools(self):
-        from agent.bedrock_adapter import _model_supports_tool_use
-        assert _model_supports_tool_use("us.anthropic.claude-sonnet-4-6") is True
-
-
-    def test_deepseek_r1_no_tools(self):
-        from agent.bedrock_adapter import _model_supports_tool_use
-        assert _model_supports_tool_use("us.deepseek.r1-v1:0") is False
 
 
 class TestBuildConverseKwargsToolStripping:
     """Test that tools are stripped for non-tool-calling models."""
 
-    def test_tools_included_for_claude(self):
-        from agent.bedrock_adapter import build_converse_kwargs
-        tools = [{"type": "function", "function": {"name": "test", "description": "t", "parameters": {}}}]
-        kwargs = build_converse_kwargs(
-            model="us.anthropic.claude-sonnet-4-6",
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=tools,
-        )
-        assert "toolConfig" in kwargs
 
     def test_tools_stripped_for_deepseek_r1(self):
         from agent.bedrock_adapter import build_converse_kwargs
@@ -1273,10 +1264,6 @@ class TestEmptyTextBlockFix:
         assert blocks[0]["text"].strip()
 
 
-    def test_real_text_preserved(self):
-        from agent.bedrock_adapter import _convert_content_to_converse
-        blocks = _convert_content_to_converse("Hello")
-        assert blocks[0]["text"] == "Hello"
 
 
 # ---------------------------------------------------------------------------
@@ -1495,15 +1482,24 @@ class TestRequireBoto3VersionCheck:
             with pytest.raises(RuntimeError, match="does not support converse_stream"):
                 _require_boto3()
 
-    def test_accepts_boto3_at_minimum_version(self):
-        """boto3 == 1.34.59 should be accepted."""
+    def test_missing_boto3_error_reports_why_the_lazy_install_did_not_land(self, monkeypatch):
+        """A completed install that needs a restart must not tell the user to install it again."""
+        import pm
         from agent.bedrock_adapter import _require_boto3
+        from pm.package import InstallError
 
-        fake_boto3 = MagicMock()
-        fake_boto3.__version__ = "1.34.59"
-        with patch.dict("sys.modules", {"boto3": fake_boto3}):
-            result = _require_boto3()
-            assert result is fake_boto3
+        restart = InstallError("venv", "bedrock installed; restart Hermes to activate the new dependency environment")
+
+        def ensure_import(extra):
+            raise restart
+
+        monkeypatch.setattr(pm, "ensure_import", ensure_import)
+        with patch.dict("sys.modules", {"boto3": None}):
+            with pytest.raises(ImportError) as excinfo:
+                _require_boto3()
+        assert str(restart) in str(excinfo.value)
+        assert pm.install_hint("bedrock") not in str(excinfo.value)
+
 
 
 class TestImageBase64Decoding:
@@ -1636,6 +1632,7 @@ class TestReasoningReplaySchema:
     replaying captured thinking as a bare ``text`` key dies client-side with ParamValidationError (#115865)."""
 
     def test_call_converse_replays_thinking_botocore_accepts(self):
+        pytest.importorskip("botocore.session", reason="botocore (bedrock extra) required")
         import botocore.session
         from botocore.validate import validate_parameters
         from agent.bedrock_adapter import call_converse

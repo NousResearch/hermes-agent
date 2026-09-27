@@ -14,6 +14,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { SidebarMenuButton } from '@/components/ui/sidebar'
 import type { DesktopRegistryConnection } from '@/global'
 import { useI18n } from '@/i18n'
 import {
@@ -119,7 +120,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
     <div
       aria-busy={pendingConnectionId !== null}
       aria-label={t.settings.connections.title}
-      className={cn('min-w-20 shrink overflow-hidden', compact ? 'h-full max-w-40' : 'max-w-72')}
+      className={cn('min-w-20 shrink', compact ? 'h-full max-w-40' : 'w-full')}
       data-slot="connection-switcher"
       role="group"
     >
@@ -157,7 +158,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
               searchInputRef.current?.select()
             }
           }}
-          side="top"
+          side={compact ? 'top' : 'bottom'}
         >
           {searchable && (
             <>
@@ -243,29 +244,50 @@ function ConnectionSwitcherTrigger({
   title,
   ...triggerProps
 }: ConnectionMenuProps & React.ComponentProps<'button'>) {
-  return (
+  const sharedProps = {
+    ...triggerProps,
+    'aria-label': activeConnection ? `${title}: ${activeConnection.label}` : title,
+    title: activeConnection ? connectionTooltip(activeConnection) : title,
+    className: cn(
+      'data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground',
+      triggerProps.className
+    )
+  }
+
+  const content = (
+    <>
+      {!compact && activeConnection && (
+        <ConnectionGlyph className="size-4 [&>svg]:size-4" connection={activeConnection} />
+      )}
+      <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+        {pending && <Loader2 aria-hidden="true" className="size-3 shrink-0 animate-spin" />}
+        {compact && activeConnection ? (
+          <ConnectionLabel connection={activeConnection} />
+        ) : (
+          <span className="truncate">{activeConnection?.label ?? title}</span>
+        )}
+      </span>
+      <Codicon aria-hidden="true" className="shrink-0 opacity-60" name="chevron-down" size="0.875rem" />
+    </>
+  )
+
+  return compact ? (
     <Button
-      {...triggerProps}
-      aria-label={activeConnection ? `${title}: ${activeConnection.label}` : title}
+      {...sharedProps}
       className={cn(
-        'w-full min-w-0 justify-between overflow-hidden px-1 text-(--ui-text-secondary) data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground',
-        compact && 'h-full min-h-0 rounded-none px-1.5 text-[0.6875rem] font-normal',
-        triggerProps.className
+        'h-full min-h-0 w-full min-w-0 justify-between rounded-none px-1.5 text-[0.6875rem] font-normal text-(--ui-text-secondary)',
+        sharedProps.className
       )}
       size="xs"
       type="button"
       variant="ghost"
     >
-      <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-        {pending && <Loader2 aria-hidden="true" className="size-3 shrink-0 animate-spin" />}
-        {activeConnection ? (
-          <ConnectionLabel connection={activeConnection} />
-        ) : (
-          <span className="truncate">{title}</span>
-        )}
-      </span>
-      <Codicon aria-hidden="true" className="shrink-0 opacity-60" name="chevron-down" size="0.875rem" />
+      {content}
     </Button>
+  ) : (
+    <SidebarMenuButton {...sharedProps} size="nav" type="button" variant="nav">
+      {content}
+    </SidebarMenuButton>
   )
 }
 

@@ -1,11 +1,15 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as renderComponent, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
+import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { SidebarProvider } from '@/components/ui/sidebar'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { $findInPage } from '@/store/find-in-page'
 
 import { ConnectionSwitcher } from './connection-switcher'
+
+const render = (ui: ReactNode) => renderComponent(<SidebarProvider>{ui}</SidebarProvider>)
 
 // Radix menus use pointer capture; jsdom does not implement it.
 Element.prototype.hasPointerCapture ??= () => false
@@ -63,7 +67,7 @@ const connection = (id: string, label: string, kind: 'local' | 'remote' = 'remot
   tokenSet: false
 })
 
-const registry = (connections: ReturnType<typeof connection>[]): DesktopConnectionsRegistry => ({
+const registry = (connections: DesktopConnectionsRegistry['connections']): DesktopConnectionsRegistry => ({
   connections,
   primary: connections[0]?.id ?? 'local',
   secureTokenStorage: true,
@@ -87,21 +91,25 @@ describe('ConnectionSwitcher', () => {
     expect(screen.queryByRole('group', { name: 'Registered gateways' })).toBeNull()
   })
 
-  it('shows a named source selector instead of profile-like gateway glyphs', () => {
+  it.each([false, true])('switches gateways and opens management (compact=%s)', compact => {
     $connectionsRegistry.set(
       registry([
         connection('local', 'This device', 'local'),
-        connection('homelab', 'Homelab'),
+        { ...connection('homelab', 'Homelab'), url: 'https://lab.example.com' },
         connection('work-vps', 'Work VPS')
       ])
     )
-    render(<ConnectionSwitcher onConnect={onConnect} />)
+    render(<ConnectionSwitcher compact={compact} onConnect={onConnect} />)
 
     const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
 
     expect(trigger.textContent).toContain('This device')
+    expect(trigger.title).toBe('This device')
+    expect(trigger.closest('[data-slot="connection-switcher"]')?.classList.contains('overflow-hidden')).toBe(false)
 
     fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    expect(trigger.getAttribute('data-state')).toBe('open')
+    expect(trigger.className).toContain('data-[state=open]:bg-(--ui-control-active-background)')
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Homelab' }))
     expect(selectConnection).toHaveBeenCalledWith('homelab')
 
@@ -109,6 +117,11 @@ describe('ConnectionSwitcher', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Manage gateways…' }))
     expect(onConnect).toHaveBeenCalledTimes(1)
     expect(selectConnection).toHaveBeenCalledTimes(1)
+
+    act(() => $activeConnectionId.set('homelab'))
+    expect(screen.getByRole('button', { name: 'Registered gateways: Homelab' }).title).toBe(
+      'Homelab\nhttps://lab.example.com'
+    )
   })
 
   it('keeps source controls stable while a remote is opening', () => {

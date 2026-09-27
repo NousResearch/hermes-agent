@@ -97,6 +97,10 @@ interface PaneChrome extends PaneSizing {
   headerVeto?: boolean
   /** Page-owned controls in the panel's normal tab-header space. */
   headerContent?: () => React.ReactNode
+  /** Internal navigation chrome: the shell shows the connection selector above
+   *  a side zone with a visible opted-in pane and multiple saved connections.
+   *  Independent of the active tab and tab-strip preference. */
+  connectionScoped?: boolean
   /** A lead NODE for this pane's TAB, rendered before the label. A session
    *  pane (main workspace + tiles) passes its live `SessionStatusDot` here so
    *  the tab and the sidebar row render status/color from the ONE primitive

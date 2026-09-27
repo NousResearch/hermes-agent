@@ -609,6 +609,42 @@ def _install_startup_entry(script_path: Path) -> Path:
     return entry
 
 
+def _venv_launcher_for_base_interpreter(python_exe: str, prefix: Path | None = None) -> str | None:
+    """Return the venv's console ``python.exe`` when *python_exe* is that venv's base interpreter, else None.
+
+    A uv venv's ``venv\\Scripts\\python.exe`` is a trampoline that re-execs the base CPython, so a RUNNING
+    gateway shows ``argv[0] = ...\\uv\\python\\cpython-3.11-...\\python.exe`` with the venv shim only as its
+    parent (#106489). Replaying that captured argv spawns the base interpreter with no venv binding, which
+    dies at the first site-packages import (``ModuleNotFoundError: No module named 'yaml'``). Match the
+    interpreter against the ``home=`` line of the ``pyvenv.cfg`` of the venv this process runs from
+    (*prefix*, default ``sys.prefix`` — None when that is not a venv) and rewrite to the venv launcher;
+    every other interpreter is returned unchanged.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        if prefix is not None:
+            venv_root = Path(prefix).resolve()
+        else:
+            venv_root = Path(sys.prefix).resolve()
+            if Path(sys.base_prefix).resolve() == venv_root:
+                return None  # this process does not run from a venv — nothing to map
+        cfg_home = None
+        for line in (venv_root / "pyvenv.cfg").read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key.strip().casefold() == "home":
+                cfg_home = Path(value.strip().strip('"'))
+                break
+        if cfg_home is None:
+            return None
+        if os.path.normcase(str(Path(python_exe).parent.resolve())) != os.path.normcase(str(cfg_home.resolve())):
+            return None
+        venv_python = venv_root / "Scripts" / "python.exe"
+        return str(venv_python) if venv_python.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
 def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     """Return (hidden_console_python, venv_dir, extra_pythonpath) for detached runs. ``extra_pythonpath``
     is always empty now; the tuple shape is kept so every call site stays unchanged.
@@ -631,6 +667,12 @@ def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     ``pythonw.exe``. When the sibling console ``python.exe`` exists, swap to it so respawns and regenerated
     launchers get the hidden-console design instead of resurrecting the console-less daemon (the
     #54220/#56747 flash class, plus the ``sys.stderr is None`` startup-crash class from #71671).
+    - uv base-interpreter argvs: the respawn paths replay the RUNNING gateway's captured argv, whose
+    ``argv[0]`` is the base interpreter (the trampoline's child), not the venv shim (#106489). When that
+    interpreter is the base of the venv this process runs from, rewrite it to the venv launcher — the
+    grandparent (``venv_dir``) then points at the real venv too, so ``VIRTUAL_ENV`` stops naming the uv
+    install dir. Callers that already pass the venv python are unaffected: its parent directory never
+    equals the ``pyvenv.cfg`` ``home=``.
     """
     p = Path(python_exe)
     if p.name.lower() in ("pythonw.exe", "pythonw"):
@@ -643,6 +685,10 @@ def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
             # Can't stat the sibling — keep the original interpreter: a console-less gateway is
             # worse than a hidden-console one, but a failed respawn is worse still.
             pass
+    venv_launcher = _venv_launcher_for_base_interpreter(python_exe)
+    if venv_launcher is not None:
+        p = Path(venv_launcher)
+        python_exe = venv_launcher
     return (python_exe, p.parent.parent, [])
 
 
@@ -679,7 +725,8 @@ def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str
     nothing flashes (#54220/#56747; the old pythonw.exe rewrite here produced a console-less gateway whose
     every console-subsystem child allocated a visible conhost). This helper now only normalizes the
     interpreter via ``_resolve_detached_python`` and supplies the stable cwd + env overlay (HERMES_HOME,
-    VIRTUAL_ENV, PYTHONPATH) so the respawn doesn't depend on the watcher's transient working directory.
+    VIRTUAL_ENV, __PYVENV_LAUNCHER__, PYTHONPATH) so the respawn doesn't depend on the watcher's transient
+    working directory.
     """
     if not run_argv or sys.platform != "win32":
         return run_argv, "", {}
@@ -697,6 +744,15 @@ def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str
     env_overlay: dict[str, str] = {"PYTHONIOENCODING": "utf-8", "HERMES_GATEWAY_DETACHED": "1", "VIRTUAL_ENV": str(venv_dir)}
     if hermes_home:
         env_overlay["HERMES_HOME"] = hermes_home
+    # Belt-and-braces (#106489): when the respawn interpreter belongs to the venv this process runs
+    # from, bind the child explicitly so a base-interpreter argv still resolves venv site-packages
+    # even if the launcher rewrite in _resolve_detached_python is ever bypassed.
+    try:
+        this_venv = Path(sys.prefix).resolve()
+        if Path(sys.base_prefix).resolve() != this_venv and Path(venv_dir).resolve() == this_venv:
+            env_overlay["__PYVENV_LAUNCHER__"] = str(this_venv / "Scripts" / "python.exe")
+    except OSError:
+        pass
     _prepend_pythonpath(env_overlay, [str(PROJECT_ROOT), *extra_pythonpath])
     return [hidden_console_python, *run_argv[1:]], _stable_gateway_working_dir(PROJECT_ROOT), env_overlay
 

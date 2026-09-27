@@ -447,14 +447,14 @@ class PluginLlm:
         self, messages: List[Dict[str, Any]], *, provider: Optional[str] = None, model: Optional[str] = None,
         temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         timeout: Optional[float] = None, agent_id: Optional[str] = None, profile: Optional[str] = None,
-        purpose: Optional[str] = None, task: Optional[str] = None,
+        purpose: Optional[str] = None, task: Optional[str] = None, default_model_only: bool = False,
     ) -> PluginLlmCompleteResult:
         """Run a host-owned chat completion against the user's active model.
 
         ``provider``/``model``/``agent_id``/``profile`` are each gated by
         ``plugins.entries.<id>.llm.allow_*_override``. ``task`` routes through a
         plugin-registered auxiliary slot (see :func:`_check_task`)."""
-        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout, default_model_only=default_model_only)
         return self._finish("complete", agent, kw, self._invoke_sync(kw), purpose)
 
     def complete_structured(
@@ -462,25 +462,27 @@ class PluginLlm:
         json_mode: bool = False, schema_name: Optional[str] = None, system_prompt: Optional[str] = None,
         provider: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None,
         max_tokens: Optional[int] = None, timeout: Optional[float] = None, agent_id: Optional[str] = None,
-        profile: Optional[str] = None, purpose: Optional[str] = None, task: Optional[str] = None,
+        profile: Optional[str] = None, purpose: Optional[str] = None, task: Optional[str] = None, default_model_only: bool = False,
     ) -> PluginLlmStructuredResult:
         """Run a bounded host-owned structured completion.
 
         ``input`` accepts text and image blocks. With ``json_mode=True`` or a
         ``json_schema`` the response is parsed (and validated when the optional
-        ``jsonschema`` package is installed) into ``result.parsed``."""
+        ``jsonschema`` package is installed) into ``result.parsed``.
+        ``default_model_only=True`` uses the configured main provider/model without
+        auxiliary routing or recovery to another route; unavailable means raise."""
         spec = _structured_spec("complete_structured", instructions, input, system_prompt, json_mode, json_schema, schema_name)
-        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec, default_model_only=default_model_only)
         return self._finish("complete_structured", agent, kw, self._invoke_sync(kw), purpose, spec)
 
     async def acomplete(
         self, messages: List[Dict[str, Any]], *, provider: Optional[str] = None, model: Optional[str] = None,
         temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         timeout: Optional[float] = None, agent_id: Optional[str] = None, profile: Optional[str] = None,
-        purpose: Optional[str] = None, task: Optional[str] = None,
+        purpose: Optional[str] = None, task: Optional[str] = None, default_model_only: bool = False,
     ) -> PluginLlmCompleteResult:
         """Async sibling of :meth:`complete`."""
-        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout, default_model_only=default_model_only)
         return self._finish("acomplete", agent, kw, await self._invoke_async(kw), purpose)
 
     async def acomplete_structured(
@@ -488,17 +490,18 @@ class PluginLlm:
         json_mode: bool = False, schema_name: Optional[str] = None, system_prompt: Optional[str] = None,
         provider: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None,
         max_tokens: Optional[int] = None, timeout: Optional[float] = None, agent_id: Optional[str] = None,
-        profile: Optional[str] = None, purpose: Optional[str] = None, task: Optional[str] = None,
+        profile: Optional[str] = None, purpose: Optional[str] = None, task: Optional[str] = None, default_model_only: bool = False,
     ) -> PluginLlmStructuredResult:
         """Async sibling of :meth:`complete_structured`."""
         spec = _structured_spec("acomplete_structured", instructions, input, system_prompt, json_mode, json_schema, schema_name)
-        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec, default_model_only=default_model_only)
         return self._finish("acomplete_structured", agent, kw, await self._invoke_async(kw), purpose, spec)
 
     def _gate(
         self, provider: Optional[str], model: Optional[str], agent_id: Optional[str], profile: Optional[str],
         task: Optional[str], messages: Optional[List[Dict[str, Any]]], temperature: Optional[float],
         max_tokens: Optional[int], timeout: Optional[float], spec: Optional[Dict[str, Any]] = None,
+        *, default_model_only: bool = False,
     ) -> tuple[Optional[str], Dict[str, Any]]:
         """Trust gate (task first, then overrides), then — for a structured ``spec`` —
         build messages/response_format (input-shape errors surface only after trust
@@ -506,6 +509,8 @@ class PluginLlm:
         order: messages, provider_override, model_override, profile_override,
         temperature, max_tokens, timeout, extra_body, task."""
         policy = self._policy_loader(self._plugin_id)
+        if default_model_only and (provider or model or profile or task):
+            raise ValueError("default_model_only cannot be combined with provider, model, profile or task")
         eff_task = _check_task(policy, plugin_id=self._plugin_id, requested_task=task)
         eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
             policy, requested_provider=provider, requested_model=model, requested_agent_id=agent_id,
@@ -516,7 +521,8 @@ class PluginLlm:
             extra_body = _json_response_format(json_mode=spec["json_mode"], json_schema=spec["json_schema"])
         return eff_agent, dict(messages=messages, provider_override=eff_provider, model_override=eff_model,
                                profile_override=eff_profile, temperature=temperature, max_tokens=max_tokens,
-                               timeout=timeout, extra_body=extra_body, task=eff_task)
+                               timeout=timeout, extra_body=extra_body, task=eff_task,
+                               default_model_only=default_model_only)
 
     def _finish(
         self, name: str, agent_id: Optional[str], kw: Dict[str, Any], invoked: tuple[str, str, Any],
@@ -546,15 +552,16 @@ class PluginLlm:
     @staticmethod
     def _host_kwargs(kw: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[Dict[str, str]]]:
         """Call kwargs → ``call_llm`` kwargs. The auth profile rides in
-        ``extra_body.metadata.auth_profile``; ``route_info`` is only requested when
-        routing through a task slot."""
+        ``extra_body.metadata.auth_profile``; record the resolved route for task
+        slots and default-only calls (which must not reread mutable config)."""
         merged_extra = dict(kw["extra_body"] or {})
         if kw["profile_override"]:
             merged_extra.setdefault("metadata", {})["auth_profile"] = kw["profile_override"]
-        route_info: Optional[Dict[str, str]] = {} if kw["task"] else None
+        route_info: Optional[Dict[str, str]] = {} if kw["task"] or kw["default_model_only"] else None
         return dict(task=kw["task"], provider=kw["provider_override"], model=kw["model_override"],
                     messages=kw["messages"], temperature=kw["temperature"], max_tokens=kw["max_tokens"],
-                    timeout=kw["timeout"], extra_body=merged_extra or None, route_info=route_info), route_info
+                    timeout=kw["timeout"], extra_body=merged_extra or None, route_info=route_info,
+                    default_model_only=kw["default_model_only"]), route_info
 
     @staticmethod
     def _attributed(kw: Dict[str, Any], response: Any, route_info: Optional[Dict[str, str]]) -> tuple[str, str, Any]:

@@ -7178,6 +7178,7 @@ def _resolve_call_client(
     api_key: Optional[str], resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], main_runtime: Optional[Dict[str, Any]], async_mode: bool,
+    default_model_only: bool = False,
 ) -> _ResolvedAuxRoute:
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
@@ -7202,7 +7203,7 @@ def _resolve_call_client(
             api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime,
             task=task)
         effective_provider = _effective_provider_for_client(client, resolved_provider)
-        if client is None:
+        if client is None and not default_model_only:
             # Explicit provider with no credentials: honor the task fallback_chain before
             # raising (fallback entries may use OAuth / credential-pool auth).
             _explicit = (resolved_provider or "").strip().lower()
@@ -7247,7 +7248,7 @@ def _prepare_aux_request(
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
-    route_info: Optional[Dict[str, str]], async_mode: bool,
+    route_info: Optional[Dict[str, str]], async_mode: bool, default_model_only: bool = False,
 ) -> _PreparedAuxRequest:
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
@@ -7263,6 +7264,7 @@ def _prepare_aux_request(
         resolved_provider=resolved_provider, resolved_model=resolved_model,
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
+        default_model_only=default_model_only,
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
     # Codex-Responses-only: real SDK clients reject an unrecognized ``no_progress_timeout``
@@ -7790,7 +7792,7 @@ def call_llm(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
-    latency_info: Optional[Dict[str, int]] = None,
+    latency_info: Optional[Dict[str, int]] = None, default_model_only: bool = False,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     queue_started_at = time.monotonic()
@@ -7820,6 +7822,7 @@ def call_llm(
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
+                default_model_only=default_model_only,
             )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -7852,19 +7855,49 @@ def _plan_aux_call(
     messages: list, temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
-    route_info: Optional[Dict[str, str]],
+    route_info: Optional[Dict[str, str]], default_model_only: bool = False,
 ) -> Tuple[_PreparedAuxRequest, Dict[str, Any], Dict[str, Any]]:
     """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
     drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
     runtime snapshot for keying/resolution/retries/fallbacks, so a concurrent /model switch
     can't mix key and client from different runtimes."""
     main_runtime = _normalize_main_runtime(main_runtime)
+    if default_model_only:
+        # Resolve the configured default rather than the live (possibly switched)
+        # conversation route. An absent/virtual route cannot authorize discovery.
+        from hermes_cli.config import load_config
+        cfg = load_config().get("model") or {}
+        if not isinstance(cfg, dict):
+            cfg = {"default": cfg}
+        configured_provider = str(cfg.get("provider") or "").strip()
+        configured_model = str(cfg.get("default") or "").strip()
+        if not configured_provider or configured_provider.lower() in {"auto", "moa"} or not configured_model or configured_model.lower() == "auto":
+            raise AuxiliaryClientUnavailable("A concrete default provider and model are required")
+        if task or provider or model or base_url or api_key or api_mode or extra_headers or (
+            isinstance(extra_body, dict) and isinstance(extra_body.get("metadata"), dict)
+            and extra_body["metadata"].get("auth_profile")
+        ):
+            raise ValueError("default_model_only cannot be combined with route overrides or an auxiliary task")
+        provider, model = configured_provider, configured_model
+        base_url = str(cfg.get("base_url") or "").strip() or None
+        key_env = str(cfg.get("key_env") or cfg.get("api_key_env") or "").strip()
+        # Unlike the general auxiliary startup reader, this consent-scoped path
+        # must not borrow the launch profile's process env when a scope is absent.
+        from agent.secret_scope import get_secret
+        api_key = (str(cfg.get("api_key") or "").strip()
+                   or ((get_secret(key_env) or "").strip() if key_env else "") or None)
+        if key_env and not api_key:
+            raise AuxiliaryClientUnavailable("Default model credential is unavailable")
+        api_mode = str(cfg.get("api_mode") or "").strip() or None
+        main_runtime = dict(provider=provider, model=model, base_url=base_url or "",
+                            api_key=api_key or "", api_mode=api_mode or "")
     req = _prepare_aux_request(
         task, provider=provider, model=model, base_url=base_url, api_key=api_key,
         main_runtime=main_runtime, messages=messages, temperature=temperature,
         max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
         reasoning_config=reasoning_config, extra_headers=extra_headers,
         api_mode=api_mode, route_info=route_info, async_mode=async_mode,
+        default_model_only=default_model_only,
     )
     candidate_kwargs = dict(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
@@ -7925,6 +7958,7 @@ def _call_llm_impl(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
+    default_model_only: bool = False,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
@@ -7937,6 +7971,7 @@ def _call_llm_impl(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
+        default_model_only=default_model_only,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
@@ -7999,6 +8034,10 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
+        if default_model_only:
+            # Recovery may change the credential, endpoint, provider or model. A
+            # consent-scoped call must fail instead of entering that ladder.
+            raise
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
@@ -8086,7 +8125,7 @@ async def async_call_llm(
     api_key: str = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
     temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
-    route_info: Optional[Dict[str, str]] = None,
+    route_info: Optional[Dict[str, str]] = None, default_model_only: bool = False,
 ) -> Any:
     """Run an asynchronous auxiliary LLM request under the configured limit."""
     semaphore = _acquire_async_aux_semaphore(task)
@@ -8099,6 +8138,7 @@ async def async_call_llm(
                 main_runtime=main_runtime, messages=messages, temperature=temperature,
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, route_info=route_info,
+                default_model_only=default_model_only,
             )
     finally:
         if semaphore is not None:
@@ -8110,7 +8150,7 @@ async def _async_call_llm_impl(
     api_key: str = None, main_runtime: Optional[Dict[str, Any]] = None, messages: list,
     temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
-    route_info: Optional[Dict[str, str]] = None,
+    route_info: Optional[Dict[str, str]] = None, default_model_only: bool = False,
 ) -> Any:
     """Centralized asynchronous LLM call; see call_llm() for full documentation.
     No per-request header / api_mode override on the async entry point."""
@@ -8120,6 +8160,7 @@ async def _async_call_llm_impl(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=None, api_mode=None, route_info=route_info,
+        default_model_only=default_model_only,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     try:
@@ -8146,6 +8187,8 @@ async def _async_call_llm_impl(
                         "once on the same provider before fallback: %s", task or "call", transient_err)
             return await _primary()
     except Exception as first_err:
+        if default_model_only:
+            raise
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":

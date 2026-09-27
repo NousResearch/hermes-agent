@@ -107,6 +107,18 @@ const markNeedsInput = (ctx: ServerRequestContext) => {
   }
 }
 
+/**
+ * A blocking-input card must not park for a session whose runtime is already
+ * interrupted — the user hit Stop, or `removeSession` marked the doomed runtime
+ * interrupted before it deletes the row. The backend withdraws the same request
+ * on that boundary (`request.cancel`), so a frame still in flight would
+ * otherwise re-create an overlay (and native notification) for a turn that is
+ * gone (#75587). Sessionless requests (app-level Bot Screen install) are never
+ * gated.
+ */
+const sessionStopped = (ctx: ServerRequestContext): boolean =>
+  Boolean(ctx.sessionId) && ctx.deps.sessionInterrupted(ctx.sessionId)
+
 const notifyInput = (ctx: ServerRequestContext, body: string) => {
   if (!ctx.request.replayed) {
     dispatchNativeNotification({
@@ -223,6 +235,10 @@ const approval: Handler = ctx => {
   const command = str(p.command)
   const description = str(p.description) || 'dangerous command'
 
+  if (sessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(request)
   void receiveApprovalRequest(null, {
     // false only when a tirith warning forbids it; backend omits the field otherwise.
@@ -261,6 +277,10 @@ const approval: Handler = ctx => {
 }
 
 const sudo: Handler = ctx => {
+  if (sessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setSudoRequest({
     command: str(ctx.request.params.command),
@@ -289,6 +309,10 @@ const secret: Handler = ctx => {
   const envVar = str(p.env_var)
   const promptText = str(p.prompt)
 
+  if (sessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setSecretRequest({ envVar, prompt: promptText, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
   markNeedsInput(ctx)
@@ -298,6 +322,10 @@ const secret: Handler = ctx => {
 const vaultCode: Handler = ctx => {
   const p = ctx.request.params
   const site = str(p.site)
+
+  if (sessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(ctx.request)
   setVaultCodeRequest({ hint: str(p.hint), requestId: ctx.request.id, sessionId: ctx.sessionId || null, site })
@@ -310,6 +338,10 @@ const vaultSaveLogin: Handler = ctx => {
   const origin = str(p.origin)
   const site = str(p.site) || origin
 
+  if (sessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setVaultSaveLoginRequest({ origin, requestId: ctx.request.id, sessionId: ctx.sessionId || null, site })
   markNeedsInput(ctx)
@@ -320,6 +352,10 @@ const vaultUnlockPrompt: Handler = ctx => {
   const p = ctx.request.params
   const backend = str(p.backend)
   const displayName = str(p.display_name) || backend
+
+  if (sessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(ctx.request)
   setVaultUnlockRequest({ backend, displayName, requestId: ctx.request.id, sessionId: ctx.sessionId || null })

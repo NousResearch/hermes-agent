@@ -25,6 +25,7 @@ import logging
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_state_common import _id_chunks, _placeholders as _session_ids_placeholders
+from hermes_state_titles import fit_title
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,9 @@ class SessionProfileRepairMixin:
             if parent_id and conn.execute("SELECT 1 FROM sessions WHERE id = ?", (parent_id,)).fetchone() is None:
                 session["parent_session_id"] = None
             title = session.get("title")
+            if title is not None:
+                # A row imported before titles were fitted can carry an over-cap title across.
+                title = session["title"] = fit_title(title, self.MAX_TITLE_LENGTH)
             if title is not None and conn.execute("SELECT 1 FROM sessions WHERE title = ?", (title,)).fetchone():
                 suffix = f" ({session_id[-12:]})"
                 session["title"] = title[:self.MAX_TITLE_LENGTH - len(suffix)] + suffix

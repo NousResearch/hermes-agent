@@ -473,6 +473,9 @@ class SessionPortabilityMixin:
         clean_session["model_config"] = self._import_json_object_or_none(clean_session.get("model_config"), "model_config")
         for field in ("parent_session_id", *_IMPORT_SESSION_TEXT_FIELDS):
             clean_session[field] = self._import_text_or_none(clean_session.get(field), field)
+        if clean_session.get("title"):
+            # Inserted past the title writer: an over-cap title would refuse every later write naming it.
+            clean_session["title"] = fit_title(clean_session["title"], self.MAX_TITLE_LENGTH)
         clean_messages: List[Dict[str, Any]] = []
         for message_index, message in enumerate(messages):
             clean_message = dict(message)

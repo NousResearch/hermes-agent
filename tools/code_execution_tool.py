@@ -268,6 +268,9 @@ def _connect():
         AF_UNIX is unreliable — the parent falls back to loopback TCP)
     """
     global _sock
+    if _sock is not None and _peer_closed(_sock):
+        _sock.close()
+        _sock = None
     if _sock is None:
         endpoint = os.environ["HERMES_RPC_SOCKET"]
         if endpoint.startswith("tcp://"):
@@ -283,6 +286,19 @@ def _connect():
         _sock.settimeout(300)
     return _sock
 
+def _peer_closed(sock):
+    # A connection the server dropped while idle reads as EOF or a reset. Checked before
+    # sending because over TCP a write to it still succeeds and only the reply read fails.
+    try:
+        sock.setblocking(False)
+        return sock.recv(1, socket.MSG_PEEK) == b""
+    except BlockingIOError:
+        return False
+    except OSError:
+        return True
+    finally:
+        sock.settimeout(300)
+
 def _call(tool_name, args):
     """Send a tool call to the parent process and return the parsed result."""
     request = json.dumps({
@@ -296,9 +312,11 @@ def _call(tool_name, args):
     _attempts = 2 if os.environ.get("HERMES_RPC_PERSISTENT") == "1" else 1
     with _call_lock:
         for _attempt in range(_attempts):
+            sent = False
             try:
                 conn = _connect()
                 conn.sendall(request.encode())
+                sent = True
                 buf = b""
                 while True:
                     chunk = conn.recv(65536)
@@ -308,7 +326,7 @@ def _call(tool_name, args):
                     if buf.endswith(b"\\n"):
                         break
                 break
-            except (OSError, RuntimeError) as exc:
+            except (OSError, RuntimeError):
                 global _sock
                 try:
                     if _sock is not None:
@@ -316,9 +334,9 @@ def _call(tool_name, args):
                 except OSError:
                     pass
                 _sock = None
-                # A timeout means the server took this request and may still be running
-                # it; resending would run the tool a second time.
-                if isinstance(exc, socket.timeout) or _attempt + 1 >= _attempts:
+                # Once the request is sent the server may be running it (a timeout, a reset
+                # or a close before the reply); resending would run the tool a second time.
+                if sent or _attempt + 1 >= _attempts:
                     raise
     raw = buf.decode().strip()
     result = json.loads(raw)

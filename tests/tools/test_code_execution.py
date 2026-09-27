@@ -892,6 +892,70 @@ class TestRpcClientTimeout(unittest.TestCase):
         self.assertIn("raised", result["output"], result)
         self.assertEqual(calls, ["terminal"])
 
+    def test_sent_request_is_never_resent_but_an_idle_drop_reconnects(self):
+        """A request the server took is never sent again, whatever the failure after the send;
+        a connection the server dropped while idle still reconnects. Over loopback TCP (the
+        Windows transport) a write to a dropped connection succeeds and only the read fails,
+        so both cases look alike from the reply side. The generated stub runs as written."""
+        import tools.code_execution_tool as cet
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        listener.settimeout(10)
+        received = []  # (connection index, tool) per request line the server read
+        dropped = threading.Event()
+
+        def read_line(conn):
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = conn.recv(65536)
+                if not chunk:
+                    return None
+                buf += chunk
+            return json.loads(buf)["tool"]
+
+        def serve():
+            # conn 0: answer once, then close as the idle timeout does.
+            conn, _ = listener.accept()
+            received.append((0, read_line(conn)))
+            conn.sendall(b'{"ok": 1}\n')
+            conn.close()
+            dropped.set()
+            # conn 1: answer once, then take the next request and close before replying.
+            conn, _ = listener.accept()
+            received.append((1, read_line(conn)))
+            conn.sendall(b'{"ok": 2}\n')
+            received.append((1, read_line(conn)))
+            conn.close()
+            # A resend would arrive on a third connection.
+            listener.settimeout(2)
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            received.append((2, read_line(conn)))
+            conn.sendall(b'{"ok": 3}\n')
+            conn.close()
+
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+        ns = {}
+        env = {"HERMES_RPC_SOCKET": f"tcp://127.0.0.1:{listener.getsockname()[1]}",
+               "HERMES_RPC_PERSISTENT": "1"}
+        try:
+            with patch.dict(os.environ, env):
+                exec(cet._UDS_TRANSPORT_HEADER, ns)
+                self.assertEqual(ns["_call"]("first", {}), {"ok": 1})
+                self.assertTrue(dropped.wait(10))
+                time.sleep(0.2)  # let the FIN reach the client socket
+                self.assertEqual(ns["_call"]("second", {}), {"ok": 2})
+                with self.assertRaises((OSError, RuntimeError)):
+                    ns["_call"]("third", {})
+            server.join(10)
+        finally:
+            listener.close()
+        self.assertEqual(received, [(0, "first"), (1, "second"), (1, "third")])
+
 
 
 

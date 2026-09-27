@@ -113,17 +113,42 @@ def _next_run_overdue_seconds(next_run_at: Any) -> Optional[float]:
     return (now().astimezone(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
 
 
+def _retained_occurrence_pending(job: Dict[str, Any]) -> bool:
+    """True when ``next_run_at`` is the occurrence ``resume_job`` deliberately retained.
+
+    A recurring job resumed after its slot elapsed keeps that past instant as the due instant
+    (#113603) and stamps it on the record. Until a tick consumes the occurrence (advancing
+    ``next_run_at`` breaks the equality) or an operator rewrite supersedes it, that past stamp is
+    the expected state, not evidence of a wedged scheduler. The stamp is compared, never assumed
+    present, so a job that was never resumed (or whose occurrence was already consumed) is false.
+    """
+    stamp = str(job.get("next_run_at") or "").strip()
+    return bool(
+        stamp
+        and job.get("retained_occurrence") == stamp
+        and job.get("enabled", True)
+        and job.get("state") not in {"paused", "completed"}
+    )
+
+
 def _next_run_row(job: Dict[str, Any]) -> tuple[str, str]:
     """``("Next run" | "Overdue", value)`` for one job.
 
     A stamp parked past `cron doctor`'s grace on a job that is supposed to fire is the only
-    user-visible trace of a dead scheduler; never present it as an upcoming run (#114309).
+    user-visible trace of a dead scheduler; never present it as an upcoming run (#114309). A
+    retained occurrence (resume across an elapsed slot) is the one past stamp that is not a
+    fault, so it says what will happen instead of asserting a single cause (src#902).
     """
     stamp = job.get("next_run_at", "?")
     overdue_s = _next_run_overdue_seconds(stamp)
     if (overdue_s is None or overdue_s <= _OVERDUE_GRACE_SECONDS
             or not job.get("enabled", True) or job.get("state") in {"paused", "completed"}):
         return ("Next run", stamp)
+    if _retained_occurrence_pending(job):
+        return ("Overdue", color(
+            f"{stamp}  ({_format_lateness(overdue_s)} ago — occurrence retained when the job was "
+            "resumed; the next scheduler tick fires it late/catch-up, or logs the skip)",
+            Colors.YELLOW))
     return ("Overdue", color(f"{stamp}  ({_format_lateness(overdue_s)} ago — the job has not fired; "
                                    "is the scheduler running?)", Colors.YELLOW))
 
@@ -538,20 +563,30 @@ def _print_active_jobs_summary(jobs) -> None:
     # job its configured zone), so order by instant, never by ISO text; display the stored stamp.
     # `_parse_aware` hands back one shared ZoneInfo, and Python compares same-tzinfo datetimes
     # by wall clock (wrong across a DST fold) — normalise to UTC before ordering.
-    next_runs = [(parsed.astimezone(timezone.utc), j["next_run_at"]) for j in jobs
+    next_runs = [(parsed.astimezone(timezone.utc), j) for j in jobs
                  if (parsed := _parse_aware(j.get("next_run_at"))) is not None]
     print(f"  {len(jobs)} active job(s)")
     if next_runs:
-        earliest = min(next_runs, key=lambda run: run[0])[1]
+        earliest_job = min(next_runs, key=lambda run: run[0])[1]
+        earliest = earliest_job["next_run_at"]
         overdue_by = _next_run_overdue_seconds(earliest)
         if overdue_by is not None and overdue_by > _OVERDUE_GRACE_SECONDS:
-            # #114309: a dead scheduler leaves next_run_at stranded in the past; presenting it
-            # as an upcoming "Next run" hides the outage. Same 15m grace as `cron doctor`
-            # (_OVERDUE_GRACE_SECONDS) so a job a few minutes behind the ticker's own
-            # cadence doesn't flash OVERDUE here while doctor still calls it healthy.
-            print(color(f"  ⚠ Next run {earliest} is OVERDUE — passed "
-                        f"{_format_lateness(overdue_by)} ago but the job has not fired "
-                        "(is the scheduler running?)", Colors.YELLOW))
+            if _retained_occurrence_pending(earliest_job):
+                # A resume across an elapsed slot keeps that instant due on purpose (#113603); the
+                # next tick resolves it. Say what will happen rather than blaming a dead ticker
+                # (src#902) — re-anchoring here would silently drop the retained occurrence.
+                print(color(f"  ⚠ Next run {earliest} is OVERDUE — passed "
+                            f"{_format_lateness(overdue_by)} ago. It is the occurrence retained "
+                            "when the job was resumed; the next scheduler tick fires it "
+                            "late/catch-up, or logs the skip.", Colors.YELLOW))
+            else:
+                # #114309: a dead scheduler leaves next_run_at stranded in the past; presenting it
+                # as an upcoming "Next run" hides the outage. Same 15m grace as `cron doctor`
+                # (_OVERDUE_GRACE_SECONDS) so a job a few minutes behind the ticker's own
+                # cadence doesn't flash OVERDUE here while doctor still calls it healthy.
+                print(color(f"  ⚠ Next run {earliest} is OVERDUE — passed "
+                            f"{_format_lateness(overdue_by)} ago but the job has not fired "
+                            "(is the scheduler running?)", Colors.YELLOW))
         else:
             print(f"  Next run: {earliest}")
     # Post-downtime late fires show at status level, not just per-job in `cron list`.
@@ -597,14 +632,24 @@ def _script_health_issue(script: str) -> Optional[str]:
 _OVERDUE_GRACE_SECONDS = 15 * 60
 
 
-def _next_run_overdue_issue(next_run: str) -> Optional[str]:
-    """Issue string when ``next_run_at`` is parked in the past."""
+def _next_run_overdue_issue(job: Dict[str, Any]) -> Optional[str]:
+    """Issue string when ``next_run_at`` is parked in the past.
+
+    A retained occurrence (resume across an elapsed slot, #113603) is overdue by design until the
+    next tick resolves it, so the issue names that instead of asserting a dead scheduler — and
+    warns against the re-anchor that would drop the occurrence (src#902).
+    """
+    next_run = str(job.get("next_run_at") or "").strip()
     overdue_s = _next_run_overdue_seconds(next_run)
     if overdue_s is None:
         return f"next_run_at is not a valid timestamp: {next_run!r}"
     if overdue_s <= _OVERDUE_GRACE_SECONDS:
         return None
     amount = f"{overdue_s / 3600:.1f}h" if overdue_s >= 3600 else f"{overdue_s / 60:.0f}m"
+    if _retained_occurrence_pending(job):
+        return (f"next_run_at is {amount} overdue — the occurrence retained when the job was "
+                "resumed; the next scheduler tick fires it late/catch-up or logs the skip "
+                "(do not re-anchor)")
     return f"next_run_at is {amount} overdue — job is not firing (is the scheduler running?)"
 
 
@@ -631,7 +676,7 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
         issues.append(_missed_fire_issue(job, fire_err))
     if job.get("enabled", True) and job.get("state") not in {"paused", "completed"}:
         next_run = str(job.get("next_run_at") or "").strip()
-        issue = _next_run_overdue_issue(next_run) if next_run else "active job has no next_run_at"
+        issue = _next_run_overdue_issue(job) if next_run else "active job has no next_run_at"
         if issue:
             issues.append(issue)
     script = str(job.get("script") or "").strip()
@@ -787,8 +832,12 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
         return 1
     job = result.get("job") or result.get("removed_job") or {}
     print(color(f"{success_verb} job: {job.get('name', job_id)} ({job_id})", Colors.GREEN))
-    if action in {"resume", "run"} and result.get("job", {}).get("next_run_at"):
-        print(f"  Next run: {result['job']['next_run_at']}")
+    if action in {"resume", "run"} and job.get("next_run_at"):
+        note = ""
+        if action == "resume" and _retained_occurrence_pending(job):
+            note = ("  (occurrence retained from the pause — the next scheduler tick fires it "
+                    "late/catch-up, or logs the skip)")
+        print(f"  Next run: {job['next_run_at']}{note}")
     if action == "run":
         print(f"  {_run_outcome(result.get('job', {}))}")
     return 0

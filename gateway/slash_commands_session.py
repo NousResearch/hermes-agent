@@ -555,6 +555,9 @@ class GatewaySessionCommandsMixin:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
         except TranscriptReadError:
             return HISTORY_UNREADABLE
+        if getattr(session_entry, "compression_paused", False) is True:
+            # Replay would refuse this paused turn after /retry had already erased it.
+            return self._compression_pause_notice()
         last_user_idx = next((i for i in range(len(history) - 1, -1, -1)
                               if user_originated_turn_view(history[i]) is not None), None)
         if last_user_idx is None:
@@ -747,10 +750,18 @@ class GatewaySessionCommandsMixin:
                 return t("gateway.compress.nothing_to_do")
             if result.status != "compressed":
                 return "\n".join(render_compress_result(result))
-            committed = await self._persist_manual_compression(
-                tmp_agent, session_entry, source, result.after_messages, expected_session_id=expected_session_id,
-            )
+            try:
+                committed = await self._persist_manual_compression(
+                    tmp_agent, session_entry, source, result.after_messages, expected_session_id=expected_session_id,
+                )
+            except Exception:
+                # The compressor may already have committed history before routing fails.
+                logger.warning("Manual compression recovery could not be persisted", exc_info=True)
+                return self._compression_pause_notice(persistence_failed=True)
             if not committed:
+                if (getattr(tmp_agent, "_last_compaction_in_place", False) is True
+                        or tmp_agent.session_id != expected_session_id):
+                    return self._compression_pause_notice(persistence_failed=True)
                 return "No compression was committed. The conversation is unchanged; use /compress or /new."
             compressor = tmp_agent.context_compressor
             summary = result.summary

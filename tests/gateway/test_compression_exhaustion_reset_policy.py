@@ -1291,6 +1291,71 @@ async def test_native_new_cancellation_during_cleanup_settles_own_admission(nati
 
 
 
+@pytest.mark.asyncio
+async def test_native_retry_preserves_paused_transcript(native_env):
+    e = native_env
+    mark(e)
+    policy(e, "compression:\n  exhaustion_action: pause\n")
+    session_id = e.entry.session_id
+    before = e.db.get_messages(session_id)
+    e.entry.last_prompt_tokens = 987
+
+    reply = await native_message(e, "/retry")
+
+    assert "paused" in str(reply).lower()
+    e.runner._hmwa_prepare_turn.assert_not_awaited()
+    e.runner._run_agent.assert_not_awaited()
+    assert e.db.get_messages(session_id) == before
+    assert e.entry.last_prompt_tokens == 987
+    persisted = reload_entry(e)
+    assert persisted is not None
+    assert persisted.session_id == session_id and persisted.compression_paused
+    assert not e.runner._is_session_running(e.key)
+
+
+@pytest.mark.asyncio
+async def test_native_compress_reports_committed_history_when_pause_clear_fails(
+    native_env, monkeypatch,
+):
+    from agent.conversation_compression_manual import CompressRequest, CompressResult
+
+    e = native_env
+    mark(e)
+    text = native_recovery_command(e, monkeypatch, "compress")
+    agent = e.runner._build_manual_compression_agent.return_value
+    session_id = e.entry.session_id
+    before = e.db.get_messages(session_id)
+    compressed = [{"role": "user", "content": "Summary of the completed inspection"}]
+    failure = Mock(side_effect=OSError("routing storage unavailable"))
+
+    def compress(*args, **kwargs):
+        # Commit real in-place history before failing the later routing write.
+        e.db.archive_and_compact(session_id, compressed)
+        agent._last_compaction_in_place = True
+        monkeypatch.setattr(e.db, "replace_gateway_routing_entries", failure)
+        return CompressResult(
+            "compressed", HISTORY, compressed, 100, 20, CompressRequest(),
+            summary={"headline": "Compressed", "token_line": "20", "note": ""},
+        )
+
+    monkeypatch.setattr("agent.conversation_compression_manual.compress_now", compress)
+    reply = await native_message(e, text)
+
+    failure.assert_called_once()
+    after = e.db.get_messages(session_id)
+    assert after != before
+    assert [message["content"] for message in after] == [compressed[0]["content"]]
+    persisted = reload_entry(e)
+    assert persisted is not None
+    assert persisted.session_id == session_id and persisted.compression_paused
+    assert not e.runner._is_session_running(e.key)
+    e.runner._hmwa_prepare_turn.assert_not_awaited()
+    e.runner._run_agent.assert_not_awaited()
+    assert "unchanged" not in str(reply).lower()
+    assert "persist" in str(reply).lower()
+    assert "/compress" in str(reply) and "/new" in str(reply)
+
+
 @pytest.fixture
 def native_topic_env(native_env):
     e = native_env

@@ -1306,21 +1306,25 @@ def list_authenticated_providers(
 
 
 def _picker_model_family_conflicts(row: dict, model: str) -> bool:
-    """Reject only clear native-family mismatches, not uncurated model IDs.
+    """Skip a saved default only when it conflicts with a native catalog's vendors.
 
-    Custom endpoints and aggregators can legitimately serve cross-vendor IDs.
-    Native Anthropic and ChatGPT/Codex accounts cannot serve one another's
-    distinct Claude and Codex GPT families.
+    Custom endpoints, aggregators, and OpenCode resellers may serve families
+    beyond their catalog. Unknown model names or unrecognizable catalogs leave
+    injection unchanged so uncurated models remain selectable.
     """
-    if row.get("is_user_defined"):
-        return False
+    from hermes_cli.model_normalize import detect_vendor
+    from hermes_cli.models import _AGGREGATOR_PROVIDERS, opencode_provider_family
+
     slug = str(row.get("slug") or "").strip().lower()
-    name = model.strip().lower()
-    if slug == "openai-codex":
-        return name.startswith(("claude-", "anthropic/claude-"))
-    if slug == "anthropic":
-        return name.startswith(("gpt-", "openai/gpt-", "codex-", "openai/codex-"))
-    return False
+    if (not slug or row.get("is_user_defined") or row.get("api_url")
+            or slug in _AGGREGATOR_PROVIDERS or opencode_provider_family(slug) is not None):
+        return False
+    saved_vendor = detect_vendor(model)
+    if not saved_vendor:
+        return False
+    catalog_vendors = {detect_vendor(str(item)) for item in row.get("models") or []}
+    catalog_vendors.discard(None)
+    return bool(catalog_vendors) and saved_vendor not in catalog_vendors
 
 
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:

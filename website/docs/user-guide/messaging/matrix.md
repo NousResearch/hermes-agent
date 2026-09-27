@@ -103,6 +103,7 @@ matrix:
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
   max_message_length: 15000       # Outbound chunk size in UTF-8 bytes (default and max: 15000)
+  thread_backfill_limit: 20       # Prior thread messages to fetch for a new session (0 disables)
 ```
 
 Or via environment variables:

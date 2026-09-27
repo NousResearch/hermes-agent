@@ -15,7 +15,8 @@ from tools.registry import registry
 importlib.import_module("tools.matrix_read_tool")
 
 
-def test_matrix_read_uses_session_owner_and_rejects_other_rooms():
+@pytest.mark.asyncio
+async def test_matrix_read_uses_session_owner_and_rejects_other_rooms():
     adapter = SimpleNamespace(
         read_matrix_context=AsyncMock(return_value={"events": [{"event_id": "$one", "body": "hello"}]})
     )
@@ -24,9 +25,11 @@ def test_matrix_read_uses_session_owner_and_rejects_other_rooms():
         thread_id="$root", session_key="matrix-session", transport_adapter=adapter,
     )
     try:
-        result = json.loads(registry.dispatch("matrix_read", {"kind": "room", "limit": 5}))
-        wrong_room = json.loads(registry.dispatch(
-            "matrix_read", {"kind": "room", "room_id": "!other:server", "limit": 5}
+        result = json.loads(await asyncio.to_thread(
+            registry.dispatch, "matrix_read", {"kind": "room", "limit": 5},
+        ))
+        wrong_room = json.loads(await asyncio.to_thread(
+            registry.dispatch, "matrix_read", {"kind": "room", "room_id": "!other:server", "limit": 5},
         ))
     finally:
         clear_session_vars(tokens)
@@ -72,3 +75,25 @@ async def test_matrix_read_runs_on_owning_gateway_loop():
         clear_session_vars(tokens)
 
     assert json.loads(result) == {"on_owner_loop": True}
+
+
+@pytest.mark.asyncio
+async def test_matrix_read_refuses_a_stopped_owner_loop():
+    from gateway import session_context
+
+    adapter = SimpleNamespace(read_matrix_context=AsyncMock(return_value={"events": []}))
+    stopped_loop = asyncio.new_event_loop()
+    tokens = set_session_vars(
+        platform="matrix", chat_id="!room:server", user_id="@alice:server",
+        transport_adapter=adapter,
+    )
+    loop_token = session_context._SESSION_TRANSPORT_LOOP.set(stopped_loop)
+    try:
+        result = await asyncio.to_thread(registry.dispatch, "matrix_read", {"kind": "room"})
+    finally:
+        session_context._SESSION_TRANSPORT_LOOP.reset(loop_token)
+        clear_session_vars(tokens)
+        stopped_loop.close()
+
+    assert json.loads(result) == {"error": "Matrix gateway loop is unavailable"}
+    adapter.read_matrix_context.assert_not_awaited()

@@ -51,12 +51,19 @@ def head_sha() -> str:
 
 
 def make_origin(root: Path, ref: str) -> Path:
-    """Bare origin with ``main`` at ``ref``."""
+    """Bare origin with ``main`` at ``ref``.
+
+    ``--single-branch``: only this checkout's branch is copied, never every local branch of the
+    host repository (a blobless developer clone holds branches whose blobs it never fetched, and
+    serving those makes the installer's clone die with ``unable to read <sha>``).
+    ``uploadpack.allowFilter``: a blobless host checkout's object store is itself partial, and the
+    installer's clone of this origin needs the filter capability to be served from it."""
     origin = root / "origin.git"
-    git("clone", "-q", "--bare", "--shared", "--no-tags", str(H.WORKTREE), str(origin), cwd=root)
+    git("clone", "-q", "--bare", "--shared", "--no-tags", "--single-branch", str(H.WORKTREE), str(origin), cwd=root)
     git("update-ref", "refs/heads/main", ref, cwd=origin)
     git("symbolic-ref", "HEAD", "refs/heads/main", cwd=origin)
     git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=origin)
+    git("config", "uploadpack.allowFilter", "true", cwd=origin)
     return origin
 
 

@@ -272,3 +272,30 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
 
     assert live == [], f"cache-only listing ran live probes in the request path: {live}"
     assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
+
+
+@pytest.mark.parametrize("provider,model", [
+    ("openai-codex", "claude-sonnet-5"),
+    ("openai-codex", "anthropic/claude-opus-5"),
+    ("anthropic", "gpt-5.3-codex"),
+    ("anthropic", "openai/gpt-5.4"),
+])
+def test_picker_does_not_inject_clearly_foreign_native_model(provider, model):
+    row = _make_provider(provider, models=["existing"], is_current=True)
+    result = model_switch_providers._finalize_picker_rows([row], {}, model)[0]
+    assert result["models"] == ["existing"]
+    assert result["total_models"] == 1
+
+
+@pytest.mark.parametrize("provider,model,user_defined", [
+    ("openai-codex", "gpt-6-codex", False),
+    ("anthropic", "claude-sonnet-6", False),
+    ("openrouter", "anthropic/claude-sonnet-5", False),
+    ("custom:relay", "claude-sonnet-5", True),
+])
+def test_picker_keeps_new_or_custom_provider_model(provider, model, user_defined):
+    row = _make_provider(provider, models=["existing"], is_current=True,
+                         is_user_defined=user_defined, api_url="http://localhost/v1" if user_defined else None)
+    result = model_switch_providers._finalize_picker_rows([row], {}, model)[0]
+    assert result["models"] == [model, "existing"]
+    assert result["total_models"] == 2

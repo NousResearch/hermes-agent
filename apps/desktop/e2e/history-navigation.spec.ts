@@ -36,7 +36,7 @@ with SessionDB(db_path=Path(sys.argv[1]) / 'state.db') as db:
     rows = []
     for turn in range(40):
         rows.append({'role': 'user', 'content': f'NAV prompt {turn:02}', 'timestamp': turn + 1})
-        rows.append({'role': 'assistant', 'content': ('### Navigation answer\\n\\n' + 'A durable paragraph for measuring the selected turn. ' * 30), 'timestamp': turn + 1})
+        rows.append({'role': 'assistant', 'content': ('### Navigation answer' + chr(10) * 2 + 'A durable paragraph for measuring the selected turn. ' * 30), 'timestamp': turn + 1})
         if turn == 20:
             for tool in range(250):
                 rows.append({'role': 'assistant', 'content': f'Navigation tool step {tool}', 'timestamp': 21,
@@ -62,22 +62,24 @@ with SessionDB(db_path=Path(sys.argv[1]) / 'state.db') as db:
     await rail.evaluate(element => {
       element.scrollTop = 0
     })
-    await rail.getByRole('button', { name: 'NAV prompt 00', exact: true }).click()
-    const target = viewport.locator('[data-message-id="history-row-1"]')
-    await expect(target).toBeVisible()
-    await expect
-      .poll(() =>
-        target.evaluate(element => {
-          const viewport = element.closest('[data-slot="aui_thread-viewport"]')!
-          const group = element.closest('[data-slot="aui_message-group"]')!
-          return Math.abs(group.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 8)
-        })
-      )
-      .toBeLessThanOrEqual(2)
-    await expect(rail.getByRole('button', { name: 'NAV prompt 00', exact: true })).toHaveAttribute(
-      'aria-current',
-      'location'
-    )
+    const expectPromptAtTop = async (turn: number, rowId: number) => {
+      const name = `NAV prompt ${String(turn).padStart(2, '0')}`
+      await rail.getByRole('button', { name, exact: true }).click()
+      const target = viewport.locator(`[data-message-id="history-row-${rowId}"]`)
+      await expect(target).toBeVisible()
+      await expect.poll(() => target.evaluate(element => {
+        const viewport = element.closest('[data-slot="aui_thread-viewport"]')!
+        const group = element.closest('[data-slot="aui_message-group"]')!
+        const top = group.getBoundingClientRect().top - viewport.getBoundingClientRect().top
+        // The first group cannot acquire an 8px margin by scrolling below zero.
+        const destination = Math.max(0, Math.min(viewport.scrollHeight - viewport.clientHeight, viewport.scrollTop + top - 8))
+        return Math.abs(viewport.scrollTop - destination)
+      })).toBeLessThanOrEqual(2)
+      await expect(rail.getByRole('button', { name, exact: true })).toHaveAttribute('aria-current', 'location')
+    }
+    await expectPromptAtTop(0, 1)
+    await expectPromptAtTop(10, 21)
+    await expectPromptAtTop(0, 1)
     await page.screenshot({ path: testInfo.outputPath('exact-history-target.png') })
     const later = viewport.getByRole('button', { name: 'Show later messages' })
     for (let pageNumber = 0; pageNumber < 4; pageNumber += 1) {

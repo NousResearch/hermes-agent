@@ -220,6 +220,13 @@ def strip_inert_heredoc_bodies(command: str, *, data_only: bool = False) -> str:
                 return command  # unterminated
             body_ranges.append((body_cursor, close_end))
             body_cursor = close_end
+        if data_only and (
+            command_start != 0 or owner_start != 0
+            or command[body_cursor:].strip()
+        ):
+            # Security scans only exempt a standalone write. Earlier commands
+            # may redefine cat/tee or PATH; later commands may execute the file.
+            return command
         if (
             all(quoted for _delimiter, _strip_tabs, quoted in specs)
             and not post_heredoc_list_operator

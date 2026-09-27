@@ -29,6 +29,9 @@ def test_executable_or_uncertain_payload_stays_blocked(command):
 
 
 @pytest.mark.parametrize("command", [
+    "cat() { sh; }\ncat <<'EOF'\npoweroff\nEOF",
+    "PATH=./bin\ncat <<'EOF'\npoweroff\nEOF",
+    "cat > script <<'EOF'\npoweroff\nEOF\nsh script",
     "./cat <<'EOF'\npoweroff\nEOF",
     "/opt/custom/tee <<'EOF'\npoweroff\nEOF",
     "PATH=./bin cat <<'EOF'\npoweroff\nEOF",

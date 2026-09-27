@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import quote
 
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import _effective_content, _label_body, _own_text
 
 try:
@@ -124,5 +125,27 @@ async def read_matrix_context(
         if kind == "thread" and visible["event_id"] != event_id and visible["thread_id"] != event_id:
             continue
         events.append(visible)
+
+    targets = [event for event in events if isinstance(event["event_id"], str)]
+    snapshots = await fetch_reactions_for_events(
+        client, room_id, [event["event_id"] for event in targets],
+        limit=50 if kind == "event" else 8,
+    )
+    for event, snapshot in zip(targets, snapshots):
+        if snapshot.reactions:
+            event["reactions"] = [
+                reaction.to_dict(sender_authorized=(
+                    reaction.sender == adapter._user_id or adapter._is_sender_authorized(
+                        reaction.sender, chat_type=chat_type, chat_id=room_id,
+                    ) is True
+                ))
+                for reaction in snapshot.reactions
+            ]
+        if snapshot.truncated:
+            event["reactions_truncated"] = True
+        for reaction_id in snapshot.missing_keys:
+            errors.append({"event_id": reaction_id, "error": "missing decryption keys"})
+        if snapshot.error:
+            errors.append({"event_id": event["event_id"], "error": snapshot.error})
 
     return {"events": events, "errors": errors}

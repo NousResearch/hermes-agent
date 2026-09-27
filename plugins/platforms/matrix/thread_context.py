@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from enum import Enum
 from typing import Any
 from urllib.parse import quote
@@ -17,6 +18,7 @@ from plugins.platforms.matrix.reply_context import (
     _own_text,
 )
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 
 
 logger = logging.getLogger(__name__)
@@ -130,13 +132,15 @@ async def fetch_thread_entries(
         return []
 
     entries: list[MatrixEventContext] = []
+    entry_ids: list[str] = []
     root = await cache.resolve(client, room_id, thread_id)
     if root is not None:
         entries.append(root)
+        entry_ids.append(thread_id)
 
     chunk = response.get(event_key) if isinstance(response, dict) else None
     if not isinstance(chunk, list):
-        return entries
+        chunk = []
 
     for raw in reversed(chunk[:limit]):
         if not isinstance(raw, dict):
@@ -155,5 +159,12 @@ async def fetch_thread_entries(
         stored = cache.store(room_id, event_id, entry)
         if stored is not None:
             entries.append(stored)
+            entry_ids.append(event_id)
 
-    return entries
+    snapshots = await fetch_reactions_for_events(client, room_id, entry_ids)
+    return [
+        replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
+                reaction_keys_missing=bool(snapshot.missing_keys),
+                reactions_unavailable=bool(snapshot.error))
+        for entry, snapshot in zip(entries, snapshots)
+    ]

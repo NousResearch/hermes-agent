@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime
 import time
 from typing import Any
@@ -12,6 +13,7 @@ from urllib.parse import quote
 
 from gateway.session import _format_untrusted_prompt_value
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 from plugins.platforms.matrix.thread_context import Method, history_entry
 
@@ -54,6 +56,7 @@ async def fetch_room_entries(
         return []
 
     entries: list[MatrixEventContext] = []
+    entry_ids: list[str] = []
     for raw in reversed(earlier[:limit]):
         if not isinstance(raw, dict) or not isinstance(raw.get("event_id"), str):
             continue
@@ -67,7 +70,15 @@ async def fetch_room_entries(
         stored = cache.store(room_id, raw["event_id"], entry)
         if stored is not None:
             entries.append(stored)
-    return entries
+            entry_ids.append(raw["event_id"])
+
+    snapshots = await fetch_reactions_for_events(client, room_id, entry_ids)
+    return [
+        replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
+                reaction_keys_missing=bool(snapshot.missing_keys),
+                reactions_unavailable=bool(snapshot.error))
+        for entry, snapshot in zip(entries, snapshots)
+    ]
 
 
 @dataclass(frozen=True)

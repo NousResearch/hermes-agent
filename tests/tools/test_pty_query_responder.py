@@ -120,7 +120,7 @@ def test_dec_mode_non_digit_passes_through():
     assert out + r.flush() == seq
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX ptyprocess only")
+@pytest.mark.platforms("posix")  # POSIX ptyprocess only
 def test_live_pty_subprocess_unblocked_by_cursor_report(tmp_path):
     """E2E: a PTY subprocess blocking on ESC[6n exits once answered.
 

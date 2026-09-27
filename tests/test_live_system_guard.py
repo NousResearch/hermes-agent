@@ -7,7 +7,9 @@ All blocked-case commands use patterns that match no real process, so a
 guard regression cannot kill anything.
 """
 
+import os
 import subprocess
+import sys
 
 import pytest
 
@@ -63,3 +65,31 @@ def test_gateway_start_inside_a_container_exec_is_not_blocked():
 def test_gateway_start_on_the_host_is_still_blocked():
     with pytest.raises(RuntimeError, match="REAL.*gateway runtime"):
         subprocess.run(["python", "-m", "hermes_cli.main", "gateway", "start"])
+
+
+def test_custom_home_tmpdir_is_relocated_before_pytest_uses_it(tmp_path):
+    home = tmp_path / "custom-home"
+    scratch = home / "cache" / "scratch"
+    scratch.mkdir(parents=True)
+    env = dict(os.environ, HERMES_HOME=str(home), TMPDIR=str(scratch))
+    env.pop("HERMES_SCRATCH_DIR", None)
+    result = subprocess.run(
+        [sys.executable, "-c", "import tempfile, tests.conftest; print(tempfile.gettempdir())"],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    assert not result.stdout.strip().startswith(str(home))
+
+
+def test_default_home_unmarked_tmpdir_is_relocated_before_pytest_uses_it(tmp_path):
+    # Model the operator's default root with a disposable HOME, not ~/.hermes.
+    operator_home = tmp_path / "operator"
+    scratch = operator_home / ".hermes" / "cache" / "scratch"
+    scratch.mkdir(parents=True)
+    env = dict(os.environ, HOME=str(operator_home), TMPDIR=str(scratch))
+    env.pop("HERMES_HOME", None)
+    env.pop("HERMES_SCRATCH_DIR", None)
+    result = subprocess.run(
+        [sys.executable, "-c", "import tempfile, tests.conftest; print(tempfile.gettempdir())"],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    assert not result.stdout.strip().startswith(str(operator_home / ".hermes"))

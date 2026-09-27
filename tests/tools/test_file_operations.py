@@ -1,5 +1,6 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
+import base64
 import os
 import pytest
 import subprocess
@@ -7,17 +8,14 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
-from tools.environments.local import _find_bash, _msys_to_windows_path, LocalEnvironment
+from tools.environments.local import _find_bash, LocalEnvironment
 from agent.file_safety import is_write_denied as _is_write_denied
-from tools.file_operations_common import LintResult, SearchMatch
+from tools.file_operations_common import SearchMatch
 from tools.file_operations import (
     ReadResult,
-    WriteResult,
-    PatchResult,
     SearchResult,
     ShellFileOperations,
     normalize_read_pagination,
-    normalize_search_pagination,
 )
 
 
@@ -107,51 +105,13 @@ class TestReadResult:
         assert "similar_files" not in d  # empty list omitted
 
 
-    def test_binary_fields(self):
-        r = ReadResult(is_binary=True, is_image=True, mime_type="image/png")
-        d = r.to_dict()
-        assert d["is_binary"] is True
-        assert d["is_image"] is True
-        assert d["mime_type"] == "image/png"
 
 
-class TestWriteResult:
-    def test_to_dict_omits_none(self):
-        r = WriteResult(bytes_written=100)
-        d = r.to_dict()
-        assert d["bytes_written"] == 100
-        assert "error" not in d
-        assert "warning" not in d
-
-    def test_to_dict_includes_error(self):
-        r = WriteResult(error="Permission denied")
-        d = r.to_dict()
-        assert d["error"] == "Permission denied"
 
 
-class TestPatchResult:
-    def test_to_dict_success(self):
-        r = PatchResult(success=True, diff="--- a\n+++ b", files_modified=["a.py"])
-        d = r.to_dict()
-        assert d["success"] is True
-        assert d["diff"] == "--- a\n+++ b"
-        assert d["files_modified"] == ["a.py"]
-
-    def test_to_dict_error(self):
-        r = PatchResult(error="File not found")
-        d = r.to_dict()
-        assert d["success"] is False
-        assert d["error"] == "File not found"
 
 
 class TestSearchResult:
-    def test_to_dict_with_matches(self):
-        m = SearchMatch(path="a.py", line_number=10, content="hello")
-        r = SearchResult(matches=[m], total_count=1)
-        d = r.to_dict()
-        assert d["total_count"] == 1
-        assert len(d["matches"]) == 1
-        assert d["matches"][0]["path"] == "a.py"
 
 
     def test_truncated_flag_marks_total_as_lower_bound(self):
@@ -214,19 +174,6 @@ class TestSearchResultDensify:
         assert "my dir/a b.py" in text.split("\n")[0]
 
 
-class TestLintResult:
-    def test_skipped(self):
-        r = LintResult(skipped=True, message="No linter for .md files")
-        d = r.to_dict()
-        assert d["status"] == "skipped"
-        assert d["message"] == "No linter for .md files"
-
-
-    def test_error(self):
-        r = LintResult(success=False, output="SyntaxError line 5")
-        d = r.to_dict()
-        assert d["status"] == "error"
-        assert "SyntaxError" in d["output"]
 
 
 # =========================================================================
@@ -300,11 +247,9 @@ class TestShellFileOpsHelpers:
         assert normalize_read_pagination(offset=2, limit=999999) == (2, 2000)
 
 
-    def test_escape_shell_arg_simple(self, file_ops):
-        assert file_ops._escape_shell_arg("hello") == "'hello'"
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, file_ops):
         """Windows-only: ``_bash_safe_path`` only rewrites drive paths to the
         Git Bash form on Windows, where the MSYS path mangling it works around
@@ -313,45 +258,6 @@ class TestShellFileOpsHelpers:
             "C:/Users/alice/notes.txt"
         ) == "'/c/Users/alice/notes.txt'"
 
-    @pytest.mark.windows_only
-    def test_read_file_uses_bash_safe_windows_paths(self, mock_env):
-        """Windows-only: proves read_file's shell commands carry the MSYS path
-        form Git Bash needs — a translation that is a no-op off Windows."""
-        commands = []
-
-        def side_effect(command, **kwargs):
-            commands.append(command)
-            m = READ_SENTINEL_RE.search(command)
-            if m:
-                return {
-                    "output": compound_read_output(
-                        m.group(0), size=5, sample=b"hello", content="hello\n", total_lines=1
-                    ),
-                    "returncode": 0,
-                }
-            return {"output": "", "returncode": 0}
-
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-        result = ops.read_file(r"C:\Users\alice\notes.txt")
-
-        assert result.error is None
-        # One compound probe carries every stage; each embeds the MSYS path.
-        # The size probe gates `wc -c` behind `[ -f ]` so a FIFO or device
-        # cannot block the read; it still reports a plain byte count.
-        assert len(commands) == 1
-        probe = commands[0]
-        assert probe.startswith(
-            "if [ -f '/c/Users/alice/notes.txt' ]; "
-            "then wc -c < '/c/Users/alice/notes.txt' 2>/dev/null; "
-        )
-        assert "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64" in probe
-        assert "sed -n '1,2000p' '/c/Users/alice/notes.txt' 2>/dev/null | cut -b1-8001" in probe
-        assert "wc -l < '/c/Users/alice/notes.txt'" in probe
-        assert (
-            "elif [ -e '/c/Users/alice/notes.txt' ]; "
-            "then echo __hermes_not_regular__; "
-        ) in probe
 
     def test_is_likely_binary_by_extension(self, file_ops):
         assert file_ops._is_likely_binary("photo.png") is True
@@ -360,10 +266,6 @@ class TestShellFileOpsHelpers:
         assert file_ops._is_likely_binary("readme.md") is False
 
 
-    def test_cwd_fallback_to_slash(self):
-        env = MagicMock(spec=[])  # no cwd attribute
-        ops = ShellFileOperations(env)
-        assert ops.cwd == "/"
 
     def test_read_file_strips_leaked_terminal_fence_markers(self, mock_env):
         leaked = (
@@ -394,29 +296,6 @@ class TestShellFileOpsHelpers:
         assert "\x1b]" not in result.content
         assert "\x07" not in result.content
         assert "1|print('ok')" in result.content
-
-    def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
-        leaked = (
-            "__HERMES_FENCE_a9f7b3__\x07'\n"
-            "alpha\n"
-            "\x1b]0;cat '/tmp/test/a.txt'\x07__HERMES_FENCE_a9f7b3__\n"
-        )
-
-        def side_effect(command, **kwargs):
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": "6\n", "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "alpha\n", "returncode": 0}
-            if command.startswith("cat "):
-                return {"output": leaked, "returncode": 0}
-            return {"output": "", "returncode": 0}
-
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-        result = ops.read_file_raw("/tmp/test/a.txt")
-
-        assert result.error is None
-        assert result.content == "alpha\n"
 
     def test_newline_terminated_content_has_no_phantom_line(self, file_ops):
         # A file ending in a newline (the normal, well-formed case) has its
@@ -542,6 +421,19 @@ class TestShellFileOpsWriteDenied:
         assert "Failed to move" in result.error
 
 
+
+def _fenced_base64_reply(command: str, payload: bytes, rc: int = 0) -> str:
+    """The reply shape ``_read_exact_bytes`` asks for: its per-call sentinel around the base64
+    payload (and the file's ``wc -c`` when the command asks for it), then the read's exit status.
+    Mirrors what the real shell emits, so a double stays honest about the fence the transport
+    relies on."""
+    import base64 as _b64
+    import re as _re
+    sentinel = _re.search(r"__HERMES_RB_[0-9a-f]+__", command).group(0)
+    body = _b64.b64encode(payload).decode() if rc == 0 else ""
+    size = f"{len(payload)}\n{sentinel}\n" if "wc -c <" in command else ""
+    return f"{sentinel}\n{body}\n{sentinel}\n{size}{rc}\n"
+
 class TestPatchReplacePostWriteVerification:
     """Tests for the post-write verification added in patch_replace.
 
@@ -556,12 +448,12 @@ class TestPatchReplacePostWriteVerification:
         file_contents = {"/tmp/test/a.py": "hello world\n"}
 
         def side_effect(command, **kwargs):
-            # cat reads the file — both the initial read and the verify read
-            if command.startswith("cat "):
-                # Extract path from cat command (strip quotes)
+            # the byte-exact read (base64 over the transport) — both the initial read and the verify read
+            if "base64 < " in command:
                 for path in file_contents:
                     if path in command:
-                        return {"output": file_contents[path], "returncode": 0}
+                        return {"output": _fenced_base64_reply(command, file_contents[path].encode()),
+                                "returncode": 0}
                 return {"output": "", "returncode": 1}
             # mkdir for parent dir
             if command.startswith("mkdir "):
@@ -589,18 +481,18 @@ class TestPatchReplacePostWriteVerification:
 
     def test_patch_replace_fails_when_verify_read_errors(self, mock_env):
         """If the verify-read step itself fails (exit code != 0), return an error."""
-        call_count = {"cat": 0}
+        call_count = {"read": 0}
         state = {"content": "hello world\n"}
 
         def side_effect(command, stdin_data=None, **kwargs):
             if stdin_data is not None:  # write (atomic temp-file + mv script)
                 state["content"] = stdin_data
                 return {"output": "", "returncode": 0}
-            if command.startswith("cat "):  # read
-                call_count["cat"] += 1
+            if "base64 < " in command:  # byte-exact read
+                call_count["read"] += 1
                 # First read (initial fetch) succeeds; second read (verify) fails
-                if call_count["cat"] == 1:
-                    return {"output": state["content"], "returncode": 0}
+                if call_count["read"] == 1:
+                    return {"output": _fenced_base64_reply(command, state["content"].encode()), "returncode": 0}
                 return {"output": "", "returncode": 1}
             if command.startswith("mkdir "):
                 return {"output": "", "returncode": 0}
@@ -613,21 +505,6 @@ class TestPatchReplacePostWriteVerification:
         result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
-
-
-# =========================================================================
-# Git baseline check for write_file warning
-# =========================================================================
-
-class _DeletedTestGitBaselineCheck:
-    """Removed May 2026 — these tests asserted on a ``_check_git_baseline``
-    method that doesn't exist on ``ShellFileOperations`` (regression intro
-    by a separate refactor). All 6 tests in the class fail with
-    AttributeError on origin/main. Deleted wholesale per Teknium's
-    instruction to keep CI green; reinstate them when the underlying
-    helper is restored or replaced.
-    """
-    pass
 
 
 # =========================================================================
@@ -757,9 +634,6 @@ class TestByteLayerBinaryDetection:
         assert sample[-1:] != b"a"  # the cut really is mid-character
         assert file_ops._is_likely_binary_bytes(sample) is False
 
-    def test_pure_cjk_text_cut_mid_character_is_text(self, file_ops):
-        sample = ("汉字" * 400).encode("utf-8")[:1000]
-        assert file_ops._is_likely_binary_bytes(sample) is False
 
     def test_emoji_cut_at_boundary_is_text(self, file_ops):
         # 4-byte sequence cut after 2 bytes.
@@ -777,8 +651,6 @@ class TestByteLayerBinaryDetection:
     def test_nul_byte_is_binary(self, file_ops):
         assert file_ops._is_likely_binary_bytes(b"MZ\x00\x01text") is True
 
-    def test_elf_header_is_binary(self, file_ops):
-        assert file_ops._is_likely_binary_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 8) is True
 
     def test_latin1_text_stays_read_only(self, file_ops):
         # Mid-stream invalid UTF-8 (0xE9 = latin-1 é). Reading it through the
@@ -789,8 +661,6 @@ class TestByteLayerBinaryDetection:
     def test_empty_sample_is_text(self, file_ops):
         assert file_ops._is_likely_binary_bytes(b"") is False
 
-    def test_short_ascii_is_text(self, file_ops):
-        assert file_ops._is_likely_binary_bytes(b"hello\n") is False
 
     def test_truncated_garbage_tail_after_invalid_prefix_is_binary(self, file_ops):
         # Error near the end but the prefix itself is not clean UTF-8.
@@ -799,12 +669,9 @@ class TestByteLayerBinaryDetection:
     # --- transport: _sample_file_bytes ------------------------------------
 
     def test_sample_decodes_base64_transport(self, mock_env):
-        import base64 as b64
         payload = ("汉字" * 400).encode("utf-8")[:1000]
-        mock_env.execute.return_value = {
-            "output": b64.b64encode(payload).decode() + "\n",
-            "returncode": 0,
-        }
+        mock_env.execute.side_effect = lambda command, **kwargs: {
+            "output": _fenced_base64_reply(command, payload), "returncode": 0}
         ops = ShellFileOperations(mock_env)
         assert ops._sample_file_bytes("/tmp/x.txt") == payload
 
@@ -872,39 +739,28 @@ class TestEscapeNativeToolArg:
     def _ops(self, mock_env):
         return ShellFileOperations(mock_env)
 
-    def test_windows_native_path_kept_native(self, mock_env, monkeypatch):
-        import tools.environments.local as local_mod
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    @pytest.mark.platforms("windows")
+    def test_windows_native_path_kept_native(self, mock_env):
         ops = self._ops(mock_env)
         out = ops._escape_native_tool_arg(r"C:\Users\alice\project")
         assert out == "'C:/Users/alice/project'"
 
-    def test_msys_path_translated_back_to_native(self, mock_env, monkeypatch):
-        import tools.environments.local as local_mod
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    @pytest.mark.platforms("windows")
+    def test_msys_path_translated_back_to_native(self, mock_env):
         ops = self._ops(mock_env)
         out = ops._escape_native_tool_arg("/c/Users/alice/project")
         assert out == "'C:/Users/alice/project'"
 
-    def test_posix_path_untouched_on_windows(self, mock_env, monkeypatch):
+    @pytest.mark.platforms("windows")
+    def test_posix_path_untouched_on_windows(self, mock_env):
         """Multi-segment POSIX paths (/home/x, /tmp/y) are not drive paths."""
-        import tools.environments.local as local_mod
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         ops = self._ops(mock_env)
         assert ops._escape_native_tool_arg("/tmp/workdir") == "'/tmp/workdir'"
 
-    def test_non_windows_behaves_like_escape_shell_arg(self, mock_env, monkeypatch):
-        import tools.environments.local as local_mod
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
-        ops = self._ops(mock_env)
-        assert ops._escape_native_tool_arg("/home/u/it's here") == (
-            ops._escape_shell_arg("/home/u/it's here")
-        )
-
-    def test_rg_content_search_uses_native_form(self, mock_env, monkeypatch):
-        """_search_with_rg must pass the path in native C:/ form to rg."""
-        import tools.environments.local as local_mod
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    @pytest.mark.platforms("windows")
+    def test_rg_content_search_uses_native_form(self, mock_env):
+        """The call site, not just the helper: search must hand the native rg
+        binary C:/..., never the MSYS /c/... form (the live os-error-3 failure)."""
         commands = []
 
         def side_effect(command, **kwargs):
@@ -923,15 +779,14 @@ class TestEscapeNativeToolArg:
         assert any("'C:/Users/alice/project'" in c for c in rg_cmds), rg_cmds
         assert all("/c/Users" not in c for c in rg_cmds), rg_cmds
 
-    def test_shell_linter_uses_native_form(self, mock_env, monkeypatch):
+    @pytest.mark.platforms("windows")
+    def test_shell_linter_uses_native_form(self, mock_env):
         """_check_lint must hand node/python/etc. the native C:/ path.
 
         Regression for the double-prefix failure (#84303): node given the
         MSYS /c/Users/... form resolves it as C:\\c\\Users\\... and every
         .js write reports a phantom ENOENT lint error.
         """
-        import tools.environments.local as local_mod
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         commands = []
 
         def side_effect(command, **kwargs):

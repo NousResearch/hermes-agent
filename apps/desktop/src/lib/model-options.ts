@@ -1,4 +1,4 @@
-import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResponse } from '@hermes/shared'
+import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 
@@ -22,7 +22,7 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
  *  catalog is loading / doesn't say. Callers treat undefined as "assume
  *  reasoning" so controls never flicker away during the fetch. */
 export function currentModelCapabilities(
-  options: ModelOptionsResponse | null | undefined,
+  options: ModelOptionsResult | null | undefined,
   provider: string,
   model: string
 ): ModelCapabilities | undefined {
@@ -35,6 +35,60 @@ export function currentModelCapabilities(
 // soft-accepts them. Diffing the pick against the catalog silently swapped
 // `deepseek-v4.1-flash` for the row's `-0731` sibling. The only authority on a
 // pick's validity is the gateway's switch result.
+
+/** The single, deliberate exception to the sticky-pick rule above: the virtual
+ *  `moa` provider. Its catalog row vanishes entirely once no MoA preset is
+ *  enabled (`hermes_cli/inventory.py` filters it out of explicit-only
+ *  catalogs), so a persisted manual pick pointing at it leaves the composer
+ *  pill reading `Model · moa: default` forever (#90244). For this one provider
+ *  — and only with a populated catalog in hand — row absence is authoritative:
+ *  the pick reseeds from the profile default. Every other provider keeps the
+ *  sticky behavior; an unloaded/empty catalog never clobbers anything. */
+export function moaPickRemoved(
+  options: { providers?: ModelOptionProvider[] | null } | null | undefined,
+  provider: string,
+  model: string
+): boolean {
+  if (!model.trim() || provider.trim().toLowerCase() !== 'moa') {
+    return false
+  }
+
+  const providers = options?.providers
+
+  if (!providers || providers.length === 0) {
+    return false
+  }
+
+  const row = providers.find(p => (p.slug || p.name || '').toLowerCase() === 'moa')
+
+  return !(row?.models ?? []).includes(model)
+}
+
+/** A bare provider slug is the pre-migration spelling of a custom entry. The
+ *  catalog aliases `custom:<key>` with the bare config key (#87035), so a pick
+ *  still carrying `nvidia` and a profile default of `custom:nvidia` name the
+ *  SAME endpoint — the pick's spelling is simply stale, not a distinct choice.
+ *  Shipping the bare slug resolves the NATIVE provider instead of the custom
+ *  entry, silently dropping the entry's `extra_body` (e.g.
+ *  `thinking: {type: adaptive}`) that the user configured (#81922).
+ *
+ *  Only a bare slug can be superseded: a pick that already names a provider
+ *  class (`custom:<other>`, `moa`, `openai-codex`) is a different endpoint and
+ *  keeps the sticky behavior. The bare slug must be the default's own key, so
+ *  an unrelated manual pick (`anthropic` while the default is `custom:nvidia`)
+ *  is never clobbered. */
+export function customDefaultSupersedesPick(pickProvider: string, defaultProvider: string): boolean {
+  const pick = (pickProvider || '').trim().toLowerCase()
+  const fallback = (defaultProvider || '').trim().toLowerCase()
+
+  if (!pick || pick === fallback || !fallback.startsWith('custom:')) {
+    return false
+  }
+
+  const key = fallback.slice('custom:'.length).trim()
+
+  return key.length > 0 && pick === key
+}
 
 interface ModelOptionsRequest {
   /** When false, include ambient/unconfigured providers (onboarding/setup
@@ -64,7 +118,7 @@ export function modelOptionsQueryKey(
   return ['model-options', profileKey, sessionId || 'global', ...(ownerKey ? ['owner', ownerKey] : [])] as const
 }
 
-function hasSelectableModels(options: ModelOptionsResponse | null | undefined): boolean {
+function hasSelectableModels(options: ModelOptionsResult | null | undefined): boolean {
   return options?.providers?.some(provider => (provider.models?.length ?? 0) > 0) ?? false
 }
 
@@ -72,7 +126,7 @@ function restModelOptions(
   explicitOnly: boolean,
   refresh: boolean,
   profile?: null | string
-): Promise<ModelOptionsResponse> {
+): Promise<ModelOptionsResult> {
   const opts = { explicitOnly, ...(refresh ? { refresh: true } : {}) }
   const profileKey = (profile ?? '').trim()
 
@@ -86,7 +140,7 @@ export async function requestModelOptions({
   refresh = false,
   request,
   sessionId
-}: ModelOptionsRequest): Promise<ModelOptionsResponse> {
+}: ModelOptionsRequest): Promise<ModelOptionsResult> {
   const dispatch = request ?? (gateway ? gateway.request.bind(gateway) : null)
 
   if (dispatch) {
@@ -111,10 +165,10 @@ export async function requestModelOptions({
     }
 
     let gatewayError: unknown
-    let gatewayOptions: ModelOptionsResponse | undefined
+    let gatewayOptions: ModelOptionsResult | undefined
 
     try {
-      gatewayOptions = await dispatch<ModelOptionsResponse>('model.options', params)
+      gatewayOptions = await dispatch<ModelOptionsResult>('model.options', params)
     } catch (error) {
       gatewayError = error
     }

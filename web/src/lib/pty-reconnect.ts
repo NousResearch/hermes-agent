@@ -28,6 +28,12 @@ export const PTY_RECONNECT_BASE_MS = 250
 export const PTY_RECONNECT_MAX_MS = 3000
 export const PTY_RECONNECT_MAX_ATTEMPTS = 5
 
+// Browsers cannot emit WebSocket ping frames directly. A resize control frame
+// is consumed by `/api/pty` without reaching the child process, so it is a
+// safe application-level keepalive for quiet terminals behind idle-closing
+// proxies.
+export const PTY_KEEPALIVE_INTERVAL_MS = 20_000
+
 /** Delay before PTY reconnect `attempt` (1-based: ChatPage bumps its counter before scheduling). */
 export function ptyReconnectDelayMs(attempt: number): number {
   return reconnectBackoffDelayMs(attempt - 1, {
@@ -54,6 +60,8 @@ export interface PtyResumeReconnectInput {
   socketReadyState?: number | null
   ptyState: PtyConnectionState
   connectInFlight?: boolean
+  /** The automatic ladder used its last attempt; only the explicit Reconnect button restarts it. */
+  reconnectGaveUp?: boolean
 }
 
 const WS_CONNECTING = 0
@@ -67,9 +75,15 @@ export function shouldReconnectPtyOnPageResume({
   online,
   socketReadyState,
   ptyState,
-  connectInFlight
+  connectInFlight,
+  reconnectGaveUp
 }: PtyResumeReconnectInput): boolean {
   if (!isActive || !online || visibilityState === 'hidden') {
+    return false
+  }
+  // The overlay says retries stopped: a tab focus or network blip must not
+  // silently restart the whole ladder behind it.
+  if (reconnectGaveUp) {
     return false
   }
   if (ptyState === 'ended') {

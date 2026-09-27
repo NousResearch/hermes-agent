@@ -86,7 +86,7 @@ def build_init_prompt_for_cwd(cwd: str | None = None, extra: str = "") -> str:
     agents_path = os.path.join(resolved, "AGENTS.md")
     try:
         if os.path.isfile(agents_path):
-            with open(agents_path, encoding="utf-8", errors="replace") as fh:
+            with open(agents_path, encoding="utf-8-sig", errors="replace") as fh:
                 existing = fh.read()
     except OSError:
         existing = None

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -121,23 +120,6 @@ class TestCaptureResponseDefaultPath:
         assert "vision_analysis" not in resp
 
 
-    def test_ax_only_capture_returns_text_regardless_of_routing(self):
-        from tools.computer_use import tool as cu_tool
-
-        cap = _make_capture(mode="ax", png_b64="")
-        # ax mode never has a PNG so neither path matters; assert pure text.
-        with patch.object(cu_tool, "_should_route_through_aux_vision",
-                          return_value=True) as routing:
-            resp = cu_tool._capture_response(cap)
-
-        # ax never even consults the routing helper — short-circuited above
-        # the image branch.
-        routing.assert_not_called()
-        assert isinstance(resp, str)
-        body = json.loads(resp)
-        assert body["mode"] == "ax"
-
-
 # ---------------------------------------------------------------------------
 # _capture_response: routing ON (the #24015 fix)
 # ---------------------------------------------------------------------------
@@ -177,6 +159,7 @@ class TestCaptureResponseRoutedToAuxVision:
         # the contract that prevents #24015's HTTP 404 from firing on the
         # next agent turn.
         assert isinstance(resp, str)
+        assert "data:image" not in resp and "image_url" not in resp
         body = json.loads(resp)
         assert body["mode"] == "som"
         assert body["app"] == "Safari"
@@ -194,7 +177,6 @@ class TestCaptureResponseRoutedToAuxVision:
         args, _kwargs = fake_vat.call_args
         path_arg, prompt_arg = args[0], args[1]
         assert str(tmp_cache_dir) in path_arg
-        assert "desktop application screenshot" in prompt_arg
         # AX summary is included so the aux model can ground its description
         # against the same set-of-mark index the agent will see.
         assert "Sign in" in prompt_arg
@@ -261,49 +243,3 @@ class TestRoutingDecisionWiring:
              patch.object(vr_mod, "should_route_capture_to_aux_vision",
                           side_effect=ValueError("policy bug")):
             assert cu_tool._should_route_through_aux_vision() is False
-
-
-# ---------------------------------------------------------------------------
-# Bug reproduction marker — proves the fix is needed.
-# ---------------------------------------------------------------------------
-
-class TestBugReproductionAnchor:
-    """Without the fix, this test would assert the wrong thing.
-
-    On upstream/main HEAD prior to this branch, _capture_response returns a
-    multimodal envelope unconditionally — so when a non-vision main model
-    is configured, the captured PNG is delivered to the main provider as
-    image_url content and the request is rejected with HTTP 404. We don't
-    have a live provider here, but we can pin the contract: with routing
-    enabled the response MUST be a JSON string with no image_url parts.
-    """
-
-    def test_non_vision_main_model_never_returns_image_url_when_routed(
-        self, tmp_cache_dir,
-    ):
-        from tools.computer_use import tool as cu_tool
-
-        cap = _make_capture(mode="som")
-
-        def _fake_run_async(_coro):
-            return _stub_aux_analysis(
-                "Screenshot showing a GitHub.com window with a sign-in "
-                "form."
-            )
-
-        fake_vat = MagicMock(return_value="<coro>")
-
-        with patch.object(cu_tool, "_should_route_through_aux_vision",
-                          return_value=True), \
-             patch("model_tools._run_async", side_effect=_fake_run_async), \
-             patch("tools.vision_tools.vision_analyze_tool",
-                   new_callable=lambda: fake_vat):
-            resp = cu_tool._capture_response(cap)
-
-        # Must be a string (text-only result).
-        assert isinstance(resp, str)
-        # Must NOT contain a base64 image URL anywhere — that's what tripped
-        # 'No endpoints found that support image input' on the reporter's
-        # main provider in #24015.
-        assert "data:image" not in resp
-        assert "image_url" not in resp

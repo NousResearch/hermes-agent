@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      Выбор [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Время ожидания истекло — команда отклонена"
+  timeout:         "      ⏱ Нет ответа в течение {waited} — команда не была выполнена. Попросите снова, чтобы повторить, или увеличьте лимит: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ Разрешено один раз"
   allowed_session: "      ✓ Разрешено для этого сеанса"
   allowed_always:  "      ✓ Добавлено в постоянный список разрешённых"
@@ -86,6 +86,9 @@ gateway:
     switch_failed:         "Ветка создана, но переключиться на неё не удалось."
     branched_one:          "⑂ Создана ветка **{title}** (скопировано {count} сообщение)\nОригинал: `{parent}`\nВетка: `{new}`\nИспользуйте `/resume`, чтобы вернуться к оригиналу."
     branched_many:         "⑂ Создана ветка **{title}** (скопировано {count} сообщений)\nОригинал: `{parent}`\nВетка: `{new}`\nИспользуйте `/resume`, чтобы вернуться к оригиналу."
+    branched_thread_one:   "⑂ Ветка **{title}** создана в новом треде ({count} сообщение скопировано)\nТред: {thread}\nОригинал: `{parent}` — этот чат остаётся на нём\nВетка: `{new}`\nИспользуйте `/branch --here`, чтобы ветвить в этом чате."
+    branched_thread_many:  "⑂ Ветка **{title}** создана в новом треде ({count} сообщений скопировано)\nТред: {thread}\nОригинал: `{parent}` — этот чат остаётся на нём\nВетка: `{new}`\nИспользуйте `/branch --here`, чтобы ветвить в этом чате."
+    thread_fallback:       "Здесь не удалось создать тред, поэтому ветка заменила сессию этого чата."
 
   commands:
     usage:                 "Использование: `/commands [page]`"
@@ -179,7 +182,7 @@ gateway:
       blocked:             "blocked; needs attention"
       review_requested:    "handed off for review; the implementation is done"
       changes_requested:   "review requested changes (BLOCK); implementation is not approved"
-      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
+      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."

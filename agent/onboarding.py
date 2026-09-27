@@ -119,6 +119,53 @@ def profile_build_mode(config: Mapping[str, Any]) -> str:
     return "off" if isinstance(mode, str) and mode.strip().lower() == "off" else "ask"
 
 
+# Shared by both first-contact notes so a real first-message task is never
+# replaced by the intro (plain or profile-build offer).
+TASK_FIRST_CLAUSE = (
+    "If this message is itself a real request or task, DO THE TASK FIRST -- call "
+    "whatever tools it needs -- and only then, in the closing sentences of that same "
+    "reply, do what this note asks. Never let this note replace or skip work the user "
+    "actually asked for. "
+)
+
+PLAIN_INTRO_NOTE = (
+    "[System note: This is the user's very first message ever. "
+    + TASK_FIRST_CLAUSE
+    + "What this note asks: briefly introduce yourself and mention that /help shows "
+    "available commands, in one or two sentences.]"
+)
+
+
+def first_contact_turn_note(
+    config: Mapping[str, Any],
+    config_path: Path,
+    *,
+    session_history_empty: bool,
+    install_has_prior_sessions: bool,
+) -> Optional[str]:
+    """Return a one-shot sidecar note for the install's first-ever message.
+
+    Matches the gateway first-contact path: when ``profile_build`` is ``ask``
+    and the offer has not been latched yet, return the opt-in profile-build
+    directive and persist ``onboarding.seen.profile_build_offered``. Otherwise
+    return the plain intro note. Returns ``None`` when this is not the first
+    contact (non-empty session history or prior sessions exist on the install).
+    """
+    if not session_history_empty or install_has_prior_sessions:
+        return None
+    try:
+        if (
+            profile_build_mode(config) == "ask"
+            and not is_seen(config, PROFILE_BUILD_FLAG)
+        ):
+            mark_seen(config_path, PROFILE_BUILD_FLAG)
+            return profile_build_directive().strip()
+        return PLAIN_INTRO_NOTE
+    except Exception as e:
+        logger.debug("first_contact_turn_note failed, using plain intro: %s", e)
+        return PLAIN_INTRO_NOTE
+
+
 def profile_build_directive() -> str:
     """System-note directive appended to the very first message ever.
 
@@ -128,7 +175,8 @@ def profile_build_directive() -> str:
     """
     return (
         "\n\n"
-        "[System note: This is the user's very first message ever. After a one-sentence introduction (mention /help "
+        "[System note: This is the user's very first message ever. " + TASK_FIRST_CLAUSE
+        + "What this note asks: after a one-sentence introduction (mention /help "
         "shows commands), OFFER — do not assume — to build a short profile of them so you can be more useful, and "
         "explain they can decline or do it later. If and ONLY IF they accept:\n"
         "  1. Ask for whatever they're comfortable sharing (name, what they do, how they like you to work). "
@@ -175,6 +223,7 @@ def mark_seen(config_path: Path, flag: str) -> bool:
 
 __all__ = [
     "BUSY_INPUT_FLAG", "TOOL_PROGRESS_FLAG", "OPENCLAW_RESIDUE_FLAG", "PROFILE_BUILD_FLAG",
+    "PLAIN_INTRO_NOTE", "first_contact_turn_note",
     "busy_input_hint_gateway", "busy_input_hint_cli", "tool_progress_hint_gateway", "tool_progress_hint_cli",
     "openclaw_residue_hint_cli", "detect_openclaw_residue", "profile_build_mode", "profile_build_directive",
     "is_seen", "mark_seen",

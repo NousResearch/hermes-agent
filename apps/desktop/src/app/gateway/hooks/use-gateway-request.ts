@@ -1,11 +1,11 @@
-import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
+import { isGatewayReauthRequired } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
-import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
@@ -71,16 +71,19 @@ export function useGatewayRequest() {
       reauthErrorRef.current = null
 
       try {
-        // Reconnect to whichever profile the gateway is currently routed to (not
-        // always the primary), so a sleep/wake reconnect keeps the user on the
-        // profile they were chatting in. Both awaits below are IPC round-trips
-        // into the main process with no timeout of their own (#93454) — a
-        // wedged main-process round-trip otherwise hangs this await forever,
-        // latching reconnectingRef.current so every later requestGateway() call
-        // returns the same never-settling promise. Bound the same way
-        // use-gateway-boot.ts bounds the primary boot/soft-switch equivalents.
+        // This path recovers only the window primary (requestGateway routes
+        // secondaries to ensureActiveGatewayOpen). Call getConnection() with no
+        // profile so main resolves the sender's full route — passing the
+        // profile name would look it up in the LOCAL pool, which fails for a
+        // profile that exists only on a remote gateway (peer windows).
+        // Both awaits below are IPC round-trips into the main process with no
+        // timeout of their own (#93454) — a wedged main-process round-trip
+        // otherwise hangs this await forever, latching reconnectingRef.current
+        // so every later requestGateway() call returns the same never-settling
+        // promise. Bound the same way use-gateway-boot.ts bounds the primary
+        // boot/soft-switch equivalents.
         const conn = await withTimeout(
-          desktop.getConnection($activeGatewayProfile.get()),
+          desktop.getConnection(),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
@@ -95,7 +98,7 @@ export function useGatewayRequest() {
         // retryable. Stash only the former so requestGateway can show the
         // actionable "sign in again" message.
         const wsUrl = await withTimeout(
-          resolveGatewayWsUrl(desktop, conn),
+          resolveDesktopGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out re-minting the gateway WebSocket URL'
         )

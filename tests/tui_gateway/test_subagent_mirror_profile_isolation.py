@@ -56,10 +56,10 @@ HOME_A = "/profiles/a"
 HOME_B = "/profiles/b"
 
 
-def _relay(server, event_type, **payload):
+def _relay(server, event_type, sid="parent-sid", **payload):
     """Drive _on_tool_progress the way the delegate relay does."""
     server._on_tool_progress(
-        "parent-sid",
+        sid,
         event_type,
         payload.pop("tool_name", None),
         payload.pop("preview", None),
@@ -126,3 +126,96 @@ def test_complete_clears_only_the_owning_profiles_entry(server, emits):
 
     assert server._child_run_active("child-1", HOME_A)
     assert not server._child_run_active("child-1", HOME_B)
+
+
+def test_mirror_state_dict_is_scoped_per_profile(server, emits):
+    # The mirror's per-child stream state (started flag, open tool) is keyed on
+    # (home, key) too: with a bare key, B's relay found A's entry "already started"
+    # and completed A's open tool verbatim into B's window — no message.start, and
+    # A's tool payload (preview included) eavesdropped into another profile.
+    server._sessions["parent-a"] = {"session_key": "parent", "profile_home": HOME_A}
+    server._sessions["parent-b"] = {"session_key": "parent", "profile_home": HOME_B}
+    server._sessions["live-a"] = {"session_key": "child-1", "profile_home": HOME_A, "agent": None}
+    server._sessions["live-b"] = {"session_key": "child-1", "profile_home": HOME_B, "agent": None}
+
+    _relay(server, "subagent.tool", sid="parent-a", tool_name="terminal",
+           preview="SECRET-A: cat ~/.aws/credentials", child_session_id="child-1")
+    _relay(server, "subagent.tool", sid="parent-b", tool_name="web_search",
+           preview="b query", child_session_id="child-1")
+
+    a = [(e, p) for e, s, p in emits if s == "live-a"]
+    b = [(e, p) for e, s, p in emits if s == "live-b"]
+    # Each window got its OWN synthetic turn: message.start then its parent's tool.
+    assert [e for e, _ in a] == ["message.start", "tool.start"]
+    assert [e for e, _ in b] == ["message.start", "tool.start"]
+    assert a[1][1]["preview"] == "SECRET-A: cat ~/.aws/credentials"
+    assert b[1][1]["name"] == "web_search"
+    # A's open tool stays open under A's dimension — not completed by B's relay.
+    assert server._child_mirrors[(HOME_A, "child-1")]["open_tool"]["name"] == "terminal"
+
+
+def test_gone_parent_record_fails_closed(server, emits):
+    # Mid-run parent teardown (session.close pops unconditionally; the WS orphan reaper
+    # force-pops mid-turn): the relaying sid is gone from _sessions, so the event cannot
+    # be attributed to a profile. None is NOT a stand-in here — it is the launch profile,
+    # a real dimension — so the unresolved event must bind nothing: no liveness row under
+    # the launch dimension, no mirror into a same-key launch-profile window. The complete
+    # still drains the row the child registered under its real home before the teardown.
+    server._sessions["parent-a"] = {"session_key": "parent", "profile_home": HOME_A}
+    server._sessions["launch-live"] = {"session_key": "child-1", "agent": None}
+    _relay(server, "subagent.tool", sid="parent-a", tool_name="terminal",
+           preview="ls", child_session_id="child-1")
+    assert server._child_run_active("child-1", HOME_A)
+
+    server._sessions.pop("parent-a")
+    _relay(server, "subagent.tool", sid="parent-a", tool_name="terminal",
+           preview="more", child_session_id="child-1")
+
+    assert (None, "child-1") not in server._active_child_runs
+    assert [(e, s) for e, s, _ in emits if s == "launch-live"] == []
+    assert server._child_mirrors == {}
+
+    _relay(server, "subagent.complete", sid="parent-a",
+           child_session_id="child-1", status="completed", summary="done")
+    assert server._active_child_runs == {}
+
+
+def test_lazy_build_guard_holds_only_the_owning_profile_lazy(server):
+    # _start_agent_build's spectate guard (server.py): a lazy watch window stays lazy
+    # only while the run is in flight under ITS OWN profile — a same-key run under
+    # another profile must not pin this window lazy and starve its agent build.
+    import threading
+
+    server._mirror_subagent_to_child("subagent.tool", {"child_session_id": "child-1"}, HOME_A)
+
+    lazy_b = {"session_key": "child-1", "profile_home": HOME_B, "lazy": True,
+              "agent_ready": threading.Event()}
+    server._start_agent_build("live-b", lazy_b)
+    lazy_b["_agent_build_thread"].join(timeout=5)  # no live-b in _sessions: the build abandons quietly
+    assert lazy_b.get("agent_build_started") is True
+    assert "lazy" not in lazy_b
+
+    lazy_a = {"session_key": "child-1", "profile_home": HOME_A, "lazy": True,
+              "agent_ready": threading.Event()}
+    server._start_agent_build("live-a", lazy_a)
+    assert lazy_a.get("agent_build_started") is None
+    assert lazy_a.get("lazy") is True
+
+
+def test_submit_turn_guard_holds_only_the_owning_profile(server):
+    # _lock_in_submit_turn's busy guard (methods_prompt.py): typing into a lazy watch
+    # window is refused only while the in-flight child runs under the window's OWN
+    # profile — another profile's same-key run does not fence this turn.
+    import threading
+
+    server._mirror_subagent_to_child("subagent.tool", {"child_session_id": "child-1"}, HOME_A)
+
+    live_b = {"agent": None, "history_lock": threading.Lock(), "lazy": True,
+              "running": False, "session_key": "child-1", "profile_home": HOME_B}
+    err, _fields = server._lock_in_submit_turn("rid-b", "live-b", live_b, "hi", {}, False, [], None, None)
+    assert err is None  # admitted: B's window is not fenced by A's run
+
+    live_a = {"agent": None, "history_lock": threading.Lock(), "lazy": True,
+              "running": False, "session_key": "child-1", "profile_home": HOME_A}
+    err_a, _fields = server._lock_in_submit_turn("rid-a", "live-a", live_a, "hi", {}, False, [], None, None)
+    assert err_a["error"]["code"] == 4009

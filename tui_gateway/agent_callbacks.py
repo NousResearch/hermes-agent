@@ -15,13 +15,21 @@ from .method_ctx import bind_module
 # Child-session live mirror: a delegated child's activity reaches the gateway only as
 # relayed ``subagent.*`` events on the PARENT sid; translate them into native stream
 # events on the CHILD sid (write_json routes by sid) so its own window is not silent.
-_child_mirrors: dict[str, dict] = {}
+# Keyed like ``_active_child_runs``: the child runs under its PARENT's profile, and the
+# per-child stream state (open tool, started flag) must not leak across profiles sharing
+# a stored id — A's open tool would otherwise complete into B's window verbatim.
+_child_mirrors: dict[tuple[str | None, str], dict] = {}
 _child_mirrors_lock = threading.Lock()
 # Child sids with a run in flight (refreshed per relayed event, popped on complete) so a
 # lazy watch resume reports running=true during a silent long tool. Keyed on the child's
 # profile home: stored ids are timestamps that exist in several profiles' stores, so a
 # bare-key hit would report ANOTHER profile's run as active here.
 _active_child_runs: dict[tuple[str | None, str], float] = {}
+# The relaying parent's record is gone (session.close pops unconditionally; the WS orphan
+# reaper force-pops mid-turn): the event cannot be attributed to a profile, so it binds
+# NOTHING. None itself is a legal key dimension (the launch profile), so unresolvable is
+# a distinct sentinel rather than a None profile_home.
+_UNRESOLVED_PROFILE = object()
 # Anything quiet this long lost its completion event — don't pin "running".
 _CHILD_RUN_STALE_S = 3600.0
 _CHILD_DELTA_EVENTS = {"subagent.thinking": "reasoning.delta", "subagent.text": "message.delta",
@@ -43,6 +51,17 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home=None)
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
         return
+    if profile_home is _UNRESOLVED_PROFILE:
+        # Fail-closed: no liveness pin under the launch-profile dimension, no mirror into any
+        # window. Rows this child registered earlier under its real home are still drained so a
+        # mid-run parent teardown cannot strand them for the full stale window.
+        if event_type == "subagent.complete":
+            for key in [k for k in _active_child_runs if k[1] == child_key]:
+                _active_child_runs.pop(key, None)
+        with _child_mirrors_lock:
+            for key in [k for k in _child_mirrors if k[1] == child_key]:
+                _child_mirrors.pop(key, None)
+        return
     home = _child_run_profile(profile_home)
     # Liveness registry first: accurate with no window open (one opened mid-run knows busy).
     if event_type == "subagent.complete":
@@ -54,12 +73,12 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home=None)
     live = _find_live_session_by_key(child_key, home)
     if live is None or live[1].get("agent") is not None:
         with _child_mirrors_lock:
-            _child_mirrors.pop(child_key, None)
+            _child_mirrors.pop((home, child_key), None)
         return
     csid = live[0]
     text = str(payload.get("text") or "")
     with _child_mirrors_lock:
-        st = _child_mirrors.setdefault(child_key, {"seq": 0, "open_tool": None, "started": False})
+        st = _child_mirrors.setdefault((home, child_key), {"seq": 0, "open_tool": None, "started": False})
         if not st["started"]:
             st["started"] = True
             _emit("message.start", csid)
@@ -92,7 +111,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home=None)
         else:
             summary = str(payload.get("summary") or payload.get("text") or "")
             _emit("message.complete", csid, {"text": summary})
-            _child_mirrors.pop(child_key, None)
+            _child_mirrors.pop((home, child_key), None)
 
 
 def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:

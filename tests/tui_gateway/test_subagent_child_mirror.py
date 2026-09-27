@@ -54,7 +54,11 @@ def emits(server, monkeypatch):
 
 
 def _relay(server, event_type, **payload):
-    """Drive _on_tool_progress the way the delegate relay does."""
+    """Drive _on_tool_progress the way the delegate relay does. The parent record
+    exists like any live turn's does (launch profile: no profile_home) — a parent
+    that is already gone is the fail-closed path, covered in
+    test_subagent_mirror_profile_isolation.py."""
+    server._sessions.setdefault("parent-sid", {"session_key": "parent"})
     server._on_tool_progress(
         "parent-sid",
         event_type,
@@ -125,7 +129,7 @@ def test_live_child_session_gets_native_stream(server, emits):
 def test_window_closed_midrun_drops_state_then_fresh_turn_on_reopen(server, emits):
     server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
-    assert "child-1" in server._child_mirrors
+    assert (None, "child-1") in server._child_mirrors
 
     # Window closes → live session gone → state dropped on the next event.
     server._sessions.clear()

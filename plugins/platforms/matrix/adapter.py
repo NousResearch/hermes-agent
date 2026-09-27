@@ -361,6 +361,16 @@ class MatrixRoomIdentity:
     conflict: bool = False
 
 
+@dataclass(frozen=True)
+class _MatrixFollowupChoice:
+    turn_id: str
+    emoji_filter: tuple[str, ...]
+    room_id: str
+    requester: str
+    thread_id: str
+    profile: str
+
+
 @dataclass
 class _MatrixApprovalPrompt:
     """Pending reaction-based exec approval prompt."""
@@ -880,7 +890,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         self._reaction_redaction_delay_seconds = 5.0
         self._reaction_redaction_tasks: set[asyncio.Task] = set()
         self._agent_reactions: dict[tuple[str, str], list[str]] = {}
-        self._reaction_followup_actions: dict[str, tuple[str, tuple[str, ...]]] = {}
+        self._reaction_followup_actions: dict[str, _MatrixFollowupChoice] = {}
         self._reaction_watch_store: ReactionWatchStore | None = None
 
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
@@ -1449,11 +1459,14 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
 
     async def configure_reaction_followups(
         self, session_key: str, enabled: bool, emoji_filter: tuple[str, ...],
+        *, room_id: str, requester: str, thread_id: str, profile: str,
     ) -> bool:
         if session_key not in self._active_sessions:
             return False
         if enabled:
-            self._reaction_followup_actions[session_key] = (uuid.uuid4().hex, emoji_filter)
+            self._reaction_followup_actions[session_key] = _MatrixFollowupChoice(
+                uuid.uuid4().hex, emoji_filter, room_id, requester, thread_id, profile,
+            )
         else:
             self._reaction_followup_actions.pop(session_key, None)
         return True
@@ -1463,25 +1476,36 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         metadata: Dict[str, Any], *, reply_to: Optional[str],
         is_ephemeral_response: bool = False,
     ) -> tuple[SendResult, BasePlatformAdapter]:
-        result, delivery_adapter = await super().send_final_ledgered(
-            event, session_key, text_content, metadata, reply_to=reply_to,
-            is_ephemeral_response=is_ephemeral_response)
-        if result.success and result.message_id:
-            ids = (*result.continuation_message_ids, result.message_id)
-            self.on_streamed_final_delivery(event.source, session_key, ids, text_content)
-        return result, delivery_adapter
+        try:
+            result, delivery_adapter = await super().send_final_ledgered(
+                event, session_key, text_content, metadata, reply_to=reply_to,
+                is_ephemeral_response=is_ephemeral_response)
+            if result.success and result.message_id:
+                ids = (*result.continuation_message_ids, result.message_id)
+                self.on_streamed_final_delivery(event.source, session_key, ids, text_content)
+            return result, delivery_adapter
+        finally:
+            self._reaction_followup_actions.pop(session_key, None)
 
     def on_streamed_final_delivery(
         self, source: SessionSource, session_key: str, ids: tuple[str, ...], text_content: str,
     ) -> None:
         action = self._reaction_followup_actions.get(session_key)
-        if not action or not text_content or not ids or not source.user_id:
+        if not action or not text_content or not ids or source.chat_id != action.room_id:
             return
+        saved_source = source.to_dict()
+        saved_source.update(user_id=action.requester, thread_id=action.thread_id or None)
+        if action.profile:
+            saved_source["profile"] = action.profile
+        else:
+            saved_source.pop("profile", None)
         self._followup_store().arm(
-            action[0], ids, profile=source.profile or "", room_id=source.chat_id,
-            thread_id=source.thread_id or "", session_key=session_key,
-            requester=source.user_id, source=source.to_dict(), emoji_filter=action[1],
+            action.turn_id, ids, profile=action.profile, room_id=action.room_id,
+            thread_id=action.thread_id, session_key=session_key,
+            requester=action.requester, source=saved_source,
+            emoji_filter=action.emoji_filter,
         )
+        self._reaction_followup_actions.pop(session_key, None)
 
     async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
@@ -2901,7 +2925,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        if actions := getattr(self, "_reaction_followup_actions", None):
+        if outcome != ProcessingOutcome.SUCCESS and (actions := getattr(self, "_reaction_followup_actions", None)):
             actions.pop(self._event_session_key(event), None)
         msg_id, room_id = event.message_id, event.source.chat_id
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:

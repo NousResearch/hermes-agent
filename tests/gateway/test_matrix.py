@@ -1912,7 +1912,17 @@ async def test_thread_backfill_omits_child_redacted_during_relations_fetch():
     cache.redact(room_id, "$child")
     release.set()
 
-    assert await fetching == [root, MatrixEventContext("@alice:example.org", "", redacted=True)]
+    entries = await fetching
+    adapter = _make_adapter()
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._is_sender_authorized = MagicMock(return_value=True)
+    rendered = await adapter._format_history_context(room_id, entries, "Recent thread messages")
+
+    assert (entries, rendered) == (
+        [root, MatrixEventContext("@alice:example.org", "", redacted=True)],
+        "[Recent thread messages]\n[Alice] root\n[Alice] [redacted]",
+    )
 
 
 @pytest.mark.asyncio
@@ -1933,6 +1943,9 @@ async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
             {"event_id": "$other-thread", "room_id": room_id,
              "sender": "@bob:example.org", "content": {"msgtype": "m.text", "body": "Other thread",
              "m.relates_to": {"rel_type": "m.thread", "event_id": "$other-root"}}},
+            {"event_id": "$redacted-orphan", "room_id": room_id,
+             "sender": "@bob:example.org", "type": "m.room.message", "content": {},
+             "unsigned": {"redacted_because": {"event_id": "$redaction"}}},
             {"event_id": "$encrypted", "room_id": room_id, "type": "m.room.encrypted",
              "sender": "@alice:example.org", "content": {"ciphertext": "encrypted",
                  "m.relates_to": {"rel_type": "m.thread", "event_id": "$root"}}},
@@ -1951,7 +1964,7 @@ async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
     with patch("plugins.platforms.matrix.effective_event._decrypt", new_callable=AsyncMock) as decrypt:
         decrypt.return_value = ({"content": {"msgtype": "m.text", "body": "Secret"}}, None)
         entries = await thread_context.fetch_thread_entries(
-            client, cache, room_id, "$root", limit=4, before_event_id="$current",
+            client, cache, room_id, "$root", limit=5, before_event_id="$current",
         )
 
     assert entries == [
@@ -1960,7 +1973,7 @@ async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
     ]
     decrypt.assert_awaited_once()
     assert [call.kwargs["query_params"] for call in _history_request_calls(client)] == [
-        {"limit": "0"}, {"limit": "8"},
+        {"limit": "0"}, {"limit": "10"},
     ]
 
 

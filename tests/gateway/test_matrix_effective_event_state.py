@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from plugins.platforms.matrix.read_context import read_matrix_context
+from plugins.platforms.matrix.effective_event import MatrixEffectiveEvent, effective_event
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 from plugins.platforms.matrix.room_context import fetch_room_entries
 from plugins.platforms.matrix.thread_context import fetch_thread_entries
@@ -144,7 +145,11 @@ async def test_encrypted_replacement_uses_owning_crypto_and_reports_missing_edit
         }}},
     }
     original_text = SimpleNamespace(content={"msgtype": "m.text", "body": "before"})
-    replacement_text = SimpleNamespace(content={"msgtype": "m.text", "body": "after"})
+    replacement_text = SimpleNamespace(content=SimpleNamespace(serialize=lambda: {
+        "msgtype": "m.text", "body": "* after",
+        "m.new_content": {"msgtype": "m.text", "body": "after"},
+        "m.relates_to": {"rel_type": "m.replace", "event_id": "$child"},
+    }))
     decrypt = AsyncMock(side_effect=[original_text, replacement_text, original_text, SessionNotFound()])
 
     async def request(_method, path, **_kwargs):
@@ -170,6 +175,89 @@ async def test_encrypted_replacement_uses_owning_crypto_and_reports_missing_edit
     assert [call.args[0] for call in decrypt.await_args_list] == [
         original, original["unsigned"]["m.relations"]["m.replace"],
         original, original["unsigned"]["m.relations"]["m.replace"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pinned_mautrix_typed_edit_keeps_new_content():
+    mautrix_types = pytest.importorskip("mautrix.types")
+    original = {
+        "room_id": ROOM, "event_id": "$child", "sender": SENDER,
+        "type": "m.room.encrypted", "content": {"ciphertext": "original"},
+        "unsigned": {"m.relations": {"m.replace": {
+            "room_id": ROOM, "event_id": "$edit", "sender": SENDER,
+            "type": "m.room.encrypted", "content": {
+                "ciphertext": "replacement",
+                "m.relates_to": {"rel_type": "m.replace", "event_id": "$child"},
+            },
+        }}},
+    }
+    decrypted_original = mautrix_types.Event.deserialize({
+        **_original("$child", "before"), "origin_server_ts": 1,
+    })
+    decrypted_edit = mautrix_types.Event.deserialize({
+        "room_id": ROOM, "event_id": "$edit", "sender": SENDER,
+        "type": "m.room.message", "origin_server_ts": 2,
+        "content": {
+            "msgtype": "m.text", "body": "* after",
+            "m.new_content": {"msgtype": "m.text", "body": "after"},
+            "m.relates_to": {"rel_type": "m.replace", "event_id": "$child"},
+        },
+    })
+    with patch("plugins.platforms.matrix.effective_event._decrypt", new_callable=AsyncMock) as decrypt:
+        decrypt.side_effect = [(decrypted_original, None), (decrypted_edit, None)]
+        state = await effective_event(SimpleNamespace(), original)
+
+    assert decrypted_edit.content.serialize() == {
+        "msgtype": "m.text", "body": "* after",
+        "m.relates_to": {"rel_type": "m.replace", "event_id": "$child"},
+        "m.new_content": {"msgtype": "m.text", "body": "after"},
+    }
+    assert state == MatrixEffectiveEvent(
+        {"msgtype": "m.text", "body": "after"}, original["content"], edited=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_encrypted_edit_is_visible_in_room_catch_up():
+    raw = {
+        "room_id": ROOM, "event_id": "$original", "sender": SENDER,
+        "type": "m.room.encrypted", "content": {"ciphertext": "original"},
+        "unsigned": {"m.relations": {"m.replace": {
+            "room_id": ROOM, "event_id": "$edit", "sender": SENDER,
+            "type": "m.room.encrypted", "content": {
+                "ciphertext": "replacement",
+                "m.relates_to": {"rel_type": "m.replace", "event_id": "$original"},
+            },
+        }}},
+    }
+    decrypted = [
+        SimpleNamespace(content={"msgtype": "m.text", "body": "before"}),
+        SimpleNamespace(content=SimpleNamespace(serialize=lambda: {
+            "msgtype": "m.text", "body": "* after",
+            "m.new_content": {"msgtype": "m.text", "body": "after"},
+            "m.relates_to": {"rel_type": "m.replace", "event_id": "$original"},
+        })),
+    ]
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "boundary"}
+        if "/messages" in path:
+            return {"chunk": [raw]}
+        if "/m.annotation" in path:
+            return {"chunk": []}
+        raise AssertionError(path)
+
+    crypto = SimpleNamespace(decrypt_megolm_event=AsyncMock(side_effect=decrypted))
+    client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)), crypto=crypto)
+    mautrix = SimpleNamespace(types=SimpleNamespace(Event=SimpleNamespace(deserialize=lambda event: event)))
+    with patch.dict(sys.modules, {"mautrix": mautrix, "mautrix.types": mautrix.types}):
+        entries = await fetch_room_entries(client, MatrixEventContextCache(), ROOM, "$current", limit=1)
+
+    assert entries == [MatrixEventContext(SENDER, "after")]
+    assert [call.args[0] for call in crypto.decrypt_megolm_event.await_args_list] == [
+        raw, raw["unsigned"]["m.relations"]["m.replace"],
     ]
 
 

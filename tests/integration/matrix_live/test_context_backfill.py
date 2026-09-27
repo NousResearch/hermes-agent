@@ -7,7 +7,9 @@ import json
 import time
 import uuid
 from collections.abc import Callable
+from urllib.parse import quote
 
+import aiohttp
 import pytest
 from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomRedactResponse, RoomSendResponse
 
@@ -208,3 +210,38 @@ def test_room_catch_up_shows_edits_and_redactions_to_model(
         asyncio.run(asyncio.wait_for(exchange(), timeout=20))
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))
+
+
+def test_redacted_child_is_removed_from_thread_relations(live_room: LiveRoom) -> None:
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        try:
+            root = await _send(client, live_room.room_id, "Thread root")
+            child = await _send(client, live_room.room_id, "Thread child", root=root)
+            base = f"{live_room.homeserver}/_matrix/client/v1/rooms/{quote(live_room.room_id, safe='')}"
+            relations_url = f"{base}/relations/{quote(root, safe='')}/m.thread"
+            event_url = f"{live_room.homeserver}/_matrix/client/v3/rooms/{quote(live_room.room_id, safe='')}/event/{quote(child, safe='')}"
+            headers = {"Authorization": f"Bearer {live_room.observer.access_token}"}
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(relations_url) as response:
+                    assert response.status == 200
+                    before = await response.json()
+
+                redaction = await client.room_redact(live_room.room_id, child)
+                assert isinstance(redaction, RoomRedactResponse), redaction
+
+                async with session.get(relations_url) as response:
+                    assert response.status == 200
+                    after = await response.json()
+                async with session.get(event_url) as response:
+                    assert response.status == 200
+                    event = await response.json()
+
+            assert [item["event_id"] for item in before["chunk"]] == [child]
+            assert after["chunk"] == []
+            assert event["content"] == {}
+            assert event["unsigned"]["redacted_because"]["redacts"] == child
+        finally:
+            await client.close()
+
+    asyncio.run(asyncio.wait_for(exchange(), timeout=15))

@@ -93,9 +93,7 @@ async def effective_event(client: Any, raw: dict[str, Any]) -> MatrixEffectiveEv
         revised, error = await _decrypt(client, replacement)
         if error is not None:
             return MatrixEffectiveEvent(content, original_content, error=error)
-        revised_content = event_content(revised)
-        if isinstance(revised, dict):
-            revised_content = revised_content.get("m.new_content")
+        revised_content = event_content(revised).get("m.new_content")
     else:
         revised_content = event_content(replacement).get("m.new_content")
     if not isinstance(revised_content, dict):

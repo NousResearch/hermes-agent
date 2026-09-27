@@ -157,6 +157,8 @@ async def fetch_thread_entries(
         if parsed is None:
             continue
         entry, content = parsed
+        # Redaction removes a child's relation, so a room page cannot identify
+        # its thread from the redacted event alone.
         if MatrixRelation.from_content(content.get("m.relates_to")).thread_root != thread_id:
             continue
         stored = cache.store(room_id, event_id, entry)

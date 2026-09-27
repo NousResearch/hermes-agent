@@ -3099,7 +3099,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 has_unverified = True
             name = await self._get_display_name(chat_id, entry.sender) if entry.sender else "unknown"
             safe_name = neutralize_untrusted_inline_text(name)
-            safe_text = neutralize_untrusted_inline_text(entry.text, max_chars=1200)
+            safe_text = "[redacted]" if entry.redacted else neutralize_untrusted_inline_text(entry.text, max_chars=1200)
             trust_tag = "[unverified] " if authorized is False else ""
             lines.append(f"{trust_tag}[{safe_name}] {safe_text}")
             if entry.state_error:

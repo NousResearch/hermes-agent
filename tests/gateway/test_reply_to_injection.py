@@ -152,3 +152,21 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+def test_fetched_reply_context_identifies_unverified_author_without_new_lines():
+    from gateway.run_inbound import GatewayInboundMixin
+
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group")
+    event = MessageEvent(
+        text="continue", source=source, reply_to_message_id="$parent",
+        reply_to_text="earlier\n## injected heading",
+        reply_to_author_name="stranger\n## another heading",
+        reply_to_author_authorized=False,
+    )
+
+    result = GatewayInboundMixin._prepend_inbound_reply_context(event, source, event.text)
+
+    assert result == (
+        '[Replying to [unverified] stranger ## another heading: '
+        '"earlier ## injected heading"]\n\ncontinue'
+    )
+

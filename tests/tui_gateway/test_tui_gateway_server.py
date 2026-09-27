@@ -2254,6 +2254,48 @@ def test_voice_record_start_forwards_max_recording_seconds(monkeypatch):
         ), f"cfg={cfg!r} forwarded {captured.get('max_recording_seconds')!r}, expected {expected!r}"
 
 
+def test_voice_record_start_cuts_inflight_tts(monkeypatch):
+    """PTT barge-in (#40010): arming the mic cuts in-flight streaming TTS.
+
+    The CLI record-key handler already cuts TTS before starting a capture;
+    the gateway's ``voice.record`` start path did not, so a TUI/Desktop user
+    pressing push-to-talk mid-reply kept hearing the agent talk over them.
+    The cut must happen before ``start_continuous`` arms the mic, and must
+    latch as a user barge (the next turn's model note), not a mode change.
+    """
+    order: list[str] = []
+    tts_calls: list[bool] = []
+
+    def fake_start_continuous(**_kwargs):
+        order.append("start_continuous")
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=fake_start_continuous, stop_continuous=lambda **_kwargs: None
+        ),
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
+    monkeypatch.setattr(
+        server, "_tts_stream_stop", lambda user_barge=True: tts_calls.append(user_barge)
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+
+    resp = _dispatch_sync(
+        {
+            "id": "voice-record-tts-cut",
+            "method": "voice.record",
+            "params": {"action": "start"},
+        }
+    )
+
+    assert resp is not None and "result" in resp, f"voice.record raised: {resp and resp.get('error')}"
+    assert tts_calls == [True], "PTT start must cut TTS as a user barge"
+    assert order == ["start_continuous"], "start_continuous must still arm the mic"
+
+
 def test_voice_record_stop_forces_transcription(monkeypatch):
     captured: dict = {}
 

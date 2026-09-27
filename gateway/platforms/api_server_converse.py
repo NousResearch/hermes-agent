@@ -335,10 +335,20 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
         # gateway does not plumb a barge-in note into _run_agent (dashboard parity is
         # dashboard-only), so it is intentionally unused here.
         from tools.voice_converse_loop import voice_system_prompt
+        # Optional voice-only model override: `voice.model` (and `voice.provider`) let the converse
+        # path request its OWN model group — so voice's model / reasoning_effort can be tuned
+        # independently of the global model.default (and of hermie/penny). Unset → normal
+        # resolution (model.default), i.e. no behaviour change. Read under the request's profile
+        # scope, which _run_turn preserves.
+        from hermes_cli.config import load_config as _load_config
+        _voice_cfg = _load_config().get("voice") or {}
+        _voice_model = (_voice_cfg.get("model") or None) if isinstance(_voice_cfg, dict) else None
+        _voice_provider = (_voice_cfg.get("provider") or None) if isinstance(_voice_cfg, dict) else None
         result, _usage = await self._run_agent(
             user_message=transcript, conversation_history=list(conversation_history),
             ephemeral_system_prompt=voice_system_prompt(name, allow_signoff=quiet_interval > 0),
-            stream_delta_callback=on_delta, session_id=session_id)
+            stream_delta_callback=on_delta, session_id=session_id,
+            requested_model=_voice_model, requested_provider=_voice_provider)
         if isinstance(result, dict) and result.get("failed"):
             return "", str(result.get("error") or "agent run failed")
         if isinstance(result, dict):

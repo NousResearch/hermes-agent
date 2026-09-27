@@ -81,11 +81,13 @@ def _server_presence(decl: Any, liveness_raw: Any, title: str) -> Presence:
     if available.state == "version_too_old":
         found = f" (found {available.version})" if available.version else ""
         return Presence("missing_app", f"needs {title} {available.min_version} or newer{found}")
+    if liveness_raw is None:
+        return Presence("present")
     try:
-        live = parse_liveness(liveness_raw) if liveness_raw is not None else None
+        live = parse_liveness(liveness_raw)
     except ValueError:
-        live = None
-    if live is None or live.kind == "static":
+        return UNKNOWN  # a declaration we cannot read is never a guess
+    if live.kind == "static":
         return Presence("present")
     if live.kind == "interactive_session":
         return Presence("present") if facts.interactive_session() else Presence(

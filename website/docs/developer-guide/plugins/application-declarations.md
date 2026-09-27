@@ -49,9 +49,9 @@ app:
 | `version.kind` | `pe_resource` \| `plist` \| `uninstall_registry` \| `none` | default `none`; `pe_resource`/`uninstall_registry` only under `win32`, `plist` only under `darwin` | `.version_kind` |
 | `version.display_name_prefix` | str | required when `uninstall_registry` | `.version_arg` |
 | `liveness.kind` | `server_json` \| `none` | default `none` | `.liveness_kind` |
-| `liveness.path` | str | required when `server_json` | `.liveness_path` |
-| `liveness.pid_key` / `url_key` / `token_key` | str | defaults `pid` / `http` / `token` | `.liveness_*_key` |
-| `liveness.endpoint_path` | str | default `/mcp`; the path used for `initialize`, never the one in the file | `.endpoint_path` |
+| `liveness.path` | str | required when `server_json`; same rule as `location` (rooted or `~` / `%VAR%` / `$VAR` prefix; no `..` segment or URL scheme) | `.liveness_path` |
+| `liveness.pid_key` / `url_key` / `token_key` | str | defaults `pid` / `http` / `token`; simple key names only (`[A-Za-z0-9_.-]+`) | `.liveness_*_key` |
+| `liveness.endpoint_path` | str | default `/mcp`; a plain path starting with `/`, charset `[A-Za-z0-9._~/-]`; no `@`, `?`, `#`, whitespace, or scheme. It is appended to the loopback URL from the runtime file, never the one in the file | `.endpoint_path` |
 
 When `requires.app` is true, an OS missing from `app:` gives `unsupported_os`.
 

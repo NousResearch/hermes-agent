@@ -3,6 +3,15 @@ export interface BootstrapMarkerLike {
   schemaVersion?: unknown
 }
 
+// Packaged Czesiek owns a separate runtime. Only an explicit deployment
+// override may use an external command; PATH discovery is for development.
+export function externalRuntimePolicy(isPackaged: boolean, ignoreExisting: boolean, explicitCommand: boolean) {
+  return {
+    command: !ignoreExisting && (!isPackaged || explicitCommand),
+    systemPython: !ignoreExisting && !isPackaged
+  }
+}
+
 export interface ActiveRuntimeState {
   hasValidMarker: boolean
   shouldUseActiveRuntime: boolean

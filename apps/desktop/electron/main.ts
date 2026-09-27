@@ -29,7 +29,7 @@ import {
   systemPreferences
 } from 'electron'
 
-import { classifyActiveRuntime } from './active-runtime-state'
+import { classifyActiveRuntime, externalRuntimePolicy } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
@@ -5015,7 +5015,12 @@ function resolveHermesBackend(backendArgs) {
   //    do NOT write a bootstrap marker; the user did this themselves and we
   //    don't want to take ownership of an install we didn't perform.
   //    HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap path for testing.
-  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
+  const externalRuntime = externalRuntimePolicy(
+    IS_PACKAGED,
+    process.env.HERMES_DESKTOP_IGNORE_EXISTING === '1',
+    Boolean(process.env.HERMES_DESKTOP_HERMES)
+  )
+  if (externalRuntime.command) {
     let hermesCommand = null
     const hermesOverride = process.env.HERMES_DESKTOP_HERMES
 
@@ -5086,7 +5091,7 @@ function resolveHermesBackend(backendArgs) {
   // 5. Last-ditch: pip-installed hermes_cli module via system Python.
   //    Same rationale as #4 -- the user installed this; we use it but don't
   //    take ownership.
-  const python = findSystemPython()
+  const python = externalRuntime.systemPython ? findSystemPython() : null
 
   if (python) {
     // Same smoke-test rationale as step 4: a system Python in the

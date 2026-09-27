@@ -239,7 +239,7 @@ function downloadInstallScript(
   // ref so local builds can still bootstrap without pretending the all-zero
   // placeholder is a real GitHub commit.
   const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`
+  const url = `https://raw.githubusercontent.com/aievolutionpl/AGENT_CZESIEK/${ref}/scripts/${scriptName}`
 
   const deadline = AbortSignal.timeout(deadlineMs)
   const signal = abortSignal ? AbortSignal.any([abortSignal, deadline]) : deadline

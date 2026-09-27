@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 
 import { test } from 'vitest'
 
@@ -26,6 +27,41 @@ const ZERO_COMMIT = '0000000000000000000000000000000000000000'
 function mkTmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bootstrap-test-'))
 }
+
+test('fresh packaged bootstrap downloads the pinned installer from the product repository', async () => {
+  const home = mkTmpHome()
+  const commit = 'a'.repeat(40)
+  const metadata = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  const repository = new URL(metadata.repository.url.replace(/^git\+/, '').replace(/\.git$/, '')).pathname
+  let requested: URL | undefined
+  const payload = 'installer fixture'
+  const get = (url, _options, callback) => {
+    requested = new URL(url)
+    const request = new EventEmitter()
+    queueMicrotask(() => {
+      const response = Object.assign(Readable.from([payload]), { statusCode: 200, headers: {} })
+      callback(response)
+    })
+
+    return request
+  }
+
+  try {
+    const result = await resolveInstallScript({
+      installStamp: { commit, branch: 'main' },
+      sourceRepoRoot: null,
+      hermesHome: home,
+      emit: () => {},
+      _download: (ref, destination, signal) => downloadInstallScript(ref, destination, signal, get)
+    })
+    assert.equal(result.source, 'download')
+    assert.equal(requested?.host, 'raw.githubusercontent.com')
+    assert.equal(requested?.pathname, `${repository}/${commit}/scripts/${SCRIPT_NAME}`)
+    assert.equal(fs.readFileSync(result.path, 'utf8'), payload)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
 
 test('runBootstrap bails immediately when the signal is already aborted', async () => {
   const controller = new AbortController()

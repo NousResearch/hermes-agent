@@ -23,12 +23,12 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from litco.homes import safe_segment
+from litco.homes import register_deliverable, safe_segment
 from litco.litkit.client import (LitKitClient, LitKitConfig, LitKitError, LitKitPermissionError,
                                  default_client)
-from litco.litkit.context import current_acting_user
-from litco.litkit.files import (TEXT_SEPARATOR, PathOutsideWorkDir, dumps, generate_preview, input_path,
-                                output_dir, output_path, relative, spill)
+from litco.litkit.context import current_acting_user, current_turn
+from litco.litkit.files import (TEXT_SEPARATOR, InputFileMissing, PathOutsideWorkDir, dumps, generate_preview,
+                                input_path, output_dir, output_path, relative, spill, work_dir)
 
 TOOLSET = "litkit"
 EXPORT_BATCH = 500
@@ -45,6 +45,18 @@ def check_available() -> bool:
     """The toolset is offered only on a host configured for LitKit."""
     try:
         return LitKitConfig.from_env().configured
+    except Exception:
+        return False
+
+
+def check_matter_host() -> bool:
+    """Local tools (no LitKit call) are offered on any matter host: LitKit configured, or a turn
+    server secret / matter id present."""
+    if check_available():
+        return True
+    try:
+        from litco.litkit.client import _secret
+        return bool(_secret("LITCO_HOST_SECRET") or _secret("LITCO_MATTER_ID"))
     except Exception:
         return False
 
@@ -78,6 +90,8 @@ def _tool(name: str) -> Callable[[Callable[..., Any]], Callable[..., str]]:
                 return dumps(exc.to_dict())
             except PathOutsideWorkDir as exc:
                 return _fail(str(exc))
+            except InputFileMissing as exc:
+                return _fail(str(exc), file_missing=True)
             except (ValueError, TypeError) as exc:
                 return _fail(str(exc))
             return result if isinstance(result, str) else _ok(result, name)
@@ -583,7 +597,7 @@ def litkit_files(args: Dict[str, Any]) -> Any:
         return {"saved": relative(target), "fileId": file_id, "bytes": info["bytes"], "sha256": info["sha256"],
                 "contentType": info["contentType"]}
     if action == "upload":
-        path = input_path(str(_require(args, "path")))
+        path = input_path(str(_require(args, "path")), tool="litkit_files")
         status, body = client.upload(f"/api/litspace/matters/{mid}/files/upload", path,
                                      fields={"filename": args.get("filename"), "parentId": args.get("parentId")},
                                      filename=args.get("filename") or path.name)
@@ -636,10 +650,10 @@ def _gate_summary(gate: Any) -> Dict[str, Any]:
 
 @_tool("litkit_deliver")
 def litkit_deliver(args: Dict[str, Any]) -> Any:
+    path = input_path(str(_require(args, "path")), tool="litkit_deliver")
+    klass = str(_require(args, "deliverableClass"))
     client = _client()
     mid = _mid(client)
-    path = input_path(str(_require(args, "path")))
-    klass = str(_require(args, "deliverableClass"))
     provenance = args.get("provenance")
     if provenance is not None and not isinstance(provenance, (dict, str)):
         raise ValueError("provenance must be an object")
@@ -676,7 +690,7 @@ def litkit_quote_check(args: Dict[str, Any]) -> Any:
         body = client.post(f"/api/matters/{mid}/quote-check", {"responseText": text}, idempotent=True)
         stem = "quote-check-text"
     else:
-        path = input_path(str(_require(args, "path")))
+        path = input_path(str(_require(args, "path")), tool="litkit_quote_check")
         _, body = client.upload(f"/api/matters/{mid}/quote-check/file", path,
                                 fields={"deliverableClass": args.get("deliverableClass")}, timeout=600)
         stem = f"quote-check-{safe_segment(path.stem)}"
@@ -691,6 +705,31 @@ def litkit_quote_check(args: Dict[str, Any]) -> Any:
         out["result"] = body
     out["fullFindings"] = relative(saved)
     return out
+
+
+DELIVERABLE_CLASSES = ["draft", "filing", "production", "pleading", "brief", "memo", "work_product", "complaint",
+                       "motion", "letter", "client_memo"]
+
+
+@_tool("litco_deliver_local")
+def litco_deliver_local(args: Dict[str, Any]) -> Any:
+    """Attach a file to this turn's reply. No LitKit call: the turn server lists it in
+    ``final.deliverables`` and the app fetches it from the host."""
+    turn = current_turn()
+    if turn is None or not turn.turn_id:
+        raise ValueError("litco_deliver_local works only inside a turn; there is no thread to deliver to")
+    path = input_path(str(_require(args, "path")), tool="litco_deliver_local")
+    klass = args.get("deliverableClass")
+    if klass is not None and klass not in DELIVERABLE_CLASSES:
+        raise ValueError(f"deliverableClass must be one of {', '.join(DELIVERABLE_CLASSES)}")
+    name = args.get("name")
+    if name is not None and (not isinstance(name, str) or not name.strip()):
+        raise ValueError("name must be a file name")
+    entry = register_deliverable(turn.turn_id, work_dir(), path, name=name.strip() if name else None,
+                                 deliverable_class=klass)
+    return {"registered": True, "filename": entry.filename, "path": relative(entry.path),
+            "deliverableClass": entry.deliverable_class,
+            "message": f"{entry.filename} will be attached to this turn's reply"}
 
 
 # ---------------------------------------------------------------------------
@@ -881,7 +920,7 @@ def litkit_litlex(args: Dict[str, Any]) -> Any:
             body["paragraphNumber"] = int(args["paragraphNumber"])
         return client.post("/api/litlex/cite-check", body, idempotent=True)
     if action == "brief_check":
-        path = input_path(str(_require(args, "path")))
+        path = input_path(str(_require(args, "path")), tool="litkit_litlex")
         _, body = client.upload("/api/litlex/brief-check", path, fields={"matterId": _mid(client)}, timeout=600)
         saved = _save_json("qa", f"brief-check-{safe_segment(path.stem)}", body)
         return {"fullFindings": relative(saved), "result": body}
@@ -1051,9 +1090,8 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
         "litkit_deliver", "Commit a finished work-product file to the matter through LitKit's deliverable gates "
         "(quote re-resolve, pleading, citation, prose). Returns gate findings; blocked=true means nothing was "
         "saved: report the findings to the user instead of resubmitting unchanged. documentId adds a new version.",
-        {"path": _S, "deliverableClass": {"type": "string",
-                                          "enum": ["draft", "filing", "production", "pleading", "brief", "memo",
-                                                   "work_product", "complaint", "motion", "letter", "client_memo"]},
+        {"path": {"type": "string", "description": "an existing file; write and check it before calling"},
+         "deliverableClass": {"type": "string", "enum": DELIVERABLE_CLASSES},
          "documentId": _S, "folder": {"type": "string", "description": "under Work Product/"}, "filename": _S,
          "note": _S, "provenance": {"type": "object"}}, ["path", "deliverableClass"]),
     "litkit_quote_check": _schema(
@@ -1118,6 +1156,14 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
     "litkit_attachment": _schema(
         "litkit_attachment", "Fetch a chat attachment by its LitKit fileId into inbox/<fileId>/.",
         {"fileId": _S, "filename": _S}, ["fileId"]),
+    "litco_deliver_local": _schema(
+        "litco_deliver_local", "Attach a file you wrote to this turn's reply so the lawyer receives it. Register "
+        "every file you mean to hand over (scratch files are never sent). Only .docx .xlsx .pptx .pdf .md .txt "
+        ".csv .png .jpg files in deliverables/ are sent without it. This does not commit to the matter; "
+        "litkit_deliver does.",
+        {"path": {"type": "string", "description": "an existing file in the working directory"},
+         "name": {"type": "string", "description": "file name the lawyer sees (default: the file's own name)"},
+         "deliverableClass": {"type": "string", "enum": DELIVERABLE_CLASSES}}, ["path"]),
 }
 
 HANDLERS: Dict[str, Callable[..., str]] = {
@@ -1128,8 +1174,11 @@ HANDLERS: Dict[str, Callable[..., str]] = {
     "litkit_ingest": litkit_ingest, "litkit_proposals": litkit_proposals, "litkit_tags": litkit_tags,
     "litkit_work_sets": litkit_work_sets, "litkit_litlex": litkit_litlex, "litkit_notify": litkit_notify,
     "litkit_remember": litkit_remember, "litkit_recall": litkit_recall, "litkit_actions": litkit_actions,
-    "litkit_attachment": litkit_attachment,
+    "litkit_attachment": litkit_attachment, "litco_deliver_local": litco_deliver_local,
 }
+
+# Tools that make no LitKit call are offered on any matter host.
+CHECKS: Dict[str, Callable[[], bool]] = {"litco_deliver_local": check_matter_host}
 
 TOOLS: List[Tuple[str, Dict[str, Any], Callable[..., str]]] = [(n, SCHEMAS[n], HANDLERS[n]) for n in SCHEMAS]
 
@@ -1137,5 +1186,5 @@ TOOLS: List[Tuple[str, Dict[str, Any], Callable[..., str]]] = [(n, SCHEMAS[n], H
 def register(ctx: Any) -> None:
     """Register every LitKit tool in the ``litkit`` toolset (called by ``plugins/litkit``)."""
     for name, schema, handler in TOOLS:
-        ctx.register_tool(name=name, toolset=TOOLSET, schema=schema, handler=handler, check_fn=check_available,
-                          emoji="⚖")
+        ctx.register_tool(name=name, toolset=TOOLSET, schema=schema, handler=handler,
+                          check_fn=CHECKS.get(name, check_available), emoji="⚖")

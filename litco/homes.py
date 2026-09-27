@@ -9,6 +9,14 @@ Layout under ``LITCO_MATTER_HOME`` (default ``~/matter``)::
     inbox/<turnId>/         attachments fetched for one turn
 
 Directories are created on first use.
+
+What counts as a deliverable. A turn delivers (``final.deliverables``) exactly:
+
+* every file the agent registered with ``litco_deliver_local`` during the turn (copied into the
+  thread's ``deliverables/`` folder if it lived elsewhere), whatever its type; and
+* every other file created or changed under ``deliverables/`` whose extension is on
+  :data:`DELIVERABLE_EXTENSIONS`, unless it is scratch: a dotfile or a file in a dot-folder,
+  ``*.spec.json``, ``*.tmp``, or an Office lock file (``~$*``).
 """
 
 from __future__ import annotations
@@ -17,11 +25,17 @@ import base64
 import mimetypes
 import os
 import re
+import shutil
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 DELIVERABLES = "deliverables"
 _SAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]")
+# Files under deliverables/ that ship without registration. Anything else must be registered.
+DELIVERABLE_EXTENSIONS = frozenset({".docx", ".xlsx", ".pptx", ".pdf", ".md", ".txt", ".csv", ".png", ".jpg",
+                                    ".jpeg"})
 
 
 def matter_home(env: Optional[Dict[str, str]] = None) -> Path:
@@ -54,6 +68,76 @@ def inbox_dir(home: Path, turn_id: str) -> Path:
     return path
 
 
+def is_scratch(path: Path, root: Path) -> bool:
+    """A working file that never ships unregistered: dotfiles and dot-folders, ``*.spec.json``,
+    ``*.tmp``, Office lock files (``~$*``)."""
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        parts = (path.name,)
+    if any(part.startswith(".") for part in parts):
+        return True
+    name = path.name.lower()
+    return name.startswith("~$") or name.endswith(".spec.json") or name.endswith(".tmp")
+
+
+def auto_deliverable(path: Path, root: Path) -> bool:
+    """True when an unregistered file under ``deliverables/`` ships: allow-listed type, not scratch."""
+    return path.suffix.lower() in DELIVERABLE_EXTENSIONS and not is_scratch(path, root)
+
+
+# ---------------------------------------------------------------------------
+# Explicit registration (the ``litco_deliver_local`` tool)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RegisteredDeliverable:
+    path: Path                       # absolute, inside a thread's deliverables/ folder
+    filename: str
+    deliverable_class: Optional[str] = None
+
+
+_REGISTRY: Dict[str, Dict[str, RegisteredDeliverable]] = {}
+_REGISTRY_LOCK = threading.Lock()
+
+
+def register_deliverable(turn_id: str, thread_dir: Path, source: Path, *, name: Optional[str] = None,
+                         deliverable_class: Optional[str] = None) -> RegisteredDeliverable:
+    """Mark ``source`` as a file this turn delivers to its thread.
+
+    A file outside the thread's ``deliverables/`` folder (or registered under a different name)
+    is copied there first, so ``GET /deliverables/{fileId}`` can serve it. Registering the same
+    target twice keeps the latest call.
+    """
+    if not turn_id:
+        raise ValueError("no turn is active, so there is no thread to deliver to")
+    source = Path(source).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"{source} does not exist; write the file first")
+    root = (Path(thread_dir) / DELIVERABLES).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    filename = safe_segment(name or source.name)
+    try:
+        source.relative_to(root)
+        in_place = name is None or filename == source.name
+    except ValueError:
+        in_place = False
+    target = source if in_place else root / filename
+    if target != source:
+        shutil.copy2(source, target)
+    entry = RegisteredDeliverable(path=target, filename=target.name,
+                                  deliverable_class=(deliverable_class or None))
+    with _REGISTRY_LOCK:
+        _REGISTRY.setdefault(turn_id, {})[str(target)] = entry
+    return entry
+
+
+def pop_registered(turn_id: str) -> List[RegisteredDeliverable]:
+    """Registrations for a turn, removed from the registry (the server calls this once per turn)."""
+    with _REGISTRY_LOCK:
+        return list(_REGISTRY.pop(turn_id, {}).values())
+
+
 def snapshot_deliverables(thread_dir: Path) -> Dict[str, Tuple[float, int]]:
     """``{abs path: (mtime, size)}`` for every file under the thread's deliverables folder."""
     root = thread_dir / DELIVERABLES
@@ -84,21 +168,38 @@ def decode_file_id(file_id: str) -> Optional[str]:
         return None
 
 
-def changed_deliverables(home: Path, thread_dir: Path, before: Dict[str, Tuple[float, int]]) -> List[dict]:
-    """Deliverables created or modified since ``before``, as ``final.deliverables`` entries.
+def _entry(home: Path, abs_path: str, deliverable_class: Optional[str] = None) -> dict:
+    rel = os.path.relpath(abs_path, home)
+    mime = mimetypes.guess_type(abs_path)[0] or "application/octet-stream"
+    item = {"fileId": encode_file_id(rel), "filename": os.path.basename(abs_path), "mime": mime, "path": rel}
+    if deliverable_class:
+        item["deliverableClass"] = deliverable_class
+    return item
 
-    ``path`` is relative to the matter home; ``fileId`` encodes that path and can be fetched
-    back through ``GET /deliverables/{fileId}``.
+
+def changed_deliverables(home: Path, thread_dir: Path, before: Dict[str, Tuple[float, int]],
+                         registered: Optional[List[RegisteredDeliverable]] = None) -> List[dict]:
+    """The turn's ``final.deliverables`` entries.
+
+    Registered files come first (in registration order), then unregistered files created or
+    modified under ``deliverables/`` since ``before`` that pass :func:`auto_deliverable`.
+    ``path`` is relative to the matter home; ``fileId`` encodes that path and can be fetched back
+    through ``GET /deliverables/{fileId}``. ``deliverableClass`` is present when the agent gave one.
     """
-    after = snapshot_deliverables(thread_dir)
-    items = []
-    for abs_path, stamp in sorted(after.items()):
-        if before.get(abs_path) == stamp:
+    root = thread_dir / DELIVERABLES
+    items: List[dict] = []
+    seen = set()
+    for reg in registered or []:
+        abs_path = str(reg.path)
+        if abs_path in seen or resolve_deliverable(home, encode_file_id(os.path.relpath(abs_path, home))) is None:
             continue
-        rel = os.path.relpath(abs_path, home)
-        mime = mimetypes.guess_type(abs_path)[0] or "application/octet-stream"
-        items.append({"fileId": encode_file_id(rel), "filename": os.path.basename(abs_path), "mime": mime,
-                      "path": rel})
+        seen.add(abs_path)
+        items.append(_entry(home, abs_path, reg.deliverable_class))
+    after = snapshot_deliverables(thread_dir)
+    for abs_path, stamp in sorted(after.items()):
+        if abs_path in seen or before.get(abs_path) == stamp or not auto_deliverable(Path(abs_path), root):
+            continue
+        items.append(_entry(home, abs_path))
     return items
 
 

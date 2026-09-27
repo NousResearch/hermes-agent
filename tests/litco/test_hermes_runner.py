@@ -57,6 +57,43 @@ def test_summaries_flag_errors_and_hide_content():
     assert _summarize_result("Error: boom")["status"] == "error"
 
 
+def test_failed_terminal_command_is_an_error():
+    # the terminal tool's result for `ls missing`: no error text, just a non-zero exit
+    raw = '{"output": "ls: missing: No such file or directory", "exit_code": 1, "error": null}'
+    out = _summarize_result(raw, "terminal")
+    assert out == {"status": "error", "summary": "command failed with exit code 1"}
+    assert "No such file" not in out["summary"]  # output stays private
+    with_error = _summarize_result({"output": "", "exit_code": 127, "error": "command not found"}, "terminal")
+    assert with_error == {"status": "error", "summary": "command not found (exit code 127)"}
+    # a trailing hint after the JSON does not hide the exit code
+    assert _summarize_result(raw + "\n[hint: cwd is /x]", "terminal")["status"] == "error"
+    assert _summarize_result('{"output": "ok", "exit_code": 0}', "terminal")["status"] == "ok"
+
+
+def test_mapper_applies_hermes_error_verdict(tmp_path):
+    """Hermes reports is_error on tool.completed just before tool_complete_callback; a spilled result
+    (unparseable for us) still arrives as an error."""
+    ctx, events = _ctx(tmp_path)
+    m = _EventMapper(ctx)
+    raw = '{"output": "' + "x" * 50 + '", "exit_code": 2, "error": null}'
+    spilled = "<persisted-output>\nThis tool result was too large...\n</persisted-output>"
+    m.tool_start("c1", "terminal", {"command": "make"})
+    m.progress("tool.completed", "terminal", None, None, duration=0.1, is_error=True, result=raw)
+    m.tool_complete("c1", "terminal", {"command": "make"}, spilled)
+    assert events[-1][1]["result"]["status"] == "error"
+    assert events[-1][1]["result"]["summary"] == "command failed with exit code 2"
+    # and a success verdict stays ok
+    m.tool_start("c2", "terminal", {"command": "true"})
+    m.progress("tool.completed", "terminal", None, None, duration=0.1, is_error=False,
+               result='{"output": "", "exit_code": 0}')
+    m.tool_complete("c2", "terminal", {}, '{"output": "", "exit_code": 0}')
+    assert events[-1][1]["result"]["status"] == "ok"
+    # no verdict reported: Hermes's classifier is consulted directly
+    m.tool_start("c3", "web_fetch", {})
+    m.tool_complete("c3", "web_fetch", {}, '{"error": "HTTP 404"}')
+    assert events[-1][1]["result"] == {"status": "error", "summary": "HTTP 404", "durationMs": events[-1][1]["result"]["durationMs"]}
+
+
 class FakeAgent:
     def __init__(self, mapper, *, rotate_to=None, block=None):
         self.mapper = mapper
@@ -158,3 +195,81 @@ def test_run_classifies_exceptions(runner, tmp_path, monkeypatch):
     ctx, _ = _ctx(tmp_path)
     outcome = runner.run(ctx)
     assert outcome.error and outcome.error_category == "auth"
+
+
+# ---------------------------------------------------------------------------
+# memory scoping
+# ---------------------------------------------------------------------------
+
+class MemoryAgent(FakeAgent):
+    """Records the built-in memory it was given, then writes a note to it."""
+
+    def __init__(self, mapper, note, target="user"):
+        super().__init__(mapper)
+        from tools.memory_tool import MemoryStore
+        self._memory_store = MemoryStore()   # what AIAgent builds: the profile-wide store
+        self._memory_store.load_from_disk()
+        self.note, self.target = note, target
+
+    def run_conversation(self, user_message, conversation_history, task_id):
+        store = self._memory_store
+        self.seen = {"memory": list(store.memory_entries), "user": list(store.user_entries),
+                     "prompt": store.format_for_system_prompt("user") or ""}
+        assert store.add(self.target, self.note)["success"] is True
+        return {"final_response": "noted"}
+
+
+def test_memory_is_scoped_per_thread(runner, tmp_path, monkeypatch):
+    from hermes_constants import get_hermes_home
+    agents = []
+    plan = iter([("private fact for u1", "user"), ("private fact for u2", "user"),
+                 ("team fact", "memory"), ("second team fact", "memory"), ("u1 again", "user")])
+
+    def build(ctx, sid, mapper):
+        note, target = next(plan)
+        agent = MemoryAgent(mapper, note, target)
+        agent.session_id = sid
+        agents.append(agent)
+        return agent
+
+    monkeypatch.setattr(runner, "_build_agent", build)
+    profile_user_md = get_hermes_home() / "memories" / "USER.md"
+    profile_user_md.parent.mkdir(parents=True, exist_ok=True)
+    profile_user_md.write_text("profile-wide entry from before the fix", encoding="utf-8")
+
+    runner.run(_ctx(tmp_path, session_id="d1", kind="dm", user_id="u1")[0])
+    runner.run(_ctx(tmp_path, session_id="d2", kind="dm", user_id="u2")[0])
+    # u2's private turn saw neither u1's note nor the profile-wide file
+    assert agents[1].seen["user"] == [] and agents[1].seen["memory"] == []
+    assert (tmp_path / "users/u1/memories/USER.md").read_text().count("private fact for u1") == 1
+    assert "u1" not in (tmp_path / "users/u2/memories/USER.md").read_text()
+
+    runner.run(_ctx(tmp_path, session_id="c1", kind="channel")[0])
+    runner.run(_ctx(tmp_path, session_id="c2", kind="channel")[0])
+    # a second channel thread sees the shared matter memory, and nothing private
+    assert agents[3].seen["memory"] == ["team fact"] and agents[3].seen["user"] == []
+    assert (tmp_path / "shared/memories/MEMORY.md").is_file()
+
+    runner.run(_ctx(tmp_path, session_id="d3", kind="dm", user_id="u1")[0])
+    # u1's next private thread sees u1's own note (in the prompt too), not u2's, not the team's
+    assert agents[4].seen["user"] == ["private fact for u1"]
+    assert "private fact for u1" in agents[4].seen["prompt"] and "u2" not in agents[4].seen["prompt"]
+    assert agents[4].seen["memory"] == []
+    # the profile-wide memory was never read into a turn nor written by one
+    assert profile_user_md.read_text(encoding="utf-8") == "profile-wide entry from before the fix"
+    assert not (get_hermes_home() / "memories" / "MEMORY.md").exists() or \
+        "team fact" not in (get_hermes_home() / "memories" / "MEMORY.md").read_text()
+
+
+def test_memory_off_stays_off(runner, tmp_path, monkeypatch):
+    holder = {}
+
+    def build(ctx, sid, mapper):
+        agent = FakeAgent(mapper)
+        agent._memory_store = None
+        holder["agent"] = agent
+        return agent
+
+    monkeypatch.setattr(runner, "_build_agent", build)
+    runner.run(_ctx(tmp_path, kind="dm", user_id="u1")[0])
+    assert holder["agent"]._memory_store is None

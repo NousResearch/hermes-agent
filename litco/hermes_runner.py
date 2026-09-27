@@ -17,6 +17,15 @@ result ``interrupted`` / ``failed``       ``loop_halted`` / ``error_classified``
 ========================================  ===========================================
 
 Hermes has no plan events, so ``plan_*`` frames are never emitted.
+
+A tool's ``status`` follows Hermes's own failure verdict: the executor classifies every result
+(``agent.display._detect_tool_failure``: a terminal command's non-zero exit, an ``error`` field,
+``success: false``) and reports it on the ``tool.completed`` progress event just before it calls
+``tool_complete_callback``. The mapper keeps that verdict per tool name and applies it, so a
+command Hermes logs as "returned error" arrives as ``status: "error"``.
+
+Built-in memory is scoped per thread (:mod:`litco.memory_scope`): a dm turn uses the lawyer's
+``users/<userId>/memories/``, a channel turn the matter's ``shared/memories/``.
 """
 
 from __future__ import annotations
@@ -25,11 +34,13 @@ import json
 import logging
 import threading
 import time
+from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Deque, Dict, Optional, Tuple
 
 from litco.homes import safe_segment
 from litco.litkit.context import TurnIdentity, bind_turn, reset_turn
+from litco.memory_scope import memory_dir, scope_agent_memory
 from litco.turn_server import TurnContext, TurnOutcome, build_user_message
 
 logger = logging.getLogger("litco.hermes_runner")
@@ -71,9 +82,7 @@ def _size_label(n: int) -> str:
     return f"{n} chars" if n < 10_000 else f"{n / 1000:.0f}k chars"
 
 
-def _summarize_result(result: Any) -> Dict[str, Any]:
-    """``{status, summary}`` for a tool result. The summary never carries the result's content:
-    only a tool-supplied ``summary``/``message``, an error message, or the result's size."""
+def _parse(result: Any) -> Tuple[str, Optional[dict]]:
     text = result if isinstance(result, str) else json.dumps(result, default=str, ensure_ascii=False)
     text = text or ""
     parsed = result if isinstance(result, dict) else None
@@ -81,13 +90,57 @@ def _summarize_result(result: Any) -> Dict[str, Any]:
         try:
             parsed = json.loads(text)
         except Exception:
-            parsed = None
+            # A hint or notice appended after the JSON body: parse the leading object alone.
+            try:
+                parsed, _ = json.JSONDecoder().raw_decode(text)
+            except Exception:
+                parsed = None
+    return text, parsed if isinstance(parsed, dict) else None
+
+
+def _exit_code(parsed: Optional[dict]) -> Optional[int]:
+    if not isinstance(parsed, dict):
+        return None
+    for key in ("exit_code", "exitCode", "returncode"):
+        value = parsed.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            return int(value.strip())
+    return None
+
+
+def _hermes_verdict(name: Optional[str], result: Any) -> Tuple[bool, str]:
+    """Hermes's own failure classification (the one behind its "returned error" log line)."""
+    if not name:
+        return False, ""
+    try:
+        from agent.display import _detect_tool_failure
+        failed, suffix = _detect_tool_failure(name, result)
+    except Exception:
+        return False, ""
+    return bool(failed), str(suffix or "").strip().strip("[]").strip()
+
+
+def _summarize_result(result: Any, name: Optional[str] = None, is_error: Optional[bool] = None) -> Dict[str, Any]:
+    """``{status, summary}`` for a tool result. The summary never carries the result's content:
+    only a tool-supplied ``summary``/``message``, an error message, an exit code, or the size.
+
+    ``is_error`` is Hermes's verdict when the executor reported one; otherwise Hermes's classifier
+    is asked directly. Either way a non-zero exit code or an ``error`` field is a failure."""
+    text, parsed = _parse(result)
     status, summary = "ok", f"returned {_size_label(len(text))}"
+    exit_code = _exit_code(parsed)
     if isinstance(parsed, dict):
         error = parsed.get("error")
         if error or parsed.get("success") is False or parsed.get("ok") is False:
             status = "error"
             summary = str(error or parsed.get("message") or "the tool reported a failure")
+        elif exit_code not in (None, 0):
+            status = "error"
+            summary = f"command failed with exit code {exit_code}"
         else:
             for key in ("summary", "message"):
                 value = parsed.get(key)
@@ -96,6 +149,16 @@ def _summarize_result(result: Any) -> Dict[str, Any]:
                     break
     elif text.lower().startswith("error"):
         status, summary = "error", text.splitlines()[0]
+    if status == "ok":
+        failed, detail = (bool(is_error), "") if is_error is not None else _hermes_verdict(name, result)
+        if failed:
+            status = "error"
+            if not detail:
+                _, detail = _hermes_verdict(name, result)
+            summary = (f"command failed with exit code {exit_code}" if exit_code not in (None, 0)
+                       else detail if detail and detail != "error" else "the tool reported an error")
+    elif exit_code not in (None, 0) and "exit code" not in summary:
+        summary = f"{summary} (exit code {exit_code})"
     summary = " ".join(summary.split())
     try:
         from agent.redact import redact_sensitive_text
@@ -116,6 +179,10 @@ class _EventMapper:
         self._streamed_any = False
         self._starts: Dict[str, float] = {}
         self._open_calls: Dict[str, str] = {}  # tool name -> latest open call id
+        # Hermes's verdicts from ``tool.completed`` (fired just before tool_complete_callback), per tool
+        # name in completion order; results are committed and announced one call at a time.
+        self._verdicts: Dict[str, Deque[Tuple[bool, Any]]] = defaultdict(deque)
+        self._verdict_lock = threading.Lock()
 
     def delta(self, text: Optional[str]) -> None:
         if text is None:
@@ -148,12 +215,24 @@ class _EventMapper:
         started = self._starts.pop(call_id, None)
         if self._open_calls.get(name) == call_id:
             self._open_calls.pop(name, None)
-        summary = _summarize_result(result)
+        with self._verdict_lock:
+            pending = self._verdicts.get(name)
+            verdict = pending.popleft() if pending else None
+        if verdict is not None:
+            is_error, raw = verdict
+            # The raw result is what Hermes classified; the callback's copy may be spilled or carry hints.
+            summary = _summarize_result(raw if raw is not None else result, name, is_error)
+        else:
+            summary = _summarize_result(result, name)
         summary["durationMs"] = int((time.monotonic() - started) * 1000) if started else 0
         self.ctx.emit("tool_complete", call={"toolCallId": call_id, "name": name}, result=summary)
 
     def progress(self, event_type: str, tool_name: Optional[str] = None, preview: Optional[str] = None,
                  args: Any = None, **kwargs: Any) -> None:
+        if event_type == "tool.completed" and tool_name and "is_error" in kwargs:
+            with self._verdict_lock:
+                self._verdicts[tool_name].append((bool(kwargs.get("is_error")), kwargs.get("result")))
+            return
         if not isinstance(event_type, str) or not event_type.startswith("subagent."):
             return  # tool.started/completed duplicate the start/complete hooks; reasoning stays private
         if event_type == "subagent.text" or not preview:
@@ -193,11 +272,18 @@ class HermesTurnRunner:
         req = ctx.request
         who = f"the lawyer {req.acting_user or req.user_id}" if req.user_id else "the case team"
         scope = ("a private thread with " + who) if req.kind == "dm" else "a thread in the matter's shared channel"
+        memory = ("Your memory in this thread is this lawyer's private memory; nothing you save here is seen in "
+                  "other lawyers' threads." if req.kind == "dm" else
+                  "Your memory in this thread is the case team's shared matter memory; do not save anything "
+                  "one lawyer told you in confidence.")
         return (
             f"Matter {req.matter_id}. This turn arrives over {req.channel} in {scope}. "
-            f"Your working directory is {ctx.cwd}. Save every file you produce for the team under "
-            f"{ctx.cwd / 'deliverables'}; files there are delivered back to the thread automatically, "
-            "so point to them instead of pasting long text.")
+            f"Your working directory is {ctx.cwd}. Save the files you produce for the team under "
+            f"{ctx.cwd / 'deliverables'} and register each one you mean to hand over with "
+            "litco_deliver_local (path, optional name and deliverableClass). Only registered files, and "
+            ".docx .xlsx .pptx .pdf .md .txt .csv .png .jpg files in deliverables/, reach the thread; "
+            "keep specs, JSON and other scratch files elsewhere. Point to the files instead of pasting long "
+            f"text. {memory}")
 
     def _build_agent(self, ctx: TurnContext, hermes_sid: str, mapper: _EventMapper):
         from run_agent import AIAgent
@@ -246,6 +332,8 @@ class HermesTurnRunner:
             db = self._session_db()
             history = db.get_messages_as_conversation(hermes_sid) if db is not None else []
             agent = self._build_agent(ctx, hermes_sid, mapper)
+            # Before the first prompt is assembled: MEMORY.md / USER.md come from this thread's folder.
+            scope_agent_memory(agent, memory_dir(ctx.home, req.kind, req.user_id))
             if ctx.interrupted:
                 return TurnOutcome(halted=ctx.interrupt_reason or "interrupted")
             ctx.on_interrupt(lambda reason: agent.interrupt(hard_cancel=True, tool_reason=reason))

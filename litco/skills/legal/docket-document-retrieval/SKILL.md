@@ -31,7 +31,7 @@ Fetch specific as-filed litigation documents (briefs, motions, orders, exhibits,
 3. **Retrieve** from PACER or DocketAlarm. Keep the canonical case URL the service returns (including any case-name slug) for entry and document paths.
 4. **Verify provenance and body.** Extract page 1 text (`pdftotext -f 1 -l 1`) and confirm the ECF header `Case <no.> Document <n> Filed <date> Page 1 of N`. If page 1's text layer lacks it, check an interior page and render page 1 with `vision_analyze` before concluding. A file whose text is only ECF headers is a scanned body: OCR or render it before summarizing. Pre-ECF orders and reporter copies may lack a stamp; label the source type and leave as-filed status unconfirmed rather than calling them drafts. Filenames with `_vNN`, `Draft`, or `TO FILE` usually mark work product, and sealed entries often exist only as one-page "filed under seal" slip sheets.
 5. **Escalate in order** when a document is missing: the matter's files, then PACER, then DocketAlarm. Deliver what is verified, state which items are missing and exactly where each lives, and never substitute a draft.
-6. **Deliver** under `deliverables/` named `<date> Dkt <n> - <Title> (AS FILED).pdf`, and read back `pdfinfo` page counts and `sha256sum` hashes in the reply.
+6. **Deliver** under `deliverables/` named `<date> Dkt <n> - <Title> (AS FILED).pdf`, register each with `litco_deliver_local deliverableClass=filing`, and read back `pdfinfo` page counts and `sha256sum` hashes in the reply.
 
 ## Injunctions, decrees, and settlement judgments
 

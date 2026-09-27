@@ -31,6 +31,9 @@ class FakeRunner:
         self.max_running = 0
         self._lock = threading.Lock()
         self.write_file: str = ""
+        self.extra_files: Dict[str, str] = {}      # path under cwd -> text, written during the turn
+        self.register: List[dict] = []             # litco_deliver_local calls made during the turn
+        self.registered: List[dict] = []
 
     def run(self, ctx: TurnContext) -> TurnOutcome:
         with self._lock:
@@ -51,6 +54,16 @@ class FakeRunner:
             if self.write_file:
                 target = ctx.cwd / "deliverables" / self.write_file
                 target.write_text("memo", encoding="utf-8")
+            for rel, text in self.extra_files.items():
+                target = ctx.cwd / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+            if self.register:
+                from litco.litkit import tools as T
+                from litco.litkit.context import TurnIdentity, turn_scope
+                with turn_scope(TurnIdentity(turn_id=ctx.turn_id, matter_id=ctx.request.matter_id, cwd=ctx.cwd)):
+                    for args in self.register:
+                        self.registered.append(json.loads(T.HANDLERS["litco_deliver_local"](dict(args))))
             ctx.emit("assistant_reset", reason="iteration_committed")
             ctx.emit("assistant_delta", delta="Done.")
             return TurnOutcome(text="Done.", input_tokens=10, output_tokens=4, model_used="fake-model")
@@ -380,4 +393,54 @@ async def test_health(home):
     assert body["matterId"] == MATTER
     assert body["activeTurns"] == 0
     assert body["version"]
+    assert body["hermesVersion"] and body["hermesVersion"] != "0.0.0"
     assert body["uptimeSeconds"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_scratch_files_do_not_ship(home):
+    runner = FakeRunner()
+    runner.extra_files = {
+        "deliverables/memo.docx": "memo", "deliverables/chart.png": "png", "deliverables/notes.md": "md",
+        "deliverables/memo.spec.json": "{}", "deliverables/data.json": "{}", "deliverables/build.tmp": "x",
+        "deliverables/~$memo.docx": "lock", "deliverables/.draft.md": "x", "deliverables/.cache/a.pdf": "x",
+        "deliverables/script.py": "print()", "work/outline.md": "outside deliverables"}
+    async with TestClient(TestServer(_server(runner, home).build_app())) as client:
+        events = await _turn(client, _body(sessionId="c1"))
+    names = sorted(d["filename"] for d in events[-1]["deliverables"])
+    assert names == ["chart.png", "memo.docx", "notes.md"]
+    assert all("deliverableClass" not in d for d in events[-1]["deliverables"])
+
+
+@pytest.mark.asyncio
+async def test_registered_files_ship_with_class(home):
+    runner = FakeRunner()
+    runner.extra_files = {"work/table.json": "{\"rows\": 1}", "deliverables/letter.docx": "letter",
+                          "deliverables/letter.spec.json": "{}"}
+    runner.register = [
+        {"path": "work/table.json", "name": "privilege-log.json"},                 # copied into deliverables/
+        {"path": "deliverables/letter.docx", "deliverableClass": "letter"},
+        {"path": "deliverables/not-written-yet.docx"}]
+    async with TestClient(TestServer(_server(runner, home).build_app())) as client:
+        events = await _turn(client, _body(kind="dm", userId="u9", sessionId="d9"))
+        items = events[-1]["deliverables"]
+        assert [(d["filename"], d.get("deliverableClass")) for d in items] == [
+            ("privilege-log.json", None), ("letter.docx", "letter")]
+        assert items[0]["path"] == "users/u9/deliverables/privilege-log.json"
+        got = await client.get(f"/deliverables/{items[0]['fileId']}", headers=_headers())
+        assert got.status == 200 and await got.read() == b'{"rows": 1}'
+        missing = runner.registered[2]
+        assert missing["file_missing"] is True and "does not exist" in missing["error"]
+        assert "Write the file first" in missing["error"]
+
+        # registrations belong to one turn: the next turn delivers nothing new
+        runner.extra_files, runner.register = {}, []
+        events = await _turn(client, _body(kind="dm", userId="u9", sessionId="d9"))
+        assert "deliverables" not in events[-1]
+
+
+def test_deliver_local_needs_a_turn(tmp_path, monkeypatch):
+    from litco.litkit import tools as T
+    monkeypatch.setenv("LITCO_MATTER_HOME", str(tmp_path))
+    out = json.loads(T.HANDLERS["litco_deliver_local"]({"path": "x.md"}))
+    assert "only inside a turn" in out["error"]

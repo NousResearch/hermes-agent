@@ -74,7 +74,11 @@ def output_dir(subdir: str, *, base: Optional[Path] = None) -> Path:
     return folder
 
 
-def input_path(raw: str) -> Path:
+class InputFileMissing(ValueError):
+    """The agent named a file that is not on disk (usually: it has not been written yet)."""
+
+
+def input_path(raw: str, *, tool: str = "this tool") -> Path:
     """A file the agent names for upload: relative to the working directory, or absolute inside
     the working directory or the matter home. Must exist."""
     if not raw or not str(raw).strip():
@@ -84,8 +88,12 @@ def input_path(raw: str) -> Path:
     path = (path if path.is_absolute() else base / path).resolve()
     if not (inside(base, path) or inside(matter_home(), path)):
         raise PathOutsideWorkDir(f"{raw} is outside the matter's working directories")
+    if path.is_dir():
+        raise ValueError(f"{raw} is a folder, not a file; name the file itself")
     if not path.is_file():
-        raise ValueError(f"no such file: {raw}")
+        raise InputFileMissing(
+            f"the file {raw} does not exist (looked for {path}). Write the file first, confirm it exists "
+            f"(for example with ls or read_file), then call {tool} again with that path.")
     return path
 
 

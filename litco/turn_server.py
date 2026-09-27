@@ -40,8 +40,8 @@ from aiohttp import ClientSession, ClientTimeout, web
 
 from litco import __version__
 from litco.assertion import secret_matches, verify_user_assertion
-from litco.homes import (changed_deliverables, inbox_dir, matter_home, resolve_deliverable, safe_segment,
-                         snapshot_deliverables, thread_home)
+from litco.homes import (changed_deliverables, inbox_dir, matter_home, pop_registered, resolve_deliverable,
+                         safe_segment, snapshot_deliverables, thread_home)
 
 logger = logging.getLogger("litco.turn_server")
 
@@ -419,11 +419,12 @@ class TurnServer:
                     ctx.local_attachments = await self._fetch_attachments(turn, ctx)
                     before = snapshot_deliverables(cwd)
                     outcome = await loop.run_in_executor(None, self.runner.run, ctx)
-                    deliverables = changed_deliverables(self.home, cwd, before)
+                    deliverables = changed_deliverables(self.home, cwd, before, pop_registered(turn.turn_id))
         except Exception as exc:  # the runner should not raise; classify if it does
             logger.exception("litco turn %s failed", turn.turn_id)
             outcome = TurnOutcome(error=_short(str(exc)) or exc.__class__.__name__, error_category="unknown")
         finally:
+            pop_registered(turn.turn_id)  # never leak a failed turn's registrations
             if budget_handle is not None:
                 budget_handle.cancel()
         self._finish(turn, outcome, deliverables)
@@ -534,9 +535,22 @@ def _halt_text(reason: str) -> str:
 
 
 def _hermes_version() -> Optional[str]:
+    """The running Hermes release, as Hermes itself reports it.
+
+    The package metadata says ``0.0.0`` in a source checkout, so ask Hermes's own identity
+    resolver (install stamp, then git): e.g. ``0.21.5`` or ``0.21.5+3720.g3754997`` for a fork
+    commit past the release tag. Falls back to the release date when neither is known.
+    """
     try:
-        from importlib.metadata import version
-        return version("hermes-agent")
+        from hermes_cli.version_info import get_version_info
+        info = get_version_info()
+        if info.base_version and info.base_version not in ("unknown", "0.0.0"):
+            return info.derived_version or info.base_version
+    except Exception:
+        pass
+    try:
+        from hermes_cli import __release_date__
+        return str(__release_date__)
     except Exception:
         return None
 

@@ -372,8 +372,19 @@ def test_toolset_registers_through_plugin_discovery(tmp_path, monkeypatch):
 
 
 def test_schemas_are_well_formed():
-    assert len(T.TOOLS) == 22
+    assert len(T.TOOLS) == 23
     for name, schema, _handler in T.TOOLS:
         assert schema["name"] == name and schema["parameters"]["type"] == "object"
         assert set(schema["parameters"]["required"]) <= set(schema["parameters"]["properties"])
         assert len(schema["description"]) < 400
+
+
+def test_deliver_before_the_file_exists(env, fake):
+    before = len(fake.requests)
+    out = call("litkit_deliver", path="deliverables/memo.docx", deliverableClass="memo")
+    assert out["file_missing"] is True
+    assert "does not exist" in out["error"] and "Write the file first" in out["error"]
+    assert "litkit_deliver again" in out["error"]
+    assert len(fake.requests) == before  # nothing reached LitKit
+    folder = call("litkit_quote_check", path="deliverables")
+    assert "is a folder" in folder["error"]

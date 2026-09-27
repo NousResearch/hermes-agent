@@ -61,14 +61,19 @@ The response is `text/event-stream`. The header `X-Turn-Id` carries the turn id.
 | `assistant_reset` | `reason` | The text streamed so far was interim commentary (for example, before a tool call). Discard it; later deltas start fresh. |
 | `tool_started` | `call{toolCallId,name}`, `args` | A tool call begins. |
 | `tool_progress` | `call`, `message` | Progress from a long tool, such as a delegated subagent. |
-| `tool_complete` | `call`, `result{status,summary,durationMs}` | A tool call ends. `status` is `ok` or `error`. The summary never carries the tool's output, only a tool-supplied summary, an error message, or the size of the result. |
+| `tool_complete` | `call`, `result{status,summary,durationMs}` | A tool call ends. `status` is `ok` or `error`, and follows Hermes's own verdict: a terminal command with a non-zero exit, a result with an `error` field or `success: false`, and anything Hermes logs as "returned error" arrive as `error`. The summary never carries the tool's output, only a tool-supplied summary, an error message, an exit code (`command failed with exit code 1`), or the size of the result. |
 | `error_classified` | `category`, `message`, `recovery` | The turn failed. |
 | `loop_halted` | `reason`, `explanation` | The turn stopped early: `interrupted`, `budget_exhausted`, or `shutdown`. |
 | `final` | `text`, `citations`, `usage{inputTokens,outputTokens,cacheReadTokens?,cacheWriteTokens?}`, `durationMs`, `modelUsed?`, `deliverables?` | Always last. |
 
 Hermes has no plan events, so `plan_drafted` and `plan_step_*` are never sent.
 
-`final.deliverables` lists every file the turn created or changed under the thread's `deliverables/` folder, as `{fileId, filename, mime, path}`. `path` is relative to `LITCO_MATTER_HOME`. `fileId` encodes that path and can be fetched from `GET /deliverables/{fileId}`.
+`final.deliverables` lists the files the turn hands to the thread, as `{fileId, filename, mime, path, deliverableClass?}`:
+
+1. every file the agent registered with the `litco_deliver_local` tool, in registration order, whatever its type (a file registered from outside `deliverables/`, or under another `name`, is first copied into the thread's `deliverables/` folder); then
+2. every other file created or changed under `deliverables/` whose extension is `.docx`, `.xlsx`, `.pptx`, `.pdf`, `.md`, `.txt`, `.csv`, `.png`, or `.jpg`/`.jpeg`, unless it is scratch: a dotfile or a file in a dot-folder, `*.spec.json`, `*.tmp`, or an Office lock file (`~$*`).
+
+Anything else under `deliverables/` (JSON, scripts, zips) stays on the host unless registered. `deliverableClass` appears when the agent gave one on registration. `path` is relative to `LITCO_MATTER_HOME`. `fileId` encodes that path and can be fetched from `GET /deliverables/{fileId}`.
 
 If the client disconnects, the turn keeps running and its transcript lands in the session. `POST /interrupt/{turnId}` still stops it.
 
@@ -78,7 +83,7 @@ Stops the turn. Returns 202 while the turn winds down, 200 if it had already fin
 
 ### `GET /health`
 
-Returns `{ok, version, hermesVersion, uptimeSeconds, activeTurns, matterId}`. No secret is required.
+Returns `{ok, version, hermesVersion, uptimeSeconds, activeTurns, matterId}`. No secret is required. `hermesVersion` comes from Hermes's own identity resolver (install stamp, then git), for example `0.21.5+3720.g3754997` for a fork commit past the `0.21.5` release; the package metadata's `0.0.0` placeholder is never reported.
 
 ### `GET /deliverables/{fileId}`
 
@@ -97,12 +102,22 @@ The server creates these under `LITCO_MATTER_HOME` on first use:
 ```
 shared/                   channel threads (the whole case team)
   deliverables/
+  memories/               the matter's shared Hermes memory (MEMORY.md, USER.md)
 users/<userId>/           dm threads (one lawyer's private work)
   deliverables/
+  memories/               that lawyer's private Hermes memory
 inbox/<turnId>/           attachments fetched for one turn
 ```
 
 A turn's working directory is `shared/` for a `channel` thread and `users/<userId>/` for a `dm` thread. The terminal and file tools start there, so a relative path such as `deliverables/memo.docx` lands in the thread's own folder.
+
+### Memory
+
+Hermes's built-in memory (`MEMORY.md` for notes, `USER.md` for the user profile, both read into the system prompt) is scoped by thread, not by profile. A `dm` turn reads and writes `users/<userId>/memories/`; a `channel` turn reads and writes `shared/memories/`. The profile-wide `$HERMES_HOME/memories/` is never read or written by a turn, so a note from one lawyer's private thread does not reach any other lawyer's turn.
+
+No Hermes core file changes for this. `MemoryStore` resolves its files through its overridable `_path_for` on every load and write, and every consumer in a turn (the `memory` tool, the system-prompt snapshot, compaction reloads, the background memory review, which shares the parent agent's store object) reaches the files through `agent._memory_store`. The runner replaces that store, after building the agent and before the first prompt is assembled, with a `ScopedMemoryStore` bound to the thread's folder (`litco/memory_scope.py`). The binding is on the object, so a background review that finishes after the turn still writes to the right folder.
+
+Limits: this covers turns that arrive through the turn server. Turns from native Hermes adapters (a Slack or Telegram bot configured directly in the profile) and cron jobs still use the profile-wide memory, and so do memory writes staged for approval (`write_approval` for memory, off by default), which are applied later to the profile-wide files; keep that gate off on a matter host. An external memory provider (`memory.provider`) keeps its own keying. A session created before this change keeps the system prompt it stored on its first turn, which may carry profile-wide memory.
 
 Attachments that carry a `url` are downloaded into `inbox/<turnId>/` with `Authorization: Bearer $LITCO_AGENT_TOKEN`, and the agent is told where each one landed. An attachment without a `url`, or one that fails to download, is named in the prompt with its LitKit `fileId`.
 
@@ -166,6 +181,9 @@ The assertion is minted fresh for each request and each retry (MAC = base64url, 
 | `litkit_remember`, `litkit_recall` | `POST /api/agent/actions` (`remember`, `recall`) | `scope:"user"` keeps a note private to the acting lawyer |
 | `litkit_actions` | `POST /api/agent/actions` | `term_frequency`, `find_redacted`, `hot_documents`, `refresh_dossier`, `diagnose_issue`, `diagnose_ingest`, `litlex_format_cite` |
 | `litkit_attachment` | `GET …/chat/attachments/{fileId}` | `inbox/<fileId>/<filename>` |
+| `litco_deliver_local` | none (local) | registers a file for this turn's `final.deliverables`, with optional `name` and `deliverableClass`; offered on any matter host, LitKit configured or not |
+
+A tool given a path that does not exist (`litkit_deliver`, `litkit_quote_check`, `litkit_files upload`, `litkit_litlex brief_check`, `litco_deliver_local`) returns `file_missing: true` and an error that says to write the file first, confirm it exists, and call again. Nothing is sent to LitKit.
 
 A blocked deliverable (`422`) returns `blocked: true`, the gate findings, and an instruction to report them to the user rather than resubmit; nothing was committed.
 
@@ -184,6 +202,11 @@ Results larger than 12,000 characters follow Hermes's spill convention: the full
 
 `litco/skills/legal/` holds the firm's procedures rewritten for the matter host: `litkit-corpus-pull` (census, bulk text, hot-document ranking), `litkit-deliverable` (build, quote-check, commit, report the gates), `deposition-prep-package`, `discovery-letter-brief`, `docket-document-retrieval`, `expanded-legal-letter-redlines`, `legal-cite-check`, and `production-data-analysis` (with `references/litkit-access-procedure.md`). They call the `litkit` tools instead of a cookie-jar session and keep the verification discipline: quotations checked against extracted text before delivery, certified transcripts only, as-filed ECF copies. They carry no client names or matter facts.
 
+## Known upstream noise
+
+- `pm/shell.py:13` raises a `SyntaxWarning: invalid escape sequence` on import (a Windows path in a docstring). It is upstream code and harmless; it is left alone so the tree stays syncable.
+- The gateway's loop-tick watchdog binds an `AF_UNIX` socket at `$HERMES_HOME/state/gateway.loop-tick.<pid>.sock`. With a deep `HERMES_HOME` (typical of a macOS dev checkout under a scratch folder) the path passes the 104-byte limit and the watchdog logs `AF_UNIX path too long`; liveness then falls back to the heartbeat file. Upstream hardcodes the location (both the gateway and the `hermes gateway` probe compute it), so it cannot be moved without a core change. The host image's `HERMES_HOME` is short, so this appears only in local runs; use a short `HERMES_HOME` there.
+
 ## Code map
 
 | Path | Role |
@@ -191,7 +214,8 @@ Results larger than 12,000 characters follow Hermes's spill convention: the full
 | `litco/turn_server.py` | aiohttp app: auth, parsing, SSE framing, per-session locks, budgets, interrupts, deliverables. |
 | `litco/hermes_runner.py` | Builds the `AIAgent` for a turn and maps Hermes callbacks to events. |
 | `litco/assertion.py` | Host-secret comparison and the user-assertion MAC. |
-| `litco/homes.py` | Working-directory layout and deliverable ids. |
+| `litco/homes.py` | Working-directory layout, deliverable ids, the deliverable rule, and the `litco_deliver_local` registry. |
+| `litco/memory_scope.py` | Per-thread scoping of Hermes's built-in memory. |
 | `litco/litkit/` | LitKit client, the `litkit` tools, the turn identity, the write boundary. |
 | `plugins/litkit/` | Registers the `litkit` toolset (bundled backend plugin). |
 | `litco/skills/legal/` | Legal skills for the matter host. |

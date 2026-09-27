@@ -90,16 +90,24 @@ def discord_triggering_note(message_id: Any) -> str:
     )
 
 
-def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
-    """Authored text for the durable user row: peel off exactly the note
-    ``_prepend_inbound_reply_context`` added for THIS event, if present. The note is a
-    model instruction, not something the user wrote — persisted as ``content`` it renders
-    verbatim in every transcript surface and pollutes FTS/memory (#71304, #114719). It
-    keeps riding ``message_text`` (and the replay-only ``api_content`` sidecar)."""
-    message_id = getattr(event, "message_id", None)
-    if not message_id or not isinstance(message_text, str):
+def matrix_source_note(permalink: str) -> str:
+    return f"[Matrix source: {permalink}]"
+
+
+def strip_inbound_source_note(event: Any, message_text: Any) -> Any:
+    """Remove the transport note from the durable user row."""
+    if not getattr(event, "message_id", None) or not isinstance(message_text, str):
         return message_text
-    prefix = f"{discord_triggering_note(message_id)}\n\n"
+
+    source = getattr(event, "source", None)
+    if getattr(source, "platform", None) == Platform.DISCORD:
+        note = discord_triggering_note(event.message_id)
+    elif getattr(source, "platform", None) == Platform.MATRIX and source.source_permalink:
+        note = matrix_source_note(source.source_permalink)
+    else:
+        return message_text
+
+    prefix = f"{note}\n\n"
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
@@ -1622,7 +1630,7 @@ class GatewayInboundMixin:
 
     @staticmethod
     def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
+        """Prepend the reply-to pointer and any per-turn platform source note."""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
@@ -1632,10 +1640,6 @@ class GatewayInboundMixin:
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
             message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
 
-        # Discord: the triggering message id goes on the per-turn user message, never the cached
-        # system prompt — it changes every turn and would bust the agent-cache signature. It is
-        # the OUTERMOST prefix so strip_discord_triggering_note can peel exactly it off the
-        # persisted transcript row without touching the reply pointer.
         if (
             source is not None
             and getattr(source, "platform", None) == Platform.DISCORD
@@ -1644,6 +1648,18 @@ class GatewayInboundMixin:
             from gateway.session import _discord_tools_loaded as _disc_tools_loaded
             if _disc_tools_loaded():
                 message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
+        if (
+            source is not None
+            and source.platform == Platform.MATRIX
+            and getattr(event, "message_id", None)
+            and source.source_permalink
+        ):
+            from gateway.run import _load_gateway_config
+            from gateway.session import _should_redact_pii
+
+            redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+            if not _should_redact_pii(Platform.MATRIX, redact_pii):
+                message_text = f"{matrix_source_note(source.source_permalink)}\n\n{message_text}"
         return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:

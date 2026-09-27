@@ -234,9 +234,14 @@ class TestMatrixSourcePermalinkPrompt:
         ctx = build_session_context(source, GatewayConfig())
         return build_session_context_prompt(ctx, redact_pii=redact_pii)
 
-    def test_prompt_contains_permalink(self):
-        prompt = self._prompt(source_permalink=self.PERMALINK)
-        assert f"**Matrix Source:** {self.PERMALINK}" in prompt
+    def test_prompt_stays_stable_across_triggering_links(self):
+        first = self._prompt(source_permalink=self.PERMALINK)
+        second = self._prompt(
+            source_permalink="https://matrix.to/#/!room:example.org/$later?via=example.org"
+        )
+        assert first == second
+        assert "Matrix Source" not in first
+        assert "matrix.to" not in first
 
     def test_prompt_omits_permalink_when_unset(self):
         prompt = self._prompt()
@@ -256,6 +261,48 @@ class TestMatrixSourcePermalinkPrompt:
         )
         assert "Matrix Source" not in prompt
         assert "matrix.to" not in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("redact_pii", [False, True])
+async def test_matrix_source_link_reaches_model_without_persisting_as_user_text(
+    monkeypatch, redact_pii,
+):
+    from gateway.run import GatewayRunner
+    import gateway.session as session_mod
+
+    monkeypatch.setattr(session_mod, "_PII_SAFE_PLATFORMS", frozenset({Platform.MATRIX}))
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"privacy": {"redact_pii": redact_pii}},
+    )
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(group_sessions_per_user=False)
+    runner.adapters = {}
+    runner._model = "test-model"
+    runner._base_url = ""
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room:example.org",
+        chat_type="room",
+        source_permalink="https://matrix.to/#/!room:example.org/$event?via=example.org",
+    )
+    event = MessageEvent(text="Please cite this", source=source, message_id="$event")
+
+    model_text = await runner._prepare_inbound_message_text(
+        event=event, source=source, history=[],
+    )
+    _, persisted_text, _ = runner._hmwa_apply_message_timestamp(event, model_text)
+
+    expected_model_text = "Please cite this"
+    if not redact_pii:
+        expected_model_text = (
+            "[Matrix source: https://matrix.to/#/!room:example.org/$event?via=example.org]"
+            "\n\nPlease cite this"
+        )
+    assert model_text == expected_model_text
+    assert persisted_text == "Please cite this"
 
 
 class TestSenderPrefixWithBackfill:

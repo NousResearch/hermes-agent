@@ -40,8 +40,12 @@ def adapter(monkeypatch):
     return a
 
 
-def _stub_download(monkeypatch, size: int):
-    """Make the fallback's SSRF-safe client return ``size`` bytes."""
+def _stub_download(monkeypatch, size: int, captured_headers: dict | None = None):
+    """Make the fallback's SSRF-safe client return ``size`` bytes.
+
+    ``captured_headers``, when given, is filled in with whatever headers the
+    fallback's ``client.get()`` call sends, so a test can assert on them.
+    """
 
     class _Resp:
         content = b"x" * size
@@ -56,7 +60,9 @@ def _stub_download(monkeypatch, size: int):
         async def __aexit__(self, *exc):
             return False
 
-        async def get(self, url):
+        async def get(self, url, headers=None, **kwargs):
+            if captured_headers is not None:
+                captured_headers.update(headers or {})
             return _Resp()
 
     import tools.url_safety as url_safety
@@ -105,3 +111,39 @@ async def test_send_image_upload_fallback_uses_media_read_timeout(adapter, monke
     upload = calls[1]
     assert isinstance(upload["photo"], (bytes, bytearray))
     assert upload["read_timeout"] == tg._MEDIA_SEND_READ_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_send_image_upload_fallback_sends_identifying_user_agent(adapter, monkeypatch):
+    """The byte-upload fallback must not download with the bare httpx default
+    UA: bot-detecting CDNs (upload.wikimedia.org confirmed) serve
+    ``python-httpx/x`` a 403 while the same URL works from Telegram's own
+    fetch and from a browser seconds earlier (#89260). The fallback must
+    send the same identifying UA already used for direct downloads
+    elsewhere (``tools.url_safety.DEFAULT_USER_AGENT``), not a browser-spoof
+    string — Wikimedia's UA policy asks clients to identify themselves
+    rather than impersonate a browser.
+    """
+    from tools.url_safety import DEFAULT_USER_AGENT
+
+    headers: dict = {}
+    _stub_download(monkeypatch, 8 * 1024 * 1024, captured_headers=headers)
+    calls = []
+
+    async def _photo(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("Photo too big for a URL send")
+        msg = MagicMock()
+        msg.message_id = 4
+        return msg
+
+    adapter._bot.send_photo = AsyncMock(side_effect=_photo)
+
+    result = await adapter.send_image(
+        "123", "https://upload.wikimedia.org/wikipedia/commons/x/x.jpg", caption="hi"
+    )
+
+    assert result.success and len(calls) == 2
+    assert headers.get("User-Agent") == DEFAULT_USER_AGENT
+    assert "python-httpx" not in headers.get("User-Agent", "")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from typing import Any, Collection
 import asyncio
 import logging
@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 from gateway.session import format_untrusted_prompt_value
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 from plugins.platforms.matrix.thread_context import Method, PreviousTurnCheck, history_entry
 
@@ -54,7 +55,7 @@ async def fetch_room_entries(
     if not isinstance(earlier, list):
         return []
 
-    newest_first: list[MatrixEventContext] = []
+    newest_first: list[tuple[str, MatrixEventContext]] = []
     for raw in earlier[:limit]:
         if not isinstance(raw, dict) or not isinstance(raw.get("event_id"), str):
             continue
@@ -71,8 +72,15 @@ async def fetch_room_entries(
             break
         stored = cache.store(room_id, raw["event_id"], entry)
         if stored is not None:
-            newest_first.append(stored)
-    return newest_first[::-1]
+            newest_first.append((raw["event_id"], stored))
+    entries = newest_first[::-1]
+    snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in entries])
+    return [
+        replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
+                reaction_keys_missing=bool(snapshot.missing_keys),
+                reactions_unavailable=bool(snapshot.error))
+        for (_, entry), snapshot in zip(entries, snapshots)
+    ]
 
 
 @dataclass(frozen=True)

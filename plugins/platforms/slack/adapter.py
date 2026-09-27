@@ -2843,6 +2843,31 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    # A bot that keeps answering a bot can run forever. This caps one direction
+    # of one thread. A human mention resets it, so a person can always restart
+    # the exchange. The cap is fixed on purpose: a knob here would be config
+    # with no operator asking for it.
+    _BOT_HOP_LIMIT = 6
+    _BOT_HOP_WINDOW_SECONDS = 600
+
+    def _bot_hop_key(self, team_id: str, channel_id: str, thread_ts: str) -> tuple:
+        return (str(team_id or ""), str(channel_id or ""), str(thread_ts or ""))
+
+    def _note_bot_hop(self, key: tuple, now: float) -> int:
+        """Record one accepted bot message and return how many landed in the window."""
+        hops = getattr(self, "_bot_hops", None)
+        if hops is None:
+            hops = self._bot_hops = {}
+        recent = [t for t in hops.get(key, []) if now - t < self._BOT_HOP_WINDOW_SECONDS]
+        recent.append(now)
+        hops[key] = recent
+        return len(recent)
+
+    def _reset_bot_hops(self, key: tuple) -> None:
+        hops = getattr(self, "_bot_hops", None)
+        if hops:
+            hops.pop(key, None)
+
     def _slack_allow_bots(self) -> str:
         """Return normalized Slack bot-message policy (scoped ``SLACK_ALLOW_BOTS`` → YAML → none)."""
         raw = _extra_or_secret(self.config.extra, "allow_bots", "SLACK_ALLOW_BOTS", "none")
@@ -4630,6 +4655,19 @@ class SlackAdapter(BasePlatformAdapter):
         force_process = bool(event.get("_hermes_force_process"))
         if await self._peer_bot_drop(event, user_id, bot_uid, channel_id, team_id, is_mentioned):
             return
+        # A person stepping in restarts the exchange. Only an unbroken run of
+        # bot messages counts toward the cap.
+        hop_key = self._bot_hop_key(team_id, channel_id, thread_ts or ts)
+        sender_is_bot = self._event_declares_bot_sender(event)
+        if not sender_is_bot and is_mentioned:
+            self._reset_bot_hops(hop_key)
+        elif sender_is_bot:
+            if self._note_bot_hop(hop_key, time.time()) > self._BOT_HOP_LIMIT:
+                logger.warning(
+                    "[Slack] Dropping bot message: %d replies between bots in one "
+                    "thread within %d minutes, no person stepped in",
+                    self._BOT_HOP_LIMIT, self._BOT_HOP_WINDOW_SECONDS // 60)
+                return
         if (
             not is_one_to_one_dm and bot_uid and not await self._channel_gate_allows(
             channel_id=channel_id, routing_text=routing_text, bot_uid=bot_uid,

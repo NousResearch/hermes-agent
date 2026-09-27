@@ -366,16 +366,27 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         title_started = _coerce_started_ts((_get_session_meta(db, title_root) or _get_session_meta(db, title_sid)).get("started_at"))
         if {title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts):
             title_result = None
-    raw_results, err = _loud(lambda: db.search_messages(
-        query=query, role_filter=role_filter or ["user", "assistant"],
-        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
-        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
+    def _search(**scope):
+        return db.search_messages(
+            query=query, role_filter=role_filter or ["user", "assistant"],
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES), offset=0, sort=sort,
+            fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts, **scope)
+    raw_results, err = _loud(lambda: _search(limit=_DISCOVER_SCAN_LIMIT), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
     # can't starve the user's own sessions out of the top `limit`; stable sort keeps BM25
     # order within each class.
     raw_results = sorted(raw_results, key=lambda r: (r.get("source") or "") in _DEMOTED_SESSION_SOURCES)
+    # The caller's own compaction archive leads: the compaction recovery pointers send the model here for
+    # detail that left THIS conversation, and ranked against every other session (BM25, or recency on a
+    # tool-role scan) it falls outside `limit` or the scan window (#99568).
+    if current_session_id:
+        own, err = _loud(lambda: _search(limit=1, compacted_in_session=current_session_id),
+                         "FTS5 search failed: %s", "Search failed")
+        if err:
+            return err
+        raw_results = own + raw_results
     # See #19434.
     if not raw_results and not title_result:
         return _discover_payload(db, query, detail, [], message=(

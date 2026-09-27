@@ -350,7 +350,9 @@ def _emitted_session_search_kwargs(pointer: str, query: str) -> dict:
 class TestCompactionRecoveryPointersRecover:
     """The call each compaction recovery pointer emits must actually return the compacted detail when the
     model makes it verbatim, under the runtime's own ``current_session_id`` (#99568). Asserting on the
-    pointer text alone let a pointer that selects READ mode, which ignores the query, pass review."""
+    pointer text alone let a pointer that selects READ mode, which ignores the query, pass review.
+    Newer sessions matching the same keywords compete for the default ``limit``: the pointer is not
+    session-scoped, so a lone compacted session would win by default and prove nothing."""
 
     def _compacted_session(self, db):
         sid = "s_recover"
@@ -363,7 +365,16 @@ class TestCompactionRecoveryPointersRecover:
             {"role": "user", "content": "[CONTEXT COMPACTION] earlier turns summarized"},
             {"role": "assistant", "content": "Summary: a port was noted and a build failed."},
         ])
+        for i in range(6):
+            other = f"s_other{i}"
+            db.create_session(other, source="cli")
+            db.append_message(other, role="user", content="PORTMARK_7741 " * 20)
+            db.append_message(other, role="tool", content="TOOLMARK_0923 " * 20, tool_name="terminal")
         return sid
+
+    @staticmethod
+    def _recovered(result: dict, sid: str, marker: str) -> bool:
+        return any(hit["session_id"] == sid and marker in json.dumps(hit) for hit in result.get("results", []))
 
     def test_the_summary_footer_call_recovers_a_compacted_turn(self, db):
         from agent.context_compressor import _build_recovery_footer
@@ -371,7 +382,7 @@ class TestCompactionRecoveryPointersRecover:
         sid = self._compacted_session(db)
         kwargs = _emitted_session_search_kwargs(_build_recovery_footer(sid, region_len=10), "PORTMARK_7741")
         result = json.loads(session_search(**kwargs, db=db, current_session_id=sid))
-        assert "PORTMARK_7741" in json.dumps(result), result
+        assert self._recovered(result, sid, "Remember the port: PORTMARK_7741"), result
 
     def test_the_demoted_tool_stub_call_recovers_the_tool_output(self, db):
         from agent.context_compressor import _lean_recovery_stub
@@ -379,7 +390,7 @@ class TestCompactionRecoveryPointersRecover:
         sid = self._compacted_session(db)
         kwargs = _emitted_session_search_kwargs(_lean_recovery_stub("terminal", 3200, sid), "TOOLMARK_0923")
         result = json.loads(session_search(**kwargs, db=db, current_session_id=sid))
-        assert "TOOLMARK_0923" in json.dumps(result), result
+        assert self._recovered(result, sid, "fatal: TOOLMARK_0923"), result
 
 
 class TestDiscoverySort:

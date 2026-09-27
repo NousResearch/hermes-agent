@@ -291,6 +291,30 @@ def _require_own_dependencies(project_root: Path) -> None:
         raise RuntimeError("no dependency environment is committed for this install")
 
 
+def _refuse_foreign_build(environment: Path) -> bool:
+    """Compare *environment*'s recorded interpreter version against the one running.
+
+    Shared by every arm of ``activate_dependencies`` so a generation built for another
+    interpreter never lands on ``sys.path`` unverified, regardless of which branch
+    selected it. True means the caller must not select *environment* (its own packages
+    are kept instead); raises when this is PM's bare store interpreter, which has
+    nothing of its own to fall back to.
+    """
+    import sys
+
+    built = venv_python_version(environment)
+    running = (sys.version_info.major, sys.version_info.minor)
+    if built is None or built == running:
+        return False
+    if sys.prefix != sys.base_prefix:
+        return True  # a venv interpreter (developer .venv, test env) carries its own packages
+    raise RuntimeError(
+        "the committed dependency environment was built for Python "
+        f"{built[0]}.{built[1]} but this process runs "
+        f"{running[0]}.{running[1]}"
+    )
+
+
 def activate_dependencies(project_root: Path) -> None:
     """Select the committed tree at process boot, before third-party imports.
 
@@ -319,17 +343,9 @@ def activate_dependencies(project_root: Path) -> None:
                 environment, release = current, lease_generation(current)
             # Checked on the generation actually about to be selected -- the loop above can
             # still swap in a different one after an initial match.
-            built = venv_python_version(environment)
-            running = (sys.version_info.major, sys.version_info.minor)
-            if built is not None and built != running:
+            if _refuse_foreign_build(environment):
                 release()
-                if sys.prefix != sys.base_prefix:
-                    return  # a venv interpreter (developer .venv, test env) carries its own packages
-                raise RuntimeError(
-                    "the committed dependency environment was built for Python "
-                    f"{built[0]}.{built[1]} but this process runs "
-                    f"{running[0]}.{running[1]}"
-                )
+                return
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return
@@ -339,6 +355,8 @@ def activate_dependencies(project_root: Path) -> None:
         environment = payload_venv(project_root)
         if environment is None:
             return _require_own_dependencies(project_root)
+        if _refuse_foreign_build(environment):
+            return
         selected = site_packages(environment)
         if not selected.is_dir():
             return  # External/Nix interpreter owns its original sys.path.

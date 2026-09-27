@@ -26,7 +26,7 @@ from hermes_cli.update_channel import adopt_retired_channel
 from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
 from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
 from hermes_cli._old_updater import stop_for_relaunch
-from hermes_cli._early_recovery import interrupted_pull_marker
+from hermes_cli._early_recovery import git_operation_in_progress, interrupted_pull_marker
 from hermes_cli import update_cmd_check as _check
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
@@ -1391,6 +1391,13 @@ def _apply_pulled_update(
 
 def _cmd_update_impl(args, gateway_mode: bool):
     """Apply the update; the command boundary owns errors, receipts and stdio."""
+    git_operation = git_operation_in_progress(_m().PROJECT_ROOT)
+    if git_operation:
+        root = _m().PROJECT_ROOT
+        print(f"✗ Cannot update while a Git {git_operation} is in progress in {root}.")
+        print(f"  Finish it or run `git {git_operation} --abort`, then re-run `hermes update`.")
+        sys.exit(1)
+
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 

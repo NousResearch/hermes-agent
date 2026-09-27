@@ -76,6 +76,55 @@ def test_completion_refresh_preserves_profile_isolation(completion, tmp_path, mo
     assert skills() == {"fixture-own", "fixture-new"}
 
 
+def test_unchanged_completion_does_not_reread_skill_bodies(completion, monkeypatch):
+    home, skills = completion
+    skill = _write_skill(home, "fixture-cached")
+    reads = []
+    original = Path.read_text
+
+    def tracked(path, *args, **kwargs):
+        if path == skill:
+            reads.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", tracked)
+    assert skills() == {"fixture-cached"}
+    assert reads == [skill]
+    assert skills() == {"fixture-cached"}
+    assert reads == [skill], "unchanged completion reparsed the skill body"
+    skill.write_text("---\nname: fixture-updated-longer\n---\nEdited.\n", encoding="utf-8")
+    assert skills() == {"fixture-updated-longer"}
+    assert reads == [skill, skill]
+
+
+def test_cached_parse_rechecks_current_eligibility(completion, monkeypatch):
+    import tools.skills_tool as tools
+
+    home, skills = completion
+    _write_skill(home, "fixture-gated")
+    assert skills() == {"fixture-gated"}
+    with monkeypatch.context() as scoped:
+        scoped.setattr(tools, "_get_disabled_skill_names", lambda: {"fixture-gated"})
+        assert skills() == set()
+    assert skills() == {"fixture-gated"}
+
+
+def test_cached_parse_does_not_mask_read_failure(completion, monkeypatch):
+    home, skills = completion
+    skill = _write_skill(home, "fixture-recover")
+    original = Path.read_text
+
+    def denied(path, *args, **kwargs):
+        if path == skill:
+            raise PermissionError("fixture denied")
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "read_text", denied)
+        assert skills() == set()
+    assert skills() == {"fixture-recover"}
+
+
 def test_unreadable_skill_does_not_hide_healthy_siblings(completion):
     home, skills = completion
     _write_skill(home, "fixture-good")

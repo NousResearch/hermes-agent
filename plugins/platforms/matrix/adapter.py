@@ -876,7 +876,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         self._reaction_redaction_delay_seconds = 5.0
         self._reaction_redaction_tasks: set[asyncio.Task] = set()
         self._last_inbound_by_room: dict[str, str] = {}
-        self._agent_reactions: dict[tuple[str, str], str] = {}
+        self._agent_reactions: dict[tuple[str, str], list[str]] = {}
 
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
         if self._proxy_url:
@@ -2783,7 +2783,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 "success": False,
                 "error": "reaction send failed (see gateway debug log)",
             }
-        self._agent_reactions[(str(chat_id), str(target))] = reaction_event_id
+        self._agent_reactions.setdefault((str(chat_id), str(target)), []).append(reaction_event_id)
         return {"success": True, "message_id": str(target)}
 
     async def remove_reaction(
@@ -2800,18 +2800,19 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 "success": False,
                 "error": "no message to unreact — pass message_id",
             }
-        reaction_event_id = self._agent_reactions.pop(
-            (str(chat_id), str(target)), None
-        )
-        if not reaction_event_id:
+        key = (str(chat_id), str(target))
+        reaction_event_ids = self._agent_reactions.get(key)
+        if not reaction_event_ids:
             return {
                 "success": False,
                 "error": "no reaction of ours recorded on that message",
             }
-        ok = await self._redact_reaction(
-            str(chat_id), reaction_event_id, "reaction retracted"
-        )
-        return {"success": bool(ok), "message_id": str(target)}
+        for reaction_event_id in tuple(reaction_event_ids):
+            if await self._redact_reaction(str(chat_id), reaction_event_id, "reaction retracted"):
+                reaction_event_ids.remove(reaction_event_id)
+        if not reaction_event_ids:
+            self._agent_reactions.pop(key, None)
+        return {"success": not reaction_event_ids, "message_id": str(target)}
 
     def _schedule_reaction_redaction(self, room_id: str, reaction_event_id: str, reason: str = "") -> None:
         """Redact a reaction after a short delay so message delivery settles."""

@@ -1322,7 +1322,19 @@ class GatewayInboundMixin:
         if self._is_session_running(_quick_key):
             return await self._hm_handle_running_session_message(event, source, _quick_key)
 
-        _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
+        # Commands return before the agent pause gate. Keep accepted work parked until
+        # a recovery actually publishes a usable route, including failure/cancellation.
+        command_entry = (await self.async_session_store.lookup_by_session_key(_recovery_key)
+                         if event.get_command() else None)
+        command_paused = getattr(command_entry, "compression_paused", False) is True
+        if command_paused:
+            event._gateway_preserve_pending = True
+        try:
+            _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
+        finally:
+            if command_paused:
+                recovered = await self.async_session_store.lookup_by_session_key(_recovery_key)
+                event._gateway_preserve_pending = (recovered is None or recovered.compression_paused)
         if _handled:
             return _result
 

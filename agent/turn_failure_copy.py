@@ -424,6 +424,13 @@ def nonretryable_copy(
 ) -> str:
     """Chat copy for a terminal non-retryable rejection (auth, model missing, TLS, generic 4xx)."""
     label = provider_label_for(provider)
+    if (classified.reason == FailoverReason.provider_policy_blocked
+            and getattr(classified, "error_context", {}).get("governance_refusal") is True):
+        return (
+            f"{label}'s policy gateway refused this request. Review the policy decision "
+            f"or required approval with the gateway administrator before resubmitting."
+            f"\n\nProvider said: {classified.message}"
+        )
     if getattr(classified, "is_auth", False):
         from agent.error_surface import auth_kind
 

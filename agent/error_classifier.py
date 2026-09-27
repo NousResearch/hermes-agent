@@ -1025,7 +1025,34 @@ def _status_403(c: _Ctx) -> Verdict:
     # 403 and on established block/challenge markers; any other 403 stays auth.
     if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    policy_reason = _governance_refusal_reason(c.body)
+    if policy_reason:
+        # An explicit governance denial is not a broken credential. Do not silently
+        # route around it through a different provider or retry without approval.
+        return _v(
+            _R.provider_policy_blocked, retryable=False, message=policy_reason,
+            error_context={"governance_refusal": True},
+        )
     return _V_AUTH_FALLBACK
+
+
+def _governance_refusal_reason(body: dict) -> str:
+    """A structured, explicitly non-retryable policy decision, not any unknown 403."""
+    error = _error_obj(body) if "error" in body else body
+    codes = [error.get(key) for key in ("type", "code")]
+    auth_codes = {"authentication_error", "invalid_api_key", "permission_denied", "unauthorized"}
+    if any(isinstance(code, str) and code.strip().lower() in auth_codes for code in codes):
+        return ""
+    if not any(isinstance(code, str) and code.strip() for code in codes):
+        return ""
+    if error.get("retryable") is not False:
+        return ""
+    reason = error.get("reason") or error.get("message")
+    if not isinstance(reason, str) or not reason.strip():
+        return ""
+    if not re.search(r"\bpolicy\b", reason, re.IGNORECASE) and error.get("approval_token_required") is not True:
+        return ""
+    return reason.strip()[:500]
 
 
 def _status_404(c: _Ctx) -> Verdict:

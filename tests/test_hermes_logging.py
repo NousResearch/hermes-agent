@@ -821,3 +821,92 @@ class TestLineBufferPipedStdout:
         # setup_logging runs per AIAgent build: a second call must not re-flush/reconfigure.
         hermes_logging.setup_logging(hermes_home=tmp_path, force=True)
         stream.reconfigure.assert_called_once_with(line_buffering=True)
+
+
+class TestRolloverPreservesLogOwnership:
+    """Regression for #120151.
+
+    ``doRollover`` renames ``agent.log`` and opens a new one, so the replacement is owned
+    by whichever process wrote the record that crossed ``maxBytes``. With a rotating handler
+    per profile, that is usually the long-lived gateway — so a worker's log can be replaced
+    by a root-owned file the worker can never reopen, and the profile is locked out for good.
+    """
+
+    @staticmethod
+    def _make_handler(log_path: Path, max_bytes: int = 1):
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=max_bytes, backupCount=1, encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        return handler
+
+    @pytest.mark.platforms("linux", "macos")
+    def test_rollover_keeps_the_previous_owner_and_mode(self, tmp_path):
+        """A rollover must not silently change who owns the log."""
+        log_path = tmp_path / "agent.log"
+        log_path.write_text("seed\n", encoding="utf-8")
+        os.chmod(log_path, 0o640)
+        before = os.stat(log_path)
+
+        handler = self._make_handler(log_path)
+        try:
+            handler.doRollover()
+            handler.flush()
+        finally:
+            handler.close()
+
+        after = os.stat(log_path)
+        assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
+        assert stat.S_IMODE(after.st_mode) == stat.S_IMODE(before.st_mode)
+
+    @pytest.mark.platforms("linux", "macos")
+    def test_restore_owner_is_a_noop_when_chown_is_impossible(self, tmp_path, monkeypatch):
+        """An unprivileged process cannot chown — that must stay silent, not raise.
+
+        The unprivileged case never changed the owner in the first place, so leaving the
+        new file as-is is correct; a raised OSError would turn a log write into a crash.
+        """
+        target = tmp_path / "agent.log"
+        target.write_text("x\n", encoding="utf-8")
+        monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(os, "chown", _raise_oserror, raising=False)
+        hermes_logging._restore_owner(str(target), (0, 0, 0o600))
+        assert target.exists()  # reached here only because nothing raised
+
+    @pytest.mark.platforms("linux", "macos")
+    def test_stat_owner_reports_nothing_on_windows(self, tmp_path):
+        """A st without uid/gid (Windows) must read as 'nothing to preserve'."""
+        assert hermes_logging._stat_owner(str(tmp_path / "missing.log")) is None
+        existing = tmp_path / "agent.log"
+        existing.write_text("x\n", encoding="utf-8")
+        owner = hermes_logging._stat_owner(str(existing))
+        assert owner is not None
+        assert owner[0] == os.getuid() and owner[1] == os.getgid()
+
+    @pytest.mark.platforms("not linux", "not macos")
+    def test_stat_owner_is_none_where_there_are_no_uids(self, tmp_path, monkeypatch):
+        """Windows must not be handed an owner tuple it cannot act on."""
+        existing = tmp_path / "agent.log"
+        existing.write_text("x\n", encoding="utf-8")
+        real_stat = os.stat
+
+        def posix_free_stat(path, *args, **kwargs):
+            actual = real_stat(path, *args, **kwargs)
+            return _StatWithoutOwner(actual)
+
+        monkeypatch.setattr(os, "stat", posix_free_stat)
+        assert hermes_logging._stat_owner(str(existing)) is None
+
+
+def _raise_oserror(*_args, **_kwargs):
+    raise OSError("operation not permitted")
+
+
+class _StatWithoutOwner:
+    """An ``os.stat_result`` stand-in with no uid/gid, the way Windows reports one."""
+
+    st_uid = None
+    st_gid = None
+
+    def __init__(self, real):
+        self.st_mode = real.st_mode

@@ -36,8 +36,11 @@ class VersionInfo:
 
     @property
     def display_version(self) -> str:
-        """``<base>+<distance>``: the short form surfaces label a version by.
-        The commit is shown beside it where there is room, never inside it."""
+        """``<base>+<distance>`` when a release is known, else the derived identity.
+        Keep a tagless checkout's ``git.<sha>`` rather than reducing it to unknown.
+        """
+        if self.base_version == "unknown":
+            return self.derived_version
         return _derived_version(self.base_version, self.distance)
 
 

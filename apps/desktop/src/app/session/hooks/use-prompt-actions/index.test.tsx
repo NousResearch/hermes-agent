@@ -1999,6 +1999,36 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
   })
 
+  it('reports each typed command to shared metrics once, locally handled ones included, never alias re-dispatches', async () => {
+    const openMemoryGraph = vi.fn()
+
+    const requestGateway = vi.fn(
+      async (method: string, _params?: Record<string, unknown>) =>
+        (method === 'slash.exec' ? { type: 'alias', target: 'journey' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        openMemoryGraph={openMemoryGraph}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/journey') // desktop-local: never reaches the gateway's slash.exec
+    await handle!.submitText('/mg') // user alias: the backend answers "run /journey"
+
+    expect(openMemoryGraph).toHaveBeenCalledTimes(2)
+    expect(requestGateway.mock.calls.filter(([method]) => method === SLASH_METRIC).map(([, params]) => params)).toEqual(
+      [
+        { command: 'journey', session_id: RUNTIME_SESSION_ID },
+        { command: 'mg', session_id: RUNTIME_SESSION_ID }
+      ]
+    )
+  })
+
   it('marks a timed-out handoff as failed so the next attempt can retry', async () => {
     vi.useFakeTimers()
     const calls: { method: string; params?: Record<string, unknown> }[] = []

@@ -465,6 +465,39 @@ class TestJobCRUD:
             completed = get_job(job["id"])["repeat"]["completed"]
             assert completed == expected and type(completed) is int
 
+    def test_invalid_repeat_times_is_normalized(self, tmp_cron_dir):
+        """A hand-edited "times" (string, float, negative, Infinity) or a non-dict "repeat"
+        must not kill mark_job_run (`times > 0` TypeError / `.get` AttributeError) and
+        freeze the whole store — the sibling of the repeat.completed normalization."""
+        import json
+        from cron.jobs import JOBS_FILE, get_job, mark_job_run
+
+        job = create_job(prompt="t", schedule="every 1h", repeat=3)
+
+        def set_repeat(value):
+            payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+            payload["jobs"][0]["repeat"] = value
+            JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        # "3" crashed mark_job_run with TypeError; 2.0 rendered "2.0/3"; -5 disabled the
+        # limit; Infinity raised OverflowError in int().
+        for value, expected in (
+            ({"times": "3", "completed": 0}, 3),
+            ({"times": 2.0, "completed": 0}, 2),
+            ({"times": -5, "completed": 0}, None),
+            ({"times": float("inf"), "completed": 0}, None),
+        ):
+            set_repeat(value)
+            mark_job_run(job["id"], success=True)
+            stored = get_job(job["id"])
+            assert stored is not None
+            assert stored["repeat"]["times"] == expected
+            assert type(stored["repeat"]["times"]) is type(expected)
+        # A non-dict repeat crashed every .get() reader; normalized to {} = infinite.
+        set_repeat("banana")
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["repeat"] == {}
+
     def test_oneshot_turned_recurring_becomes_forever(self, tmp_cron_dir):
         """A one-shot budget must not survive a schedule change to a recurring kind.
 

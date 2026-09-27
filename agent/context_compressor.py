@@ -2014,7 +2014,7 @@ This historical snapshot must identify the latest unresolved user input precisel
 If the user's most recent message was a reverse signal (stop, undo, roll
 back, never mind, just verify, change of topic) that supersedes earlier
 work, describe the reverse signal accurately and DO NOT carry forward the
-cancelled task. The compressor inserts the source-grounded snapshot afterward.
+cancelled task.
 Example: "User asked to stop the prior task — earlier work is cancelled."
 If no outstanding task exists, write "None."]""",
         "goal": "[What the user is trying to accomplish overall]",

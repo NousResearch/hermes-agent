@@ -1077,7 +1077,6 @@ class TestLoadGatewayConfig:
         )
 
 
-
     def test_bridges_unauthorized_dm_behavior_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

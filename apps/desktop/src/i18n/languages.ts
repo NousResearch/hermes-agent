@@ -141,6 +141,7 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   'de-ch': 'de',
   de_ch: 'de',
   german: 'de',
+  deutsch: 'de',
   es: 'es',
   'es-es': 'es',
   es_es: 'es',

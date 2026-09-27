@@ -64,6 +64,10 @@ export interface Translations {
     message: string
     copyUrl: string
     close: string
+    missing: {
+      title: string
+      message: string
+    }
   }
   intro: {
     stock: Record<string, string[]>
@@ -997,6 +1001,8 @@ export interface Translations {
       toursDesc: string
       composerPopoutTitle: string
       composerPopoutDesc: string
+      fileBrowserTitle: string
+      fileBrowserDesc: string
       vibeHeartsTitle: string
       vibeHeartsDesc: string
       embedsTitle: string
@@ -2107,11 +2113,15 @@ export interface Translations {
       emptyHint: string
       loadFailed: string
       toggleFailed: (name: string) => string
+      toolsetOn: (name: string, profile: string) => string
+      toolsetOff: (name: string, profile: string) => string
+      toolsetToggleFailed: (name: string) => string
       legacyBackend: string
       portableBadge: string
       serverStates: {
         connected: string
         app_not_running: string
+        hermes_not_connected: string
         endpoint_unavailable: string
         no_interactive_session: string
         version_too_old: string
@@ -2717,6 +2727,7 @@ export interface Translations {
     skillsLabel: string
     notSet: string
     soulDesc: string
+    soulMissing: string
     soulOptional: string
     soulPlaceholder: (mode: string) => string
     soulPlaceholderCloned: string
@@ -2835,6 +2846,8 @@ export interface Translations {
     nameLabel: string
     namePlaceholder: string
     promptLabel: string
+    scriptLabel: string
+    scriptBadge: string
     promptPlaceholder: string
     frequencyLabel: string
     deliverLabel: string
@@ -3109,6 +3122,7 @@ export interface Translations {
       backgroundRunning: string
       draftSession: string
       handoffOrigin: (platform: string) => string
+      continuationOrigin: string
       ownedByProfile: (profile: string) => string
       renamed: string
       renameFailed: string
@@ -3216,6 +3230,8 @@ export interface Translations {
     queueResumeTip: string
     queueStuckTitle: string
     queueStuckBody: string
+    queueDroppedTitle: string
+    queueDroppedBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -3293,6 +3309,7 @@ export interface Translations {
     goalWaiting: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
+    previousTodos: (done: number, total: number) => string
     running: string
     stop: string
     dismiss: string
@@ -4305,6 +4322,8 @@ export interface Translations {
       preparingAudio: string
       stopReading: string
       readAloud: string
+      copyFullResponse: string
+      readAloudFullResponseHint: string
       editMessage: string
       expandMessage: string
       scrollToBottom: string
@@ -4354,6 +4373,7 @@ export interface Translations {
       lateAnswer: (question: string, choice: string) => string
       lateAnswerTip: string
       lateAnswerHint: string
+      notDelivered: string
     }
     catalogInstall: {
       preparing: string

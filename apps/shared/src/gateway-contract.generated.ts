@@ -2062,10 +2062,10 @@ export interface SessionForeignImportResult {
   session_id: string
   already_imported?: boolean
 }
-/** ``delegations`` is reserved for async delegation records and is currently always empty. */
+/** ``delegations``: recently failed async delegation tasks for the session (durable store), newest first. */
 export interface SubagentListResult {
   subagents?: SubagentSnapshot[]
-  delegations?: Record<string, unknown>[]
+  delegations?: FailedDelegation[]
 }
 /** ``methods_subagents._SUBAGENT_SNAPSHOT_FIELDS`` projection of one live child record. */
 export interface SubagentSnapshot {
@@ -2083,6 +2083,16 @@ export interface SubagentSnapshot {
 }
 /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
+/** ``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation. */
+export interface FailedDelegation {
+  delegation_id: string
+  task_index?: number
+  status: string
+  goal?: string
+  error?: string | null
+  dispatched_at?: number | null
+  completed_at?: number | null
+}
 export interface SubagentIdParams {
   session_id: string
   profile?: string | null
@@ -2312,6 +2322,7 @@ export interface ProjectTreeSession {
   handoff_state?: string | null
   _lineage_root_id?: string | null
   _lineage_ids?: string[] | null
+  continuation_kind?: string | null
   profile?: string | null
   [key: string]: unknown
 }
@@ -4083,7 +4094,7 @@ export interface PluginServerRow {
   state: PluginServerState
   sentence: string
 }
-export type PluginServerState = 'connected' | 'app_not_running' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
+export type PluginServerState = 'connected' | 'app_not_running' | 'hermes_not_connected' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
 /** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. */
 export interface PluginSettingField {
   key: string
@@ -5516,7 +5527,7 @@ export interface BackendGatewayEventMap {
   'preview.restart.complete': SideAgentCompletePayload
   /** Progress line from the preview-restart agent. */
   'preview.restart.progress': PreviewRestartProgressPayload
-  /** projects.db moved; refetch the Projects sidebar. */
+  /** projects.db moved; refetch the project list + tree. */
   'projects.changed': ChangeSignalPayload
   /** Affection reaction detected in the user's message (hearts etc.). */
   reaction: ReactionPayload

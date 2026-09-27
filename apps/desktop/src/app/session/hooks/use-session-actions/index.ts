@@ -30,6 +30,7 @@ import {
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
+import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
@@ -1712,6 +1713,14 @@ export function useSessionActions({
                 clearedClarifyProjection?.messages ??
                 activatedMessages
 
+              if (!running) {
+                restoreSessionTodosFromSnapshot(
+                  cachedRuntimeId,
+                  latestSessionTodoSnapshot(visibleActivatedMessages),
+                  false
+                )
+              }
+
               releaseTranscriptView()
 
               const reconcileActivatedState = (state: ClientSessionState): ClientSessionState => {
@@ -2064,6 +2073,14 @@ export function useSessionActions({
 
         restoreSessionTodosFromSnapshot(resumed.session_id, resumed.todo_state, resumedRunning)
 
+        if (!resumedRunning && prefetchApplied && prefetchMatchesResumedSession && prefetchedTranscriptMessages) {
+          restoreSessionTodosFromSnapshot(
+            resumed.session_id,
+            latestSessionTodoSnapshot(prefetchedTranscriptMessages),
+            false
+          )
+        }
+
         // Crash-survivable turn progress: fold a journaled in-flight tail
         // (persisted by use-session-state-cache while the turn streamed;
         // survives renderer/app death) back onto the restored transcript. The
@@ -2087,11 +2104,28 @@ export function useSessionActions({
         // must not mask a lost transcript (a retry that reloads real history
         // is safer than surfacing the in-flight turn alone). Recovery only
         // ever appends, so this matches the final transcript's emptiness.
-        if (sessionShouldHaveTranscript(stored) && preferredMessages.length === 0) {
+        //
+        // "Should have a transcript" is not the cached sessions-list row alone.
+        // That row is a cache of backend truth and lags the two flows that
+        // report a vanished thread: after a wake/reconnect the list can still
+        // carry the respawned backend's session at message_count 0, and a
+        // compression tip can show 0 rows while the stored transcript is
+        // intact. Conditioning the latch on it alone paints a blank thread
+        // UNLATCHED — no retry, no error, just an empty chat that looks like
+        // lost history. The resume RPC is authoritative and always reports the
+        // stored size (`message_count`, filled from state.db even when
+        // `messages_omitted`), so treat it — and a non-empty REST page — as the
+        // other rungs of the same ladder.
+        const saidToHaveTranscript =
+          sessionShouldHaveTranscript(stored) ||
+          (resumed.message_count || 0) > 0 ||
+          Boolean(prefetchedResult?.messages.length)
+
+        if (saidToHaveTranscript && preferredMessages.length === 0) {
           // Roll back a provisional cached-tail paint and drop its entry: the
-          // authoritative sources say this session has no transcript, so the
-          // cache no longer reflects backend truth and must not survive to
-          // mislead the retry (or the next wake).
+          // latched attempt painted no history from any source, so the
+          // display-only cache must not survive to mask the retry (or the next
+          // wake) as a transcript that loaded.
           if (cachedTailPaint !== null && $messages.get() === cachedTailPaint) {
             setMessages([])
             dropTranscriptTail(storedSessionId, sessionRestScope)

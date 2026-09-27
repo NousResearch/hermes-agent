@@ -45,7 +45,15 @@ const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // must not end the span — the same distinction findClosingSingleDollar draws
 // via isEscapedAt. The two alternatives are disjoint on their first character,
 // so the body cannot backtrack ambiguously.
-const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?:[^\n$\\]|\\[^\n])+?(?<!\\)\$)/g
+//
+// The inline branch deliberately has NO lookbehind on its CLOSING `$`: the
+// body alternation consumes escape pairs atomically, so any `$` the engine
+// reaches after the body is by construction unescaped — a trailing `\\$`
+// (escaped backslash, valid TeX) would otherwise defeat a one-character
+// lookbehind and unshield the span ($a\\$ mis-split, #92371). The display
+// branch keeps its guard: its `[\s\S]*?` body does not step over escape
+// pairs, so it genuinely needs it.
+const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?:[^\n$\\]|\\[^\n])+?\$)/g
 const LATEX_DISPLAY_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\[[ \t]*\r?$/
 const LATEX_DISPLAY_CLOSE_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\][ \t]*\r?$/
 const CUSTOM_DISPLAY_MATH_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\[\/math\][ \t]*\r?$/
@@ -89,9 +97,12 @@ const MARKDOWN_LINK_SPLIT_RE = new RegExp(
   'gm'
 )
 
-// Only strip bare localhost root URLs in prose. URLs with actual path segments
-// (e.g. http://localhost:8080/piwo) are user-facing content and must survive.
-const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?(?=\s|$)/gi
+// A fenced block whose entire body is a loopback URL is the preview-pane
+// hand-off: the widget already paints that address, so the whole block is
+// dropped instead of painting the raw text twice. Bare loopback URLs in
+// PROSE are user-facing content and must survive (#121683) — "dev server at
+// http://localhost:3000" is the address the reader needs, wherever it sits
+// in the sentence.
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 // Autolink-shaped spans (bare or angle-bracketed http(s) URLs) that must be
@@ -169,6 +180,20 @@ const SAFE_HTML_TAG_NAMES = new Set([
 ])
 
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+
+// Web-citation transport markers (Gemini-style grounding): private-use
+// delimiters U+E200/U+E201 wrap a `citeturn<n>search<m>` id list, with U+E202
+// separating ids — `\uE200citeturn0search11\uE202turn2search0\uE201`, or the
+// single-id `\uE200citeturn0search0\uE201`. The delimiters paint as
+// replacement glyphs (the reported "triple bars") and the ids are protocol
+// noise a reader cannot follow to a source (#120587). Strip the whole marker;
+// a marker that cannot be resolved is dropped, never invented into a link.
+// The bare no-delimiter alternative only fires with the `cite` head, so plain
+// prose can't trip it. Scoped to this shape: stray private-use characters
+// (icon fonts, user content) are left alone.
+const CITATION_TRANSPORT_MARKER_RE =
+  /\uE200(?:cite)?(?:\uE202?turn\d+search\d+)+\uE201?|citeturn\d+search\d+(?:turn\d+search\d+)*/gu
+
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
@@ -421,7 +446,7 @@ function rewriteProseSegment(segment: string): string {
       autoLinkRawUrls(
         routeFileLinksToPreview(
           escapeUnknownHtmlLikeTags(
-            segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            segment.replace(/`{3,}/g, '').replace(CITATION_TRANSPORT_MARKER_RE, '').replace(CITATION_MARKER_RE, '')
           )
         )
       )

@@ -484,6 +484,79 @@ class SessionMessagesMixin:
             return pending
         return self._execute_write(_do)
 
+    def get_latest_todo_result(self, session_id: str, *, max_chars: Optional[int] = None) -> Optional[str]:
+        """Newest visible, paired and valid Todo result in the resume display scope.
+
+        Search indexed, bounded pages rather than loading a potentially long transcript. A branch owns its
+        copied history; compression continuations also show their ancestors' archived rows. Invalid results
+        are skipped just as the model's Todo hydration does, and explicit empty results are retained.
+        """
+        if not session_id:
+            return None
+        if max_chars is None:
+            from tools.todo_tool import MAX_TODO_RESULT_CHARS
+            max_chars = MAX_TODO_RESULT_CHARS
+        session_ids = self._resume_lineage_ids(session_id)
+        with self._read_ctx() as conn:
+            for sid in reversed(session_ids):
+                before_id = 2**63 - 1
+                while True:
+                    rows = conn.execute(
+                        "SELECT id, content, tool_call_id FROM messages INDEXED BY idx_messages_session_id "
+                        "WHERE session_id = ? AND id < ? AND role = 'tool' "
+                        "AND tool_name IN ('todo_list', 'todo') AND (active = 1 OR compacted = 1) "
+                        "AND length(content) <= ? ORDER BY id DESC LIMIT 100",
+                        (sid, before_id, max_chars),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    for row in rows:
+                        call_id = row["tool_call_id"]
+                        if not call_id:
+                            continue
+                        prior = conn.execute(
+                            "SELECT role, tool_calls FROM messages INDEXED BY idx_messages_session_id "
+                            "WHERE session_id = ? AND id < ? AND role IN ('assistant', 'user', 'system') "
+                            "AND (active = 1 OR compacted = 1) ORDER BY id DESC LIMIT 1",
+                            (sid, row["id"]),
+                        ).fetchone()
+                        if prior is None or prior["role"] != "assistant":
+                            continue
+                        try:
+                            calls = json.loads(prior["tool_calls"]) if prior["tool_calls"] else []
+                            def is_todo_call(call):
+                                if not isinstance(call, dict) or call.get("id") != call_id:
+                                    return False
+                                function = call.get("function")
+                                if not isinstance(function, dict):
+                                    return False
+                                if function.get("name") in ("todo_list", "todo"):
+                                    return True
+                                if function.get("name") != "tool_call":
+                                    return False
+                                arguments = function.get("arguments")
+                                if isinstance(arguments, str):
+                                    arguments = json.loads(arguments)
+                                if not isinstance(arguments, dict):
+                                    return False
+                                inner_calls = arguments.get("calls")
+                                return isinstance(inner_calls, list) and any(
+                                    isinstance(inner, dict) and inner.get("name") in ("todo_list", "todo")
+                                    for inner in inner_calls)
+
+                            paired = isinstance(calls, list) and any(is_todo_call(call) for call in calls)
+                            if not paired:
+                                continue
+                            data = json.loads(row["content"])
+                            if not isinstance(data, dict) or not isinstance(data.get("todos"), list):
+                                continue
+                            int(data.get("revision") or 0)
+                        except (ValueError, TypeError):
+                            continue
+                        return row["content"]
+                    before_id = rows[-1]["id"]
+        return None
+
     def latest_message_row_id(self, session_id: str, *, role: str = "user", offset: int = 0,
                               require_text: bool = True) -> Optional[int]:
         """Row id of the most recent active *role* message, or ``None``. ``offset`` steps back; ``require_text``
@@ -512,9 +585,12 @@ class SessionMessagesMixin:
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
         return row[0] if row else None
 
-    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
+    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]], *,
+                             prune_checkpoints: bool = True) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
-        Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows."""
+        Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows.
+        A caller that re-archives some rows afterwards passes ``prune_checkpoints=False`` and prunes once they
+        are archived again (:meth:`_prune_shadowed_checkpoints`)."""
         now_ts = time.time()
         inserted = tool_calls_total = 0
         for msg in messages:
@@ -533,10 +609,15 @@ class SessionMessagesMixin:
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
-        carrier = _newest_checkpoint_carrier(messages, "codex_reasoning_items")
-        if carrier >= 0 and isinstance(messages[carrier].get("_row_id"), int):
-            self._drop_shadowed_checkpoint_rows(conn, session_id, messages[carrier]["_row_id"])
+        if prune_checkpoints:
+            self._prune_shadowed_checkpoints(conn, session_id, messages)
         return inserted, tool_calls_total
+
+    def _prune_shadowed_checkpoints(self, conn, session_id: str, live_messages: List[Dict[str, Any]]) -> None:
+        """Keep only the newest checkpoint among *live_messages* (inserted rows carrying ``_row_id``)."""
+        carrier = _newest_checkpoint_carrier(live_messages, "codex_reasoning_items")
+        if carrier >= 0 and isinstance(live_messages[carrier].get("_row_id"), int):
+            self._drop_shadowed_checkpoint_rows(conn, session_id, live_messages[carrier]["_row_id"])
 
     def _drop_shadowed_checkpoint_rows(self, conn, session_id: str, carrier_row_id: int) -> int:
         """Rewrite older active assistant rows so only the row *carrier_row_id* keeps a ``type: "compaction"``
@@ -807,6 +888,9 @@ class SessionMessagesMixin:
             self._clone_message_rows(conn, unseen)
             inserted += len(unseen)
             tool_calls_total += unseen_tool_calls
+        # A carried copy whose stored identity was computed differently lands in its own
+        # display_order group and would project twice; re-fold before publishing (#122167).
+        self._reconcile_display_orders(conn, session_id)
         conn.execute(
             f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
             (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
@@ -886,6 +970,9 @@ class SessionMessagesMixin:
                 self._clone_message_rows(conn, tail_ids)
                 inserted += len(tail_ids)
                 tool_calls_total += tail_tool_calls
+            # A carried copy whose stored identity was computed differently lands in its own
+            # display_order group and would project twice; re-fold before publishing (#122167).
+            self._reconcile_display_orders(conn, session_id)
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted
@@ -1010,6 +1097,39 @@ class SessionMessagesMixin:
         # copy in a newer generation has a higher id than messages emitted after the original.
         return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
 
+    def _reconcile_display_orders(self, conn, session_id: str) -> None:
+        """Re-fold split display generations by the recomputed display key.
+
+        A compaction generation that computed the display identity differently (or cloned
+        without inheriting it) leaves one logical message in two ``display_order`` groups,
+        and ``GROUP BY display_order`` then projects it twice (#122167). Folding by the same
+        recomputed key :meth:`_dedupe_display_generations` uses keeps every display projection
+        on one definition of a logical message; the live copy wins its group via the read
+        path's ``ORDER BY candidate.active DESC, candidate.id DESC``. Writes only on drift."""
+        first_id: Dict[bytes, int] = {}
+        last_id = 0
+        while True:
+            rows = conn.execute(
+                "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+                "display_kind, display_metadata, display_order, display_identity "
+                "FROM messages INDEXED BY idx_messages_session_id "
+                "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
+                "ORDER BY id LIMIT 1000",
+                (session_id, last_id))
+            batch_start = last_id
+            updates = []
+            for row in rows:
+                last_id = row["id"]
+                identity = self._display_identity(self._display_dedupe_key(row))
+                order = first_id.setdefault(identity, last_id)
+                if order != row["display_order"] or identity != row["display_identity"]:
+                    updates.append((order, identity, last_id))
+            rows.close()
+            if last_id == batch_start:
+                break
+            conn.executemany(
+                "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
+
     def _ensure_display_order(self, session_id: str) -> bool:
         """Backfill one legacy session once, preserving the pre-index display identity exactly."""
         with self._read_ctx() as conn:
@@ -1025,29 +1145,7 @@ class SessionMessagesMixin:
             missing = conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone()
             if missing is None:
                 return True
-            first_id: Dict[bytes, int] = {}
-            last_id = 0
-            while True:
-                rows = conn.execute(
-                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
-                    "display_kind, display_metadata, display_order, display_identity "
-                    "FROM messages INDEXED BY idx_messages_session_id "
-                    "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
-                    "ORDER BY id LIMIT 1000",
-                    (session_id, last_id))
-                batch_start = last_id
-                updates = []
-                for row in rows:
-                    last_id = row["id"]
-                    identity = self._display_identity(self._display_dedupe_key(row))
-                    order = first_id.setdefault(identity, last_id)
-                    if order != row["display_order"] or identity != row["display_identity"]:
-                        updates.append((order, identity, last_id))
-                rows.close()
-                if last_id == batch_start:
-                    break
-                conn.executemany(
-                    "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
+            self._reconcile_display_orders(conn, session_id)
             return True
 
         return bool(self._execute_write(_do))

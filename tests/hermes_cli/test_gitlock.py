@@ -139,9 +139,22 @@ _CRASH_STDERR = (
     "fatal: index-pack failed\n"
 )
 
+# Git for Windows 2.54 field evidence (#124293): no signal line — the BUG()
+# assertion is followed directly by the repack fatal and index-pack failure.
+_CRASH_STDERR_WINDOWS = (
+    "remote: Enumerating objects: 12, done.\n"
+    "BUG: builtin/pack-objects.c:4967: should_include_obj should only be called on existing objects\n"
+    "fatal: could not finish pack-objects to repack local links\n"
+    "fatal: index-pack failed\n"
+)
+
 
 def test_crash_recognizer_matches_reported_stderr():
     assert is_partial_clone_pack_objects_crash(_CRASH_STDERR)
+
+
+def test_crash_recognizer_matches_windows_stderr_without_signal_wording():
+    assert is_partial_clone_pack_objects_crash(_CRASH_STDERR_WINDOWS)
 
 
 def test_crash_recognizer_rejects_unrelated_failures():
@@ -149,6 +162,9 @@ def test_crash_recognizer_rejects_unrelated_failures():
         "fatal: Authentication failed for 'https://github.com/example.git'")
     assert not is_partial_clone_pack_objects_crash(
         "error: pack-objects died of signal 6")  # one marker alone is not the crash
+    assert not is_partial_clone_pack_objects_crash(
+        "BUG: builtin/pack-objects.c:4842: should_include_obj should only be called on existing objects\n"
+        "fatal: index-pack failed\n")  # fingerprint without either terminator: not this crash
     assert not is_partial_clone_pack_objects_crash("")
     assert not is_partial_clone_pack_objects_crash(None)
 

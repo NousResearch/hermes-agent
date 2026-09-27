@@ -452,15 +452,27 @@ def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
 
 _PACK_OBJECTS_CRASH_MARKERS = (
     "BUG: builtin/pack-objects.c",
-    "pack-objects died of signal 6",
     "index-pack failed",
+)
+
+# The BUG() assertion is the crash's fingerprint; how git then reports the abort
+# differs per platform and git build. POSIX builds emit "pack-objects died of
+# signal 6"; Windows builds (Git for Windows 2.54, #124293 field evidence)
+# instead print a second fatal line from the repack ("could not finish
+# pack-objects to repack local links") and no signal wording at all. Either
+# terminator of the same BUG() counts — match the fingerprint plus one of them.
+_PACK_OBJECTS_CRASH_TERMINATORS = (
+    "pack-objects died of signal 6",
+    "could not finish pack-objects to repack local links",
 )
 
 
 def is_partial_clone_pack_objects_crash(stderr: str) -> bool:
     """True when a fetch failure is the git 2.53/2.54 partial-clone pack-objects BUG (#124272)."""
     text = stderr or ""
-    return all(marker in text for marker in _PACK_OBJECTS_CRASH_MARKERS)
+    if not all(marker in text for marker in _PACK_OBJECTS_CRASH_MARKERS):
+        return False
+    return any(terminator in text for terminator in _PACK_OBJECTS_CRASH_TERMINATORS)
 
 
 def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.CompletedProcess],

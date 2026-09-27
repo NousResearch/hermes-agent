@@ -3290,6 +3290,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[%s] Using Telegram local_mode (read files from disk)", self.name)
             request, get_updates_request = await self._build_ptb_requests()
             builder = builder.request(request).get_updates_request(get_updates_request)
+            # PTB defaults to SimpleUpdateProcessor(max_concurrent_updates=1): the update fetcher
+            # awaits each update's full handler chain inline, so one slow turn (long provider retry,
+            # compaction loop) deafens every other chat and even local commands until it finishes.
+            # Default to a bounded parallel pool (True→PTB's 256); opt down/up via config extra.
+            concurrent = 32
+            raw = (self.config.extra or {}).get("max_concurrent_updates")
+            if raw is not None:
+                try:
+                    concurrent = max(1, int(raw))
+                except (TypeError, ValueError):
+                    concurrent = 32
+            builder = builder.concurrent_updates(concurrent)
             self._app = builder.build()
             self._bot = self._app.bot
             # Plugin PTB handlers go BEFORE core: PTB dispatches the first matching handler per group.

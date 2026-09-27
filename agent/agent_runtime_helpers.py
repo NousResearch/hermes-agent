@@ -1557,7 +1557,8 @@ def dump_api_request_debug(
         # a whole-JSON pass can eat a string's closing quote and the dump would be dropped.
         from agent.redact_structured import redact_structured
         _redacted_payload = redact_structured(dump_payload)
-        atomic_json_write(dump_file, _redacted_payload, default=str)
+        # Owner-only even after redaction: the dump still holds the whole prompt and conversation.
+        atomic_json_write(dump_file, _redacted_payload, mode=0o600, default=str)
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
         if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
             print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))

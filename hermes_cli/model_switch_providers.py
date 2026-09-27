@@ -1305,6 +1305,24 @@ def list_authenticated_providers(
     return _finalize_picker_rows(b.results, user_providers, current_model)
 
 
+def _picker_model_family_conflicts(row: dict, model: str) -> bool:
+    """Reject only clear native-family mismatches, not uncurated model IDs.
+
+    Custom endpoints and aggregators can legitimately serve cross-vendor IDs.
+    Native Anthropic and ChatGPT/Codex accounts cannot serve one another's
+    distinct Claude and Codex GPT families.
+    """
+    if row.get("is_user_defined"):
+        return False
+    slug = str(row.get("slug") or "").strip().lower()
+    name = model.strip().lower()
+    if slug == "openai-codex":
+        return name.startswith(("claude-", "anthropic/claude-"))
+    if slug == "anthropic":
+        return name.startswith(("gpt-", "openai/gpt-", "codex-", "openai/codex-"))
+    return False
+
+
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
@@ -1334,7 +1352,8 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
             if current_model not in models:
                 from hermes_cli.models import _model_requires_account_discovery
 
-                if _model_requires_account_discovery(row.get("slug"), current_model):
+                if (_model_requires_account_discovery(row.get("slug"), current_model)
+                        or _picker_model_family_conflicts(row, current_model)):
                     break
                 row["models"] = [current_model, *models]
                 row["total_models"] = row.get("total_models", len(models)) + 1

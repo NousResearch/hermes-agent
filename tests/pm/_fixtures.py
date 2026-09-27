@@ -52,6 +52,12 @@ def stage_host_python(python: Path) -> Path:
         shutil.copytree(stdlib, python.parent.parent / "lib" / stdlib.name,
                         ignore=shutil.ignore_patterns("site-packages", "test", "__pycache__", "idlelib", "tkinter"),
                         symlinks=True)
+    # A shared-libpython build (macOS, some Linux distros) also needs the library the
+    # binary loads via @rpath/libpython3.* against @executable_path/../lib; a statically
+    # linked build has no such file, so the glob is empty there.
+    for shared in host_lib.glob("libpython3.*"):
+        if shared.is_file() and not (python.parent.parent / "lib" / shared.name).exists():
+            shutil.copy2(shared, python.parent.parent / "lib" / shared.name)
     return python
 
 

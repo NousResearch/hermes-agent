@@ -37,6 +37,7 @@ const TABS = ['connections', 'keys', 'api'] as const
 type ConnectionsTab = (typeof TABS)[number]
 
 const CARD = 'jarvis-glass rounded-3xl p-4'
+const INTEGRATION_CONNECTIONS = new Set(['google', 'notion', 'github', 'smartHome', 'mcp'])
 
 function ExternalAnchor({ href, label }: { href: string; label: string }) {
   return (
@@ -127,6 +128,10 @@ function ConnectionsGrid({ query }: { query: string }) {
   const needle = query.trim().toLocaleLowerCase()
 
   const visible = JARVIS_CONNECTIONS.filter(connection => {
+    if (!INTEGRATION_CONNECTIONS.has(connection.id)) {
+      return false
+    }
+
     const entry = copy.entries[connection.id]
 
     return !needle || `${entry.name} ${entry.description}`.toLocaleLowerCase().includes(needle)

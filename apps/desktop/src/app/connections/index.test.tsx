@@ -56,6 +56,16 @@ describe('ConnectionsView', () => {
     expect(screen.getByTestId('where').textContent).toBe('/messaging?platform=homeassistant')
   })
 
+  it('keeps communication channels out of the integrations catalog', () => {
+    renderPage()
+
+    expect(screen.queryByText(pl.jarvisConnections.entries.messaging.name)).toBeNull()
+    expect(screen.queryByText(pl.jarvisConnections.entries.email.name)).toBeNull()
+    expect(screen.queryByText(pl.jarvisConnections.entries.phone.name)).toBeNull()
+    expect(screen.getByText(pl.jarvisConnections.entries.google.name)).toBeTruthy()
+    expect(screen.getByText(pl.jarvisConnections.entries.github.name)).toBeTruthy()
+  })
+
   it('explains the Agent Czesiek API with a copyable example that uses the real address', () => {
     renderPage()
 

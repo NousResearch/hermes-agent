@@ -7,13 +7,14 @@ import type { Translations } from '@/i18n'
  * runtime page (see `JARVIS_VIEW_TARGETS`).
  */
 export const JARVIS_NAV_GROUPS = [
-  { id: 'work', views: ['jarvis', 'tasks', 'agents', 'messaging', 'webhooks'] },
-  { id: 'knowledge', views: ['prompts', 'artifacts', 'memory', 'starmap', 'tools'] },
-  { id: 'system', views: ['connections', 'insights'] }
+  { id: 'work', views: ['jarvis', 'tasks', 'agents'] },
+  { id: 'knowledge', views: ['prompts', 'artifacts', 'memory', 'starmap'] },
+  { id: 'connections', views: ['connections', 'messaging', 'webhooks'] },
+  { id: 'system', views: ['tools', 'insights', 'settings'] }
 ] as const
 
 export const JARVIS_MAIN_VIEWS = JARVIS_NAV_GROUPS.flatMap(group => group.views)
-export const JARVIS_AUXILIARY_VIEWS = ['settings', 'profile'] as const
+export const JARVIS_AUXILIARY_VIEWS = ['profile'] as const
 
 export type JarvisNavGroup = (typeof JARVIS_NAV_GROUPS)[number]['id']
 export type JarvisMainView = (typeof JARVIS_NAV_GROUPS)[number]['views'][number]

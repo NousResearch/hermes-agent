@@ -9,7 +9,11 @@ import { startManualOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
 import { setConnection } from '@/store/session'
 
-import { JARVIS_ONBOARDING_STEPS, JARVIS_ONBOARDING_VERSION, jarvisOnboardingStorageKey } from './jarvis/onboarding-state'
+import {
+  JARVIS_ONBOARDING_STEPS,
+  JARVIS_ONBOARDING_VERSION,
+  jarvisOnboardingStorageKey
+} from './jarvis/onboarding-state'
 
 import AppRoot, { appCompositionMode, JARVIS_VIEW_TARGETS, jarvisViewForLocation } from './index'
 
@@ -163,14 +167,14 @@ describe('desktop app root Agent Czesiek integration', () => {
   it.each([
     ['Zadania', '/cron'],
     ['Agenci', '/agents'],
+    ['Integracje', '/connections'],
     ['Komunikatory', '/messaging'],
-    ['Webhooki', '/webhooks'],
+    ['Automatyzacje', '/webhooks'],
     ['Mapa wiedzy', '/starmap'],
-    ['Połączenia', '/connections'],
-    ['Centrum dowodzenia', '/command-center'],
-    ['Artefakty', '/artifacts'],
+    ['Monitor systemu', '/command-center'],
+    ['Pliki i wyniki', '/artifacts'],
     ['Pamięć', '/starmap?view=list'],
-    ['Możliwości', '/skills'],
+    ['Narzędzia', '/skills'],
     ['Ustawienia', '/settings'],
     ['Profil', '/profiles'],
     ['Pulpit', '/']
@@ -299,7 +303,9 @@ describe('desktop app root Agent Czesiek integration', () => {
         : {
             model: 'default-model',
             provider: 'default-provider',
-            providers: [{ authenticated: true, models: ['default-model'], name: 'Default Provider', slug: 'default-provider' }]
+            providers: [
+              { authenticated: true, models: ['default-model'], name: 'Default Provider', slug: 'default-provider' }
+            ]
           }
     )
 
@@ -418,8 +424,9 @@ describe('desktop app root Agent Czesiek integration', () => {
     expect(saveHermesConfigRecord).not.toHaveBeenCalled()
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
     expect(
-      JSON.parse(window.localStorage.getItem(jarvisOnboardingStorageKey({ connectionId: 'local', profile: 'default' })) ?? '{}')
-        .completedSteps
+      JSON.parse(
+        window.localStorage.getItem(jarvisOnboardingStorageKey({ connectionId: 'local', profile: 'default' })) ?? '{}'
+      ).completedSteps
     ).not.toContain('approvals')
   })
 
@@ -428,9 +435,7 @@ describe('desktop app root Agent Czesiek integration', () => {
     persistReadyApprovalsState({ connectionId: 'local', profile: 'default' })
     const configWrite = deferred<{ ok: boolean }>()
 
-    vi.mocked(saveHermesConfigRecord)
-      .mockReturnValueOnce(configWrite.promise)
-      .mockResolvedValueOnce({ ok: true })
+    vi.mocked(saveHermesConfigRecord).mockReturnValueOnce(configWrite.promise).mockResolvedValueOnce({ ok: true })
     vi.mocked(setModelAssignment).mockResolvedValue({ model: 'llama-3', ok: true, provider: 'fireworks' })
 
     render(
@@ -458,7 +463,11 @@ describe('desktop app root Agent Czesiek integration', () => {
     await waitFor(() => expect(setModelAssignment).toHaveBeenCalledTimes(2))
     expect(saveHermesConfigRecord).toHaveBeenNthCalledWith(
       1,
-      { approvals: { mode: 'smart' }, custom_prompt: expect.stringContaining('Czesiek: koordynator głosowy'), voice: { auto_tts: false, engine: 'classic' } },
+      {
+        approvals: { mode: 'smart' },
+        custom_prompt: expect.stringContaining('Czesiek: koordynator głosowy'),
+        voice: { auto_tts: false, engine: 'classic' }
+      },
       { connectionId: 'local', profile: 'default' }
     )
     expect(saveHermesConfigRecord).toHaveBeenNthCalledWith(
@@ -473,8 +482,9 @@ describe('desktop app root Agent Czesiek integration', () => {
     )
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
     expect(
-      JSON.parse(window.localStorage.getItem(jarvisOnboardingStorageKey({ connectionId: 'local', profile: 'default' })) ?? '{}')
-        .completedSteps
+      JSON.parse(
+        window.localStorage.getItem(jarvisOnboardingStorageKey({ connectionId: 'local', profile: 'default' })) ?? '{}'
+      ).completedSteps
     ).not.toContain('approvals')
   })
 

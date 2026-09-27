@@ -241,7 +241,14 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
                   />
                 )
               })}
-              {group.id === 'work' ? <NavButton active={false} icon={Clock} label={locale === 'pl' ? 'Historia czatu' : 'Chat history'} onClick={() => setSessionPickerOpen(true)} /> : null}
+              {group.id === 'work' ? (
+                <NavButton
+                  active={false}
+                  icon={Clock}
+                  label={locale === 'pl' ? 'Rozmowy' : 'Conversations'}
+                  onClick={() => setSessionPickerOpen(true)}
+                />
+              ) : null}
             </div>
           ))}
         </div>
@@ -262,12 +269,6 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
       </button>
 
       <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-t border-(--glass-border) pt-3 md:flex-col md:items-stretch md:overflow-visible">
-        <NavButton
-          active={activeView === 'settings'}
-          icon={VIEW_ICONS.settings}
-          label={copy.views.settings}
-          onClick={() => onSelect('settings')}
-        />
         <div className="flex shrink-0 items-center justify-between gap-2">
           <ThemeToggle copy={navCopy} />
           <LanguageToggle label={navCopy.language} />
@@ -288,11 +289,7 @@ function LanguageToggle({ label }: { label: string }) {
   const { isSavingLocale, locale, setLocale } = useI18n()
 
   return (
-    <div
-      aria-label={label}
-      className="jarvis-glass flex shrink-0 gap-0.5 rounded-xl p-0.5"
-      role="radiogroup"
-    >
+    <div aria-label={label} className="jarvis-glass flex shrink-0 gap-0.5 rounded-xl p-0.5" role="radiogroup">
       {LANGUAGE_CHOICES.map(choice => (
         <button
           aria-checked={locale === choice.id}
@@ -328,11 +325,7 @@ function ThemeToggle({ copy }: { copy: JarvisShellCopy['home']['nav'] }) {
 
   return (
     // Shares one row with the language switch: icons only, names in aria-label.
-    <div
-      aria-label={copy.theme}
-      className="jarvis-glass flex shrink-0 gap-0.5 rounded-xl p-0.5"
-      role="radiogroup"
-    >
+    <div aria-label={copy.theme} className="jarvis-glass flex shrink-0 gap-0.5 rounded-xl p-0.5" role="radiogroup">
       {THEME_CHOICES.map(({ icon: Icon, id }) => (
         <button
           aria-checked={mode === id}

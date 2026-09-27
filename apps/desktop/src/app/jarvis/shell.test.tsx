@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
@@ -23,21 +23,31 @@ describe('Agent CzesiekShell', () => {
   it('renders the focused product navigation with 44px targets', () => {
     renderShell('jarvis')
 
-    expect(screen.getByRole('navigation', { name: 'Główna nawigacja' })).toBeTruthy()
-
-    for (const label of [
+    const navigation = screen.getByRole('navigation', { name: 'Główna nawigacja' })
+    const labels = [
       'Pulpit',
       'Zadania',
       'Agenci',
-      'Komunikatory',
-      'Webhooki',
-      'Artefakty',
+      'Rozmowy',
+      'Moje prompty',
+      'Pliki i wyniki',
       'Pamięć',
       'Mapa wiedzy',
-      'Możliwości',
-      'Połączenia',
-      'Centrum dowodzenia'
-    ]) {
+      'Integracje',
+      'Komunikatory',
+      'Automatyzacje',
+      'Narzędzia',
+      'Monitor systemu',
+      'Ustawienia'
+    ]
+
+    expect(
+      within(navigation)
+        .getAllByRole('button')
+        .map(button => button.textContent)
+    ).toEqual(labels)
+
+    for (const label of labels) {
       expect(screen.getByRole('button', { name: label }).className).toContain('min-h-11')
     }
 
@@ -57,7 +67,7 @@ describe('Agent CzesiekShell', () => {
 
     fireEvent.keyDown(screen.getByRole('button', { name: 'Zadania' }), { key: 'End' })
 
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Centrum dowodzenia' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Ustawienia' }))
   })
 
   it('uses the real Agent Czesiek UI store and Agent CzesiekCore on the default Agent Czesiek screen', () => {

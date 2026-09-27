@@ -334,7 +334,8 @@ export const zh: Translations = {
           error: 'having a voice problem'
         }
       },
-      emptyGreeting: name => (name ? `${name}, what should Agent Czesiek handle next?` : 'What should Agent Czesiek handle next?'),
+      emptyGreeting: name =>
+        name ? `${name}, what should Agent Czesiek handle next?` : 'What should Agent Czesiek handle next?',
       insightTabs: {
         activity: 'Activity',
         news: 'News',
@@ -547,7 +548,7 @@ export const zh: Translations = {
       nav: {
         tagline: '人 · 知识 · 实际成果',
         search: '搜索…',
-        sections: { work: '工作', knowledge: '知识', system: '系统' },
+        sections: { work: '工作', knowledge: '知识', connections: '连接', system: '系统' },
         promoTitle: '用 AI 构建更多。',
         promoBody: '添加技能和工具——更快的想法，更大的成效。',
         profileHint: '配置文件与代理',
@@ -564,13 +565,13 @@ export const zh: Translations = {
       tasks: '任务',
       agents: '代理',
       messaging: '消息',
-      webhooks: 'Webhooks',
-      artifacts: '产物',
+      webhooks: '自动化',
+      artifacts: '文件与结果',
       memory: '记忆',
       starmap: '知识图谱',
-      tools: '能力',
-      connections: '连接',
-      insights: '指挥中心',
+      tools: '工具',
+      connections: '集成',
+      insights: '系统监控',
       settings: 'Settings',
       profile: 'Profile'
     },
@@ -584,9 +585,8 @@ export const zh: Translations = {
   },
 
   jarvisConnections: {
-    title: 'Connections',
-    subtitle:
-      'Connect the tools you use every day. Agent Czesiek walks you through each one, and keys and passwords stay on this computer.',
+    title: '集成',
+    subtitle: '连接 Google、日历、GitHub、Notion 和其他工作服务。消息与自动化在菜单中有独立入口。',
     chosenLabel: 'Chosen during setup',
     allLabel: 'All connections',
     stepsLabel: 'How to connect',
@@ -768,7 +768,10 @@ export const zh: Translations = {
           body: 'Tools: files, terminal, browser, the web — and, with your consent, your screen.'
         },
         memory: { title: 'Memory', body: 'Remembers you, your projects and decisions between conversations.' },
-        voice: { title: 'Voice', body: 'Speak naturally, Agent Czesiek answers out loud. You can interrupt it anytime.' },
+        voice: {
+          title: 'Voice',
+          body: 'Speak naturally, Agent Czesiek answers out loud. You can interrupt it anytime.'
+        },
         approvals: { title: 'Approvals', body: 'Sending an e-mail or deleting a file waits for your "yes".' }
       },
       flowLabel: 'How one task goes',
@@ -883,7 +886,8 @@ export const zh: Translations = {
     },
     approvals: {
       balanced: 'Balanced',
-      balancedHint: 'Agent Czesiek uses smart approvals for routine safe actions and still asks for sensitive operations.',
+      balancedHint:
+        'Agent Czesiek uses smart approvals for routine safe actions and still asks for sensitive operations.',
       strict: 'Strict',
       strictHint: 'Agent Czesiek asks before operations that need explicit approval.',
       title: 'Approvals'
@@ -1474,7 +1478,8 @@ export const zh: Translations = {
         title: '宠物',
         intro:
           '领养一只悬浮在应用上的 petdex 动画宠物，它会根据 Agent Czesiek 的状态做出反应——工具执行时奔跑、成功时欢呼、出错时沮丧。',
-        restartHint: '宠物功能需要重启——当前运行的应用在此功能加入前启动。请退出并重新打开 Agent Czesiek，然后回到此处。',
+        restartHint:
+          '宠物功能需要重启——当前运行的应用在此功能加入前启动。请退出并重新打开 Agent Czesiek，然后回到此处。',
         scaleTitle: '大小',
         scaleDesc: '调整悬浮宠物的大小，所有界面即时生效。',
         roamTitle: '漫游',
@@ -1748,7 +1753,8 @@ export const zh: Translations = {
         'Agent Czesiek 运行时已更新,但桌面应用本身仍是旧构建——在应用更新之前,新的界面功能(如 Bot Mode)不会显示。请运行下方的更新以重新构建应用。如果此警告仍未消除,请从最新的桌面安装程序重新安装。',
       bundleOutOfSyncAction: '获取安装程序',
       bundleSwapPending: '重启以完成更新',
-      bundleSwapPendingDesc: '更新后的应用已安装完成，只需重启 Agent Czesiek 即可加载新版本。聊天记录和设置不会受到影响。',
+      bundleSwapPendingDesc:
+        '更新后的应用已安装完成，只需重启 Agent Czesiek 即可加载新版本。聊天记录和设置不会受到影响。',
       bundleSwapPendingAction: '重启 Agent Czesiek',
       updates: '更新',
       checkNow: '立即检查',
@@ -3057,8 +3063,8 @@ export const zh: Translations = {
     search: '搜索 Webhook…',
     loading: '正在加载 Webhook…',
     loadFailed: 'Webhook 加载失败',
-    subscriptions: (count: number) => `订阅（${count}）`,
-    hint: '接收器运行后，订阅更改会热重载。已禁用的订阅会拒绝传入事件。',
+    subscriptions: (count: number) => `Webhook 与触发器（${count}）`,
+    hint: '高级功能。Webhook 接收其他服务的事件，并自动触发所选操作。',
     empty: '暂无 Webhook 订阅。',
     disabledTitle: 'Webhook 接收器已禁用',
     disabledBody:
@@ -4006,7 +4012,8 @@ export const zh: Translations = {
     blockerTitle: '关闭本地预览以更新 Agent Czesiek？',
     blockerBody: 'Agent Czesiek 需要在更新前停止这些本地预览。这不会修改或删除你的文件。',
     foreignBlockerTitle: '关闭其他进程以更新 Agent Czesiek',
-    foreignBlockerBody: 'Agent Czesiek 无法安全地自动关闭这些进程。请关闭拥有这些进程的应用、终端或服务，然后重试更新。',
+    foreignBlockerBody:
+      'Agent Czesiek 无法安全地自动关闭这些进程。请关闭拥有这些进程的应用、终端或服务，然后重试更新。',
     mixedBlockerBody: 'Agent Czesiek 可以关闭下方列出的本地预览。其他进程必须手动关闭，更新才能继续。',
     closePreviewsAndUpdate: '关闭预览并更新',
     closePreviewsAndCheckAgain: '关闭预览并重新检查',
@@ -4158,7 +4165,8 @@ export const zh: Translations = {
     copyAuthCode: '复制授权码并粘贴到下面。',
     pasteAuthCode: '粘贴授权码',
     reopenAuthPage: '重新打开授权页面',
-    autoBrowser: provider => `已在浏览器中打开 ${provider}。请在那里授权 Agent Czesiek，连接会自动完成，无需复制或粘贴。`,
+    autoBrowser: provider =>
+      `已在浏览器中打开 ${provider}。请在那里授权 Agent Czesiek，连接会自动完成，无需复制或粘贴。`,
     reopenSignInPage: '重新打开登录页面',
     waitingAuthorize: '等待你授权...',
     externalPending: provider => `${provider} 通过自己的 CLI 登录。请在终端运行此命令，然后回来选择“我已登录”：`,

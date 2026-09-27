@@ -566,7 +566,11 @@ with tarfile.open(archive, "r:bz2") as tf:
         # ASCII like the installer itself: 5.1 reads a BOM-less file as the
         # ANSI code page, and $code is all-ASCII.
         Set-Content -LiteralPath $tmpPy -Value $code -Encoding Ascii
-        Invoke-Native { & $py $tmpPy $Archive $Destination }
+        # Out-Host keeps the child's (empty today) stdout OFF this function's
+        # output stream: Get-PinnedGit's result is consumed as a single string
+        # by Ensure-Git's Split-Path chain, and any stray print would turn it
+        # into an array. Out-Host mirrors Invoke-Logged; stderr keeps flowing.
+        Invoke-Native { & $py $tmpPy $Archive $Destination } | Out-Host
     } finally {
         Remove-Item -LiteralPath $tmpPy -Force -ErrorAction SilentlyContinue
     }
@@ -597,6 +601,15 @@ function Get-PinnedGit {
         # builds (libarchive 3.3.x) ship without the bzip2 filter -- covered
         # by the fallback below.
         $inboxTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+        # Gate BEFORE the call, not on $LASTEXITCODE: PowerShell raises
+        # CommandNotFoundException when the exe is missing, Invoke-Native's
+        # relaxed preference swallows it, and $LASTEXITCODE keeps its prior
+        # value (0 in a fresh -Stage process) -- the fallback below would be
+        # skipped and the stage would die later with a misleading "git.exe
+        # not found" instead of naming the missing extractor.
+        if (-not (Test-Path -LiteralPath $inboxTar)) {
+            Fail "System32 tar.exe not found on this host (pre-1803 Windows 10, Server LTSC or Nano Server); cannot extract the pinned git archive"
+        }
         # MSYS ships these as symlinks into /proc. Without symlink rights (not
         # elevated, no Developer Mode) tar cannot create them and fails the
         # whole extract. Skip exactly the links pm's own extractor skips
@@ -615,7 +628,9 @@ function Get-PinnedGit {
             # with the pinned uv's own managed Python, whose stdlib tarfile
             # reads bz2 natively (the same move pm made for host xz in
             # #11197); the fallback covers every bsdtar failure, not just
-            # this one.
+            # this one. CPython's bz2 is slow (~2.5 min on the real 120 MB
+            # artifact): say so up front so the silent stretch is legible.
+            Log "bsdtar failed (exit $LASTEXITCODE); retrying extraction with the managed Python (this can take a couple of minutes)"
             Invoke-PythonTarExtract -Archive $tarPath -Destination $extractDir
             if ($LASTEXITCODE) { Fail "failed to extract pinned git archive" }
         }

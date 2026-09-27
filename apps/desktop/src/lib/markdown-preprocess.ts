@@ -32,8 +32,8 @@ const PARTIAL_OPEN_REASONING_TAG_RE = new RegExp(`(^|\\n)[ \\t]*<(?:${REASONING_
 const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
-const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
-const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~|$))/g
+const FENCE_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)(`{3,}|~{3,})([^\n]*)$/
+const FENCE_CLOSE_LINE_RE = /^[ \t]*(?:>[ \t]*)*(`{3,}|~{3,})[ \t]*\r?$/
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // Math spans as remark-math will see them: a `$$…$$` block, which may span
 // lines, or a same-line `$…$`. A delimiter escaped as `\$` is prose — that is
@@ -340,8 +340,74 @@ function stripReasoningBlocks(text: string): string {
   return closed.replace(OPEN_REASONING_BLOCK_RE, '$1').replace(PARTIAL_OPEN_REASONING_TAG_RE, '$1')
 }
 
+interface MarkdownSegment {
+  code: boolean
+  // A closed fence whose closer is the very next line.
+  empty: boolean
+  text: string
+}
+
+// Prose and fenced-code segments in order; joined, they are `text` exactly. A
+// fence opens only on its own line (after any blockquote / list-item prefix)
+// and closes only on a line holding the same character at least as long — the
+// rule normalizeFenceBlocks applies. A ``` inside a code line, or the inner
+// fences of a ````-fenced markdown example, is code, not a boundary: treating it
+// as one ran the prose rewrites over the rest of the listing (`arr[0]` lost its
+// index, `$5` gained a backslash) and dropped the closing fences.
+function splitFencedCode(text: string): MarkdownSegment[] {
+  const segments: MarkdownSegment[] = []
+  let cursor = 0
+  let fence: null | { marker: string; openerEnd: number; start: number } = null
+
+  for (let lineStart = 0; ;) {
+    const newline = text.indexOf('\n', lineStart)
+    const lineEnd = newline === -1 ? text.length : newline
+    const line = text.slice(lineStart, lineEnd)
+
+    if (!fence) {
+      const open = line.match(FENCE_OPEN_LINE_RE)
+
+      // A backtick run with a backtick in its info string is inline code.
+      if (open && !(open[2][0] === '`' && open[3].includes('`'))) {
+        fence = { marker: open[2], openerEnd: lineEnd, start: lineStart + open[1].length }
+      }
+    } else {
+      const close = line.match(FENCE_CLOSE_LINE_RE)
+
+      if (close && close[1][0] === fence.marker[0] && close[1].length >= fence.marker.length) {
+        segments.push(
+          { code: false, empty: false, text: text.slice(cursor, fence.start) },
+          { code: true, empty: lineStart === fence.openerEnd + 1, text: text.slice(fence.start, lineEnd) }
+        )
+        cursor = lineEnd
+        fence = null
+      }
+    }
+
+    if (newline === -1) {
+      break
+    }
+
+    lineStart = newline + 1
+  }
+
+  if (fence) {
+    segments.push(
+      { code: false, empty: false, text: text.slice(cursor, fence.start) },
+      { code: true, empty: false, text: text.slice(fence.start) }
+    )
+  } else {
+    segments.push({ code: false, empty: false, text: text.slice(cursor) })
+  }
+
+  return segments
+}
+
 function stripEmptyFenceBlocks(text: string): string {
-  return text.replace(EMPTY_FENCE_BLOCK_RE, '$1')
+  return splitFencedCode(text)
+    .filter(segment => !segment.empty)
+    .map(segment => segment.text)
+    .join('')
 }
 
 function isUrlOnlyBlock(lines: string[]): boolean {
@@ -1070,11 +1136,10 @@ export function preprocessMarkdown(text: string): string {
   // `[n] url` entry there (see collectSourceListIds).
   const sourceListIds = collectSourceListIds(strippedEmptyFences)
 
-  return strippedEmptyFences
-    .split(CODE_FENCE_SPLIT_RE)
-    .map(part => {
+  return splitFencedCode(strippedEmptyFences)
+    .map(({ code, text: part }) => {
       // Fence blocks pass through untouched.
-      if (/^(?:```|~~~)/.test(part)) {
+      if (code) {
         return part
       }
 
@@ -1106,10 +1171,9 @@ export function preprocessMarkdown(text: string): string {
  * them regardless of this function.
  */
 export function normalizeFilePreviewMath(text: string): string {
-  return text
-    .split(CODE_FENCE_SPLIT_RE)
-    .map(part => {
-      if (/^(?:```|~~~)/.test(part)) {
+  return splitFencedCode(text)
+    .map(({ code, text: part }) => {
+      if (code) {
         return part
       }
 

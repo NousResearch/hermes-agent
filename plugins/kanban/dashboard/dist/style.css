@@ -647,6 +647,30 @@
   color: var(--color-muted-foreground);
 }
 
+/* Estimate: the result line reads like a sidebar value; the rationale and the
+   "makes a model call" note sit a step quieter. */
+.hermes-kanban-estimate {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.hermes-kanban-estimate-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.hermes-kanban-estimate-value {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-foreground);
+}
+.hermes-kanban-estimate-note {
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--color-muted-foreground);
+}
+
 .hermes-kanban-pre {
   margin: 0;
   padding: 0.5rem 0.6rem;

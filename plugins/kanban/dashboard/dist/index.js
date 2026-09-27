@@ -4297,6 +4297,7 @@
             value: h("span", { className: "font-mono" }, String(t.worker_pid)),
           }) : null,
         ),
+        h(EstimateSection, { key: t.id, taskId: t.id, boardSlug: props.boardSlug }),
         h(HomeSubsSection, {
           homeChannels: props.homeChannels || [],
           homeBusy: props.homeBusy || {},
@@ -5188,6 +5189,73 @@
     );
   }
 
+
+  // Rough effort estimate from the auxiliary (auto-routed) model: tokens and
+  // an S/M/L band, never dollars (providers don't report cost reliably).
+  // It makes a model call, so it only runs on an explicit click. Keyed by
+  // task id at the call site, so opening another task drops the result.
+  const ESTIMATE_BANDS = { S: "Small", M: "Medium", L: "Large" };
+  function EstimateSection(props) {
+    const { t } = useI18n();
+    const [result, setResult] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);
+    const run = function () {
+      setBusy(true);
+      setMsg(null);
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/estimate`, props.boardSlug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }).then(function (r) {
+        if (r && r.ok) setResult(r);
+        else setMsg((r && r.reason) || tx(t, "couldNotEstimate", "Could not estimate"));
+      }).catch(function (e) { setMsg(parseApiErrorMessage(e)); })
+        .finally(function () { setBusy(false); });
+    };
+    const tokens = result && typeof result.est_tokens === "number"
+      ? new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(result.est_tokens)
+      : null;
+    const band = result && result.complexity
+      ? tx(t, "complexity" + result.complexity, ESTIMATE_BANDS[result.complexity] || result.complexity)
+      : null;
+    const tip = tx(t, "estimateTipLong",
+      "Runs a quick auxiliary-model call to estimate tokens + complexity. A rough guide, not a bill.");
+    return h("div", { className: "hermes-kanban-section" },
+      // Same head row as Worker log: the label, and the re-run as an edit link.
+      h("div", { className: "hermes-kanban-section-head-row" },
+        h("span", { className: "hermes-kanban-section-head" }, tx(t, "estimate", "Estimate")),
+        result
+          ? h("button", {
+              type: "button",
+              className: "hermes-kanban-edit-link",
+              disabled: busy,
+              onClick: run,
+              title: tip,
+            }, busy ? tx(t, "estimating", "Estimating…") : tx(t, "reEstimate", "re-estimate"))
+          : null,
+      ),
+      result
+        ? h("div", { className: "hermes-kanban-estimate" },
+            h("div", { className: "hermes-kanban-estimate-value" },
+              tokens ? `~${tokens} ${tx(t, "tokUnit", "tok")}` : "—",
+              band ? h("span", { className: "text-muted-foreground" }, ` · ${band}`) : null),
+            result.rationale
+              ? h("div", { className: "hermes-kanban-estimate-note" }, result.rationale)
+              : null,
+          )
+        : h("div", { className: "hermes-kanban-estimate-row" },
+            h(Button, {
+              size: "sm",
+              disabled: busy,
+              onClick: run,
+              title: tip,
+            }, busy ? tx(t, "estimating", "Estimating…") : tx(t, "estimateEffort", "Estimate effort")),
+            h("span", { className: "hermes-kanban-estimate-note" }, tx(t, "makesModelCall", "makes a model call")),
+          ),
+      msg ? h("div", { className: "text-xs text-destructive", role: "status" }, msg) : null,
+    );
+  }
 
   // One toggle per gateway platform the user has a home channel set on
   // (telegram, discord, slack, etc.). Toggling on creates a kanban_notify_subs

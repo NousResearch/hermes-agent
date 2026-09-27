@@ -183,6 +183,43 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     return None if should_bypass_proxy(raw if "://" in raw else f"//{raw}") else proxy
 
 
+def _os_proxy_for_url(base_url: Optional[str], *, is_windows: bool | None = None) -> Optional[str]:
+    """Windows OS proxy (WinINET registry) for *base_url*, honoring ProxyOverride (#124773).
+
+    With no proxy ENV vars set, the OS proxy still governs Windows egress —
+    ``urllib.request.getproxies()`` reads ``ProxyEnable``/``ProxyServer`` and
+    ``proxy_bypass`` honors ``ProxyOverride``. An env-only policy egressed auxiliary.*
+    calls DIRECTLY while the rest of the app proxied, and region-gated providers
+    (OpenRouter → Gemini) 403'd on the direct egress. macOS keeps the env-only policy:
+    its system proxies can omit the ExceptionsList, so consulting them would proxy
+    local Hermes endpoints (#12952, #54049). *is_windows* lets a POSIX process answer
+    the Windows layout (pure data, never ``os.name``).
+    """
+    import os
+
+    if is_windows is None:
+        is_windows = os.name == "nt"
+    if not is_windows:
+        return None
+    try:
+        import urllib.request as _urllib
+        proxies = _urllib.getproxies()
+    except Exception:
+        return None
+    https_proxy = proxies.get("https") or proxies.get("http")
+    if not https_proxy:
+        return None
+    host = (base_url or "").strip().split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    if host:
+        try:
+            bypassed = _urllib.proxy_bypass(host)
+        except Exception:
+            bypassed = False
+        if bypassed:
+            return None  # the OS bypass list excludes this host — direct egress
+    return https_proxy
+
+
 def _shared_transport_cls():
     """Lazily define the per-client transport view (httpx import is deferred)."""
     global _SharedTransport
@@ -265,7 +302,8 @@ def close_shared_transports() -> int:
     return len(transports)
 
 
-def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False, verify: Any = True) -> Optional[Any]:
+def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False, verify: Any = True,
+                                is_windows: bool | None = None) -> Optional[Any]:
     """httpx client for OpenAI SDK calls with env-only proxy policy (None on failure).
 
     Explicit no-proxy mounts disable httpx's ``trust_env`` path so macOS system
@@ -273,6 +311,11 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
     reaps idle connections before reverse proxies' 30-60 s timeouts (a custom
     socket_options transport broke streaming and stripped TCP_NODELAY). ``verify``
     goes on the client AND the mounts, since a mounted transport owns its SSL context.
+
+    Windows is the exception (#124773): with no proxy ENV vars set, the OS proxy
+    (WinINET registry) still governs egress and is consulted via
+    ``_os_proxy_for_url`` — an env-only policy egressed auxiliary.* calls DIRECTLY
+    while the rest of the app proxied, and region-gated providers 403'd.
 
     Every call returns a NEW ``httpx.Client`` (per-client close semantics), but sync clients
     with the same (verify, proxy, happy-eyeballs) identity mount the SAME underlying
@@ -286,6 +329,8 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
     try:
         import httpx
         proxy = _get_proxy_for_base_url(base_url)
+        if proxy is None:
+            proxy = _os_proxy_for_url(base_url, is_windows=is_windows)
         limits = httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=20.0)
         timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)  # read=None for SSE streaming
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport

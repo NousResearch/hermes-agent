@@ -26,6 +26,9 @@ def no_proxy_env(monkeypatch):
         "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy",
     ):
         monkeypatch.delenv(name, raising=False)
+    # The sharing contract is about the no-proxy path: a Windows dev machine's OS
+    # proxy (WinINET registry) must not leak into these clients either (#124773).
+    monkeypatch.setattr(process_bootstrap, "_os_proxy_for_url", lambda *a, **k: None)
     process_bootstrap.close_shared_transports()
     yield
     process_bootstrap.close_shared_transports()

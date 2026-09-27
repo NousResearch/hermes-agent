@@ -72,8 +72,23 @@ def is_shallow_repository(git_cmd: list[str], root: Path) -> bool:
 
 
 def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, branch: str):
+    """Fetch ``branch`` into its tracking ref with an explicit refspec.
+
+    A narrow clone (tag-pinned ``--single-branch`` installer, or a hand-narrowed
+    checkout) has no ``refs/heads/*`` mapping in ``remote.origin.fetch``, and a
+    fetch by name only writes ``FETCH_HEAD`` — the later ``origin/<branch>``
+    verify then reports a branch the remote plainly has. An explicit refspec
+    keeps the download scoped to one branch and works regardless of the
+    configured refspec.
+    """
     print(f"→ Fetching from {remote}...")
-    return _git(git_cmd, root, ["fetch", *depth_args, remote, branch], **_uc()._no_prompt_git_kwargs())
+    refspec = f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+    return _git(
+        git_cmd,
+        root,
+        ["fetch", *depth_args, remote, refspec],
+        **_uc()._no_prompt_git_kwargs(),
+    )
 
 
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):
@@ -111,6 +126,26 @@ def repair_shallow_grafts(root: Path) -> None:
 def compare_ref_exists(git_cmd: list[str], root: Path, compare_branch: str) -> bool:
     # rev-list on a missing ref exits 128 and would surface a traceback; report it instead.
     return _git(git_cmd, root, ["rev-parse", "--verify", "--quiet", compare_branch]).returncode == 0
+
+
+def branch_exists_on_remote(
+    git_cmd: list[str], root: Path, remote: str, branch: str
+) -> bool | None:
+    """Ask the remote whether ``refs/heads/<branch>`` exists, for a truthful refusal.
+
+    ``True``/``False`` from ``ls-remote --exit-code --heads``; ``None`` when the
+    probe itself fails (offline, unknown remote) so callers fall back to the
+    local-ref wording instead of asserting a network fact they could not check.
+    """
+    probe = _git(
+        git_cmd,
+        root,
+        ["ls-remote", "--exit-code", "--heads", remote, f"refs/heads/{branch}"],
+        **_uc()._no_prompt_git_kwargs(),
+    )
+    if probe.returncode not in (0, 2):
+        return None
+    return probe.returncode == 0
 
 
 def report_shallow_verdict(git_cmd: list[str], root: Path, compare_branch: str) -> None:

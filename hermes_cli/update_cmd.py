@@ -618,7 +618,15 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
         _check.repair_shallow_grafts(root)
 
     if not _check.compare_ref_exists(git_cmd, root, compare_branch):
-        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
+        _remote = compare_branch.split("/", 1)[0]
+        if _check.branch_exists_on_remote(git_cmd, root, _remote, branch) is False:
+            print(f"✗ Branch '{branch}' not found on {_remote}.")
+        else:
+            print(
+                f"✗ Branch '{branch}' could not be resolved to {compare_branch} "
+                f"after fetching; widen the fetch refspec "
+                f"(git remote set-branches --add {_remote} {branch}) and retry."
+            )
         sys.exit(1)
     if is_shallow:
         _check.report_shallow_verdict(git_cmd, root, compare_branch)
@@ -1382,9 +1390,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print("→ Fetching updates...")
         if release_sha:
-            fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
+            fetch_result = _git_run(
+                git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True
+            )
         else:
-            fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+            # Explicit refspec: a narrow clone has no refs/heads/* mapping in
+            # remote.origin.fetch, so fetching by name would leave origin/<branch>
+            # unmaterialised for every later verify (#125112).
+            fetch_result = _git_run(
+                git_cmd,
+                [
+                    "fetch",
+                    "origin",
+                    f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+                ],
+                network=True,
+            )
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

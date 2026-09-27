@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import re
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -243,18 +242,25 @@ class _Trunc(TruncationVerdict):
         _exit_reason = (
             failure[0] if failure[0] == "truncated" else f"truncated({failure[0]})"
         )
-        with suppress(Exception):
+        try:
             # Same logger + format as turn_finalizer._log_turn_exit; the reason carries
             # the typed failure verdict (``truncated`` / ``context_overflow`` / …).
+            # Fail-open by design: a broken import or signature drift must never mask
+            # the partial result — but it stays observable at debug level (#125505).
             from agent.turn_finalizer import _log_turn_exit
             _log_turn_exit(
                 agent, _final_messages, final_response, self.api_call_count,
                 _exit_reason, False, logger,
             )
-        with suppress(Exception):
+        except Exception:
+            logger.debug("length-stop exit: turn-exit log failed", exc_info=True)
+        try:
             # Start (or drop, when none) the title upgrade finalize_turn would have fired.
+            # Fail-open too, logged for the same reason (#125505).
             from agent.turn_context import start_deferred_title_upgrade
             start_deferred_title_upgrade(agent)
+        except Exception:
+            logger.debug("length-stop exit: deferred title upgrade failed", exc_info=True)
         return self.done("return", stamp_failure(partial_result(
             _final_messages, self.api_call_count,
             final_response, error, failed=failed, compression_exhausted=compression_exhausted,

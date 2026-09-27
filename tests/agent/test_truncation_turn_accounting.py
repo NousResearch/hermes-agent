@@ -105,3 +105,37 @@ class TestTruncationTurnAccounting:
             assert agent._deferred_title_upgrade is None
         finally:
             agent.close()
+
+    def test_end_turn_observability_failures_log_at_debug(self, tmp_path, monkeypatch, caplog):
+        """The end-turn observability hooks are fail-open, but a broken import or
+        signature drift must stay observable at debug level instead of vanishing
+        silently (review point on #125505) — and must never mask the partial result."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        agent = _make_agent()
+        try:
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG, logger="agent.conversation_loop"):
+                with patch("agent.turn_finalizer._log_turn_exit",
+                           side_effect=RuntimeError("simulated signature drift")):
+                    with patch("agent.turn_context.start_deferred_title_upgrade",
+                               side_effect=RuntimeError("simulated import rot")):
+                        verdict = _check(agent, _length_response(), [{"role": "user", "content": "hi"}])
+            # Fail-open: the truncation exit itself still completes.
+            assert verdict.action == "return"
+            assert verdict.result is not None
+            assert verdict.result.get("failure_reason") == "truncated"
+            # ...and both failures are traceable in agent.log at debug level.
+            assert any(
+                r.levelno == logging.DEBUG
+                and "turn-exit log failed" in r.getMessage()
+                and r.exc_info is not None
+                for r in caplog.records
+            )
+            assert any(
+                r.levelno == logging.DEBUG
+                and "deferred title upgrade failed" in r.getMessage()
+                and r.exc_info is not None
+                for r in caplog.records
+            )
+        finally:
+            agent.close()

@@ -458,14 +458,73 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
         tmp_db.unlink(missing_ok=True)
 
 
+def _vanished_since_scan(abs_path: Path, exc: BaseException) -> bool:
+    """True when *exc* is ENOENT for plain file *abs_path* and the path is really gone now.
+
+    A file deleted between the scan and the archive write (a pruned cron output, a finished
+    process record) no longer exists to recover, so it is not an archive failure. Any other
+    error — permission, I/O, a path that still exists — stays a real failure, and a SQLite
+    ``*.db`` never qualifies: a missing database is an incomplete backup on every archive path.
+    """
+    return (abs_path.suffix != ".db" and isinstance(exc, FileNotFoundError)
+            and not os.path.lexists(abs_path))
+
+
+def _in_kanban_scratch_workspace(rel_path: Path) -> bool:
+    """True when *rel_path* lies inside one task's kanban scratch workspace.
+
+    ``kanban/workspaces/<task>/...`` (default board) or ``kanban/boards/<slug>/workspaces/<task>/...``.
+    The dispatcher deletes a finished task's workspace wholesale, so anything inside (a worker's
+    throwaway browser profile and its SQLite files) can disappear mid-backup. Hermes-owned
+    databases never live there.
+    """
+    parts = rel_path.parts
+    if parts[:2] == ("kanban", "workspaces"):
+        return len(parts) >= 4
+    return len(parts) >= 6 and parts[:2] == ("kanban", "boards") and parts[3] == "workspaces"
+
+
+def _confirmed_enoent(path: Path) -> bool:
+    """True only when ``lstat(path)`` positively fails with ENOENT.
+
+    Unlike :func:`os.path.lexists`, which reports False for *any* ``OSError``, a permission
+    (EACCES), I/O (EIO) or other error here means existence is unknown, so it returns False
+    and the caller keeps the failure fatal.
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _db_vanished_since_scan(abs_path: Path, rel_path: Path) -> bool:
+    """True when a failed ``*.db`` snapshot is a deleted kanban scratch-workspace file.
+
+    Only a database inside a task scratch workspace qualifies, and only when both the file and
+    its containing directory are positively gone (ENOENT): the workspace is ephemeral scratch
+    that was cleaned up between scan and write. Every other database (state.db, kanban.db,
+    cron/executions.db, provider stores), any database whose file or directory still exists
+    (locked, unreadable, corrupt, mid-cleanup), and any EACCES/EIO on either check stays an
+    ``on_db_failure``.
+    """
+    return (_in_kanban_scratch_workspace(rel_path)
+            and _confirmed_enoent(abs_path) and _confirmed_enoent(abs_path.parent))
+
+
 def _write_zip_entries(
     zf: zipfile.ZipFile, files_to_add: List[Tuple[Path, Path]], out_path: Path,
-    *, on_db_failure, on_error, on_progress, track_bytes: bool) -> int:
+    *, on_db_failure, on_error, on_progress, track_bytes: bool, on_vanished=None) -> int:
     """Add every ``(abs_path, rel_path)`` to *zf*, WAL-safe for ``*.db``; return bytes archived.
 
     ``on_db_failure(rel_path)`` runs when a SQLite snapshot fails (may raise to abort);
-    ``on_error(rel_path, exc)`` records a read failure; ``on_progress(i)`` fires every 500 files;
-    ``track_bytes`` stats plain files for the size total.
+    ``on_error(rel_path, exc)`` records a read failure; ``on_vanished(rel_path)`` records a
+    plain file deleted after the scan (defaults to ``on_error``); ``on_progress(i)`` fires every
+    500 files; ``track_bytes`` totals the archived sizes. A missing ``*.db`` stays an
+    ``on_db_failure`` unless it sat in a since-deleted kanban scratch workspace
+    (:func:`_db_vanished_since_scan`).
     """
     total_bytes = 0
     for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
@@ -473,15 +532,22 @@ def _write_zip_entries(
             if abs_path.suffix == ".db":
                 size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
                 if size is None:
-                    on_db_failure(rel_path)
+                    if on_vanished is not None and _db_vanished_since_scan(abs_path, rel_path):
+                        on_vanished(rel_path)
+                    else:
+                        on_db_failure(rel_path)
                     continue
                 total_bytes += size
             else:
                 zf.write(abs_path, arcname=str(rel_path))
                 if track_bytes:
-                    total_bytes += abs_path.stat().st_size
+                    # Size of what was archived: the source may be deleted right after the write.
+                    total_bytes += zf.infolist()[-1].file_size
         except (PermissionError, OSError, ValueError) as exc:
-            on_error(rel_path, exc)
+            if on_vanished is not None and _vanished_since_scan(abs_path, exc):
+                on_vanished(rel_path)
+            else:
+                on_error(rel_path, exc)
             continue
         if i % 500 == 0:
             on_progress(i)
@@ -584,6 +650,7 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
     logger.info("backup phase=archive status=started files=%d", file_count)
     print(f"Backing up {file_count} files ...")
     errors = []
+    vanished: list[str] = []
     t0 = time.monotonic()
 
     def _progress(i: int) -> None:
@@ -595,19 +662,25 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
         total_bytes = _write_zip_entries(
             zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
-            on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
-        # External memory-provider state never includes ``.db`` files in practice, so a
-        # straight zf.write is fine.
+            on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
+            on_vanished=lambda rel: vanished.append(str(rel)))
+        # External memory-provider files are written directly; _vanished_since_scan still
+        # refuses to excuse a missing provider-declared ``*.db``.
         for abs_path, arcname in external_to_add:
             try:
                 zf.write(abs_path, arcname=arcname)
-                total_bytes += abs_path.stat().st_size
+                total_bytes += zf.infolist()[-1].file_size
             except (PermissionError, OSError, ValueError) as exc:
-                errors.append(f"{arcname}: {exc}")
+                if _vanished_since_scan(abs_path, exc):
+                    vanished.append(arcname)
+                else:
+                    errors.append(f"{arcname}: {exc}")
     elapsed = time.monotonic() - t0
     zip_size = out_path.stat().st_size
-    logger.info("backup phase=archive status=complete duration_ms=%.1f files=%d errors=%d bytes=%d",
-                elapsed * 1000, file_count, len(errors), zip_size)
+    logger.info("backup phase=archive status=complete duration_ms=%.1f files=%d errors=%d vanished=%d bytes=%d",
+                elapsed * 1000, file_count, len(errors), len(vanished), zip_size)
+    for rel in vanished:
+        logger.info("backup vanished file (deleted after scan, not archived): %s", rel)
     print(f"\nBackup {'incomplete' if errors else 'complete'}: {out_path}\n"
           f"  Files:       {file_count}\n"
           f"  Original:    {_format_size(total_bytes)}\n"
@@ -620,6 +693,9 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
               "(not portable):\n" + "\n".join(f"    {p}" for p in sorted(skipped_external)[:10]))
     if skipped_dirs:
         print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in sorted(skipped_dirs)))
+    if vanished:
+        _print_capped(f"\n  {len(vanished)} file(s) vanished during backup (deleted after the scan; "
+                      "nothing left to archive):", vanished, "    ")
     if errors:
         _print_capped(f"\n  Archive kept, but {len(errors)} file(s) could not be added:", errors, "  ")
     else:
@@ -1985,6 +2061,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
                 on_error=lambda rel, exc: logger.debug("Skipping %s in zip backup: %s", rel, exc),
+                on_vanished=lambda rel: logger.debug("Skipping %s in zip backup: vanished after scan", rel),
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))
     except (OSError, _SQLiteSnapshotError) as exc:

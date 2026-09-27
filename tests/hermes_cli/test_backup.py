@@ -1,5 +1,6 @@
 """Tests for hermes backup and import commands."""
 
+import errno
 import json
 import os
 import socket
@@ -946,6 +947,366 @@ class TestBackupEdgeCases:
         assert exc.value.code == 1
         unreadable.chmod(0o600)
         assert run_backup(Namespace(output=str(tmp_path / "out4.zip"))) is True
+
+    @staticmethod
+    def _delete_after_scan(monkeypatch, *victims: Path) -> None:
+        """Reproduce the scan→delete→write race: the real walk lists *victims*, then they are
+        deleted (as a cron/output pruner would) before the archive phase opens them."""
+        import hermes_cli.backup as backup_mod
+
+        real_iter = backup_mod._iter_backup_files
+
+        def _racing_iter(*args, **kwargs):
+            yield from real_iter(*args, **kwargs)
+            for victim in victims:
+                victim.unlink()
+
+        monkeypatch.setattr(backup_mod, "_iter_backup_files", _racing_iter)
+
+    def test_file_vanished_after_scan_is_not_a_failure(self, tmp_path, monkeypatch, capsys):
+        """A transient file deleted between scan and write no longer exists to recover: the
+        backup succeeds, names the vanished file, and complete-archive pruning still runs."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        transient = hermes_home / "cron" / "output" / "job1" / "2026-09-27_01-56-29.md"
+        transient.parent.mkdir(parents=True)
+        transient.write_text("run output\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        self._delete_after_scan(monkeypatch, transient)
+        from hermes_cli.backup import _RUN_BACKUP_PREFIX, run_backup
+
+        out_dir = tmp_path / "b"
+        out_dir.mkdir()
+        old = out_dir / f"{_RUN_BACKUP_PREFIX}2026-01-01-000000.zip"  # prune orders by name
+        old.write_bytes(b"PK")
+        out_zip = out_dir / f"{_RUN_BACKUP_PREFIX}2026-09-27-013000.zip"
+
+        assert run_backup(Namespace(output=str(out_zip), keep=1)) is True
+        out = capsys.readouterr().out
+        assert "Backup complete" in out
+        assert "1 file(s) vanished during backup" in out
+        assert "cron/output/job1/2026-09-27_01-56-29.md" in out
+        assert "could not be added" not in out
+        assert not old.exists(), "a vanished-only run is complete and may rotate older backups"
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert "cron/output/job1/2026-09-27_01-56-29.md" not in names
+        assert {"config.yaml", "hermes_state.db", "cron/jobs.json"} <= names
+
+    def test_vanished_file_alongside_real_error_still_fails(self, tmp_path, monkeypatch, capsys):
+        """Vanished files never mask a genuine unreadable file in the same run."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        transient = hermes_home / "logs" / "transient.json"
+        transient.write_text("{}")
+        unreadable = hermes_home / "skills" / "locked.md"
+        unreadable.write_text("secret\n")
+        unreadable.chmod(0)
+        if os.access(unreadable, os.R_OK):
+            pytest.skip("running as root: chmod 0 does not make the file unreadable")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        self._delete_after_scan(monkeypatch, transient)
+        from hermes_cli.backup import run_backup
+
+        try:
+            assert run_backup(Namespace(output=str(tmp_path / "out.zip"))) is False
+        finally:
+            unreadable.chmod(0o600)
+        out = capsys.readouterr().out
+        assert "Backup incomplete" in out
+        assert "1 file(s) vanished during backup" in out
+        assert "1 file(s) could not be added" in out
+        assert "skills/locked.md" in out
+
+    def test_io_error_on_write_still_fails(self, tmp_path, monkeypatch, capsys):
+        """A read/I-O error (EIO) is data loss, not a vanished file: the backup fails."""
+        import errno
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        real_write = zipfile.ZipFile.write
+
+        def _eio_write(self, filename, arcname=None, *a, **kw):
+            if str(arcname) == "memories/notes.json":
+                raise OSError(errno.EIO, "Input/output error", str(filename))
+            return real_write(self, filename, arcname, *a, **kw)
+
+        monkeypatch.setattr(zipfile.ZipFile, "write", _eio_write)
+        from hermes_cli.backup import run_backup
+
+        assert run_backup(Namespace(output=str(tmp_path / "out.zip"))) is False
+        out = capsys.readouterr().out
+        assert "memories/notes.json" in out and "Input/output error" in out
+        assert "vanished during backup" not in out
+
+    def test_enoent_for_a_file_that_still_exists_still_fails(self, tmp_path, monkeypatch, capsys):
+        """ENOENT is only 'vanished' when the path is really gone; a still-present file whose
+        write reports ENOENT (e.g. a missing parent in a racing rename) remains a failure."""
+        import errno
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        real_write = zipfile.ZipFile.write
+
+        def _enoent_write(self, filename, arcname=None, *a, **kw):
+            if str(arcname) == "sessions/abc123.json":
+                raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(filename))
+            return real_write(self, filename, arcname, *a, **kw)
+
+        monkeypatch.setattr(zipfile.ZipFile, "write", _enoent_write)
+        from hermes_cli.backup import run_backup
+
+        assert run_backup(Namespace(output=str(tmp_path / "out.zip"))) is False
+        out = capsys.readouterr().out
+        assert "1 file(s) could not be added" in out
+        assert "vanished during backup" not in out
+
+    def test_state_db_vanished_after_scan_still_fails(self, tmp_path, monkeypatch, capsys):
+        """A SQLite database missing at snapshot time is never treated as a vanished transient."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        self._delete_after_scan(monkeypatch, hermes_home / "hermes_state.db")
+        from hermes_cli.backup import run_backup
+
+        assert run_backup(Namespace(output=str(tmp_path / "out.zip"))) is False
+        out = capsys.readouterr().out
+        assert "hermes_state.db: SQLite safe copy failed" in out
+        assert "vanished during backup" not in out
+
+    @pytest.mark.parametrize("suffix, expect_ok", [(".md", True), (".db", False)])
+    def test_external_provider_file_vanished_after_collect(
+            self, tmp_path, monkeypatch, capsys, suffix, expect_ok):
+        """External memory-provider entries follow the main-tree rule: a vanished plain file is
+        benign, but a provider-declared ``*.db`` that disappears keeps the backup failed."""
+        import sqlite3
+
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        external = tmp_path / f"provider-memory{suffix}"
+        if suffix == ".db":
+            with sqlite3.connect(external) as db:
+                db.execute("create table kept(v text)")
+        else:
+            external.write_text("provider notes\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(backup_mod, "_collect_memory_provider_external_paths", lambda: [external])
+        real_collect = backup_mod._collect_external_entries
+
+        def _collected_then_deleted():
+            entries, skipped = real_collect()
+            assert len(entries) == 1
+            external.unlink()
+            return entries, skipped
+
+        monkeypatch.setattr(backup_mod, "_collect_external_entries", _collected_then_deleted)
+        out_dir = tmp_path / "b"
+        out_dir.mkdir()
+        old = out_dir / f"{backup_mod._RUN_BACKUP_PREFIX}2026-01-01-000000.zip"
+        old.write_bytes(b"PK")
+        out_zip = out_dir / f"{backup_mod._RUN_BACKUP_PREFIX}2026-09-27-013000.zip"
+
+        assert backup_mod.run_backup(Namespace(output=str(out_zip), keep=1)) is expect_ok
+        out = capsys.readouterr().out
+        arcname = f"provider-memory{suffix}"
+        if expect_ok:
+            assert "Backup complete" in out and "1 file(s) vanished during backup" in out
+            assert arcname in out and "could not be added" not in out
+            assert not old.exists(), "a vanished-only run is complete and may rotate older backups"
+        else:
+            assert "Backup incomplete" in out and "1 file(s) could not be added" in out
+            assert arcname in out and "vanished during backup" not in out
+            assert old.exists(), "an incomplete backup must not prune older complete backups"
+        with zipfile.ZipFile(out_zip) as zf:
+            assert not any(n.endswith(arcname) for n in zf.namelist())
+
+    @staticmethod
+    def _make_sqlite(path: Path) -> Path:
+        import sqlite3
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path) as db:
+            db.execute("create table t(v text)")
+        return path
+
+    @staticmethod
+    def _rmtree_after_scan(monkeypatch, *trees: Path) -> None:
+        """The dispatcher's scratch-workspace cleanup racing the archive phase: the real walk
+        lists every file, then whole trees are ``rmtree``'d before the archive opens them."""
+        import shutil
+
+        import hermes_cli.backup as backup_mod
+
+        real_iter = backup_mod._iter_backup_files
+
+        def _racing_iter(*args, **kwargs):
+            yield from real_iter(*args, **kwargs)
+            for tree in trees:
+                shutil.rmtree(tree)
+
+        monkeypatch.setattr(backup_mod, "_iter_backup_files", _racing_iter)
+
+    @pytest.mark.parametrize("ws_root", ["kanban/workspaces", "kanban/boards/estate/workspaces"])
+    def test_kanban_scratch_workspace_browser_profile_vanished(
+            self, tmp_path, monkeypatch, capsys, ws_root):
+        """27 Sep 05:18 producer failure: a finished task's scratch workspace holding a throwaway
+        Chrome profile was cleaned up mid-backup. Its SQLite files are gone with the workspace,
+        so they are vanished transients, not a failed Hermes recovery point."""
+        from hermes_cli.backup import _RUN_BACKUP_PREFIX, run_backup
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        ws = hermes_home / ws_root / "t_d123f935"
+        prof = ws / "chrome-prof"
+        dbs = [self._make_sqlite(prof / rel) for rel in (
+            "first_party_sets.db", "Default/heavy_ad_intervention_opt_out.db",
+            "GPUPersistentCache/abc/cache.db")]
+        (prof / "Local State").write_text("{}")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        self._rmtree_after_scan(monkeypatch, ws)
+        out_dir = tmp_path / "b"
+        out_dir.mkdir()
+        old = out_dir / f"{_RUN_BACKUP_PREFIX}2026-01-01-000000.zip"
+        old.write_bytes(b"PK")
+        out_zip = out_dir / f"{_RUN_BACKUP_PREFIX}2026-09-27-051822.zip"
+
+        assert run_backup(Namespace(output=str(out_zip), keep=1)) is True
+        out = capsys.readouterr().out
+        assert "Backup complete" in out and "could not be added" not in out
+        assert "SQLite safe copy failed" not in out
+        assert f"{len(dbs) + 1} file(s) vanished during backup" in out
+        assert f"{ws_root}/t_d123f935/chrome-prof/first_party_sets.db" in out
+        assert not old.exists(), "a vanished-only run is complete and may rotate older backups"
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert not any("chrome-prof" in n for n in names)
+        assert {"config.yaml", "hermes_state.db", "cron/jobs.json"} <= names
+
+    @pytest.mark.parametrize("rel", [
+        "kanban.db",                                # default board DB
+        "kanban/boards/estate/kanban.db",           # named board DB
+        "cron/executions.db",
+        "kanban/workspaces/state.db",               # beside, not inside, a task workspace
+        "kanban/boards/estate/workspaces/gate.db",
+    ])
+    def test_hermes_db_vanished_after_scan_still_fails(self, tmp_path, monkeypatch, capsys, rel):
+        """Only a database INSIDE a task scratch workspace may vanish; Hermes-owned databases,
+        including board DBs next to the workspaces, keep a missing snapshot fatal."""
+        from hermes_cli.backup import run_backup
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        victim = self._make_sqlite(hermes_home / rel)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        self._delete_after_scan(monkeypatch, victim)
+
+        assert run_backup(Namespace(output=str(tmp_path / "out.zip"))) is False
+        out = capsys.readouterr().out
+        assert f"{rel}: SQLite safe copy failed" in out
+        assert "vanished during backup" not in out
+
+    def test_kanban_workspace_db_still_present_but_unreadable_still_fails(
+            self, tmp_path, monkeypatch, capsys):
+        """A workspace database that still exists but cannot be snapshotted (locked, EACCES,
+        corrupt) is a real failure, not a vanished file."""
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        self._make_sqlite(hermes_home / "kanban/workspaces/t_1/chrome-prof/cookies.db")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        real_copy = backup_mod._safe_copy_db
+        monkeypatch.setattr(backup_mod, "_safe_copy_db",
+                            lambda src, dst, *a, **kw: False if src.name == "cookies.db"
+                            else real_copy(src, dst, *a, **kw))
+
+        assert backup_mod.run_backup(Namespace(output=str(tmp_path / "out.zip"))) is False
+        out = capsys.readouterr().out
+        assert "kanban/workspaces/t_1/chrome-prof/cookies.db: SQLite safe copy failed" in out
+        assert "vanished during backup" not in out
+
+    @pytest.mark.parametrize("file_err, parent_err, vanished", [
+        (errno.ENOENT, errno.ENOENT, True),    # workspace rmtree'd: file and dir gone
+        (errno.EACCES, errno.ENOENT, False),   # file existence unknown -> fatal
+        (errno.EIO, errno.ENOENT, False),
+        (errno.ENOENT, errno.EACCES, False),   # dir existence unknown -> fatal
+        (errno.ENOENT, errno.EIO, False),
+        (errno.ENOENT, None, False),           # file gone, dir still present -> fatal
+        (None, None, False),                   # file still present -> fatal
+    ])
+    def test_workspace_db_absence_check_discriminates_enoent(
+            self, tmp_path, monkeypatch, file_err, parent_err, vanished):
+        """Writer-level seam: a failed workspace snapshot is vanished only on a positively
+        established ENOENT for BOTH the file and its directory; EACCES/EIO stay fatal."""
+        import hermes_cli.backup as backup_mod
+
+        ws = tmp_path / "kanban/workspaces/t_1/chrome-prof"
+        abs_path = ws / "cookies.db"
+        rel_path = Path("kanban/workspaces/t_1/chrome-prof/cookies.db")
+        real_lstat = os.lstat
+
+        def _lstat(path, *a, **kw):
+            err = {str(abs_path): file_err, str(ws): parent_err}.get(os.fspath(path), "real")
+            if err == "real":
+                return real_lstat(path, *a, **kw)
+            if err is None:
+                return real_lstat(tmp_path)
+            raise OSError(err, os.strerror(err), os.fspath(path)) if err != errno.ENOENT \
+                else FileNotFoundError(err, os.strerror(err), os.fspath(path))
+
+        monkeypatch.setattr(backup_mod, "_zip_sqlite_snapshot", lambda *a, **kw: None)
+        monkeypatch.setattr(os, "lstat", _lstat)
+        seen = {"vanished": [], "db_failure": [], "error": []}
+        with zipfile.ZipFile(tmp_path / "o.zip", "w") as zf:
+            backup_mod._write_zip_entries(
+                zf, [(abs_path, rel_path)], tmp_path / "o.zip",
+                on_db_failure=seen["db_failure"].append,
+                on_error=lambda r, e: seen["error"].append(r),
+                on_progress=lambda i: None, track_bytes=False,
+                on_vanished=seen["vanished"].append)
+        assert seen == ({"vanished": [rel_path], "db_failure": [], "error": []} if vanished
+                        else {"vanished": [], "db_failure": [rel_path], "error": []})
+
+    def test_automatic_zip_tolerates_vanished_workspace_db(self, tmp_path, monkeypatch):
+        """The pre-update/pre-migration zip aborts on a failed snapshot; a cleaned-up task
+        workspace database must not abort it, while a vanished Hermes DB still does."""
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        ws = hermes_home / "kanban/workspaces/t_d123f935"
+        self._make_sqlite(ws / "chrome-prof/first_party_sets.db")
+        self._rmtree_after_scan(monkeypatch, ws)
+        out_zip = tmp_path / "auto.zip"
+        assert backup_mod._write_full_zip_backup(out_zip, hermes_home) == out_zip
+
+        monkeypatch.undo()
+        victim = hermes_home / "hermes_state.db"
+        self._delete_after_scan(monkeypatch, victim)
+        assert backup_mod._write_full_zip_backup(tmp_path / "auto2.zip", hermes_home) is None
 
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
         """Backup handles empty hermes home (no files to back up)."""

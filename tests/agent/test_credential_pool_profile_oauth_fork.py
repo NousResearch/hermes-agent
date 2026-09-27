@@ -605,7 +605,21 @@ def _seed_codex_grant(root):
     (root / "auth.json").write_text(json.dumps(store))
 
 
-def _shared_profile(fleet, name, *, link):
+def _link_same_file(target, alias):
+    """Make ``alias`` the SAME store as ``target``: a symlink where the host
+    permits one, a hardlink where it does not (Windows without SeCreateSymbolicLink
+    privilege raises WinError 1314). Both flavors are one file — the heal contract
+    (``_is_same_auth_store``) is ``samefile``/resolved-path equality, not the link
+    flavor, so the test exercises the same contract on either host."""
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError):
+        if alias.is_symlink() or alias.exists():
+            alias.unlink()
+        os.link(target, alias)
+
+
+def _shared_profile(fleet, name, *, link=_link_same_file):
     """Profile whose auth.json IS the root store (``link`` makes the alias)."""
     pdir = _profile(fleet, name)
     pdir.mkdir(parents=True, exist_ok=True)
@@ -678,19 +692,135 @@ def test_heal_leaves_an_aliased_anthropic_singleton_alone(fleet):
     assert (root / ".anthropic_oauth.json").read_text() == before
 
 
-def test_heal_same_store_skip_is_memoized_off_the_hot_path(fleet, monkeypatch):
-    """The shared-store skip must record the clean mark so load_pool()'s
-    per-call heal does not re-stat/resolve both paths every model call."""
-    from hermes_cli import auth as auth_mod
+
+
+# ── E. the clean mark outlives the process ──────────────────────────────
+#
+# The in-memory mark only silences the heal for one process, so every fresh
+# `hermes` invocation re-paid its two nested EXCLUSIVE auth-store locks to
+# rediscover a store it had already cleared. Persisting the mark removes that,
+# but a mark that outlives the process must also invalidate on anything the
+# heal reads -- including the ROOT store, which the in-memory fingerprint
+# could safely ignore precisely because it died with the process.
+
+def _new_process(auth_mod):
+    """Simulate a fresh `hermes` invocation: in-memory state gone, disk kept."""
+    auth_mod._oauth_heal_clean_marks.clear()
+    auth_mod._global_auth_store_cache = None
+
+
+
+
+def _kid_with_api_key_only(fleet, name="kid"):
+    """Profile whose store exists and is genuinely fork-free, so the heal has
+    to run its locked body to find that out (not the no-files fast path)."""
+    pdir = _profile(fleet, name)
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+        "credential_pool": {"openai": [{
+            "id": "k1", "label": "static", "auth_type": "api_key",
+            "priority": 0, "source": "manual", "access_token": "sk-local",
+        }]},
+    }))
+    return pdir
+
+
+
+
+def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
+    """The mark may not outlive the facts. Root acquiring a counterpart turns
+    a row the heal deliberately KEPT into a fork it must strip -- with the
+    profile's own files untouched, so only root's stamp can catch it."""
+    import hermes_cli.auth as auth_mod
+    from hermes_cli import auth_oauth_grants as grants
 
     root = fleet["root"]
-    _seed_codex_grant(root)
-    shared = _shared_profile(fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
-    fleet["use"](shared)
+    store = json.loads((root / "auth.json").read_text())
+    store["credential_pool"].pop("anthropic")
+    (root / "auth.json").write_text(json.dumps(store))
 
-    assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
-    assert "openai-codex" in auth_mod._oauth_heal_clean_marks
-    calls = []
-    monkeypatch.setattr(auth_mod, "_is_same_auth_store", lambda *a: calls.append(a) or True)
-    assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None
-    assert calls == [], "same-store check ran again despite the clean mark"
+    kid = _kid_with_api_key_only(fleet, "kid2")
+    fork = {
+        "id": "abc123", "label": "team-grant", "auth_type": "oauth",
+        "priority": 0, "source": "manual:hermes_pkce",
+        "access_token": "sk-ant-oat01-AT0", "refresh_token": "sk-ant-ort-RT0",
+        "expires_at_ms": int((time.time() + 3600) * 1000),
+        "base_url": "https://api.anthropic.com",
+    }
+    kid_store = json.loads((kid / "auth.json").read_text())
+    kid_store["credential_pool"]["anthropic"] = [dict(fork)]
+    (kid / "auth.json").write_text(json.dumps(kid_store))
+
+    fleet["use"](kid)
+    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
+    assert fleet["rows"](kid), "the only surviving copy must not be stripped"
+    marked = grants._oauth_heal_clean_mark_path().read_text()
+
+    store["credential_pool"]["anthropic"] = [dict(fork)]
+    (root / "auth.json").write_text(json.dumps(store))
+    _new_process(auth_mod)
+    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is not None, (
+        "the persisted mark skipped a heal that had become necessary")
+    assert not fleet["rows"](kid), "the fork survived in the profile store"
+
+    # A heal that actually did work writes no mark, so the one on disk is now
+    # stale -- it describes the pre-heal files and can no longer match. The
+    # next process re-checks, finds the store clean, and re-stamps.
+    _new_process(auth_mod)
+    assert auth_mod.heal_forked_single_use_oauth_grants("anthropic") is None
+    assert grants._oauth_heal_clean_mark_path().read_text() != marked
+
+
+
+# ── G. token generation is the authority boundary (#120815) ─────────────
+
+@pytest.mark.parametrize("borrowed", [False, True], ids=["owned-rows", "borrowed-root-rows"])
+def test_stale_terminal_verdict_cannot_kill_peer_token_generation(fleet, borrowed):
+    from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
+
+    fleet["use"](_profile(fleet, "stale-dead") if borrowed else fleet["root"])
+    stale, stale_billing, peer = load_pool("anthropic"), load_pool("anthropic"), load_pool("anthropic")
+    stale_adopter = load_pool("anthropic")
+    assert peer.try_refresh_matching(credential_id="abc123").refresh_token == "sk-ant-ort-RT1"
+    # An ordinary flush whose pair already matches disk must not re-hydrate the live object.
+    live = peer._entries[0]
+    peer._persist()
+    assert peer._entries[0] is live
+    # A stale writer's _adopt hands back the post-persist entry carrying the peer's pair.
+    adopted = stale_adopter._adopt(stale_adopter._entries[0], last_status=None)
+    assert adopted.refresh_token == "sk-ant-ort-RT1" and adopted is stale_adopter._entries[0]
+
+    stale.mark_exhausted_and_rotate(
+        status_code=401, credential_id="abc123",
+        error_context={"reason": "invalid_grant", "message": "refresh token already used"},
+    )
+
+    row = fleet["rows"](fleet["root"])[0]
+    assert row["refresh_token"] == "sk-ant-ort-RT1"
+    assert row.get("last_status") != STATUS_DEAD
+    selected = stale.select()
+    assert selected is not None and selected.refresh_token == "sk-ant-ort-RT1"
+
+    # Only the terminal verdict is scoped to the old pair: a later account-wide
+    # billing 402 from another still-stale writer applies to the rotated pair.
+    stale_billing.mark_exhausted_and_rotate(status_code=402, credential_id="abc123")
+    row = fleet["rows"](fleet["root"])[0]
+    assert row["refresh_token"] == "sk-ant-ort-RT1"
+    assert row["last_status"] == STATUS_EXHAUSTED
+
+
+def test_terminal_verdict_for_current_token_generation_still_persists(fleet):
+    from agent.credential_pool import STATUS_DEAD, load_pool
+
+    fleet["use"](fleet["root"])
+    pool = load_pool("anthropic")
+    pool.mark_exhausted_and_rotate(
+        status_code=401, credential_id="abc123",
+        error_context={"reason": "invalid_grant", "message": "refresh token already used"},
+    )
+
+    row = fleet["rows"](fleet["root"])[0]
+    assert row["refresh_token"] == "sk-ant-ort-RT0"
+    assert row["last_status"] == STATUS_DEAD
+    assert pool.select() is None

@@ -11,6 +11,7 @@ import path from 'node:path'
 import simpleGit from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
+import { execGit, noConsoleGitEnv, simpleGitBinary, windowsGitHost } from './no-console-git'
 
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
@@ -51,13 +52,27 @@ function gitFor(cwd, gitBin) {
   // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
   // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
   // could resolve a repo-local git.exe).
-  return simpleGit({
+  // On Windows the binary tuple is [python.exe, host script]. simple-git has no
+  // creationFlags slot; the script spawns the real git with CREATE_NO_WINDOW and
+  // forwards argv unchanged.
+  const host = windowsGitHost()
+  const binary = simpleGitBinary(gitBin, host)
+  const binaryParts = Array.isArray(binary) ? binary : [binary]
+  const unsafe = binaryParts.some(part => /\s/.test(part)) || Boolean(gitBin && /\s/.test(gitBin))
+
+  const git = simpleGit({
     baseDir: cwd,
-    binary: gitBin || 'git',
+    binary,
     maxConcurrentProcesses: 4,
     trimmed: false,
-    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+    ...(unsafe ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
   })
+
+  if (Array.isArray(binary)) {
+    return git.env(noConsoleGitEnv(process.env, gitBin || 'git'))
+  }
+
+  return git
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -360,14 +375,13 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   // Untracked file: no worktree diff exists, so synthesize an all-add diff via
   // --no-index (exits non-zero by design when files differ, so go around
   // simple-git's reject-on-nonzero with a raw execFile).
-  return new Promise(resolve => {
-    execFile(
-      gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-      (_err, stdout) => resolve(String(stdout || ''))
-    )
-  })
+  return execGit(gitBin || 'git', ['diff', '--no-index', '--', '/dev/null', filePath], {
+    cwd,
+    timeoutMs: 30_000
+  }).then(
+    result => result.stdout,
+    () => ''
+  )
 }
 
 // Working-tree-vs-HEAD diff for ONE file — the "what changed since the last
@@ -398,14 +412,13 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
     return ''
   }
 
-  return new Promise(resolve => {
-    execFile(
-      gitBin || 'git',
-      ['diff', '--no-index', '--', '/dev/null', filePath],
-      { cwd, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-      (_err, stdout) => resolve(String(stdout || ''))
-    )
-  })
+  return execGit(gitBin || 'git', ['diff', '--no-index', '--', '/dev/null', filePath], {
+    cwd,
+    timeoutMs: 30_000
+  }).then(
+    result => result.stdout,
+    () => ''
+  )
 }
 
 async function reviewStage(repoPath, filePath, gitBin) {
@@ -618,77 +631,6 @@ const prPayload = pr => ({
   url: String(pr.url || '')
 })
 
-// A GitHub review-comment / issue-comment URL, as pasted from the browser.
-// Captures owner, repo, PR number, and the comment kind + id. Review threads
-// deep-link as `#discussion_r<id>`; conversation-tab comments as
-// `#issuecomment-<id>`.
-const PR_COMMENT_URL_RE =
-  /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:\/[^#\s]*)?#(discussion_r|issuecomment-)(\d+)$/
-
-function parsePrCommentUrl(url) {
-  const match = PR_COMMENT_URL_RE.exec(String(url || '').trim())
-
-  if (!match) {
-    return null
-  }
-
-  const [, owner, repo, prNumber, kind, id] = match
-
-  return { id, kind: kind === 'discussion_r' ? 'review' : 'issue', owner, prNumber: Number(prNumber), repo }
-}
-
-// Resolve a pasted PR comment URL into the structured context the composer
-// attaches: author, body, and — for review comments — the file, line range,
-// and the diff hunk the comment anchors to. Reads only; any failure (gh
-// missing, unauthenticated, private repo, deleted comment) yields null and the
-// paste falls back to being a plain URL.
-async function reviewFetchPrComment(repoPath, ghBin, url) {
-  const parsed = parsePrCommentUrl(url)
-
-  if (!parsed) {
-    return null
-  }
-
-  let cwd
-
-  try {
-    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review comment fetch' })
-  } catch {
-    return null
-  }
-
-  const endpoint =
-    parsed.kind === 'review'
-      ? `repos/${parsed.owner}/${parsed.repo}/pulls/comments/${parsed.id}`
-      : `repos/${parsed.owner}/${parsed.repo}/issues/comments/${parsed.id}`
-
-  const res = await runGh(['api', endpoint], cwd, ghBin)
-
-  if (!res.ok) {
-    return null
-  }
-
-  try {
-    const data = JSON.parse(res.stdout)
-
-    return {
-      author: String(data?.user?.login || ''),
-      body: String(data?.body || ''),
-      diffHunk: parsed.kind === 'review' ? String(data?.diff_hunk || '') : '',
-      kind: parsed.kind,
-      // `line` is the comment's anchor in the current diff; null once the code
-      // moved on (outdated comment) — `original_line` still says where it was.
-      line: data?.line ?? data?.original_line ?? null,
-      path: parsed.kind === 'review' ? String(data?.path || '') : '',
-      prNumber: parsed.prNumber,
-      startLine: data?.start_line ?? data?.original_start_line ?? null,
-      url: String(data?.html_url || url)
-    }
-  } catch {
-    return null
-  }
-}
-
 // The PR for each of the given branches, keyed by branch. Asks GitHub about the
 // branches we actually have sessions on rather than listing the repo's newest
 // PRs and hoping ours are in the page — on a busy repo they are not. One
@@ -891,7 +833,6 @@ export {
   reviewCommitContext,
   reviewCreatePr,
   reviewDiff,
-  reviewFetchPrComment,
   reviewList,
   reviewPrList,
   reviewPush,

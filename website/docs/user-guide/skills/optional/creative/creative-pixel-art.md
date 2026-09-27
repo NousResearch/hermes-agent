@@ -15,7 +15,7 @@ Pixel art w/ era palettes (NES, Game Boy, PICO-8).
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/pixel-art` |
-| Path | `optional-skills/creative\pixel-art` |
+| Path | `optional-skills/creative/pixel-art` |
 | Version | `2.0.0` |
 | Author | dodo-reach |
 | License | MIT |
@@ -157,12 +157,13 @@ from pixel_art import pixel_art
 from pixel_art_video import pixel_art_video
 
 # 1. Convert to pixel art
-pixel_art("/path/to/photo.jpg", "/tmp/pixel.png", preset="nes")
+out = os.path.expanduser("~/.hermes/cache/scratch")
+pixel_art("/path/to/photo.jpg", f"{out}/pixel.png", preset="nes")
 
 # 2. Animate (optional)
 pixel_art_video(
-    "/tmp/pixel.png",
-    "/tmp/pixel.mp4",
+    f"{out}/pixel.png",
+    f"{out}/pixel.mp4",
     scene="night",
     duration=6,
     fps=15,

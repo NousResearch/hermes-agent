@@ -165,6 +165,10 @@ export const fr: Translations = {
     failedToDeleteSelected: "Échec de la suppression des sessions sélectionnées",
     resumeInChat: "Reprendre dans le chat",
     newChat: "Nouveau chat",
+    workspace: "espace de travail",
+    workspaceDefault: "Par défaut",
+    workspaceRescan: "Rechercher à nouveau les dépôts",
+    workspaceCustom: "Autre chemin…",
     previousPage: "Page précédente",
     nextPage: "Page suivante",
     roles: {
@@ -325,6 +329,8 @@ export const fr: Translations = {
     disableRuntime: "Désactiver",
     enableAfterInstall: "Activer après l'installation",
     enableRuntime: "Activer",
+    toggleTakesEffectAfterRestart:
+      "Enregistré — redémarrez la passerelle pour appliquer la modification.",
     forceReinstall: "Forcer la réinstallation (supprimer d'abord le dossier existant)",
     headline:
       "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",

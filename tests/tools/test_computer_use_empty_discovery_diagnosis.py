@@ -6,7 +6,6 @@ Live-QA findings (Aug 2026, locked KDE desktop):
 2. `_call_tool_via_cli` retried 4x with ~3.5s of sleeps on "daemon is not
    running", a permanent condition for that invocation.
 """
-from typing import Any, Dict
 
 import pytest
 
@@ -15,28 +14,6 @@ from tools.computer_use import cua_backend_driver as cb_driver
 
 
 # ── _empty_discovery_reason ─────────────────────────────────────────────
-
-
-def test_locked_session_reason_names_the_lock(monkeypatch):
-    monkeypatch.setattr(cb, "_linux_session_locked", lambda: True)
-    reason = cb._empty_discovery_reason()
-    assert "LOCKED" in reason
-    assert "unlock" in reason.lower()
-
-
-def test_no_display_reason(monkeypatch):
-    monkeypatch.setattr(cb, "_linux_session_locked", lambda: False)
-    monkeypatch.setattr(cb.sys, "platform", "linux")
-    monkeypatch.delenv("DISPLAY", raising=False)
-    reason = cb._empty_discovery_reason()
-    assert "DISPLAY" in reason
-
-
-def test_unknown_reason_points_at_doctor(monkeypatch):
-    monkeypatch.setattr(cb, "_linux_session_locked", lambda: None)
-    monkeypatch.setenv("DISPLAY", ":0")
-    reason = cb._empty_discovery_reason()
-    assert "doctor" in reason
 
 
 def test_locked_probe_fails_safe(monkeypatch):

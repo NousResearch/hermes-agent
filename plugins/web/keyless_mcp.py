@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
@@ -120,7 +121,12 @@ def use_keyless(name: str, api_key: str) -> bool:
 def _parse_mcp_body(body: str) -> str:
     """First text content item from an MCP tools/call response — plain-JSON bodies
     (Parallel) or SSE ``data: {...}`` lines (Exa). Raises :class:`KeylessMCPError` for
-    JSON-RPC errors and ``isError`` tool results (e.g. Exa's free-tier rate limit)."""
+    JSON-RPC errors and ``isError`` tool results (e.g. Exa's free-tier rate limit).
+
+    SSE frames are split on the SSE line terminators (CRLF, CR, LF) only:
+    ``str.splitlines()`` also breaks on U+0085 / U+2028 / U+2029, which legitimately
+    occur inside CJK page text and would cut a ``data:`` line in two. A parsed envelope with no text is reported as such — it is
+    the vendor's answer, not an unrecognized shape."""
 
     def _from_payload(payload: str) -> Optional[str]:
         payload = payload.strip()
@@ -134,19 +140,32 @@ def _parse_mcp_body(body: str) -> str:
         texts = [c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict)]
         if result.get("isError"):
             raise KeylessMCPError(" ".join(t for t in texts if t) or "MCP tool call failed")
-        return next((str(t) for t in texts if t), None)
+        return next((str(t) for t in texts if t), "")
 
     stripped = body.strip()
     candidates = [stripped] if stripped.startswith("{") else []
-    candidates += [line[len("data: "):] for line in body.splitlines() if line.startswith("data: ")]
+    candidates += [line[len("data: "):] for line in re.split(r"\r\n|\r|\n", body) if line.startswith("data: ")]
+    envelope_seen = False
     for candidate in candidates:
         try:
             text = _from_payload(candidate)
         except json.JSONDecodeError:
             continue
-        if text is not None:
+        if text:
             return text
-    raise KeylessMCPError("Unrecognized MCP response shape")
+        envelope_seen = envelope_seen or text == ""
+    raise KeylessMCPError("MCP response contained no text content" if envelope_seen else "Unrecognized MCP response shape")
+
+
+def _response_text(response: Any) -> str:
+    """Body decoded with the declared charset, else UTF-8. JSON-RPC and SSE bodies are UTF-8 by
+    spec, but ``text/event-stream`` carries no charset and ``requests`` then decodes ``.text`` as
+    ISO-8859-1 — mojibake for every non-ASCII result and, for CJK, stray U+0085 line breaks that
+    made the envelope unparseable."""
+    from requests.utils import get_encoding_from_headers
+    content_type = response.headers.get("Content-Type", "")
+    declared = get_encoding_from_headers({"content-type": content_type}) if "charset=" in content_type.lower() else None
+    return response.content.decode(declared or "utf-8", errors="replace")
 
 
 def mcp_call(url: str, tool: str, arguments: Dict[str, Any], timeout: int = _TIMEOUT_SECONDS) -> str:
@@ -160,8 +179,8 @@ def mcp_call(url: str, tool: str, arguments: Dict[str, Any], timeout: int = _TIM
     except requests.RequestException as exc:
         raise KeylessMCPError(f"request failed: {exc}") from exc
     if response.status_code >= 400:
-        raise KeylessMCPError(f"HTTP {response.status_code}: {response.text[:300]}")
-    return _parse_mcp_body(response.text)
+        raise KeylessMCPError(f"HTTP {response.status_code}: {_response_text(response)[:300]}")
+    return _parse_mcp_body(_response_text(response))
 
 
 # --- Parallel (search.parallel.ai) — JSON text payloads -----------------------
@@ -272,7 +291,7 @@ def _keenable_request(method: str, path: str, **kwargs: Any) -> Dict[str, Any]:
         headers["Content-Type"] = "application/json"
     response = getattr(requests, method)(f"{KEENABLE_API_URL}{path}", headers=headers, timeout=_TIMEOUT_SECONDS, **kwargs)
     if response.status_code >= 400:
-        raise KeylessMCPError((response.text or "").strip() or f"HTTP {response.status_code}")
+        raise KeylessMCPError(_response_text(response).strip() or f"HTTP {response.status_code}")
     return response.json()
 
 

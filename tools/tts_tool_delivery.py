@@ -288,35 +288,8 @@ def _write_wav_bytes_as(wav_bytes: bytes, output_path: str) -> str:
 
 def _convert_to_opus(mp3_path: str) -> Optional[str]:
     """Convert any ffmpeg-readable audio file to OGG Opus next to it; None on failure."""
-    return _ffmpeg_transcode_to_opus(mp3_path, mp3_path.rsplit(".", 1)[0] + ".ogg")
-
-
-def _ffmpeg_transcode_to_opus(input_path: str, ogg_path: str) -> Optional[str]:
-    """Transcode *input_path* to real Ogg/Opus at *ogg_path* (in-place safe via temp file); None on failure."""
-    if shutil.which("ffmpeg") is None:
-        return None
-    in_place = os.path.abspath(input_path) == os.path.abspath(ogg_path)
-    work_path = ogg_path + ".tmp.ogg" if in_place else ogg_path
-    try:
-        result = _ffmpeg_run("ffmpeg", ["-i", input_path, *_OPUS_VOICE_ARGS, "-f", "ogg", work_path, "-y"])
-        if result.returncode != 0:
-            logger.warning("ffmpeg conversion failed with return code %d: %s",
-                           result.returncode, result.stderr.decode('utf-8', errors='ignore')[:200])
-            return None
-        if os.path.exists(work_path) and os.path.getsize(work_path) > 0:
-            if in_place:
-                os.replace(work_path, ogg_path)
-            return ogg_path
-    except subprocess.TimeoutExpired:
-        logger.warning("ffmpeg OGG conversion timed out after 30s")
-    except FileNotFoundError:
-        logger.warning("ffmpeg not found in PATH")
-    except Exception as e:
-        logger.warning("ffmpeg OGG conversion failed: %s", e, exc_info=True)
-    finally:
-        if in_place and os.path.exists(work_path):
-            _remove_quietly(work_path)
-    return None
+    from gateway.platforms.base import transcode_to_ogg_opus
+    return transcode_to_ogg_opus(mp3_path, bitrate="48k", timeout=30, output_path=mp3_path.rsplit(".", 1)[0] + ".ogg")
 
 
 # --- Container sniffing / repair ---
@@ -341,7 +314,8 @@ def _repair_ogg_container(file_str: str) -> str:
     if container in ("ogg", "unknown"):
         return file_str
     logger.info("TTS wrote %s bytes into a .ogg path (%s) — transcoding to real Ogg/Opus", container, file_str)
-    repaired = _ffmpeg_transcode_to_opus(file_str, file_str)
+    from gateway.platforms.base import transcode_to_ogg_opus
+    repaired = transcode_to_ogg_opus(file_str, bitrate="48k", timeout=30, output_path=file_str)
     if repaired:
         return repaired
     honest = f"{file_str[:-4]}.{container}"

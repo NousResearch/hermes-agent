@@ -37,10 +37,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [
-    pytest.mark.windows_only,
-    pytest.mark.skipif(sys.platform != "win32", reason="native Windows only"),
-]
+pytestmark = pytest.mark.platforms("windows")  # native Windows only
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

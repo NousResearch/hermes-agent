@@ -53,7 +53,7 @@ The picker offers two credential choices:
 1. **xAI Grok OAuth (SuperGrok / Premium+)** — opens the browser to `accounts.x.ai` if you're not already logged in
 2. **xAI API key** — prompts for `XAI_API_KEY`
 
-Either choice satisfies the gating. You can pick whichever credentials you already have; the tool works identically with both. If both end up configured, OAuth is preferred at call time.
+Either choice satisfies the gating. You can pick whichever credentials you already have; the tool works identically with both. If both end up configured, the explicit `XAI_API_KEY` is used at call time, with OAuth as the fallback (see [Authentication](#authentication)).
 
 ## Configuration
 

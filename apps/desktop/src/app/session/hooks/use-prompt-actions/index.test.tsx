@@ -35,7 +35,7 @@ import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
 import type { SubmitTextOptions } from './utils'
 
-import { uploadComposerAttachment, usePromptActions } from '.'
+import { uploadComposerAttachment, isClientStagedImagePath, usePromptActions } from '.'
 
 // Suites in this file reuse the same stored-id constants. The module-level
 // single-flight resume map (and drift-recovery cache) would otherwise leak a
@@ -5659,6 +5659,100 @@ describe('uploadComposerAttachment preview reuse', () => {
       filename: 'shot.png',
       session_id: RUNTIME_SESSION_ID
     })
+  })
+})
+
+describe('isClientStagedImagePath (#125122)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('matches composer-images as the final path component across OS separators', () => {
+    expect(
+      isClientStagedImagePath('/Users/kelvin/Library/Application Support/Hermes/composer-images/shot.png', 'composer-images')
+    ).toBe(true)
+    expect(
+      isClientStagedImagePath('C:\\Users\\kelvin\\AppData\\Roaming\\Hermes\\composer-images\\shot.png', 'composer-images')
+    ).toBe(true)
+    // A directory whose ANCESTOR is named composer-images does not match.
+    expect(
+      isClientStagedImagePath('/data/composer-images/cache/shot.png', 'composer-images')
+    ).toBe(false)
+    // A bare file literally named like the dir does not match.
+    expect(isClientStagedImagePath('/tmp/composer-images', 'composer-images')).toBe(false)
+    // Unrelated paths do not match.
+    expect(isClientStagedImagePath('/local/shot.png', 'composer-images')).toBe(false)
+    // No dirname provided -> the fail-safe is inert.
+    expect(isClientStagedImagePath('/Users/x/composer-images/shot.png', '')).toBe(false)
+    expect(isClientStagedImagePath('/Users/x/composer-images/shot.png', undefined)).toBe(false)
+  })
+
+  it('uploads bytes for a composer-staged image even when the session resolves local', async () => {
+    // #125122: pre-existing sessions can misresolve their owner mode as local,
+    // shipping the client-local composer-images path to a remote gateway and
+    // failing 4016 `image not found` on every attempt. A staged image path is
+    // client-local by construction, so the attach must go out as bytes.
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZnJvbS1kaXNr')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        composerImagesDirname: vi.fn(async () => 'composer-images'),
+        readFileDataUrl
+      }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/gw/images/shot.png' } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        id: 'image:shot.png',
+        kind: 'image',
+        label: 'shot.png',
+        path: '/Users/test/Library/Application Support/Hermes/composer-images/composer_saved.png',
+        previewUrl: 'data:image/png;base64,ZnJvbS1wcmV2aWV3'
+      },
+      { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
+    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
+      content_base64: 'ZnJvbS1wcmV2aWV3',
+      filename: 'composer_saved.png',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(uploaded.path).toBe('/gw/images/shot.png')
+  })
+
+  it('keeps shipping ordinary local paths to a local backend', async () => {
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { composerImagesDirname: vi.fn(async () => 'composer-images') }
+    })
+
+    const requestGateway = vi.fn(async () => ({ attached: true, path: '' }) as never)
+
+    await uploadComposerAttachment(
+      {
+        id: 'image:shot.png',
+        kind: 'image',
+        label: 'shot.png',
+        path: '/Users/test/screenshots/shot.png',
+        previewUrl: 'data:image/png;base64,ZnJvbS1wcmV2aWV3'
+      },
+      { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(requestGateway).toHaveBeenCalledWith('image.attach', {
+      path: '/Users/test/screenshots/shot.png',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('image.attach_bytes', expect.anything())
   })
 })
 

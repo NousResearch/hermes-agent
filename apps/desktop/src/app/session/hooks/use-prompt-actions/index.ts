@@ -113,6 +113,54 @@ function attachmentPathNeedsUpload(path: string, backendCwd?: null | string, ter
   return isWindowsAbsolutePath(path.trim()) && POSIX_ABSOLUTE_PATH_RE.test(backendCwd?.trim() || '')
 }
 
+/** True for a path the Desktop itself staged into its composer-images dir.
+
+ * That directory lives under the CLIENT app's userData — a fact about where
+ * the file was written, independent of any connection-mode resolution. When
+ * the owner-mode chain (#120730) misresolves a long-lived session as local,
+ * shipping the bare path still fails 4016 `image not found` against a remote
+ * gateway, so treat client-staged image paths as always-upload-bytes
+ * (#125122): `image.attach_bytes` works against local gateways too. */
+export function isClientStagedImagePath(path: string, composerImagesDirname?: null | string): boolean {
+  const dirname = (composerImagesDirname || '').trim()
+
+  if (!dirname) {
+    return false
+  }
+
+  const normalized = path.trim().replace(/\\/g, '/')
+  const segment = dirname.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+
+  if (!segment || !segment.includes('/')) {
+    // The staging dir's own name (single path segment): match the final component.
+    const parts = normalized.split('/').filter(Boolean)
+
+    return parts.length > 1 && parts[parts.length - 1] === segment
+  }
+
+  return normalized.endsWith(`/${segment}`)
+}
+
+// Final component of the composer's staging dir, fetched once per renderer
+// from the main process (which owns the userData location). Empty when the
+// bridge/main is unavailable — the fail-safe then simply doesn't fire.
+let cachedComposerImagesDirname: string | null = null
+
+async function composerImagesDirname(): Promise<string> {
+  if (cachedComposerImagesDirname !== null) {
+    return cachedComposerImagesDirname
+  }
+
+  try {
+    const dirname = await window.hermesDesktop?.composerImagesDirname?.()
+    cachedComposerImagesDirname = typeof dirname === 'string' ? dirname : ''
+  } catch {
+    cachedComposerImagesDirname = ''
+  }
+
+  return cachedComposerImagesDirname
+}
+
 /**
  * Stage one file/image attachment into the session workspace and return the
  * attachment rewritten with the gateway-side ref. Attachments upload their
@@ -140,7 +188,12 @@ export async function uploadComposerAttachment(
   const { backendCwd, remote, requestGateway, storedSessionId, onRecovered, onSessionRecovered, terminalBackend } = opts
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
-  const uploadBytes = remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
+  // Fail-safe for client-staged composer images (#125122): the staging dir is
+  // client-local by construction, and `remote` can be wrong for long-lived
+  // sessions whose owner-mode chain misresolves — bytes work everywhere.
+  const clientStaged =
+    attachment.kind === 'image' && isClientStagedImagePath(path, await composerImagesDirname())
+  const uploadBytes = remote || clientStaged || attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
 
   // Read bytes/paths ONCE, outside the retry. Only the session-scoped RPC is
   // replayed on recovery — re-reading a multi-MB file to retry a dead session

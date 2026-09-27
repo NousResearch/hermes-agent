@@ -6003,6 +6003,8 @@ async function saveImageFromUrl(rawUrl) {
   return true
 }
 
+export const COMPOSER_IMAGES_DIRNAME = 'composer-images'
+
 async function writeComposerImage(buffer, ext = '.png', name = '') {
   const rawExt = String(ext || '.png')
     .trim()
@@ -6010,7 +6012,7 @@ async function writeComposerImage(buffer, ext = '.png', name = '') {
 
   const normalizedExt = rawExt.startsWith('.') ? rawExt : `.${rawExt}`
   const safeExt = /^\.[a-z0-9]{1,5}$/.test(normalizedExt) ? normalizedExt : '.png'
-  const dir = path.join(app.getPath('userData'), 'composer-images')
+  const dir = path.join(app.getPath('userData'), COMPOSER_IMAGES_DIRNAME)
   await fs.promises.mkdir(dir, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
   const random = crypto.randomBytes(3).toString('hex')
@@ -17560,6 +17562,12 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
 
   return writeComposerImage(buffer, payload?.ext || '.png', payload?.name)
 })
+
+// The renderer's attach decision needs the staging dir's name without the
+// absolute userData path (which the sandboxed renderer must not learn): a
+// path whose final component is the composer-images dir is always
+// client-local (#125122) — the backend cannot resolve it remotely.
+ipcMain.handle('hermes:composerImagesDirname', () => COMPOSER_IMAGES_DIRNAME)
 
 ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
   const text = typeof payload?.text === 'string' ? payload.text : ''

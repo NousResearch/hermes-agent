@@ -363,6 +363,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:context-menu-spellcheck', listener)
   },
   saveImageBuffer: (data, ext, name) => ipcRenderer.invoke('hermes:saveImageBuffer', { data, ext, name }),
+  composerImagesDirname: () => ipcRenderer.invoke('hermes:composerImagesDirname'),
   capturePreview: payload => ipcRenderer.invoke('hermes:capturePreview', payload),
   savePastedText: text => ipcRenderer.invoke('hermes:savePastedText', { text }),
   saveClipboardImage: () => ipcRenderer.invoke('hermes:saveClipboardImage'),

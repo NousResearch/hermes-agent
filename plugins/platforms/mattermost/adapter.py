@@ -17,7 +17,7 @@ import os
 import re
 from pathlib import Path
 from urllib.parse import unquote as _unquote
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -99,6 +99,58 @@ def validate_mattermost_config(config: PlatformConfig) -> bool:
         logger.warning("Mattermost: MATTERMOST_URL not set")
         return False
     return True
+
+
+# Mention-boundary and strip hygiene shared by the edge self-mention cleanup. A mention is
+# only addressable text when it starts at a word boundary (after start/whitespace/punct), so
+# `@Al` must not eat `@Alice`; terminal punct may directly follow a trailing mention.
+_MENTION_BOUNDARY_CHARS = frozenset(" \t\n\r.,;:!?、，。；：！？()[]{}<>\"'`")
+_TRAILING_TERMINAL_PUNCT = frozenset(" \t\n\r.!?。！？")
+
+
+def _strip_edge_self_mentions(text: str, handles: Sequence[str]) -> str:
+    """Remove the receiving bot's own @handles only at the START/END of *text*.
+
+    The old unconditional ``re.sub`` stripped every occurrence, so in a channel served by
+    several bot profiles each adapter deleted ITS OWN handle from the shared post and every
+    profile's model saw a different text: a multi-recipient ``@A @B`` read to A's agent as
+    "addressed to B" (phantom misroute complaints). Inline occurrences — the co-recipient
+    set — are now PRESERVED, mirroring the Feishu adapter's mention handling. Strips are
+    boundary-checked and collapse their own whitespace, so ``**@bot**`` no longer redacts
+    to a literal ``****`` and an inline ``x @bot y`` never leaves a double space (those
+    occurrences now simply stay). See #125380.
+    """
+    if not text:
+        return text
+    names = sorted((h for h in handles if h), key=len, reverse=True)
+    if not names:
+        return text
+    lowered = [nm.lower() for nm in names]
+    remaining = text.lstrip()
+    while True:
+        for nm, nm_low in zip(names, lowered):
+            if remaining[: len(nm)].lower() != nm_low:
+                continue
+            after = remaining[len(nm):]
+            # A longer handle may share this prefix; only strip at a true mention boundary.
+            if after and after[0] not in _MENTION_BOUNDARY_CHARS:
+                continue
+            remaining = after.lstrip()
+            break
+        else:
+            break
+    while True:
+        i = len(remaining)
+        while i > 0 and remaining[i - 1] in _TRAILING_TERMINAL_PUNCT:
+            i -= 1
+        body, tail = remaining[:i], remaining[i:]
+        for nm, nm_low in zip(names, lowered):
+            if body[-len(nm):].lower() != nm_low:
+                continue
+            remaining = body[: -len(nm)].rstrip() + tail
+            break
+        else:
+            return remaining
 
 
 class MattermostAdapter(BasePlatformAdapter):
@@ -509,9 +561,11 @@ class MattermostAdapter(BasePlatformAdapter):
         if require_mention and channel_id not in free_channels and not has_mention:
             logger.debug("Mattermost: skipping non-DM message without @mention (channel=%s)", channel_id)
             return None
-        if has_mention:  # strip the @mention so the agent sees clean input
-            for pattern in mention_patterns:
-                message_text = re.sub(re.escape(pattern), "", message_text, flags=re.IGNORECASE).strip()
+        if has_mention:
+            # Strip only EDGE self-mentions so the model still sees the co-recipient set:
+            # the old strip-everywhere rewrite made `@A @B` read to A's agent as "addressed
+            # to B" in multi-bot channels, and left `****` / double-space residue (#125380).
+            message_text = _strip_edge_self_mentions(message_text, mention_patterns).strip()
         return message_text
 
     async def _download_attachments(self, file_ids: List[str]) -> Tuple[List[str], List[str]]:

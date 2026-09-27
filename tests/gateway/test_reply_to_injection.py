@@ -26,9 +26,9 @@ def _make_runner() -> GatewayRunner:
     return runner
 
 
-def _source() -> SessionSource:
+def _source(platform=Platform.TELEGRAM) -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_id="123",
         chat_name="DM",
         chat_type="private",
@@ -58,6 +58,36 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
         '[Replying to: "Japan is great for culture, food, and efficiency."]'
     )
     assert result.endswith("What's the best time to go?")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply_to_is_own_message", "expected"),
+    [
+        (False, "[Replying to an earlier message (content unavailable)]"),
+        (True, "[Replying to your previous message (content unavailable)]"),
+    ],
+)
+async def test_reply_prefix_preserves_pointer_when_quoted_text_is_unavailable(
+    reply_to_is_own_message, expected
+):
+    runner = _make_runner()
+    source = _source(Platform.WHATSAPP_CLOUD)
+    event = MessageEvent(
+        text="yes, send it",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=None,
+        reply_to_is_own_message=reply_to_is_own_message,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == f"{expected}\n\nyes, send it"
 
 
 @pytest.mark.asyncio
@@ -150,5 +180,3 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result is not None
     assert result.startswith(f'[Replying to: "{quoted}"]')
     assert result.endswith("What's the best time to go?")
-
-

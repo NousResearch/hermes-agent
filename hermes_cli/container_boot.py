@@ -98,8 +98,9 @@ def reconcile_profile_gateways(
     review).
     """
     actions: list[ReconcileAction] = []
-    # ONE gateway per container: named slots are registered (so `hermes -p X gateway start` has a
-    # target and `s6-svstat` can report them) but are NEVER booted from their persisted run intent.
+    # ONE multiplexing gateway per container: named slots are registered (so `hermes -p X gateway
+    # start` has a target and `s6-svstat` can report them) but are never booted from their persisted
+    # run intent, except a `gateway.standalone` profile's (below).
     # This is the s6 leg of the multiplex-only convergence: an image upgraded from a release that
     # booted N per-profile slots comes back up with one multiplexing root gateway and no manual
     # step, instead of N processes fighting over the same profiles.
@@ -149,7 +150,7 @@ def reconcile_profile_gateways(
 def boot_notice(folded: Sequence[str]) -> str:
     """One line naming the profiles whose autostart intent the root slot took over."""
     return ("reconcile: profile gateway(s) " + ", ".join(sorted(folded)) +
-            " asked to autostart; one gateway per container serves every profile, so the ROOT "
+            " asked to autostart; one gateway per container serves every non-standalone profile, so the ROOT "
             "slot (gateway-default) was started instead and multiplexes them.")
 
 

@@ -327,7 +327,10 @@ A standalone profile's adapters, cron, webhook ingress and Kanban
 notifications run only while its own gateway runs, not under the host
 multiplexer or `hermes serve`. Point webhook clients at the standalone
 gateway's own listener; the host's `/p/<profile>/` ingress no longer serves
-it. The cron destination picker still lists standalone profiles as
+it. That listener resolves its port from the profile's own `.env` or
+`config.yaml`, so when both it and the host gateway enable the API server or
+webhook ingress, give the profile its own `API_SERVER_PORT` / `WEBHOOK_PORT`;
+two gateways left on the defaults both try to bind them. The cron destination picker still lists standalone profiles as
 `bot-chat:<name>` targets, but the host cannot deliver to those targets.
 
 `hermes -p coder gateway status` prints `standalone by config

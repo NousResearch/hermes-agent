@@ -507,13 +507,13 @@ def _hermes_cli() -> str:
     selects current dependencies at child start. Keep the historical fallbacks
     for external/developer installs that have no published launcher (#93590).
     """
-    names = ("hermes.exe", "hermes.cmd") if sys.platform == "win32" else ("hermes",)
-    launchers = Path(__file__).resolve().parents[1] / ".hermes" / "bin"
-    for name in names:
-        published = launchers / name
-        if published.is_file():
-            return str(published)
-    sibling = Path(sys.executable or "").parent / names[0]
+    # Do not select batch shims: cmd.exe reinterprets otherwise literal argv
+    # (for example an ampersand in a query-file path), even with shell=False.
+    name = "hermes.exe" if sys.platform == "win32" else "hermes"
+    published = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / name
+    if published.is_file():
+        return str(published)
+    sibling = Path(sys.executable or "").parent / name
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
 
 

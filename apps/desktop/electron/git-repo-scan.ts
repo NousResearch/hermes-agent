@@ -105,12 +105,14 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
 }
 
 /**
- * Scan roots for Git repositories. An empty root list preserves the historical
- * home-directory scan. Disabled discovery returns before resolving home or
- * reading the filesystem.
+ * Scan explicitly configured roots for Git repositories. An empty root list is
+ * intentionally a no-op: silently expanding it to the user's home directory
+ * traverses the whole home (and, on macOS, can reach TCC-protected locations)
+ * during ordinary Desktop startup (#53328). Disabled discovery returns before
+ * resolving home or reading the filesystem.
  */
 export async function scanGitRepos(roots: string[], options: RepoScanOptions = {}) {
-  if (options.enabled === false) {
+  if (options.enabled === false || !Array.isArray(roots) || roots.length === 0) {
     return []
   }
 

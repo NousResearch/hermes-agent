@@ -11,6 +11,8 @@ Reference: https://learn.microsoft.com/azure/ai-foundry/foundry-models/how-to/co
 
 from __future__ import annotations
 
+from pm import install_hint
+import contextvars
 import functools
 import logging
 import os
@@ -24,10 +26,14 @@ logger = logging.getLogger(__name__)
 # scope is an ARM control-plane scope rejected for inference by newer resources; override via ``model.entra.scope``.
 SCOPE_AI_AZURE_DEFAULT = "https://ai.azure.com/.default"
 
-_AZURE_IDENTITY_FEATURE = "provider.azure_identity"
+# ---------------------------------------------------------------------------
+# Lazy SDK import — only loaded when the Entra path is actually used.
+# ---------------------------------------------------------------------------
+
+_AZURE_IDENTITY_FEATURE = "azure-identity"
 _INSTALL_MSG = "The 'azure-identity' package is required for Azure AI Foundry Entra ID authentication. "
 _LAZY_INSTALL_HINT = (
-    "pip install azure-identity manually, or enable lazy installs (security.allow_lazy_installs: true in config.yaml)."
+    f"Run: {install_hint('azure-identity')}"
 )
 _AUTH_HEADERS = ("Authorization", "authorization", "Api-Key", "api-key", "X-Api-Key", "x-api-key")
 
@@ -48,22 +54,23 @@ def _require_azure_identity():
         return _ai
     except ImportError:
         try:
-            from tools.lazy_deps import ensure, FeatureUnavailable
+            from pm import InstallError, ensure_import
         except ImportError as exc:
-            raise ImportError(_INSTALL_MSG + "Install it with: pip install azure-identity") from exc
+            raise ImportError(_INSTALL_MSG + "Run: hermes pm repair") from exc
         try:
-            ensure(_AZURE_IDENTITY_FEATURE, prompt=False)
-        except FeatureUnavailable as exc:
+            ensure_import(_AZURE_IDENTITY_FEATURE)
+        except InstallError as exc:
             raise ImportError(_INSTALL_MSG + str(exc)) from exc
         import azure.identity as _ai  # noqa: WPS440 — retry after lazy install
         return _ai
 
 
 def reset_credential_cache() -> None:
-    """Clear the cached ``DefaultAzureCredential`` (tests, profile switches); tolerates a monkeypatched plain function."""
-    cache_clear = getattr(build_credential, "cache_clear", None)
+    """Clear the cached credentials (tests, profile switches); tolerates a monkeypatched plain function."""
+    cache_clear = getattr(_default_chain_credential, "cache_clear", None)
     if callable(cache_clear):
         cache_clear()
+    _credentials_by_home.clear()
 
 
 @dataclass(frozen=True)
@@ -91,13 +98,64 @@ class EntraIdentityConfig:
 
 
 @functools.lru_cache(maxsize=1)
-def build_credential(config: EntraIdentityConfig) -> Any:
-    """Cached ``DefaultAzureCredential``. ``maxsize=1`` is intentional: a process uses one ``model.entra.*``
-    block at a time. Only Hermes knobs are passed as kwargs; the rest comes from ``AZURE_*`` env vars."""
+def _default_chain_credential(config: EntraIdentityConfig) -> Any:
+    """Cached ``DefaultAzureCredential`` for the unscoped process. ``maxsize=1`` is intentional: a process uses
+    one ``model.entra.*`` block at a time. Only Hermes knobs are passed as kwargs; the rest comes from ``AZURE_*``
+    env vars."""
     ai = _require_azure_identity()
     # SDK default already excludes the browser; only pass the kwarg when opting in.
     kwargs = {} if config.exclude_interactive_browser else {"exclude_interactive_browser_credential": False}
     return ai.DefaultAzureCredential(**kwargs)
+
+
+# Routed multiplex profiles: (home key, config) -> credential. DefaultAzureCredential reads AZURE_* from the
+# process env, which under an override belongs to the LAUNCH profile, so a served profile's service principal
+# is built explicitly from its own secret scope (client secret first, then workload identity). Under multiplex
+# the ambient default chain is refused outright when the profile sets no credential of its own: every source it
+# could mint from (env SP, CLI/azd/PowerShell caches, host managed identity) is the launch context's identity,
+# and _inject_bearer would ship it to whatever base_url the served profile configured.
+_credentials_by_home: Dict[tuple, Any] = {}
+
+_AMBIENT_CHAIN_REFUSAL = (
+    "Entra ID auth is refused for this profile: it sets no AZURE_* credential of its own, and under "
+    "multiplexed profiles the ambient DefaultAzureCredential chain (process env, az CLI caches, host "
+    "managed identity) mints the LAUNCH profile's identity, which would be sent to this profile's "
+    "base_url. Set AZURE_TENANT_ID + AZURE_CLIENT_ID + AZURE_CLIENT_SECRET or "
+    "AZURE_FEDERATED_TOKEN_FILE in this profile's own config; AZURE_CLIENT_ID alone selects the "
+    "host's user-assigned managed identity."
+)
+
+
+def _scoped_credential(ai: Any, config: EntraIdentityConfig) -> Any:
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    scope = current_secret_scope() or {}
+    read = lambda name: (scope.get(name) or "").strip()  # noqa: E731
+    tenant, client = read("AZURE_TENANT_ID"), read("AZURE_CLIENT_ID")
+    if tenant and client and read("AZURE_CLIENT_SECRET"):
+        return ai.ClientSecretCredential(tenant, client, read("AZURE_CLIENT_SECRET"))
+    if tenant and client and read("AZURE_FEDERATED_TOKEN_FILE"):
+        return ai.WorkloadIdentityCredential(tenant_id=tenant, client_id=client, token_file_path=read("AZURE_FEDERATED_TOKEN_FILE"))
+    if client and not tenant and not read("AZURE_CLIENT_SECRET") and not read("AZURE_FEDERATED_TOKEN_FILE"):
+        # AZURE_CLIENT_ID alone names a user-assigned managed identity: an explicit
+        # per-profile choice, not an ambient borrow (same as the SDK's env-driven MI).
+        return ai.ManagedIdentityCredential(client_id=client)
+    if is_multiplex_active():
+        raise RuntimeError(_AMBIENT_CHAIN_REFUSAL)
+    kwargs = {} if config.exclude_interactive_browser else {"exclude_interactive_browser_credential": False}
+    return ai.DefaultAzureCredential(**kwargs)
+
+
+def build_credential(config: EntraIdentityConfig) -> Any:
+    """Cached Entra credential: the process-wide default chain when unscoped, the routed profile's own
+    credential (built from its secret scope) under a HERMES_HOME override."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        return _default_chain_credential(config)
+    key = (hermes_home_key(), config)
+    credential = _credentials_by_home.get(key)
+    if credential is None:
+        credential = _credentials_by_home[key] = _scoped_credential(_require_azure_identity(), config)
+    return credential
 
 
 def _resolve_config(config: Optional[EntraIdentityConfig], scope: Optional[str], **overrides: Any) -> EntraIdentityConfig:
@@ -111,7 +169,7 @@ def _install_failure(allow_install: bool) -> Optional[Dict[str, Any]]:
     if has_azure_identity_installed():
         return None
     if not allow_install:
-        return {"error": "azure-identity not installed", "hint": "pip install azure-identity (or rely on lazy install at first use)"}
+        return {"error": "azure-identity not installed", "hint": _LAZY_INSTALL_HINT}
     try:
         _require_azure_identity()
     except ImportError as exc:
@@ -132,6 +190,7 @@ def build_token_provider(scope: Optional[str] = None, *, config: Optional[EntraI
 def _probe_token(config: EntraIdentityConfig, timeout_seconds: float) -> Optional[Dict[str, Any]]:
     """``get_token`` on a daemon thread under a hard deadline → ``{"token"}`` / ``{"error"}`` / None on timeout."""
     result: Dict[str, Any] = {}
+    ctx = contextvars.copy_context()
 
     def _probe() -> None:
         try:
@@ -139,7 +198,9 @@ def _probe_token(config: EntraIdentityConfig, timeout_seconds: float) -> Optiona
         except Exception as exc:
             result["error"] = str(exc)
 
-    thread = threading.Thread(target=_probe, daemon=True)
+    # A bare Thread drops contextvars, so the probe would run UNSCOPED under
+    # multiplexing — minting the launch profile's chain and hiding the refusal.
+    thread = threading.Thread(target=lambda: ctx.run(_probe), daemon=True)
     thread.start()
     thread.join(timeout=max(0.01, timeout_seconds))
     return None if thread.is_alive() else result
@@ -172,19 +233,18 @@ def _env(name: str) -> str:
 
 def _scoped_env(name: str) -> str:
     """Credential-bearing env read via the profile secret scope so a multiplexed profile never reports
-    another profile's env-bridged credentials; unscoped CLI probes fall back to plain env."""
-    try:
-        from agent.secret_scope import get_secret
-        return (get_secret(name) or "").strip()
-    except Exception:  # UnscopedSecretError, import failure, or any scope error
-        return _env(name)
+    another profile's env-bridged credentials. Unscoped CLI probes (multiplex off) read the process
+    env through ``get_secret`` itself; a scope-less multiplex caller raises — spawn-site bug."""
+    from agent.secret_scope import get_secret
+
+    return (get_secret(name) or "").strip()
 
 
 # (label, predicate) for env-var-driven credential sources, in chain order.
 _ENV_SOURCE_CHECKS = (
     ("WorkloadIdentityCredential (AZURE_FEDERATED_TOKEN_FILE)", lambda: _scoped_env("AZURE_FEDERATED_TOKEN_FILE")),
     ("EnvironmentCredential (client secret)",
-     lambda: _env("AZURE_CLIENT_ID") and _scoped_env("AZURE_CLIENT_SECRET") and _env("AZURE_TENANT_ID")),
+     lambda: _scoped_env("AZURE_CLIENT_ID") and _scoped_env("AZURE_CLIENT_SECRET") and _scoped_env("AZURE_TENANT_ID")),
     ("ManagedIdentityCredential (IDENTITY_ENDPOINT)", lambda: _env("IDENTITY_ENDPOINT") or _env("MSI_ENDPOINT")),
 )
 
@@ -202,7 +262,7 @@ def describe_active_credential(config: Optional[EntraIdentityConfig] = None, *, 
         return info
     config = _resolve_config(config, scope, **overrides)
     info["scope"] = config.scope
-    if tenant := _env("AZURE_TENANT_ID"):
+    if tenant := _scoped_env("AZURE_TENANT_ID"):
         info["tenant_id_env"] = tenant
     info["env_sources"] = [label for label, present in _ENV_SOURCE_CHECKS if present()]
     result = _probe_token(config, timeout_seconds)

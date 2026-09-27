@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 try:
-    import yaml
+    from ruamel import yaml
 except Exception:  # pragma: no cover - handled at runtime
     yaml = None
 
@@ -147,7 +147,7 @@ MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
     },
     "session-config": {
         "label": "Session configuration",
-        "description": "Import session reset policies (daily/idle) into Hermes session_reset config.",
+        "description": "Archive advanced session settings; automatic reset timers are not imported.",
     },
     "full-providers": {
         "label": "Full model provider definitions",
@@ -371,7 +371,7 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
       :class:`ConfigReadError` so the caller refuses and leaves the file
       byte-identical.
 
-    ``yaml is None`` (PyYAML not installed) still yields ``{}``: nothing can be
+    ``yaml is None`` (ruamel.yaml not installed) still yields ``{}``: nothing can be
     written in that state either, since :func:`dump_yaml_file` raises.
     """
     if yaml is None or not path.exists():
@@ -386,7 +386,9 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
             f"({exc}). Fix the file permissions or move it aside first."
         ) from exc
     try:
-        data = yaml.safe_load(raw)
+        reader = yaml.YAML(typ="safe")
+        reader.version = (1, 1)  # Match Hermes' existing config scalar semantics.
+        data = reader.load(raw)
     except yaml.YAMLError as exc:
         raise ConfigReadError(
             f"Refusing to overwrite {path}: the existing file is not valid YAML "
@@ -421,7 +423,7 @@ def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
     ``~/.hermes/config.yaml`` into a dotfiles repo or profile package.
     """
     if yaml is None:
-        raise RuntimeError("PyYAML is required to update Hermes config.yaml")
+        raise RuntimeError("ruamel.yaml is required to update Hermes config.yaml")
     ensure_parent(path)
     target = os.path.realpath(str(path)) if os.path.islink(str(path)) else str(path)
     fd, tmp_path = tempfile.mkstemp(
@@ -429,7 +431,13 @@ def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(yaml.safe_dump(data, sort_keys=False, allow_unicode=False))
+            # The C emitter leaves YAML 1.1 boolean-like strings unquoted.
+            writer = yaml.YAML(typ="safe", pure=True)
+            writer.version = (1, 1)
+            writer.default_flow_style = False
+            writer.sort_base_mapping_type_on_output = False
+            writer.allow_unicode = False
+            writer.dump(data, handle)
             handle.flush()
             os.fsync(handle.fileno())
         try:
@@ -915,7 +923,6 @@ class Migrator:
         "hooks-config",
         "agent-config",
         "gateway-config",
-        "session-config",
         "full-providers",
         "deep-channels",
         "browser-config",
@@ -1342,7 +1349,7 @@ class Migrator:
             self.record("command-allowlist", None, destination, "skipped", "No OpenClaw exec approvals file found")
             return
         if yaml is None:
-            self.record("command-allowlist", source, destination, "error", "PyYAML is not available")
+            self.record("command-allowlist", source, destination, "error", "ruamel.yaml is not available")
             return
 
         try:
@@ -1840,7 +1847,7 @@ class Migrator:
                     break
 
         if yaml is None:
-            self.record("model-config", source_path, destination, "error", "PyYAML is not available")
+            self.record("model-config", source_path, destination, "error", "ruamel.yaml is not available")
             return
 
         hermes_config = load_yaml_file(destination)
@@ -1875,7 +1882,7 @@ class Migrator:
             return
 
         if yaml is None:
-            self.record("tts-config", source_path, destination, "error", "PyYAML is not available")
+            self.record("tts-config", source_path, destination, "error", "ruamel.yaml is not available")
             return
 
         tts_data: Dict[str, Any] = {}
@@ -2573,48 +2580,9 @@ class Migrator:
             self.record("session-config", None, None, "skipped", "No session configuration found")
             return
 
-        hermes_cfg_path = self.target_root / "config.yaml"
-        hermes_cfg = load_yaml_file(hermes_cfg_path)
-        sr = hermes_cfg.get("session_reset") or {}
-        changes = False
-
-        # OpenClaw uses session.reset (structured) and session.resetTriggers (string array)
-        reset = session.get("reset") or {}
-        reset_triggers = session.get("resetTriggers") or session.get("reset_triggers") or []
-
-        if reset:
-            # Structured reset config: has mode, atHour, idleMinutes
-            mode = reset.get("mode", "")
-            if mode == "daily":
-                sr["mode"] = "daily"
-            elif mode == "idle":
-                sr["mode"] = "idle"
-            else:
-                sr["mode"] = mode or "none"
-            if reset.get("atHour") is not None:
-                sr["at_hour"] = reset["atHour"]
-            if reset.get("idleMinutes"):
-                sr["idle_minutes"] = reset["idleMinutes"]
-            changes = True
-        elif isinstance(reset_triggers, list) and reset_triggers:
-            # Simple string triggers: ["daily", "idle"]
-            has_daily = "daily" in reset_triggers
-            has_idle = "idle" in reset_triggers
-            if has_daily and has_idle:
-                sr["mode"] = "both"
-            elif has_daily:
-                sr["mode"] = "daily"
-            elif has_idle:
-                sr["mode"] = "idle"
-            changes = True
-
-        if changes:
-            hermes_cfg["session_reset"] = sr
-            if self.execute:
-                self.maybe_backup(hermes_cfg_path)
-                dump_yaml_file(hermes_cfg_path, hermes_cfg)
-            self.record("session-config", "openclaw.json session.resetTriggers",
-                        "config.yaml session_reset", "migrated")
+        if session.get("reset") or session.get("resetTriggers") or session.get("reset_triggers"):
+            self.record("session-config", "session reset timers", None, "skipped",
+                        "Hermes conversations do not reset on idle or daily timers")
 
         # Archive full session config (identity links, thread bindings, etc.)
         complex_keys = {"identityLinks", "threadBindings", "maintenance", "scope", "sendPolicy"}

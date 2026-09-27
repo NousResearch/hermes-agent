@@ -7,11 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -154,10 +154,9 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     runner = _make_runner()
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(
         gateway_run,
-        "_load_gateway_runtime_config",
+        "_load_gateway_config",
         lambda: {"agent": {"service_tier": "fast"}},
     )
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")

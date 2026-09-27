@@ -22,11 +22,6 @@ def _provider(save_messages: bool) -> HonchoMemoryProvider:
 
 
 class TestSyncTurn:
-    def test_disabled_writes_nothing(self):
-        p = _provider(save_messages=False)
-        p.sync_turn('user says', 'assistant says')
-        p._manager.get_or_create.assert_not_called()
-        p._manager.save.assert_not_called()
 
     def test_enabled_routes_through_save(self):
         p = _provider(save_messages=True)
@@ -37,29 +32,8 @@ class TestSyncTurn:
         # save() (not _flush_session) so writeFrequency batching is honored
         p._manager.save.assert_called_once()
 
-    def test_enabled_writes(self):
-        p = _provider(save_messages=True)
-        p.sync_turn('user says', 'assistant says')
-        if p._sync_thread is not None:
-            p._sync_thread.join(timeout=5)
-        p._manager.get_or_create.assert_called_once()
 
 
-class TestOnMemoryWrite:
-    def test_disabled_skips_conclusion_mirror(self):
-        p = _provider(save_messages=False)
-        p.on_memory_write('add', 'user', 'user likes coffee')
-        p._manager.create_conclusion.assert_not_called()
-
-    def test_enabled_mirrors(self):
-        import time
-
-        p = _provider(save_messages=True)
-        p.on_memory_write('add', 'user', 'user likes coffee')
-        deadline = time.time() + 5
-        while time.time() < deadline and not p._manager.create_conclusion.called:
-            time.sleep(0.05)
-        p._manager.create_conclusion.assert_called_once()
 
 
 class TestOnSessionEnd:

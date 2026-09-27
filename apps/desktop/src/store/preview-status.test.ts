@@ -1,13 +1,19 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
+
 import {
   $previewStatusBySession,
   clearPreviewArtifacts,
   dismissPreviewArtifact,
   recordPreviewArtifact
 } from './preview-status'
+import { recordSessionEventScope } from './session-states'
 
-beforeEach(() => $previewStatusBySession.set({}))
+beforeEach(() => {
+  window.localStorage.clear()
+  $previewStatusBySession.set({})
+})
 
 describe('recordPreviewArtifact', () => {
   it('appends new targets newest-last and is idempotent', () => {
@@ -37,5 +43,38 @@ describe('recordPreviewArtifact', () => {
 
     clearPreviewArtifacts('s1')
     expect($previewStatusBySession.get().s1).toBeUndefined()
+  })
+
+  it('keeps dismissal with the session owner across foreground changes and runtime rebinds', () => {
+    const record = (runtime: string, connectionId: string, profile: string) => {
+      recordSessionEventScope({ session_id: runtime, connectionId, profile })
+      recordPreviewArtifact(runtime, '/work/report.html', '/work', 'same-stored-id')
+    }
+
+    record('owner-a', 'local', 'alpha')
+    dismissPreviewArtifact('owner-a', '/work/report.html', 'same-stored-id')
+    $previewStatusBySession.set({})
+    rescopeConnectionScopedStores({ mode: 'remote', baseUrl: 'https://other.invalid', profile: 'other' })
+    record('owner-a-rebound', 'local', 'alpha')
+    record('other-profile', 'local', 'beta')
+    record('other-connection', 'remote', 'alpha')
+    expect($previewStatusBySession.get()['owner-a-rebound']).toBeUndefined()
+    expect($previewStatusBySession.get()['other-profile']).toHaveLength(1)
+    expect($previewStatusBySession.get()['other-connection']).toHaveLength(1)
+    rescopeConnectionScopedStores({ mode: 'local' })
+  })
+
+  it('deduplicates equivalent file URLs without hiding distinct same-named files', () => {
+    recordPreviewArtifact('files', '/work/one/index.html', '/work')
+    recordPreviewArtifact('files', 'file:///work/one/index.html', '/work')
+    recordPreviewArtifact('files', './one/index.html', '/work')
+    recordPreviewArtifact('files', '/work/two/index.html', '/work')
+
+    const items = $previewStatusBySession.get().files
+    expect(items).toHaveLength(2)
+    expect(new Set(items.map(item => item.label)).size).toBe(2)
+    dismissPreviewArtifact('files', items[0].id)
+    recordPreviewArtifact('files', 'file:///work/one/index.html', '/work')
+    expect($previewStatusBySession.get().files).toHaveLength(1)
   })
 })

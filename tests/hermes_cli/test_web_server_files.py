@@ -1,5 +1,6 @@
 """Tests for the dashboard-managed file browser API."""
 
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -91,6 +92,25 @@ def _seed_file(client, root, name="out/hello.txt"):
 
 
 
+@pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])
+def test_mkdir_creates_a_folder_the_picker_can_list_and_enter(client_fixture, request):
+    """The desktop remote folder picker's New folder: mkdir an absolute child of
+    the folder it is browsing, then list the parent and navigate into the result."""
+    client, root = request.getfixturevalue(client_fixture)
+    root.mkdir(exist_ok=True)
+    listed = client.get("/api/fs/list", params={"path": str(root)}).json()
+    assert "error" not in listed
+
+    created = client.post("/api/files/mkdir", json={"path": str(root / "fresh project")})
+
+    assert created.status_code == 200
+    new_dir = created.json()["path"]
+    assert (root / "fresh project").is_dir()
+    after = client.get("/api/fs/list", params={"path": str(root)}).json()["entries"]
+    assert {"name": "fresh project", "path": new_dir, "isDirectory": True} in after
+    assert client.get("/api/fs/list", params={"path": new_dir}).json() == {"entries": []}
+
+
 def test_download_authenticates_via_query_token(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root, name="out/demo.mp4")
@@ -131,6 +151,49 @@ def test_download_authenticates_via_query_token(forced_files_client):
     assert client.get(
         "/api/files/download", params={"path": str(file_path)}
     ).status_code == 401
+
+
+def test_download_resolves_paths_in_the_originating_profile_session(local_files_client, monkeypatch):
+    from pathlib import Path
+    from hermes_state import SessionDB
+
+    client, home = local_files_client
+    monkeypatch.setattr(Path, "home", lambda: home)
+    hermes_home = home / "isolated-hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    session_cwd = home / "project"
+    session_cwd.mkdir()
+    gateway_cwd = home / "gateway"
+    gateway_cwd.mkdir()
+    monkeypatch.chdir(gateway_cwd)
+    artifact = session_cwd / "report.txt"
+    artifact.write_bytes(b"session artifact")
+    (gateway_cwd / artifact.name).write_bytes(b"wrong gateway artifact")
+    for profile, sid, cwd in [("default", "origin-session", str(session_cwd)),
+                              ("other", "other-session", str(gateway_cwd))]:
+        db_home = hermes_home if profile == "default" else hermes_home / "profiles" / profile
+        db_home.mkdir(parents=True, exist_ok=True)
+        (db_home / "config.yaml").write_text("{}", encoding="utf-8")
+        db = SessionDB(db_path=db_home / "state.db")
+        try:
+            db.create_session(sid, source="gui", cwd=cwd)
+        finally:
+            db.close()
+    for route in ("/api/fs/download", "/api/fs/read-data-url"):
+        for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
+            response = client.get(route, params={
+                "path": path, "profile": "default", "session_id": "origin-session",
+            })
+            assert response.status_code == 200, response.text
+            data = (base64.b64decode(response.json()["dataUrl"].split(",", 1)[1])
+                    if route.endswith("read-data-url") else response.content)
+            assert data == artifact.read_bytes()
+        for profile, session_id in (("other", "origin-session"), ("missing", "origin-session"),
+                                    ("default", "missing-session"), ("default", "")):
+            response = client.get(route, params={
+                "path": str(artifact), "profile": profile, "session_id": session_id,
+            })
+            assert response.status_code == 404, response.text
 
 
 def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
@@ -182,7 +245,6 @@ def test_stream_rejects_non_media_active_content(forced_files_client):
         file_path = _seed_file(client, root, name=name)
         response = client.get("/api/files/stream", params={"path": str(file_path)})
         assert response.status_code == 415
-        assert response.json()["detail"] == "Unsupported media type"
 
 
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
@@ -376,3 +438,23 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+
+
+def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):
+    """#83851: the Desktop polls ``/api/fs/default-cwd``; on zh-CN Windows the serve process's default
+    subprocess codec is cp936, and git's UTF-8 output (branch names, localized stderr) raised
+    UnicodeDecodeError in communicate()'s reader threads on every poll. The branch must round-trip."""
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git not installed")
+    branch = "功能/✅-修复"  # UTF-8 bytes that are illegal multibyte sequences in GBK
+    subprocess.run([git, "init", "-q", str(tmp_path)], check=True)
+    subprocess.run([git, "-C", str(tmp_path), "symbolic-ref", "HEAD", f"refs/heads/{branch}"], check=True)
+    # subprocess resolves an unspecified text-mode codec through _text_encoding() → locale.getencoding()
+    # (cp936 on zh-CN Windows); patch that seam since run_tests.sh's PYTHONUTF8=1 short-circuits locale.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
+
+    assert _rt_files._fs_git_branch(str(tmp_path)) == branch

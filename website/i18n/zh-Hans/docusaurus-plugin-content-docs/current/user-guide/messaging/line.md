@@ -173,6 +173,7 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # 默认推送目标
 | `LINE_BUTTON_LABEL` | 否 | "Get answer" | 按钮标签 |
 | `LINE_DELIVERED_TEXT` | 否 | "Already replied ✅" | 再次点击已送达按钮时的回复 |
 | `LINE_INTERRUPTED_TEXT` | 否 | "Run was interrupted before completion." | 点击 `/stop` 孤立按钮时的回复 |
+| `LINE_EXPIRED_TEXT` | 否 | "That request has expired — send your message again." | 点击缓存答案已失效的按钮时的回复 |
 
 ---
 

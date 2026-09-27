@@ -10,6 +10,7 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
+import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -61,10 +62,17 @@ export function PromptZone({
   onClarifyAnswer,
   onClarifyQuestionAnswer,
   onSecretSubmit,
-  onSudoSubmit
+  onSudoSubmit,
+  onVaultUnlockSubmit
 }: Pick<
   AppOverlaysProps,
-  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onClarifyQuestionAnswer' | 'onSecretSubmit' | 'onSudoSubmit'
+  | 'cols'
+  | 'onApprovalChoice'
+  | 'onClarifyAnswer'
+  | 'onClarifyQuestionAnswer'
+  | 'onSecretSubmit'
+  | 'onSudoSubmit'
+  | 'onVaultUnlockSubmit'
 >) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
@@ -105,6 +113,14 @@ export function PromptZone({
     return (
       <PromptCell cols={cols} id="subscription">
         <SubscriptionOverlay onClose={onClose} onPatch={onPatch} overlay={current} t={theme} />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.connection) {
+    return (
+      <PromptCell cols={cols} id="connection">
+        <ConnectionSetupOverlay cols={cols} t={theme} />
       </PromptCell>
     )
   }
@@ -164,6 +180,21 @@ export function PromptZone({
     )
   }
 
+  if (overlay.vaultUnlock) {
+    return (
+      <PromptCell cols={cols} id="vault-unlock">
+        <MaskedPrompt
+          cols={cols}
+          icon="🔐"
+          label={`Unlock ${overlay.vaultUnlock.displayName} for this session`}
+          onSubmit={onVaultUnlockSubmit}
+          sub="master password · hidden · goes to the manager CLI only · Esc keeps it locked"
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
   return null
 }
 
@@ -171,6 +202,7 @@ export function FloatingOverlays({
   cols,
   compIdx,
   completions,
+  nativeMode = false,
   onActiveSessionSelect,
   onActiveSessionClose,
   onModelSelect,
@@ -190,7 +222,7 @@ export function FloatingOverlays({
   | 'onNewPromptSession'
   | 'onResumeSelect'
   | 'pagerPageSize'
->) {
+> & { nativeMode?: boolean }) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
@@ -381,9 +413,15 @@ export function FloatingOverlays({
     })
   }
 
-  return (
+  const grid = <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
+
+  return nativeMode ? (
+    <Box alignItems="flex-start" flexDirection="column" marginBottom={1} width="100%">
+      {grid}
+    </Box>
+  ) : (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
+      {grid}
     </Box>
   )
 }

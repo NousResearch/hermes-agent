@@ -5,6 +5,7 @@ import { $composerActionsBySession } from '@/store/composer-actions'
 import { $statusItemsBySession } from '@/store/composer-status'
 import { $previewStatusBySession } from '@/store/preview-status'
 import { $sessionControlBySession } from '@/store/session-control'
+import { $retainedTodosBySession } from '@/store/todos'
 
 /** Structural view of the per-session feeds — they hold different item
  *  types, and all this hook needs from each is "does this key have rows". */
@@ -19,7 +20,8 @@ const subscribe = (onChange: () => void) => {
   const offs = [
     ...FEEDS.map(feed => feed.listen(onChange)),
     $sessionControlBySession.listen(onChange),
-    $clarifyRequests.listen(onChange)
+    $clarifyRequests.listen(onChange),
+    $retainedTodosBySession.listen(onChange)
   ]
 
   return () => {
@@ -41,13 +43,17 @@ const subscribe = (onChange: () => void) => {
  * OTHER sessions. The boolean snapshot bails out of all of that, re-rendering
  * only on the actual show/hide transition.
  */
-export function useSessionStatusPresence(sessionId: string | null): boolean {
+export function useSessionStatusPresence(sessionId: string | null, busy = false): boolean {
   return useSyncExternalStore(subscribe, () => {
     if (!sessionId) {
       return false
     }
 
     if ($clarifyRequests.get()[sessionId] || FEEDS.some(feed => (feed.get()[sessionId]?.length ?? 0) > 0)) {
+      return true
+    }
+
+    if (!busy && ($retainedTodosBySession.get()[sessionId]?.length ?? 0) > 0) {
       return true
     }
 

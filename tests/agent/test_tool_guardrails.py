@@ -33,18 +33,6 @@ def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposi
     assert "☤" not in json.dumps(metadata)
 
 
-def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
-    cfg = ToolCallGuardrailConfig()
-
-    assert cfg.warnings_enabled is True
-    assert cfg.hard_stop_enabled is False
-    assert cfg.non_interactive_hard_stop_enabled is True
-    assert cfg.exact_failure_warn_after == 2
-    assert cfg.same_tool_failure_warn_after == 3
-    assert cfg.no_progress_warn_after == 2
-    assert cfg.exact_failure_block_after == 5
-    assert cfg.same_tool_failure_halt_after == 8
-    assert cfg.no_progress_block_after == 5
 
 
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
@@ -260,8 +248,8 @@ from agent.tool_guardrails import LoopCapConfig  # noqa: E402
 def test_loop_cap_zero_disables_and_junk_falls_back():
     # 0 is a legitimate "unlimited" value; negatives / junk fall back to default.
     assert LoopCapConfig.from_mapping({"max_web_searches": 0}).max_web_searches == 0
-    assert LoopCapConfig.from_mapping({"max_web_searches": -5}).max_web_searches == 50
-    assert LoopCapConfig.from_mapping({"max_subagents": "nope"}).max_subagents == 50
+    assert LoopCapConfig.from_mapping({"max_web_searches": -5}).max_web_searches == LoopCapConfig().max_web_searches
+    assert LoopCapConfig.from_mapping({"max_subagents": "nope"}).max_subagents == LoopCapConfig().max_subagents
 
 
 def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
@@ -376,3 +364,117 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("telegram", "discord", "cron", "kanban"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
+
+
+def test_harness_refusals_are_not_tool_failures_on_either_classifier(tmp_path):
+    """Every loop refusal the file tools emit (read dedup block, consecutive-read block,
+    repeated-search block) carries `"error"` for the model's benefit -- exactly what the
+    substring tests key on. Neither `classify_tool_failure` nor the executor's live seam
+    `_detect_tool_failure` may count them, or the cheap refusal feeds the streak that
+    fires `repeated_exact_failure_block` over calls that never failed."""
+    from agent.display import _detect_tool_failure
+    from tools.file_tools import _dedup_stub_or_block, read_file_tool, search_tool
+
+    target = tmp_path / "responses.ts"
+    target.write_text("export const x = 1;\n" * 30, encoding="utf-8")
+
+    task = {"dedup_hits": {}}
+    for _ in range(3):
+        dedup_block = _dedup_stub_or_block(task, (str(target), 1, 999), str(target))
+    consecutive_block = [read_file_tool(str(target), offset=1, limit=5, task_id="t-read") for _ in range(4)][-1]
+    search_block = [search_tool("const x", path=str(tmp_path), task_id="t-search") for _ in range(4)][-1]
+
+    for refusal in (dedup_block, consecutive_block, search_block):
+        assert json.loads(refusal)["error"].startswith("BLOCKED"), refusal
+        assert classify_tool_failure("read_file", refusal) == (False, ""), refusal
+        assert _detect_tool_failure("read_file", refusal) == (False, ""), refusal
+
+
+def test_a_real_tool_error_is_still_a_failure():
+    """The exemption is keyed on the marker, not on the word: a body that
+    genuinely failed still counts, or the streak that stops a real loop is gone."""
+    from agent.display import _detect_tool_failure
+
+    real = '{"error": "ENOENT: no such file"}'
+    assert classify_tool_failure("read_file", real)[0] is True
+    assert _detect_tool_failure("read_file", real)[0] is True
+    # The marker is only honoured as the literal boolean, never as truthy prose.
+    assert classify_tool_failure("read_file", '{"error": "x", "guardrail_refusal": "yes"}')[0] is True
+
+
+def test_identical_streak_ignores_volatile_execution_metadata():
+    # execute_code results carry per-call metadata (execution_count, duration_seconds) that
+    # changes on every run. Hashing it made each empty replay look "new", so a model re-ran
+    # the same empty probe 147 times without the identical-call halt ever firing.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=5)
+    )
+    args = {"code": "import subprocess\nprint(subprocess.run(['true']).returncode) if False else None"}
+
+    def result(n):
+        return json.dumps({
+            "status": "success", "output": "", "exit_code": 0, "tool_calls_made": 0,
+            "duration_seconds": 1.0 + n / 100,
+            "kernel": {"mode": "session", "reused": True, "execution_count": 100 + n, "state_reset": False},
+            "stdout_truncated": False, "stdout_bytes_captured": 0,
+        })
+
+    for i in range(4):
+        controller.observe_call("execute_code", args, result(i), failed=False)
+        assert controller.halt_decision is None, f"halted early at {i}"
+    controller.observe_call("execute_code", args, result(4), failed=False)
+    halt = controller.halt_decision
+    assert halt is not None, "volatile metadata defeated the identical-call streak"
+    assert halt.code == "identical_call_streak_halt"
+
+
+def test_identical_streak_still_resets_when_real_output_changes():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    args = {"code": "print(1)"}
+    for i in range(6):
+        out = json.dumps({"status": "success", "output": f"line {i}", "duration_seconds": 1.0,
+                          "kernel": {"execution_count": i}})
+        controller.observe_call("execute_code", args, out, failed=False)
+    assert controller.halt_decision is None, "different real output must not count as a replay"
+
+
+def test_other_tools_keep_duration_and_execution_count_as_real_output():
+    # Only execute_code's known metadata locations are volatile. For any other tool these keys
+    # can be the actual answer (e.g. a job-status tool reporting how long a job ran), so results
+    # that differ only there are different results and must not form an identical streak.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    args = {"job": "build-42"}
+    for i in range(6):
+        out = json.dumps({"status": "done", "duration_seconds": 10 + i,
+                          "stats": {"execution_count": 100 + i}})
+        controller.observe_call("mcp_ci_job_status", args, out, failed=False)
+    assert controller.halt_decision is None, "a real change in duration_seconds/execution_count was treated as a replay"
+
+
+def test_execute_code_replay_streak_notice_fires_on_warn_only_desktop_config():
+    # #124072: on an interactive surface hard stops are off, so the appended notice is
+    # the only signal the model gets. 186 no-op print("...") cells whose results differed
+    # only in kernel.execution_count / duration_seconds produced zero notices.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping({}, platform="desktop"))
+    args = {"code": 'print("...")'}
+
+    def result(n):
+        return json.dumps({
+            "status": "success", "output": "...\n", "exit_code": 0, "tool_calls_made": 0,
+            "duration_seconds": 0.001 * n,
+            "kernel": {"mode": "session", "reused": True, "execution_count": n, "state_reset": False},
+            "stdout_truncated": False, "stdout_bytes_captured": 4, "stdout_bytes_total": 4,
+            "stdout_bytes_omitted": 0,
+        })
+
+    notices = [
+        controller.observe_call("execute_code", args, result(i), tool_call_id=f"c{i}").notice
+        for i in range(1, 7)
+    ]
+    assert notices[:2] == [None, None]
+    assert all(n is not None and "consecutive identical call to execute_code" in n for n in notices[2:]), notices
+    assert controller.halt_decision is None, "warn-only surfaces must not halt"

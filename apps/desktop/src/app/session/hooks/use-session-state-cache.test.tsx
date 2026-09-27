@@ -1,8 +1,11 @@
-import { act, cleanup, render } from '@testing-library/react'
-import { type MutableRefObject, useLayoutEffect } from 'react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
+import { type MutableRefObject, useLayoutEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { group } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionStoredIdRotation,
   $currentFastMode,
@@ -11,6 +14,8 @@ import {
   $currentReasoningEffort,
   $currentServiceTier,
   $messages,
+  $selectedStoredSessionId,
+  $sessionStartedAt,
   $turnStartedAt,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -19,16 +24,25 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setSelectedStoredSessionId,
+  setSessions,
+  setSessionStartedAt,
   setTurnStartedAt
 } from '@/store/session'
 import {
   $sessionStates,
+  $sessionTiles,
   clearAllSessionStates,
+  closeSessionTile,
+  openSessionTile,
   reconcileBusyStatesOnReconnect,
   type SessionTileDelegate,
-  setSessionTileDelegate
+  setSessionTileDelegate,
+  setZoneParkedTiles
 } from '@/store/session-states'
 
+import { useSessionActions } from './use-session-actions'
+import { cachedSessionRow } from './use-session-actions/utils'
 import { useSessionStateCache } from './use-session-state-cache'
 
 type Cache = ReturnType<typeof useSessionStateCache>
@@ -42,14 +56,21 @@ interface HarnessProps {
 describe('useSessionStateCache — stored-id rotation provenance', () => {
   afterEach(() => {
     cleanup()
+    clearAllSessionStates()
     setActiveSessionId(null)
     setActiveSessionStoredIdRotation(null)
+    setSelectedStoredSessionId(null)
+    setSessions([])
+    $sessionTiles.set([])
+    $layoutTree.set(null)
+    noteActiveTreeGroup(null)
+    window.history.pushState({}, '', '/')
   })
-
   it('emits the previous, next, and runtime ids and removes the stale reverse mapping', () => {
     let cache!: Cache
 
     setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
     render(
       <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
     )
@@ -85,6 +106,235 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
   })
+
+  // The foreground has three voices — the stored selection, the HashRouter
+  // route and the focused layout pane. Any one of them naming a session
+  // outside the rotating lineage means the user already moved on (#86106).
+  it.each([
+    {
+      surface: 'selection',
+      arm: () => setSelectedStoredSessionId('stored-B'),
+      selected: 'stored-B'
+    },
+    {
+      // Also the pop-out/secondary-window shape: `isSecondaryWindow()` starts
+      // that renderer with `$sessionTiles` empty AND `$layoutTree` null, so
+      // `$focusedStoredSessionId` collapses to the selection and the route is
+      // the only voice left. No tiles and no tree is exactly this case.
+      surface: 'hash route',
+      arm: () => window.history.pushState({}, '', '/#/stored-B'),
+      selected: null
+    },
+    {
+      surface: 'focused tile',
+      arm: () => {
+        // Route and selection still name A while tile B holds the layout
+        // focus. The selection is armed BEFORE the layout: its listener homes
+        // focus to the workspace, so the tile focus must be noted last.
+        setSessions([{ id: 'stored-A' }, { id: 'stored-B' }] as never)
+        $sessionTiles.set([{ storedSessionId: 'stored-B' }])
+        setSelectedStoredSessionId('stored-A')
+        window.history.pushState({}, '', '/#/stored-A')
+        $layoutTree.set(
+          group(['workspace', 'session-tile:stored-B'], { active: 'session-tile:stored-B', id: 'grp-main' })
+        )
+        noteActiveTreeGroup('grp-main')
+      },
+      selected: 'stored-A'
+    }
+  ])('does not steal the foreground when the $surface names another session while A rotates', ({ arm, selected }) => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    arm()
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={selected} />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+
+    // Aftermath of the suppression: nothing re-points the primary, so its
+    // selection and route keep the PRE-rotation stored id. That residue is
+    // benign only if the id is still a live handle — the lineage row resolves
+    // it to the tip, so coming back to this chat resumes A-next (the same
+    // resolution `resolveStoredSession` does on every sidebar/route resume)
+    // rather than a dead segment.
+    setSessions([
+      { _lineage_ids: ['stored-A', 'stored-A-next'], _lineage_root_id: 'stored-A', id: 'stored-A-next' }
+    ] as never)
+    expect(cachedSessionRow('stored-A')?.id).toBe('stored-A-next')
+  })
+
+  it.each([
+    { shape: 'the primary route is that same session', arm: () => window.history.pushState({}, '', '/#/stored-A') },
+    { shape: 'there is no route and no store selection', arm: () => undefined },
+    {
+      shape: 'the focused tile belongs to the same lineage',
+      arm: () => {
+        // A tile keyed by an OLDER segment id of the same conversation still
+        // counts as the foreground: the rotation carries it to the new tip.
+        setSessions([
+          { _lineage_ids: ['stored-A', 'stored-A-next'], _lineage_root_id: 'stored-A', id: 'stored-A-next' }
+        ] as never)
+        $sessionTiles.set([{ storedSessionId: 'stored-A' }])
+        $layoutTree.set(
+          group(['workspace', 'session-tile:stored-A'], { active: 'session-tile:stored-A', id: 'grp-main' })
+        )
+        noteActiveTreeGroup('grp-main')
+      }
+    }
+  ])('follows A -> A-next when $shape', ({ arm }) => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId(null)
+    arm()
+    render(<Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toEqual({
+      nextStoredSessionId: 'stored-A-next',
+      previousStoredSessionId: 'stored-A',
+      runtimeSessionId: 'runtime-A'
+    })
+  })
+
+  it('re-homes an open tile on a cache-path rotation even when the runtime is background (#98622)', () => {
+    let cache!: Cache
+
+    // Background runtime: the rotation atom stays null, but the tile keyed on
+    // the pre-rotation id must still re-home to the new tip.
+    setActiveSessionId('runtime-B')
+    render(
+      <Harness activeSessionId="runtime-B" onReady={value => (cache = value)} selectedStoredSessionId="stored-B" />
+    )
+
+    act(() => {
+      $sessionTiles.set([{ storedSessionId: 'stored-A' }])
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    const tiles = $sessionTiles.get()
+    expect(tiles.find(t => t.storedSessionId === 'stored-A')).toBeUndefined()
+    expect(tiles.find(t => t.storedSessionId === 'stored-A-next')).toBeDefined()
+  })
+
+  it('rekeys the persisted owner profile when its runtime rotates while another profile is visible', () => {
+    let cache!: Cache
+    const profileA = 'rotation-profile-a-98622'
+    const profileB = 'rotation-profile-b-98622'
+    const previousStoredSessionId = 'stored-profile-previous'
+    const nextStoredSessionId = 'stored-profile-next'
+
+    try {
+      act(() => {
+        $activeGatewayProfile.set(profileA)
+        closeSessionTile(previousStoredSessionId)
+        closeSessionTile(nextStoredSessionId)
+        openSessionTile(previousStoredSessionId)
+        $activeGatewayProfile.set(profileB)
+      })
+
+      setActiveSessionId('runtime-visible-b')
+      render(
+        <Harness
+          activeSessionId="runtime-visible-b"
+          onReady={value => (cache = value)}
+          selectedStoredSessionId={null}
+        />
+      )
+
+      act(() => {
+        cache.updateSessionState('runtime-a', state => state, previousStoredSessionId)
+        cache.updateSessionState('runtime-a', state => state, nextStoredSessionId)
+      })
+
+      act(() => {
+        $activeGatewayProfile.set(profileA)
+      })
+      expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual([nextStoredSessionId])
+    } finally {
+      act(() => {
+        $activeGatewayProfile.set(profileA)
+        closeSessionTile(previousStoredSessionId)
+        closeSessionTile(nextStoredSessionId)
+        $activeGatewayProfile.set('default')
+      })
+    }
+  })
+
+  it('leaves only the rotated main session when ensureSessionState publishes before route-follow', async () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-cache-ordering')
+    setSelectedStoredSessionId('stored-cache-previous')
+    $sessionTiles.set([{ storedSessionId: 'stored-cache-previous' }])
+    render(
+      <RotationHarness
+        activeSessionId="runtime-cache-ordering"
+        onReady={value => (cache = value)}
+        selectedStoredSessionId="stored-cache-previous"
+      />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-cache-ordering', state => state, 'stored-cache-previous')
+      cache.updateSessionState('runtime-cache-ordering', state => state, 'stored-cache-next')
+    })
+
+    await waitFor(() => expect($selectedStoredSessionId.get()).toBe('stored-cache-next'))
+    expect($sessionTiles.get()).toEqual([])
+  })
+
+  it('preserves the old tile when a cache update detaches its stored session id', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-detach')
+    $sessionTiles.set([{ storedSessionId: 'stored-detach-old' }])
+    render(
+      <Harness activeSessionId="runtime-detach" onReady={value => (cache = value)} selectedStoredSessionId={null} />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-detach', state => state, 'stored-detach-old')
+      cache.updateSessionState('runtime-detach', state => state, null)
+    })
+
+    expect($sessionTiles.get()).toEqual([{ storedSessionId: 'stored-detach-old' }])
+  })
+
+  it('drops the stale tile on a cache-path rotation when the new tip is the main selection (#98622)', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A-next" />
+    )
+
+    act(() => {
+      // The drop decision reads the GLOBAL selection atom, not the harness prop.
+      setSelectedStoredSessionId('stored-A-next')
+      $sessionTiles.set([{ storedSessionId: 'stored-A' }])
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    // Main already shows the conversation on the new tip: the tile is dropped
+    // entirely (main OR tile — never both).
+    expect($sessionTiles.get()).toHaveLength(0)
+  })
 })
 
 function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
@@ -104,7 +354,45 @@ function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessP
   return null
 }
 
-describe('useSessionStateCache — per-session turn timer', () => {
+function RotationHarness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
+  const busyRef = useRef(false)
+  const activeSessionIdRef = useRef<string | null>(activeSessionId)
+  const selectedStoredSessionIdRef = useRef<string | null>(selectedStoredSessionId)
+
+  const cache = useSessionStateCache({
+    activeSessionId,
+    busyRef,
+    selectedStoredSessionId,
+    setAwaitingResponse: () => undefined,
+    setBusy: () => undefined,
+    setMessages: () => undefined
+  })
+
+  useSessionActions({
+    activeSessionId,
+    activeSessionIdRef,
+    busyRef,
+    creatingSessionRef: useRef(false),
+    ensureSessionState: cache.ensureSessionState,
+    getRouteToken: () => 'rotation-test',
+    getRoutedStoredSessionId: () => selectedStoredSessionId,
+    navigate: vi.fn() as never,
+    requestGateway: async () => ({}) as never,
+    resetViewSync: cache.resetViewSync,
+    runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef: cache.sessionStateByRuntimeIdRef,
+    syncSessionStateToView: cache.syncSessionStateToView,
+    updateSessionState: cache.updateSessionState
+  })
+
+  onReady(cache)
+
+  return null
+}
+
+describe('useSessionStateCache — per-session timers', () => {
   beforeEach(() => {
     // The view-sync flush runs on a real rAF in the browser path; in jsdom we
     // want it synchronous so the global mirror is observable immediately. The
@@ -125,6 +413,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    setSessionStartedAt(null)
   })
 
   afterEach(() => {
@@ -136,6 +425,22 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    setSessionStartedAt(null)
+  })
+
+  it('mirrors only the focused runtime session anchor into the global timer', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
+
+    act(() => {
+      cache.updateSessionState('bg-runtime', state => ({ ...state, runtimeStartedAt: 1_700_000_000_000 }), 'bg-stored')
+    })
+    expect($sessionStartedAt.get()).toBeNull()
+
+    act(() => {
+      cache.updateSessionState('fg-runtime', state => ({ ...state, runtimeStartedAt: 1_700_000_111_000 }), 'fg-stored')
+    })
+    expect($sessionStartedAt.get()).toBe(1_700_000_111_000)
   })
 
   it("keeps a background session's running turn clock and never mirrors it to the view", () => {
@@ -154,21 +459,6 @@ describe('useSessionStateCache — per-session turn timer', () => {
     // ...but the global atom (statusbar timer) is untouched — a background turn
     // must not drive the foreground timer.
     expect($turnStartedAt.get()).toBeNull()
-  })
-
-  it("mirrors the focused session's turn clock into the global atom on view-sync", () => {
-    let cache!: Cache
-    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
-
-    const startedAt = 1_700_000_111_000
-
-    // A turn on the ACTIVE session stages into the view; the flush mirrors its
-    // turnStartedAt into the global atom the statusbar reads.
-    act(() => {
-      cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, turnStartedAt: startedAt }), 'fg-stored')
-    })
-
-    expect($turnStartedAt.get()).toBe(startedAt)
   })
 
   it('clears the global clock when the focused turn ends', () => {
@@ -264,6 +554,34 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentServiceTier.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
+  })
+
+  it('mirrors runtime model/provider into the view without persisting over the composer selection (#102793)', () => {
+    // A real user pick: persisted to localStorage, the same as picking a
+    // provider in the model menu.
+    setCurrentModel('claude-opus-5')
+    setCurrentProvider('anthropic')
+    expect(window.localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
+
+    let cache!: Cache
+
+    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
+
+    // A session.info heartbeat reports the resolved runtime class — `custom`
+    // for a named custom provider — for the same foreground session.
+    act(() => {
+      cache.updateSessionState(
+        'fg-runtime',
+        state => ({ ...state, model: 'claude-opus-5', provider: 'custom' }),
+        'fg-stored'
+      )
+    })
+
+    // The visible status area follows the runtime...
+    expect($currentProvider.get()).toBe('custom')
+    // ...but the user's persisted composer selection must survive the
+    // heartbeat, so a fresh chat still follows it instead of `custom`.
+    expect(window.localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
   })
 })
 
@@ -641,6 +959,165 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
   })
 })
 
+// #117867: the warm-resume transcript gate used to empty the view entirely
+// while held, so rows arriving LIVE during the hold (the user's in-flight turn)
+// never painted until REST authority landed. The gate now hides only the cached
+// prefix captured when the hold was armed.
+describe('useSessionStateCache — held transcript gate keeps live rows (#117867)', () => {
+  const runtime = 'hold-runtime'
+  const stored = 'hold-stored'
+
+  beforeEach(() => {
+    clearAllSessionStates()
+    setActiveSessionId(runtime)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $messages.set([])
+    clearAllSessionStates()
+    setActiveSessionId(null)
+  })
+
+  it('paints rows appended after the arm and hides only the cached prefix', () => {
+    let cache!: Cache
+    let release: (() => void) | undefined
+
+    render(<ViewHarness activeSessionId={runtime} onReady={value => (cache = value)} />)
+
+    // Seed the warm cache entry with the unproven cached prefix — exactly what
+    // resumeSession has in hand when it arms the hold.
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({
+          ...state,
+          messages: [userMessage('cached-1', 'cached prompt'), assistantText('cached-2', 'cached tail')]
+        }),
+        stored
+      )
+    })
+
+    // The real production arm path, after the cache entry exists.
+    act(() => {
+      release = cache.holdSessionTranscriptView(runtime)
+    })
+
+    // A live row arrives mid-hold. busy:false forces the critical-transition
+    // sync flush (no rAF), so $messages is observable here.
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({
+          ...state,
+          busy: false,
+          messages: [
+            userMessage('cached-1', 'cached prompt'),
+            assistantText('cached-2', 'cached tail'),
+            userMessage('live-1', 'live turn')
+          ]
+        }),
+        stored
+      )
+    })
+
+    const ids = $messages.get().map(message => message.id)
+
+    expect(ids).toContain('live-1')
+    expect(ids).not.toContain('cached-1')
+    expect(ids).not.toContain('cached-2')
+
+    // Releasing restores the full transcript.
+    act(() => release?.())
+    act(() => {
+      cache.updateSessionState(runtime, state => ({ ...state, messages: state.messages }), stored)
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['cached-1', 'cached-2', 'live-1'])
+  })
+
+  it('fails closed when the hold was armed with no cached prefix', () => {
+    let cache!: Cache
+    let release: (() => void) | undefined
+
+    render(<ViewHarness activeSessionId={runtime} onReady={value => (cache = value)} />)
+
+    act(() => {
+      release = cache.holdSessionTranscriptView(runtime)
+    })
+
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({
+          ...state,
+          busy: false,
+          messages: [userMessage('late-1', 'arrived after the arm')]
+        }),
+        stored
+      )
+    })
+
+    // No baseline was captured, so nothing is trustworthy yet: today's
+    // hide-everything behavior is preserved until REST authority lands.
+    expect($messages.get()).toEqual([])
+
+    act(() => release?.())
+  })
+
+  it('keeps a re-sequenced cached tail hidden when compaction assigns fresh ids mid-hold (#117867)', () => {
+    let cache!: Cache
+    let release: (() => void) | undefined
+
+    render(<ViewHarness activeSessionId={runtime} onReady={value => (cache = value)} />)
+
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({
+          ...state,
+          messages: [userMessage('cached-1', 'cached prompt'), assistantText('cached-2', 'cached tail')]
+        }),
+        stored
+      )
+    })
+
+    act(() => {
+      release = cache.holdSessionTranscriptView(runtime)
+    })
+
+    // A mid-hold compaction re-sequences the cached tail with FRESH row ids
+    // while keeping the content (archive_and_compact contract: consumers that
+    // reference durable row ids re-resolve by content). An id-only cutoff
+    // would pass `seq-*` through as if it were live and paint the compressed
+    // tail the hold exists to hide (#73646); the content fingerprint keeps it
+    // hidden while a genuinely new row still paints.
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({
+          ...state,
+          busy: false,
+          messages: [
+            userMessage('seq-71', 'cached prompt'),
+            assistantText('seq-72', 'cached tail'),
+            userMessage('live-1', 'live turn')
+          ]
+        }),
+        stored
+      )
+    })
+
+    const ids = $messages.get().map(message => message.id)
+
+    expect(ids).toContain('live-1')
+    expect(ids).not.toContain('seq-71')
+    expect(ids).not.toContain('seq-72')
+
+    act(() => release?.())
+  })
+})
+
 // #93059: reconnect used to downgrade the $sessionStates mirror only, leaving
 // this cache (which warm resume ORs over `running: false`) still busy.
 describe('useSessionStateCache — reconnect busy reconcile (#93059)', () => {
@@ -688,5 +1165,87 @@ describe('useSessionStateCache — reconnect busy reconcile (#93059)', () => {
     expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.busy).toBe(false)
     expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.awaitingResponse).toBe(false)
     expect($sessionStates.get()['runtime-1']?.busy).toBe(false)
+  })
+})
+
+// #77311: a tile the pane shell PARKED (bounded keep-alive, pane-lifecycle.ts)
+// still exists in $sessionTiles, so the warm cache's isReferenced predicate used
+// to count it as visible and pin its transcript forever. Parking is the only
+// thing that changes here — no navigation, no publish — which is exactly the
+// idle-window case the fix has to cover.
+describe('useSessionStateCache — parked tiles release their warm transcript (#77311)', () => {
+  const runtime = 'parked-runtime'
+  const stored = 'parked-stored'
+
+  /** Fill the cache to its settled-entry cap with unreferenced sessions, so a
+   *  single additional candidate is enough to force one eviction. */
+  const fillToCap = (cache: Cache, count: number) => {
+    for (let i = 0; i < count; i += 1) {
+      act(() => {
+        cache.updateSessionState(
+          `parked-filler-${i}`,
+          state => ({ ...state, messages: transcriptForCache(`filler-${i}`) }),
+          `parked-filler-${i}-stored`
+        )
+      })
+    }
+  }
+
+  beforeEach(() => {
+    clearAllSessionStates()
+    setActiveSessionId(null)
+    $sessionTiles.set([{ storedSessionId: stored }])
+  })
+
+  afterEach(() => {
+    cleanup()
+    setZoneParkedTiles('parked-zone', [])
+    $sessionTiles.set([])
+    clearAllSessionStates()
+    setActiveSessionId(null)
+  })
+
+  it('evicts and releases a settled parked tile with no other state change', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    // Seeded first, so it is the least-recently-touched candidate once parked.
+    act(() => {
+      cache.updateSessionState(runtime, state => ({ ...state, messages: transcriptForCache('parked') }), stored)
+    })
+    fillToCap(cache, 24)
+
+    // Still on screen as a tile: referenced, therefore not even a candidate.
+    expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(true)
+
+    act(() => setZoneParkedTiles('parked-zone', [stored]))
+
+    expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has(stored)).toBe(false)
+    // releaseSessionTranscript ran: the cheap status projection survives, the
+    // transcript bytes do not.
+    expect($sessionStates.get()[runtime]).toMatchObject({ storedSessionId: stored })
+    expect($sessionStates.get()[runtime]?.messages).toEqual([])
+  })
+
+  it('keeps a parked tile whose turn is still running', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({ ...state, busy: true, messages: transcriptForCache('parked-busy') }),
+        stored
+      )
+    })
+    // One past the cap, so a drain definitely runs — the busy entry surviving
+    // it is the assertion, not an absence of pressure.
+    fillToCap(cache, 25)
+
+    act(() => setZoneParkedTiles('parked-zone', [stored]))
+
+    expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(true)
+    expect($sessionStates.get()[runtime]?.messages.length).toBe(2)
   })
 })

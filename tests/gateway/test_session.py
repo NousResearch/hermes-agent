@@ -26,6 +26,44 @@ from gateway.session import (
 normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
+def test_matrix_reset_pins_current_room_metadata_for_new_conversation(tmp_path):
+    from gateway.run import GatewayRunner
+
+    config = GatewayConfig()
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    initial = SessionSource(
+        platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="thread",
+        user_id="@alice:example.org", thread_id="$root", profile="matrix-bot",
+        chat_name="Old name", chat_topic="Old topic",
+    )
+    old_entry = store.get_or_create_session(initial)
+    changed = replace(initial, chat_name="New name", chat_topic="New topic")
+
+    def prompt_and_signature(source, entry):
+        prompt = build_session_context_prompt(build_session_context(source, config, entry))
+        return prompt, GatewayRunner._agent_config_signature("fake-model", {}, [], prompt)
+
+    old_prompt = prompt_and_signature(initial, old_entry)
+    assert prompt_and_signature(changed, old_entry) == old_prompt
+
+    new_entry = store.reset_session(old_entry.session_key, source=changed)
+
+    assert new_entry is not None
+    assert new_entry.session_id != old_entry.session_id
+    assert (new_entry.session_key, new_entry.origin.profile, new_entry.origin.thread_id) == (
+        old_entry.session_key, "matrix-bot", "$root",
+    )
+    assert new_entry.origin.chat_name == "New name"
+    assert new_entry.origin.chat_topic == "New topic"
+    assert prompt_and_signature(changed, old_entry) == old_prompt
+    assert prompt_and_signature(changed, new_entry) != old_prompt
+
+    restarted = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    restored = restarted.get_or_create_session(changed)
+    assert restored.session_id == new_entry.session_id
+    assert prompt_and_signature(changed, restored) == prompt_and_signature(changed, new_entry)
+
+
 class TestSessionSourceRoundtrip:
     def test_full_roundtrip(self):
         source = SessionSource(
@@ -1637,5 +1675,3 @@ class TestGatewayRoutingTable:
         recovered = restarted.get_or_create_session(self._source())
         assert recovered.session_id == entry.session_id
         restarted._db.close()
-
-

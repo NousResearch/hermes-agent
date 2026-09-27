@@ -58,20 +58,26 @@ def test_set_forks_a_builtin_without_inventing_a_background():
 
 @pytest.mark.parametrize("builtin", sorted(_BUILTIN_SKINS))
 def test_set_forks_a_builtin_that_differs_only_in_the_one_key(builtin):
-    """The fork must render as the built-in except for the tweaked key: spinner, banner art and the
-    paired light/dark palettes included, and no paired palette may mask the new value."""
+    """The fork must render as the built-in except for the tweaked keys: spinner, banner art and the
+    paired light/dark palettes included, and no paired palette may mask a new value, neither on
+    the set that forks nor on a later set that edits the fork in place."""
     _activate(builtin)
+    base = load_skin(builtin)
+    # A key the paired palettes declare, when the built-in has one, so the in-place set can be masked.
+    second = min((set(base.light_colors) | set(base.dark_colors)) - {"ui_accent"}, default="prompt")
 
     assert skin_cmd._skin_set("ui_accent", "#00FFFF", None) == 0
+    assert skin_cmd._skin_set(second, "#FF00FF", None) == 0
 
-    base, fork = load_skin(builtin), load_skin(f"{builtin}-custom")
+    fork = load_skin(f"{builtin}-custom")
+    tweaks = {"ui_accent": "#00FFFF", second: "#FF00FF"}
     for field in ("spinner", "branding", "tool_prefix", "tool_emojis", "banner_logo", "banner_hero",
                   "custom_css"):
         assert getattr(fork, field) == getattr(base, field), field
-    assert fork.colors == {**base.colors, "ui_accent": "#00FFFF"}
+    assert fork.colors == {**base.colors, **tweaks}
     for paired in ("light_colors", "dark_colors"):
         overlay = {**fork.colors, **getattr(fork, paired)}  # how the TUI resolves a polarity
-        assert overlay == {**base.colors, **getattr(base, paired), "ui_accent": "#00FFFF"}, paired
+        assert overlay == {**base.colors, **getattr(base, paired), **tweaks}, paired
 
 
 def test_set_rejects_non_hex():

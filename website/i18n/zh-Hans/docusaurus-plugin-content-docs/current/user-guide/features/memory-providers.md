@@ -287,6 +287,8 @@ hermes config set memory.provider openviking
 echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
 ```
 
+当端点为本地地址且没有进程在监听时，Hermes 会在后台启动 `openviking-server`。该服务器会获得你的模型提供商密钥（供其嵌入和 VLM 模型使用）、你的 `HOME` 与 `OPENVIKING_CONFIG_FILE`，但绝不会获得机器人、网关或中继令牌，也不会获得 Hermes 的 `PYTHONPATH`。服务器需要的其他设置请写入 `ov.conf`。
+
 **主要特性：**
 - 分层上下文加载：L0（约 100 tokens）→ L1（约 2k）→ L2（完整）
 - 会话提交时自动提取记忆（profile、偏好、实体、事件、案例、模式）

@@ -28,23 +28,60 @@ def _probe_script(path: Path, out: Path, names) -> Path:
     return path
 
 
-def test_compute_host_child_keeps_provider_keys_but_never_tier1_secrets(child_env, monkeypatch):
+def _compute_host_seen(child_env, monkeypatch, names):
     from tui_gateway.host_supervisor import HostSupervisor
 
-    _plant(monkeypatch)
-    names = [*_TIER1, _PROVIDER, "HERMES_COMPUTE_HOST_HEARTBEAT_SECS"]
     hello = ("import json, os, sys; print(json.dumps({'type': 'hello', 'seen': "
              f"{{n: os.environ.get(n) for n in {names!r}}}}}), flush=True); sys.stdin.readline()")
     sup = HostSupervisor(registry_path=child_env / "host.json", argv=[sys.executable, "-c", hello],
                          cwd=child_env, expected_build_sha="unknown", autostart=False)
     try:
         sup.start()
-        seen = sup._hello["seen"]
+        return sup._hello["seen"]
     finally:
         sup.shutdown()
+
+
+def _openviking_server_seen(child_env, monkeypatch, names):
+    import subprocess
+
+    import plugins.memory.openviking as ov
+
+    out = child_env / "seen.json"
+    probe = _probe_script(child_env / "openviking-server", out, names)
+    monkeypatch.setattr(ov, "_local_openviking_port_is_open", lambda host, port: False)
+    monkeypatch.setattr(ov.shutil, "which", lambda name: str(probe))
+    real_popen, children = subprocess.Popen, []
+
+    def _record(*args, **kwargs):
+        children.append(real_popen(*args, **kwargs))
+        return children[-1]
+
+    monkeypatch.setattr(ov.subprocess, "Popen", _record)
+    state, _ = ov._start_local_openviking_server("http://127.0.0.1:1933")
+    assert state == ov._LOCAL_SERVER_STARTED
+    children[0].wait(timeout=30)
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("site", [
+    "compute_host", pytest.param("openviking_server", marks=pytest.mark.platforms("posix"))])
+def test_credentialed_children_keep_provider_keys_but_never_tier1_secrets(child_env, monkeypatch, site):
+    # Both children call model providers (the turn process; openviking-server's embedding/VLM
+    # models), so provider keys pass by design. Bot and relay tokens never do.
+    _plant(monkeypatch)
+    if site == "compute_host":
+        own = {"HERMES_COMPUTE_HOST_HEARTBEAT_SECS": "15"}
+        seen = _compute_host_seen(child_env, monkeypatch, [*_TIER1, _PROVIDER, *own])
+    else:
+        # The server finds ov.conf through OPENVIKING_CONFIG_FILE or HOME; Hermes' PYTHONPATH
+        # would shadow its own site-packages (#78153).
+        monkeypatch.setenv("OPENVIKING_CONFIG_FILE", str(child_env / "ov.conf"))
+        monkeypatch.setenv("PYTHONPATH", str(child_env / "hermes-venv"))
+        own = {"OPENVIKING_CONFIG_FILE": str(child_env / "ov.conf"), "HOME": str(child_env), "PYTHONPATH": None}
+        seen = _openviking_server_seen(child_env, monkeypatch, [*_TIER1, _PROVIDER, *own])
     assert seen == {"TELEGRAM_BOT_TOKEN": None, "GATEWAY_RELAY_SECRET": None,
-                    # The turn process drives the model, so provider keys pass by design.
-                    _PROVIDER: "fake-openai_api_key", "HERMES_COMPUTE_HOST_HEARTBEAT_SECS": "15"}
+                    _PROVIDER: "fake-openai_api_key", **own}
 
 
 @pytest.mark.platforms("posix")  # the stand-in binaries are shebang scripts

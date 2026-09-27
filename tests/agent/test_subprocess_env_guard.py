@@ -56,15 +56,16 @@ ALLOWED_RAW_SPAWN_ENV_FILES = {
     "hermes_cli/gateway.py",
     "hermes_cli/stderr_timestamp.py",
     "hermes_cli/profiles.py",
-    # apt/dpkg run as root: sudo resets the environment, and the scrub helpers would point
-    # TMPDIR into HERMES_HOME's scratch dir, leaving root-owned files there.
+    # apt/dnf/pacman run as root, through sudo (which resets the environment) or because Hermes
+    # already is root. A root child can read every process's environment anyway, and the scrub
+    # helpers would point TMPDIR into HERMES_HOME's scratch dir, leaving root-owned files there.
     "tools/bot_desktop/install.py",
-    # The docker/ssh CLIENT process: same as inheriting (``None``) plus the forwarded values;
-    # what may be forwarded is decided by the backend's forward/passthrough policy.
+    # The docker/ssh CLIENT process: the user's own backend binary, never code the agent runs,
+    # needing their real HOME for ~/.ssh and ~/.docker. Same as inheriting (``None``) plus the
+    # forwarded values; what crosses into the sandbox is the backend's forward/passthrough policy.
     "tools/environments/remote_common.py",
-    # openviking-server is the user's own memory server and may read their provider keys for
-    # its embedding/VLM models; only the Hermes PYTHONPATH is removed (#78153).
-    "plugins/memory/openviking/__init__.py",
+    # Needing provider keys is not a reason to be here: such a child uses
+    # hermes_subprocess_env(inherit_credentials=True), which still drops bot/relay tokens.
 }
 
 

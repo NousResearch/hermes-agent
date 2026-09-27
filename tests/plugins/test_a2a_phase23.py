@@ -762,3 +762,46 @@ class TestSSRFProtection:
     def test_empty_url_blocked(self):
         assert security.is_safe_callback_url("") is False
         assert security.is_safe_callback_url(None) is False
+
+
+
+class TestCallPeerSyncTenant:
+    """The orchestrate helper must preserve the configured tenant like a2a_call does."""
+
+    @staticmethod
+    def _post(captured):
+        def fake_post(url, body, headers, timeout):
+            captured.update(body.get("params", {}))
+            return {
+                "jsonrpc": "2.0",
+                "id": body.get("id", "r1"),
+                "result": protocol.build_task("task-1", "ctx-1", protocol.STATE_COMPLETED, "ok"),
+            }
+        return fake_post
+
+    def test_call_peer_sync_carries_tenant_to_send_body(self, monkeypatch):
+        peer = {"url": "http://peer.example", "auth": {}, "timeout": 5, "tenant": "dev-team"}
+        captured = {}
+        monkeypatch.setattr(tools, "_fetch_card", lambda url, headers, timeout: None)
+        monkeypatch.setattr(tools, "_http_post_json", self._post(captured))
+
+        tools._call_peer_sync("dev", peer, "hello", "ctx-1")
+
+        assert captured.get("tenant") == "dev-team"
+
+    def test_orchestrate_and_direct_peer_resolution_use_same_tenant(self, monkeypatch):
+        peer = {
+            "url": "http://peer.example",
+            "auth": {},
+            "timeout": 5,
+            "tenant": "dev-team",
+            "capabilities": ["research"],
+        }
+        captured = {}
+        monkeypatch.setattr(tools, "_load_config", lambda: {"a2a_agents": {"dev": peer}})
+        monkeypatch.setattr(tools, "_fetch_card", lambda url, headers, timeout: None)
+        monkeypatch.setattr(tools, "_http_post_json", self._post(captured))
+
+        tools.a2a_orchestrate({"capability": "research", "message": "hello", "mode": "all"})
+
+        assert captured.get("tenant") == tools._resolve_peer("dev").get("tenant") == "dev-team"

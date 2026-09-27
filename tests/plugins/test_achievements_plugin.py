@@ -345,8 +345,10 @@ def test_content_drops_media_blocks_and_caps_oversized_text(plugin_api):
     # Plain string content is capped, not passed through wholesale.
     assert plugin_api._content({"content": "x" * (cap + 50)}) == "x" * cap
 
-    # Media blocks (OpenAI-style image_url / Anthropic-style image, audio, file) are dropped;
-    # text blocks and typeless blocks survive.
+    # Media blocks (OpenAI-style image_url / Anthropic-style image, audio, video, file) are
+    # dropped; text blocks and typeless blocks survive. The video rows are the three states
+    # Hermes itself produces (``_VIDEO_PART_TYPES``; the OpenAI→Anthropic mapping emits
+    # ``video``), and their payload is the same inline base64 as photos.
     b64 = "A" * 100_000
     msg = {
         "content": [
@@ -354,6 +356,9 @@ def test_content_drops_media_blocks_and_caps_oversized_text(plugin_api):
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
             {"type": "image", "source": {"type": "base64", "data": b64}},
             {"type": "input_audio", "input_audio": {"data": b64}},
+            {"type": "video", "source": {"type": "base64", "data": b64}},
+            {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{b64}"}},
+            {"type": "input_video", "input_video": {"data": b64}},
             {"type": "file", "file": {"filename": "report.pdf"}},
             {"type": "document", "source": {"type": "base64", "data": b64}},
             {"type": "text", "text": "and a typeless block below"},

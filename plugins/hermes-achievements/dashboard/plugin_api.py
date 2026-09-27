@@ -264,12 +264,14 @@ def _content(msg: Dict[str, Any]) -> str:
     if isinstance(content, (list, tuple)):
         # Media blocks carry their payload inline as base64 ``data:`` URLs; the stats below
         # only ever reason about human/tool text, so drop them instead of feeding hundreds of
-        # MB through ~15 regex passes (#123902).
+        # MB through ~15 regex passes (#123902). ``video`` covers the three video block
+        # states Hermes itself produces (``video``/``video_url``/``input_video`` — see
+        # ``_VIDEO_PART_TYPES`` and the OpenAI→Anthropic video mapping).
         parts: List[str] = []
         for block in content:
             if isinstance(block, dict):
                 btype = str(block.get("type", "")).lower()
-                if any(k in btype for k in ("image", "audio", "file", "document")):
+                if any(k in btype for k in ("image", "audio", "video", "file", "document")):
                     continue
                 parts.append(json.dumps(block, ensure_ascii=False))
             else:

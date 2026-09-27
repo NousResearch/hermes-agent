@@ -394,30 +394,35 @@ class GatewayVoiceMixin:
             return guild_id
         return None
 
-    def _voice_play_lock(self, guild_id: int) -> asyncio.Lock:
-        """One lock per guild so spoken commentary and the final reply play in order, never overlap."""
+    def _voice_play_lock(self, guild_id: int, adapter=None) -> asyncio.Lock:
+        """Share Discord's guild lock with the base adapter's voice-input final path."""
+        shared = getattr(adapter, "voice_play_lock", None)
+        if callable(shared):
+            lock = shared(guild_id)
+            if isinstance(lock, asyncio.Lock):
+                return lock
         locks = self.__dict__.setdefault("_voice_play_locks", {})
         lock = locks.get(guild_id)
         if lock is None:
             lock = locks[guild_id] = asyncio.Lock()
         return lock
 
-    def _commentary_voice_guild(self, source: SessionSource) -> Optional[int]:
+    def _commentary_voice_guild(self, source: SessionSource, *, message_type=None) -> Optional[int]:
         """Guild to speak interim commentary in: the chat is the voice-linked text channel, the bot
         is in that voice channel, and the chat's voice mode is on (``all`` or ``voice_only``)."""
         with suppress(Exception):
             mode = self._voice_mode.get(self._voice_key_for_source(source))
-            if mode not in ("all", "voice_only"):
+            if mode != "all" and not (mode == "voice_only" and message_type == MessageType.VOICE):
                 return None
             return self._linked_voice_guild_in_vc(
                 self._delivery_adapter_for(source), source.chat_id)
         return None
 
-    async def _speak_commentary(self, source: SessionSource, text: str) -> None:
+    async def _speak_commentary(self, source: SessionSource, text: str, *, message_type=None) -> None:
         """Speak one interim commentary message (text the agent writes between tool calls) in the
         linked voice channel, so a listener hears progress instead of silence until the final
         reply. Adapters without streaming TTS (Discord) otherwise speak only the final reply."""
-        guild_id = self._commentary_voice_guild(source)
+        guild_id = self._commentary_voice_guild(source, message_type=message_type)
         if not guild_id:
             return
         audio_path, actual_paths = None, []
@@ -428,7 +433,7 @@ class GatewayVoiceMixin:
             if not tts_text or not tts_text.strip():
                 return
             adapter = self._delivery_adapter_for(source)
-            async with self._voice_play_lock(guild_id):
+            async with self._voice_play_lock(guild_id, adapter):
                 audio_path = build_auto_tts_output_path(source.platform)
                 raw = await asyncio.to_thread(text_to_speech_tool, text=tts_text,
                                               output_path=audio_path)
@@ -452,7 +457,7 @@ class GatewayVoiceMixin:
         adapter = self._delivery_adapter_for(event.source)
         guild_id = self._linked_voice_guild_in_vc(adapter, event.source.chat_id)
         if guild_id:
-            async with self._voice_play_lock(guild_id):
+            async with self._voice_play_lock(guild_id, adapter):
                 for path in audio_paths:
                     await adapter.play_in_voice_channel(guild_id, path)
             return

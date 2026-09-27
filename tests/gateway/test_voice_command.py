@@ -432,7 +432,7 @@ class TestSendVoiceReply:
 
     @pytest.mark.parametrize("mode,chat_id,in_vc,expected", [
         ("all", "123", True, 111),
-        ("voice_only", "123", True, 111),
+        ("voice_only", "123", True, None),
         ("off", "123", True, None),
         (None, "123", True, None),
         ("all", "999", True, None),     # not the voice-linked chat
@@ -443,7 +443,20 @@ class TestSendVoiceReply:
         runner.adapters[event.source.platform] = self._vc_adapter(in_vc=in_vc)
         if mode is not None:
             self._set_mode(runner, event.source, mode)
-        assert runner._commentary_voice_guild(event.source) == expected
+        assert runner._commentary_voice_guild(event.source, message_type=event.message_type) == expected
+
+    @pytest.mark.parametrize("message_type", [None, MessageType.TEXT])
+    def test_voice_only_does_not_speak_text_turn_commentary(self, runner, message_type):
+        event = self._internal_discord_event()
+        runner.adapters[event.source.platform] = self._vc_adapter()
+        self._set_mode(runner, event.source, "voice_only")
+        assert runner._commentary_voice_guild(event.source, message_type=message_type) is None
+
+    def test_voice_only_speaks_voice_turn_commentary(self, runner):
+        event = self._internal_discord_event()
+        runner.adapters[event.source.platform] = self._vc_adapter()
+        self._set_mode(runner, event.source, "voice_only")
+        assert runner._commentary_voice_guild(event.source, message_type=MessageType.VOICE) == 111
 
     @pytest.mark.asyncio
     async def test_speak_commentary_plays_clip_in_linked_voice_channel(self, runner, tmp_path):
@@ -479,6 +492,51 @@ class TestSendVoiceReply:
     async def test_commentary_and_reply_share_one_lock_per_guild(self, runner):
         assert runner._voice_play_lock(111) is runner._voice_play_lock(111)
         assert runner._voice_play_lock(111) is not runner._voice_play_lock(222)
+
+    @pytest.mark.asyncio
+    async def test_voice_input_final_waits_for_commentary_playback(self, runner, tmp_path):
+        """The base adapter's voice-input final must not play while commentary is synthesizing."""
+        import asyncio
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        event = self._internal_discord_event()
+        event.message_type = MessageType.VOICE
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = event.source.platform
+        adapter._voice_text_channels = {111: 123}
+        adapter._voice_play_locks = {}
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        played = []
+
+        async def play(guild_id, audio_path):
+            played.append((guild_id, audio_path))
+            return True
+
+        adapter.play_in_voice_channel = AsyncMock(side_effect=play)
+        runner.adapters[event.source.platform] = adapter
+        self._set_mode(runner, event.source, "voice_only")
+        started, release = threading.Event(), threading.Event()
+        clip = tmp_path / "commentary.ogg"
+
+        def synthesize(text, output_path):
+            started.set()
+            assert release.wait(3)
+            clip.write_bytes(b"audio")
+            return json.dumps({"success": True, "file_path": str(clip)})
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=synthesize):
+            commentary = asyncio.create_task(runner._speak_commentary(
+                event.source, "Progress", message_type=MessageType.VOICE))
+            try:
+                assert await asyncio.to_thread(started.wait, 2)
+                final = asyncio.create_task(adapter._play_tts_file(
+                    event, "Final", "/tmp/final.ogg", True, {}, lambda _: None))
+                await asyncio.sleep(0.05)
+                assert played == []
+            finally:
+                release.set()
+            await asyncio.wait_for(asyncio.gather(commentary, final), 3)
+        assert played == [(111, str(clip)), (111, "/tmp/final.ogg")]
 
     def test_stts_audible(self):
         from gateway.run_turn_runner import _stts_audible
@@ -1496,6 +1554,7 @@ class TestVoiceTTSPlayback:
         adapter._voice_clients = {}
         adapter._voice_locks = {}
         adapter._voice_text_channels = {}
+        adapter._voice_play_locks = {}
         adapter._voice_sources = {}
         adapter._voice_receivers = {}
         return adapter

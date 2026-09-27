@@ -1,0 +1,72 @@
+"""Outbound callback delivery must work before any inbound message or listener."""
+from pathlib import Path
+
+import httpx
+import pytest
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platform_registry import platform_registry
+from hermes_cli.plugins import PluginManager
+from hermes_cli.plugins_manifest import parse_manifest_file
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['success', 'api_error', 'exception', 'refresh', 'scoped'])
+async def test_fresh_callback_delivery(monkeypatch, mode):
+    from plugins.platforms.wecom import callback_adapter as cb
+    from tools.send_message_tool import _send_to_platform
+    from tools.send_message_targets import resolve_send_target
+
+    root = Path(__file__).resolve().parents[2] / 'plugins/platforms/wecom'
+    manifest = parse_manifest_file(root / 'plugin.yaml', root, 'bundled', 'platforms')
+    manager = PluginManager()
+    calls = []
+    clients = []
+    real_client = httpx.AsyncClient
+
+    def transport(request):
+        calls.append(request)
+        if mode == 'exception':
+            raise httpx.ConnectError('fixture offline')
+        if request.url.path.endswith('/gettoken'):
+            return httpx.Response(200, json={'errcode': 0, 'access_token': 'fixture-token', 'expires_in': 7200})
+        if mode == 'api_error':
+            return httpx.Response(200, json={'errcode': 81013, 'errmsg': 'fixture refusal'})
+        if mode == 'refresh' and len(calls) == 2:
+            return httpx.Response(200, json={'errcode': 40001})
+        return httpx.Response(200, json={'errcode': 0, 'msgid': 'fixture-message'})
+
+    def client(**kwargs):
+        result = real_client(transport=httpx.MockTransport(transport), **kwargs)
+        clients.append(result)
+        return result
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Outbound delivery must not start the callback listener')
+
+    monkeypatch.setattr(cb.httpx, 'AsyncClient', client)
+    monkeypatch.setattr(cb.WecomCallbackAdapter, 'connect', forbidden)
+    manager._register_deferred_platform(manifest)
+    try:
+        entry = platform_registry.get('wecom_callback')
+        assert entry is not None, 'secondary platform must resolve in a fresh process'
+        recipient = 'fixture-corp:alice' if mode == 'scoped' else 'alice'
+        target, thread, error = resolve_send_target('wecom_callback', recipient)
+        assert (target, thread, error) == (recipient, None, None)
+        extra = {
+            'corp_id': 'fixture-corp', 'corp_secret': 'fixture-secret', 'agent_id': '123',
+        }
+        if mode == 'scoped':
+            extra = {'apps': [dict(extra, name='other', corp_id='other', agent_id='999'), dict(extra, name='selected')]}
+        result = await _send_to_platform(Platform.WECOM_CALLBACK, PlatformConfig(enabled=True, extra=extra), target, 'hello')
+        if mode in {'api_error', 'exception'}:
+            assert result.get('error'), result
+        else:
+            assert result.get('success') is True, result
+            assert result.get('message_id') == 'fixture-message'
+            assert len(calls) == (4 if mode == 'refresh' else 2)
+            import json
+            assert json.loads(calls[-1].content)['agentid'] == 123
+        assert clients and all(c.is_closed for c in clients)
+    finally:
+        manager.unload(manifest)

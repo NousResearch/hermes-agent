@@ -252,7 +252,11 @@ class PluginLoaderMixin:
     @_serialized_replacement
     def _lease_deferred_platform(self, manifest: PluginManifest, lookup_key: str) -> bool:
         """Publish the deferred loader as a ledger-owned lease; False when the registry refused it."""
-        platform_name = self._platform_name_from_manifest(manifest)
+        names = dict.fromkeys([self._platform_name_from_manifest(manifest), *manifest.platform_aliases])
+        return all(self._lease_platform_name(manifest, lookup_key, name) for name in names)
+
+    def _lease_platform_name(self, manifest: PluginManifest, lookup_key: str, platform_name: str) -> bool:
+        """Each secondary name owns the same reversible, profile-scoped lease as the primary."""
         try:
             from gateway.platform_registry import platform_registry
             scope = self.scope_key
@@ -263,6 +267,9 @@ class PluginLoaderMixin:
                 with self._discovery_lock, _plugin_home_scope(self.home_path):
                     if platform_registry.is_deferred_load_cancelled(platform_name, scope=scope):
                         return
+                    loaded = self._plugins.get(lookup_key)
+                    if loaded is not None and not loaded.deferred:
+                        return  # A sibling name already materialized this plugin.
                     self._load_plugin_scoped(_manifest)
 
             previous = platform_registry.snapshot_registration(platform_name, scope=scope)

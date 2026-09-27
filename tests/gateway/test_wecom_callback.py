@@ -276,16 +276,16 @@ class TestStandaloneSend:
         )
 
         result = asyncio.run(
-            wecom_adapter._callback_standalone_send(_config(), "app:user1", "hello")
+            wecom_adapter._callback_standalone_send(_config(), "ww1234567890:user1", "hello")
         )
 
         assert result == {
             "success": True,
             "platform": "wecom_callback",
-            "chat_id": "app:user1",
+            "chat_id": "ww1234567890:user1",
             "message_id": "msg-1",
         }
-        assert sent == {"chat_id": "app:user1", "content": "hello"}
+        assert sent == {"chat_id": "ww1234567890:user1", "content": "hello"}
 
     def test_http_client_is_opened_and_closed(self, monkeypatch):
         """The outbound client is the only resource the sender may hold."""
@@ -318,7 +318,7 @@ class TestStandaloneSend:
         )
 
         asyncio.run(
-            wecom_adapter._callback_standalone_send(_config(), "app:user1", "hi")
+            wecom_adapter._callback_standalone_send(_config(), "ww1234567890:user1", "hi")
         )
 
         assert seen["client_during_send"] is True
@@ -347,7 +347,7 @@ class TestStandaloneSend:
         )
 
         result = asyncio.run(
-            wecom_adapter._callback_standalone_send(_config(), "app:user1", "hi")
+            wecom_adapter._callback_standalone_send(_config(), "ww1234567890:user1", "hi")
         )
 
         assert "errcode 40013" in result["error"]
@@ -362,7 +362,7 @@ class TestStandaloneSend:
         )
 
         result = asyncio.run(
-            wecom_adapter._callback_standalone_send(_config(), "app:user1", "hi")
+            wecom_adapter._callback_standalone_send(_config(), "ww1234567890:user1", "hi")
         )
 
         assert "requirements not met" in result["error"].lower()

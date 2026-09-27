@@ -781,7 +781,9 @@ async def _callback_standalone_send(
     is wrong here. Only the outbound HTTP client is opened, and it is closed
     again afterwards.
     """
-    del thread_id, media_files, force_document  # text-only proactive send
+    del thread_id, force_document
+    if media_files:
+        return send_error("WeCom Callback standalone delivery supports text only.")
     from plugins.platforms.wecom.callback_adapter import (
         check_wecom_callback_requirements,
     )
@@ -795,11 +797,22 @@ async def _callback_standalone_send(
         }
     try:
         adapter = _build_callback_adapter(pconfig)
+        # A fresh sender has no inbound routing map. Never guess the first app
+        # when a scoped recipient belongs to a different corporation.
+        apps = adapter._apps
+        if ":" in chat_id:
+            corp_id, user_id = chat_id.split(":", 1)
+            apps = [app for app in apps if app.get("corp_id") == corp_id]
+            if not user_id:
+                return send_error("WeCom Callback recipient is empty.")
+        if len(apps) != 1:
+            return send_error("WeCom Callback target must identify exactly one configured app.")
+        adapter._apps = apps  # Ephemeral adapter: constrain routing to the selected app.
         adapter._ensure_http_client()
         try:
             result = await adapter.send(chat_id, message)
             if not result.success:
-                return {"error": f"WeCom Callback send failed: {result.error}"}
+                return send_error(f"WeCom Callback send failed: {result.error}")
             return {
                 "success": True,
                 "platform": "wecom_callback",
@@ -809,7 +822,7 @@ async def _callback_standalone_send(
         finally:
             await adapter.aclose_http_client()
     except Exception as e:
-        return {"error": f"WeCom Callback send failed: {e}"}
+        return send_error(f"WeCom Callback send failed: {e}")
 
 
 def interactive_setup() -> None:
@@ -901,6 +914,7 @@ def register(ctx) -> None:
         is_connected=_callback_is_connected, validate_config=_callback_is_connected,
         required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],
         standalone_sender_fn=_callback_standalone_send,
+        parse_target_ref_fn=lambda target: (target.strip(), None) if target.strip() else None,
         allowed_users_env="WECOM_CALLBACK_ALLOWED_USERS", allow_all_env="WECOM_CALLBACK_ALLOW_ALL_USERS", **common,
     )
 

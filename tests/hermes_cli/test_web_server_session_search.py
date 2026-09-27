@@ -171,3 +171,63 @@ def test_desktop_session_search_stamps_the_requested_profile(monkeypatch):
         (row["profile"], row["is_default_profile"])
         for row in response["results"]
     } == {("worker", False)}
+
+
+class _DeepLineageSessionDB(_FakeSessionDB):
+    """A compression lineage deeper than the chain walk's defensive bound.
+
+    Sessions s000..s178 form one in-place-compression lineage (each session's
+    parent ended with end_reason='compression'). The forward chain walk is
+    bounded; the bug remapped the SEARCH hit via tip(root), which truncates to
+    a stale mid id, while the CLI resumes from the matched id and reaches the
+    live tip (#125041).
+    """
+
+    DEPTH = 179
+    TIP = "s178"
+    MID = "s020"
+
+    def search_sessions_by_id(self, query, limit=20, include_archived=True,
+                              source=None, sources=None, exclude_sources=None):
+        return []  # pragma: no cover - content-hit path only in this test
+
+    def search_messages(self, query, source_filter=None, exclude_sources=None,
+                        limit=20, fields=None):
+        return [{
+            "session_id": self.MID,
+            "snippet": "content hit inside a deep lineage",
+            "role": "assistant",
+            "source": "desktop",
+            "model": "gpt",
+            "session_started": 200,
+        }][:limit]
+
+    def get_session(self, session_id):
+        parent = None
+        if session_id != "s000":
+            parent = f"s{int(session_id[1:]) - 1:03d}"
+        n = int(session_id[1:])
+        return {"id": session_id, "parent_session_id": parent,
+                "end_reason": "compression",
+                "ended_at": n + 1, "started_at": n}
+
+    def get_compression_tip(self, session_id):
+        # Faithful simulation of the bounded forward walk from ANY start id:
+        # root→tip hops are capped, matched-id→tip hops are not (the walk
+        # terminates at the real tip when started near it).
+        cap = 1000  # the raised bound; the OLD bound (100) truncated root walks
+        idx = int(session_id[1:])
+        return f"s{min(idx + cap, self.DEPTH - 1):03d}"
+
+
+def test_deep_lineage_search_resolves_tip_from_matched_id(monkeypatch):
+    monkeypatch.setattr("hermes_state.SessionDB", _DeepLineageSessionDB)
+
+    response = asyncio.run(_rt_sessions.search_sessions(q="content", limit=2))
+
+    [row] = response["results"]
+    # The resume id MUST be the live tip — not a stale mid the bounded
+    # root-started walk truncated to.
+    assert row["session_id"] == _DeepLineageSessionDB.TIP
+    # Dedupe/lineage bookkeeping stays keyed by the root.
+    assert row["lineage_root"] == "s000"

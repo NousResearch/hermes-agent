@@ -64,22 +64,24 @@ def _openviking_server_seen(child_env, monkeypatch, names):
     return json.loads(out.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("site", [
-    "compute_host", pytest.param("openviking_server", marks=pytest.mark.platforms("posix"))])
-def test_credentialed_children_keep_provider_keys_but_never_tier1_secrets(child_env, monkeypatch, site):
-    # Both children call model providers (the turn process; openviking-server's embedding/VLM
-    # models), so provider keys pass by design. Bot and relay tokens never do.
+def test_compute_host_is_hermes_and_keeps_its_full_environment(child_env, monkeypatch):
+    # It runs agent turns for the dashboard, so it needs what the turn needs: keys set only in the
+    # process env (Docker -e, systemd) are not in any .env for it to reload (#65895).
     _plant(monkeypatch)
-    if site == "compute_host":
-        own = {"HERMES_COMPUTE_HOST_HEARTBEAT_SECS": "15"}
-        seen = _compute_host_seen(child_env, monkeypatch, [*_TIER1, _PROVIDER, *own])
-    else:
-        # The server finds ov.conf through OPENVIKING_CONFIG_FILE or HOME; Hermes' PYTHONPATH
-        # would shadow its own site-packages (#78153).
-        monkeypatch.setenv("OPENVIKING_CONFIG_FILE", str(child_env / "ov.conf"))
-        monkeypatch.setenv("PYTHONPATH", str(child_env / "hermes-venv"))
-        own = {"OPENVIKING_CONFIG_FILE": str(child_env / "ov.conf"), "HOME": str(child_env), "PYTHONPATH": None}
-        seen = _openviking_server_seen(child_env, monkeypatch, [*_TIER1, _PROVIDER, *own])
+    names = [*_TIER1, _PROVIDER]
+    assert _compute_host_seen(child_env, monkeypatch, names) == {n: f"fake-{n.lower()}" for n in names}
+
+
+@pytest.mark.platforms("posix")
+def test_openviking_server_keeps_provider_keys_but_never_tier1_secrets(child_env, monkeypatch):
+    # Its embedding/VLM models call providers, so provider keys pass. Bot and relay tokens never do.
+    # It finds ov.conf through OPENVIKING_CONFIG_FILE or HOME; Hermes' PYTHONPATH would shadow its
+    # own site-packages (#78153).
+    _plant(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_CONFIG_FILE", str(child_env / "ov.conf"))
+    monkeypatch.setenv("PYTHONPATH", str(child_env / "hermes-venv"))
+    own = {"OPENVIKING_CONFIG_FILE": str(child_env / "ov.conf"), "HOME": str(child_env), "PYTHONPATH": None}
+    seen = _openviking_server_seen(child_env, monkeypatch, [*_TIER1, _PROVIDER, *own])
     assert seen == {"TELEGRAM_BOT_TOKEN": None, "GATEWAY_RELAY_SECRET": None,
                     _PROVIDER: "fake-openai_api_key", **own}
 

@@ -56,6 +56,9 @@ ALLOWED_RAW_SPAWN_ENV_FILES = {
     "hermes_cli/gateway.py",
     "hermes_cli/stderr_timestamp.py",
     "hermes_cli/profiles.py",
+    # The compute host runs agent turns for the dashboard: Home Assistant tools, Modal/Daytona
+    # backends and platform sends read keys that exist only in the process env (#65895).
+    "tui_gateway/host_supervisor.py",
     # apt/dnf/pacman run as root, through sudo (which resets the environment) or because Hermes
     # already is root. A root child can read every process's environment anyway, and the scrub
     # helpers would point TMPDIR into HERMES_HOME's scratch dir, leaving root-owned files there.

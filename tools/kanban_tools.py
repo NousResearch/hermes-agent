@@ -21,7 +21,8 @@ from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
-    KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
+    KANBAN_ATTACH_DELETE_SCHEMA, KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA,
+    KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
     KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
@@ -1011,6 +1012,31 @@ def _handle_attachments(args: dict, **kw) -> str:
                 _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]})
 
 
+@_kanban_handler("kanban_attach_delete")
+def _handle_attach_delete(args: dict, **kw) -> str:
+    """Delete one attachment from this worker's task (the delete verb the
+    toolset was missing: the only way out of a superseded artifact was editing
+    the attachments dir by hand)."""
+    tid = _worker_guard("kanban_attach_delete", args)
+    raw = args.get("attachment_id")
+    try:
+        attachment_id = int(raw)
+    except (TypeError, ValueError):
+        raise _Reject(
+            f"kanban_attach_delete: attachment_id must be an integer, got {raw!r}. Nothing changed.")
+    with _board(args.get("board")) as (kb, conn):
+        _existing_task(kb, conn, tid)
+        att = kb.get_attachment(conn, attachment_id)
+        if att is None or att.task_id != tid:
+            return tool_error(
+                f"kanban_attach_delete: no attachment {attachment_id} on {tid}. "
+                f"Nothing changed. Call kanban_attachments to list this task's ids.")
+        kb.delete_attachment(conn, attachment_id)
+        return _ok(
+            task_id=tid, deleted={"id": attachment_id, "filename": att.filename},
+            attachments=[_fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)])
+
+
 def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
     """Return a session id only when it is present in this profile's state.db."""
     if not session_id:
@@ -1212,6 +1238,7 @@ _TOOLS = (
     ("kanban_attach", KANBAN_ATTACH_SCHEMA, _handle_attach, "📎"),
     ("kanban_attach_url", KANBAN_ATTACH_URL_SCHEMA, _handle_attach_url, "📎"),
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
+    ("kanban_attach_delete", KANBAN_ATTACH_DELETE_SCHEMA, _handle_attach_delete, "🗑"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))

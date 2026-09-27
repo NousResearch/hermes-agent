@@ -196,6 +196,51 @@ def test_complete_reports_registered_attachments(worker_env):
     assert readback["attachments"] == d["attachments"]
 
 
+def test_attach_delete_removes_row_and_blob(worker_env):
+    """A worker can clear one attachment explicitly: the record and its blob
+    both go, so a superseded artifact cannot be handed to the next reader."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        att_id = kb.store_attachment_bytes(
+            conn, worker_env, "stale.pdf", b"old render", uploaded_by="tester")
+        att = kb.get_attachment(conn, att_id)
+        assert att is not None
+        blob = Path(att.stored_path)
+    assert blob.exists()
+
+    out = json.loads(kt._handle_attach_delete(
+        {"task_id": worker_env, "attachment_id": att_id}))
+    assert out["ok"] is True, out
+    assert out["deleted"] == {"id": att_id, "filename": "stale.pdf"}
+    assert out["attachments"] == []
+    assert not blob.exists(), "the blob must go with the row"
+    with kbc.connect() as conn:
+        assert kb.get_attachment(conn, att_id) is None
+
+
+def test_attach_delete_refuses_another_tasks_attachment(worker_env):
+    """The delete is task-scoped: a worker cannot clear another card's
+    attachment by id."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        other = kb.create_task(conn, title="other card", assignee="test-worker")
+        att_id = kb.store_attachment_bytes(
+            conn, other, "evidence.pdf", b"keep me", uploaded_by="tester")
+
+    out = kt._handle_attach_delete({"task_id": other, "attachment_id": att_id})
+    assert "error" in out.lower(), out
+    with kbc.connect() as conn:
+        assert kb.get_attachment(conn, att_id) is not None, "the row must survive"
+
+
 def test_request_review_rejects_unknown_reviewer_without_mutation(monkeypatch, worker_env, tmp_path):
     """#106163: a non-profile ``reviewer`` (e.g. the literal "reviewer") must be
     refused with an error the model sees, leaving the task running under the

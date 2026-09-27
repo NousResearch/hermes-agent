@@ -367,6 +367,23 @@ KANBAN_ATTACHMENTS_SCHEMA = _schema(
     [],
 )
 
+KANBAN_ATTACH_DELETE_SCHEMA = _schema(
+    "kanban_attach_delete",
+    (
+        "Delete one attachment from a task: the supported way to clear a "
+        "superseded artifact, so kanban_attachments (and the next reviewer) "
+        "cannot still see it. Re-uploading the same filename replaces the "
+        "record in place, so this is only needed to remove an artifact "
+        "outright. Deleting the wrong file is worse than leaving it, so the "
+        "id is required and must belong to task_id."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "attachment_id": _prop("integer", "Attachment id from kanban_attachments."),
+    },
+    ["attachment_id"],
+)
+
 KANBAN_CREATE_SCHEMA = _schema(
     "kanban_create",
     (

@@ -325,6 +325,8 @@ KANBAN_GUIDANCE = (
     "paths in `metadata` are NOT uploaded). Files must exist at completion.\n"
     "- **Attachments.** Attach real downloadable artifacts instead of pasting links in comments: `kanban_attach` "
     "(base64) or `kanban_attach_url` (server-side public http(s) fetch); 25 MB cap, `kanban_attachments` lists them. "
+    "Re-attaching the same filename REPLACES that artifact in place (one entry per name), so a rework round never "
+    "leaves the superseded bytes behind; `kanban_attach_delete` removes one outright. "
     "Workers may only attach to their own task.\n"
     "- **Created cards.** List ids in `kanban_complete(created_cards=[...])` ONLY when captured from a successful "
     "`kanban_create` return — never invent or paste ids; the kernel rejects the completion on any phantom id.\n"

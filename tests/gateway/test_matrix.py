@@ -1193,6 +1193,33 @@ def test_matrix_relation_distinguishes_reply_from_thread_fallback(content, expec
 
 
 @pytest.mark.asyncio
+async def test_legacy_thread_fallback_quote_is_not_current_message():
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
+    adapter._client.state_store.get_members = AsyncMock(return_value=[
+        "@bot:example.org", "@alice:example.org",
+    ])
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._background_read_receipt = MagicMock()
+    adapter._require_mention = True
+    body = "> <@alice:example.org> quoted @file:/tmp/private\n\n!model"
+
+    event = await adapter._build_inbound_event(
+        "!room:example.org", "@alice:example.org", "$current", body,
+        {"msgtype": "m.text", "body": body},
+        {"rel_type": "m.thread", "event_id": "$root", "is_falling_back": True,
+         "m.in_reply_to": {"event_id": "$root"}},
+    )
+
+    assert (
+        event.text, event.message_type, event.source.thread_id,
+        event.reply_to_message_id, event.reply_to_text,
+    ) == ("/model", MessageType.COMMAND, "$root", None, None)
+
+
+@pytest.mark.asyncio
 async def test_reply_without_inline_quote_fetches_parent_with_author_trust():
     adapter = _make_adapter()
     adapter._client = MagicMock()
@@ -1313,6 +1340,12 @@ async def test_reply_context_uses_edit_and_never_resurfaces_redacted_text():
         {"msgtype": "m.text", "body": "question"}, relation,
     )
     await adapter._on_redaction(types.SimpleNamespace(room_id=room_id, redacts="$parent"))
+    await adapter._on_room_message(types.SimpleNamespace(
+        room_id=room_id, sender="@alice:example.org", event_id="$late-edit", timestamp=0,
+        content={"msgtype": "m.text", "body": "* revived",
+                 "m.relates_to": {"rel_type": "m.replace", "event_id": "$parent"},
+                 "m.new_content": {"msgtype": "m.text", "body": "revived"}},
+    ))
     redacted_reply = await adapter._build_inbound_event(
         room_id, "@bob:example.org", "$reply2", "another question",
         {"msgtype": "m.text", "body": "another question"}, relation,
@@ -1336,6 +1369,113 @@ async def test_sent_matrix_message_is_available_as_reply_context():
     assert (result.success, result.message_id, cached) == (
         True, "$sent", MatrixEventContext("@bot:example.org", "hello from the bot"),
     )
+
+
+@pytest.mark.asyncio
+async def test_successful_matrix_edit_updates_cached_reply_target():
+    from plugins.platforms.matrix.reply_context import MatrixEventContext
+
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.send_message_event = AsyncMock(side_effect=[
+        "$sent", "$edit", RuntimeError("send failed"),
+    ])
+    room_id = "!room:example.org"
+
+    sent = await adapter.send(room_id, "first fragment")
+    edited = await adapter.edit_message(room_id, sent.message_id, "final answer")
+    after_success = await adapter._event_context_cache.resolve(None, room_id, sent.message_id)
+    failed = await adapter.edit_message(room_id, sent.message_id, "unpublished")
+    after_failure = await adapter._event_context_cache.resolve(None, room_id, sent.message_id)
+
+    assert (
+        sent.success, edited.success, failed.success, after_success, after_failure,
+    ) == (
+        True, True, False,
+        MatrixEventContext("@bot:example.org", "final answer"),
+        MatrixEventContext("@bot:example.org", "final answer"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport_outcome", ["success", "failure", "cancelled"])
+@pytest.mark.parametrize("parent_redacted", [False, True])
+async def test_matrix_edit_budget_and_cached_parent(transport_outcome, parent_redacted):
+    import json
+
+    from gateway.platforms.base import SendResult
+    from plugins.platforms.matrix.reply_context import MatrixEventContext
+
+    adapter = _make_adapter()
+    room_id = "!room:example.org"
+    user_ids = [f"@u{i}:a.b" for i in range(1300)]
+    payload = " ".join(user_ids)
+    prior = MatrixEventContext("@bot:example.org", "before", media_type="application/test")
+    adapter._event_context_cache.store(room_id, "$parent", prior)
+    if parent_redacted:
+        adapter._event_context_cache.redact(room_id, "$parent")
+
+    cancellation = asyncio.CancelledError()
+    effects = {"success": None, "failure": RuntimeError("send failed"), "cancelled": cancellation}
+    adapter._client = MagicMock()
+    adapter._client.send_message_event = AsyncMock(
+        return_value="$edit", side_effect=effects[transport_outcome],
+    )
+
+    result = None
+    cancelled = False
+    if transport_outcome == "cancelled":
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await adapter.edit_message(room_id, "$parent", payload)
+        cancelled = raised.value is cancellation
+    else:
+        result = await adapter.edit_message(room_id, "$parent", payload)
+
+    awaited_call = adapter._client.send_message_event.await_args
+    assert awaited_call is not None
+    sent_content = awaited_call.args[2]
+    sent_bytes = len(json.dumps(sent_content, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    after_edit = await adapter._event_context_cache.resolve(None, room_id, "$parent")
+    rejected_store = None
+    after_store = after_edit
+    if parent_redacted:
+        rejected_store = adapter._event_context_cache.store(room_id, "$parent", prior)
+        after_store = await adapter._event_context_cache.resolve(None, room_id, "$parent")
+
+    expected_results = {
+        "success": SendResult(success=True, message_id="$edit"),
+        "failure": SendResult(success=False, error="send failed"),
+        "cancelled": None,
+    }
+    expected_context = prior
+    if transport_outcome == "success":
+        expected_context = MatrixEventContext("@bot:example.org", payload, media_type="application/test")
+    if parent_redacted:
+        expected_context = None
+
+    assert {
+        "input_within_advertised_budget": len(payload.encode("utf-8")) <= adapter.max_message_length_for_chat(room_id),
+        "event_fits_homeserver": sent_bytes * 4 // 3 + 4096 <= 65_536,
+        "replacement": sent_content["m.new_content"],
+        "relation": sent_content["m.relates_to"],
+        "fallback_shortened": sent_content["body"] != f"* {payload}",
+        "result": result,
+        "same_cancellation": cancelled,
+        "cached_parent": after_edit,
+        "rejected_store": rejected_store,
+        "cached_parent_after_store": after_store,
+    } == {
+        "input_within_advertised_budget": True,
+        "event_fits_homeserver": True,
+        "replacement": {"msgtype": "m.text", "body": payload, "m.mentions": {"user_ids": user_ids}},
+        "relation": {"rel_type": "m.replace", "event_id": "$parent"},
+        "fallback_shortened": True,
+        "result": expected_results[transport_outcome],
+        "same_cancellation": transport_outcome == "cancelled",
+        "cached_parent": expected_context,
+        "rejected_store": None,
+        "cached_parent_after_store": expected_context,
+    }
 
 
 @pytest.mark.asyncio
@@ -1487,6 +1627,42 @@ async def test_thread_fetch_uses_mautrix_get_method():
         Method.GET,
         "/_matrix/client/v1/rooms/%21room%3Aexample.org/relations/%24root/m.thread",
         query_params={"dir": "b", "limit": "5"},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("image_event_id", ["$root", "$child"])
+async def test_thread_image_cache_can_retry_explicit_reply_download(tmp_path, image_event_id):
+    from plugins.platforms.matrix.reply_context import MatrixEventContextCache
+    from plugins.platforms.matrix.thread_context import fetch_thread_entries
+
+    room_id = "!room:example.org"
+    image_content = {
+        "msgtype": "m.image", "body": "photo.png", "url": "mxc://example.org/photo",
+    }
+    root_content = image_content if image_event_id == "$root" else {"msgtype": "m.text", "body": "root"}
+    chunk = [{"event_id": "$child", "sender": "@alice:example.org", "content": image_content}]
+    client = MagicMock()
+    client.api.request = AsyncMock(return_value={"chunk": chunk if image_event_id == "$child" else []})
+
+    async def get_event(_room_id, event_id):
+        content = root_content if event_id == "$root" else image_content
+        return types.SimpleNamespace(sender="@alice:example.org", content=content)
+
+    client.get_event = AsyncMock(side_effect=get_event)
+    cache = MatrixEventContextCache()
+    await fetch_thread_entries(client, cache, room_id, "$root", limit=5)
+    image = tmp_path / "photo.png"
+    image.write_bytes(b"png")
+    loader = AsyncMock(side_effect=[None, (str(image), "image/png")])
+
+    first = await cache.resolve(client, room_id, image_event_id, loader)
+    second = await cache.resolve(client, room_id, image_event_id, loader)
+
+    assert first is not None
+    assert second is not None
+    assert (first.media_path, second.media_path, second.media_type, loader.await_count) == (
+        None, str(image), "image/png", 2,
     )
 
 

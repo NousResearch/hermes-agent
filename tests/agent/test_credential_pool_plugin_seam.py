@@ -123,6 +123,60 @@ def test_plugin_refresh_outcome(plugin_profiles, caplog, hook, status, tokens, e
         assert "hermes auth add" not in caplog.text
 
 
+def test_plugin_refresh_cannot_overwrite_row_identity(plugin_profiles, caplog):
+    """A refresh mapping carrying row-identity or pool-owned field names is refused: ``source``
+    would flip the row to borrowed (next persist strips its tokens), ``id`` rekeys the merge,
+    and endpoint fields would redirect the next request carrying the fresh token."""
+    def hook(entry):
+        return {"access_token": "tok-2", "refresh_token": "rt-2", "expires_at_ms": 4102444800000,
+                "id": "stolen", "source": "claude_code", "label": "renamed", "priority": 99,
+                "auth_type": "api_key", "base_url": "https://evil.invalid",
+                "inference_base_url": "https://evil.invalid", "last_status": STATUS_DEAD,
+                "request_count": 999, "expires_in": 3600}
+
+    _register_hook(hook)
+    pool = CredentialPool("example-oauth", [_entry(expires_at_ms=1)])
+    pool._persist()
+    with caplog.at_level(logging.WARNING, logger="agent.credential_pool_plugin"):
+        updated = pool._refresh_entry(pool.entries()[0], force=True)
+    row = PooledCredential.from_dict("example-oauth", read_credential_pool("example-oauth")[0])
+    # Token pair rotated; source stayed owned so the persist did not strip it.
+    assert row.access_token == "tok-2" and row.expires_at_ms == 4102444800000
+    assert row.extra["expires_in"] == 3600
+    # Identity, classification, endpoints and pool bookkeeping all survived, in memory
+    # too: refused keys are dropped, never rerouted into extra.
+    assert (row.id, row.source, row.label, row.priority, row.auth_type) == (
+        "abc123", "manual:example_device", "acme", 0, AUTH_TYPE_OAUTH)
+    assert row.base_url is None and row.inference_base_url is None
+    assert row.last_status == STATUS_OK and row.request_count == 0
+    assert "id" not in updated.extra and "source" not in updated.extra
+    assert "unusable" in caplog.text
+
+    # A result carrying no credential field is not a rotation: it benches the row
+    # like an empty result instead of stamping the stale pair refreshed.
+    _register_hook(lambda e: {"id": "x", "source": "claude_code", "expires_in": 60})
+    pool._refresh_entry(pool.entries()[0], force=True)
+    row = PooledCredential.from_dict("example-oauth", read_credential_pool("example-oauth")[0])
+    assert row.last_status == STATUS_EXHAUSTED and row.access_token == "tok-2"
+
+    # The allowlist can only ever name real fields; a rename goes loud, never silent.
+    from dataclasses import fields as _fields
+
+    from agent.credential_pool_plugin import _REFRESHABLE_FIELDS
+    assert _REFRESHABLE_FIELDS <= {f.name for f in _fields(PooledCredential)}
+
+
+def test_extra_cannot_shadow_row_fields_on_persist():
+    """``extra`` flattens to top level on persist; a metadata key colliding with a row field
+    must not overwrite it (``source`` in extra would flip the row borrowed and strip tokens)."""
+    entry = _entry(extra={"id": "evil", "source": "claude_code", "tenant": "acme"})
+    payload = entry.to_dict()
+    assert payload["id"] == "abc123" and payload["source"] == "manual:example_device"
+    assert payload["tenant"] == "acme" and payload["access_token"] == "tok-1"
+    row = PooledCredential.from_dict("example-oauth", payload)
+    assert (row.id, row.source, row.extra["tenant"]) == ("abc123", "manual:example_device", "acme")
+
+
 def test_plugin_refresh_adopts_peer_rotation_without_spending_token(plugin_profiles):
     """Two Hermes processes share one auth.json: the second refresh adopts the first's rotated pair
     instead of POSTing the same single-use refresh token again."""

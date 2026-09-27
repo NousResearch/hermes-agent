@@ -313,3 +313,126 @@ class TestFailedRollbackRetiresConnection:
         assert db._conn is not None and db._conn is not real_conn
         row = db._conn.execute("SELECT v FROM _witness").fetchone()
         assert row is not None and row[0] == "after-retire"
+
+    def test_failed_rollback_can_reopen_clean_wal(self, db, monkeypatch, tmp_path):
+        """#125184 R1 witness (review-supplied): after a failed-rollback retire that
+        closed the sole WAL holder, the sidecar identity must be cleared with the
+        connection — the next write re-adopts the on-disk generation instead of
+        misclassifying our own clean close as a deleted WAL generation."""
+        if not db._wal_active:
+            pytest.skip("this regression must actually exercise WAL (this dev box "
+                        "forces journal_mode=DELETE; the CI lane with SQLite >=3.51.3 "
+                        "covers the WAL-open path)")
+        while db._evict_one_idle_read_conn():
+            pass
+        assert db._db_sidecar_identity
+        monkeypatch.setattr(
+            db, "_conn", _RollbackBreakingConn(db._conn, None)
+        )
+
+        def fail(conn):
+            conn.execute(
+                "INSERT INTO state_meta(key, value) VALUES (?, ?)",
+                ("rollback_reopen_probe", "must-rollback"),
+            )
+            raise sqlite3.OperationalError("database is locked")
+
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            db._execute_write(fail)
+        assert db._conn is None
+        # The retire cleared the recorded sidecar identity: no false generation loss.
+        db.set_meta("rollback_reopen_probe", "after-retire")
+        assert db.get_meta("rollback_reopen_probe") == "after-retire"
+        assert not db._db_wal_generation_lost
+        # Control: with the identity (incorrectly) retained, the same sequence WOULD
+        # trip DeletedWalGenerationError — pinned by monkeypatching the clear away.
+        db2 = SessionDB(db_path=tmp_path / "state2.db")
+        try:
+            if not db2._wal_active:
+                pytest.skip("second instance also not WAL on this runtime")
+            while db2._evict_one_idle_read_conn():
+                pass
+            monkeypatch.setattr(
+                db2, "_conn", _RollbackBreakingConn(db2._conn, None)
+            )
+            retained = dict(db2._db_sidecar_identity)
+            real_retire = type(db2)._retire_connection_locked
+
+            def retain_identity_retire(self, conn=None):
+                real_retire(self)
+                # Simulate the pre-R1 behavior: identity survives the retire.
+                self._db_sidecar_identity = retained
+
+            monkeypatch.setattr(SessionDB, "_retire_connection_locked", retain_identity_retire)
+            with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                db2._execute_write(
+                    lambda conn: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked"))
+                )
+            from hermes_state import DeletedWalGenerationError
+            with pytest.raises(DeletedWalGenerationError):
+                db2.set_meta("rollback_reopen_probe", "never")
+        finally:
+            db2.close()
+
+
+class TestStrictReopenFailureIsNotReusable:
+    """#125184 R2 witness (review-supplied): a strict hold() that raises during the
+    reopen must not leave a usable unguarded writer installed — the refusal repeats
+    while the fault is installed and the handle recovers once it clears."""
+
+    def _refusing_ofd_lock(self, monkeypatch):
+        real_ofd_lock = lg._ofd_lock
+
+        def refuse(fd, lock_type, start, length, *, cmd=None):
+            if cmd is None and lock_type == lg._F_RDLCK:
+                return False
+            return real_ofd_lock(fd, lock_type, start, length, cmd=cmd)
+
+        monkeypatch.setattr(lg, "_ofd_lock", refuse)
+
+    def test_strict_reopen_failure_is_not_reusable(self, db, monkeypatch):
+        if not (db._wal_active and lg.supported()):
+            pytest.skip("requires WAL + OFD guard support (CI lane covers it)")
+        assert not db._wal_guard_degraded
+        db.close()
+        real_ofd_lock = lg._ofd_lock
+
+        def refuse(fd, lock_type, start, length, *, cmd=None):
+            if cmd is None and lock_type == lg._F_RDLCK:
+                return False
+            return real_ofd_lock(fd, lock_type, start, length, cmd=cmd)
+
+        monkeypatch.setattr(lg, "_ofd_lock", refuse)
+        outcomes = []
+        for _ in range(2):
+            try:
+                db.set_meta("must_not_commit", "unguarded-write")
+            except lg.WalGuardArmedIncompleteError:
+                outcomes.append("refused")
+            else:
+                outcomes.append("COMMITTED")
+        assert outcomes == ["refused", "refused"]
+        assert db._conn is None
+        # Recovery: with the fault cleared, the next write re-establishes the
+        # full open+guard pair instead of staying refused.
+        monkeypatch.setattr(lg, "_ofd_lock", real_ofd_lock)
+        db.set_meta("must_not_commit", "recovered-write")
+        assert db.get_meta("must_not_commit") == "recovered-write"
+        assert db._conn is not None
+
+    def test_strict_reopen_failure_oserror_also_retires(self, db, monkeypatch):
+        """The OSError variant of the arming fault retires the candidate too."""
+        if not (db._wal_active and lg.supported()):
+            pytest.skip("requires WAL + OFD guard support (CI lane covers it)")
+        db.close()
+        real_ofd_lock = lg._ofd_lock
+
+        def exploding(fd, lock_type, start, length, *, cmd=None):
+            if cmd is None and lock_type == lg._F_RDLCK:
+                raise OSError("guard arming exploded")
+            return real_ofd_lock(fd, lock_type, start, length, cmd=cmd)
+
+        monkeypatch.setattr(lg, "_ofd_lock", exploding)
+        with pytest.raises(OSError, match="guard arming exploded"):
+            db.set_meta("must_not_commit", "unguarded-write")
+        assert db._conn is None, "a failed arming must not leave the writer installed"

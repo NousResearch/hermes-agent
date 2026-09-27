@@ -713,7 +713,13 @@ class SessionDB(
             # (howtocorrupt §2.2); these survive it. Lifted in close(). Strict: on a supported
             # runtime a guard that failed to arm is not a guard — refuse the writer (#125184),
             # unless HERMES_STATE_WAL_GUARD_BYPASS explicitly accepts the degraded mode.
-            self._wal_lock_guard = _lockguard.hold(self.db_path, strict=not self._wal_guard_degraded)
+            # Exception-safe publication (#125184 R2): same contract as the reopen path —
+            # a strict hold() that raises must not leave an unguarded writer installed.
+            try:
+                self._wal_lock_guard = _lockguard.hold(self.db_path, strict=not self._wal_guard_degraded)
+            except BaseException:
+                self._retire_connection_locked()
+                raise
 
     def _open_read_only(self) -> None:
         """Read-only attach for cross-profile aggregation: no schema init, NO write
@@ -978,7 +984,7 @@ class SessionDB(
             "flight — reopening (teardown/worker race, #94736)", self.db_path, context,
         )
         try:
-            self._conn = self._open_writer_conn()
+            conn = self._open_writer_conn()
         except Exception as exc:
             raise sqlite3.OperationalError(
                 f"state.db connection was closed while a {context} was still "
@@ -986,7 +992,50 @@ class SessionDB(
                 f"this worker finished — #94736) and the automatic reopen failed: {exc}"
             ) from exc
         if self._wal_active:  # a reopened writer is a live generation holder like the first open
-            self._wal_lock_guard = _lockguard.hold(self.db_path, strict=not self._wal_guard_degraded)
+            # Exception-safe publication (#125184 R2): opening the connection and arming
+            # its guard must be ONE step — a strict hold() that raises after partially
+            # arming unwinds its own refcounts but cannot unpublish self._conn. A writer
+            # installed without its guard would skip this reopen on every later write
+            # (non-None _conn) and keep committing unguarded. Retire the candidate the
+            # same way a healthy close() does — release whatever arming survived (none,
+            # strict failure unwinds itself), close the connection, clear the sidecar
+            # identity a native close unlinks — and let the next write re-attempt the
+            # full open+guard pair. The refusal is per-call, never a silent degradation.
+            try:
+                self._wal_lock_guard = _lockguard.hold(self.db_path, strict=not self._wal_guard_degraded)
+            except BaseException:
+                self._retire_connection_locked(conn)
+                raise
+        self._conn = conn
+
+    def _retire_connection_locked(self, conn: Optional[sqlite3.Connection] = None) -> None:
+        """Retire a writer connection under ``self._lock`` the way a healthy close() does:
+        release the WAL guard BEFORE the close (SQLite's close-time lock reset then sees
+        only real holders — see lockguard.release()), quietly close the connection, and
+        clear the recorded sidecar identity so the next write re-adopts whatever
+        generation is on disk instead of misclassifying our own clean close as a deleted
+        WAL generation (#125184 R1). Only call when the handle is NOT already marked
+        replaced / generation-lost: those retire through the quarantine paths, and an
+        unsafe generation must never be erased to reach a green test.
+
+        Callers that hold a guard record NOT tied to *conn* (the close() path, whose
+        guard may predate the connection being closed) release the guard themselves;
+        here the guard and the connection retire together.
+        """
+        _lockguard.release(self._wal_lock_guard)
+        self._wal_lock_guard = {}
+        conn = self._conn if conn is None else conn
+        if conn is not None:
+            self._close_connection_quietly(conn)
+        if conn is self._conn:
+            self._conn = None
+        # A native close of the last WAL holder unlinks -wal/-shm: the recorded
+        # identity describes files that are (correctly) gone. Keep it only when
+        # this retire is NOT a clean one — a quarantine/generation-loss retirement
+        # preserves the identity for the capture path; here nothing was wrong with
+        # the connection, only with its guard.
+        if not (self._db_replaced or self._db_wal_generation_lost or self._db_corrupt):
+            self._db_sidecar_identity = {}
 
     def _execute_write(
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
@@ -1053,11 +1102,11 @@ class SessionDB(
                             # the next BEGIN IMMEDIATE on it would raise a misleading
                             # "cannot start a transaction within a transaction". Retire
                             # the connection the same way close() does — release the
-                            # guard first, then a quiet close — so a later write goes
-                            # through a proven-fresh reopen instead of inheriting it.
-                            conn, self._conn = self._conn, None
-                            _lockguard.release(self._wal_lock_guard)
-                            self._close_connection_quietly(conn)
+                            # guard first, then a quiet close, clearing the sidecar
+                            # identity a native close unlinks (#125184 R1) — so a later
+                            # write goes through a proven-fresh reopen instead of
+                            # inheriting it.
+                            self._retire_connection_locked()
                         raise
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1

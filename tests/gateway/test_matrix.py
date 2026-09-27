@@ -1223,6 +1223,46 @@ async def test_reply_without_inline_quote_fetches_parent_with_author_trust():
 
 
 @pytest.mark.asyncio
+async def test_media_reply_without_inline_quote_fetches_parent_and_survives_failure():
+    adapter = _make_adapter()
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
+    adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
+    adapter._client.state_store.get_members = AsyncMock(
+        return_value=["@bot:example.org", "@alice:example.org"]
+    )
+    adapter._client.get_event = AsyncMock(side_effect=[
+        types.SimpleNamespace(sender="@alice:example.org", content={"msgtype": "m.text", "body": "earlier"}),
+        RuntimeError("homeserver unavailable"),
+    ])
+    adapter._download_and_cache_media = AsyncMock(return_value="/tmp/photo.png")
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._background_read_receipt = MagicMock()
+    adapter._require_mention = False
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    content = {"msgtype": "m.image", "body": "photo.png", "url": "mxc://example.org/photo"}
+    for event_id, parent_id in (("$first", "$first-parent"), ("$second", "$second-parent")):
+        await adapter._handle_media_message(
+            "!room:example.org", "@alice:example.org", event_id, 0.0, content,
+            {"m.in_reply_to": {"event_id": parent_id}}, "m.image",
+        )
+
+    assert [
+        (event.message_type, event.reply_to_message_id, event.reply_to_text, event.media_urls)
+        for event in captured
+    ] == [
+        (MessageType.PHOTO, "$first-parent", "earlier", ["/tmp/photo.png"]),
+        (MessageType.PHOTO, "$second-parent", None, ["/tmp/photo.png"]),
+    ]
+    assert adapter._client.get_event.await_count == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("claimed_author", ["@stranger:example.org", "@bot:example.org"])
 async def test_inline_reply_fallback_does_not_verify_claimed_author(claimed_author):
     adapter = _make_adapter()

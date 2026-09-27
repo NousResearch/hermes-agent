@@ -1754,3 +1754,46 @@
 .hermes-kanban-trash-label {
   font-weight: 500;
 }
+
+/* ---- Activity feed tabs (comments / events / runs) ------------------ */
+
+/* SDK Tabs lay out with gap-4; tighten to the section rhythm. */
+.hermes-kanban-feed-tabs {
+  gap: 0.6rem;
+}
+/* The strip spans the column and scrolls sideways on phones rather than
+   wrapping the triggers. */
+.hermes-kanban-feed-tablist {
+  display: flex;
+  /* The SDK list is a fixed h-9 with centred triggers, which floats the
+     active underline above the rule; size to the triggers instead. */
+  height: auto;
+  align-items: flex-end;
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+/* The SDK trigger ships the Mondwest display face; no dashboard page uses
+   it, so the triggers take the section-heading type instead. The first
+   trigger sits flush with the column edge like the headings around it. */
+.hermes-kanban-feed-tablist > button {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.65rem;
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-feed-tablist > button:first-child {
+  padding-left: 0;
+}
+.hermes-kanban-feed-tablist > button[aria-selected="true"],
+.hermes-kanban-feed-tablist > button:hover {
+  color: var(--color-foreground);
+}
+.hermes-kanban-feed-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}

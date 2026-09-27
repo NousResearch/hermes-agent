@@ -21,6 +21,7 @@
     Card, CardContent,
     Badge, Button, Input, Label, Select, SelectOption,
     Dialog, DialogContent, DialogTitle, DialogClose,
+    Tabs, TabsList, TabsTrigger,
   } = SDK.components;
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
   const { cn, timeAgo } = SDK.utils;
@@ -4129,70 +4130,14 @@
             );
           }),
         ) : null,
-        h("div", { className: "hermes-kanban-section" },
-          h("div", { className: "hermes-kanban-section-head" },
-            `${tx(i18n, "comments", "Comments")} (${comments.length})`),
-          comments.length === 0
-            ? h("div", { className: "text-xs text-muted-foreground" },
-                tx(i18n, "noComments", "— no comments —"))
-            : comments.map(function (c) {
-                return h("div", { key: c.id, className: "hermes-kanban-comment" },
-                  h("div", { className: "hermes-kanban-comment-head" },
-                    h("span", { className: "hermes-kanban-comment-author" }, c.author || "anon"),
-                    h("span", { className: "hermes-kanban-comment-ago" },
-                      timeAgo ? timeAgo(c.created_at) : ""),
-                  ),
-                  h(MarkdownBlock, { source: c.body, enabled: props.renderMarkdown }),
-                );
-              }),
-        ),
-        h("div", { className: "hermes-kanban-section" },
-          h("div", { className: "hermes-kanban-section-head" },
-            `${tx(i18n, "events", "Events")} (${events.length})`),
-          events.slice().reverse().slice(0, 20).map(function (e) {
-            const isDiag = isDiagnosticEvent(e.kind);
-            const phantoms = isDiag ? phantomIdsFromEvent(e) : [];
-            return h("div", {
-              key: e.id,
-              className: cn(
-                "hermes-kanban-event",
-                isDiag ? "hermes-kanban-event--hallucination" : "",
-              ),
-            },
-              isDiag
-                ? h("div", { className: "hermes-kanban-event-header" },
-                    h("span", { className: "hermes-kanban-event-warning-icon" }, "⚠"),
-                    h("span", { className: "hermes-kanban-event-warning-label" },
-                      getDiagnosticEventLabel(i18n, e.kind) || e.kind),
-                    h("span", { className: "hermes-kanban-event-ago" },
-                      timeAgo ? timeAgo(e.created_at) : ""),
-                  )
-                : h("div", { className: "hermes-kanban-event-header-plain" },
-                    h("span", { className: "hermes-kanban-event-kind" }, e.kind),
-                    h("span", { className: "hermes-kanban-event-ago" },
-                      timeAgo ? timeAgo(e.created_at) : ""),
-                  ),
-              isDiag && phantoms.length > 0
-                ? h("div", { className: "hermes-kanban-event-phantom-row" },
-                    h("span", { className: "hermes-kanban-event-phantom-label" },
-                      tx(i18n, "phantomIds", "Phantom ids:")),
-                    phantoms.map(function (pid) {
-                      return h("code", {
-                        key: pid,
-                        className: "hermes-kanban-event-phantom-chip",
-                      }, pid);
-                    }),
-                  )
-                : null,
-              e.payload && !isDiag
-                ? h("code", { className: "hermes-kanban-event-payload" },
-                    JSON.stringify(e.payload))
-                : null,
-            );
-          }),
-        ),
+        h(FeedTabs, {
+          key: t.id,
+          comments: comments,
+          events: events,
+          runs: props.data.runs || [],
+          renderMarkdown: props.renderMarkdown,
+        }),
         h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
-        h(RunHistorySection, { runs: props.data.runs || [] }),
       ),
       h("aside", { className: "hermes-kanban-drawer-side" },
         h("div", { className: "hermes-kanban-drawer-meta" },
@@ -4246,6 +4191,112 @@
     );
   }
 
+  // Comments / events / runs as SDK Tabs, like the desktop FeedTabs
+  // (2476c82837). The tab carries the label and count, so the panels have no
+  // heading of their own. With nothing but comments there is nothing to
+  // switch to, and a plain heading replaces the tab strip.
+  function FeedTabs(props) {
+    const { t: i18n } = useI18n();
+    const comments = props.comments;
+    const events = props.events;
+    const runs = props.runs;
+    const tabs = [
+      { id: "comments", label: `${tx(i18n, "comments", "Comments")} (${comments.length})` },
+      events.length ? { id: "events", label: `${tx(i18n, "events", "Events")} (${events.length})` } : null,
+      runs.length ? { id: "runs", label: `${tx(i18n, "runHistory", "Run history")} (${runs.length})` } : null,
+    ].filter(Boolean);
+
+    const panel = function (id) {
+      if (id === "runs") return h(RunHistorySection, { runs: runs, bare: true });
+      if (id === "events") {
+        return h("div", { className: "hermes-kanban-feed-panel" },
+          events.slice().reverse().slice(0, 20).map(function (e) {
+            const isDiag = isDiagnosticEvent(e.kind);
+            const phantoms = isDiag ? phantomIdsFromEvent(e) : [];
+            return h("div", {
+              key: e.id,
+              className: cn(
+                "hermes-kanban-event",
+                isDiag ? "hermes-kanban-event--hallucination" : "",
+              ),
+            },
+              isDiag
+                ? h("div", { className: "hermes-kanban-event-header" },
+                    h("span", { className: "hermes-kanban-event-warning-icon" }, "⚠"),
+                    h("span", { className: "hermes-kanban-event-warning-label" },
+                      getDiagnosticEventLabel(i18n, e.kind) || e.kind),
+                    h("span", { className: "hermes-kanban-event-ago" },
+                      timeAgo ? timeAgo(e.created_at) : ""),
+                  )
+                : h("div", { className: "hermes-kanban-event-header-plain" },
+                    h("span", { className: "hermes-kanban-event-kind" }, e.kind),
+                    h("span", { className: "hermes-kanban-event-ago" },
+                      timeAgo ? timeAgo(e.created_at) : ""),
+                  ),
+              isDiag && phantoms.length > 0
+                ? h("div", { className: "hermes-kanban-event-phantom-row" },
+                    h("span", { className: "hermes-kanban-event-phantom-label" },
+                      tx(i18n, "phantomIds", "Phantom ids:")),
+                    phantoms.map(function (pid) {
+                      return h("code", {
+                        key: pid,
+                        className: "hermes-kanban-event-phantom-chip",
+                      }, pid);
+                    }),
+                  )
+                : null,
+              e.payload && !isDiag
+                ? h("code", { className: "hermes-kanban-event-payload" },
+                    JSON.stringify(e.payload))
+                : null,
+            );
+          }),
+        );
+      }
+      return h("div", { className: "hermes-kanban-feed-panel" },
+        comments.length === 0
+          ? h("div", { className: "text-xs text-muted-foreground" },
+              tx(i18n, "noComments", "— no comments —"))
+          : comments.map(function (c) {
+              return h("div", { key: c.id, className: "hermes-kanban-comment" },
+                h("div", { className: "hermes-kanban-comment-head" },
+                  h("span", { className: "hermes-kanban-comment-author" }, c.author || "anon"),
+                  h("span", { className: "hermes-kanban-comment-ago" },
+                    timeAgo ? timeAgo(c.created_at) : ""),
+                ),
+                h(MarkdownBlock, { source: c.body, enabled: props.renderMarkdown }),
+              );
+            }),
+      );
+    };
+
+    if (tabs.length === 1) {
+      return h("div", { className: "hermes-kanban-section" },
+        h("div", { className: "hermes-kanban-section-head" }, tabs[0].label),
+        panel("comments"),
+      );
+    }
+    return h(Tabs, { defaultValue: "comments", className: "hermes-kanban-feed-tabs" },
+      function (active, setActive) {
+        const current = tabs.some(function (tab) { return tab.id === active; }) ? active : "comments";
+        return [
+          h(TabsList, { key: "list", role: "tablist", className: "hermes-kanban-feed-tablist" },
+            tabs.map(function (tab) {
+              return h(TabsTrigger, {
+                key: tab.id,
+                value: tab.id,
+                active: tab.id === current,
+                role: "tab",
+                "aria-selected": tab.id === current,
+                onClick: function () { setActive(tab.id); },
+              }, tab.label);
+            }),
+          ),
+          h("div", { key: "panel", role: "tabpanel" }, panel(current)),
+        ];
+      });
+  }
+
   // Per-attempt history. Closed runs first (most recent last), then the
   // active run if any. Each row shows profile / outcome / elapsed /
   // summary. Collapsed by default when there are more than three runs.
@@ -4268,7 +4319,7 @@
 
     return h("div", { className: "hermes-kanban-section" },
       h("div", { className: "hermes-kanban-section-head-row" },
-        h("span", { className: "hermes-kanban-section-head" },
+        props.bare ? h("span", null) : h("span", { className: "hermes-kanban-section-head" },
           `${tx(t, "runHistory", "Run history")} (${runs.length})`),
         !showAll
           ? h("button", {

@@ -588,15 +588,33 @@ def _apply_pins(changed: list, lockfile) -> int:
     if not changed:
         print("pm update: nothing to update")
         return 0
+    pinned: list[str] = []
+    failed: list[str] = []
     for d in changed:
         package = get_package(d.name)
-        artifacts = _pin_artifacts(package, d, lockfile.pinned_artifacts(d.name))
+        try:
+            artifacts = _pin_artifacts(package, d, lockfile.pinned_artifacts(d.name))
+        except Exception as e:
+            # One broken pin — a package's resolution bug or one target's upstream
+            # pool skew (rolling Termux pool 404 while nodejs.org is ahead) — must
+            # not zero out the whole run. Pin the rest, report the failure (#125386).
+            print(f"✗ {d.name} pin failed: {e}")
+            failed.append(d.name)
+            continue
         lockfile.set_pin(d.name, d.version, artifacts)
+        pinned.append(d.name)
         print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
-    lockfile.save()
-    if _install_names([d.name for d in changed]):
+    if not pinned:
+        print("pm update: every pin failed; lockfile untouched")
         return 1
-    return 0 if _sync_venv_step() else 1
+    lockfile.save()
+    if _install_names(pinned):
+        return 1
+    rc = 0 if _sync_venv_step() else 1
+    if failed:
+        print(f"pm update: pinned {len(pinned)}, failed {len(failed)}: {', '.join(failed)}")
+        return 1
+    return rc
 
 
 def _refresh_uv_lock() -> int:

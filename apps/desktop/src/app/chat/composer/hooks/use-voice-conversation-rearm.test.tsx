@@ -1,7 +1,8 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $voicePlayback } from '@/store/voice-playback'
+import { $autoSpeakReplies } from '@/store/voice-prefs'
 
 import { useVoiceConversation } from './use-voice-conversation'
 
@@ -205,7 +206,15 @@ async function beginReply(hook: ReturnType<typeof renderRearmConversation>) {
 }
 
 describe('useVoiceConversation playback rearm', () => {
+  beforeEach(() => {
+    // These tests exercise the TTS playback paths, which the read-aloud
+    // toggle gates in useVoiceConversation (#44263); opt in like the app
+    // does when replies are spoken.
+    $autoSpeakReplies.set(true)
+  })
+
   afterEach(() => {
+    $autoSpeakReplies.set(false)
     cleanup()
     vi.clearAllMocks()
     mocks.resetSpeechMocks()

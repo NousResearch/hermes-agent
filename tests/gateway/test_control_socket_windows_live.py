@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.live_process_fixtures import sleeper_script_path
+
 pytestmark = pytest.mark.platforms("windows")  # live Windows named-pipe E2E
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -191,8 +193,10 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
 
     standin = subprocess.Popen(
         # Use the real interpreter: a Windows venv's python.exe can be a shim
-        # whose PID differs from the process running the command line.
-        [getattr(sys, "_base_executable"), "-c", "import time; time.sleep(120)", "hermes", "gateway", "run"],
+        # whose PID differs from the process running the command line. The
+        # stand-in runs a SCRIPT, not `-c`: gateway identity is no longer
+        # inferred from inline `-c` source (#107002).
+        [getattr(sys, "_base_executable"), sleeper_script_path(), "hermes", "gateway", "run"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

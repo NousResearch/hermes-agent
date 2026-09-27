@@ -337,7 +337,7 @@ def _run_capability_probe(plugin_dir: Path, manifest: dict) -> Tuple[Optional[di
                     json.dumps(_probe_options(manifest)),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=_PROBE_TIMEOUT,
                 env=env,
             )

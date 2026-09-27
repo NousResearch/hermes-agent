@@ -122,7 +122,15 @@ class GatewayVoiceMixin:
         except Exception:
             auto_tts_default = False
         if hasattr(adapter, "_auto_tts_default"):
-            adapter._auto_tts_default = auto_tts_default
+            # A2A never inherits the global speak default. The flag is written by
+            # Desktop "Read replies aloud" / voice.auto_tts and is meant for human
+            # chat surfaces; an agent peer's replies must stay text (its adapter has
+            # no native send_voice, so auto-TTS would synthesize an MP3 and then
+            # fail delivery) — /voice scoped modes never applied to A2A anyway.
+            if platform.value == "a2a":
+                adapter._auto_tts_default = False
+            else:
+                adapter._auto_tts_default = auto_tts_default
         prefix = self._voice_key(platform, "", profile=getattr(adapter, "_owner_profile", None))
         for chats, modes in chat_sets:
             chats.clear()
@@ -295,6 +303,13 @@ class GatewayVoiceMixin:
         already called text_to_speech this turn, or voice input + base adapter auto-TTS handled it
         — UNLESS streaming consumed the response (already_sent): then the runner must do it."""
         if not response or response.startswith("Error:"):
+            return False
+        # A2A is agent-to-agent text. The adapter has no native send_voice, so
+        # global voice.auto_tts (Desktop "Read replies aloud") would synthesize
+        # an MP3 and then fail delivery with "Couldn't deliver the audio
+        # attachment." — the peer sees the failure instead of the text reply the
+        # agent already produced (#90103). Keep /voice scoped to human platforms.
+        if getattr(event.source.platform, "value", None) == "a2a":
             return False
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))

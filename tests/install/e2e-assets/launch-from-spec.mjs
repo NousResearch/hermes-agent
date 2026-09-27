@@ -114,13 +114,6 @@ async function main() {
   // holding node's event loop open, so the driver can outlive its own
   // finished test. Success and failure paths exit explicitly; this unref'd
   // timer is the backstop so no unknown state holds a runner past its budget.
-  const SELF_DEADLINE_MS = 20 * 60 * 1000;
-  const selfDeadline = setTimeout(() => {
-    log(`DRIVER SELF-TIMEOUT after ${SELF_DEADLINE_MS / 60000}min - exiting 124 (phase: ${currentPhase})`);
-    process.exit(124);
-  }, SELF_DEADLINE_MS);
-  selfDeadline.unref();
-
   const { values } = parseArgs({
     options: {
       spec: { type: 'string' },
@@ -134,6 +127,14 @@ async function main() {
       'timeout-ms': { type: 'string', default: '600000' },
     },
   });
+  // After the update wait (--timeout-ms), not inside it: launch, OLD chat and
+  // relaunch checks get their own 20 minutes.
+  const SELF_DEADLINE_MS = Number(values['timeout-ms']) + 20 * 60 * 1000;
+  const selfDeadline = setTimeout(() => {
+    log(`DRIVER SELF-TIMEOUT after ${SELF_DEADLINE_MS / 60000}min - exiting 124 (phase: ${currentPhase})`);
+    process.exit(124);
+  }, SELF_DEADLINE_MS);
+  selfDeadline.unref();
   if (!values.spec) throw new Error('--spec is required');
   if (!values['old-sha'] || !values['chat-out'] || !values['mock-url'] || !values['repo-dir']) {
     throw new Error('--old-sha, --chat-out, --mock-url and --repo-dir are required for OLD chat');

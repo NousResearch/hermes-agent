@@ -42,6 +42,7 @@ from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import pre_agent_fallback_notice
+from gateway.turn_executor import _UnboundedThreadExecutor
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -57,8 +58,6 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # offline update queue, #46621).
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
-# Size of the pool that runs turn bodies (blocking agent work).
-_TURN_MAX_WORKERS = 10
 # Size of the separate pool for best-effort session HOUSEKEEPING; why it is separate: _run_housekeeping_in_executor.
 _HOUSEKEEPING_MAX_WORKERS = 4
 
@@ -427,6 +426,12 @@ def _ensure_windows_gateway_venv_imports() -> None:
         return
 
     project_root = Path(__file__).resolve().parent.parent
+    from pm.environments import committed_venv
+
+    # A PM install's store Python was already activated onto the committed generation by
+    # hermes_bootstrap; overlaying the leftover pre-PM venv loads a foreign ABI (#122183).
+    if committed_venv(project_root) is not None:
+        return
     candidates: list[Path] = []
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))
@@ -503,6 +508,8 @@ def _seed_hygiene_system_prompt(agent: Any, session_row: Optional[Dict[str, Any]
             stored_prompt = raw_prompt
 
     agent._cached_system_prompt = stored_prompt
+    # Compaction otherwise rebuilds the prompt at the commit boundary from this agent's reduced toolset.
+    agent._retain_seeded_system_prompt = True
     return bool(stored_prompt)
 
 
@@ -1148,6 +1155,10 @@ def _build_replay_entry(
             entry[_rkey] = _rval
     if preserve_timestamp and msg.get("timestamp"):
         entry["timestamp"] = msg["timestamp"]
+    # Replay rewrites are view-only: keep the durable-row stamp so marker-only
+    # flushes skip rows already in state.db (#121462/#123462).
+    if msg.get("_db_persisted"):
+        entry["_db_persisted"] = True
     return entry
 
 
@@ -1809,12 +1820,18 @@ async def _async_profile_runtime_scope(profile_home: "Path"):
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner. An UNSET ``multiplex_profiles`` is
     settled first by ``resolve_multiplex_mode`` (the default is on; the boot guard keeps a fleet that
-    still runs per-profile gateways standalone). Multiplexed: reload under the default profile's
-    ``_profile_runtime_scope`` so platform tokens in its ``.env`` resolve via the secret scope;
-    unscoped ``_getenv`` falls to ``os.environ``, which often lacks a token living only under
-    ``profiles/<name>/.env``. Off -> identical to ``load_gateway_config()``.
+    still runs per-profile gateways standalone). Multiplexed: set multiplex-active, then reload
+    under the default root's ``_profile_runtime_scope`` — not ``get_hermes_home()``, which is the
+    named launcher when a profile-scoped process started the host. A scope miss must not fall
+    through to that process's ``os.environ``. Off -> identical to ``load_gateway_config()``.
 
     See #64674.
+
+    The probe load above only decides whether this process is a multiplexer. The primary
+    config is the scoped reload: multiplex must already be active (a scope miss must not
+    fall through to the launching profile's ``os.environ``) and the home must be the
+    default root, not ``get_hermes_home()`` — a named launcher's home is not the owner
+    of the primary adapter map.
     """
     from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
     cfg = load_gateway_config()
@@ -1822,7 +1839,13 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     if not cfg.multiplex_profiles:
         return cfg
     try:
-        home = get_hermes_home()
+        from agent.secret_scope import set_multiplex_active
+        set_multiplex_active(True)
+    except Exception:
+        logger.debug("could not set multiplex-active before primary config load", exc_info=True)
+    try:
+        from hermes_constants import get_default_hermes_root
+        home = get_default_hermes_root()
     except Exception:
         return cfg
     try:
@@ -3611,8 +3634,14 @@ class GatewayRunner(
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = threading.Lock()
         # Launch-time identity of the profile that owns ``self.adapters``; ``_authorization_adapter``
-        # compares against this rather than the per-turn ``_active_profile_name()``.
-        self._primary_profile_name = self._kanban_notifier_profile = self._active_profile_name()
+        # compares against this rather than the per-turn ``_active_profile_name()``. A multiplex
+        # host's primary map is always the default profile, even when a named profile launched
+        # the process (that launcher is a secondary adapter owner).
+        launch = self._active_profile_name()
+        self._kanban_notifier_profile = launch
+        self._primary_profile_name = (
+            "default" if getattr(self.config, "multiplex_profiles", False) else launch
+        )
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
@@ -4274,17 +4303,16 @@ class GatewayRunner(
         Callers of this helper bound their await with ``asyncio.wait_for`` and, on timeout, log
         "the worker thread is left to finish on its own" and proceed. That bounds the AWAIT but
         NOT the OCCUPANCY: a ``concurrent.futures`` work item that has already begun executing is
-        not cancellable, so an abandoned worker keeps its pool slot until its blocking call
-        returns. On a shared pool, N abandonments retire N turn slots for ANY N — the failure is
-        scale-invariant, so raising ``max_workers`` does not fix it. Housekeeping therefore gets
-        its own bounded pool; exhausting that one delays only more housekeeping, which is
-        best-effort by construction.
+        not cancellable, so an abandoned worker keeps its thread until its blocking call returns.
+        The turn pool is unbounded (one thread per turn), so sharing it would let wedged
+        housekeeping grow threads without limit. Housekeeping therefore gets its own bounded pool;
+        exhausting that one delays only more housekeeping, which is best-effort by construction.
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._get_housekeeping_executor(), copy_context().run, func, *args)
 
-    def _get_or_create_pool(self, attr: str, max_workers: int, prefix: str) -> concurrent.futures.ThreadPoolExecutor:
+    def _get_or_create_pool(self, attr: str, make_pool: Callable[[], concurrent.futures.Executor]) -> concurrent.futures.Executor:
         """Return (creating under ``_executor_lock``) the pool at ``attr``; one lock + closing flag fences both."""
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
@@ -4295,17 +4323,28 @@ class GatewayRunner(
                 raise RuntimeError("Gateway is shutting down; executor unavailable")
             executor = getattr(self, attr, None)
             if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=prefix)
+                executor = make_pool()
                 setattr(self, attr, executor)
             return executor
 
-    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
-        """Return the gateway-owned executor for blocking agent work."""
-        return GatewayRunner._get_or_create_pool(self, "_executor", _TURN_MAX_WORKERS, "hermes-gateway")
+    def _get_executor(self) -> concurrent.futures.Executor:
+        """Return the gateway-owned, UNBOUNDED executor for turn bodies and other blocking agent work.
 
-    def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        A turn body holds its thread for the whole turn (every tool call blocks), so a finite pool
+        silently queued already-accepted turns behind running ones. Actual bound: one live turn per
+        session, plus turns abandoned by the inactivity timeout (run_turn keeps no handle; their
+        thread runs to completion). ``max_concurrent_sessions`` is the only admission cap and is
+        unset by default.
+        """
+        return GatewayRunner._get_or_create_pool(
+            self, "_executor", lambda: _UnboundedThreadExecutor(thread_name_prefix="hermes-gateway"))
+
+    def _get_housekeeping_executor(self) -> concurrent.futures.Executor:
         """Return the gateway-owned executor for best-effort session housekeeping."""
-        return GatewayRunner._get_or_create_pool(self, "_housekeeping_executor", _HOUSEKEEPING_MAX_WORKERS, "hermes-gateway-hk")
+        return GatewayRunner._get_or_create_pool(
+            self, "_housekeeping_executor",
+            lambda: concurrent.futures.ThreadPoolExecutor(
+                max_workers=_HOUSEKEEPING_MAX_WORKERS, thread_name_prefix="hermes-gateway-hk"))
 
     @staticmethod
     def _stop_pool(executor) -> list:

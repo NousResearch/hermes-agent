@@ -36,6 +36,60 @@ export function currentModelCapabilities(
 // `deepseek-v4.1-flash` for the row's `-0731` sibling. The only authority on a
 // pick's validity is the gateway's switch result.
 
+/** The single, deliberate exception to the sticky-pick rule above: the virtual
+ *  `moa` provider. Its catalog row vanishes entirely once no MoA preset is
+ *  enabled (`hermes_cli/inventory.py` filters it out of explicit-only
+ *  catalogs), so a persisted manual pick pointing at it leaves the composer
+ *  pill reading `Model · moa: default` forever (#90244). For this one provider
+ *  — and only with a populated catalog in hand — row absence is authoritative:
+ *  the pick reseeds from the profile default. Every other provider keeps the
+ *  sticky behavior; an unloaded/empty catalog never clobbers anything. */
+export function moaPickRemoved(
+  options: { providers?: ModelOptionProvider[] | null } | null | undefined,
+  provider: string,
+  model: string
+): boolean {
+  if (!model.trim() || provider.trim().toLowerCase() !== 'moa') {
+    return false
+  }
+
+  const providers = options?.providers
+
+  if (!providers || providers.length === 0) {
+    return false
+  }
+
+  const row = providers.find(p => (p.slug || p.name || '').toLowerCase() === 'moa')
+
+  return !(row?.models ?? []).includes(model)
+}
+
+/** A bare provider slug is the pre-migration spelling of a custom entry. The
+ *  catalog aliases `custom:<key>` with the bare config key (#87035), so a pick
+ *  still carrying `nvidia` and a profile default of `custom:nvidia` name the
+ *  SAME endpoint — the pick's spelling is simply stale, not a distinct choice.
+ *  Shipping the bare slug resolves the NATIVE provider instead of the custom
+ *  entry, silently dropping the entry's `extra_body` (e.g.
+ *  `thinking: {type: adaptive}`) that the user configured (#81922).
+ *
+ *  Only a bare slug can be superseded: a pick that already names a provider
+ *  class (`custom:<other>`, `moa`, `openai-codex`) is a different endpoint and
+ *  keeps the sticky behavior. The bare slug must be the default's own key, so
+ *  an unrelated manual pick (`anthropic` while the default is `custom:nvidia`)
+ *  is never clobbered. */
+export function customDefaultSupersedesPick(pickProvider: string, defaultProvider: string): boolean {
+  const pick = (pickProvider || '').trim().toLowerCase()
+  const fallback = (defaultProvider || '').trim().toLowerCase()
+
+  if (!pick || pick === fallback || !fallback.startsWith('custom:')) {
+    return false
+  }
+
+  const key = fallback.slice('custom:'.length).trim()
+
+  return key.length > 0 && pick === key
+}
+
 interface ModelOptionsRequest {
   /** When false, include ambient/unconfigured providers (onboarding/setup
    *  surfaces). Chat pickers default to true so only explicitly configured

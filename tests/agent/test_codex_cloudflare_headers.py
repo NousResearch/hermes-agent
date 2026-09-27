@@ -211,13 +211,13 @@ class TestAuxiliaryClientWiring:
         token = _make_codex_jwt("acct-aux-try-codex")
 
         # Force _select_pool_entry to return "no pool" so we fall through to
-        # _read_codex_access_token.
+        # the auth.json token.
         monkeypatch.setattr(
             auxiliary_client, "_select_pool_entry",
             lambda provider: (False, None),
         )
         monkeypatch.setattr(
-            auxiliary_client, "_read_codex_access_token",
+            auxiliary_client, "_read_codex_singleton_token",
             lambda: token,
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -235,7 +235,11 @@ class TestAuxiliaryClientWiring:
         from agent import auxiliary_client
         token = _make_codex_jwt("acct-aux-raw-codex")
         monkeypatch.setattr(
-            auxiliary_client, "_read_codex_access_token",
+            auxiliary_client, "_select_pool_entry",
+            lambda provider: (False, None),
+        )
+        monkeypatch.setattr(
+            auxiliary_client, "_read_codex_singleton_token",
             lambda: token,
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:

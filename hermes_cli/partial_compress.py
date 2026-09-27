@@ -131,7 +131,9 @@ def split_history_for_partial_compress(
     exchanges kept verbatim.
 
     Exchanges are counted by ``user`` messages so the tail always starts on a user turn and
-    ``compressed_head + tail`` keeps alternation valid. Returns ``(history, [])`` when the head
+    ``compressed_head + tail`` keeps alternation valid. A ``display_kind`` row (timeline marker,
+    wake notice, mid-turn ``/steer``) is user-role but starts no exchange: counting it would keep
+    fewer exchanges than asked, or cut a turn in two at the steer. Returns ``(history, [])`` when the head
     would be empty (or there are no user turns), signaling the caller to fall back to full
     compression rather than rotating the session for a no-op.
     """
@@ -143,7 +145,7 @@ def split_history_for_partial_compress(
     boundary = None
     seen = 0
     for idx in range(len(history) - 1, -1, -1):
-        if history[idx].get("role") == "user":
+        if history[idx].get("role") == "user" and not history[idx].get("display_kind"):
             boundary = idx
             seen += 1
             if seen >= keep_last:

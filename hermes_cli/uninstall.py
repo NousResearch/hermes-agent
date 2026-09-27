@@ -8,6 +8,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
+from hermes_cli import legacy_uv
 from hermes_cli.colors import Colors, color
 
 def _logger(mark: str, col: str):
@@ -367,9 +368,9 @@ _GATEWAY_SERVICE_REMOVERS = {
 
 
 def _hermes_path_markers(hermes_home: Path, *, include_managed_bin: bool = False) -> list[str]:
-    """Prefixes identifying Hermes-owned User-PATH entries (prefix match sweeps git\cmd, git\bin,
-    node...). ``include_managed_bin`` adds ``<root>\bin`` (launchers + managed uv) — only when that
-    dir is about to be deleted, so a keep-data uninstall keeps the working uv resolvable."""
+    """Prefixes identifying Hermes-owned User-PATH entries (prefix match sweeps git\\cmd, git\\bin,
+    node...). ``include_managed_bin`` adds ``<root>\bin`` (launchers; a pre-PM uv can still sit
+    there) — only when that dir is about to be deleted, so a keep-data uninstall keeps it resolvable."""
     root = str(hermes_home).rstrip("\\/")
     subs = ("hermes-agent", "git", "node", "venv") + (("bin",) if include_managed_bin else ())
     return [f"{root}\\{sub}" for sub in subs]
@@ -495,19 +496,18 @@ def _remove_path_or_tree(path: Path) -> bool:
         return False
 
 
-def remove_legacy_runtime_trees(hermes_home: Path) -> list[Path]:
+def remove_legacy_runtime_trees(hermes_home: Path, *, defer_uv_to_wipe: bool = False) -> list[Path]:
     """Delete managed-runtime trees a PRE-SPLIT install left in HERMES_HOME.
 
-    Runtime artifacts are install-scoped now, so the current locations go
-    away with ``rmtree(project_root)``. But a checkout OUTSIDE the home
-    (the common case: ``~/src/hermes-agent``) used to put its node/uv
-    under ``$HERMES_HOME`` — that tree survives removing the checkout and
-    survives "keep my data" uninstalls, because it is not data.
+    A checkout OUTSIDE the home (``~/src/hermes-agent``) used to put its
+    node/uv under ``$HERMES_HOME``, and that tree outlives both the checkout
+    removal and a keep-data uninstall. Only the exact managed layout goes:
+    ``node/`` and the ``bin/uv`` family, never the whole ``bin/`` dir.
 
-    Only the exact managed layout is removed: ``node/`` (a tree the
-    installer owned wholesale) and ``bin/uv`` (the single binary, NOT the
-    whole ``bin/`` dir — a user's own scripts can live there). Profile
-    state is never touched.
+    The uv family goes through the shared fail-closed cleanup
+    (:func:`legacy_uv.remove_legacy_managed_uv`); a full uninstall passes
+    ``defer_uv_to_wipe`` instead — the home is about to be deleted whole, so a
+    manual-removal warning would name files about to disappear with it.
     """
     removed: list[Path] = []
 
@@ -519,33 +519,30 @@ def remove_legacy_runtime_trees(hermes_home: Path) -> list[Path]:
         except Exception as e:
             log_warn(f"Could not remove {node_tree}: {e}")
 
-    for uv_name in ("uv", "uv.exe"):
-        uv_binary = hermes_home / "bin" / uv_name
-        if uv_binary.is_file():
-            try:
-                uv_binary.unlink()
-                removed.append(uv_binary)
-            except Exception as e:
-                log_warn(f"Could not remove {uv_binary}: {e}")
+    if not defer_uv_to_wipe:
+        removed.extend(legacy_uv.remove_legacy_managed_uv(hermes_home))
 
     return removed
 
 
 def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
-    """Delete the managed binary dir (the default Hermes root's ``bin``).
+    """Delete the managed binary dir's hermes LAUNCHERS (the default root's ``bin``).
 
-    The dir holds only hermes-owned launcher copies (the relocatable venv's
-    console scripts, staged onto PATH by first-run repair) — pm keeps uv in
-    its own store entry, so nothing shared lives here and the whole dir goes.
-    Every uninstall mode deletes the code checkout, so a surviving launcher
-    would dangle: ``hermes`` in a new terminal resolves and then errors on
-    its missing venv target, which reads worse than command-not-found.
+    The sweep takes only the exact launcher leaves — the
+    :data:`_launchers.WINDOWS_BIN_LAUNCHERS` names with a ``.exe``/``.cmd``
+    suffix or the bare name. Every uninstall mode deletes the code checkout, so
+    a surviving launcher would dangle: ``hermes`` resolves in a new terminal
+    and then errors on its missing venv target.
 
-    A launcher that IS this process's own trampoline is mandatory-locked
-    against deletion but not rename, so removal falls back to renaming it
-    aside with a non-executable suffix.
+    Everything else stays — a pre-PM ``uv.exe`` (kept resolvable by keep-data,
+    in the fail-closed cleanup's hands) and the user's own scripts — and the
+    dir goes only when nothing but launchers was in it, so a kept PATH entry
+    never dangles on an emptied dir. A launcher that IS this process's
+    trampoline cannot be deleted but can be renamed aside
+    (``<leaf>.uninstalled.<pid>``); that residue is ours, so a later run
+    reclaims it (its base is still a launcher leaf).
 
-    *windows* is an injectable platform verdict for tests (same pattern as
+    *windows* is an injectable platform verdict for tests (pattern as in
     ``_install_repair.ensure_windows_bin_launchers``).
     """
     if windows is None:
@@ -562,23 +559,29 @@ def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
         return []
 
     removed: list[Path] = []
-    for launcher in sorted(bin_dir.iterdir()):
-        if not launcher.is_file():
-            continue
+    from hermes_cli._launchers import WINDOWS_BIN_LAUNCHERS
+
+    launcher_leaves = {f"{name}{ext}" for name in WINDOWS_BIN_LAUNCHERS for ext in ("", ".exe", ".cmd")}
+    for entry in sorted(bin_dir.iterdir()):
+        # Exact leaves only: ``hermes.bak`` is user data, which an earlier sweep
+        # would have taken by stem. The rename-aside residue a failed unlink
+        # leaves (``<leaf>.uninstalled.<pid>``) is reclaimed via its base leaf.
+        if not entry.is_file() or entry.name.split(".uninstalled.", 1)[0] not in launcher_leaves:
+            continue  # a pre-PM uv.exe or the user's own script is not a launcher
         try:
-            launcher.unlink()
-            removed.append(launcher)
+            entry.unlink()
+            removed.append(entry)
         except OSError:
-            aside = launcher.with_name(f"{launcher.name}.uninstalled.{os.getpid()}")
+            aside = entry.with_name(f"{entry.name}.uninstalled.{os.getpid()}")
             try:
-                os.rename(launcher, aside)
-                removed.append(launcher)
+                os.rename(entry, aside)
+                removed.append(entry)
             except OSError as e:
-                log_warn(f"Could not remove {launcher}: {e}")
+                log_warn(f"Could not remove {entry}: {e}")
     try:
         bin_dir.rmdir()
     except OSError:
-        pass  # leftovers (renamed-aside trampolines) keep the dir until next run
+        pass  # non-launcher files (legacy uv, user scripts) keep the dir — and the PATH entry valid
     return removed
 
 
@@ -1009,10 +1012,10 @@ def _perform_uninstall(
         log_info("No gateway service or processes found")
 
     # 2-3b. PATH entries, wrapper, Windows launchers, node symlinks. Windows: hermes_home is
-    #    %VAR%-expanded because install.ps1 writes literal C:\Users\<u>\...; hermes\bin (launchers +
-    #    managed uv) leaves the PATH only when the full wipe below deletes it (keep-data keeps uv
-    #    resolvable), while the launchers themselves always go. Symlinks go only when they still
-    #    point into this home's node dir (never clobber nvm / user-managed Node).
+    #    %VAR%-expanded because install.ps1 writes literal C:\Users\<u>\...; hermes\bin (launchers,
+    #    plus any pre-PM uv) leaves the PATH only when the full wipe below deletes it (keep-data
+    #    keeps it resolvable), while the launchers themselves always go. Symlinks go only when they
+    #    still point into this home's node dir (never clobber nvm / user-managed Node).
     windows = _is_windows()
     sweep_managed_bin = windows and full_uninstall and _is_default_hermes_home(hermes_home)
     for on_this_platform, label, remove, success_fmt, none_msg in (
@@ -1075,7 +1078,8 @@ def _perform_uninstall(
     #     are install tooling, not data, so removing them is correct in
     #     either mode.
     log_info("Removing managed runtime trees...")
-    removed_runtimes = remove_legacy_runtime_trees(hermes_home)
+    removed_runtimes = remove_legacy_runtime_trees(
+        hermes_home, defer_uv_to_wipe=full_uninstall)
     if removed_runtimes:
         for path in removed_runtimes:
             log_success(f"Removed {path}")

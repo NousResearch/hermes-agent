@@ -929,6 +929,28 @@ def _print_checkpoint_footprint_notice() -> None:
         print(f"\n\033[1;33mℹ  {notice}\033[0m")
 
 
+def _purge_legacy_managed_uv() -> None:
+    """Drop the pre-PM ``uv``/``uvx`` a legacy install left in each home's ``bin``.
+
+    Runs only once the store carries its own uv (until then the legacy binary
+    is the install's only uv), over every home: the pre-PM resolver was
+    profile-scoped, and ``list_profiles()`` never enumerated a custom
+    ``HERMES_HOME``. Fail-closed platforms skip silently; doctor names the
+    manual step there.
+    """
+    import pm
+    from hermes_constants import get_hermes_home
+    from hermes_cli.profiles import list_profiles
+    from hermes_cli.legacy_uv import AUTOMATIC_CLEANUP, remove_legacy_managed_uv
+
+    if not AUTOMATIC_CLEANUP or not pm.is_installed("uv"):
+        return
+    homes = {profile.path for profile in list_profiles(lazy_skill_count=True)}
+    homes.add(get_hermes_home())
+    for home in sorted(homes, key=lambda h: str(h)):
+        remove_legacy_managed_uv(home)
+
+
 def _print_post_update_notices_and_self_heals() -> None:
     """Best-effort notices (FTS optimize, curator) and self-heals (FHS PATH, ACP launcher,
     Windows bin launchers, cua-driver refresh) that run after the summary."""
@@ -949,6 +971,7 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('FHS PATH guard check failed: %s', _ensure_fhs_path_guard),
         ('CLI launcher exposure failed: %s', lambda: _launchers.expose_cli(_m().PROJECT_ROOT)),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
+        ('Legacy managed uv cleanup failed: %s', _purge_legacy_managed_uv),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Default PM tool install failed: %s', _install_default_tools_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),

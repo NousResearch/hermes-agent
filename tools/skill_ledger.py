@@ -745,6 +745,17 @@ def rollback_entry(entry_id: str) -> tuple[bool, str]:
         return False, f"no ledger entry with id '{entry_id}'"
     if path_err := _validate_entry_paths(entry):
         return False, f"refusing rollback: {path_err}"
+    # Share skill_manage's lock (including category/name aliases and batches).
+    # A writer landing between safety capture and restore would be overwritten
+    # without being recoverable from the safety entry. Import lazily: the manager
+    # itself calls the ledger when recording ordinary mutations.
+    from tools.skill_manager_tool import _skill_mutation_lock
+    with _skill_mutation_lock(str(entry.get("skill") or "?")):
+        return _rollback_entry_locked(entry_id, entry)
+
+
+def _rollback_entry_locked(entry_id: str, entry: Dict[str, Any]) -> Tuple[bool, str]:
+    """Hold skill ownership through safety capture, restoration and the final ledger row."""
     before = list(entry.get("before") or [])
     after = list(entry.get("after") or [])
     # Historical hollow delete/archive/purge entries (SKILL.md only): fill from the

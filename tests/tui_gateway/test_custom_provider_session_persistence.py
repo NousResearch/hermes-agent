@@ -578,8 +578,8 @@ class TestFollowProfileConfigRuntimeOverrides:
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
             home.mkdir()
-            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n")
-            (home / ".env").write_text("")
+            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n", encoding="utf-8")
+            (home / ".env").write_text("", encoding="utf-8")
         stored = "20260919-000000-botc"
         db = SessionDB(db_path=secondary / "state.db")
         db.create_session(stored, "desktop", model="profile/default",
@@ -636,7 +636,7 @@ class TestFollowProfileConfigRuntimeOverrides:
             assert record["model_override"]["model"] == "zai/glm-5.1"
             assert record["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
 
-            (secondary / "config.yaml").write_text("model:\n  default: profile/new-default\n  provider: nous\n")
+            (secondary / "config.yaml").write_text("model:\n  default: profile/new-default\n  provider: nous\n", encoding="utf-8")
             assert resume().get("model_override") is None
         finally:
             db.close()

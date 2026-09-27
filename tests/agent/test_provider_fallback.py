@@ -143,12 +143,12 @@ class TestFallbackChainAdvancement:
         agent = _make_agent(fallback_model=[
             {"provider": "broken", "model": "nope"}, {"provider": "zai", "model": "glm-5.2"},
         ])
-        agent.provider = "openai-codex"
+        agent.provider = "nous"
         with patch("agent.auxiliary_client.resolve_provider_client",
                    side_effect=[(None, None), (_mock_client(base_url="https://api.z.ai/v1"), "glm-5.2")]):
             assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
 
-        assert [(kw["from_provider"], kw["to_provider"]) for kw in calls] == [("openai-codex", "zai")]
+        assert [(kw["from_provider"], kw["to_provider"]) for kw in calls] == [("nous", "zai")]
         assert fallback_fields(**calls[0])["error_class"] == "rate_limit"
 
     def test_skips_provider_that_raises_to_next(self):

@@ -254,9 +254,7 @@ async def test_mattermost_thread_fallback_keeps_requested_result(policy, caplog)
     async def api(method, path, payload=None):
         frames.append(dict(payload))
         if "root_id" in payload:
-            adapter._last_post_status = 404
-            adapter._last_post_error = "root_id not found"
-            return {}
+            return {"_post_broken_thread_root": True}
         return {"id": "sent"}
 
     adapter._api = api

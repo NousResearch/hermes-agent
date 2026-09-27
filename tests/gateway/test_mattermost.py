@@ -270,9 +270,8 @@ class TestMattermostSend:
         """Tool/status/progress bubbles must stay quiet when the thread is broken."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._last_post_status = 400
-        self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(return_value={})
+        self.adapter._api_post = AsyncMock(return_value={
+            "_post_broken_thread_root": True})
 
         result = await self.adapter.send(
             "channel_1",
@@ -295,10 +294,10 @@ class TestMattermostSend:
         self.adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": limit}))
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._last_post_status = 400
-        self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
         self.adapter._api_post = AsyncMock(
-            side_effect=lambda path, payload: {} if "root_id" in payload else {"id": "flat_final"})
+            side_effect=lambda path, payload: {
+                "_post_broken_thread_root": True
+            } if "root_id" in payload else {"id": "flat_final"})
 
         result = await self.adapter.send(
             "channel_1", body, reply_to="bad_root", metadata={"notify": True})
@@ -314,6 +313,63 @@ class TestMattermostSend:
         assert "Mattermost thread delivery failed" in flat[0]["message"]
         assert "".join(p["message"].removeprefix(warning).removeprefix(warning.rstrip()) for p in flat) == body
 
+    @pytest.mark.asyncio
+    async def test_notify_invalid_root_recovers_after_concurrent_success(self):
+        """A second POST must not erase the rejected notify's own root error."""
+        import asyncio
+
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
+        body_started = asyncio.Event()
+        release_body = asyncio.Event()
+        payloads = []
+
+        async def rejected_body():
+            body_started.set()
+            await release_body.wait()
+            return "api.context.invalid_param.app_error: invalid root_id"
+
+        def post(url, **kwargs):
+            payload = kwargs["json"]
+            payloads.append(payload)
+            response = AsyncMock()
+            response.__aenter__.return_value = response
+            response.status = 201
+            if payload.get("root_id") == "bad_root":
+                response.status = 400
+                response.text.side_effect = rejected_body
+            elif payload["message"] == "Concurrent message":
+                response.json.return_value = {"id": "concurrent"}
+            else:
+                response.json.return_value = {"id": "flat_final"}
+            return response
+
+        self.adapter._session.post.side_effect = post
+        notify = asyncio.create_task(self.adapter.send(
+            "channel_1", "Final answer", reply_to="bad_root", metadata={"notify": True}))
+        try:
+            await asyncio.wait_for(body_started.wait(), timeout=5)
+            concurrent = await asyncio.wait_for(
+                self.adapter.send("channel_1", "Concurrent message"), timeout=5)
+            assert concurrent.success is True
+            assert concurrent.message_id == "concurrent"
+        finally:
+            release_body.set()
+        result = await asyncio.wait_for(notify, timeout=5)
+
+        assert result.success is True
+        assert result.message_id == "flat_final"
+        assert len(payloads) == 3
+        assert payloads[0]["root_id"] == "bad_root"
+        assert payloads[0]["message"] == "Final answer"
+        assert payloads[1]["message"] == "Concurrent message"
+        assert "root_id" not in payloads[1]
+        assert payloads[2]["channel_id"] == "channel_1"
+        assert "root_id" not in payloads[2]
+        assert payloads[2]["message"] == (
+            "⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n"
+            "Final answer")
+
 
     @pytest.mark.parametrize("outcome", ["ok", "unacknowledged", "timeout", "notice_unacknowledged", "cancelled"])
     @pytest.mark.asyncio
@@ -323,13 +379,12 @@ class TestMattermostSend:
         self.adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500}))
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._last_post_status = 400
-        self.adapter._last_post_error = "invalid root_id"
         self.adapter._upload_file = AsyncMock(return_value="file")
         final = {"ok": {"id": "content"}, "unacknowledged": {}, "timeout": TimeoutError(),
                  "notice_unacknowledged": {}, "cancelled": asyncio.CancelledError()}[outcome]
         notice = {} if outcome == "notice_unacknowledged" else {"id": "notice"}
-        self.adapter._api_post = AsyncMock(side_effect=[{}, notice, final])
+        self.adapter._api_post = AsyncMock(side_effect=[{
+            "_post_broken_thread_root": True}, notice, final])
         path = tmp_path / "image.png"
         path.write_bytes(b"image")
         call = self.adapter.send_image_file(

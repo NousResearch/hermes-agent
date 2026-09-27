@@ -1548,7 +1548,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             action.turn_id, ids, profile=action.profile, room_id=action.room_id,
             thread_id=action.thread_id, session_key=session_key, session_id=action.session_id,
             requester=action.requester, source=saved_source,
-            emoji_filter=action.emoji_filter,
+            emoji_filter=action.emoji_filter, text_content=text_content,
         )
         self._reaction_followup_actions.pop(session_key, None)
 
@@ -2887,8 +2887,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         candidate = store.candidate(room_id, target_event_id)
         if candidate is None or candidate["requester"] != sender:
             return
-        if (not self._is_authorized_user(sender)
-                or self._is_system_or_bridge_sender(sender)
+        if (self._is_system_or_bridge_sender(sender)
                 or any(pattern.search(sender) for pattern in self._ignored_user_patterns)
                 or not await self._is_allowed_matrix_room_event(room_id)):
             return
@@ -2905,6 +2904,11 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             return
         if (source.profile or "") != candidate["profile"]:
             return
+        if self._is_sender_authorized(
+            sender, chat_type=source.chat_type, chat_id=room_id,
+            thread_id=source.thread_id,
+        ) is not True:
+            return
         session_store = getattr(self, "_session_store", None)
         if (not candidate["session_id"] or session_store is None
                 or await asyncio.to_thread(
@@ -2916,8 +2920,11 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             reaction_time=reaction_time)
         if claimed is None:
             return
-        target = await self._event_context_cache.resolve(
-            getattr(self, "_client", None), room_id, target_event_id)
+        reply_text = claimed["text_content"]
+        if not reply_text:
+            target = await self._event_context_cache.resolve(
+                getattr(self, "_client", None), room_id, target_event_id)
+            reply_text = target.text if target else ""
         context = (f"Matrix reaction by {sender}: {emoji} on reply {target_event_id} "
                    f"(reaction event {reaction_event_id}).")
         followup = MessageEvent(
@@ -2925,7 +2932,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             raw_message={"m.relates_to": {"rel_type": "m.annotation",
                                           "event_id": target_event_id, "key": emoji}},
             reply_to_message_id=target_event_id, channel_context=context,
-            reply_to_text=target.text[:500] if target and target.text else None,
+            reply_to_text=reply_text[:500] or None,
             reply_to_is_own_message=True,
             user_id=sender, allow_gateway_control=False, defer_until_idle=True,
             metadata={

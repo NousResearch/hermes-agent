@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Collection
 from urllib.parse import quote
@@ -20,6 +21,7 @@ from plugins.platforms.matrix.reply_context import (
     _own_text,
 )
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 
 
 logger = logging.getLogger(__name__)
@@ -171,7 +173,7 @@ async def fetch_thread_entries(
         return []
 
     chunk = response.get(event_key) if isinstance(response, dict) else None
-    newest_first: list[MatrixEventContext] = []
+    newest_first: list[tuple[str, MatrixEventContext]] = []
     reached_previous_turn = False
     for raw in chunk[:limit] if isinstance(chunk, list) else []:
         if not isinstance(raw, dict):
@@ -192,12 +194,18 @@ async def fetch_thread_entries(
             break
         stored = cache.store(room_id, event_id, entry)
         if stored is not None:
-            newest_first.append(stored)
+            newest_first.append((event_id, stored))
 
-    entries: list[MatrixEventContext] = []
+    entries: list[tuple[str, MatrixEventContext]] = []
     if not reached_previous_turn and thread_id not in exclude_event_ids:
         root = await _thread_root(client, cache, room_id, thread_id, is_previous_turn)
         if root is not None:
-            entries.append(root)
+            entries.append((thread_id, root))
     entries.extend(reversed(newest_first))
-    return entries
+    snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in entries])
+    return [
+        replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
+                reaction_keys_missing=bool(snapshot.missing_keys),
+                reactions_unavailable=bool(snapshot.error))
+        for (_, entry), snapshot in zip(entries, snapshots)
+    ]

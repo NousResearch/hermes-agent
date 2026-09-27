@@ -126,7 +126,8 @@ with `require_mention: false` start a turn for every message, so they have no ca
 Threads that the bot already takes part in also start a turn for every message unless
 `thread_require_mention` is `true`. With that setting, those threads require a mention
 and get catch-up as well. Set either limit to `0` to disable that source of earlier
-messages.
+messages. Catch-up also shows recent reactions to the included messages. Redacted
+reactions are excluded. Ordinary reactions do not start an agent turn.
 
 Or via environment variables:
 
@@ -433,7 +434,7 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-Hermes has one Matrix-specific agent tool, `matrix_read`, in the `matrix_read` toolset. It reads recent messages in the current room, one thread, or one event, and returns at most 50 events. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session.
+Hermes has one Matrix-specific agent tool, `matrix_read`, in the `matrix_read` toolset. It reads recent messages in the current room, one thread, or one event, and returns at most 50 events. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Reads show reactions with their sender and target event.
 
 The `matrix_read` toolset is enabled for Matrix sessions. Turn it off in the Matrix checklist of `hermes tools`, or run `hermes tools disable matrix_read --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before this toolset existed does not include it; run `hermes tools enable matrix_read --platform matrix` to add it.
 

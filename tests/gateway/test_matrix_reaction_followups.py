@@ -706,7 +706,10 @@ def test_reaction_watch_requires_its_original_conversation_at_claim_and_admissio
         runner = object.__new__(GatewayRunner)
         runner._session_key_for_source = lambda _source: "session"
         runner.session_store = SimpleNamespace(
-            lookup_by_session_key=lambda _key: SimpleNamespace(session_id=current_session[0]),
+            lookup_by_session_key=lambda _key: SimpleNamespace(
+                session_key="session", session_id=current_session[0],
+            ),
+            _db_for_key=lambda _key: None,
         )
         assert await runner._hmwa_resolve_session(event, event.source) is None
 

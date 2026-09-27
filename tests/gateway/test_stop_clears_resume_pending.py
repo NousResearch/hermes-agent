@@ -3,8 +3,9 @@
 A gateway restart that interrupts a turn marks the session ``resume_pending``; only a turn that
 completes successfully clears it. A /stop ends the (often resumed) turn as "interrupted", so
 without this the marker survived and the NEXT restart auto-resumed the work the user had
-explicitly stopped. Both /stop routes converge on ``_interrupt_and_clear_session``, which is
-driven for real here (stubs as in test_agent_loop_stopped_hook.py).
+explicitly stopped. It is cleared in ``_interrupt_and_clear_session`` (where the busy-path and
+dispatched /stop routes converge) and up front in the /stop handler, which also covers a /stop with
+nothing running. Both are driven for real here (stubs as in test_agent_loop_stopped_hook.py).
 """
 
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.i18n import t
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -23,7 +25,7 @@ class _Store:
         self.cleared = []
 
     def get_or_create_session(self, source):
-        return SimpleNamespace(session_key=self._key)
+        return SimpleNamespace(session_key=self._key, session_id="s1")
 
     def clear_resume_pending(self, session_key):
         self.cleared.append(session_key)
@@ -58,9 +60,24 @@ async def test_busy_path_stop_clears_resume_pending():
 
 
 @pytest.mark.asyncio
-async def test_idle_path_stop_clears_resume_pending():
+async def test_dispatched_stop_with_running_agent_clears_resume_pending():
+    """The /stop handler reached with an agent under the caller's own key (the fallback route)."""
     runner, source, key = _setup()
     await runner._handle_stop_command(MessageEvent(text="/stop", message_type=MessageType.TEXT, source=source))
+    assert key in runner.session_store.cleared
+
+
+@pytest.mark.asyncio
+async def test_idle_stop_with_nothing_running_clears_resume_pending(monkeypatch):
+    """Nothing running anywhere, yet the marker can still be set (auto-resume skipped because the
+    adapter was not ready, or the restart-loop breaker tripped): /stop must retire it anyway."""
+    import tools.async_delegation as async_delegation
+
+    monkeypatch.setattr(async_delegation, "interrupt_for_session", lambda **kw: False)
+    runner, source, key = _setup()
+    runner._running_agents = {}
+    reply = await runner._handle_stop_command(MessageEvent(text="/stop", message_type=MessageType.TEXT, source=source))
+    assert reply == t("gateway.stop.no_active")
     assert runner.session_store.cleared == [key]
 
 

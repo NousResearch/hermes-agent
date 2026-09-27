@@ -987,19 +987,40 @@ def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
         print(f"  ⚠ {problem}")
 
 
+def _bundle_has_app_payload(app: Path) -> bool:
+    """True when *app* carries an Electron payload: packed ``app.asar`` or an unpacked ``app/``.
+
+    The macOS bootstrap installer (#125245) ships neither -- its ``Resources/`` holds only an
+    icon -- so a stamp-less bundle without a payload is not a release at all: just the
+    documented ``/Applications`` path occupied by the wrong artifact.
+    """
+    resources = app / "Contents" / "Resources"
+    return (resources / "app.asar").is_file() or (resources / "app").is_dir()
+
+
 def _update_owned_macos_bundles(candidates: list[Path]) -> list[Path]:
     """The existing bundles in *candidates* that only ``hermes update`` keeps current (#52339).
 
     Ownership comes from the bundle's own ``install-stamp.json``. ``updateMechanism: self`` is a
     bootstrap build (a local pack or the bootstrap download), and stamps older than the field
     predate every self-updating kind. Bundled/light releases update themselves and commit builds
-    are external, so a local build must never be copied over them. No readable stamp, no claim.
+    are external, so a local build must never be copied over them. A stamp naming another
+    mechanism, or a stamp-less bundle that still carries an app payload (an unknown build), is
+    never claimed.
+
+    A stamp-less bundle with no payload is reclaimable (#125245): the macOS bootstrap installer
+    ships exactly that under the documented install path, so treating it as foreign silently
+    orphans the installed copy the docs promise the CLI refreshes. Only existing bundles are
+    reclaim candidates.
     """
     owned = []
     for app in candidates:
         try:
             stamp = json.loads((app / "Contents" / "Resources" / "install-stamp.json").read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
+            if not app.is_dir() or _bundle_has_app_payload(app):
+                continue
+            owned.append(app)
             continue
         if isinstance(stamp, dict) and stamp.get("updateMechanism", "self") == "self":
             owned.append(app)

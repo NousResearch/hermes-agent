@@ -110,6 +110,27 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
     return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
 
 
+async def apply_collectable_text_filter(
+    hooks: Any, event_type: str, context: dict, key: str, value: str,
+) -> str:
+    """Return the first string replacement a subscribed hook offers for ``key``, else ``value``.
+
+    Hooks are user/plugin code running inside the turn, so a subscription that raises
+    (or returns junk) must never break the pipeline: failures are contained here and the
+    original text is kept — hence the fail-open contract and "first valid result wins",
+    which keeps the outcome deterministic regardless of subscription order.
+    """
+    try:
+        collected = await hooks.emit_collect(event_type, {**context, key: value})
+    except Exception as _filter_err:
+        logger.debug("Collectable text filter %s failed (non-fatal): %s", event_type, _filter_err)
+        return value
+    for candidate in collected or ():
+        if isinstance(candidate, dict) and isinstance(candidate.get(key), str):
+            return candidate[key]
+    return value
+
+
 # Setup/prefix rows rather than conversation: the agent rebuilds its own system prompt, and a
 # transcript meta row is logging-only — neither reaches the model, but both are the head a
 # fail-closed payload keeps.
@@ -1514,6 +1535,7 @@ class GatewayTurnMixin:
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
         persist_user_display_kind: Optional[str] = None,
         reply_expected: Optional[bool] = None,
+        hook_ctx: Optional[dict] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -1524,6 +1546,12 @@ class GatewayTurnMixin:
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
         )
         response = agent_result.get("final_response") or ""
+
+        # Collectable response-filter hooks: a subscribed hook may return
+        # {"response": ...} to replace what goes out (e.g. restoring obfuscated PII).
+        response = await apply_collectable_text_filter(
+            self.hooks, "agent:response:filter", hook_ctx or {}, "response", response,
+        )
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
@@ -2185,6 +2213,12 @@ class GatewayTurnMixin:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            # Collectable text-filter hooks. A subscribed hook may return
+            # {"message": ...} to replace the text the agent sees (e.g. PII obfuscation).
+            message_text = await apply_collectable_text_filter(
+                self.hooks, "agent:message:filter", hook_ctx, "message", message_text,
+            )
+
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
             from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
@@ -2241,6 +2275,7 @@ class GatewayTurnMixin:
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
+                hook_ctx=hook_ctx,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)

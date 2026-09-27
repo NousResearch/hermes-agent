@@ -1696,6 +1696,26 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
+### Free-first ladder
+
+Flagging head entries with `free: true` turns the chain into a **cost ladder** (#125289): everyday (default-configured) requests promote the first resolvable free entry to primary and demote your configured primary to the **last** rung — free quota is spent before paid models are touched:
+
+```yaml
+fallback_providers:
+  - provider: gemini
+    model: gemini-3.8-flash
+    free: true          # free tier: tried BEFORE the configured primary
+  - provider: openrouter
+    model: <a :free model>
+    free: true
+  - provider: anthropic
+    model: claude-sonnet-4
+```
+
+- A 429'd free model falls through the ladder for that turn only; the next turn retries free quota first.
+- Explicitly pinned routes (session `/model` overrides, `-m`/`--provider` flags, delegated or cron pins) are never re-routed to a free model.
+- `!new` prints the full order: `◆ Ladder: gemini-3.8-flash (gemini) [free] → ... → <primary> [primary]`.
+
 Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
 
 :::tip

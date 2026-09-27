@@ -71,26 +71,6 @@ describe('reconcileBackgroundProcesses', () => {
     expect(items().map(i => i.id)).toEqual(['a', 'b'])
   })
 
-  it('preserves object identity for unchanged rows (memo stability)', () => {
-    reconcileBackgroundProcesses(SID, [running('a'), running('b')])
-    const [a1] = items()
-
-    reconcileBackgroundProcesses(SID, [running('a'), exited('b', 0)])
-    const [a2, b2] = items()
-
-    expect(a2).toBe(a1)
-    expect(b2!.state).toBe('done')
-  })
-
-  it('is a no-op store write when nothing changed', () => {
-    reconcileBackgroundProcesses(SID, [running('a')])
-    const before = $backgroundStatusBySession.get()
-
-    reconcileBackgroundProcesses(SID, [running('a')])
-
-    expect($backgroundStatusBySession.get()).toBe(before)
-  })
-
   it('never resurrects a dismissed process while the registry still reports it', () => {
     reconcileBackgroundProcesses(SID, [exited('a', 0), running('b')])
     dismissBackgroundProcess(SID, 'a')

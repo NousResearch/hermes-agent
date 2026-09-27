@@ -15,19 +15,37 @@ from typing import Any, Optional, Tuple
 
 from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
 
-# The [vertex] extra is not in [all]; install google-auth on demand, else fall through to the ImportError below.
-try:
-    from tools.lazy_deps import ensure as _lazy_ensure
-    _lazy_ensure("provider.vertex", prompt=False)
-except Exception:
-    pass
-
 try:
     import google.auth
     import google.auth.transport.requests
     from google.oauth2 import service_account
 except ImportError:
     google = None  # type: ignore[assignment]
+
+
+def _ensure_google_auth() -> bool:
+    """Bind ``google.auth`` on first use, installing the [vertex] extra through PM if needed.
+
+    The extra left [all] under the lazy-install policy (2026-05-12) so a plain ``hermes-agent``
+    install still reaches Vertex after selecting a Gemini model. This runs at the first
+    credential request, never at import: an import-time sync would rebuild the dependency
+    environment of whatever process happens to import this module.
+    """
+    global google, service_account
+    if google is not None:
+        return True
+    try:
+        from pm import ensure_import
+        ensure_import("vertex")
+        import google.auth as _auth  # noqa: F401 — rebinding the module globals below
+        import google.auth.transport.requests  # noqa: F401
+        from google.oauth2 import service_account as _service_account
+    except Exception as exc:
+        logger.warning("google-auth package not installed (%s). Cannot use Vertex AI.", exc)
+        return False
+    import google as _google
+    google, service_account = _google, _service_account
+    return True
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +147,7 @@ def _needs_refresh(creds) -> bool:
 
 def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """Return (fresh access_token, project_id) or (None, None); Credentials cached per file content."""
-    if google is None:
-        logger.warning("google-auth package not installed. Cannot use Vertex AI.")
+    if not _ensure_google_auth():
         return None, None
 
     resolved_path = _resolve_credentials_path(credentials_path)

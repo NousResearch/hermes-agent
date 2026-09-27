@@ -9,6 +9,7 @@ still land on the intended region::
         content, old_string, new_string, replace_all=False)
 """
 
+import bisect
 import re
 from difflib import SequenceMatcher
 from typing import Callable, Optional
@@ -342,11 +343,21 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     ``(content, 0, None, error)``.
     """
     if not old_string:
-        return content, 0, None, "old_string cannot be empty"
+        # Actionable recovery text: a terse "cannot be empty" leaves the model
+        # re-sending the identical call until the loop detector kills the run
+        # (upstream report: cline/cline#13970 — Kimi K3 looped on old_text: null).
+        return content, 0, None, (
+            "old_string is empty — nothing to match. Set old_string to the exact "
+            "existing text the replacement should replace (read the file first if "
+            "unsure). To create a new file or fully rewrite one, use write_file "
+            "instead. Do not re-send this call unchanged.")
     if not old_string.strip():
         # Whitespace-only anchors match trivially and mass-replace or
         # ambiguity-error; never meaningful.
-        return content, 0, None, "old_string is only whitespace — provide non-blank text to match"
+        return content, 0, None, (
+            "old_string is only whitespace — provide non-blank text to match. Set it "
+            "to the exact existing text the replacement should replace (read the file "
+            "first if unsure). Do not re-send this call unchanged.")
     if old_string == new_string:
         return content, 0, None, IDENTICAL_STRINGS_ERROR
 
@@ -499,12 +510,12 @@ def _preserve_unicode_in_replacement(content: str, matches: list[Span],
         return new_string  # strategy shouldn't have fired; fall back
 
     file_orig_to_norm = _build_orig_to_norm_map(file_region)
-    file_norm_to_orig = _invert_norm_map(file_orig_to_norm)
 
     result_parts: list[str] = []
     for tag, i1, i2, j1, j2 in SequenceMatcher(None, norm_old, new_string).get_opcodes():
         if tag == "equal":
-            orig_start = file_norm_to_orig.get(i1, 0)
+            # The original char owning norm index i1, even one inside a multi-char expansion (em-dash -> '--').
+            orig_start = bisect.bisect_right(file_orig_to_norm, i1) - 1
             orig_end = _norm_end_to_orig(file_orig_to_norm, orig_start, i2)
             result_parts.append(file_region[orig_start:orig_end])
         elif tag != "delete":

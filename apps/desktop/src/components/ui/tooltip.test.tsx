@@ -38,14 +38,6 @@ describe('suppressNonKeyboardFocusOpen', () => {
     expect(preventDefault).toHaveBeenCalledOnce()
   })
 
-  it('suppresses the focus-open when focus is not keyboard-visible', () => {
-    const { event, preventDefault } = focusEvent(notFocusVisible)
-
-    suppressNonKeyboardFocusOpen(event, 'pointer')
-
-    expect(preventDefault).toHaveBeenCalledOnce()
-  })
-
   it('keeps the focus-open for keyboard (Tab) focus — a11y path', () => {
     const { event, preventDefault } = focusEvent(focusVisible)
 

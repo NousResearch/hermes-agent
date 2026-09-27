@@ -12,12 +12,14 @@ from tools.registry import registry
 
 async def _matrix_followup(args: dict[str, Any]) -> str:
     session_key = get_session_env("HERMES_SESSION_KEY")
+    session_id = get_session_env("HERMES_SESSION_ID")
     room_id = get_session_env("HERMES_SESSION_CHAT_ID")
     requester = get_session_env("HERMES_SESSION_USER_ID")
     adapter, owner_loop = get_session_transport()
     if (
         get_session_env("HERMES_SESSION_PLATFORM") != "matrix"
         or not session_key
+        or not session_id
         or not room_id
         or not requester
         or adapter is None
@@ -42,6 +44,7 @@ async def _matrix_followup(args: dict[str, Any]) -> str:
         session_key, enabled, selected, room_id=room_id, requester=requester,
         thread_id=get_session_env("HERMES_SESSION_THREAD_ID"),
         profile=get_session_env("HERMES_SESSION_PROFILE"),
+        session_id=session_id,
     )
     if owner_loop is not asyncio.get_running_loop():
         try:

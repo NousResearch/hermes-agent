@@ -22,6 +22,7 @@ async def test_followup_action_validates_filter_and_updates_live_turn():
         chat_id="!room:test",
         user_id="@alice:test",
         session_key="agent:matrix:room",
+        session_id="sid",
         transport_adapter=adapter,
     )
     try:
@@ -54,11 +55,11 @@ async def test_followup_action_validates_filter_and_updates_live_turn():
     ] == [
         (("agent:matrix:room", True, ("👍",)), {
             "room_id": "!room:test", "requester": "@alice:test",
-            "thread_id": "", "profile": "",
+            "thread_id": "", "profile": "", "session_id": "sid",
         }),
         (("agent:matrix:room", False, ()), {
             "room_id": "!room:test", "requester": "@alice:test",
-            "thread_id": "", "profile": "",
+            "thread_id": "", "profile": "", "session_id": "sid",
         }),
     ]
     assert (

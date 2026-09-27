@@ -136,6 +136,12 @@ done
 #     subprocess rebuild the 5GB image from a cold builder cache instead
 #     (~4 min per worker per run, and the rebuilt image lacked the
 #     HERMES_GIT_SHA build-arg the workflow bakes in).
+#   * HERMES_MANAGED_ROLLOUT_FIXTURE_{SET,KEY,USER} select the disposable
+#     SSH fixture for the managed-rollout lanes, including the actual-SSH
+#     slice of tests/hermes_cli/test_update_target_integration.py. The KEY
+#     variable holds the key's *path*, never key material; without these
+#     the lane reports named skips, so the documented verification command
+#     would be a silent no-op.
 #
 # These are test-infrastructure knobs, not credentials — same class as the
 # HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER / HERMES_RUN_E2E opt-ins
@@ -181,6 +187,9 @@ exec env -i \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
   ${HERMES_RUN_E2E:+HERMES_RUN_E2E="$HERMES_RUN_E2E"} \
+  ${HERMES_MANAGED_ROLLOUT_FIXTURE_SET:+HERMES_MANAGED_ROLLOUT_FIXTURE_SET="$HERMES_MANAGED_ROLLOUT_FIXTURE_SET"} \
+  ${HERMES_MANAGED_ROLLOUT_FIXTURE_KEY:+HERMES_MANAGED_ROLLOUT_FIXTURE_KEY="$HERMES_MANAGED_ROLLOUT_FIXTURE_KEY"} \
+  ${HERMES_MANAGED_ROLLOUT_FIXTURE_USER:+HERMES_MANAGED_ROLLOUT_FIXTURE_USER="$HERMES_MANAGED_ROLLOUT_FIXTURE_USER"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

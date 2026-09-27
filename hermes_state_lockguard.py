@@ -160,7 +160,26 @@ def hold(db_path, held: Optional[Held] = None) -> Held:
                     held[ident] = ranges[ident]
                     _HANDLES[ident] = _HANDLES.get(ident, 0) + 1
     except OSError:
-        logger.debug("WAL lock guard unavailable for %s", os.fspath(db_path), exc_info=True)
+        # Supported runtime that FAILED to arm (e.g. EACCES): distinct from the best-effort
+        # no-op promised for unsupported runtimes, which returned early above. This used to be
+        # DEBUG-only, leaving a partially armed guard unrecorded (#125184).
+        logger.warning(
+            "WAL lock guard failed to arm for %s (OSError while locking; guard ranges below "
+            "may be unarmed)",
+            os.fspath(db_path), exc_info=True,
+        )
+    # Completeness check: on a supported runtime every requested range must be in `held`. A
+    # refusal (``F_OFD_SETLK`` → EAGAIN, a foreign EXCLUSIVE holder — typically a sibling's
+    # close-time WAL reset) and an OSError in the arming block alike land here through one
+    # mechanism. A partially armed guard is adjacent to the deleted-sidecar split-brain this
+    # module exists to prevent; it must not pass unrecorded at any log level (#125184).
+    unguarded = [ident for ident in ranges if ident not in held]
+    if unguarded:
+        logger.warning(
+            "WAL lock guard incomplete for %s: %d of %d guard range(s) not armed (foreign "
+            "EXCLUSIVE holder or lock failure) — the WAL generation is partially unguarded",
+            os.fspath(db_path), len(unguarded), len(ranges),
+        )
     return held
 
 

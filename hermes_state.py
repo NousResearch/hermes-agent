@@ -1014,6 +1014,12 @@ class SessionDB(
             # later writes (#105567). Inside the lock the probe only ever sees the
             # stable post-close state (identity cleared → adopt / reopen path).
             fn_started = False
+            # Set when the post-error rollback() itself raised: the transaction may
+            # still be open. Retrying inside an open transaction resurfaces as a
+            # misleading "cannot start a transaction within a transaction" or
+            # replays non-idempotent work — strictly worse than failing the
+            # operation, so every retry path below refuses to continue (#125184).
+            rollback_failed = False
             try:
                 with self._lock:
                     self._raise_if_db_replaced()
@@ -1028,7 +1034,14 @@ class SessionDB(
                         try:
                             self._conn.rollback()
                         except Exception:
-                            pass
+                            # Swallowing this silently used to hide an open
+                            # transaction from every retry decision below.
+                            rollback_failed = True
+                            logger.warning(
+                                "rollback failed after write error on %s; the transaction may "
+                                "still be open — refusing to retry the write",
+                                self.db_path, exc_info=True,
+                            )
                         raise
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
@@ -1048,20 +1061,27 @@ class SessionDB(
                 # finally lets go.
                 if compression_deadline is None:
                     compression_deadline = min(time.monotonic() + self._COMPRESSION_BUSY_WAIT_S, deadline)
-                if self._sleep_before_write_retry(
-                    compression_deadline, self._COMPRESSION_BUSY_WAIT_S
+                if (
+                    not rollback_failed
+                    and self._sleep_before_write_retry(
+                        compression_deadline, self._COMPRESSION_BUSY_WAIT_S
+                    )
                 ):
                     continue
                 raise
             except sqlite3.Error as exc:
                 # 'no more rows' is a transient engine error on contended WAL appends (some builds
                 # raise it as InterfaceError, a sibling of DatabaseError): retry like locked/busy.
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                if (
+                    not rollback_failed
+                    and _is_no_more_rows(exc)
+                    and self._sleep_before_write_retry(deadline, patience_s)
+                ):
                     continue
                 err_msg = str(exc).lower()
                 if isinstance(exc, sqlite3.OperationalError):
                     if is_sqlite_lock_error(exc):
-                        if self._sleep_before_write_retry(deadline, patience_s):
+                        if not rollback_failed and self._sleep_before_write_retry(deadline, patience_s):
                             continue
                         # Say what actually happened, not disk/permission damage. The holder goes to
                         # the log, not the message: classify_persistence_error() buckets by phrase and
@@ -1094,7 +1114,10 @@ class SessionDB(
                             self._raise_if_db_replaced()
                     # Corrupt FTS shadow tables fail every write via the sync triggers while canonical
                     # rows are intact: detach the derived indexes atomically and retry (never rebuild here).
-                    if self._enter_fts_fail_open(exc, deadline=deadline, patience_s=patience_s):
+                    if (
+                        not rollback_failed
+                        and self._enter_fts_fail_open(exc, deadline=deadline, patience_s=patience_s)
+                    ):
                         continue
                     # What survives both checks is structural damage: quarantine.
                     if self._is_structural_corruption_error(exc):

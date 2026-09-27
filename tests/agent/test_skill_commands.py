@@ -645,6 +645,29 @@ class TestSkillDirectoryHeader:
         assert str(skill_dir) in msg
 
 
+class TestSkillViewTargetSpelling:
+    """The activation message hands the agent the exact ``skill_view(name=...)`` to call back
+    with, beside an example the same block spells ``scripts/foo.js``. Built from
+    ``str(relative_to(...))``, a categorized skill's name arrived half in the other convention
+    on Windows -- and ``skill_view``'s own docstring documents the form as
+    ``"03-fine-tuning/axolotl"``."""
+
+    def test_categorized_skill_view_target_is_slash_spelled(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            # scripts/ is globbed non-recursively for linked_files, so a nested script leaves that
+            # empty and the message falls through to skill_commands' own disk walk.
+            skill_dir = _make_skill(tmp_path, "axolotl", category="03-fine-tuning")
+            nested = skill_dir / "scripts" / "build"
+            nested.mkdir(parents=True)
+            (nested / "run.py").write_text("print(1)\n", encoding="utf-8")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/axolotl", "go")
+
+        assert msg is not None
+        assert 'skill_view(name="03-fine-tuning/axolotl"' in msg
+        assert "- scripts/build/run.py" in msg
+
+
 class TestTemplateVarSubstitution:
     """``${HERMES_SKILL_DIR}`` and ``${HERMES_SESSION_ID}`` in SKILL.md body
     are replaced before the agent sees the content."""

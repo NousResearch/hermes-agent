@@ -12,6 +12,8 @@ from tools.url_safety import (
     normalize_url_for_request,
     redirect_target_from_response,
     create_ssrf_safe_async_client,
+    create_ssrf_safe_client,
+    DEFAULT_USER_AGENT,
     SSRFConnectionBlocked,
     _SSRFGuardedAsyncNetworkBackend,
     _MAX_SSRF_CONNECT_IPS,
@@ -237,6 +239,70 @@ class TestSSRFGuardedHttpxClient:
             )
         finally:
             await client.aclose()
+
+
+class TestDefaultUserAgent:
+    """#93242: every SSRF-safe client should default to an identifying UA,
+    since CDNs with basic bot detection (upload.wikimedia.org confirmed in
+    #89260) 403 httpx's bare default (``python-httpx/x``)."""
+
+    @pytest.mark.asyncio
+    async def test_async_client_defaults_to_identifying_user_agent(self):
+        client = create_ssrf_safe_async_client(timeout=0.01)
+        try:
+            assert client.headers["User-Agent"] == DEFAULT_USER_AGENT
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_async_client_respects_caller_supplied_user_agent(self):
+        client = create_ssrf_safe_async_client(
+            timeout=0.01, headers={"User-Agent": "custom-agent/1.0"}
+        )
+        try:
+            assert client.headers["User-Agent"] == "custom-agent/1.0"
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_async_client_treats_user_agent_case_insensitively(self):
+        """A caller-supplied lowercase ``user-agent`` must not get a second,
+        differently-cased default alongside it."""
+        client = create_ssrf_safe_async_client(
+            timeout=0.01, headers={"user-agent": "custom-agent/1.0"}
+        )
+        try:
+            assert client.headers.get_list("user-agent") == ["custom-agent/1.0"]
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_async_client_does_not_mutate_caller_headers_dict(self):
+        """A caller's own dict must come back unchanged -- otherwise a dict
+        reused across requests would get silently poisoned with a UA the
+        caller never asked to keep around."""
+        caller_headers = {"X-Custom": "value"}
+        client = create_ssrf_safe_async_client(timeout=0.01, headers=caller_headers)
+        try:
+            assert caller_headers == {"X-Custom": "value"}
+        finally:
+            await client.aclose()
+
+    def test_sync_client_defaults_to_identifying_user_agent(self):
+        client = create_ssrf_safe_client(timeout=0.01)
+        try:
+            assert client.headers["User-Agent"] == DEFAULT_USER_AGENT
+        finally:
+            client.close()
+
+    def test_sync_client_respects_caller_supplied_user_agent(self):
+        client = create_ssrf_safe_client(
+            timeout=0.01, headers={"User-Agent": "custom-agent/1.0"}
+        )
+        try:
+            assert client.headers["User-Agent"] == "custom-agent/1.0"
+        finally:
+            client.close()
 
 
 class TestIsBlockedIp:

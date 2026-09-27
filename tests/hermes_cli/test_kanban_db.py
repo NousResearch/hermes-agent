@@ -1551,18 +1551,34 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
+def test_resolve_hermes_argv_prefers_module_form_over_path_shim(tmp_path, monkeypatch):
     """A `hermes` on PATH must not shadow the running install (#111569):
     the module argv wins whenever ``hermes_cli`` is importable; only an
-    explicit ``$HERMES_BIN`` overrides it."""
+    explicit ``$HERMES_BIN`` overrides it.
+
+    ``_module_hermes_argv()`` now resolves a store Python via
+    ``resolve_store_python()`` (7c37aa8403); point ``HERMES_RUNTIME_DIR`` at
+    an empty temp directory so that lookup deterministically finds no
+    ``facts.json`` and falls back to ``sys.executable`` — the public env-var
+    seam ``store_root()`` already honors, so this never touches the real
+    Hermes home. The assertion is a behavioral relationship (module form,
+    whatever its exact shape, beats the planted PATH shim), not a frozen
+    argv literal -- see AGENTS.md's "don't write change-detector tests".
+    """
     import shutil
-    import sys
     from hermes_cli import kanban_db_dispatch as kbd
 
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "no-store-python"))
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    resolved = kbd._resolve_hermes_argv()
+    assert resolved == kbd._module_hermes_argv(), (
+        "hermes_cli importable in-process must resolve to the module form"
+    )
+    assert resolved != ["/tmp/planted/hermes"], (
+        "the planted PATH shim must never win while hermes_cli is importable"
+    )
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
@@ -1570,7 +1586,7 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
 
 
 
-def test_resolve_hermes_argv_module_actually_runs():
+def test_resolve_hermes_argv_module_actually_runs(tmp_path):
     """The fallback module name must be importable + runnable.
 
     A unit test that pins the literal string is necessary but not
@@ -1578,6 +1594,11 @@ def test_resolve_hermes_argv_module_actually_runs():
     handling or its argparse setup, `python -m hermes_cli.main --version`
     would fail and so would every dispatcher spawn that hits the fallback.
     Run it as a real subprocess to catch that regression.
+
+    ``HERMES_RUNTIME_DIR`` is pointed at an empty temp directory so
+    ``resolve_store_python()`` (7c37aa8403) deterministically falls back to
+    ``sys.executable`` instead of touching this dev checkout's real Hermes
+    home (this repo happens to live under ``~/.hermes``).
     """
     import subprocess
     from hermes_cli import kanban_db_dispatch as kbd
@@ -1586,6 +1607,7 @@ def test_resolve_hermes_argv_module_actually_runs():
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
+        os.environ["HERMES_RUNTIME_DIR"] = str(tmp_path / "no-store-python")
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
     r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)

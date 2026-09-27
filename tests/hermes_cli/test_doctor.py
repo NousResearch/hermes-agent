@@ -784,6 +784,71 @@ def test_run_doctor_vendor_slug_policy_for_openai_api_endpoint(
     assert (warning in buf.getvalue()) is expects_warning
 
 
+@pytest.mark.parametrize(
+    ("provider", "default_model"),
+    [
+        ("vertex", "google/gemini-3.7-flash"),
+        ("novita", "moonshotai/kimi-k2.5"),
+        ("gmi", "zai-org/GLM-5.1-FP8"),
+    ],
+)
+def test_run_doctor_accepts_vendor_slugs_for_catalog_slug_providers(
+    monkeypatch, tmp_path, provider, default_model
+):
+    """#56906, #91669: these providers take vendor/model IDs natively (Vertex needs the
+    google/ publisher prefix), so doctor must not tell the user to drop the prefix."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        f"  provider: {provider}\n"
+        f"  default: {default_model}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert f"model.provider '{provider}' is not a recognised provider" not in out
+    assert f"model.provider '{provider}' is unknown" not in out
+    assert "vendor/model slug" not in out
+    assert "drop the vendor prefix" not in out
+
+
+def test_vendor_slug_allowlist_covers_every_catalog_provider_with_slug_ids():
+    """A provider whose curated model list uses vendor/model IDs must be exempt from the
+    doctor's vendor-prefix warning, or doctor tells users to drop a prefix the provider needs."""
+    from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+    slug_providers = {
+        provider
+        for provider, models in _PROVIDER_MODELS.items()
+        if any("/" in (m[0] if isinstance(m, tuple) else m) for m in models)
+    }
+    assert slug_providers - doctor_config._VENDOR_SLUG_PROVIDERS == set()
+
+
 
 
 def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):

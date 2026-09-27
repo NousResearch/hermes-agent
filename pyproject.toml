@@ -551,6 +551,9 @@ dev = [
 test = [
   "distlib==0.4.3; sys_platform == 'win32'",
   "anthropic==0.87.0",
+  "testcontainers==4.15.0",
+  "matrix-nio==0.26.0; sys_platform != 'linux'",
+  "matrix-nio[e2e]==0.26.0; sys_platform == 'linux'",
 ]
 
 [build-system]

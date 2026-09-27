@@ -422,7 +422,10 @@ class CLILoopsMixin:
                 _cprint(f"  Steer failed: {exc}")
             else:
                 if accepted:
-                    _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {_preview(payload)}")
+                    # _init_agent wires the acceptance observer as the single rendering owner.
+                    # Keep a fallback for tests/minimal shells without that wiring.
+                    if not callable(getattr(self.agent, "_steer_accepted_callback", None)):
+                        _cprint(f"  ⏩ Steer queued: {payload}")
                 else:
                     _cprint("  Steer rejected (empty payload).")
         else:

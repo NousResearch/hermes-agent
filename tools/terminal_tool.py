@@ -1548,7 +1548,7 @@ def _handle_terminal(args, **kw):
     heartbeat = args.get("heartbeat") or 0
     persist_on_release = bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
-        return tool_error("heartbeat must be a whole number of seconds (min 60).")
+        return tool_error("heartbeat must be a whole number of seconds (0 disables; positive values are clamped to min 60).")
     if not args.get("background", False):
         if notify or watch_patterns or notify_on_complete or heartbeat:
             return tool_error(

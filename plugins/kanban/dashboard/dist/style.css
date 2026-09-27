@@ -722,6 +722,47 @@
   padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
 }
 
+.hermes-kanban-comment-field {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.hermes-kanban-comment-field textarea {
+  display: block;
+  width: 100%;
+  min-height: 2.25rem;
+  max-height: 10rem;
+  field-sizing: content;
+  resize: none;
+  padding: 0.5rem 2.25rem 0.5rem 0.65rem;
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--color-foreground);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+.hermes-kanban-comment-field textarea::placeholder {
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-comment-field textarea:focus-visible {
+  outline: none;
+  border-color: var(--color-ring);
+}
+.hermes-kanban-comment-send {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.3rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-comment-send:not(:disabled):hover {
+  color: var(--color-foreground);
+}
+.hermes-kanban-comment-send:disabled {
+  opacity: 0.4;
+}
+
 .hermes-kanban-count {
   display: inline-flex;
   gap: 0.2rem;

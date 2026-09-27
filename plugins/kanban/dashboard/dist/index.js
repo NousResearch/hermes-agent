@@ -3902,22 +3902,39 @@
             tx(t, "commentHint",
               "Comments reach the worker on its next run or kanban_show() — no need to block the task first."),
           ),
+          // Like the desktop CommentComposer: a growing textarea with a
+          // ghost arrow-up send button inset top-right, rather than a
+          // labelled button beside a one-line input. Enter sends,
+          // Shift+Enter adds a line. The SDK has no Textarea, so this is a
+          // native one styled to match the SDK Input.
           h("div", { className: "hermes-kanban-drawer-comment-row" },
-            h(Input, {
-              value: newComment,
-              onChange: function (e) { setNewComment(e.target.value); },
-              onKeyDown: function (e) {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault(); handleComment();
-                }
-              },
-              placeholder: tx(t, "addComment", "Add a comment… (Enter to submit)"),
-              className: "h-8 text-sm flex-1",
-            }),
-            h(Button, {
-              onClick: handleComment,
-              size: "sm",
-            }, tx(t, "comment", "Comment")),
+            h("div", { className: "hermes-kanban-comment-field" },
+              h("textarea", {
+                value: newComment,
+                rows: 1,
+                "aria-label": tx(t, "addComment", "Add a comment… (Enter to submit)"),
+                onChange: function (e) { setNewComment(e.target.value); },
+                onKeyDown: function (e) {
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault(); handleComment();
+                  }
+                },
+                placeholder: tx(t, "addComment", "Add a comment… (Enter to submit)"),
+              }),
+              h(Button, {
+                ghost: true,
+                size: "xs",
+                type: "button",
+                className: "hermes-kanban-comment-send",
+                "aria-label": tx(t, "comment", "Comment"),
+                disabled: !newComment.trim(),
+                onClick: handleComment,
+              }, h("svg", {
+                viewBox: "0 0 16 16", width: 14, height: 14, fill: "none",
+                stroke: "currentColor", strokeWidth: 1.5,
+                strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true,
+              }, h("path", { d: "M8 13V3M3.5 7.5 8 3l4.5 4.5" }))),
+            ),
           ),
         ) : null,
       ),

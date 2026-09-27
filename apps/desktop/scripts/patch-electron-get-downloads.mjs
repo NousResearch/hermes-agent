@@ -94,6 +94,36 @@ function describeError(error) {
 }
 
 /**
+ * `downloadArtifact` checksum-validates the seeded copy only AFTER
+ * `downloader.download()` has already returned, so a corrupt non-empty file in
+ * the shared cache fails every packaging run forever from inside the downloader
+ * itself: the seed is re-served each run and nothing in this process ever sees
+ * the rejection. The heal therefore has to cross runs: record the serve in a
+ * sidecar next to the SEED (the per-run temp dir is removed before the next
+ * run, so the shared cache is the only place the state survives), and if the
+ * same URL is downloaded again — which, with the private cache hit path
+ * returning early, only happens when the previous serve failed validation —
+ * unlink the seed ONCE and fetch from the network. Exactly the "falls back to
+ * a real download on the next run" behavior the docstring above promises.
+ * A stale marker (healthy seed, externally evicted private cache) costs one
+ * re-download, then clears; an infinite seed/evict loop is impossible because
+ * the marker is unlinked on the evict path.
+ * @param {string} seeded @returns {boolean} true when a poisoned seed was evicted */
+function evictPoisonedSharedSeed(seeded) {
+  const marker = `${seeded}.hermes-poisoned`
+  try {
+    if (fs.existsSync(marker)) {
+      fs.rmSync(marker, { force: true })
+      fs.rmSync(seeded, { force: true })
+      console.warn(`      evicting corrupt shared-cache artifact (failed checksum last run): ${path.basename(seeded)}`)
+      return true
+    }
+    fs.writeFileSync(marker, seeded, { encoding: 'utf8' })
+  } catch { /* best-effort heal; a checksum failure still surfaces via validateArtifact */ }
+  return false
+}
+
+/**
  * One transfer attempt: fetch with a stall watchdog instead of a fixed minute
  * budget, appending to the partial file via HTTP Range when resuming. A caller
  * `signal` is deliberately superseded — the fixed 10-minute AbortSignal is what
@@ -122,6 +152,18 @@ export async function resumableFetchToFile(url, targetFilePath, options = {}, st
       // Server ignored the range: appending would corrupt the artifact.
       throw Object.assign(new Error('resume refused: server returned 200 for a ranged request'), { code: 'HERMES_RESUME_REFUSED' })
     }
+    if (startOffset > 0) {
+      // A 206 must continue OUR byte offset. A server answering a different
+      // range (or the whole object) still appends blindly and silently mixes
+      // bytes; refuse and restart from zero instead.
+      const contentRange = response.headers.get('content-range') || ''
+      const start = Number(contentRange.match(/^bytes\s+(\d+)-/i)?.[1] ?? NaN)
+      if (start !== startOffset) {
+        throw Object.assign(
+          new Error(`resume refused: server returned 206 starting at byte ${Number.isNaN(start) ? '?' : start}, expected ${startOffset}`),
+          { code: 'HERMES_RESUME_REFUSED' })
+      }
+    }
     if (!response.body) throw new Error('Response body is empty')
     const { pipeline } = await import('node:stream/promises')
     const { Readable } = await import('node:stream')
@@ -137,6 +179,7 @@ export async function resumableFetchToFile(url, targetFilePath, options = {}, st
       for await (const chunk of source) {
         lastChunkAt = Date.now()
         transferred += chunk.length
+        report() // forward byte progress before EOF: the stall watchdog sees the chunk, the builder's callback must too
         yield chunk
       }
     }, write)
@@ -151,8 +194,9 @@ export async function resumableFetchToFile(url, targetFilePath, options = {}, st
  * Download with bounded retries, backoff, and HTTP Range resume of the partial
  * file the previous attempt left behind.
  * @param {string} url @param {string} targetFilePath @param {Record<string, unknown>} [options]
+ * @param {number} [retryDelayMs] test hook replacing the exponential backoff
  */
-async function downloadWithRetryResume(url, targetFilePath, options = {}) {
+async function downloadWithRetryResume(url, targetFilePath, options = {}, retryDelayMs) {
   fs.mkdirSync(path.dirname(targetFilePath), { recursive: true })
   for (let attempt = 1; ; attempt++) {
     const startOffset = fs.existsSync(targetFilePath) ? fs.statSync(targetFilePath).size : 0
@@ -165,7 +209,7 @@ async function downloadWithRetryResume(url, targetFilePath, options = {}) {
         continue
       }
       if (attempt >= MAX_ATTEMPTS || !isRetryableDownloadError(error)) throw error
-      const delay = Math.min(2 ** (attempt - 1) * 1_000, RETRY_BACKOFF_MAX_MS)
+      const delay = retryDelayMs ?? Math.min(2 ** (attempt - 1) * 1_000, RETRY_BACKOFF_MAX_MS)
       console.warn(`      download attempt ${attempt}/${MAX_ATTEMPTS} failed (${describeError(error)}); retrying in ${delay / 1000}s${startOffset > 0 ? `, resuming from byte ${startOffset}` : ''}`)
       await new Promise(resolve => setTimeout(resolve, delay))
     }
@@ -180,20 +224,21 @@ async function downloadWithRetryResume(url, targetFilePath, options = {}) {
  * fetching slot in underneath all of that.
  */
 export class ResumableDownloader {
-  /** @param {{ sharedRoot?: string }} [options] */
-  constructor({ sharedRoot } = {}) {
+  /** @param {{ sharedRoot?: string, retryDelayMs?: number }} [options] */
+  constructor({ sharedRoot, retryDelayMs } = {}) {
     this.sharedRoot = sharedRoot
+    this.retryDelayMs = retryDelayMs
   }
 
   /** @param {string} url @param {string} targetFilePath @param {Record<string, unknown>} [options] */
   async download(url, targetFilePath, options = {}) {
     const seeded = findInSharedElectronCache(url, this.sharedRoot)
-    if (seeded) {
+    if (seeded && !evictPoisonedSharedSeed(seeded)) {
       console.log(`      reusing electron artifact already on disk: ${path.basename(seeded)}`)
       await fs.promises.copyFile(seeded, targetFilePath)
       return
     }
-    await downloadWithRetryResume(url, targetFilePath, options)
+    await downloadWithRetryResume(url, targetFilePath, options, this.retryDelayMs)
   }
 }
 

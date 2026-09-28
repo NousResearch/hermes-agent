@@ -136,6 +136,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // every user — surfaced in the panel for opt-in binding (the issue suggests
   // ⌘⇧⌫ / Ctrl+Shift+⌫).
   { id: 'session.archive', category: 'session', defaults: [] },
+  // ⌘⇧U / Ctrl+Shift+U — the mark-unread chord Slack popularized. Flips the
+  // persisted read-state watermark of the selected session through the same
+  // markSessionUnread path the sidebar row menu uses, so the dot, the rollback
+  // and the stale-page write guard all behave identically.
+  { id: 'session.toggleUnread', category: 'session', defaults: ['mod+shift+u'] },
   // ⌘⇧B — "b" for branch: spin up a new git worktree from the active repo.
   { id: 'workspace.newWorktree', category: 'session', defaults: ['mod+shift+b'] },
   // ⌘O — the editor-standard "open folder" chord (VS Code ⌘O, Zed's

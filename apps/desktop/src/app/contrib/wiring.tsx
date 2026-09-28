@@ -87,6 +87,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
@@ -1054,6 +1055,28 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     void openNewSessionTile('center', { listed: false })
   }, [openNewSessionTile])
 
+  // Toggle the selected session's persisted unread flag (rebindable
+  // `session.toggleUnread` hotkey). Same path as the sidebar row menu: the
+  // optimistic row flip, the backend PATCH and the visible rollback all live
+  // in markSessionUnread, so a runtime-only draft (no stored row) is a no-op.
+  const toggleSelectedUnread = useCallback(() => {
+    const sessionId = $selectedStoredSessionId.get()
+
+    if (!sessionId) {
+      return
+    }
+
+    const row = $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))
+
+    if (!row) {
+      return
+    }
+
+    markSessionUnread(row.id, row.unread !== true).catch(err =>
+      notifyError(err, translateNow('sidebar.row.unreadFailed'))
+    )
+  }, [])
+
   // Archive the selected session (rebindable `session.archive` hotkey).
   const archiveSelectedSession = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
@@ -1073,7 +1096,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     requestGateway,
     startFreshSession: startFreshSessionDraft,
     toggleCommandCenter,
-    toggleSelectedPin
+    toggleSelectedPin,
+    toggleSelectedUnread
   })
 
   // Register the tab-strip "+" action (the generic renderer stays

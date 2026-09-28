@@ -775,7 +775,7 @@ class GatewayBusySessionMixin:
         if turn.agent is not running_agent:
             return None
         if turn.event is not None and turn.event is not event:
-            turn.event.absorb_reply_expected(event)
+            turn.event.absorb_turn_input(event)
             if turn.ctx is not None:
                 turn.ctx.reply_expected = turn.event.reply_expected
         return turn

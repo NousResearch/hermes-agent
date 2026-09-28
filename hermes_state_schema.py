@@ -1134,6 +1134,7 @@ class SessionSchemaMixin:
                 self.set_meta(_MESSAGE_UID_BACKFILL_CURSOR, str(done_through), cursor=cursor)
                 return
         self.set_meta(_MESSAGE_UID_BACKFILL_DONE, "1", cursor=cursor)
+        cursor.execute("DELETE FROM state_meta WHERE key = ?", (_MESSAGE_UID_BACKFILL_CURSOR,))
 
     def _migrate_v22_session_model_usage(self, cursor: sqlite3.Cursor) -> None:
         """v22: ``task`` joins the session_model_usage PRIMARY KEY ('' = main loop; aux calls

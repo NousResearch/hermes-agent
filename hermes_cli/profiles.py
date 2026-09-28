@@ -1889,7 +1889,10 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> bool:
         def _run(*cmd: str) -> None:
             subprocess.run(list(cmd), capture_output=True, check=False, timeout=10)
 
+        from hermes_cli.profiles_service_cleanup import remove_system_systemd_unit, remove_windows_task
+
         system = _platform.system()
+        removed = False
         if system == "Linux":
             svc_name = get_service_name()
             svc_file = user_systemd_unit_dir() / f"{svc_name}.service"
@@ -1899,14 +1902,20 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> bool:
                 svc_file.unlink(missing_ok=True)
                 _run("systemctl", "--user", "daemon-reload")
                 print(f"✓ Service {svc_name} removed")
-                return True
+                removed = True
+            # `gateway install --system` writes the same name under /etc; a survivor there
+            # restarts the removed profile at boot exactly like the user unit at login.
+            removed = remove_system_systemd_unit() or removed
         elif system == "Darwin":
             plist_path = get_launchd_plist_path()
             if plist_path.exists():
                 _run("launchctl", "unload", str(plist_path))
                 plist_path.unlink(missing_ok=True)
                 print("✓ Launchd service removed")
-                return True
+                removed = True
+        elif system == "Windows":
+            removed = remove_windows_task()
+        return removed
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:

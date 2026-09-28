@@ -239,4 +239,3 @@ def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(t
     lines = mode.recorded_standalone_warning_lines()
     assert any("STANDALONE" in line for line in lines)
     assert any("real standalone reason" in line for line in lines)
-

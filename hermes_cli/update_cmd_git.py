@@ -181,11 +181,49 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
         return False, "unverifiable"
     if status.stdout.strip():
         return False, "dirty"
+    unmerged_count = _count_unmerged_parked_commits(git_cmd, cwd, target_branch)
+    if unmerged_count is None:
+        return False, "unverifiable"
+    return True, f"unmerged:{unmerged_count}" if unmerged_count else ""
+
+
+def _is_partial_clone(git_cmd: list[str], cwd: Path) -> bool:
+    """True when blobs/trees are fetched on demand (promisor / partial clone).
+
+    Local config reads only — never touches the network, never triggers a lazy fetch.
+    """
+    for key in ("remote.origin.partialclonefilter", "remote.origin.promisor", "extensions.partialClone"):
+        result = _git_run(git_cmd, ["config", "--get", key], cwd)
+        if result.returncode == 0 and result.stdout.strip().lower() not in ("", "false"):
+            return True
+    return False
+
+
+def _count_unmerged_parked_commits(git_cmd: list[str], cwd: Path, target_branch: str) -> Optional[int]:
+    """Count the parked branch's OWN commits absent from ``origin/<target_branch>``; None = unreadable.
+
+    ``git cherry`` is the precise test — its patch-ids recognize a cherry-picked duplicate as
+    merged — but a patch-id needs each commit's TREE **and** the blobs it touches. A partial clone
+    (``remote.origin.partialclonefilter``, e.g. ``tree:0``) deliberately keeps those out of the
+    pack, so ``git cherry`` resolves them through the promisor remote: a pre-update *liveness*
+    check silently becomes a full-history network download. On an intermittent link that fetch
+    fails, ``git cherry`` exits non-zero, and the assessment reports ``unverifiable`` — which the
+    caller treats as unsafe and SKIPS the whole code update.
+
+    Reachability (``rev-list``) walks commits only, so it is complete and offline on any clone
+    shape. Use it wherever the objects cherry needs are not guaranteed local; keep cherry on a
+    full clone, where it is both exact and cheap.
+    """
+    from hermes_cli.update_cmd_git import _git_run
+    if _is_partial_clone(git_cmd, cwd):
+        own = _git_run(git_cmd, ["rev-list", "--no-merges", f"origin/{target_branch}..HEAD"], cwd)
+        if own.returncode != 0:
+            return None
+        return len([line for line in own.stdout.splitlines() if line.strip()])
     cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd)
     if cherry.returncode != 0:
-        return False, "unverifiable"
-    unmerged = [line for line in cherry.stdout.splitlines() if line.startswith("+")]
-    return True, f"unmerged:{len(unmerged)}" if unmerged else ""
+        return None
+    return len([line for line in cherry.stdout.splitlines() if line.startswith("+")])
 
 
 _PARKED_SKIP_WHY = {

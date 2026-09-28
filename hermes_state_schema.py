@@ -26,9 +26,9 @@ from hermes_state_common import (
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )
-from hermes_state_fts import _drop_orphan_fts_shadow_tables
+from hermes_state_fts import SessionFtsSetupMixin, _drop_orphan_fts_shadow_tables
 from hermes_state_holders import _read_proc_argv
-from hermes_state_errors import is_sqlite_lock_error
+from hermes_state_errors import classify_persistence_error, is_sqlite_lock_error
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -137,6 +137,19 @@ _CLEAR_REBUILD_MARKERS_SQL = "DELETE FROM state_meta WHERE key IN ('fts_rebuild_
 # FTS_STORAGE_VERSION < 3 truncated tool rows only above a moving state_meta mark; the aligned
 # projection truncates by role alone, so the retired marker is dropped with the realign.
 _DROP_RETIRED_TOOL_HIGH_WATER_SQL = "DELETE FROM state_meta WHERE key = 'fts_tool_full_content_high_water'"
+# A realign before the one-transaction fix committed the aligned shape first and could die in its
+# 'rebuild', leaving an index that serves only rows written since. Emptiness is no signal (the first
+# new message fills it) and neither is the layout marker (see :func:`_fts_realign_pending`); the oldest
+# row is, since the source view has no WHERE and every message gets a docsize row. A pending backfill
+# owns its own index, and so does an optimize-storage demote cut off with its trash tables still there:
+# realigning would stamp the layout current and end the resume offer before the teardown ran.
+_ALIGNED_INDEX_NEVER_FILLED_SQL = (
+    "SELECT 1 FROM messages WHERE id = (SELECT MIN(id) FROM messages) "
+    "AND NOT EXISTS (SELECT 1 FROM messages_fts_docsize WHERE id = messages.id) "
+    "AND NOT EXISTS (SELECT 1 FROM state_meta WHERE key = 'fts_rebuild_high_water') "
+    "AND NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' "
+    "AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\')"
+)
 
 
 def _legacy_inline_reinsert_sql(table: str, indent: int, *, delete_first: bool = False) -> str:
@@ -340,18 +353,25 @@ class SessionSchemaMixin:
         if statement.strip():
             raise sqlite3.OperationalError("incomplete FTS DDL statement")
 
-    def _migrate_misaligned_fts_source(self, cursor: sqlite3.Cursor, *, legacy: bool) -> None:
+    def _migrate_misaligned_fts_source(self, cursor: sqlite3.Cursor) -> None:
         """Re-point ``messages_fts`` at the stable ``messages_fts_src`` projection view and
         rebuild it ONCE (FTS_STORAGE_VERSION 2 -> 3). A v1/v2 base index carries token streams
         the raw-``messages`` external-content source cannot read back (truncated long tool
         rows, and tool rows whose full content was indexed under an old high-water mark), so
         in-place continuity is not achievable — the ONLY valid transition is a full rebuild
-        from the view, under the shared cross-process rebuild admission. Legacy inline DBs
-        skip this entirely (their index is self-contained; they still take the DDL on the
-        optimize path)."""
-        if legacy or not self._sqlite_table_exists(cursor, "messages_fts"):
+        from the view, under the shared cross-process rebuild admission. It re-runs once on an
+        aligned index an interrupted realign never filled. :func:`_fts_realign_pending` decides;
+        legacy inline DBs skip this entirely (their index is self-contained; they still take
+        the DDL on the optimize path)."""
+        try:
+            pending = _fts_realign_pending(cursor)
+        except sqlite3.DatabaseError as exc:
+            if classify_persistence_error(exc) not in ("corrupt", "fts_index"):
+                raise
+            # The probe reads ``messages`` on every open. A damaged tree is the write path's to report: it
+            # quarantines the handle (#97940), where an open failing here would surface a bare error.
             return
-        if not self._fts_index_is_misaligned_source(cursor):
+        if not pending:
             return
         has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
 
@@ -359,7 +379,8 @@ class SessionSchemaMixin:
             for name in _FTS_BASE_TRIGGERS:
                 cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
             cursor.execute("DROP TABLE IF EXISTS messages_fts")
-            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+            # Not executescript (``_ensure_fts_schema``): it COMMITs the open transaction first.
+            self._execute_ddl_script_transactional(cursor, FTS_SQL)
             if has_messages:
                 cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
             cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
@@ -377,7 +398,23 @@ class SessionSchemaMixin:
                 cursor.execute("RELEASE SAVEPOINT fts_align_empty")
                 raise
             return
-        self._run_admitted_startup_rebuild(cursor, do_align)
+
+        def align_in_one_transaction() -> None:
+            # The writer is autocommit: without BEGIN the DDL committed before the 'rebuild', and a kill
+            # in between left an aligned index missing every older row. Rolled back, the store keeps its
+            # misaligned shape and the next open realigns it.
+            cursor.execute("BEGIN IMMEDIATE")
+            try:
+                # Another opener can finish the realign between the probe above and this write lock.
+                if _fts_realign_pending(cursor):
+                    do_align()
+            except BaseException:
+                # SQLite may already have rolled back (SQLITE_INTERRUPT/FULL/IOERR); rollback() is then a no-op.
+                cursor.connection.rollback()
+                raise
+            cursor.execute("COMMIT")
+
+        self._run_admitted_startup_rebuild(cursor, align_in_one_transaction)
 
     @staticmethod
     def _sqlite_table_exists(cursor: sqlite3.Cursor, name: str) -> bool:
@@ -1171,7 +1208,7 @@ class SessionSchemaMixin:
             cursor, ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"),
         )
         if not self._fts_stale:
-            self._migrate_misaligned_fts_source(cursor, legacy=legacy_fts)
+            self._migrate_misaligned_fts_source(cursor)
         if self._fts_stale:
             if self._recover_stale_fts(cursor, legacy=legacy_fts):
                 # CJK was detached alongside the base indexes; its ensure path decides when it returns.
@@ -1287,6 +1324,25 @@ class SessionSchemaMixin:
                     1 if entry.get("expiry_finalized") or entry.get("memory_flushed") else 0, str(session_id),
                 ),
             )
+
+
+def _fts_realign_pending(cursor: sqlite3.Cursor) -> bool:
+    """True when the open must realign ``messages_fts`` onto ``messages_fts_src`` and rebuild it:
+    the index still reads raw ``messages``, or it is aligned but a cut-off realign never filled it
+    (``_ALIGNED_INDEX_NEVER_FILLED_SQL``). SELECTs only. Legacy inline stores never realign. The
+    layout marker is not consulted: older builds stamp it only on reopen, and the data migrations
+    stamp a layout-2 store current before ``_init_fts`` realigns it, so neither an absent nor a
+    current marker proves the index was filled."""
+    if SessionFtsSetupMixin._db_has_legacy_inline_fts(cursor):
+        return False
+    if not SessionSchemaMixin._sqlite_table_exists(cursor, "messages_fts"):
+        return False
+    if SessionSchemaMixin._fts_index_is_misaligned_source(cursor):
+        return True
+    # Without its docsize table the index cannot be probed; the write path reports that damage (#97940).
+    return SessionSchemaMixin._sqlite_table_exists(cursor, "messages_fts_docsize") and cursor.execute(
+        _ALIGNED_INDEX_NEVER_FILLED_SQL
+    ).fetchone() is not None
 
 
 def reconcile_state_schema(conn: sqlite3.Connection) -> None:

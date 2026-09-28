@@ -56,6 +56,50 @@ real language server. Two channels, independent signals — the
 agent sees a syntax-clean file with semantic problems as
 ``lint: ok`` plus a populated ``lsp_diagnostics``.
 
+### Workspace trust
+
+Some language servers run code that the project itself ships:
+pyright executes the configured Python interpreter,
+typescript-language-server loads the project's
+`node_modules/typescript`, svelte-language-server loads
+`svelte.config.js`, and rust-analyzer runs build scripts and
+proc-macros. That is fine for your own project, but not for a
+repository the agent has just cloned.
+
+Hermes therefore lets a server load project code only in a
+**trusted** workspace:
+
+- the git worktree Hermes was launched in (the process working
+  directory, so `cd my-app && hermes`), or
+- a directory listed under `lsp.trusted_workspaces` (or any
+  directory below one).
+
+A checkout nested inside the launch worktree has its own `.git`, so
+it is not trusted. Gateway and desktop backends are usually started
+outside any repository, which means nothing is trusted there until
+you list your projects.
+
+In an untrusted workspace, servers still run, but on Hermes-side
+tools:
+
+| Server | Untrusted workspace |
+|---|---|
+| pyright | `VIRTUAL_ENV` or the Hermes-managed Python, never the project's `.venv`/`venv` |
+| typescript-language-server | `tsserver.path` pinned to the TypeScript next to the server; skipped if there is none |
+| vue-language-server | `tsdk` from Hermes's staging tree only |
+| svelte-language-server | `isTrusted: false` (no `svelte.config.js`, no project `svelte`/`prettier`) |
+| rust-analyzer | build scripts and proc-macros disabled; cargo still reads the project's own cargo and toolchain files |
+
+Diagnostics that need the project's dependencies (for example
+unresolved-import warnings) may be less precise until you trust the
+workspace.
+
+```yaml
+lsp:
+  trusted_workspaces:
+    - ~/code/my-app
+```
+
 ## Supported languages
 
 | Language | Server | Auto-install |
@@ -211,6 +255,13 @@ lsp:
   # shape logs a warning and skips LSP for every workspace until fixed.
   exclude_roots: []
   # exclude_roots: ["~/work/huge-monorepo", "/srv/checkouts/*/vendor"]
+
+  # Directories whose projects a language server may load code from
+  # (see "Workspace trust" above). ~ expanded; everything under an
+  # entry counts. The git worktree Hermes was launched in is always
+  # trusted.
+  trusted_workspaces: []
+  # trusted_workspaces: ["~/code/my-app"]
 
   # How to handle missing server binaries.
   #   auto    — install via npm/pip/go install into <HERMES_HOME>/lsp/bin

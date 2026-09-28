@@ -46,6 +46,40 @@ agent 看到的输出如下：
 `lsp_diagnostics` 字段承载来自真实语言服务器的语义诊断。两个通道，独立信号——
 agent 对于语法正确但存在语义问题的文件，会看到 ``lint: ok`` 加上已填充的 ``lsp_diagnostics``。
 
+### 工作区信任
+
+部分语言服务器会运行项目自带的代码：pyright 会执行所配置的 Python
+解释器，typescript-language-server 会加载项目的
+`node_modules/typescript`，svelte-language-server 会加载
+`svelte.config.js`，rust-analyzer 会运行构建脚本和过程宏。对你自己的项目
+这没有问题，但对 agent 刚克隆下来的仓库则不应如此。
+
+因此，Hermes 只在**受信任**的工作区中允许服务器加载项目代码：
+
+- 启动 Hermes 时所在的 git 工作树（即进程工作目录，例如 `cd my-app && hermes`），或
+- `lsp.trusted_workspaces` 中列出的目录（及其下任意子目录）。
+
+嵌套在启动工作树内部的检出拥有自己的 `.git`，因此不受信任。网关和桌面端
+后端通常在任何仓库之外启动，所以在你列出项目之前，那里没有受信任的工作区。
+
+在不受信任的工作区中，服务器仍会运行，但使用 Hermes 一侧的工具：
+
+| 服务器 | 不受信任的工作区 |
+|---|---|
+| pyright | 使用 `VIRTUAL_ENV` 或 Hermes 管理的 Python，绝不使用项目的 `.venv`/`venv` |
+| typescript-language-server | `tsserver.path` 固定为服务器旁边的 TypeScript；若没有则跳过 |
+| vue-language-server | `tsdk` 仅取自 Hermes 的暂存目录 |
+| svelte-language-server | `isTrusted: false`（不加载 `svelte.config.js`，不加载项目的 `svelte`/`prettier`） |
+| rust-analyzer | 禁用构建脚本和过程宏；cargo 仍会读取项目自己的 cargo 和工具链文件 |
+
+依赖项目依赖项的诊断（例如无法解析的导入）在信任该工作区之前可能不够精确。
+
+```yaml
+lsp:
+  trusted_workspaces:
+    - ~/code/my-app
+```
+
 ## 支持的语言
 
 | 语言 | 服务器 | 自动安装 |
@@ -117,6 +151,12 @@ lsp:
   #   auto    — 通过 npm/pip/go install 安装到 <HERMES_HOME>/lsp/bin
   #   manual  — 仅使用已在 PATH 上的二进制文件
   install_strategy: auto
+
+  # 允许语言服务器加载项目自带代码的目录（见上文“工作区信任”）。
+  # 支持 ~ 展开，条目下的所有子目录均算在内。启动 Hermes 时所在的
+  # git 工作树始终受信任。
+  trusted_workspaces: []
+  # trusted_workspaces: ["~/code/my-app"]
 
   # 各服务器覆盖配置（均为可选）。
   servers:

@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from agent.lsp import eventlog
 from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key
 from agent.lsp.servers import SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for
-from agent.lsp.workspace import clear_cache, resolve_workspace_for_file
+from agent.lsp.workspace import clear_cache, is_trusted_workspace, resolve_workspace_for_file
 
 logger = logging.getLogger("agent.lsp.manager")
 
@@ -53,6 +53,20 @@ def _parse_exclude_roots(value: Any) -> Optional[List[str]]:
             type(value).__name__,
         )
         return None
+    return [os.path.expanduser(p) for p in value if p]
+
+
+def _parse_trusted_workspaces(value: Any) -> List[str]:
+    """Normalise ``lsp.trusted_workspaces``; a malformed value trusts nothing extra (WARNING)."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
+        eventlog.event_log.warning(
+            "lsp.trusted_workspaces must be a list of directories, e.g. ['~/code/my-app'] (got %s); "
+            "only the launch directory's git worktree is trusted until the key is fixed",
+            type(value).__name__,
+        )
+        return []
     return [os.path.expanduser(p) for p in value if p]
 
 
@@ -131,6 +145,7 @@ class LSPService:
         broken_retry_seconds: float = 0.0,
         warmup_timeout: float = 0.0,
         exclude_roots: Any = None,
+        trusted_workspaces: Any = None,
     ) -> None:
         self._enabled = enabled
         self._wait_mode = wait_mode if wait_mode in {"document", "full"} else "document"
@@ -148,6 +163,7 @@ class LSPService:
         # bare string here means "exclude that workspace", and excluding nothing would re-pay the stall it
         # was meant to avoid.
         self._exclude_roots: Optional[List[str]] = _parse_exclude_roots(exclude_roots)
+        self._trusted_workspaces: List[str] = _parse_trusted_workspaces(trusted_workspaces)
 
         self._loop = _BackgroundLoop()
         if self._enabled:
@@ -205,6 +221,7 @@ class LSPService:
             broken_retry_seconds=_float_or(lsp_cfg.get("broken_retry_seconds"), 0.0),
             warmup_timeout=_float_or(lsp_cfg.get("warmup_timeout"), 0.0),
             exclude_roots=lsp_cfg.get("exclude_roots"),
+            trusted_workspaces=lsp_cfg.get("trusted_workspaces"),
         )
 
     def _server_for(self, file_path: str) -> Optional[ServerDef]:
@@ -544,6 +561,7 @@ class LSPService:
         ctx = ServerContext(
             workspace_root=root, install_strategy=self._install_strategy, binary_overrides=self._binary_overrides,
             env_overrides=self._env_overrides, init_overrides=self._init_overrides,
+            trusted=is_trusted_workspace(root, self._trusted_workspaces),
         )
         spec = srv.build_spawn(root, ctx)
         if spec is None:

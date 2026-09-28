@@ -2,7 +2,8 @@
 
 1. **Workspace gate** — LSP only runs when the cwd (or the edited file) sits inside a git
    worktree, so gateway users on user-home cwd's never spawn daemons.
-2. **nearest_root** — the per-server project-root walk: up from a start path looking for marker
+2. **Workspace trust** — whether a server may load code the project itself ships.
+3. **nearest_root** — the per-server project-root walk: up from a start path looking for marker
    files (``pyproject.toml``, ``Cargo.toml``, ...), optionally bailing if an exclude marker
    shows up first.
 """
@@ -153,12 +154,28 @@ def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> 
     return None, False
 
 
+def is_trusted_workspace(root: str, trusted_roots: Iterable[str] = (), *, cwd: Optional[str] = None) -> bool:
+    """True iff a language server may load code the project at ``root`` ships (its own interpreter,
+    TypeScript SDK, config files, build scripts).  Trusted: ``root`` is inside an operator-listed
+    ``lsp.trusted_workspaces`` entry, or it belongs to the same git worktree as the process cwd
+    (where the operator launched Hermes).  A nested clone inside that worktree has its own ``.git``
+    and is not trusted: the agent may have fetched it."""
+    if any(is_inside_workspace(root, t) for t in trusted_roots):
+        return True
+    try:
+        anchor = cwd or os.getcwd()
+    except OSError:
+        return False
+    launch_root = find_git_worktree(anchor)
+    return launch_root is not None and find_git_worktree(root) == launch_root
+
+
 def clear_cache() -> None:
     """Clear the workspace-resolution cache (on service shutdown, so re-init doesn't see stale results)."""
     _workspace_cache.clear()
 
 
 __all__ = [
-    "find_git_worktree", "is_inside_workspace", "nearest_root", "normalize_path", "resolve_workspace_for_file",
-    "clear_cache",
+    "find_git_worktree", "is_inside_workspace", "is_trusted_workspace", "nearest_root", "normalize_path",
+    "resolve_workspace_for_file", "clear_cache",
 ]

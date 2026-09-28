@@ -90,6 +90,9 @@ class ServerContext:
     binary_overrides: Dict[str, List[str]] = field(default_factory=dict)
     env_overrides: Dict[str, Dict[str, str]] = field(default_factory=dict)
     init_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Whether the server may load code the project ships (see workspace.is_trusted_workspace).
+    # Defaults closed: a context built without a trust decision must never run the repo's code.
+    trusted: bool = False
 
 
 # ---- helpers ----
@@ -173,14 +176,17 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         sibling = os.path.join(os.path.dirname(bin_path), f"pyright-langserver{suffix}")
         if os.path.exists(sibling):
             bin_path = sibling
-    # Point pyright at the project venv; its default "python on PATH" rarely is.
-    py = _detect_python(root)
+    # Point pyright at the project venv; its default "python on PATH" rarely is.  Pyright executes
+    # this interpreter, so a checkout's own venv is only used when the workspace is trusted.
+    py = _detect_python(root if ctx.trusted else None)
     return _make_spec(root, ctx, "pyright", [bin_path, "--stdio"], {"python": {"pythonPath": py}} if py else {})
 
 
-def _detect_python(root: str) -> Optional[str]:
-    # Pyright needs the project's dependencies, not Hermes's runtime packages.
-    venvs = [v for v in (os.environ.get("VIRTUAL_ENV"), os.path.join(root, ".venv"), os.path.join(root, "venv")) if v]
+def _detect_python(root: Optional[str]) -> Optional[str]:
+    # Pyright needs the project's dependencies, not Hermes's runtime packages.  ``VIRTUAL_ENV`` is the
+    # operator's own environment; ``root`` (the project's .venv/venv) is None for an untrusted workspace.
+    project = (os.path.join(root, ".venv"), os.path.join(root, "venv")) if root else ()
+    venvs = [v for v in (os.environ.get("VIRTUAL_ENV"), *project) if v]
     paths = (os.path.join(v, sub) for v in venvs for sub in ("bin/python", "bin/python3", "Scripts/python.exe"))
     project_python = next((p for p in paths if os.path.exists(p)), None)
     if project_python is not None:
@@ -227,11 +233,12 @@ _VUE_TSDK_MSG = (
 )
 
 
-def _node_modules_trees(bin_path: str, root: str) -> List[str]:
+def _node_modules_trees(bin_path: str, root: Optional[str]) -> List[str]:
     """``node_modules`` trees that may hold the Vue server and its TypeScript SDK:
-    the launcher's own tree (symlinks resolved), Hermes staging, then the project's."""
+    the launcher's own tree (symlinks resolved), Hermes staging, then the project's
+    (``root`` is None for an untrusted workspace, whose own JavaScript must not load)."""
     from agent.lsp.install import hermes_lsp_bin_dir
-    trees = [str(hermes_lsp_bin_dir().parent / "node_modules"), os.path.join(root, "node_modules")]
+    trees = [str(hermes_lsp_bin_dir().parent / "node_modules")] + ([os.path.join(root, "node_modules")] if root else [])
     real = os.path.realpath(bin_path)
     marker = f"{os.sep}node_modules{os.sep}"
     if (idx := real.rfind(marker)) >= 0:
@@ -262,7 +269,7 @@ def _spawn_vue(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _find_binary(ctx, "vue-language-server", ("vue-language-server",), "@vue/language-server")
     if bin_path is None:
         return None
-    trees = _node_modules_trees(bin_path, root)
+    trees = _node_modules_trees(bin_path, root if ctx.trusted else None)
     if _vue_server_major(trees) >= 3:
         _warn_once("vue-tunnel", _VUE_TUNNEL_MSG)
         return None
@@ -272,6 +279,39 @@ def _spawn_vue(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         return None
     return _make_spec(root, ctx, "vue-language-server", [bin_path, "--stdio"],
                       {"typescript": {"tsdk": tsdk}, "vue": {"hybridMode": False}})
+
+
+_TS_UNTRUSTED_MSG = (
+    "typescript-language-server: no TypeScript SDK next to the server, and this workspace is untrusted so its "
+    "own node_modules/typescript is not loaded — diagnostics are skipped. Reinstall: hermes lsp install "
+    "typescript-language-server, or list the workspace under lsp.trusted_workspaces."
+)
+
+
+def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    """typescript-language-server loads the workspace's own ``node_modules/typescript`` unless
+    ``tsserver.path`` names another, so an untrusted workspace is pinned to Hermes's copy."""
+    bin_path = _find_binary(ctx, "typescript", ("typescript-language-server",), "typescript-language-server")
+    if bin_path is None:
+        return None
+    base: Dict[str, Any] = {}
+    if not ctx.trusted:
+        sdk = _typescript_sdk_dir(_node_modules_trees(bin_path, None))
+        if sdk is None:
+            _warn_once("ts-untrusted", _TS_UNTRUSTED_MSG)
+            return None
+        base = {"tsserver": {"path": sdk}}
+    return _make_spec(root, ctx, "typescript", [bin_path, "--stdio"], base, seed=True)
+
+
+def _untrusted_init(server_id: str, init: Dict[str, Any], which: Sequence[str], args: Sequence[str],
+                    install_pkg: str) -> _SpawnFn:
+    """A single-binary server whose own option switches off project-code loading when untrusted."""
+    def build(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+        bin_path = _find_binary(ctx, server_id, which, install_pkg)
+        return None if bin_path is None else _make_spec(root, ctx, server_id, [bin_path, *args],
+                                                        None if ctx.trusted else init)
+    return build
 
 
 def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
@@ -365,15 +405,21 @@ SERVERS: List[ServerDef] = [
             build_spawn=_spawn_pyright, multi_root=True),
     _server("typescript", (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"),
             "JavaScript/TypeScript — typescript-language-server", resolve_root=_root_typescript,
-            which=("typescript-language-server",), args=("--stdio",), install_pkg="typescript-language-server", seed=True),
+            build_spawn=_spawn_typescript, seed=True),
     _server("vue-language-server", (".vue",), "Vue.js — @vue/language-server", resolve_root=_root_typescript,
             build_spawn=_spawn_vue),
+    # Untrusted: no svelte.config.js and no project svelte/prettier (the server's own isTrusted switch).
     _server("svelte-language-server", (".svelte",), "Svelte — svelte-language-server", resolve_root=_root_typescript,
-            which=("svelteserver", "svelte-language-server"), args=("--stdio",), install_pkg="svelte-language-server"),
+            build_spawn=_untrusted_init("svelte-language-server", {"isTrusted": False},
+                                        ("svelteserver", "svelte-language-server"), ("--stdio",), "svelte-language-server")),
     _server("astro-language-server", (".astro",), "Astro — @astrojs/language-server", resolve_root=_root_typescript,
             which=("astro-ls", "astro-language-server"), args=("--stdio",), install_pkg="@astrojs/language-server"),
     _server("gopls", (".go",), "Go — gopls", markers=["go.work", "go.mod", "go.sum"], install_pkg="gopls"),
-    _server("rust-analyzer", (".rs",), "Rust — rust-analyzer", markers=["Cargo.toml", "Cargo.lock"], install_pkg="rust-analyzer"),
+    # Untrusted: no build scripts or proc-macros (rust-analyzer runs both by default).
+    _server("rust-analyzer", (".rs",), "Rust — rust-analyzer", markers=["Cargo.toml", "Cargo.lock"],
+            build_spawn=_untrusted_init("rust-analyzer", {"cargo": {"buildScripts": {"enable": False}},
+                                                          "procMacro": {"enable": False}},
+                                        ("rust-analyzer",), (), "rust-analyzer")),
     _server("clangd", (".c", ".cpp", ".cc", ".cxx", ".h", ".hh", ".hpp", ".hxx"), "C/C++ — clangd",
             markers=["compile_commands.json", "compile_flags.txt", ".clangd"],
             args=("--background-index", "--clang-tidy"), install_pkg="clangd"),

@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.hosts import _hosts as X
@@ -114,13 +113,11 @@ def test_musl_host_gets_runnable_tools_or_a_refusal_naming_musl(alpine_install):
     install_log = after_banner.partition("\n")[2] + cp.stderr
     assert I.TRACEBACK not in install_log, "install.sh crashed with a traceback on musl:\n" + I.describe(cp)
     dead = [f"{path} (rc={code})" for code, path in probes if code != 0]
-    with known_failure(r"musl host: (installer failed without naming musl|published tool binaries that cannot execute)",
-                       "gated on #123682: no musl detection, so PM stages glibc uv/Python/Node on musl hosts"):
-        if rc != 0:
-            assert "musl" in install_log.lower(), (
-                f"musl host: installer failed without naming musl as the reason (rc={rc}):\n" + I.describe(cp))
-        assert not dead, ("musl host: published tool binaries that cannot execute: " + ", ".join(dead)
-                          + "\n" + I.describe(cp))
+    if rc != 0:
+        assert "musl" in install_log.lower(), (
+            f"musl host: installer failed without naming musl as the reason (rc={rc}):\n" + I.describe(cp))
+    assert not dead, ("musl host: published tool binaries that cannot execute: " + ", ".join(dead)
+                      + "\n" + I.describe(cp))
     if rc == 0:
         hermes = [p for code, p in probes if p.endswith("/.local/bin/hermes")]
         assert hermes, "musl host: install exited 0 but published no hermes command:\n" + I.describe(cp)

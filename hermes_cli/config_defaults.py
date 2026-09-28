@@ -50,6 +50,16 @@ DEFAULT_CONFIG = {
         # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
         "terminal_continue": True,
     },
+    # Where the TUI/desktop gateway stages session file attachments (uploads, pasted
+    # text). "hermes-home" (default) keeps <profile home>/attachments — the dir
+    # container backends bind-mount, so @file: refs resolve in the sandbox (#76577).
+    # "workspace" opts into <session workspace>/.hermes/attachments: staging lands
+    # inside the allowed ref root, so the same profile's agent can always read its
+    # own attachments back (#110662). Read per profile from that profile's config;
+    # a remote (ssh) workspace keeps the profile home dir either way.
+    "attachments": {
+        "storage": "hermes-home",
+    },
     "agent": {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).

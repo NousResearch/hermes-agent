@@ -1,3 +1,5 @@
+import { JSON_RPC_INTERNAL_ERROR } from '@hermes/shared'
+
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import {
   abortPreviewTyping,
@@ -105,6 +107,26 @@ const markNeedsInput = (ctx: ServerRequestContext) => {
   if (ctx.sessionId) {
     ctx.deps.updateSessionState(ctx.sessionId, state => ({ ...state, needsInput: true }))
   }
+}
+
+/**
+ * A blocking-input card must not park for a session whose runtime is already
+ * interrupted — the user hit Stop, or `removeSession` marked the doomed runtime
+ * interrupted before it deletes the row. A frame still in flight would otherwise
+ * re-create an overlay (and native notification) for a turn that is gone
+ * (#75587). Answer it rather than drop it: the backend blocks on this frame, and
+ * an error reply is the same "unanswered" its own `request.cancel` produces, so
+ * the tool returns now instead of waiting out its deadline. Sessionless requests
+ * (app-level Bot Screen install) are never gated.
+ */
+const declineIfSessionStopped = (ctx: ServerRequestContext): boolean => {
+  if (!ctx.sessionId || !ctx.deps.sessionInterrupted(ctx.sessionId)) {
+    return false
+  }
+
+  ctx.request.fail(JSON_RPC_INTERNAL_ERROR, 'session interrupted')
+
+  return true
 }
 
 const notifyInput = (ctx: ServerRequestContext, body: string) => {
@@ -223,6 +245,10 @@ const approval: Handler = ctx => {
   const command = str(p.command)
   const description = str(p.description) || 'dangerous command'
 
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(request)
   void receiveApprovalRequest(null, {
     // false only when a tirith warning forbids it; backend omits the field otherwise.
@@ -261,6 +287,10 @@ const approval: Handler = ctx => {
 }
 
 const sudo: Handler = ctx => {
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setSudoRequest({
     command: str(ctx.request.params.command),
@@ -289,6 +319,10 @@ const secret: Handler = ctx => {
   const envVar = str(p.env_var)
   const promptText = str(p.prompt)
 
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setSecretRequest({ envVar, prompt: promptText, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
   markNeedsInput(ctx)
@@ -298,6 +332,10 @@ const secret: Handler = ctx => {
 const vaultCode: Handler = ctx => {
   const p = ctx.request.params
   const site = str(p.site)
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(ctx.request)
   setVaultCodeRequest({ hint: str(p.hint), requestId: ctx.request.id, sessionId: ctx.sessionId || null, site })
@@ -310,6 +348,10 @@ const vaultSaveLogin: Handler = ctx => {
   const origin = str(p.origin)
   const site = str(p.site) || origin
 
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
   rememberServerRequest(ctx.request)
   setVaultSaveLoginRequest({ origin, requestId: ctx.request.id, sessionId: ctx.sessionId || null, site })
   markNeedsInput(ctx)
@@ -320,6 +362,10 @@ const vaultUnlockPrompt: Handler = ctx => {
   const p = ctx.request.params
   const backend = str(p.backend)
   const displayName = str(p.display_name) || backend
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
 
   rememberServerRequest(ctx.request)
   setVaultUnlockRequest({ backend, displayName, requestId: ctx.request.id, sessionId: ctx.sessionId || null })

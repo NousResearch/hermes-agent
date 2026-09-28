@@ -30,6 +30,14 @@ export interface KanbanTask {
   current_run_started_at?: null | number
   worker_pid?: null | number
   last_heartbeat_at?: null | number
+  /** Typed block reason set by the backend on kanban_block (one of
+   *  VALID_BLOCK_KINDS — `dependency`, `needs_input`, `capability`,
+   *  `transient`; null for legacy/un-typed blocks). Kept across unblock, so
+   *  render it as CURRENT only while status is `blocked`. */
+  block_kind?: null | string
+  /** Unblock-loop counter — how many times this task re-blocked for the same
+   *  reason after a human unblock. 0/absent on legacy payloads. */
+  block_recurrences?: number
   /** Per-card runtime cap (seconds); null/absent = no cap. */
   max_runtime_seconds?: null | number
   /** Board-computed "needs triage": the card was unblocked and re-blocked, or

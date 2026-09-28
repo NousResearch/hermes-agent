@@ -188,6 +188,10 @@ interface PluginContext {
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
   /** Gateway event stream by type (`'*'` = all). Tracked: removed on unload/reload/disable. */
   onEvent: (type: string, listener: (event: GatewayEvent) => void) => () => void
+  /** Own a `/background` or `/btw` answer by task id: the core skips its transcript line for
+   *  that task. Claim from the `prompt.background`/`prompt.btw` reply or your own completion
+   *  listener. Consumed on delivery; released on unload (the answer then lands in the chat). */
+  claimSideTask: (taskId: string) => () => void
   /** Any other cleanup to run on unload/reload/disable (store subscriptions, injected DOM). */
   onDispose: (fn: () => void) => void
   /** Scoped timers and DOM listeners — cleared with the plugin. Each returns a disposer. */

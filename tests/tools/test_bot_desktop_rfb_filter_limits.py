@@ -53,3 +53,12 @@ def test_truncated_set_desktop_size_waits_for_the_rest():
     for byte in msg[:-1]:
         assert parser.feed(bytes([byte])) == b""
     assert parser.feed(msg[-1:]) == msg
+
+
+@pytest.mark.parametrize("holder", [False, True])
+def test_post_auth_stream_retains_shared_init_and_input_limits(holder):
+    parser = RfbClientFilter(lambda: holder, authenticated=True)
+    key = b"\x04\x01\0\0\0\0\0a"
+    assert parser.feed(b"\0" + key) == b"\x01" + (key if holder else b"")
+    with pytest.raises(ValueError, match="clipboard"):
+        parser.feed(clipboard_header(_MAX_CUT_TEXT + 1))

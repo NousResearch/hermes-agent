@@ -96,6 +96,10 @@ def _(rid, params: dict) -> dict:
     """Stopping kills the screen under whoever is on it, so it obeys the same rule as a bare
     display.lease.release: refused while a human holds unless the caller says ``force``."""
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    try:
+        _bd_runtime.refuse_remote_management()
+    except (ValueError, RuntimeError) as e:
+        return _err(rid, _DISPLAY_ERR, str(e))
     force = bool(params.get("force"))
     # Refusal and release are ONE lease transition: a takeover landing between a separate human_holds()
     # check and the release would be acknowledged to the human and then silently revoked here.
@@ -156,7 +160,7 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tools.bot_desktop import runtime as _bd_runtime
     try:
-        if _bd_runtime.rfb_socket_path() is None:
+        if _bd_runtime.rfb_socket_path() is None and _bd_runtime.remote_endpoint() is None:
             return _err(rid, _DISPLAY_ERR, "this profile's Bot Desktop is not running; call display.start first")
         viewer_id = _mint_viewer_id(str(params.get("viewer_id") or "").strip())
         ticket = mint_ticket(user_id=f"display:{viewer_id}", provider="bot-desktop",
@@ -174,6 +178,10 @@ def _(rid, params: dict) -> dict:
     ``display.install.done``. Refused while one is already running for this profile."""
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import install as _bd_install, runtime as _bd_runtime
+    try:
+        _bd_runtime.refuse_remote_management()
+    except (ValueError, RuntimeError) as e:
+        return _err(rid, _DISPLAY_ERR, str(e))
     if not _bd_runtime.is_supported_host():
         return _err(rid, _DISPLAY_ERR, "Bot Desktop runs on Linux gateway hosts only")
     if _bd_runtime.install_command() is None:

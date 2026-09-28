@@ -339,6 +339,11 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         admitted = _bd_lease.assert_agent_may_act()
     except _bd_lease.HumanHasControl as e:
         return _refused(e)
+    from tools.bot_desktop.runtime import _remote_configured
+    if _remote_configured():
+        return json.dumps({"ok": False, "action": action, "code": "remote_screen_not_drivable",
+                           "error": "computer_use drives the gateway host, not the configured remote Screen. "
+                                    "Remote agent-driving is not supported; refusing to act on a different display."})
     _bd_ensure_started()  # headless gateway: bring the profile's screen up before the backend probes DISPLAY
     if (err := _reject_unsafe(action, args)) is not None:
         return err

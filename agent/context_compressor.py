@@ -5107,6 +5107,34 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_compression_savings_pct = 0.0
         self._record_structural_no_op(reason)
 
+    def _stale_replay_rescue(
+        self, telemetry: Dict[str, Any], messages: List[Dict[str, Any]], failure_class: str, reason: str,
+    ) -> List[Dict[str, Any]]:
+        """Structural no-op exit that first tries the stale reasoning-replay prune.
+
+        A codex_responses transcript can carry most of its real bill in encrypted reasoning sidecars
+        the local estimator prices at zero (only real usage prices ciphertext, #100611). The
+        tail-budget walk then sees a tiny transcript, the middle window comes back empty, and this
+        no-op exit used to return before the success-path ``_prune_stale_reasoning_replay`` — the one
+        cleanup that would shrink the bill never ran, and the armed backoff locked it out for 300s
+        (#125920). Prune a private copy first: a changed transcript returns through it (the committed
+        boundary lifts the backoff); an unchanged one defers retries exactly as before.
+        """
+        candidate = [dict(msg) if isinstance(msg, dict) else msg for msg in messages]
+        pruned = _prune_stale_reasoning_replay(candidate)
+        if pruned:
+            telemetry["pruned_stale_replay_messages"] = pruned
+            self._last_compression_made_progress = True
+            if not self.quiet_mode:
+                logger.info(
+                    "Compression: structural no-op (%s) pruned stale reasoning replay from %d assistant "
+                    "message(s) instead of arming the no-op backoff",
+                    reason, pruned,
+                )
+            return candidate
+        self._structural_no_op_result(telemetry, failure_class, reason)
+        return messages
+
     def _drop_blank_echoes(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Remove blank platform echoes trailing the latest actionable user turn."""
         blank = self._blank_echo_indices_after(messages, self._find_last_user_message_idx(messages, 0))
@@ -5410,10 +5438,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
-            self._structural_no_op_result(
-                telemetry, "insufficient_messages", f"only {n_messages} messages (need > {_min_for_compress})",
+            return self._stale_replay_rescue(
+                telemetry, messages, "insufficient_messages",
+                f"only {n_messages} messages (need > {_min_for_compress})",
             )
-            return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
         spare_pending_images = bool(self._spared_pending_tool_round(messages))
         # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
@@ -5433,11 +5461,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._record_compression_regions(
                 head_messages=messages[:compress_start], middle_messages=[], tail_messages=messages[compress_end:],
             )
-            self._structural_no_op_result(
-                telemetry, "no_compressible_window",
+            return self._stale_replay_rescue(
+                telemetry, canonical_messages, "no_compressible_window",
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
             )
-            return canonical_messages
         turns_to_summarize = messages[compress_start:compress_end]
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
@@ -5451,11 +5478,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         if not turns_to_summarize:
             # Window is only handoff rows (#59496): skip the aux call; _previous_summary is KEPT —
             # it came from this transcript.
-            self._structural_no_op_result(
-                telemetry, "empty_post_handoff_window",
+            return self._stale_replay_rescue(
+                telemetry, canonical_messages, "empty_post_handoff_window",
                 f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
             )
-            return canonical_messages
         if not self.quiet_mode:
             self._log_compression_start(
                 display_tokens, compress_start, compress_end, len(turns_to_summarize), n_messages - scan.tail_start,

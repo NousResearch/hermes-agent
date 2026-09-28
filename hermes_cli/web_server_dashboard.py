@@ -1,6 +1,7 @@
 """Dashboard UI assets: SPA mount, theme normalisation/bootstrap CSS, dashboard-plugin discovery and the plugins-hub merge.
 """
 
+import asyncio
 import logging
 import importlib.util
 import json
@@ -802,6 +803,29 @@ async def _plugin_route_secret_scope(profile: Optional[str] = None):
         yield
 
 
+def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
+    """``plugins.isolation: host``: the plugin's router runs in the requesting profile's plugin host;
+    this process only forwards each ``/api/plugins/<name>/`` request to it (auth and the profile
+    scope still apply here first). Responses are buffered: streaming and websockets need in-process."""
+    name, dashboard_dir = plugin["name"], str(plugin["_dir"])
+
+    async def forward(request: Request, path: str = "") -> Response:
+        from hermes_cli.plugins import get_plugin_manager
+        host = get_plugin_manager()._plugin_host()
+        result = await asyncio.to_thread(
+            host.asgi_request, name, dashboard_dir, api_file_name, request.method, "/" + path,
+            request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"],
+            await request.body())
+        headers = {k: v for k, v in result["headers"]
+                   if k.lower() not in {"content-length", "transfer-encoding", "connection"}}
+        return Response(content=result["body"], status_code=int(result["status"]), headers=headers)
+
+    app.add_api_route(f"/api/plugins/{name}/{{path:path}}", forward, include_in_schema=False,
+                      methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+                      dependencies=[Depends(_plugin_route_secret_scope)])
+    _log.info("Mounted plugin API routes via the plugin host: /api/plugins/%s/", name)
+
+
 def _mount_plugin_api_routes():
     """Import and mount backend API routes from plugins that declare them.
 
@@ -834,6 +858,11 @@ def _mount_plugin_api_routes():
         if skip:
             _log.debug("Plugin %s: skipping API mount (%s)", plugin.get("name", ""), skip)
             continue
+        if plugin.get("source") not in ("bundled", "project"):
+            from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+            if isolation_mode() == ISOLATION_HOST:
+                _mount_hosted_plugin_api(app, plugin, api_file_name)
+                continue
         if plugin.get("source") == "project":
             _log.warning(
                 "Plugin %s: ignoring backend api=%s (project plugins may "

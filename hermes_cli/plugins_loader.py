@@ -455,12 +455,17 @@ class PluginLoaderMixin:
         module_name = self._policy_module_name(manifest)
         self._track_tool_override_policy(manifest, module_name)
         ctx = PluginContext(manifest, self)
+        in_host = self._runs_in_plugin_host(manifest)
 
         def _import_and_register() -> bool:
             """Import + register() — the part a plugin controls, so the part the deadline covers."""
             # Declared language packs register before any plugin code runs, inside the same ledger slice
             # so a failing register() unwinds them too.
             self._register_declared_locales(manifest, ctx)
+            if in_host and not self._is_manifest_only_language_pack(manifest):
+                self._plugin_host().load(manifest, ctx, module_name=module_name,
+                                         entrypoint=manifest.source not in {"user", "project"})
+                return True
             # Reuse a deferred platform's already-imported package so its body doesn't run twice.
             # See #78050.
             module = self._predeclared_modules.pop(plugin_key, None)
@@ -534,6 +539,19 @@ class PluginLoaderMixin:
             if lang_id not in registered:
                 logger.warning("Plugin '%s' declares provides_locales %r but %s has no %s.yaml",
                                manifest.name, lang_id, locales_dir, lang_id)
+
+    def _runs_in_plugin_host(self, manifest: PluginManifest) -> bool:
+        """``plugins.isolation: host`` sends every non-bundled Python plugin to the profile's host."""
+        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        return manifest.source != "bundled" and isolation_mode() == ISOLATION_HOST
+
+    def _plugin_host(self) -> Any:
+        """This manager's plugin host (one process per profile home), created on first use."""
+        host = getattr(self, "_plugin_host_instance", None)
+        if host is None:
+            from hermes_cli.plugin_host import PluginHost
+            host = self._plugin_host_instance = PluginHost(self)
+        return host
 
     def _track_tool_override_policy(self, manifest: PluginManifest, module_name: str) -> None:
         """Install the plugin's tool-override policy in tools.registry as a ledger-owned lease."""

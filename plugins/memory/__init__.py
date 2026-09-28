@@ -212,6 +212,11 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
     def _load(_dir):
         if provider_dir:
             return _load_provider_from_dir(provider_dir, register_skills=register_skills)
+        from hermes_cli.plugin_isolation import in_process_import_refusal
+        refusal = in_process_import_refusal(f"pip-installed memory provider {name!r}")
+        if refusal:
+            logger.warning("%s", refusal)
+            return None
         return _load_provider_from_entry_point(entry_point, register_skills=register_skills)
 
     return _loader.load_named(name, provider_dir, _load, kind="Memory provider", noun="provider", logger=logger)
@@ -228,6 +233,9 @@ def import_memory_provider_module(name: Optional[str] = None) -> bool:
     name = name or _get_active_memory_provider()
     if not name:
         return False
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    if isolation_mode() == ISOLATION_HOST and not _is_bundled(find_provider_dir(name) or Path("/")):
+        return False  # third-party code runs in the plugin host; nothing to warm in this process
     imported = False
     try:
         if provider_dir := find_provider_dir(name):
@@ -332,6 +340,11 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
 def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional["MemoryProvider"]:
     """Import a provider module; ``register(ctx)`` first, else a top-level subclass."""
     name = provider_dir.name
+    from hermes_cli.plugin_isolation import user_plugin_host
+    host = None if _is_bundled(provider_dir) else user_plugin_host()
+    if host is not None:
+        return _ProviderCollector(name, register_skills=register_skills).collect_in_host(
+            host, provider_dir, _module_name(provider_dir, name))
     mod = _load_package(provider_dir, name)
     if mod is None:
         return None
@@ -381,6 +394,21 @@ class _ProviderCollector:
         with manager._discovery_lock:
             manager._drop_fallback_hooks(self._hook_source)
             register(self)
+
+    def collect_in_host(self, host, provider_dir: Path, module_name: str):
+        """``collect`` for a provider whose code runs in the plugin host: the host captures the
+        provider and forwards every other registration here. The discovery lock is NOT held across
+        the host call — its registrations arrive on another thread and take the lock themselves."""
+        from hermes_cli.plugins_ledger import _hook_source_of
+
+        self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=str(provider_dir / "__init__.py")))
+        manager = self._plugin_context()._manager
+        with manager._discovery_lock:
+            manager._drop_fallback_hooks(self._hook_source)
+        self.provider = host.load_instance(
+            provider_dir, module_name=module_name, capture="register_memory_provider",
+            base_ref="agent.memory_provider:MemoryProvider", ctx=self)
+        return self.provider
 
     def register_hook(self, hook_name, callback):
         context = self._plugin_context()
@@ -498,6 +526,10 @@ def discover_plugin_cli_commands() -> List[dict]:
         return []
 
     module_name = _module_name(plugin_dir, active_provider) + ".cli"
+    if not _is_bundled(plugin_dir):
+        from hermes_cli.plugin_isolation import in_process_import_refusal
+        if in_process_import_refusal(f"memory provider {active_provider!r} CLI commands"):
+            return []
     try:
         cli_mod = sys.modules.get(module_name)
         if cli_mod is None:

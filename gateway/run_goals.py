@@ -148,6 +148,10 @@ class GatewayGoalsMixin:
             or self._queue_depth(quick_key, adapter=adapter) > 0
         ):
             return  # keep missed intervals due until user work has drained
+        from agent.estop import check_paused
+
+        if check_paused("heartbeat", logger):
+            return  # `hermes pause`: leave the tick unclaimed so it fires after `hermes resume`
         from hermes_cli.heartbeat import HeartbeatManager
 
         mgr = HeartbeatManager(session_id=session_id)

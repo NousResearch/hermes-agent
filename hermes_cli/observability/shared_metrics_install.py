@@ -136,6 +136,8 @@ def _is_local_endpoint(base_url: Any) -> bool:
 
 
 def _custom_base_url(provider: str) -> Any:
+    """A ``providers:`` / ``custom_providers:`` entry's endpoint, by ``custom:<name>`` or bare name
+    (built-in ids shadow entries, as at runtime)."""
     from hermes_cli.runtime_provider_custom import _get_named_custom_provider
 
     entry = _get_named_custom_provider(provider)
@@ -152,7 +154,16 @@ def _slot_is_local(slot: Any) -> bool:
 
     if provider in catalog_safe(user_named_model_providers) - {CUSTOM}:
         return True
-    return provider.startswith(f"{CUSTOM}:") and _is_local_endpoint(_custom_base_url(provider))
+    return provider not in _INHERITS_MAIN and _is_local_endpoint(_custom_base_url(provider))
+
+
+def _aux_slot_routes_itself(slot: dict[str, Any]) -> bool:
+    """An auxiliary task off the main model: a named provider, or (mirroring
+    ``agent.auxiliary_client._resolve_task_provider_model``) a bare ``base_url`` + ``api_key``,
+    which the runtime sends to that endpoint as ``custom`` even under ``provider: auto``."""
+    if _norm(slot.get("provider")) not in _INHERITS_MAIN:
+        return True
+    return all(isinstance(slot.get(k), str) and slot[k].strip() for k in ("base_url", "api_key"))
 
 
 def local_model_provider_used(config: dict[str, Any]) -> str:
@@ -161,7 +172,7 @@ def local_model_provider_used(config: dict[str, Any]) -> str:
     auxiliary = _sub(config, "auxiliary")
     slots = [model] if isinstance(model, dict) else []
     if isinstance(auxiliary, dict):
-        slots += [s for s in auxiliary.values() if isinstance(s, dict) and _norm(s.get("provider")) not in _INHERITS_MAIN]
+        slots += [s for s in auxiliary.values() if isinstance(s, dict) and _aux_slot_routes_itself(s)]
     return "yes" if any(_slot_is_local(slot) for slot in slots) else "no"
 
 

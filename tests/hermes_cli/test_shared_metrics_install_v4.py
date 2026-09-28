@@ -270,6 +270,27 @@ def test_local_model_use_covers_main_and_auxiliary_slots(config, used):
     assert install.local_model_provider_used(config) == used
 
 
+@pytest.mark.parametrize(("aux", "used"), [
+    # The runtime routes a bare base_url + api_key to that endpoint even under provider auto.
+    ({"provider": "auto", "base_url": "http://localhost:11434/v1", "api_key": "k", "model": "q"}, "yes"),
+    ({"base_url": "http://127.0.0.1:8080/v1", "api_key": "k", "model": "q"}, "yes"),
+    ({"base_url": "https://api.example.com/v1", "api_key": "k", "model": "q"}, "no"),
+])
+def test_local_model_use_sees_a_bare_auxiliary_endpoint(aux, used):
+    assert install.local_model_provider_used({"model": {"provider": "openrouter"}, "auxiliary": {"vision": aux}}) == used
+
+
+@pytest.mark.parametrize(("base_url", "used"), [("http://127.0.0.1:8080/v1", "yes"), ("https://llm.example.com/v1", "no")])
+def test_local_model_use_resolves_a_named_provider_used_by_bare_name(monkeypatch, base_url, used):
+    import hermes_cli.runtime_provider as rp
+
+    config = {"model": {"provider": "home-llama", "default": "q"},
+              "providers": {"home-llama": {"base_url": base_url, "api_key": "k"}}}
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    assert install.local_model_provider_used(config) == used
+
+
 def test_snapshot_fields_degrade_to_unknown_when_a_reader_breaks(monkeypatch):
     def _boom(*_a, **_k):
         raise OSError("unreadable")

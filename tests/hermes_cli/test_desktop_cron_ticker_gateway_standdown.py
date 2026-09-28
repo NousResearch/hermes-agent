@@ -1,10 +1,9 @@
-"""Desktop cron ticker stands down when a live gateway owns cron on the same HERMES_HOME (#52202).
+"""Desktop cron ticker yields to a live gateway that owns cron on the same HERMES_HOME (#52202).
 
-The ticker's per-tick ``profile_gate`` only arms in the multiplex path; the fail-open
-paths (profile enumeration failure, empty served set, external provider) start an
-ungated single-store ticker that races a live gateway on the same HERMES_HOME. Those
-paths bail out when a gateway is live on this home; the gated multiplex ticker still
-starts, so it resumes once that gateway stops.
+The multiplex path gates each tick through ``profile_gate``. The built-in fail-open paths
+(profile enumeration failure, empty served set) gate each tick through ``can_dispatch`` on
+the same ownership probe, and an external provider defers its start until the gateway is
+gone. Every path takes over once that gateway stops (#126822).
 """
 
 from __future__ import annotations
@@ -43,16 +42,29 @@ def _set_gateway_running(monkeypatch, running: bool) -> None:
 
 
 def test_ticker_stands_down_when_gateway_owns_cron(ticker_env, monkeypatch, caplog):
+    """An external provider has no per-tick gate: its start waits out the live gateway, and
+    happens once that gateway is gone instead of never (#126822)."""
     from hermes_cli import web_server
 
     home, started = ticker_env
     _set_gateway_running(monkeypatch, True)
+    stopped = threading.Event()
+    stopped.set()
 
     with caplog.at_level(logging.INFO, logger="hermes_cli.web_server"):
-        web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
+        web_server._start_desktop_cron_ticker(stopped, interval=0)
 
-    assert started == {}  # provider.start never called
+    assert started == {}  # backend shut down while the gateway still owned cron
     assert "live gateway owns cron" in caplog.text
+
+    import hermes_cli.profiles as profiles
+
+    probes = iter([True, True, False])
+    monkeypatch.setattr(profiles, "_check_gateway_running", lambda _home: next(probes))
+
+    web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
+
+    assert "kwargs" in started  # the gateway stopped: Desktop takes over
 
 
 def test_ticker_starts_when_no_gateway(ticker_env, monkeypatch):
@@ -111,3 +123,34 @@ def test_gated_ticker_resumes_after_the_gateway_stops(ticker_env, monkeypatch):
     assert gate("default", home) is False  # the live gateway ticks with its adapters
     gateway["running"] = False
     assert gate("default", home) is True  # it stopped: Desktop cron fires again
+
+
+def test_fail_open_ticker_gates_every_tick_on_the_gateway(ticker_env, monkeypatch):
+    """With no profile gate (enumeration failed), the single-store ticker still starts and stands
+    down per tick only while a gateway owns this home, including one that comes back."""
+    import cron.scheduler_provider as sp
+    import hermes_cli.profiles as profiles
+    from hermes_cli import web_server
+
+    home, started = ticker_env
+
+    class _InProcess(sp.InProcessCronScheduler):
+        def start(self, stop_event, **kwargs):
+            started["kwargs"] = kwargs
+
+    def _enumeration_fails(**_kw):
+        raise RuntimeError("enumeration failed")
+
+    gateway = {"running": True}
+    monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: _InProcess())
+    monkeypatch.setattr(profiles, "profiles_to_serve", _enumeration_fails)
+    monkeypatch.setattr(profiles, "_check_gateway_running", lambda _home: gateway["running"])
+
+    web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
+
+    can_dispatch = started["kwargs"]["can_dispatch"]
+    assert can_dispatch() is False  # the live gateway ticks with its adapters
+    gateway["running"] = False
+    assert can_dispatch() is True  # it stopped: Desktop cron fires again
+    gateway["running"] = True
+    assert can_dispatch() is False  # a returning gateway is not raced

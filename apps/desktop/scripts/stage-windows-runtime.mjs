@@ -113,12 +113,44 @@ const env = {
   PYTHONNOUSERSITE: '1',
   PYTHONDONTWRITEBYTECODE: '1'
 }
+// Read-aloud ships enabled with Edge as the default TTS provider, but edge-tts
+// is an opt-in extra reached at runtime through `tools/lazy_deps.py` (`tts.edge`).
+// The bundled runtime is sealed — offline and without a writable install path —
+// so that lazy install can never run inside it, and the app fails with
+// "No TTS provider available" on the first read-aloud. Bake it in here, exactly
+// as the nix `full` image (extraDependencyGroups) and the Docker image (`--extra`)
+// already do. The pin MUST stay in lockstep with pyproject.toml's `edge-tts`
+// extra and lazy_deps.py's `tts.edge`; bump all three together.
+const EDGE_TTS_VERSION = '7.2.7'
+if (!fs.existsSync(path.join(packages, 'edge_tts'))) {
+  execFileSync(
+    executable,
+    [
+      '-m',
+      'pip',
+      'install',
+      '--no-input',
+      '--no-warn-script-location',
+      // The standalone distribution ships the PEP 668 EXTERNALLY-MANAGED
+      // marker; this interpreter is the sealed runtime, not a system Python,
+      // so the override is the intended install path.
+      '--break-system-packages',
+      `edge-tts==${EDGE_TTS_VERSION}`
+    ],
+    { env, cwd: agent, encoding: 'utf8', windowsHide: true, timeout: 300000 }
+  )
+}
+if (!fs.existsSync(path.join(packages, 'edge_tts'))) {
+  throw new Error(
+    'edge-tts is missing from the staged runtime after install; bundled read-aloud would fail'
+  )
+}
 const inventory = JSON.parse(
   execFileSync(
     executable,
     [
       '-c',
-      'import json,platform,importlib.metadata as m; import hermes_cli.main,run_agent,model_tools,fastapi,uvicorn,openai,psutil; print(json.dumps({"python":platform.python_version(),"machine":platform.machine(),"packages":sorted([{ "name":d.metadata["Name"],"version":d.version} for d in m.distributions()],key=lambda d:d["name"].lower())}))'
+      'import json,platform,importlib.metadata as m; import hermes_cli.main,run_agent,model_tools,fastapi,uvicorn,openai,psutil,edge_tts; print(json.dumps({"python":platform.python_version(),"machine":platform.machine(),"packages":sorted([{ "name":d.metadata["Name"],"version":d.version} for d in m.distributions()],key=lambda d:d["name"].lower())}))'
     ],
     { env, cwd: agent, encoding: 'utf8', windowsHide: true, timeout: 120000 }
   )

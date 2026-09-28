@@ -46,3 +46,26 @@ def test_build_uninstall_parser_accepts_dry_run():
 
     assert args.dry_run is True
     assert args.full is True
+
+
+def test_uninstall_profile_uses_python_m_invocation(monkeypatch, tmp_path):
+    """Regression for #76705: _uninstall_profile must use sys.executable -m hermes_cli.main
+    so a broken/half-removed console script shim does not break profile teardown."""
+    runs = []
+
+    def _fake_run(cmd, **kwargs):
+        runs.append(cmd)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(uninstall.subprocess, "run", _fake_run)
+    profile = SimpleNamespace(name="worker1", path=tmp_path / "worker1")
+    (tmp_path / "worker1").mkdir()
+
+    uninstall._uninstall_profile(profile)
+
+    assert len(runs) >= 2
+    for cmd in runs:
+        assert cmd[0] == uninstall.sys.executable
+        assert cmd[1:3] == ["-m", "hermes_cli.main"]
+        assert "--profile" in cmd
+        assert cmd[cmd.index("--profile") + 1] == "worker1"

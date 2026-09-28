@@ -34,6 +34,7 @@ class TestUnifiedDashboardRouting:
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
+        monkeypatch.setattr(main_mod.sys, "platform", "linux")
         monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
         execs = []
 

@@ -555,12 +555,19 @@ _INFLIGHT_NOTE_LEADS = (
     "[USER INITIATED SKILLS RELOAD:",
 )
 
-# The skills-reload note's body embeds user-supplied skill names/descriptions, so a
-# description containing "]" would make the first "]" cut mid-note, destroying the
-# restated task. Anchor on the trailer the producer emits (gateway/slash_commands.py
-# "Use skills_list to see the updated catalog.]"); if i18n changed it, fall back to
-# the LAST "]" before the blank line that separates the note from the task.
+# The model-switch and skills-reload notes embed config/user-supplied strings (model
+# names, provider labels, skill names/descriptions), so a "]" inside one would make a
+# first-"]" cut mid-note, destroying the restated task. Anchor each on the fixed
+# trailer its producer emits (hermes_cli/cli_model_switch_mixin.py, gateway/
+# slash_commands.py); if i18n changed it, fall back to the LAST "]" before the blank
+# line that separates the note from the task. The speech note is one fixed literal,
+# so its first "]" is the real end.
+_MODEL_SWITCH_TRAILER = "Adjust your self-identification accordingly.]"
 _SKILLS_RELOAD_TRAILER = "Use skills_list to see the updated catalog.]"
+_INFLIGHT_NOTE_TRAILERS = {
+    _INFLIGHT_NOTE_LEADS[0]: _MODEL_SWITCH_TRAILER,
+    _INFLIGHT_NOTE_LEADS[2]: _SKILLS_RELOAD_TRAILER,
+}
 
 
 def _strip_leading_one_shot_note(text: str) -> str:
@@ -568,10 +575,11 @@ def _strip_leading_one_shot_note(text: str) -> str:
     in-flight task text; unknown text is returned unchanged."""
     for lead in _INFLIGHT_NOTE_LEADS:
         if text.startswith(lead):
-            if lead == _INFLIGHT_NOTE_LEADS[2]:
-                end = text.find(_SKILLS_RELOAD_TRAILER)
+            trailer = _INFLIGHT_NOTE_TRAILERS.get(lead)
+            if trailer is not None:
+                end = text.find(trailer)
                 if end != -1:
-                    return text[end + len(_SKILLS_RELOAD_TRAILER):].lstrip()
+                    return text[end + len(trailer):].lstrip()
                 block_end = text.find("\n\n")  # note body, then the restated task
                 if block_end != -1:
                     last = text.rfind("]", 0, block_end)

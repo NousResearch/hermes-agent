@@ -396,3 +396,36 @@ def test_skills_reload_note_with_bracketed_description_strips_cleanly():
 
     # Unknown text is returned unchanged.
     assert _strip_leading_one_shot_note(JOB_SENTINEL) == JOB_SENTINEL
+
+
+def test_model_switch_note_with_bracketed_model_name_strips_cleanly():
+    """The model-switch note interpolates the model name and provider label
+    verbatim (format_model_for_display returns non-opaque names unchanged);
+    a `]` inside one must not cut the strip mid-note — no truncated fragment
+    of the note survives into the restated task."""
+    text = (
+        "[Note: model was just switched from gpt-5.5 to qwen/qwen3.6-35b[2b] "
+        "via openrouter. Adjust your self-identification accordingly.]"
+        f"\n\n{JOB_SENTINEL} first line matters"
+    )
+    stripped = _strip_leading_one_shot_note(text)
+    assert stripped == f"{JOB_SENTINEL} first line matters"
+
+    # A bracketed provider label hits the same first-"]" cut.
+    text2 = (
+        "[Note: model was just switched from gpt-5.5 to claude-opus-4 "
+        "via my.provider[v2] (via relay). Adjust your self-identification accordingly.]"
+        f"\n\n{JOB_SENTINEL}"
+    )
+    assert _strip_leading_one_shot_note(text2) == JOB_SENTINEL
+
+    # The one-turn variant keeps the same trailer.
+    text3 = (
+        "[Note: model was just switched from gpt-5.5 to qwen/qwen3.6-35b[2b] "
+        "via openrouter. This override applies to the next turn only. "
+        f"Adjust your self-identification accordingly.]\n\n{JOB_SENTINEL}"
+    )
+    assert _strip_leading_one_shot_note(text3) == JOB_SENTINEL
+
+    # Unknown text is returned unchanged.
+    assert _strip_leading_one_shot_note(JOB_SENTINEL) == JOB_SENTINEL

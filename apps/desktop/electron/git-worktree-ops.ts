@@ -344,10 +344,10 @@ async function addWorktree(repoPath, options, gitBin) {
       const remoteBranch = base.slice('origin/'.length)
 
       // `base` comes straight from IPC, and inside a refspec a glob such as
-      // "origin/*" would fetch every branch: only fetch names the sanitizer
-      // leaves alone. The fetch is best effort; git uses the local ref or
-      // raises a clear error below if it is entirely missing.
-      if (remoteBranch === sanitizeBranch(remoteBranch)) {
+      // "origin/*" would fetch every branch: only fetch valid branch names.
+      // The fetch is best effort; git uses the local ref or raises a clear
+      // error below if it is entirely missing.
+      if (await gitOk(gitBin, ['check-ref-format', '--branch', remoteBranch], root)) {
         await fetchTrackingRef(gitBin, root, 'origin', remoteBranch)
       }
 

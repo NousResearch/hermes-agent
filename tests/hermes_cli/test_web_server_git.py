@@ -399,3 +399,21 @@ def test_worktree_add_glob_base_is_not_fetched(tmp_path):
         worktree_add(str(clone), {"base": "origin/*", "name": "glob"})
 
     assert _out(clone, "for-each-ref", "refs/remotes") == ""
+
+
+def test_worktree_add_base_refreshes_valid_branch_names_the_sanitizer_would_rewrite(tmp_path):
+    """"fix+1" is a valid branch the sanitizer rewrites; its base must still be fetched."""
+    origin, _ = _seed_origin(tmp_path)
+    seed = tmp_path / "seed"
+    _git(seed, "branch", "fix+1")
+    _git(seed, "push", "-q", str(origin), "fix+1")
+    clone = tmp_path / "normal"
+    _git(tmp_path, "clone", "-q", str(origin), str(clone))
+    _git(seed, "-c", "user.email=t@example.com", "-c", "user.name=Test",
+         "commit", "-q", "--allow-empty", "-m", "moved after the clone")
+    _git(seed, "push", "-q", str(origin), "HEAD:fix+1")
+    from hermes_cli.web_git import worktree_add
+
+    added = worktree_add(str(clone), {"base": "origin/fix+1", "name": "x"})
+
+    assert _out(added["path"], "rev-parse", "HEAD") == _out(seed, "rev-parse", "HEAD")

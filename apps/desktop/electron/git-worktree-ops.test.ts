@@ -448,6 +448,25 @@ test('addWorktree: a local slash branch named like a remote branch stays local',
   }
 })
 
+test('addWorktree: a valid branch the sanitizer would rewrite is still refreshed as a base', async () => {
+  const { cloneDir, remoteDir } = seedRemoteAndClone('plus-base', ['fix+1'])
+  const ident = ['-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes']
+
+  try {
+    execFileSync('git', ['-C', remoteDir, 'checkout', '-q', 'fix+1'])
+    execFileSync('git', ['-C', remoteDir, ...ident, 'commit', '-q', '--allow-empty', '-m', 'moved after the clone'])
+    const moved = execFileSync('git', ['-C', remoteDir, 'rev-parse', 'HEAD']).toString().trim()
+
+    const result = await addWorktree(cloneDir, { base: 'origin/fix+1', branch: 'x', name: 'x' }, 'git')
+    const head = execFileSync('git', ['-C', result.path, 'rev-parse', 'HEAD']).toString().trim()
+
+    assert.equal(head, moved)
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})
+
 test('addWorktree: a glob base is not turned into a fetch of every branch', async () => {
   const { cloneDir, remoteDir } = seedNarrowClone('narrow-glob')
 

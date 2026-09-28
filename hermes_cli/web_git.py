@@ -667,8 +667,8 @@ def worktree_add(cwd: str, options: dict) -> dict:
         if base.startswith("origin/"):
             remote_branch = base[len("origin/"):]
             # `base` comes straight from the API, and inside a refspec a glob such as
-            # "origin/*" would fetch every branch: only fetch names the sanitizer leaves alone.
-            if remote_branch == _sanitize_branch(remote_branch):
+            # "origin/*" would fetch every branch: only fetch valid branch names.
+            if _git(root, ["check-ref-format", "--branch", remote_branch])[0] == 0:
                 _fetch_tracking_ref(root, "origin", remote_branch)
             # Branching off a remote-tracking ref auto-wires upstream tracking; the user wants
             # a standalone local branch (Electron-op parity).

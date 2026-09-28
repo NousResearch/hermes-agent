@@ -20,6 +20,22 @@ _Variant = Tuple[str, Union[None, Dict[str, Any], Callable[[], Dict[str, Any]]]]
 def _refuse(action: str, message: str, **fields: Any) -> ActionResult:
     return ActionResult(ok=False, action=action, message=message, **fields)
 
+def _frame_center(bounds: Any) -> Optional[Tuple[int, int]]:
+    """Centre of an element frame, or None when the snapshot has no usable size.
+
+    Markdown-fallback elements are stored as ``(0, 0, 0, 0)``; those cannot be
+    dragged because the driver only accepts coordinates.
+    """
+    if not isinstance(bounds, tuple) or len(bounds) != 4:
+        return None
+    try:
+        x, y, w, h = (int(bounds[0]), int(bounds[1]), int(bounds[2]), int(bounds[3]))
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return (x + w // 2, y + h // 2)
+
 
 class _InputMixin:
     """Pointer / keyboard / value-setter actions against the sticky target."""
@@ -115,10 +131,22 @@ class _InputMixin:
              button: str = "left", modifiers: Optional[List[str]] = None,
              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("drag")
+        if refusal is None and from_element is not None and to_element is not None:
+            # The pinned driver drag tool takes from_x/from_y/to_x/to_y only.
+            # Resolve both indexes to the centre of the last capture's frames
+            # before the call; a zero frame is not a coordinate.
+            bounds = getattr(self, "_snapshot_bounds", {})
+            centers = [_frame_center(bounds.get(from_element)), _frame_center(bounds.get(to_element))]
+            if centers[0] is not None and centers[1] is not None:
+                from_xy, to_xy = centers[0], centers[1]
+            elif from_xy is None or to_xy is None:
+                refusal = _refuse(
+                    "drag",
+                    "element-index drag needs frame bounds from the last capture; "
+                    "pass from_coordinate and to_coordinate.",
+                )
         if refusal is None:
             refusal = self._pointer_args("drag", args, (
-                ("element-based drag", {"from_element": from_element, "to_element": to_element}
-                 if from_element is not None and to_element is not None else None),
                 ("coordinate drag", {"from_x": int(from_xy[0]), "from_y": int(from_xy[1]),
                                      "to_x": int(to_xy[0]), "to_y": int(to_xy[1])}
                  if from_xy is not None and to_xy is not None else None),

@@ -44,3 +44,45 @@ The script needed no fixes during the run. The first attempt succeeded.
 - **Cron jobs through `systemd-run --user` were not exercised.** Linger is on, but nothing ran through hermes's user manager.
 - **No real model provider was used.** No turn ran, and neither the browser tool nor the approval path was tried.
 - **The production size was not booted.** The snapshot's min disk is 80 GB, so it fits `s-2vcpu-4gb` and larger. The control plane's `s-4vcpu-8gb` should work, but that size was not tried.
+
+## 2026-09-28: `litco-agent-host-2026.09.28-rc2` (rebuild from merged main)
+
+rc2 replaces rc1. rc1 (image `247382759`) was deleted after rc2 passed its boot check.
+
+| Item | Value |
+|---|---|
+| Snapshot | `litco-agent-host-2026.09.28-rc2`, id `247411090`, 6.39 GB, min disk 80 GB, region `sfo3`, status available |
+| litco-agent ref | `74abe1a6ec42a41cc862908f7f5d73e99a38a89a`, the merge of PR #6 into `main` (PRs #1–#6). Its tree is identical to PR #6's reviewed head `3c6acae8`. |
+| Command | `deploy/host/build-image.sh --version 2026.09.28-rc2 --ref 74abe1a6… --size s-2vcpu-4gb --region sfo3 --ssh-key 56833384` |
+| Builder | droplet `604248615` (`litco-agent-builder-2026-09-28-rc2`, `s-2vcpu-4gb`, tag `litco-host-builder`). It ran from about 05:04Z to 05:13:11Z, about 9 minutes. The run exited 0 on the first attempt. |
+| Verify droplet | droplet `604250550` (`litco-host-verify`, same size and tag), created from the snapshot with no user-data. It was created at 05:13:37Z and deleted at 05:15:38Z by an EXIT trap. |
+| Cost | Droplet time was about 11 minutes at $0.0357/h, under $0.01. The rc2 snapshot costs about $0.38 a month. Deleting rc1 removes its equal charge. |
+| Pre-existing droplets | yavarlaw, litkit-prod-1, wispr-proxy, litlex-prod-1 and alice were the same set, by id, before and after. No volume, DNS record, firewall or Tailscale node was created. The only image deleted was rc1. |
+| Pre-flight | `pytest tests/host tests/litco` passed 135 tests with 1 skip. `ruff check` was clean. `hermes_cli.plugin_validate` passed on `plugins/litkit`. |
+
+### What was verified on the verify droplet
+
+The rc1 checks all passed again on rc2:
+
+- cloud-init ran fresh, with a new machine id, the hostname applied and the SSH key injected.
+- `litco-agent.service` is enabled but inactive, with `ConditionResult=no`, and no env file exists.
+- `/opt/litco-agent/REF` holds `74abe1a6…`.
+- `hermes` is uid 10000, and `Linger=yes`.
+- The Hermes venv runs Python 3.14.7 with SQLite 3.53.1.
+- The tool venv, Node 24.21, Tailscale 1.102.4, LibreOffice, the PM Chromium and agent-browser are present.
+- fail2ban and unattended-upgrades are active, `sshd -t` passes, and no systemd units failed.
+
+rc2 also closed two items that rc1 left open. This time the check waited for `cloud-init status --wait` to report `done` before inspecting the droplet.
+
+- **The DigitalOcean agents run.** `do-agent` and `droplet-agent` are both active once first boot finishes. The `inactive` reading on rc1 was taken while cloud-init was still running.
+- **journald is persistent.** `/var/log/journal/<machine-id>/system.journal` exists.
+
+### Not verified
+
+These items are unchanged from rc1:
+
+- Matter user-data on a real host, meaning the env file, the hostname, the ufw reset, the restart, and the gateway's `/health` on a droplet.
+- The Tailscale join.
+- Cron jobs through `systemd-run --user`.
+- A real model turn, the browser tool from a turn, and the approval path.
+- Booting the `s-4vcpu-8gb` size.

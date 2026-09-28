@@ -15,7 +15,9 @@ def test_reasoning_raw_persistence_reset_and_preservation(monkeypatch, tmp_path)
     monkeypatch.setattr(models, "read_user_config_raw", config.read_user_config_raw)
     monkeypatch.setattr(models, "save_config", config.save_config)
 
-    assert models.get_reasoning_effort() == {"main_raw": "medium", "delegation_raw": "low"}
+    initial = models.get_reasoning_effort()
+    assert initial["main_raw"] == "medium" and initial["delegation_raw"] == "low"
+    assert initial["main_effective"] == "medium" and initial["main_source"] == "global"
     result = models.set_reasoning_effort(ReasoningEffortUpdate(scope="main", effort=""))
     assert result["raw"] == ""
     raw = config.read_user_config_raw(path)
@@ -45,8 +47,12 @@ def test_http_effort_and_routing_resets_preserve_limits(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(models.router)
     with TestClient(app) as client:
-        result = client.post("/api/model/set", json={"scope": "delegation", "provider": "", "model": ""})
+        result = client.post("/api/model/set", json={"scope": "delegation", "provider": "", "model": "", "reset_routing": True})
         assert result.status_code == 200, result.text
+        assert result.json()["routing_confirmation_required"] is True
+        assert config.read_user_config_raw(path)["delegation"]["base_url"] == "http://old/v1"
+        result = client.post("/api/model/set", json={"scope": "delegation", "provider": "", "model": "", "reset_routing": True, "confirm_clear_routing": True})
+        assert result.status_code == 200 and result.json()["ok"]
         assert config.read_user_config_raw(path)["delegation"] == {
             "reasoning_effort": "high", "max_iterations": 40,
         }

@@ -102,8 +102,10 @@ class ManagedFileDelete(BaseModel):
 class ReasoningEffortUpdate(BaseModel):
     scope: Literal["main", "delegation"]
     # Empty clears the raw override (main: provider default; delegation: inherit parent).
-    effort: Literal["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] = ""
+    effort: Literal["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "__custom__"] = ""
     profile: Optional[str] = None
+    target: Literal["global", "model"] = "global"
+    model: Optional[str] = None
 
 class ModelAssignment(BaseModel):
     """POST /api/model/set — assign a provider/model to a slot.
@@ -123,6 +125,8 @@ class ModelAssignment(BaseModel):
     base_url: str = ""
     api_key: str = ""
     confirm_expensive_model: bool = False
+    reset_routing: bool = False
+    confirm_clear_routing: bool = False
     profile: Optional[str] = None
 
 class MoaModelSlot(BaseModel):

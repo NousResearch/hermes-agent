@@ -628,10 +628,14 @@ export const api = {
       appendProfileParam("/api/model/auxiliary", profile),
     ),
   getReasoningEffort: (profile = getManagementProfile()) =>
-    fetchJSON<{ main_raw: string; delegation_raw: string }>(appendProfileParam("/api/model/reasoning-effort", profile)),
-  setReasoningEffort: (scope: "main" | "delegation", effort: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; scope: "main" | "delegation"; raw: string }>(appendProfileParam("/api/model/reasoning-effort", profile), {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scope, effort, profile: profile || undefined }),
+    fetchJSON<{ main_raw: string; delegation_raw: string; main_effective: string; main_source: "model_override" | "global" | "provider_default"; main_model: string; main_custom?: string; delegation_custom?: string }>(appendProfileParam("/api/model/reasoning-effort", profile)),
+  setReasoningEffort: (scope: "main" | "delegation", effort: string, profile = getManagementProfile(), target: "global" | "model" = "global", model?: string) =>
+    fetchJSON<{ ok: boolean; scope: "main" | "delegation"; target?: string; raw: string; main_raw: string; delegation_raw: string; main_effective: string; main_source: "model_override" | "global" | "provider_default"; main_model: string; main_custom?: string; delegation_custom?: string }>(appendProfileParam("/api/model/reasoning-effort", profile), {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scope, effort, target, ...(model ? { model } : {}), profile: profile || undefined }),
+    }),
+  setDelegationRouting: (payload: { provider: string; model: string; reset_routing?: boolean; confirm_clear_routing?: boolean; profile?: string }) =>
+    fetchJSON<{ ok: boolean; routing_confirmation_required?: boolean; confirm_message?: string; base_url_configured?: boolean; api_key_configured?: boolean }>(appendProfileParam("/api/model/set", payload.profile), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scope: "delegation", ...payload }),
     }),
   getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
   saveMoaModels: (body: MoaConfigResponse) =>

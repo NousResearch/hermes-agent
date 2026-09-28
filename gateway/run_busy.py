@@ -494,7 +494,16 @@ class GatewayBusySessionMixin:
             message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
         else:
             message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
-        await self._send_busy_reply(event, adapter, message)
+        # Mid-turn shutdown/restart notice (#98432 contract class): mark interim so a
+        # stream-is-the-message adapter never seals the in-flight answer with this notice.
+        from gateway.run import _interim_metadata
+        reply_anchor = self._reply_anchor_for_event(event)
+        await adapter._send_with_retry(
+            chat_id=event.source.chat_id,
+            content=message,
+            reply_to=self._busy_reply_to(event, reply_anchor),
+            metadata=_interim_metadata(self._thread_metadata_for_source(event.source, reply_anchor)),
+        )
 
     # Bare-word approval replies → (verb, args) for the synthesized slash command.
     _PLAINTEXT_APPROVAL_WORDS: Dict[str, tuple] = {

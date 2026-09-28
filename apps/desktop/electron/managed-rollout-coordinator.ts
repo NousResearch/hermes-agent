@@ -749,6 +749,14 @@ export function createManagedRolloutCoordinator(
     admit(async () => {
       const attempt = state.attempts[installId]
 
+      // Recovery re-establishes restore/clearance; it never applies an update,
+      // never marks success, and never issues a new launch capability. The
+      // admissible set covers every attempt that can still carry an
+      // unresolved obligation: an unknown result (unverified /
+      // recovery-required) and a known-bad or already-applied attempt whose
+      // fence still needs proved clearance (failed / refused / updated /
+      // already-current). A mismatched correlation or unproved clearance is
+      // refused below.
       if (!attempt || !['unverified', 'recovery-required', 'failed', 'refused', 'updated', 'already-current'].includes(attempt.state)) {
         return refuse(state, 'recovery-not-admissible')
       }

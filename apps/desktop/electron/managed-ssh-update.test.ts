@@ -462,6 +462,7 @@ posixTest('POSIX observer reads the exact correlation receipt and terminal marke
       JSON.stringify({
         correlation_id: CORRELATION,
         outcome: 'success',
+        requested_sha: 'abcdef0123456789abcdef0123456789abcdef01',
         started_at: '2026-08-23T00:00:00Z',
         finished_at: '2026-08-23T00:01:00Z',
         pre_update: { sha: 'old' },
@@ -485,6 +486,9 @@ posixTest('POSIX observer reads the exact correlation receipt and terminal marke
     assert.equal(parsed.marker, 'absent')
     assert.equal(parsed.exitCode, 0)
     assert.equal(parsed.receipt?.correlationId, CORRELATION)
+    // The receipt's own recorded requested SHA is read from the remote
+    // document, not synthesized from the local target.
+    assert.equal(parsed.receipt?.requestedSha, 'abcdef0123456789abcdef0123456789abcdef01')
     assert.equal(parsed.receipt?.preSha, 'old')
     assert.equal(parsed.receipt?.postSha, 'new')
   } finally {

@@ -596,10 +596,20 @@ function receiptOutput(
 ): RolloutSnapshot['attempts'][number]['receipt'] {
   if (!receipt) {return null}
 
+  // The remote receipt's own requested SHA is authoritative. When the remote
+  // recorded one it must equal the reviewed target — a success-shaped receipt
+  // for some other request never projects as this attempt's proof. A receipt
+  // that carries none (older remote schema) stays null rather than being
+  // back-filled from the local target, so the projection cannot assert a
+  // request the remote never reported making.
+  const requestedSha = typeof receipt.requestedSha === 'string' ? receipt.requestedSha : null
+
+  if (requestedSha !== null && requestedSha !== targetSha) {return null}
+
   return {
     correlationId: receipt.correlationId,
     installId,
-    requestedSha: targetSha,
+    requestedSha,
     preSha: receipt.preSha ?? null,
     postSha: receipt.postSha ?? null,
     outcome: boundedText(receipt.outcome, 'unknown'),
@@ -1292,6 +1302,14 @@ export function createManagedRolloutProvider(
       if (!TERMINAL_PHASES.has(prior.snapshot.phase as RolloutPhase)) {throw new Error('retry-source-not-terminal')}
     }
 
+    // An unresolved fence is an installation-level safety obligation, not a
+    // property of one rollout. A fresh plan (no retryOf) never inherits another
+    // rollout's fence through a local transition such as Stop, so every
+    // admitted row is refused while its installation still carries one.
+    for (const row of plan.rows) {
+      if (deps.journal.hasUnresolvedInstall(row.installId)) {throw new Error('installation-unresolved-fence')}
+    }
+
     const verifiedSources = new Map<string, ReviewedSourceBinding>()
     const verifiedAssurance = new Map<string, VerifiedAssuranceEvidence>()
 
@@ -1404,13 +1422,44 @@ export function createManagedRolloutProvider(
 
           await persist(runtime, `terminal:${installId}:${authorization.correlationId}`, { kind: 'terminal', installId, outcome: observation.outcome, correlationId: authorization.correlationId }, settled.state, [event('launch-observed', installId), event(observation.outcome === 'failed' || observation.outcome === 'refused' ? 'attempt-failed' : 'completed', installId, observation.outcome)], facts, unresolved)
 
-          if (!settled.ok || runtime.coordinator.snapshot.phase !== 'running') {return}
+          // A healthy wave settle parks at awaiting-promotion; let control reach
+          // the promotion boundary below instead of exiting here. Every other
+          // phase (attention-required, paused, stopped, completed) exits.
+          if (!settled.ok || !['running', 'awaiting-promotion'].includes(runtime.coordinator.snapshot.phase)) {return}
         } catch (error) {
           const unresolved = await runtime.coordinator.terminal(installId, authorization.correlationId, 'unverified')
           await persist(runtime, `terminal-unverified:${installId}:${authorization.correlationId}`, { kind: 'terminal-unverified', installId, correlationId: authorization.correlationId }, unresolved.state, [event('attention-required', installId, boundedText(error instanceof Error ? error.message : error, 'unverified-launch'))])
 
           return
         }
+      }
+
+      // A wave that settled healthy parks at awaiting-promotion. Manual policy
+      // waits for the operator; auto-after-canary continues without one, but
+      // only on the coordinator's own terms (canary approved, no continuation
+      // required, no unresolved fence) — the reducer refuses otherwise.
+      //
+      // This boundary must run BEFORE the running-phase guard: a settled wave
+      // changes phase to awaiting-promotion, so exiting on `!== 'running'`
+      // first would make automatic promotion unreachable.
+      const boundary = runtime.coordinator.snapshot
+
+      if (
+        boundary.phase === 'awaiting-promotion' &&
+        boundary.policy === 'auto-after-canary' &&
+        boundary.canaryApproved &&
+        !boundary.continuationRequired &&
+        !Object.values(boundary.attempts).some(attempt => attempt.state === 'unverified' || attempt.state === 'recovery-required')
+      ) {
+        const promoted = await runtime.coordinator.promote(true)
+
+        if (!promoted.ok) {
+          await persist(runtime, `auto-promotion-refused:${randomUUID()}`, { kind: 'runner-refusal', reason: promoted.reason ?? 'auto-promotion-refused' }, promoted.state, [event('operator-disposition', null, promoted.reason ?? 'auto-promotion-refused')])
+
+          return
+        }
+
+        await persist(runtime, `auto-promoted:${randomUUID()}`, { kind: 'promoted', auto: true }, promoted.state, [event('auto-promoted', null, 'auto-after-canary')])
       }
 
       if (runtime.coordinator.snapshot.phase !== 'running') {return}

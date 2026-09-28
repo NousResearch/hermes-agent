@@ -628,6 +628,54 @@ test('preparation refuses a frozen target because preparation must precede targe
   assert.match(result.error || '', /must not include a pinned target/)
 })
 
+test('concurrent preparation is never replayed to a caller who asked for a different request', async () => {
+  let releasePreparation!: () => void
+  const pendingPreparation = new Promise<void>(resolve => { releasePreparation = resolve })
+  let preparations = 0
+
+  const service = createManagedSshUpdateService(
+    deps({
+      prepareRemote: async (_source, correlationId) => {
+        preparations += 1
+        await pendingPreparation
+
+        return { kind: 'preparation', correlationId }
+      }
+    })
+  )
+
+  const active = service.prepare('homelab', { correlationId: CORRELATION })
+  await Promise.resolve()
+
+  // A pinned prepare must be refused whether or not another preparation is
+  // active: replaying the active unpinned operation would report "prepared"
+  // under a request the caller never made.
+  const pinned = await service.prepare('homelab', { correlationId: CORRELATION, intent: PINNED_INTENT })
+
+  assert.equal(pinned.outcome, 'refused')
+  assert.match(pinned.error || '', /must not include a pinned target/)
+
+  // A different correlation against an active preparation is a mismatch, not
+  // a cached success: the caller asked about THIS correlation and must be told
+  // it does not match the in-flight one.
+  const mismatched = await service.prepare('homelab', { correlationId: OTHER_CORRELATION })
+
+  assert.equal(mismatched.outcome, 'refused')
+  assert.equal(mismatched.correlationId, OTHER_CORRELATION)
+  assert.match(mismatched.error || '', /different correlation ID/)
+  assert.equal(preparations, 1)
+
+  // Asking under the active correlation still replays that same operation.
+  const replayed = service.prepare('homelab', { correlationId: CORRELATION })
+
+  releasePreparation()
+  const first = await active
+
+  assert.equal(first.outcome, 'prepared')
+  assert.deepEqual(await replayed, first)
+  assert.equal(preparations, 1)
+})
+
 test('recovery wins admission over a duplicate update and releases only its own correlation', async () => {
   let recoveryRelease!: () => void
   const recoveryPending = new Promise<void>(resolve => { recoveryRelease = resolve })

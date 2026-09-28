@@ -512,17 +512,63 @@ export function createManagedSshUpdateService<
     options: Pick<ManagedSshUpdateRequestOptions, 'correlationId' | 'intent'> = {}
   ): Promise<ManagedSshPreparationResult> => {
     const connectionId = String(rawId || '').trim()
-    const existing = activePreparations.get(connectionId)
+
+    // Validate this request before considering any in-flight preparation.
+    // Replaying an active preparation to a caller that asked for a pinned
+    // intent or a different correlation would answer a question that caller
+    // never asked — a pinned prepare is refused whether or not one is active,
+    // and a mismatched correlation is a mismatch, never a cached success.
+    if (options.intent) {
+      return Promise.resolve({
+        connectionId,
+        correlationId: String(options.correlationId || '').trim(),
+        ok: false,
+        outcome: 'refused',
+        receipt: null,
+        error: 'Managed SSH preparation must not include a pinned target; prepare before target review.'
+      })
+    }
+
+    let requestedCorrelation: string | null = null
+
+    if (options.correlationId) {
+      try {
+        requestedCorrelation = validateCorrelationId(options.correlationId)
+      } catch (error) {
+        return Promise.resolve({
+          connectionId,
+          correlationId: String(options.correlationId || ''),
+          ok: false,
+          outcome: 'refused',
+          receipt: null,
+          error: errorMessage(error)
+        })
+      }
+    }
+
+    const existing = activePreparations.get(connectionId) as
+      (Promise<ManagedSshPreparationResult> & { preparationCorrelationId?: string }) | undefined
 
     if (existing) {
+      if (requestedCorrelation !== null && existing.preparationCorrelationId !== requestedCorrelation) {
+        return Promise.resolve({
+          connectionId,
+          correlationId: requestedCorrelation,
+          ok: false,
+          outcome: 'refused',
+          receipt: null,
+          error: 'A preparation is already active for this connection under a different correlation ID.'
+        })
+      }
+
       return existing
     }
 
     let correlationId: string
 
     try {
-      correlationId = options.correlationId
-        ? validateCorrelationId(options.correlationId)
+      correlationId = requestedCorrelation
+        ? requestedCorrelation
         : deps.createCorrelationId?.() || crypto.randomUUID()
     } catch (error) {
       return Promise.resolve({
@@ -532,17 +578,6 @@ export function createManagedSshUpdateService<
         outcome: 'refused',
         receipt: null,
         error: errorMessage(error)
-      })
-    }
-
-    if (options.intent) {
-      return Promise.resolve({
-        connectionId,
-        correlationId,
-        ok: false,
-        outcome: 'refused',
-        receipt: null,
-        error: 'Managed SSH preparation must not include a pinned target; prepare before target review.'
       })
     }
 
@@ -636,7 +671,7 @@ export function createManagedSshUpdateService<
       }
     })()
 
-    activePreparations.set(connectionId, operation)
+    activePreparations.set(connectionId, Object.assign(operation, { preparationCorrelationId: correlationId }))
 
     return operation
   }

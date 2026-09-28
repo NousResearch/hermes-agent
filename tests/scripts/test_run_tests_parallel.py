@@ -433,6 +433,27 @@ def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
     assert "NOT a pass" in proc.stdout
 
 
+def test_failing_file_summary_says_incomplete_not_100_percent(tmp_path: Path) -> None:
+    """A file with failures must not print "100% complete".
+
+    A SIGKILLed-on-timeout file never executes its remaining tests, yet the
+    discovered-count progress counter still advances past it — so a run with a
+    failed file could print "(100% complete)", which reads as successful
+    verification to any parser that scrapes the summary line.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_failing_probe.py").write_text(
+        "def test_fails():\n    assert False\n", encoding="utf-8"
+    )
+
+    proc = _run_runner(probe_dir)
+
+    assert proc.returncode == 1, proc.stdout
+    assert "INCOMPLETE" in proc.stdout, proc.stdout
+    assert "100% complete" not in proc.stdout, proc.stdout
+
+
 def test_node_id_selector_runs_the_named_test(tmp_path: Path) -> None:
     """``file.py::test_alpha`` runs that test instead of discovering nothing."""
     probe_dir = _make_probe_dir(tmp_path)

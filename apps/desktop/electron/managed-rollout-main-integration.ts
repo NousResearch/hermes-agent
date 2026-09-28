@@ -504,12 +504,22 @@ async function observeHealth(
       (!expectedReceipt || expectedReceipt.correlationId === authorization.correlationId)
     )
 
-    const receiptSucceeded = Boolean(
+    // A success claim must be evidence about the reviewed target: the remote
+    // receipt's own recorded requested SHA is that evidence, and it must equal
+    // the pinned SHA. A receipt that omits or contradicts the pinned request
+    // is not success evidence this gate accepts — the projection never
+    // back-fills the local target in its place.
+    const claimedSuccess = Boolean(
       raw.receipt && ['success', 'updated', 'already-current'].includes(raw.receipt.outcome) &&
       (!expectedReceipt || expectedReceipt.outcome === raw.receipt.outcome)
     )
+    const receiptSucceeded = Boolean(claimedSuccess && receipt?.requestedSha === authorization.targetSha)
 
-    if (receiptSucceeded && (receipt?.postSha !== authorization.targetSha || inspection.headSha !== authorization.targetSha)) {
+    // A success-shaped receipt whose recorded post-update SHA or observed HEAD
+    // contradicts the reviewed target is an inconsistent observation, not a
+    // success: refuse it whether or not its requested SHA matched, so a moved
+    // checkout can never be recorded as this attempt's proof.
+    if (claimedSuccess && (receipt?.postSha !== authorization.targetSha || inspection.headSha !== authorization.targetSha)) {
       throw new Error('observed-target-head-mismatch')
     }
 

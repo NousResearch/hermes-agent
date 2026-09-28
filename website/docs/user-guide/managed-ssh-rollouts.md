@@ -81,9 +81,11 @@ does not guess whether the remote update happened.
 - **Recheck / reprobe** is read-only. It observes the existing correlation and
   can settle that original attempt only when the observation is terminal and
   matches its correlation ID. It does not launch another update.
-- **Recover** restores the recorded scopes and proves clearance for an
-  unverified or recovery-required attempt. It also does not launch another
-  update and does not declare the target successful.
+- **Recover** restores the recorded scopes and proves clearance. It is
+  admissible for an unverified or recovery-required attempt, and also for a
+  settled failed, refused, updated, or already-current attempt whose fence
+  still needs proved clearance. It does not launch another update, does not
+  relabel the outcome, and does not declare the target successful.
 - A new update is a new pinned admission, not an automatic retry of an unknown
   launch.
 

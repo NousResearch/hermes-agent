@@ -34,6 +34,7 @@ type ManagedUpdateOutcome = 'updated' | 'update-failed' | 'restore-failed' | 'up
 interface ManagedUpdateReceiptSummary {
   correlationId: string
   outcome: string
+  requestedSha?: string
   startedAt?: string
   finishedAt?: string
   preSha?: string
@@ -572,6 +573,7 @@ def receipt():
         post=payload.get('post_update') if isinstance(payload.get('post_update'),dict) else {}
         return {
             'correlationId':correlation,'outcome':str(payload.get('outcome') or 'unknown'),
+            'requestedSha':payload.get('requested_sha'),
             'startedAt':payload.get('started_at'),'finishedAt':payload.get('finished_at'),
             'preSha':pre.get('sha'),'postSha':post.get('sha'),
             'preVersion':pre.get('version'),'postVersion':post.get('version'),

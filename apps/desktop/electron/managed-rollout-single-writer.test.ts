@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { type ChildProcess, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -9,8 +10,40 @@ import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { test } from 'vitest'
 
+// Resolve the installed Electron binary the way the portal-session live test
+// does, so this ownership test can run wherever Electron is installed rather
+// than only where a hard-coded electron.exe exists. An explicit override still
+// wins; when nothing resolves, the test skips explicitly instead of failing
+// the suite on an environment that has no Electron at all.
+const defaultElectron = (() => {
+  try {
+    return String(createRequire(import.meta.url)('electron'))
+  } catch {
+    return ''
+  }
+})()
+
 const executable = path.resolve(process.env.HERMES_MANAGED_ROLLOUT_ELECTRON_EXECUTABLE ||
-  path.join(path.dirname(fileURLToPath(import.meta.url)), '../node_modules/electron/dist/electron.exe'))
+  defaultElectron || path.join(os.tmpdir(), 'managed-rollout-electron-unavailable'))
+
+// Chromium needs a display. Windows and macOS always have one; a headless
+// Linux runner gets a virtual one through xvfb-run — the hosted JS lane
+// installs xvfb for exactly this class of Electron test, and this mirrors the
+// arrangement portal-session-live.test.ts uses so this ownership test runs on
+// that lane instead of silently skipping. `null` means the test cannot run
+// here and skips explicitly.
+const displayPrefix = (() => {
+  if (process.platform !== 'linux' || process.env.DISPLAY || process.env.WAYLAND_DISPLAY) {
+    return []
+  }
+
+  const xvfbRun = (process.env.PATH ?? '')
+    .split(path.delimiter)
+    .map(dir => path.join(dir, 'xvfb-run'))
+    .find(fs.existsSync)
+
+  return xvfbRun ? [xvfbRun, '-a'] : null
+})()
 
 const fixtureParent = path.resolve(process.env.HERMES_MANAGED_ROLLOUT_FIXTURE_ROOT || os.tmpdir())
 
@@ -31,7 +64,17 @@ function launch(appDirectory: string, mode: string, generation: number, userData
 
   delete environment.ELECTRON_RUN_AS_NODE
 
-  const child = spawn(executable, [appDirectory, '--disable-gpu'], {
+  // On Linux the sandbox aborts before the fixture runs (the npm-installed
+  // chrome-sandbox helper is not setuid), and a headless host needs the
+  // virtual display prefix; both mirror the portal-session and Playwright
+  // fixtures that run on the hosted lane.
+  const [command, ...prefixArguments] = [...(displayPrefix ?? []), executable]
+  const child = spawn(command, [
+    ...prefixArguments,
+    appDirectory,
+    ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
+    '--disable-gpu'
+  ], {
     env: environment,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
@@ -126,7 +169,7 @@ function journalBytes(directory: string): Record<string, string> {
   )
 }
 
-const runTest = fs.existsSync(executable) ? test : test.skip
+const runTest = fs.existsSync(executable) && displayPrefix !== null ? test : test.skip
 
 /**
  * Electron's OS single-instance lock is released asynchronously after the

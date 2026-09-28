@@ -41,15 +41,19 @@ const ORIGIN = 'https://github.com/NousResearch/hermes-agent.git'
 const CODE_ROOT = '/srv/hermes-agent'
 const PROFILE = 'managed-ssh-review-v1'
 const ASSURANCE_CONTROL_RECEIPT = 'd'.repeat(64)
+const NEXT_INSTALL_ID = 'f'.repeat(32)
+const THIRD_INSTALL_ID = 'ab'.repeat(16)
+const SECOND_CONNECTION_ID = '22222222-2222-4222-8222-222222222222'
+const THIRD_CONNECTION_ID = '33333333-3333-4333-8333-333333333333'
 
-function assuranceEnvelope(): Uint8Array {
+function assuranceEnvelope(fingerprint: string = SOURCE_FINGERPRINT): Uint8Array {
   const document = {
     schema: 1,
     profile: PROFILE,
     generation: 1,
     repositoryId: REPOSITORY_ID,
     targetSha: TARGET_SHA,
-    sourceFingerprint: SOURCE_FINGERPRINT,
+    sourceFingerprint: fingerprint,
     observedAt: new Date(NOW - 1_000).toISOString(),
     expiresAt: new Date(NOW + 60_000).toISOString(),
     controls: [
@@ -63,6 +67,10 @@ function assuranceEnvelope(): Uint8Array {
   }
 
   return new TextEncoder().encode(JSON.stringify(document))
+}
+
+function assuranceEvidenceSha(fingerprint: string): string {
+  return crypto.createHash('sha256').update(assuranceEnvelope(fingerprint)).digest('hex')
 }
 
 const INSTALLATION_FINGERPRINT = installationFingerprint({
@@ -432,6 +440,11 @@ test('runs an injected trusted rollout without exposing the launch capability', 
       /remote launch remains unverified/
     )
     assert.ok(facts.includes('terminal-receipt'))
+
+    const settled = await provider.get(started.id as string) as any
+    // The remote receipt carried no requested SHA here. The projection must
+    // record null rather than back-fill the local target as remote evidence.
+    assert.equal(settled.attempts[0].receipt.requestedSha, null)
     assert.ok(facts.includes('settlement-validated'))
     const snapshot = await provider.get(started.id as string) as Record<string, unknown>
     assert.equal(snapshot?.phase, 'completed')
@@ -890,6 +903,318 @@ test('does not record service handoff when service refuses coordinator admission
     const facts = dependencies.journal.read(started.id).facts.map(item => item.kind)
     assert.equal(facts.includes('handoff-accepted'), false)
     assert.equal(facts.includes('detached-intent'), false)
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('refuses a fresh admission while another rollout leaves an unresolved installation fence', async () => {
+  const { dependencies, journalDirectory } = makeDependencies()
+
+  try {
+    const provider = createManagedRolloutProvider(dependencies)
+    const resolution = await provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null }) as Record<string, unknown>
+
+    const preflight = await provider.preflight({
+      inventoryRevision: INVENTORY.inventoryRevision,
+      targetResolutionId: resolution.resolutionId,
+      waves: [[INSTALL_ID]],
+      concurrency: 1,
+      promotionPolicy: 'auto-if-healthy',
+      retryOf: null
+    }) as Record<string, unknown>
+
+    const started = await provider.start({ token: preflight.token as string, requestId: preflight.requestId as string }) as Record<string, unknown>
+    let prior = dependencies.journal.read(started.id as string)
+
+    for (let attempt = 0; attempt < 100 && prior.snapshot.phase !== 'completed'; attempt += 1) {
+      await new Promise(resolveWait => setTimeout(resolveWait, 1))
+      prior = dependencies.journal.read(started.id as string)
+    }
+
+    assert.equal(prior.snapshot.phase, 'completed')
+    const correlationId = (prior.snapshot.attempts[0] as any).correlationId
+
+    // A later Stop on an unknown attempt leaves an installation-level fence in
+    // the unresolved index without a terminal settlement. The index is keyed by
+    // rollout, but the obligation belongs to the installation.
+    const fence = {
+      key: `managed-rollout:${prior.id}:${INSTALL_ID}:${correlationId}`,
+      rolloutId: prior.id,
+      installId: INSTALL_ID,
+      correlationId,
+      reason: 'remote-launch-settlement-required',
+      recordedAt: NOW_ISO
+    }
+
+    dependencies.journal.record({
+      id: prior.id,
+      expectedRevision: prior.snapshot.revision,
+      requestId: '99999999-9999-4999-8999-999999999999',
+      payload: { kind: 'test-fence' },
+      snapshot: prior.snapshot as any,
+      unresolved: { add: [fence] }
+    })
+
+    // A fresh plan (retryOf: null) must not admit the same installation while
+    // the prior rollout's fence remains unresolved — Stop is a local transition
+    // and never releases the installation-level safety obligation.
+    await assert.rejects(
+      () => provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null }),
+      /installation-unresolved-fence/
+    )
+
+    // The fence releases only on settlement evidence for the same installation
+    // and correlation.
+    const fenced = dependencies.journal.read(prior.id)
+    dependencies.journal.record({
+      id: prior.id,
+      expectedRevision: fenced.snapshot.revision,
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      payload: { kind: 'settle-test-fence' },
+      snapshot: fenced.snapshot as any,
+      facts: [{
+        kind: 'settlement-validated',
+        rolloutId: prior.id,
+        correlationId,
+        installId: INSTALL_ID,
+        observedAt: NOW_ISO,
+        basis: 'validated terminal receipt and restored scope'
+      }],
+      unresolved: { remove: [fence.key] }
+    })
+
+    const resolved = await provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null }) as Record<string, unknown>
+    assert.equal(resolved.resolutionId, RESOLUTION.id)
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('never projects a remote receipt whose recorded requested SHA contradicts the reviewed target', async () => {
+  const { dependencies, journalDirectory } = makeDependencies()
+  dependencies.managedSshUpdateService = {
+    ...dependencies.managedSshUpdateService,
+    requestCoordinator: (connectionId, input) => ({
+      admitted: true as const,
+      operation: Promise.resolve({
+        connectionId: String(connectionId),
+        correlationId: input.correlationId,
+        ok: true, updateOk: true, restoreOk: true,
+        outcome: 'updated' as const,
+        exitCode: 0,
+        receipt: {
+          correlationId: input.correlationId,
+          outcome: 'updated',
+          startedAt: NOW_ISO,
+          finishedAt: NOW_ISO,
+          preSha: ADMITTED_SHA,
+          postSha: TARGET_SHA,
+          requestedSha: 'd'.repeat(40)
+        },
+        scopes: []
+      })
+    })
+  }
+
+  try {
+    const provider = createManagedRolloutProvider(dependencies)
+    await provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null })
+    const preflight = await provider.preflight({
+      inventoryRevision: INVENTORY.inventoryRevision,
+      targetResolutionId: RESOLUTION.id,
+      waves: [[INSTALL_ID]], concurrency: 1, promotionPolicy: 'auto-if-healthy', retryOf: null
+    }) as { token: string; requestId: string }
+    const started = await provider.start(preflight) as { id: string }
+
+    await provider.waitForIdle()
+
+    // The remote reported a request for a different SHA: the projection records
+    // no receipt at all rather than presenting the mismatch as this attempt's
+    // proof.
+    const settled = await provider.get(started.id) as any
+
+    assert.equal(settled.attempts[0].receipt, null)
+    assert.equal(JSON.stringify(settled).includes('d'.repeat(40)), false)
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('auto-after-canary promotes the next wave without another operator command once the canary is approved', async () => {
+  const { dependencies, journalDirectory } = makeDependencies()
+
+  const secondInstallation = installationFingerprint({ installId: NEXT_INSTALL_ID, codeRoot: CODE_ROOT, repositoryId: REPOSITORY_ID })
+  const thirdInstallation = installationFingerprint({ installId: THIRD_INSTALL_ID, codeRoot: CODE_ROOT, repositoryId: REPOSITORY_ID })
+  const sourceFields = (connectionId: string) => ({
+    connectionId,
+    connectionConfigRevision: SOURCE_INPUT.connectionConfigRevision,
+    verifiedHostKeyFingerprint: SOURCE_INPUT.verifiedHostKeyFingerprint,
+    remoteUser: SOURCE_INPUT.remoteUser,
+    port: SOURCE_INPUT.port,
+    configuredProfile: SOURCE_INPUT.configuredProfile,
+    configuredCodePath: SOURCE_INPUT.configuredCodePath
+  })
+  const secondSource = sourceFingerprint({ ...sourceFields(SECOND_CONNECTION_ID), installationFingerprint: secondInstallation })
+  const thirdSource = sourceFingerprint({ ...sourceFields(THIRD_CONNECTION_ID), installationFingerprint: thirdInstallation })
+
+  const plan: RolloutPlan = {
+    target: TARGET,
+    inventoryRevision: INVENTORY.inventoryRevision,
+    waves: [[INSTALL_ID], [NEXT_INSTALL_ID], [THIRD_INSTALL_ID]],
+    concurrency: 1,
+    promotionPolicy: 'auto-if-healthy',
+    rows: [
+      BASE_PLAN.rows[0],
+      {
+        installId: NEXT_INSTALL_ID, connectionId: SECOND_CONNECTION_ID,
+        installationFingerprint: secondInstallation, sourceFingerprint: secondSource,
+        admittedHead: ADMITTED_SHA, requiredScopeIds: ['scope-main'], eligible: true,
+        reviewedSource: { ...REVIEWED_SOURCE, assuranceEvidenceSha256: assuranceEvidenceSha(secondSource) }
+      },
+      {
+        installId: THIRD_INSTALL_ID, connectionId: THIRD_CONNECTION_ID,
+        installationFingerprint: thirdInstallation, sourceFingerprint: thirdSource,
+        admittedHead: ADMITTED_SHA, requiredScopeIds: ['scope-main'], eligible: true,
+        reviewedSource: { ...REVIEWED_SOURCE, assuranceEvidenceSha256: assuranceEvidenceSha(thirdSource) }
+      }
+    ],
+    retryOf: null,
+    exclusions: []
+  }
+
+  dependencies.inventoryReader = {
+    capture: async () => ({
+      inventoryRevision: INVENTORY.inventoryRevision,
+      capturedMono: INVENTORY.capturedMono,
+      observations: [
+        INVENTORY.observations[0],
+        { installId: NEXT_INSTALL_ID, connectionId: SECOND_CONNECTION_ID, aliasConnectionIds: [], codeRoot: CODE_ROOT, repositoryId: REPOSITORY_ID, headSha: ADMITTED_SHA, requiredScopeIds: ['scope-main'], source: sourceFields(SECOND_CONNECTION_ID) },
+        { installId: THIRD_INSTALL_ID, connectionId: THIRD_CONNECTION_ID, aliasConnectionIds: [], codeRoot: CODE_ROOT, repositoryId: REPOSITORY_ID, headSha: ADMITTED_SHA, requiredScopeIds: ['scope-main'], source: sourceFields(THIRD_CONNECTION_ID) }
+      ]
+    })
+  }
+  dependencies.assuranceReader = {
+    readEvidence: async (_profile, _sha, fingerprint) => assuranceEnvelope(fingerprint),
+    readProfile: async () => ({ generation: 1, requiredControlIds: ['managed-rollout-admission'] })
+  }
+  dependencies.resolveTarget = async () => ({ plan, resolution: RESOLUTION })
+  dependencies.measuredMaxInstallations = () => plan.rows.length
+  dependencies.observe = {
+    ...dependencies.observe,
+    observe: async ({ authorization, update }) => ({
+      authorization,
+      outcome: 'updated' as const,
+      receipt: update.receipt,
+      health: { ...health(), installId: authorization.installId }
+    })
+  }
+  dependencies.managedSshUpdateService = {
+    ...dependencies.managedSshUpdateService,
+    issueLaunchCapability: () => ({ internal: 'not-for-ipc' }),
+    requestCoordinator: (connectionId, input) => ({
+      admitted: true as const,
+      operation: Promise.resolve({
+        connectionId: String(connectionId),
+        correlationId: input.correlationId,
+        ok: true, updateOk: true, restoreOk: true,
+        outcome: 'updated' as const,
+        exitCode: 0,
+        receipt: {
+          correlationId: input.correlationId,
+          outcome: 'updated',
+          startedAt: NOW_ISO,
+          finishedAt: NOW_ISO,
+          preSha: ADMITTED_SHA,
+          postSha: TARGET_SHA,
+          requestedSha: TARGET_SHA
+        },
+        scopes: []
+      })
+    })
+  }
+  // The promotion sweep must revalidate exactly the settled wave and its
+  // immediate successor, as the production evidence adapter does.
+  dependencies.evidence = {
+    async sweep(state: { id: string; revision: number; queueGeneration: number; currentWave: number; attempts: Record<string, { installId: string; installationFingerprint: string; sourceFingerprint: string; reviewedSource: ReviewedSourceBinding; wave: number; excluded?: boolean }> }) {
+      const attempts = Object.values(state.attempts).filter(attempt => !attempt.excluded)
+      const nextWave = Math.min(...attempts.filter(attempt => attempt.wave > state.currentWave).map(attempt => attempt.wave))
+      const expected = attempts.filter(attempt => attempt.wave === state.currentWave || attempt.wave === nextWave)
+
+      return {
+        rolloutId: state.id,
+        revision: state.revision,
+        queueGeneration: state.queueGeneration,
+        processGeneration: 1,
+        completedMono: NOW_MONO,
+        priorWaveClear: true,
+        nextAdmissionInstallIds: attempts.filter(attempt => attempt.wave === nextWave).map(attempt => attempt.installId).sort(),
+        valid: true,
+        reason: null,
+        admissions: expected.map(attempt => ({
+          installId: attempt.installId,
+          installationFingerprint: attempt.installationFingerprint,
+          sourceFingerprint: attempt.sourceFingerprint,
+          reviewedSource: attempt.reviewedSource,
+          observationGeneration: 1,
+          observedAt: NOW_ISO
+        }))
+      }
+    }
+  }
+
+  try {
+    const provider = createManagedRolloutProvider(dependencies)
+    await provider.resolveTarget({ connectionIds: [CONNECTION_ID, SECOND_CONNECTION_ID, THIRD_CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null })
+
+    const preflight = await provider.preflight({
+      inventoryRevision: INVENTORY.inventoryRevision,
+      targetResolutionId: RESOLUTION.id,
+      waves: plan.waves,
+      concurrency: 1,
+      promotionPolicy: 'auto-if-healthy',
+      retryOf: null
+    }) as { token: string; requestId: string }
+
+    const started = await provider.start(preflight) as { id: string }
+    await provider.waitForIdle()
+
+    // Wave 0 settled healthy and parks at awaiting-promotion: the canary still
+    // requires explicit manual approval and nothing has advanced yet.
+    const awaiting = dependencies.journal.read(started.id)
+
+    assert.equal(awaiting.snapshot.phase, 'awaiting-promotion')
+    assert.equal(awaiting.snapshot.canaryApproved, false)
+    assert.deepEqual(awaiting.events.map(item => item.kind).filter(kind => kind === 'promoted' || kind === 'auto-promoted'), [])
+
+    const promoted = await provider.command({
+      id: started.id, expectedRevision: awaiting.snapshot.revision,
+      requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', action: 'promote', kind: 'promote',
+      installId: null, reason: null, promotionPolicy: null
+    } as any) as Record<string, unknown>
+
+    assert.equal(promoted.ok, true)
+    await provider.waitForIdle()
+
+    // Once the canary was approved manually, the runner promoted the remaining
+    // waves itself from recorded evidence: the auto-after-canary contract has a
+    // live driver, and the rollout completes without a second operator command.
+    const settled = dependencies.journal.read(started.id)
+
+    assert.equal(settled.snapshot.phase, 'completed', JSON.stringify(settled.events.map(item => item.kind)))
+    const kinds = settled.events.map(item => item.kind)
+
+    assert.equal(kinds.filter(kind => kind === 'promoted').length, 1)
+    assert.equal(kinds.filter(kind => kind === 'auto-promoted').length, 1)
+
+    for (const attempt of settled.snapshot.attempts as any[]) {
+      assert.equal(attempt.phase, 'updated')
+    }
+
+    // The remote reported the pinned request, so the projection records it.
+    const third = (settled.snapshot.attempts as any[]).find(attempt => attempt.identity.installId === THIRD_INSTALL_ID)
+
+    assert.equal(third.receipt.requestedSha, TARGET_SHA)
   } finally {
     fs.rmSync(journalDirectory, { recursive: true, force: true })
   }

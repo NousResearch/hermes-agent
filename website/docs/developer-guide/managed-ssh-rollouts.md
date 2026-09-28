@@ -169,10 +169,19 @@ source binding.
 ## Recheck, recover, and unknown state
 
 A remote mutation can be authorized before the process terminates or its receipt
-is observed. The state machine therefore refuses to guess after a restart.
-`restart` enters `reconciling` and sets `continuationRequired`. An authorized or
-observed attempt that cannot be conclusively settled is reconciled to
-`unverified`, and the rollout enters `attention-required`.
+is observed. The state machine therefore refuses to guess after a restart. The
+reducer's `restart` edge enters `reconciling` and sets `continuationRequired`,
+and its `reconcile-unknown` edge turns an authorized or observed attempt into
+`unverified` with the rollout in `attention-required`.
+
+Live hydration follows the same refusal without guessing. When a restart reopens
+a durable record, the provider restores the persisted state directly with
+`continuationRequired` set: a record whose attempts include an unverified,
+recovery-required, failed, or refused attempt returns as `attention-required`,
+and an otherwise running record returns as `paused`. It never replays the
+reducer's `reconciling` phase, and it never redispatches the attempt —
+conclusive settlement stays required. A `restart-reconcile` event is persisted
+whenever the hydrated state differs from the persisted snapshot.
 
 **Unknown is neither success nor failure.** It is a durable admission that the
 last launch has no conclusive settlement. It must not be redispatched merely
@@ -187,9 +196,12 @@ because the process restarted.
 `reprobe` is admissible only for authorized, observed, unverified, or
 recovery-required attempts. Its result must carry the attempt's exact correlation
 ID. A non-terminal result deliberately leaves the state unchanged. `recover` is
-admissible only for unverified or recovery-required attempts; a mismatched
+admissible for every attempt that can still carry an unresolved obligation —
+unverified and recovery-required, plus settled failed, refused, updated, and
+already-current attempts whose fence still needs proved clearance. A mismatched
 correlation or unproved clearance is refused. Recovery does not mark an update
-successful and does not issue a new launch capability.
+successful, does not relabel a failed/refused outcome, and does not issue a new
+launch capability.
 
 For the single-install service, durable recovery reopens the transport, waits
 for the required restore clearance, closes the transport, and restores each
@@ -214,8 +226,12 @@ Promotion is also evidence-gated. A healthy target must have a fresh observation
 for the exact sweep, the admitted SHA, complete and ready scopes, clear update
 marker, clear recovery state, verified process identity, and a correlated
 successful receipt whose requested and post-update SHAs equal the reviewed SHA.
-Prior waves are revalidated before promotion, and any fence or changed required
-scope set blocks promotion.
+The live sweep is bounded to the current and next wave: the 240-probe budget is
+a deliberate bound, not a claim that every earlier wave is re-probed. Earlier
+waves are revalidated against their recorded settlement evidence — each
+attempt's persisted receipt correlation, post-update SHA, health, and scope
+proof must still match the in-memory attempt — and any unresolved fence or
+changed required scope set blocks promotion.
 
 ## Current support limits
 

@@ -275,7 +275,7 @@ async function promotionFixture(
   vi.mocked(observeManagedRemoteUpdate).mockImplementation(async (_target, correlationId) => correlationId === currentCorrelation
     ? {
         marker: 'absent', launchIntent: 'absent',
-        receipt: { correlationId: currentCorrelation, outcome: 'updated', postSha: TARGET_SHA },
+        receipt: { correlationId: currentCorrelation, outcome: 'updated', postSha: TARGET_SHA, requestedSha: TARGET_SHA },
         coordinatorReady: { correlationId: currentCorrelation, pid: 1 }, exitCode: 0
       } as any
     : { marker: 'absent', launchIntent: 'absent', receipt: null, coordinatorReady: null, exitCode: 0 } as any)
@@ -385,7 +385,7 @@ describe('managed rollout main integration', () => {
       marker: correlationId === NEXT_CORRELATION_ID ? 'live' : 'absent',
       launchIntent: 'absent',
       receipt: correlationId === CORRELATION_ID
-        ? { correlationId, outcome: 'updated', postSha: TARGET_SHA } : null,
+        ? { correlationId, outcome: 'updated', postSha: TARGET_SHA, requestedSha: TARGET_SHA } : null,
       coordinatorReady: correlationId === CORRELATION_ID ? { correlationId, pid: 1 } : null,
       exitCode: 0
     } as any))
@@ -435,7 +435,7 @@ describe('managed rollout main integration', () => {
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent',
       launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA },
+      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA },
       coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 },
       exitCode: 0
     } as any)
@@ -469,7 +469,7 @@ describe('managed rollout main integration', () => {
 
   test('normal post-launch observation recognizes the updater durable success receipt', async () => {
     const { integration, authorization } = await reprobeFixture()
-    const receipt = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA }
+    const receipt = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent', launchIntent: 'absent', receipt,
       coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
@@ -490,7 +490,7 @@ describe('managed rollout main integration', () => {
     const { integration, authorization } = await reprobeFixture(TARGET_SHA, { readRecoveryRecord: () => null }, [], admittedSha)
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent', launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA },
+      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA },
       coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
     } as any)
 
@@ -503,7 +503,7 @@ describe('managed rollout main integration', () => {
   test('normal settlement refuses a success receipt when the selected checkout moved afterward', async () => {
     const movedHead = 'd'.repeat(40)
     const { integration, authorization } = await reprobeFixture(movedHead)
-    const receipt = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA }
+    const receipt = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent', launchIntent: 'absent', receipt,
       coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
@@ -529,7 +529,7 @@ describe('managed rollout main integration', () => {
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent',
       launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA },
+      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA, requestedSha: TARGET_SHA },
       coordinatorReady: _reason === 'coordinator dependency has no readiness proof'
         ? null : { correlationId: CORRELATION_ID, pid: 1 }
     } as any)
@@ -546,7 +546,7 @@ describe('managed rollout main integration', () => {
     const missing = { ...authorization, rolloutId: '99999999-9999-4999-8999-999999999999' }
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent', launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA },
+      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA, requestedSha: TARGET_SHA },
       coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
     } as any)
 
@@ -559,7 +559,7 @@ describe('managed rollout main integration', () => {
     const { integration, authorization } = await reprobeFixture()
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent', launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'already-current', postSha: 'd'.repeat(40) },
+      receipt: { correlationId: CORRELATION_ID, outcome: 'already-current', postSha: 'd'.repeat(40), requestedSha: 'd'.repeat(40) },
       coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
     } as any)
 
@@ -574,7 +574,7 @@ describe('managed rollout main integration', () => {
     ssh.exec.mockImplementation(command => command.includes('if [ -f') ? Promise.resolve(NEXT_INSTALL_ID) : originalExec(command))
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent', launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA },
+      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA, requestedSha: TARGET_SHA },
       coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
     } as any)
 
@@ -609,7 +609,7 @@ describe('managed rollout main integration', () => {
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent',
       launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA }
+      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
     } as any)
 
     await expect((integration.observe as any).recover({
@@ -636,7 +636,7 @@ describe('managed rollout main integration', () => {
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
       marker: 'absent',
       launchIntent: 'absent',
-      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA }
+      receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
     } as any)
 
     await expect((integration.observe as any).recover({

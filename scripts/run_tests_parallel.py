@@ -1390,7 +1390,13 @@ def main() -> int:
         f", {files_crashed} file{'s' if files_crashed != 1 else ''} CRASHED"
         if files_crashed else ""
     )
-    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{crashed_note}{skipped_note} ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
+    # A failed or crashed file did not complete its verification: a file that
+    # was SIGKILLed on timeout never executed its remaining tests, yet the
+    # discovered-count counter still advances past it. Claiming "100%
+    # complete" on that run reads green to a parser and was already misread as
+    # a successful verification once; say INCOMPLETE instead.
+    pct_note = f"{pct:.0f}% complete" if not fail_count and not files_crashed else "INCOMPLETE"
+    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{crashed_note}{skipped_note} ({pct_note}) in {elapsed:.1f}s ({args.jobs} workers) ===")
 
     # Host-OS gating note: tests marked for another OS were skipped by the
     # conftest hook, not run. Say so explicitly — a green local run on Linux

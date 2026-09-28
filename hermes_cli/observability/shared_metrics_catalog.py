@@ -101,6 +101,16 @@ def user_named_model_providers() -> frozenset[str]:
     ) | {CUSTOM}
 
 
+@functools.cache
+def custom_provider_aliases() -> frozenset[str]:
+    """Provider ids Hermes routes through the generic ``custom`` provider (``ollama``, ``vllm``,
+    ``llamacpp``...): shipped names, but the server and its model ids are the user's own."""
+    from hermes_cli import auth, models, providers
+
+    tables = (providers.ALIASES, getattr(auth, "_PROVIDER_ALIASES", {}), getattr(models, "_PROVIDER_ALIASES", {}))
+    return frozenset(alias for table in tables for alias, canon in table.items() if canon == CUSTOM)
+
+
 # ---- v4 gateway ----
 @functools.cache
 def bundled_platform_names() -> frozenset[str]:
@@ -229,13 +239,14 @@ def aux_task_metric_name(raw: object) -> str:
 
 
 def provider_metric_name(raw: object) -> str:
-    """A shipped provider id; user-named providers (``custom:<name>``, unknown ids) read ``custom``."""
+    """A shipped provider id; user-named providers (``custom:<name>``, unknown ids) and the local
+    server aliases of ``custom`` read ``custom``."""
     from .shared_metrics_contract import PROVIDER_IDENTIFIER_MAX_LENGTH, _metric_identifier
 
     name = _metric_identifier(raw, max_length=PROVIDER_IDENTIFIER_MAX_LENGTH)
     if name == "unknown":
         return name
-    if name.startswith(CUSTOM):
+    if name.startswith(CUSTOM) or name in _safe(custom_provider_aliases):
         return CUSTOM
     return name if name in _safe(provider_names) or _models_dev_provider(name) else CUSTOM
 
@@ -253,13 +264,16 @@ def _models_dev_provider(name: str) -> bool:
 
 def model_metric_name(raw: object, provider: str, *, max_length: int) -> str:
     """The model id for a shipped remote provider; ``custom`` when the user names it (custom
-    endpoint, loopback server) or it looks like a filesystem path or URL."""
+    endpoint, loopback server), the provider is unknown (nothing proves the id is public), or it
+    looks like a filesystem path or URL."""
     from .shared_metrics_contract import _metric_identifier
 
     if provider in _safe(user_named_model_providers):
         return CUSTOM
     model = _metric_identifier(raw, max_length=max_length)
-    if "://" in model or ":/" in model or model.endswith((".gguf", ".bin", ".safetensors")):
+    if model == "unknown":
+        return model
+    if provider == "unknown" or "://" in model or ":/" in model or model.endswith((".gguf", ".bin", ".safetensors")):
         return CUSTOM
     return model
 

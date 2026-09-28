@@ -62,6 +62,45 @@ def test_reaction_to_encrypted_split_final_resumes_after_restart(
             .decode(errors="replace")[-6000:]
         )
 
+    def failure_details() -> str:
+        code = (
+            "import json; from pathlib import Path; "
+            "from reaction_followup_state import failure_state; "
+            f"print(json.dumps(failure_state(Path('/opt/data'), {live_room.room_id!r})))"
+        )
+        result = gateway.container.get_wrapped_container().exec_run(
+            ["/opt/hermes/.venv/bin/python", "-c", code],
+            environment={"PYTHONPATH": "/matrix_live"},
+        )
+        requests = [
+            {
+                "model": request.get("model"),
+                "messages": [
+                    {
+                        "role": message.get("role"),
+                        "content": str(message.get("content", ""))[:4000],
+                        "tool_calls": message.get("tool_calls"),
+                        "tool_call_id": message.get("tool_call_id"),
+                    }
+                    for message in request["messages"][-24:]
+                ],
+            }
+            for request in gateway.model.main_requests()[-12:]
+        ]
+        logs = "\n".join(
+            f"{path.name}:\n{path.read_text(errors='replace')[-131072:]}"
+            for path in sorted((gateway.home / "logs").glob("gateway.log*"))[-2:]
+        )
+        details = (
+            f"Model requests ({len(gateway.model.main_requests())}):\n"
+            f"{json.dumps(requests)}\nPersisted state (exit {result.exit_code}):\n"
+            f"{result.output.decode(errors='replace')[-65536:]}\n"
+            f"Gateway file logs:\n{logs}\nGateway container logs:\n{gateway_logs()}"
+        )
+        for secret in (live_room.bot.access_token, live_room.observer.access_token):
+            details = details.replace(secret, "<redacted>")
+        return details
+
     def exchange(**kwargs) -> dict:
         code = (
             "import asyncio, json; "
@@ -162,7 +201,12 @@ def test_reaction_to_encrypted_split_final_resumes_after_restart(
             in latest_user
         )
         assert f"reaction event {reacted['reaction_id']}" in latest_user
-    except AssertionError as exc:
-        raise AssertionError(f"{exc}\nGateway logs:\n{gateway_logs()}") from exc
+    except (Exception, pytest.fail.Exception) as exc:
+        details = failure_details()
+        record_property("failure_diagnostics", details)
+        message = str(exc)
+        for secret in (live_room.bot.access_token, live_room.observer.access_token):
+            message = message.replace(secret, "<redacted>")
+        raise AssertionError(f"{message}\n{details}") from exc
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))

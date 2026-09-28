@@ -14,16 +14,35 @@ from tests.fakes.fake_llm_provider import Text, ToolCall
 from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
 
 
+@pytest.mark.parametrize("unreadable", [None, "missing-key", "malformed"])
 def test_model_adds_and_removes_a_native_matrix_reaction(
     gateway: LiveGateway,
     live_room: LiveRoom,
     record_property: Callable[[str, object], None],
+    unreadable: str | None,
 ) -> None:
     async def exchange() -> None:
         client = live_room.observer.client(live_room.homeserver)
         seen: set[str] = set()
         try:
             await client.sync(timeout=0)
+            if unreadable is not None:
+                sent = await client.room_send(
+                    live_room.room_id,
+                    "m.room.encrypted",
+                    {
+                        "algorithm": (
+                            "m.megolm.v1.aes-sha2"
+                            if unreadable == "missing-key"
+                            else "example.unsupported"
+                        ),
+                        "ciphertext": "unreadable historical ciphertext",
+                        "sender_key": "unavailable-key",
+                        "device_id": live_room.observer.device_id,
+                        "session_id": "unavailable-session",
+                    },
+                )
+                assert isinstance(sent, RoomSendResponse), sent
 
             async def send_and_collect(
                 body: str, expected_reply: str, event_type: type | None = None

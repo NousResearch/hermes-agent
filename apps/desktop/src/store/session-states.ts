@@ -3021,9 +3021,21 @@ export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
   Boolean(active?.startsWith(TILE_PANE_PREFIX))
 )
 
-export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
-  active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
-)
+export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) => {
+  if (active?.startsWith(TILE_PANE_PREFIX)) {
+    return active.slice(TILE_PANE_PREFIX.length)
+  }
+
+  // A contributed workspace tab is not the route-driven primary chat. The
+  // primary selection remains cached behind it, but must not hold session
+  // focus: returning to a retained Bot Chat tile needs a fresh focus edge
+  // (and a transcript refresh before acknowledging its unread marker).
+  if (active?.startsWith('plugin-workspace:')) {
+    return null
+  }
+
+  return selected
+})
 
 /** Every session currently OPEN as a surface: the primary's selection plus
  *  every tile's stored id. The sidebar highlights all of them (the focused one

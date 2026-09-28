@@ -105,6 +105,19 @@ describe('focusing a saved Bot Chat requires a visible pane', () => {
     expect($unreadFinishedMarkers.get().default).toContain('canonical-chat')
   })
 
+  it('leaves and re-enters a retained bot tile across a group workspace tab', () => {
+    const { states, tree } = ctx
+    const groupPane = 'plugin-workspace:hermes-bots:group:uat-room'
+    tree.$layoutTree.set(model.group(['workspace', paneId, groupPane], { active: paneId, id: 'main' }))
+    tree.$activeTreeGroup.set('main')
+    session.$selectedStoredSessionId.set('canonical-chat')
+    expect(states.$focusedStoredSessionId.get()).toBe('canonical-chat')
+    tree.activateTreePane('main', groupPane)
+    expect(states.$focusedStoredSessionId.get()).toBeNull()
+    tree.activateTreePane('main', paneId)
+    expect(states.$focusedStoredSessionId.get()).toBe('canonical-chat')
+  })
+
   it('reports a miss through both helpers if the layout cannot place the saved tab', () => {
     const { scope, session, states, tree } = ctx
     tree.$layoutTree.set(null)

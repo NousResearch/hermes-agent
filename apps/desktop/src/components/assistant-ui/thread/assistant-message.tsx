@@ -840,25 +840,28 @@ const ErrorRecoveryActions: FC = () => {
   // composer scope), not the pooled backend's launch profile (#119080).
   const ownerProfile = useComposerScope().profile || gatewayProfile
 
-  const openLocalDir = useCallback(async (resolve: (logsRoot: string) => string, failedMessage: string) => {
-    try {
-      const root = await window.hermesDesktop?.logsRoot?.(normalizeProfileKey(ownerProfile))
+  const openLocalDir = useCallback(
+    async (resolve: (logsRoot: string) => string, failedMessage: string) => {
+      try {
+        const root = await window.hermesDesktop?.logsRoot?.(normalizeProfileKey(ownerProfile))
 
-      if (!root) {
-        notifyError(new Error('logs root unavailable'), failedMessage)
+        if (!root) {
+          notifyError(new Error('logs root unavailable'), failedMessage)
 
-        return
+          return
+        }
+
+        const result = await window.hermesDesktop?.openDir?.(resolve(root))
+
+        if (result && !result.ok) {
+          notifyError(new Error(result.error || 'open failed'), failedMessage)
+        }
+      } catch (error) {
+        notifyError(error, failedMessage)
       }
-
-      const result = await window.hermesDesktop?.openDir?.(resolve(root))
-
-      if (result && !result.ok) {
-        notifyError(new Error(result.error || 'open failed'), failedMessage)
-      }
-    } catch (error) {
-      notifyError(error, failedMessage)
-    }
-  }, [ownerProfile])
+    },
+    [ownerProfile]
+  )
 
   const openLogs = useCallback(
     () => openLocalDir(root => root, copy.errorOpenLogsFailed),

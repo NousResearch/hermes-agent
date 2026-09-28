@@ -1,0 +1,15 @@
+name: minimax-search
+repo: https://github.com/pdonizete/hermes-minimax-search
+sha: 3e92976b5adad8a376e5a580d426404dba58da7f
+description: MiniMax web search via the Token Plan API — keyed, no CAPTCHA, no rate limits
+maintainer: pdonizete
+tier: community
+category: web
+docs_url: https://github.com/pdonizete/hermes-minimax-search#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MINIMAX_API_KEY

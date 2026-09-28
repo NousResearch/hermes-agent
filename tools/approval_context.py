@@ -73,7 +73,10 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
-    """Bind the active approval session key to the current context."""
+    """Bind the active approval session key without allowing nested replacement."""
+    current = _approval_session_key.get()
+    if current and session_key and current != session_key:
+        raise ValueError("approval session key cannot replace ambient approval authority")
     return _approval_session_key.set(session_key or "")
 
 
@@ -100,9 +103,15 @@ def reset_current_observability_context(tokens: _Tokens) -> None:
 
 
 def get_current_session_key(default: str = "default") -> str:
-    """Return the active session key: approval contextvar → session_context → os.environ."""
+    """Return the active approval key; gateway authority never falls back to process env."""
     if session_key := _approval_session_key.get():
         return session_key
+    try:
+        from gateway.platform_context import get_authenticated_platform_context
+        if get_authenticated_platform_context() is not None:
+            return default
+    except Exception:
+        pass
     from gateway.session_context import get_session_env
     return get_session_env("HERMES_SESSION_KEY", default)
 
@@ -112,6 +121,17 @@ def _session_env(name: str) -> str:
     unrelated gateway/API/TUI turns in the same process; process env is the
     fallback for CLI tests and older entrypoints."""
     try:
+        from gateway.platform_context import get_authenticated_platform_context
+        platform_context = get_authenticated_platform_context()
+        if platform_context is not None:
+            context_values = {
+                "HERMES_SESSION_PLATFORM": platform_context.platform,
+                "HERMES_SESSION_USER_ID": platform_context.user_id,
+                "HERMES_SESSION_CHAT_ID": platform_context.chat_id,
+                "HERMES_SESSION_THREAD_ID": platform_context.thread_id or "",
+            }
+            if name in context_values:
+                return context_values[name]
         from gateway.session_context import get_session_env
         return get_session_env(name, "") or ""
     except Exception:

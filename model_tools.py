@@ -894,12 +894,8 @@ def handle_function_call(
     it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
     bridge catalog to this session's grant (None = unrestricted).
     """
-    if authenticated_platform_context is None:
-        try:
-            from gateway.platform_context import get_authenticated_platform_context
-            authenticated_platform_context = get_authenticated_platform_context()
-        except Exception:
-            authenticated_platform_context = None
+    from gateway.platform_context import resolve_authenticated_platform_context
+    authenticated_platform_context = resolve_authenticated_platform_context(authenticated_platform_context)
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}

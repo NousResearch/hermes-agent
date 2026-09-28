@@ -29,8 +29,33 @@ def get_authenticated_platform_context() -> AuthenticatedPlatformContext | None:
     return _authenticated_platform_context.get()
 
 
+def resolve_authenticated_platform_context(
+    explicit: AuthenticatedPlatformContext | None = None,
+) -> AuthenticatedPlatformContext | None:
+    """Resolve the gateway-owned context without allowing explicit callers to forge it.
+
+    The ambient ContextVar is the authority.  An explicit value is accepted only as
+    a compatibility assertion from a gateway-owned caller and must exactly match an
+    already-bound ambient value; it can never create or replace authority.
+    """
+    ambient = get_authenticated_platform_context()
+    if explicit is not None:
+        if ambient is None:
+            raise ValueError("explicit authenticated platform context requires ambient gateway context")
+        if explicit != ambient:
+            raise ValueError("explicit authenticated platform context cannot replace ambient gateway context")
+    return ambient
+
+
 def set_authenticated_platform_context(context: AuthenticatedPlatformContext | None) -> Token:
-    """Bind *context* and return a token for the caller's ``finally`` block."""
+    """Bind *context* and return a token for the gateway scope's ``finally`` block.
+
+    A nested/plugin caller may not replace or clear an already-bound gateway
+    identity.  Normal cleanup uses the token returned here through ``reset``.
+    """
+    current = get_authenticated_platform_context()
+    if current is not None and context != current:
+        raise ValueError("authenticated platform context cannot replace ambient gateway context")
     return _authenticated_platform_context.set(context)
 
 

@@ -11,6 +11,8 @@ from tools.connectors.gateway.merge import assemble_results, fill_remote_failure
 def dispatch_connector_call(name, arguments, tool_call_id, *, authenticated_platform_context=None):
     from tools.connectors.gateway.bridge import run_remote
 
+    from gateway.platform_context import resolve_authenticated_platform_context
+    authenticated_platform_context = resolve_authenticated_platform_context(authenticated_platform_context)
     partition = partition_calls([{"name": name, "arguments": arguments}])
     entries = run_remote(partition.remote, tool_call_id, availability=None, client_factory=None)
     entry = entries[0]

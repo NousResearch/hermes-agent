@@ -901,14 +901,10 @@ class ToolRegistry:
             # Gateway-owned provenance is carried by a ContextVar, never by model-controlled args.
             # Resolve it at the dispatch boundary so direct registry callers, recursive tool_call paths,
             # connector re-entry, and async handlers all receive the same trusted identity.
-            if "authenticated_platform_context" not in kwargs:
-                try:
-                    from gateway.platform_context import get_authenticated_platform_context
-                    context = get_authenticated_platform_context()
-                except Exception:
-                    context = None
-                if context is not None:
-                    kwargs["authenticated_platform_context"] = context
+            from gateway.platform_context import resolve_authenticated_platform_context
+            context = resolve_authenticated_platform_context(kwargs.pop("authenticated_platform_context", None))
+            if context is not None:
+                kwargs["authenticated_platform_context"] = context
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
             # plugin handler is not broken by every field the dispatcher injects (#68318).

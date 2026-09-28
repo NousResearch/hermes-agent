@@ -45,18 +45,55 @@ def test_context_is_internal_and_model_args_cannot_override_it(registered_tool):
     trusted = AuthenticatedPlatformContext(
         platform="telegram", account_id="bot-1", user_id="user-1", chat_id="chat-1"
     )
-    result = handle_function_call(
-        "_test_authenticated_platform_context",
-        {"authenticated_platform_context": {"platform": "forged"}},
-        authenticated_platform_context=trusted,
-        skip_pre_tool_call_hook=True,
-        skip_tool_request_middleware=True,
-        skip_tool_execution_middleware=True,
-    )
+    with authenticated_platform_context_scope(trusted):
+        result = handle_function_call(
+            "_test_authenticated_platform_context",
+            {"authenticated_platform_context": {"platform": "forged"}},
+            authenticated_platform_context=trusted,
+            skip_pre_tool_call_hook=True,
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+        )
 
     assert json.loads(result) == {"ok": True}
     assert seen["args"]["authenticated_platform_context"]["platform"] == "forged"
     assert seen["context"] is trusted
+
+
+def test_forged_explicit_context_is_rejected_when_ambient_context_is_bound(registered_tool):
+    trusted = AuthenticatedPlatformContext("telegram", "bot-1", "user-1", "chat-1")
+    forged = AuthenticatedPlatformContext("telegram", "bot-1", "attacker", "chat-1")
+
+    @registered_tool
+    def handler(args, *, authenticated_platform_context):
+        return json.dumps({"user_id": authenticated_platform_context.user_id})
+
+    with authenticated_platform_context_scope(trusted):
+        with pytest.raises(ValueError, match="cannot replace ambient"):
+            handle_function_call(
+                "_test_authenticated_platform_context", {},
+                authenticated_platform_context=forged,
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
+
+
+def test_explicit_context_cannot_create_authority_without_ambient_context(registered_tool):
+    forged = AuthenticatedPlatformContext("telegram", "bot-1", "attacker", "chat-1")
+
+    @registered_tool
+    def handler(args, *, authenticated_platform_context):
+        return json.dumps({"user_id": authenticated_platform_context.user_id})
+
+    with pytest.raises(ValueError, match="requires ambient"):
+        handle_function_call(
+            "_test_authenticated_platform_context", {},
+            authenticated_platform_context=forged,
+            skip_pre_tool_call_hook=True,
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+        )
 
 
 def test_handlers_without_context_kwarg_still_work(registered_tool):
@@ -64,16 +101,18 @@ def test_handlers_without_context_kwarg_still_work(registered_tool):
     def handler(args):
         return json.dumps({"value": args["value"]})
 
-    result = handle_function_call(
-        "_test_authenticated_platform_context",
-        {"value": "ok"},
-        authenticated_platform_context=AuthenticatedPlatformContext(
-            platform="telegram", account_id="bot-1", user_id="user-1", chat_id="chat-1"
-        ),
-        skip_pre_tool_call_hook=True,
-        skip_tool_request_middleware=True,
-        skip_tool_execution_middleware=True,
+    trusted = AuthenticatedPlatformContext(
+        platform="telegram", account_id="bot-1", user_id="user-1", chat_id="chat-1"
     )
+    with authenticated_platform_context_scope(trusted):
+        result = handle_function_call(
+            "_test_authenticated_platform_context",
+            {"value": "ok"},
+            authenticated_platform_context=trusted,
+            skip_pre_tool_call_hook=True,
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+        )
 
     assert json.loads(result) == {"value": "ok"}
 
@@ -85,6 +124,16 @@ def test_context_is_immutable():
 
     with pytest.raises(AttributeError):
         context.user_id = "forged"
+
+
+def test_nested_code_cannot_replace_ambient_context():
+    trusted = AuthenticatedPlatformContext("telegram", "bot-1", "user-1", "chat-1")
+    forged = AuthenticatedPlatformContext("telegram", "bot-1", "attacker", "chat-1")
+    with authenticated_platform_context_scope(trusted):
+        with pytest.raises(ValueError, match="cannot replace ambient"):
+            from gateway.platform_context import set_authenticated_platform_context
+            set_authenticated_platform_context(forged)
+        assert get_authenticated_platform_context() is trusted
 
 
 def test_context_scope_resets_after_exception_and_does_not_use_model_args():
@@ -157,3 +206,25 @@ def test_tool_call_recursion_keeps_context_out_of_model_arguments(monkeypatch, r
         result = model_tools.handle_function_call("tool_call", {"calls": []})
     assert json.loads(result) == {"ok": True}
     assert seen == [({"value": "model"}, trusted)]
+
+
+def test_nested_dispatch_cannot_replace_ambient_context(registered_tool):
+    trusted = AuthenticatedPlatformContext("telegram", "bot-1", "user-1", "chat-1")
+    forged = AuthenticatedPlatformContext("telegram", "bot-1", "attacker", "chat-1")
+    seen = []
+
+    @registered_tool
+    def handler(args, *, authenticated_platform_context):
+        seen.append(authenticated_platform_context)
+        return json.dumps({"ok": True})
+
+    with authenticated_platform_context_scope(trusted):
+        with pytest.raises(ValueError, match="cannot replace ambient"):
+            handle_function_call(
+                "_test_authenticated_platform_context", {},
+                authenticated_platform_context=forged,
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
+    assert seen == []

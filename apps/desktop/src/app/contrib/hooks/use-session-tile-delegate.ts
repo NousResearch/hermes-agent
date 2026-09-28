@@ -433,6 +433,10 @@ export function useSessionTileDelegate({
           return readOnlyId
         }
 
+        if (refreshTranscript && !prefetch) {
+          throw new Error('Could not refresh the stored transcript')
+        }
+
         const resumed = outcome.resumed
 
         const runtimeId = resumed?.session_id

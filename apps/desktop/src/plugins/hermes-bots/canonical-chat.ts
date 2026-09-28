@@ -109,9 +109,8 @@ export function isCanonicalChatOnScreen(
 
 interface OpenStoredBotChatOptions {
   /** Background re-resume: thread refreshInPlace to host.openSession so the
-   *  refresh never navigates (issue 121874). Await the transcript refresh
-   *  only for explicit opens — a background wake resolves once the resume
-   *  is requested, never blocking on a cold backend. */
+   *  refresh never navigates (issue 121874). Both paths await a real transcript
+   *  read; only explicit opens request the foreground hydration overlay. */
   background?: boolean
 }
 

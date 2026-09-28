@@ -109,6 +109,18 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(requestGateway).not.toHaveBeenCalled()
   })
 
+  it('does not report a cold refresh as successful when only the runtime resumed', async () => {
+    setSessions([row({ id: 'cold-refresh', profile: 'ops' })])
+    vi.mocked(getLatestSessionMessages).mockRejectedValueOnce(new Error('REST unavailable'))
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({ session_id: 'cold-runtime' } as never)
+    const updateSessionState = vi.fn()
+    renderTile(vi.fn(), { updateSessionState })
+
+    await expect(sessionTileDelegate()!.resumeTile('cold-refresh', { refreshTranscript: true }))
+      .rejects.toThrow('Could not refresh the stored transcript')
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
   it('resolves and carries a default-profile session explicitly', async () => {
     setSessions([row({ id: 'stored-y', profile: 'default' })])
 

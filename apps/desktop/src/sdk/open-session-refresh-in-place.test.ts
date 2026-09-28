@@ -12,8 +12,8 @@
  * The refresh-only open may dial the owner backend and re-resume, but it must
  * not: call the core open (navigation / tile minting), publish the bots
  * workspace scope, or flip the all-profiles view. It refreshes through the
- * same levers the core uses for its own staleness probe — the tile delegate's
- * `resumeTile(refreshTranscript)` or the armed `requestSessionResume`.
+ * shared cache's `resumeTile(refreshTranscript)` for either a tile or the
+ * primary chat. Queuing a route resume is not proof of a successful read.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -188,17 +188,29 @@ describe('host.openSession refreshInPlace — background re-resume never navigat
     expect(setShowAllProfiles).not.toHaveBeenCalled()
   })
 
-  it('arms the explicit-resume request instead of navigating when the chat holds main', async () => {
-    // /:bot-chat-ops is the route: the refresh must arm the same
-    // explicit-request lever the core's staleness probe uses — consumed only
-    // while the route points at the session, so it can never navigate.
+  it('awaits the main chat transcript refresh and propagates failure without navigating', async () => {
     const { $selectedStoredSessionId } = await import('@/store/session')
-
+    const resumeTile = vi.fn().mockRejectedValueOnce(new Error('stored read failed'))
+    vi.mocked(sessionTileDelegate).mockReturnValue({ resumeTile } as never)
     setMockAtom($selectedStoredSessionId, 'bot-chat-ops')
 
-    await host.openSession('bot-chat-ops', { profile: 'ops', refreshInPlace: true })
+    await expect(host.openSession('bot-chat-ops', { profile: 'ops', refreshInPlace: true }))
+      .rejects.toThrow('stored read failed')
 
-    expect(requestSessionResume).toHaveBeenCalledWith('bot-chat-ops', undefined)
+    let complete!: (runtime: string) => void
+    resumeTile.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+    let settled = false
+
+    const refresh = host.openSession('bot-chat-ops', { profile: 'ops', refreshInPlace: true })
+      .then(() => { settled = true })
+
+    await vi.waitFor(() => expect(resumeTile).toHaveBeenCalledTimes(2))
+    expect(settled).toBe(false)
+    complete('runtime-ops')
+    await refresh
+    expect(settled).toBe(true)
+    expect(resumeTile).toHaveBeenLastCalledWith('bot-chat-ops', { refreshTranscript: true })
+    expect(requestSessionResume).not.toHaveBeenCalled()
     expect(openSessionCore).not.toHaveBeenCalled()
   })
 

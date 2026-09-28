@@ -104,7 +104,7 @@ _EXACT_HANDLERS = {
 def _queue(mgr, arg, *, render, progress=None):
     """``/goal queue`` lists; ``/goal queue <objective>`` queues behind the active goal (or, when no
     goal is active, sets it directly — queueing with nothing running is just starting)."""
-    if not arg:
+    if not arg or arg.lower() == "list":
         return GoalCommandResult(mgr.render_queue())
     if not mgr.has_goal():
         return _set(mgr, arg, drafting=False, last_user_message=None, render=render, progress=progress)

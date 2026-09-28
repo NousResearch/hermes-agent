@@ -528,6 +528,23 @@ def test_python_package_url_carries_release_tag():
         pass
 
 
+def test_git_package_url_omits_first_build_revision():
+    from pm.registry import get_package
+
+    git = get_package("git")
+    # The first build of a tag ships as PortableGit-<tag> (no ".1" — a
+    # "PortableGit-2.56.0.1-..." URL 404s); later builds keep the revision.
+    assert git.fetch_url("2.56.0+1", "win32-x64").endswith(
+        "/v2.56.0.windows.1/PortableGit-2.56.0-64-bit.7z.exe"
+    )
+    assert git.fetch_url("2.55.0+5", "win32-x64").endswith(
+        "/v2.55.0.windows.5/PortableGit-2.55.0.5-64-bit.7z.exe"
+    )
+    assert git.fetch_url("2.56.0+1", "win32-arm64").endswith(
+        "/v2.56.0.windows.1/PortableGit-2.56.0-arm64.7z.exe"
+    )
+
+
 @pytest.mark.platforms("macos")
 def test_python_package_stably_signs_macos_runtime(tmp_path):
     import shutil

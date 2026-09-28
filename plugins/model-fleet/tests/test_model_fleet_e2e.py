@@ -218,3 +218,258 @@ def test_plugin_never_hardcodes_a_home(mod):
     src = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
     for bad in ("/root/.hermes", '"~/.hermes"'):
         assert bad not in src, f"hardcoded home in plugin source: {bad}"
+
+
+# Run the parameter matrix within each contract to retain two RED test results.
+_AUXILIARY_CASES = (
+    ("all", {}, {"default", "alpha", "beta", "gamma", "empty"}, False, None),
+    ("block-wins", {"profile_allowlist": ["alpha", "beta", "empty"],
+                    "profile_blocklist": ["beta"]}, {"default", "alpha", "empty"}, True, None),
+    ("caller-excluded", {"profile_allowlist": ["beta", "empty"],
+                         "profile_blocklist": ["beta"]}, {"default", "empty"}, False, None),
+    ("profiles-off", {"include_profiles": False}, {"default"}, True, None),
+    ("resolution-refused", {}, {"default", "alpha", "beta", "gamma", "empty"}, True, "beta"),
+)
+
+
+def _auxiliary_installations(base: Path, settings: dict) -> list[dict[str, Path]]:
+    """Create independent installs with eligible and deliberately unpinned tasks."""
+    import yaml
+    from hermes_cli.config import load_config_readonly
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    installations = []
+    for name in ("a", "b"):
+        root = base / name
+        homes = {"default": root}
+        homes.update({label: root / "profiles" / label
+                      for label in ("alpha", "beta", "gamma", "empty")})
+        for label, home in homes.items():
+            _write_config(home, "nous", f"{name}-{label}-original")
+            path = home / "config.yaml"
+            cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+            cfg["unrelated"] = {"installation": name, "label": label}
+            cfg["plugins"] = {"entries": {"model-fleet": settings}}
+            if label != "empty":
+                cfg["auxiliary"] = {
+                    "pinned": {"provider": "old", "model": "old-model", "keep": True,
+                               "base_url": "https://synthetic.invalid",
+                               "api_key": "synthetic-test-value"},
+                    "unspecified": {"provider": "old", "keep": "unspecified"},
+                    "blank": {"model": "", "keep": "blank"},
+                    "scalar": "unchanged",
+                }
+            path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+            # Initialize normal home scaffolding before any invocation snapshot.
+            token = set_hermes_home_override(home)
+            try:
+                load_config_readonly()
+            finally:
+                reset_hermes_home_override(token)
+        installations.append(homes)
+    return installations
+
+
+@pytest.fixture
+def auxiliary_spies(mod, monkeypatch):
+    """Forward every observed write to the real persistence implementation."""
+    from unittest.mock import Mock
+
+    import utils
+    from hermes_cli import model_switch
+
+    spies = []
+    for owner, name in ((utils, "atomic_roundtrip_yaml_update"), (mod, "_backup"),
+                        (model_switch, "persist_model_selection")):
+        spy = Mock(wraps=getattr(owner, name))
+        monkeypatch.setattr(owner, name, spy)
+        spies.append(spy)
+    return spies
+
+
+def _auxiliary_outcomes(output: str) -> list[str]:
+    return [line.removeprefix("- ") for line in output.splitlines()
+            if line.removeprefix("- ").startswith("auxiliary")]
+
+
+def _check_auxiliary_outcomes(output, selected, verb, model, check, malformed=False):
+    from collections import Counter
+
+    outcomes = _auxiliary_outcomes(output)
+    check(Counter(line.split(":", 1)[0] for line in outcomes)
+          == Counter(f"auxiliary/{label}" for label in selected), "exact output labels")
+    for label in sorted(selected):
+        lines = [line for line in outcomes if line.startswith(f"auxiliary/{label}:")]
+        skipped = label == "empty" or (malformed and label == "beta")
+        expected = ("config unreadable" if malformed and label == "beta" else
+                    "no task declares a model" if label == "empty" else f"{verb} 1 task(s)")
+        check(len(lines) == 1 and expected in lines[0]
+              and ("SKIPPED" in lines[0] if skipped else f"anthropic/{model}" in lines[0]),
+              f"{label}: {expected} outcome")
+
+
+def test_auxiliary_named_caller_persists_selected_homes_once(
+        mod, tmp_path, monkeypatch, auxiliary_spies):
+    """A->B->A updates selected auxiliary pins with one pre-change backup per file.
+
+    Collect failures so every parameter and scope leg executes even on RED.
+    Only provider resolution is synthetic; scopes and persistence remain live.
+    """
+    from collections import Counter
+
+    import yaml
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_cli import model_switch
+    from hermes_constants import (get_hermes_home, reset_hermes_home_override,
+                                  set_hermes_home_override)
+
+    atomic, backup, persist = auxiliary_spies
+    failures, passed = [], Counter()
+
+    def check(condition, contract):
+        if condition:
+            passed[contract] += 1
+        else:
+            failures.append(f"{context}: {contract}")
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    multiplex_before = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        for case, overrides, selected, saved, refused in _AUXILIARY_CASES:
+            settings = dict(mod._SETTING_DEFAULTS, **overrides)
+            settings["include_auxiliary"] = saved
+            installations = _auxiliary_installations(tmp_path / case, settings)
+
+            def switch(*, raw_input, explicit_provider, **kwargs):
+                if Path(get_hermes_home()).name == refused:
+                    return model_switch.ModelSwitchResult(success=False,
+                                                          error_message="synthetic refusal")
+                return mod._switch_result(explicit_provider, raw_input)
+
+            monkeypatch.setattr(model_switch, "switch_model", switch)
+            for leg, index in enumerate((0, 1, 0)):
+                homes = installations[index]
+                caller = homes["alpha"]
+                model, context = f"{case}-leg-{leg}", f"{case}/{leg}"
+                stamp = f"phase1-{case}-{leg}"
+                monkeypatch.setattr(mod.time, "strftime", lambda *args, s=stamp: s)
+                before = {home / "config.yaml": (home / "config.yaml").read_bytes()
+                          for install in installations for home in install.values()}
+                for spy in auxiliary_spies:
+                    spy.reset_mock()
+                token = set_hermes_home_override(caller)
+                try:
+                    output = mod._apply_sync("anthropic", model, dry_run=False,
+                                             with_auxiliary=not saved)
+                    check(Path(get_hermes_home()) == caller, "scope restored")
+                finally:
+                    reset_hermes_home_override(token)
+                check(_read_model(caller) == ("anthropic", model), "active main model persisted")
+                writes = {Path(call.args[0]) for call in atomic.call_args_list}
+                if persist.called:
+                    writes.add(caller / "config.yaml")
+                counts = Counter(Path(call.args[0]) for call in backup.call_args_list)
+                check(counts == Counter({path: 1 for path in writes}), "one backup per written config")
+                check(counts[caller / "config.yaml"] == 1, "active backup once")
+                for path in writes:
+                    copies = list(path.parent.glob(f"config.yaml.bak-model-fleet-{stamp}"))
+                    check(len(copies) == 1 and copies[0].read_bytes() == before[path],
+                          "pre-change backup bytes")
+                targets = {Path(call.args[0]) for call in atomic.call_args_list
+                           if call.args[1].startswith("auxiliary.")}
+                check(targets == {homes[label] / "config.yaml" for label in selected - {"empty"}},
+                      "exact auxiliary target set")
+                for label, home in homes.items():
+                    path = home / "config.yaml"
+                    old, actual = yaml.safe_load(before[path]), yaml.safe_load(path.read_bytes())
+                    check(actual["unrelated"] == old["unrelated"]
+                          and actual["plugins"] == old["plugins"], "unrelated settings preserved")
+                    if label == "empty":
+                        check("auxiliary" not in actual, "no invented auxiliary")
+                    else:
+                        check(all(actual["auxiliary"][task] == old["auxiliary"][task]
+                                  for task in ("unspecified", "blank", "scalar")),
+                              "ineligible tasks preserved")
+                        expected = old["auxiliary"]
+                        if label in selected:
+                            expected["pinned"].update(provider="anthropic", model=model)
+                            expected["pinned"].pop("base_url", None)
+                            expected["pinned"].pop("api_key", None)
+                        check(actual["auxiliary"] == expected,
+                              f"{label}: eligible pins persisted" if label in selected else
+                              f"{label}: excluded auxiliary unchanged")
+                    if label not in selected and label != "alpha":
+                        check(path.read_bytes() == before[path], "excluded file byte-identical")
+                for home in installations[1 - index].values():
+                    path = home / "config.yaml"
+                    check(path.read_bytes() == before[path], "other install unchanged")
+                _check_auxiliary_outcomes(output, selected, "set", model, check)
+    finally:
+        set_multiplex_active(multiplex_before)
+    print("Passing contract checks:", dict(passed))
+    assert not failures, "\n".join(failures)
+
+
+def test_auxiliary_named_caller_preview_is_complete_and_write_free(
+        mod, tmp_path, monkeypatch, auxiliary_spies):
+    """Preview every selected label without writing, even after unreadable YAML."""
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_cli import model_switch
+    from hermes_constants import (get_hermes_home, reset_hermes_home_override,
+                                  set_hermes_home_override)
+
+    failures = []
+
+    def check(condition, contract):
+        if not condition:
+            failures.append(f"{case}/{leg}: {contract}")
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    monkeypatch.setattr(model_switch, "switch_model",
+                        lambda *, raw_input, explicit_provider, **kwargs:
+                        mod._switch_result(explicit_provider, raw_input))
+    multiplex_before = is_multiplex_active()
+    set_multiplex_active(True)
+    previews = 0
+    try:
+        for case, overrides, selected, _, _ in _AUXILIARY_CASES:
+            settings = dict(mod._SETTING_DEFAULTS, **overrides)
+            installations = _auxiliary_installations(tmp_path / case, settings)
+            for leg, index in enumerate((0, 1, 0)):
+                homes = installations[index]
+                # Keep malformed YAML out of unrelated profile model parsing.
+                malformed = case == "all" and leg == 2
+                if malformed:
+                    (homes["beta"] / "config.yaml").write_text("auxiliary: [\n", encoding="utf-8")
+                base = tmp_path / case
+                inventory = set(base.rglob("*"))
+                before = {path: path.read_bytes() for path in inventory if path.is_file()}
+                for spy in auxiliary_spies:
+                    spy.reset_mock()
+                token = set_hermes_home_override(homes["alpha"])
+                try:
+                    if malformed:
+                        lines, backups = mod._apply_auxiliary(
+                            "anthropic", "preview-model", settings, "preview", True)
+                        assert not backups
+                        output = "\n".join(lines)
+                    else:
+                        output = mod._apply_sync("anthropic", "preview-model",
+                                                 dry_run=True, with_auxiliary=True)
+                    assert Path(get_hermes_home()) == homes["alpha"]
+                finally:
+                    reset_hermes_home_override(token)
+                assert set(base.rglob("*")) == inventory
+                assert all(path.read_bytes() == data for path, data in before.items())
+                for spy in auxiliary_spies:
+                    assert spy.call_count == 0
+                previews += 1
+                _check_auxiliary_outcomes(output, selected, "would set", "preview-model",
+                                          check, malformed=malformed)
+    finally:
+        set_multiplex_active(multiplex_before)
+    print(f"{previews} previews passed byte, inventory, scope, and zero-write checks")
+    assert not failures, "\n".join(failures)

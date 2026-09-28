@@ -586,9 +586,18 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
         if not explicit and any(_read_marker_attempts(marker) >= _EARLY_CORE_INSTALL_MAX_ATTEMPTS for marker in markers):
             print("hermes: automatic dependency repair retry limit reached; run `hermes pm repair`", file=sys.stderr)
             return False
+        print("hermes: repairing the recorded dependency environment...", file=sys.stderr)
+        # ponytail: pre-increment, not post-failure — a SIGKILL (Android LMK,
+        # OOM killer) skips the handler below, so counting only on failure lets
+        # a kill reset the retry breaker forever (#123860). Counting up front
+        # is safe: success unlinks the markers, failure keeps the one count.
+        for marker in markers:
+            _count_failed_attempt(marker)
+        # Imported after the count, not before: a broken pm.recovery import (the install class this
+        # breaker exists for) used to jump straight to the handler below and skip the count, so
+        # every launch retried the same fatal import forever (#123860).
         from pm.recovery import repair_dependencies
 
-        print("hermes: repairing the recorded dependency environment...", file=sys.stderr)
         repair_dependencies(root)
         for marker in markers:
             marker.unlink(missing_ok=True)
@@ -596,8 +605,6 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
         print("hermes: dependency environment repaired", file=sys.stderr)
         return True
     except Exception as exc:
-        for marker in markers:
-            _count_failed_attempt(marker)
         print(f"hermes: dependency repair failed: {exc}; run `hermes pm repair`", file=sys.stderr)
         return False
     finally:

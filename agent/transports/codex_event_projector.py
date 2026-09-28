@@ -145,11 +145,19 @@ class CodexEventProjector:
         )
         return f"dyn_{tool}", tool, _dict_args(item.get("arguments")), content
 
+    @staticmethod
+    def _web_search_spec(item: dict) -> tuple[str, str, dict, str]:
+        # Codex ran the search itself; the result names it so a later non-Codex
+        # turn does not read this as a Hermes web_search call.
+        content = json.dumps({"provider": "codex", "status": item.get("status") or "completed"})
+        return "web_search", "web_search", {"query": item.get("query") or ""}, content
+
     _TOOL_PROJECTIONS: dict[str, Callable[[dict], tuple[str, str, dict, str]]] = {
         "commandExecution": _command_spec,
         "fileChange": _file_change_spec,
         "mcpToolCall": _mcp_tool_call_spec,
         "dynamicToolCall": _dynamic_tool_call_spec,
+        "webSearch": _web_search_spec,
     }
 
     @staticmethod

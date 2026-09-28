@@ -283,3 +283,63 @@ def test_generic_caller_verdicts_defer_to_the_recorded_failure_class(caplog, mon
         _emit_aborted_attempt_telemetry(agent, time.monotonic(), caller)
 
     assert _extract_telemetry(caplog)["failure_class"] == expected
+
+
+def test_in_place_commit_preserves_seeded_telemetry_fields(caplog):
+    """#118580: the memory-flush session-end inside the commit must not wipe attempt telemetry."""
+    import contextlib
+    import os
+    import tempfile
+    from pathlib import Path
+
+    from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
+
+    with tempfile.TemporaryDirectory() as tmp:
+        from hermes_state import SessionDB
+        from run_agent import AIAgent
+
+        db = SessionDB(db_path=Path(tmp) / "t.db")
+        sid = "20260920_234956_0c74e527"
+        db.create_session(sid, "cli", model="test/model")
+        for idx in range(8):
+            db.append_message(
+                session_id=sid, role="user" if idx % 2 == 0 else "assistant", content=f"msg {idx}",
+            )
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            agent = AIAgent(
+                api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
+                quiet_mode=True, session_db=db, session_id=sid,
+                skip_context_files=True, skip_memory=True,
+            )
+        agent.compression_in_place = True
+        agent._compression_feasibility_checked = True
+        messages = [
+            {"role": "user" if idx % 2 == 0 else "assistant",
+             "content": f"turn message {idx} padding " * 20}
+            for idx in range(30)
+        ]
+
+        def worker(fence):
+            return compress_context(
+                agent, messages, "system prompt",
+                approx_tokens=75_000, force=True, commit_fence=fence,
+            )
+
+        with patch.object(agent.context_compressor, "_generate_summary", return_value="SUMMARY"):
+            with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+                run_compress_context_with_progress_timeout(
+                    worker=worker, messages=messages, system_prompt_fallback="system prompt",
+                    idle_timeout_seconds=30, total_ceiling_seconds=120, fence=CompressionCommitFence(),
+                    telemetry_agent=agent, stall_fallback=False,
+                )
+        with contextlib.suppress(Exception):
+            db.close()
+    payload = _extract_telemetry(caplog)
+    assert payload["commit_status"] == "committed"
+    assert payload["split_status"] == "in_place_committed"
+    for key in (
+        "trigger_source", "main_model", "middle_window_tokens",
+        "protected_head_tokens", "protected_tail_tokens",
+    ):
+        assert key in payload, f"seeded field lost: {key}"
+    assert payload["middle_window_tokens"] is not None

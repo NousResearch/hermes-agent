@@ -402,12 +402,19 @@ def load_hermes_dotenv(
     home_path = Path(hermes_home) if hermes_home else get_process_hermes_home()
 
     # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
-    # into os.environ would expose its credentials to sibling turns and every spawned child. Unscoped
-    # startup loads keep the normal path; external sources still refresh against the profile mapping.
+    # into os.environ would expose its credentials to sibling turns and every spawned child. The launch
+    # home's own .env is process configuration and still loads: the launch profile's scoped bodies bind
+    # an override naming the launch home too, and skipping it hid launch-only credentials such as a
+    # fallback_providers key from the process env (#125530). Both the load's target AND the active
+    # home must be the launch home: a launch-targeted load inside a FOREIGN turn re-bridges terminal.*
+    # from the config the override resolves to, i.e. the routed profile's cwd into the shared env.
+    # External sources still refresh against the profile mapping.
     from agent.secret_scope import is_multiplex_active
-    from hermes_constants import get_hermes_home_override
+    from hermes_constants import get_hermes_home, get_hermes_home_override
 
-    if is_multiplex_active() and get_hermes_home_override() is not None:
+    launch_home = _process_hermes_home().resolve()
+    if (is_multiplex_active() and get_hermes_home_override() is not None
+            and (home_path.resolve() != launch_home or get_hermes_home().resolve() != launch_home)):
         home_key = str(home_path.resolve())
         if home_key not in _SCOPED_SKIP_LOGGED:
             _SCOPED_SKIP_LOGGED.add(home_key)

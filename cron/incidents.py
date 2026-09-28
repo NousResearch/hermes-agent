@@ -262,8 +262,11 @@ def list_incidents(state: Optional[str] = None) -> List[Dict[str, Any]]:
         return []
     where, params = _state_filter(state)
     with _transaction() as conn:
+        # last_seen_at carries a DST-varying offset: order by instant, not text.
         rows = conn.execute(
-            "SELECT * FROM cron_incidents" + where + " ORDER BY last_seen_at DESC, id DESC", params
+            "SELECT * FROM cron_incidents" + where
+            + " ORDER BY julianday(last_seen_at) DESC, last_seen_at DESC, id DESC",
+            params,
         ).fetchall()
     return [dict(row) for row in rows]
 

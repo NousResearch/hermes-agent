@@ -406,5 +406,6 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
         raise ValueError("ZIP update requires a GitHub owner/repository")
     _download_and_swap_zip(branch, f"https://github.com/{repository}/archive/{ref}.zip")
     completion_request["expected_sha"] = target_sha
+    completion_request["apply_mode"] = "zip"
     _complete_source_update(completion_request)
     return True

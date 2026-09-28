@@ -151,6 +151,14 @@ def extract_media(message: Any) -> Tuple[MessageType, List[str], List[str]]:
             media_types.append(mime)
             if msg_type == MessageType.TEXT:  # image messages, and files with image MIME (a .png attachment) → PHOTO
                 msg_type = MessageType.PHOTO if (msg_type_str == "image" or mime.startswith("image/")) else MessageType.DOCUMENT
+    elif msg_type_str == "video":
+        # The SDK leaves video payloads in extensions['content'] ({downloadCode, videoType, duration}) and
+        # the message has no text, so without this branch the whole message is dropped as empty.
+        ext_content = _ext_content(message) or {}
+        if dl_code := ext_content.get("downloadCode") or "":
+            media_urls.append(dl_code)
+            media_types.append(f"video/{str(ext_content.get('videoType') or 'mp4').lower()}")
+            msg_type = MessageType.VIDEO
     return msg_type, media_urls, media_types
 
 
@@ -164,7 +172,7 @@ def collect_download_codes(message: Any) -> List[Tuple[Any, str]]:
     for item in (getattr(rich_text, "rich_text_list", []) or []) if rich_text else []:
         if isinstance(item, dict):
             codes.extend((item, key) for key in ("downloadCode", "pictureDownloadCode", "download_code") if item.get(key))
-    if (getattr(message, "message_type", "") or "") in ("file", "image"):
+    if (getattr(message, "message_type", "") or "") in ("file", "image", "video"):
         ext_content = _ext_content(message)
         if ext_content and ext_content.get("downloadCode"):
             codes.append((ext_content, "downloadCode"))

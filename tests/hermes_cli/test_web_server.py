@@ -3166,6 +3166,56 @@ class TestNewEndpoints:
         assert top_skill["total_count"] == 1
         assert top_skill["last_used_at"] is not None
 
+    def _daily_for_local_starts(self, tz_name, local_starts):
+        """Seed one session per naive local start in ``tz_name``; return the daily buckets."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i, local in enumerate(local_starts):
+                db.create_session(session_id=f"day-bucket-{i}", source="cli")
+                db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                                 (local.replace(tzinfo=ZoneInfo(tz_name)).timestamp(), f"day-bucket-{i}"))
+            db._conn.commit()
+        finally:
+            db.close()
+        original_tz = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = tz_name
+            time.tzset()
+            resp = self.client.get("/api/analytics/usage?days=365")
+        finally:
+            if original_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original_tz
+            time.tzset()
+        assert resp.status_code == 200
+        return {row["day"]: row["sessions"] for row in resp.json()["daily"]}
+
+    @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+    def test_analytics_daily_buckets_use_local_day(self):
+        """A session at 02:00 IST is counted on that local day, as /insights counts it (not the UTC day before)."""
+        from datetime import datetime, timedelta
+
+        yesterday = (datetime.now() - timedelta(days=1)).replace(hour=2, minute=0, second=0, microsecond=0)
+        daily = self._daily_for_local_starts("Asia/Kolkata", [yesterday])
+        assert daily == {yesterday.strftime("%Y-%m-%d"): 1}
+
+    @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+    def test_analytics_daily_buckets_follow_dst_offset_per_session(self):
+        """23:30 local stays on its own day in both EST and EDT; one fixed offset for the range misplaces one."""
+        from datetime import datetime, timedelta
+
+        # The latest past day in January (EST) and in July (EDT), both inside the 365-day window.
+        recent = [(datetime.now() - timedelta(days=n)).replace(hour=23, minute=30, second=0, microsecond=0) for n in range(2, 360)]
+        starts = [next(d for d in recent if d.month == m) for m in (1, 7)]
+        daily = self._daily_for_local_starts("America/New_York", starts)
+        assert daily == {s.strftime("%Y-%m-%d"): 1 for s in starts}
+
 
 # ---------------------------------------------------------------------------
 # Desktop-owned loopback backends are not gated by dashboard.public_url (#96490)

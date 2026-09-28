@@ -34,6 +34,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
 import { useForcedTextDirection } from '@/store/text-direction'
+import { $showToolActivity } from '@/store/tool-activity'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -80,7 +81,7 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
 // failure inside `result`, never as the top-level error that sets isError, so
 // this reads the body like the run summary does. A non-zero exit_code counts
 // too, matching the gateway's _tool_result_needs_user, which forwards terminal
-// {output, exit_code: 1, error: null} in answer-only mode.
+// {output, exit_code: 1, error: null} even with display.tool_progress off.
 const failedCallNeedsUser = (part: TimelineToolCallProps): boolean => {
   const exitCode = parseMaybeObject(part.result).exit_code
 
@@ -88,7 +89,7 @@ const failedCallNeedsUser = (part: TimelineToolCallProps): boolean => {
 }
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
-  const showReasoning = useStore($showReasoning)
+  const showToolActivity = useStore($showToolActivity)
 
   // todo parts are hoisted to a dedicated panel above the message content.
   if (isTodoToolName(props.toolName)) {
@@ -154,10 +155,10 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ConnectorExecution {...props} />
   }
 
-  // Answer-only: process chrome (reads, searches, commands) stays off the
-  // transcript. Cards, approvals, and failed calls the user must act on remain.
-  // reasoning_effort is not a display switch.
-  if (!showReasoning && !failedCallNeedsUser(props) && !isCardTool(props.toolName)) {
+  // The tool feed (reads, searches, commands) follows display.tool_progress,
+  // never show_reasoning. Cards, approvals, and failed calls the user must act
+  // on remain regardless.
+  if (!showToolActivity && !failedCallNeedsUser(props) && !isCardTool(props.toolName)) {
     return null
   }
 

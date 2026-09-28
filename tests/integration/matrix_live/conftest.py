@@ -576,6 +576,11 @@ def _gateway_yaml_config(
 
 
 @pytest.fixture
+def gateway_auxiliary_config() -> str:
+    return ""
+
+
+@pytest.fixture
 def gateway(
     request: pytest.FixtureRequest,
     tmp_path: Path,
@@ -589,6 +594,7 @@ def gateway(
     matrix_feedback: MatrixFeedbackSettings,
     gateway_busy_input_mode: str,
     gateway_delivery_probe: GatewayDeliveryProbe | None,
+    gateway_auxiliary_config: str,
 ) -> Iterator[LiveGateway]:
     param = getattr(request, "param", GatewaySettings())
     settings = GatewaySettings(mode=param) if isinstance(param, str) else param
@@ -607,12 +613,19 @@ def gateway(
     with FakeLLMServer(
         script, bind_host=route.bind_host, default_text=settings.reply if mode == "inspection" else "ok",
     ) as model:
+        extra_config = yaml.safe_dump(
+            _deep_merge(
+                yaml.safe_load(gateway_auxiliary_config) or {},
+                yaml.safe_load(gateway_extra_config) or {},
+            ),
+            sort_keys=False,
+        )
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
             extra_config=_gateway_yaml_config(
                 gateway_config, matrix_feedback, settings, room_id,
-                gateway_busy_input_mode, gateway_extra_config,
+                gateway_busy_input_mode, extra_config,
             ),
         )
         if native_images:

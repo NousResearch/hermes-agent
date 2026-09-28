@@ -99,6 +99,7 @@ from plugins.platforms.matrix.pending_replay import MatrixPendingReplayMixin
 from plugins.platforms.matrix.intake_mixin import MatrixIntakeMixin
 from plugins.platforms.matrix.edit_followups import MatrixEditFollowupsMixin, edit_followup_rooms
 from plugins.platforms.matrix.sync_mixin import MatrixSyncMixin
+from plugins.platforms.matrix.unread import MatrixUnreadMixin, MatrixUnreadState
 from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote, _label_body,
@@ -797,7 +798,7 @@ from plugins.platforms.matrix.adapter_media import MatrixMediaMixin
 
 from plugins.platforms.matrix.inbound_events import MatrixInboundEventMixin
 
-class MatrixAdapter(MatrixEditFollowupsMixin, MatrixInboundEventMixin, MatrixMediaMixin, MatrixFeedbackMixin, MatrixPendingReplayMixin, MatrixIntakeMixin, MatrixRedactionMixin, MatrixFollowupMixin, MatrixRichContentMixin, MatrixContextMixin, MatrixSyncMixin, BasePlatformAdapter):
+class MatrixAdapter(MatrixEditFollowupsMixin, MatrixInboundEventMixin, MatrixMediaMixin, MatrixFeedbackMixin, MatrixPendingReplayMixin, MatrixIntakeMixin, MatrixRedactionMixin, MatrixFollowupMixin, MatrixRichContentMixin, MatrixContextMixin, MatrixSyncMixin, MatrixUnreadMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -856,6 +857,7 @@ class MatrixAdapter(MatrixEditFollowupsMixin, MatrixInboundEventMixin, MatrixMed
         self._sync_checkpoints: SyncCheckpoints | None = None
         self._reset_clock_skew_detector()
         self._last_sync_ts: float = 0.0
+        self._unread = MatrixUnreadState()
         self._dm_rooms: dict[str, bool] = {}
         self._room_identities: dict[str, MatrixRoomIdentity] = {}
         self._room_identity_cached_at: dict[str, float] = {}
@@ -1374,6 +1376,7 @@ class MatrixAdapter(MatrixEditFollowupsMixin, MatrixInboundEventMixin, MatrixMed
             mxid=UserID(self._user_id) if self._user_id else UserID(""), device_id=self._device_id or None,
             api=api, state_store=state_store, sync_store=sync_store)
         self._client = client
+        self._unread.reset()
         if not await self._connect_authenticate(client, api):
             return False
         sync_store = DurableSyncStore(
@@ -1436,6 +1439,7 @@ class MatrixAdapter(MatrixEditFollowupsMixin, MatrixInboundEventMixin, MatrixMed
         return True
 
     async def disconnect(self) -> None:
+        self._unread.reset()
         self._closing = True
         purge = getattr(self, "_watch_purge_handle", None)
         if purge is not None:

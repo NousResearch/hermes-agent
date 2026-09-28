@@ -165,6 +165,29 @@ def _format_taste_line(label: str, score: float, n_obs: int,
     )
 
 
+def _label_line_matches(line: str, label: str) -> bool:
+    """True when a taste.md line names exactly ``label``.
+
+    Boundary-strict: after the ``- {label}.`` prefix only end-of-line or
+    the ``confidence:`` / parenthetical companion may follow, so labels
+    sharing a prefix (``Prefer A`` vs ``Prefer A. B``) never collide on
+    upsert or forget.
+    """
+    stripped = line.strip()
+    prefix = f"- {label}."
+    if stripped == prefix:
+        return True
+    if not stripped.startswith(prefix):
+        return False
+    rest = stripped[len(prefix):]
+    if rest == "" or rest[0] == "(":
+        return True
+    if rest[0] not in (" ", "\t"):
+        return False
+    tail = rest.lstrip(" \t")
+    return tail.startswith("confidence:") or tail.startswith("(")
+
+
 def write_taste_md(snapshot: Dict[str, Any],
                    taste_dir: Optional[str] = None) -> Path:
     """Write one established candidate into ``taste.md`` (upsert by label).
@@ -201,7 +224,7 @@ def write_taste_md(snapshot: Dict[str, Any],
             skip_next = False
             continue
         skip_next = False
-        if ln.strip() == f"- {label}." or ln.startswith(f"- {label}."):
+        if _label_line_matches(ln, label):
             out.append(line)
             replaced = True
             skip_next = True  # drop the old companion line
@@ -295,7 +318,9 @@ def taste_forget(target: str,
                 skip_next = False
                 continue
             skip_next = False
-            if ln.startswith("- ") and any(m in ln for m in match_strings):
+            if ln.startswith("- ") and any(
+                _label_line_matches(ln, m) for m in match_strings
+            ):
                 removed += 1
                 skip_next = True
                 continue
@@ -477,7 +502,7 @@ TASTE_SCHEMA: Dict[str, Any] = {
         },
         "target": {
             "type": "string",
-            "description": "Preference id or label substring to forget "
+            "description": "Preference id or exact label to forget "
                            "(forget).",
         },
         "project": {

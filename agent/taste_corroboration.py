@@ -154,12 +154,12 @@ class CorroborationEngine:
         return self._clock()
 
     def advance(self, seconds: float) -> float:
-        """Advance the injected clock by ``seconds`` (tests only).
+        """TEST-ONLY: advance the injected clock by ``seconds``.
 
-        The clock must expose a mutable ``t`` attribute (a FakeClock in tests).
-        A bare callable clock such as the real :func:`time.time` cannot be
-        advanced and raises, which is correct: you can only move time forward in
-        a fake clock.
+        Never call this outside tests. The clock must expose a mutable
+        ``t`` attribute (a FakeClock in tests). A bare callable clock such
+        as the real :func:`time.time` cannot be advanced and raises, which
+        is correct: you can only move time forward in a fake clock.
         """
         clock = self._clock
         if not hasattr(clock, "t"):
@@ -281,7 +281,11 @@ class CorroborationEngine:
     def should_write(self):
         """A candidate is eligible for the shared taste.md once established
         AND free of escalation. Conflicted or stale candidates never reach
-        taste.md without an ack (see doc section 4.5)."""
+        taste.md without an ack (see doc section 4.5).
+
+        Returns False when is_conflicting() or is_stale() is true, even if
+        n_obs >= MIN_OBSERVATIONS_FOR_WRITE.
+        """
         if self.is_conflicting() or self.is_stale():
             return False
         return self._state.n_obs >= MIN_OBSERVATIONS_FOR_WRITE

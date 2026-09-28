@@ -853,6 +853,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/streaming-tts',
             'developer-guide/billing-lifecycle',
             'developer-guide/trajectory-format',
+            'developer-guide/taste_integration_option_b_shipped',
           ],
         },
       ],

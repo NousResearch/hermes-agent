@@ -233,6 +233,65 @@ def _patch_update_flow(monkeypatch, repo, run_real_git=True):
     )
 
 
+def test_update_refuses_stopped_rebase_without_moving_head(
+    repo_pair, monkeypatch, capsys
+):
+    """A user-owned rebase controls the checkout; update must not switch branches underneath it."""
+    (repo_pair / "a.txt").write_text("topic\n")
+    _git(repo_pair, "add", "a.txt")
+    _git(repo_pair, "commit", "-qm", "topic")
+    rebase = _git(repo_pair, "rebase", "--merge", "origin/main", check=False)
+    assert rebase.returncode != 0
+    assert (repo_pair / ".git" / "rebase-merge").is_dir()
+    assert _git(repo_pair, "branch", "--show-current").stdout.strip() == ""
+    head_before = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+
+    _patch_update_flow(monkeypatch, repo_pair)
+    args = SimpleNamespace(branch=None, yes=True, force=False, force_venv=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        update_cmd._cmd_update_impl(args, False)
+
+    assert exc_info.value.code == 1
+    assert _git(repo_pair, "rev-parse", "HEAD").stdout.strip() == head_before
+    assert (repo_pair / ".git" / "rebase-merge").is_dir()
+    assert _git(repo_pair, "stash", "list").stdout.strip() == ""
+    out = capsys.readouterr().out
+    assert "Git rebase is in progress" in out
+    assert str(repo_pair) in out
+    assert "git rebase --abort" in out
+
+
+def test_update_reports_git_am_abort_for_apply_state(
+    repo_pair, monkeypatch, capsys
+):
+    """rebase-apply is shared by rebase --apply and git am; recovery advice must match Git's owner."""
+    (repo_pair / "a.txt").write_text("topic\n")
+    _git(repo_pair, "add", "a.txt")
+    _git(repo_pair, "commit", "-qm", "topic")
+    patch = repo_pair.parent / "upstream.patch"
+    patch.write_text(
+        _git(repo_pair, "format-patch", "-1", "origin/main~1", "--stdout").stdout
+    )
+    applied = _git(repo_pair, "am", str(patch), check=False)
+    assert applied.returncode != 0
+    assert (repo_pair / ".git" / "rebase-apply" / "applying").is_file()
+    head_before = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
+
+    _patch_update_flow(monkeypatch, repo_pair)
+    args = SimpleNamespace(branch=None, yes=True, force=False, force_venv=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        update_cmd._cmd_update_impl(args, False)
+
+    assert exc_info.value.code == 1
+    assert _git(repo_pair, "rev-parse", "HEAD").stdout.strip() == head_before
+    assert (repo_pair / ".git" / "rebase-apply" / "applying").is_file()
+    out = capsys.readouterr().out
+    assert "Git am is in progress" in out
+    assert "git am --abort" in out
+
+
 def test_update_skips_and_warns_on_dirty_parked_branch(
     repo_pair, monkeypatch, capsys
 ):

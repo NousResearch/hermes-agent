@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+
+import pytest
+
 import pm
 from pm import paths
 from pm.install import ensure
@@ -47,3 +51,13 @@ def test_state_fact_in_shared_facts_file_is_not_a_store_install(pm_env):
     assert not facts.installed("venv", None, paths.store_root())
     composed = env_for("venv", "faketool", *all_packages())
     assert composed == env_for("faketool")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
+def test_entry_staged_without_exec_bit_is_usable_again(pm_env):
+    """agent-browser entries staged before stage() set the exec bit raised PermissionError on every launch."""
+    ensure("faketool", explicit=True)
+    binary = pm.installed_package("faketool").binary
+    binary.chmod(0o644)
+    healed = pm.installed_package("faketool")
+    assert healed is not None and healed.binary == binary and os.access(binary, os.X_OK)

@@ -16,6 +16,21 @@ import type { OpenAiRealtimeVoiceSessionResponse } from '@/api/voice-realtime'
 
 export type RealtimeVoiceStatus = 'connecting' | 'listening' | 'thinking' | 'speaking'
 
+/**
+ * How long a queued report waits for the model to go quiet before it is pushed
+ * in anyway — a model stuck mid-turn must not swallow the report for good.
+ */
+export const NOTIFY_GRACE_MS = 4_000
+
+/**
+ * Whether a queued report may go in now: always while the model is quiet, and
+ * after the grace window even if it never returned to listening. `blockedSince`
+ * is the first moment the report was turned away (0 when it was never blocked).
+ */
+export function canInjectReport(status: RealtimeVoiceStatus, blockedSince: number, now: number): boolean {
+  return status === 'listening' || (blockedSince !== 0 && now - blockedSince >= NOTIFY_GRACE_MS)
+}
+
 export interface RealtimeVoiceHandlers {
   onStatus: (status: RealtimeVoiceStatus) => void
   /** Run a short request through the agent and wait for its text answer. */
@@ -158,6 +173,8 @@ export async function startRealtimeVoice(
   let stopped = false
   let status: RealtimeVoiceStatus = 'connecting'
   let frame = 0
+  // First moment a queued report was turned away because the model was busy.
+  let notifyBlockedSince = 0
   const context = typeof AudioContext === 'function' ? new AudioContext() : null
   const micAnalyser = context?.createAnalyser() ?? null
   let voiceAnalyser: AnalyserNode | null = null
@@ -270,10 +287,23 @@ export async function startRealtimeVoice(
 
   return {
     notify: text => {
-      if (stopped || channel.readyState !== 'open' || status !== 'listening') {
+      if (stopped || channel.readyState !== 'open') {
         return false
       }
 
+      const now = Date.now()
+
+      // Quiet model, or a model that outstayed the grace window: either way
+      // the report goes in, so it can never be dropped for good.
+      if (!canInjectReport(status, notifyBlockedSince, now)) {
+        if (notifyBlockedSince === 0) {
+          notifyBlockedSince = now
+        }
+
+        return false
+      }
+
+      notifyBlockedSince = 0
       channel.send(
         JSON.stringify({
           type: 'conversation.item.create',

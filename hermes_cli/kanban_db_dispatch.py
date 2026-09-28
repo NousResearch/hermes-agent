@@ -2467,9 +2467,35 @@ def _rotate_worker_log(
         pass
 
 
+def _pin_checkout_on_worker_pythonpath(env: dict) -> None:
+    """Ensure a module-form worker's env can import this checkout.
+
+    Workers run as ``sys.executable -m hermes_cli.main`` with the task
+    workspace as cwd. Under a plain install ``hermes_cli`` resolves from
+    site-packages; under the package-manager launcher it exists only on the
+    DISPATCHER's in-process ``sys.path`` (the launch bootstrap pops
+    ``PYTHONPATH`` and patches ``sys.path`` without exporting it), so every
+    worker died with ``No module named hermes_cli`` (#124763). Same bug class
+    as cron's restart-safe worker (#112729) — reuse its pin: prepend the repo
+    root to the CHILD's PYTHONPATH after the env sanitizers have stripped
+    Hermes-owned entries, skipping purelib-installed trees where the import
+    already works.
+    """
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+
+    pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
+
+
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
+    console-script target — there is no top-level ``hermes`` package).
+
+    The module form only works when the child can import this checkout. Under
+    the package-manager launcher the gateway runs with the repo root patched
+    onto ``sys.path`` in-process (``PYTHONPATH`` popped by the launch
+    bootstrap), while the worker is spawned with the TASK WORKSPACE as cwd —
+    so ``_default_spawn`` pins the running tree on the worker's PYTHONPATH.
+    """
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
@@ -2902,6 +2928,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     cmd = _restart_safe_worker_argv(task, cmd)
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
+    # Module-form workers import this checkout through PYTHONPATH (see
+    # _module_hermes_argv); without the pin a package-manager-launcher
+    # gateway spawns workers that die on `No module named hermes_cli`.
+    _pin_checkout_on_worker_pythonpath(env)
     log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above

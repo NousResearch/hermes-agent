@@ -1619,6 +1619,66 @@ def test_resolve_hermes_argv_module_actually_runs():
     )
 
 
+def test_default_spawn_pins_checkout_on_worker_pythonpath(monkeypatch, tmp_path):
+    """Module-form workers must receive this checkout on PYTHONPATH (#124763).
+
+    Under the package-manager launcher the gateway interpreter has the repo
+    root on ``sys.path`` in-process only (the launch bootstrap pops
+    ``PYTHONPATH``), so the ``sys.executable -m hermes_cli.main`` child spawned
+    with the TASK WORKSPACE as cwd could not import ``hermes_cli`` and died at
+    start. The spawn env pins the running tree on the child's PYTHONPATH after
+    the sanitizers, mirroring cron's restart-safe worker (#112729).
+    """
+    import os
+    import subprocess
+
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env", {})
+            self.pid = 4242
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+
+    task = kb.Task(
+        id="t_tree_pin",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="ready",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=None,
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    kbd._default_spawn(task, str(tmp_path / "ws"))
+
+    cmd, env = captured["cmd"], captured["env"]
+    if cmd[:3] != [sys.executable, "-m", "hermes_cli.main"]:
+        pytest.skip(f"path-form hermes resolved ({cmd[0]}); pin is module-form-specific")
+    repo_root = str(Path(kbd.__file__).resolve().parents[1])
+    pp_entries = [e for e in env.get("PYTHONPATH", "").split(os.pathsep) if e]
+    assert pp_entries, (
+        "worker env lost the checkout pin: under the package-manager launcher "
+        "the child would die on `No module named hermes_cli`"
+    )
+    assert pp_entries[0] == repo_root
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #

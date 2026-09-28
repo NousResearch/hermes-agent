@@ -564,7 +564,7 @@ def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
         # should not be told their install is broken.
         return check_warn("Dashboard web surface", "(optional web extra not installed)")
     detail = (
-        stderr.splitlines()[-1] if stderr else f"( exited with code {proc.returncode} )"
+        stderr.splitlines()[-1] if stderr else f"(exited with code {proc.returncode})"
     )
     _fail_and_issue(
         "Dashboard web surface",
@@ -572,6 +572,7 @@ def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
         "Repair the dashboard dependencies: `hermes pm repair`, then restart Hermes",
         f.issues,
     )
+
 
 @doctor_check()
 def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:

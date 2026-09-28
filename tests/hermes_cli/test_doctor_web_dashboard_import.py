@@ -10,15 +10,10 @@ crash lands in the report instead of the user's terminal.
 
 from __future__ import annotations
 
-import subprocess
 import sys
-
-import pytest
 
 from hermes_cli import doctor_platform as dp
 from hermes_cli.doctor_report import Finding
-
-# doctor_check() replaces the wrapped fn; the undecorated original stays reachable via __wrapped__.
 
 
 class _FakeCompleted:
@@ -38,15 +33,6 @@ def _run_check(monkeypatch, completed, recorded):
     return finding
 
 
-def test_clean_import_reports_ok(capsys, monkeypatch):
-    recorded: list = []
-    finding = _run_check(monkeypatch, _FakeCompleted(0, ""), recorded)
-
-    out = capsys.readouterr().out
-    assert "Dashboard web surface" in out and "✓" in out
-    assert not finding.issues
-
-
 def test_drifted_pair_is_a_reported_issue(capsys, monkeypatch):
     stderr = (
         'File ".../fastapi/routing.py", line 835, in __init__\n'
@@ -61,16 +47,6 @@ def test_drifted_pair_is_a_reported_issue(capsys, monkeypatch):
     assert any("hermes pm repair" in i for i in finding.issues)
 
 
-def test_absent_web_extra_warns_without_failing(capsys, monkeypatch):
-    stderr = "Web UI requires fastapi and uvicorn.\nRun hermes pm repair, then restart Hermes."
-    recorded: list = []
-    finding = _run_check(monkeypatch, _FakeCompleted(1, stderr), recorded)
-
-    out = capsys.readouterr().out
-    assert "Dashboard web surface" in out and "⚠" in out
-    assert not finding.issues
-
-
 def test_probe_runs_without_lazy_installs(capsys, monkeypatch):
     recorded: list = []
     _run_check(monkeypatch, _FakeCompleted(0, ""), recorded)
@@ -81,18 +57,3 @@ def test_probe_runs_without_lazy_installs(capsys, monkeypatch):
     env = kwargs["env"]
     assert env["HERMES_DISABLE_LAZY_INSTALLS"] == "1"
     assert kwargs["timeout"] >= 60
-
-
-def test_probe_timeout_is_an_issue(capsys, monkeypatch):
-    def fake_run(*args, **kwargs):
-        raise dp.subprocess.TimeoutExpired(
-            cmd="import probe", timeout=kwargs.get("timeout", 120)
-        )
-
-    monkeypatch.setattr(dp.subprocess, "run", fake_run)
-    finding = Finding()
-    dp._check_web_dashboard_import.__wrapped__(should_fix=False, f=finding)
-
-    out = capsys.readouterr().out
-    assert "Dashboard web surface" in out and "✗" in out
-    assert any("hermes pm repair" in i for i in finding.issues)

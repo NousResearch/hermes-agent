@@ -2249,13 +2249,38 @@ def status_entry_age_seconds(conn: sqlite3.Connection, task_id: str, status: str
     return int(time.time()) - int(row["created_at"])
 
 
+def latest_verified_progress(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Most recent substantive, evidenced progress note for a task: the newer
+    of the latest worker run handoff (``task_runs.summary``) and the latest
+    board comment, by timestamp -- never an invented ETA, just the same
+    durable text a human reading ``kanban show``/the comment thread would
+    see, picked automatically. ``None`` when neither exists."""
+    run_row = conn.execute(
+        "SELECT summary, COALESCE(ended_at, started_at) AS ts FROM task_runs "
+        "WHERE task_id = ? AND summary IS NOT NULL AND summary != '' "
+        "ORDER BY ts DESC, id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    comment_row = conn.execute(
+        "SELECT body, created_at AS ts FROM task_comments "
+        "WHERE task_id = ? AND body IS NOT NULL AND body != '' "
+        "ORDER BY ts DESC, id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    if run_row is None and comment_row is None:
+        return None
+    if run_row is None:
+        return comment_row["body"]
+    if comment_row is None:
+        return run_row["summary"]
+    return run_row["summary"] if run_row["ts"] >= comment_row["ts"] else comment_row["body"]
+
+
 def compute_request_view(conn: sqlite3.Connection, task: "Task") -> dict:
     """Request-level view distinct from the raw orchestration ``status``:
     owner, a verified outcome that does not just mirror ``status`` for a
-    decomposed-but-undelivered task, blocker age, and next action. Every
-    field is derived from durable DB state -- no invented ETAs. See
-    ``unsatisfied_decomposed_children`` for why ``open_spawned_children``
-    excludes a dependency-linked release child.
+    decomposed-but-undelivered task, last verified progress, blocker age,
+    and next action. Every field is derived from durable DB state -- no
+    invented ETAs. See ``unsatisfied_decomposed_children`` for why
+    ``open_spawned_children`` excludes a dependency-linked release child.
     """
     open_children = unsatisfied_decomposed_children(conn, task.id)
     if task.status == "done" and open_children:
@@ -2292,6 +2317,7 @@ def compute_request_view(conn: sqlite3.Connection, task: "Task") -> dict:
         "owner": task.assignee,
         "verified_outcome": verified_outcome,
         "open_spawned_children": [{"id": cid, "status": status} for cid, status in open_children],
+        "last_verified_progress": latest_verified_progress(conn, task.id),
         "blocker_age_seconds": status_entry_age_seconds(conn, task.id, task.status),
         "next_action": next_action,
     }

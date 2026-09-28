@@ -111,6 +111,40 @@ def test_task_summary_dict_surfaces_request_view(conn):
     summary = kt._task_summary_dict(kb, conn, task)
     assert summary["owner"] == "anika"
     assert summary["verified_outcome"] == "in_progress"
+    assert summary["last_verified_progress"] is None
     assert summary["blocker_age_seconds"] is None
     assert "queued" in summary["next_action"]
     assert summary["open_spawned_children"] == []
+
+
+def test_last_verified_progress_is_none_with_no_evidence(conn):
+    """No run handoff and no comment yet -- None, never a placeholder."""
+    task_id = kb.create_task(conn, title="t", assignee="anika")
+    v = _view(conn, task_id)
+    assert v["last_verified_progress"] is None
+
+
+def test_last_verified_progress_prefers_newer_run_summary_over_older_comment(conn):
+    task_id = kb.create_task(conn, title="t", assignee="anika")
+    kb.add_comment(conn, task_id, author="raaj", body="older note")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_comments SET created_at = ? WHERE task_id = ?",
+            (int(time.time()) - 7200, task_id),
+        )
+    assert kb.complete_task(conn, task_id, summary="newer handoff")
+    v = _view(conn, task_id)
+    assert v["last_verified_progress"] == "newer handoff"
+
+
+def test_last_verified_progress_prefers_newer_comment_over_older_run_summary(conn):
+    task_id = kb.create_task(conn, title="t", assignee="anika")
+    assert kb.complete_task(conn, task_id, summary="older handoff", force=True)
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET ended_at = ? WHERE task_id = ?",
+            (int(time.time()) - 7200, task_id),
+        )
+    kb.add_comment(conn, task_id, author="raaj", body="newer note")
+    v = _view(conn, task_id)
+    assert v["last_verified_progress"] == "newer note"

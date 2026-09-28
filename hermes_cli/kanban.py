@@ -517,6 +517,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
     field("status", task.status)
     field("assignee", task.assignee or "-")
     field("outcome", request_view["verified_outcome"])
+    if request_view["last_verified_progress"]:
+        field("progress", request_view["last_verified_progress"].splitlines()[0][:160])
     if request_view["next_action"]:
         field("next", request_view["next_action"])
     if request_view["blocker_age_seconds"] is not None:

@@ -30,7 +30,7 @@ from testcontainers.core.labels import LABEL_SESSION_ID, SESSION_ID
 from testcontainers.core.network import Network
 
 from hermes_platform.host import facts
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, Response, Text, write_hermes_home
 from tests.integration.matrix_live.image_build import REPO_ROOT, build_command
 
 
@@ -359,28 +359,40 @@ def _gateway_ready(log: str, room_id: str) -> bool:
 
 
 @pytest.fixture
+def gateway_script() -> list[Response]:
+    return [Text("Matrix live reply")]
+
+
+@pytest.fixture
+def gateway_config(live_room: LiveRoom) -> str:
+    return ("platforms:\n  matrix:\n    enabled: true\n"
+            f"    allowed_users: '{live_room.observer.user_id}'\nupdates:\n  check: false\n")
+
+
+@pytest.fixture
 def gateway(
     tmp_path: Path,
     gateway_image: str,
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
+    gateway_script: list[Response],
+    gateway_config: str,
 ) -> Iterator[LiveGateway]:
     _, _, network = synapse
     room_id = live_room.room_id
     home = tmp_path / "hermes"
     home.mkdir()
     route = _host_route(network)
-    with FakeLLMServer([Text("Matrix live reply")], bind_host=route.bind_host) as model:
+    with FakeLLMServer(gateway_script, bind_host=route.bind_host) as model:
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
-            extra_config="platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n",
+            extra_config=gateway_config,
         )
         with (home / ".env").open("a", encoding="utf-8") as stream:
             stream.write(
                 "MATRIX_HOMESERVER=http://synapse:8008\n"
                 f"MATRIX_ACCESS_TOKEN={live_room.bot.access_token}\n"
-                f"MATRIX_ALLOWED_USERS={live_room.observer.user_id}\n"
                 f"MATRIX_HOME_ROOM={room_id}\n"
                 "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\n"
             )

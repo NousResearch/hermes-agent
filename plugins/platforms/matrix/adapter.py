@@ -47,6 +47,8 @@ from typing import Any, Dict, Optional, Set
 
 from agent.i18n import t
 from agent.secret_scope import get_secret
+from plugins.platforms.matrix.reaction_menu import MENU_TIMEOUT_SECONDS, send_reaction_menu as _send_reaction_menu
+from tools.reaction_menu_model import ReactionMenu
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
     get_scoped_secret as _get_scoped_secret, send_error
@@ -365,6 +367,7 @@ class _MatrixPickerPrompt:
     expires_at: float | None = None
     resolved: bool = False
     bot_reaction_events: dict[str, str] = field(default_factory=dict)
+    is_menu: bool = False
 
 
 _MatrixModelPickerPrompt = _MatrixChoicePickerPrompt = _MatrixPickerPrompt
@@ -914,6 +917,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
+        self._reaction_menu_send_lock = asyncio.Lock()
         # Authz lists: scoped env → this profile's YAML (``allowed_users`` / ``ignore_user_patterns``,
         # seeded by the bridge) → empty. Under multiplex os.environ is the DEFAULT profile's allowlist,
         # which must not decide who approves tool calls on a secondary bot.
@@ -1738,14 +1742,18 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _send_picker(
         self, chat_id: str, lines: list, choices: dict, session_key: str, on_selected, metadata, registry: dict,
-        label: str) -> SendResult:
+        label: str, *, is_menu: bool = False) -> SendResult:
         """Send picker *lines*, register a _MatrixPickerPrompt under the event, seed its reactions."""
         return await self._send_reaction_prompt(
             chat_id, "\n".join(lines), metadata,
             lambda message_id, requester, expires_at: _MatrixPickerPrompt(
                 chat_id=chat_id, message_id=message_id, session_key=session_key, choices=choices,
-                on_selected=on_selected, requester_user_id=requester, expires_at=expires_at),
+                on_selected=on_selected, requester_user_id=requester,
+                expires_at=time.monotonic() + MENU_TIMEOUT_SECONDS if is_menu else expires_at, is_menu=is_menu),
             registry, choices, label)
+
+    async def send_reaction_menu(self, menu: ReactionMenu, session_key: str, on_selected, metadata: dict) -> SendResult:
+        return await _send_reaction_menu(self, menu, session_key, on_selected, metadata)
 
     async def send_choice_picker(
         self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,
@@ -2587,7 +2595,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _validate_matrix_prompt_reactor(
         self, room_id: str, target_event_id: str, sender: str, prompt: Any, prompt_label: str) -> bool:
-        if not self._is_authorized_user(sender, room_id):
+        is_menu = getattr(prompt, "is_menu", False)
+        # Menu callbacks check gateway authorization, including pairing grants.
+        if not is_menu and not self._is_authorized_user(sender, room_id):
             logger.info(
                 "Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
             await self._send_invalid_reaction_feedback(
@@ -2595,7 +2605,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         requester = getattr(prompt, "requester_user_id", None)
         # getattr: object.__new__-built test doubles may lack the attribute.
-        if getattr(self, "_approval_require_sender", True) and requester and sender != requester:
+        if (is_menu or getattr(self, "_approval_require_sender", True)) and requester and sender != requester:
             logger.info("Matrix: ignoring %s reaction from %s; requester is %s", prompt_label, sender, requester)
             await self._send_invalid_reaction_feedback(
                 room_id, target_event_id, t("platform.matrix.reaction.not_requester"))

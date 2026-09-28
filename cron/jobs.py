@@ -16,7 +16,7 @@ import re
 import uuid
 
 # Cross-process advisory locking for jobs.json: fcntl (Unix) or msvcrt (Windows). If both are
-# absent, _jobs_lock() degrades to in-process locking rather than failing.
+# absent, reads may continue under the in-process lock, but saves fail closed.
 try:
     import fcntl
 except ImportError:  # pragma: no cover - non-Unix
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
-from utils import atomic_replace, atomic_write_text, fsync_directory
+from utils import atomic_write_text, fsync_directory
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
@@ -275,9 +275,8 @@ def _jobs_lock():
     """Serialize a load_jobs→modify→save_jobs critical section: in-process RLock (parallel tick
     threads) plus a cross-process flock on ``<cron dir>/.jobs.lock`` (gateway vs. CLI writes —
     otherwise a `cron pause` could be clobbered and keep firing). Nested calls in one thread
-    reuse the held lock. Without a flock backend, or on flock timeout (logged loudly), it
-    degrades to in-process-only locking: a briefly torn cross-process write beats a dead
-    scheduler."""
+    reuse the held lock. Without a flock backend, or on flock timeout (logged loudly), reads
+    may proceed under in-process locking, but saves refuse to race a sibling writer."""
     depth = getattr(_jobs_lock_state, "depth", 0)
     if depth:
         _jobs_lock_state.depth = depth + 1
@@ -289,6 +288,7 @@ def _jobs_lock():
 
     with _jobs_file_lock:
         _jobs_lock_state.depth = 1
+        _jobs_lock_state.cross_process_held = False
         # jobs.json stamp as of this section's load_jobs(): lets _save_jobs_unlocked skip the
         # shrink-merge parse when the file provably hasn't changed. Reset on entry/exit so stale
         # stamps from unlocked loads or prior sections can never suppress a needed merge.
@@ -300,16 +300,17 @@ def _jobs_lock():
                 ensure_dirs()
                 lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8-sig")
                 lock_fd.seek(0)
-                if _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS) is False:
+                if _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS) is not True:
                     logger.error(
                         "Timed out after %.0fs waiting for the cron "
                         "jobs lock (%s) — another process is holding "
-                        "it. Proceeding with in-process locking only "
-                        "so the scheduler stays alive (#60703).",
+                        "it. Reads may proceed, but writes will fail closed.",
                         _JOBS_LOCK_TIMEOUT_SECONDS, _jobs_lock_file())
                     with contextlib.suppress(OSError):
                         lock_fd.close()
                     lock_fd = None
+                else:
+                    _jobs_lock_state.cross_process_held = True
             except (OSError, IOError) as e:
                 # A locking failure must never take down cron writes — in-process lock still held.
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
@@ -322,6 +323,7 @@ def _jobs_lock():
         finally:
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
+            _jobs_lock_state.cross_process_held = False
 
 
 @contextlib.contextmanager
@@ -1540,6 +1542,8 @@ def _save_jobs_unlocked(
     ``replace=True`` skips the shrink-merge guard and the corrupt-store refusal (wholesale
     rewrite for tests, disaster recovery and load_jobs' auto-repair of unmergeable shapes)."""
     jobs_file = _current_cron_store().jobs_file
+    if not getattr(_jobs_lock_state, "cross_process_held", False):
+        raise RuntimeError("Cannot save cron jobs: cron jobs lock unavailable")
     ensure_dirs()
     # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.
     _stat_before = None
@@ -1554,7 +1558,10 @@ def _save_jobs_unlocked(
         for attempt in range(_SAVE_JOBS_MERGE_ATTEMPTS + 1):
             if not replace:
                 jobs = _merge_unexpected_disk_jobs(jobs, removed_ids=removed_ids)
-            tmp_path = _stage_jobs_payload(jobs_file, jobs)
+            # A symlinked store can point to another filesystem. Stage beside the real target,
+            # so the only publication step is a same-directory rename.
+            real_jobs_file = Path(os.path.realpath(jobs_file))
+            tmp_path = _stage_jobs_payload(real_jobs_file, jobs)
             # Verify-after-stage: a sibling landing during serialization forces another merge round.
             if (
                 not replace
@@ -1564,10 +1571,11 @@ def _save_jobs_unlocked(
                 _unlink_quiet(tmp_path)
                 tmp_path = None
                 continue
-            # fsync the directory the rename actually landed in (atomic_replace resolves symlinks).
-            replaced = Path(atomic_replace(tmp_path, jobs_file))
+            # utils.atomic_replace has copy/in-place fallbacks for other callers. A cron store
+            # must fail if rename cannot publish it atomically; leave the old bytes intact.
+            os.replace(tmp_path, real_jobs_file)
             tmp_path = None
-            fsync_directory(replaced.parent)
+            fsync_directory(real_jobs_file.parent)
             _secure_file(jobs_file)
             _preserve_file_ownership(jobs_file, _stat_before)
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk

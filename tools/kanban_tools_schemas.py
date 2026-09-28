@@ -8,6 +8,15 @@ _DESC_TASK_ID_DEFAULT = (
     "(the task the dispatcher spawned you to work on)."
 )
 
+_DESC_TIMESTAMPS = (
+    "Every timestamp appears twice. The bare field (e.g. created_at) is a Unix "
+    "epoch integer for machine use. The '_local' field (e.g. created_at_local) "
+    "is the same instant already rendered in the user's configured timezone "
+    "with its UTC offset, e.g. '2026-09-09 20:18:49+07:00'. When reporting a "
+    "time to the user, quote the '_local' value verbatim — never convert an "
+    "epoch yourself."
+)
+
 _DESC_BOARD = (
     "Kanban board slug to target. When omitted, the call resolves the "
     "active board the usual way: HERMES_KANBAN_DB env → "
@@ -48,7 +57,7 @@ KANBAN_SHOW_SCHEMA = _schema(
         "and recent events. Use this to (re)orient yourself before "
         "starting work, especially on retries. The response includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "verbatim in your reasoning. " + _DESC_TIMESTAMPS
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -66,7 +75,7 @@ KANBAN_LIST_SCHEMA = _schema(
         "counts. Bounded to 50 rows by default, 200 max, with truncation "
         "metadata. Also recomputes ready tasks before listing, matching the "
         "CLI. Orchestrator-only — dispatcher-spawned task workers never see "
-        "this tool."
+        "this tool. " + _DESC_TIMESTAMPS
     ),
     {
         "assignee": _prop("string", "Optional assignee/profile filter."),

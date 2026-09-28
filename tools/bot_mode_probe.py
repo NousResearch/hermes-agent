@@ -355,19 +355,6 @@ def _model_prompt_capability_surface(model_cfg: object) -> dict:
     }
 
 
-def _normalized_disabled_toolsets(cfg: dict) -> list:
-    """Global toolset suppression as the runtime reads it (``hermes config set
-    agent.disabled_toolsets`` may store a JSON-array string; see #97015). Falls back
-    to the raw value so the epoch still flips when the parser is unavailable."""
-    raw = (cfg.get("agent") or {}).get("disabled_toolsets") if isinstance(cfg.get("agent"), dict) else None
-    try:
-        from agent.skill_utils import parse_config_string_list
-
-        return sorted(s for s in parse_config_string_list(raw) if str(s).strip())
-    except Exception:
-        return sorted(raw) if isinstance(raw, list) else ([str(raw)] if raw else [])
-
-
 def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     """12-hex digest of the capability surface for ``home``'s profile: disabled skills +
     enabled toolsets + MCP config, model capability overrides that change the prompt
@@ -384,6 +371,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     try:
         # Canonical loader (managed overlay + env expansion + normalization),
         # scoped to the bot's home via the override the loaders already honor.
+        from agent.skill_utils import parse_config_string_list
         from hermes_cli.config import load_config_readonly
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -396,15 +384,13 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         surface["model_capabilities"] = _model_prompt_capability_surface(model_cfg)
         surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
-        # The live selection is platform_toolsets.<platform> (+ the global
-        # agent.disabled_toolsets suppression); tools.enabled_toolsets is not
-        # written by any surface, so watching it left Bot Chats blind to real
-        # `hermes tools enable/disable` edits (#124211). Raw slices: any edit
-        # flips the epoch even when the effective selection is unchanged (one
-        # spurious rebuild at most).
-        surface["platform_toolsets"] = json.dumps(
-            cfg.get("platform_toolsets") or {}, sort_keys=True, default=str)
-        surface["disabled_toolsets"] = _normalized_disabled_toolsets(cfg)
+        # The live selection is platform_toolsets.<platform> minus agent.disabled_toolsets;
+        # tools.enabled_toolsets is written by no surface, so watching it left Bot Chats
+        # blind to `hermes tools enable/disable` (#124211). Raw slices: an edit that leaves
+        # the effective selection unchanged costs one spurious rebuild at most.
+        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        surface["platform_toolsets"] = json.dumps(cfg.get("platform_toolsets") or {}, sort_keys=True, default=str)
+        surface["disabled_toolsets"] = sorted(parse_config_string_list(agent_cfg.get("disabled_toolsets")))
         mcp = cfg.get("mcp_servers")
         surface["mcp"] = json.dumps(mcp, sort_keys=True, default=str) if isinstance(mcp, dict) else ""
     except Exception:

@@ -718,67 +718,27 @@ def _restore_pinned_tools(agent, session_row) -> list:
     return built_for_this_surface
 
 
-def _refresh_bot_chat_tool_snapshot(agent) -> None:
-    """Adopt the current on-disk toolset selection and rebuild tools[] for a Bot Chat
-    capability refresh (#124211).
-
-    A canonical Bot Chat never forks, so without this its tools[] is a fossil of session
-    creation: the epoch rebuilds the prompt while the tool schema stays frozen. The
-    selection is re-resolved (it is what ``hermes tools enable/disable`` writes) and the
-    snapshot rebuilt content-aware like the compaction boundary — no prefix preservation,
-    so a disabled toolset actually drops (the prompt rebuild already breaks the cache).
-    Only a session that already carries a selection adopts a new one: ``None`` means
-    unrestricted and must stay that way. Fail-open: any failure keeps the previous
-    tools[] and the prompt rebuild still lands.
-
-    The selection is resolved the way the desktop/TUI BUILDER resolved it — the ``cli``
-    slice plus ``with_session_toolsets`` — never ``platform_toolsets.<surface>``: the
-    session's surface (``desktop``/``tui``) is not a platform-configuration key, so
-    asking for it fell through to the ``hermes-<surface>`` default and collapsed a
-    28-toolset session to the MCP-only surface in one turn (#124211 review, §1)."""
-    try:
-        from agent.skill_utils import parse_config_string_list
-        from agent.system_prompt import _agent_home
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.tools_config import _get_platform_tools
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from toolsets import with_session_toolsets
-        home = _agent_home(agent)
-        token = set_hermes_home_override(str(home)) if home is not None else None
-        try:
-            cfg = load_config_readonly() or {}
-        finally:
-            if token is not None:
-                reset_hermes_home_override(token)
-        # Read BEFORE the resolve: the fold-in below has to respect the updated
-        # suppression list, and a later read would arrive after the selection was built.
-        try:
-            agent.disabled_toolsets = (
-                parse_config_string_list((cfg.get("agent") or {}).get("disabled_toolsets")) or None
-            )
-        except Exception:
-            logger.debug("Bot Chat disabled-toolsets re-resolve skipped", exc_info=True)
-        if getattr(agent, "enabled_toolsets", None) is not None:
-            try:
-                base = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
-                agent.enabled_toolsets = sorted(
-                    with_session_toolsets(
-                        base,
-                        getattr(agent, "platform", None),
-                        disabled=agent.disabled_toolsets,
-                    )
-                )
-            except Exception:
-                logger.debug("Bot Chat toolset re-resolve skipped", exc_info=True)
-    except Exception:
-        logger.debug("Bot Chat toolset adoption skipped", exc_info=True)
+def _refresh_bot_chat_tools(agent) -> None:
+    """Rebuild ``agent.tools`` for a Bot Chat capability refresh through the builder that
+    created the session, so the refreshed set is what a fresh desktop/TUI session gets
+    (#124211). A canonical Bot Chat never forks, so its tools[] is otherwise a fossil of
+    session creation: ``hermes tools enable/disable`` writes ``platform_toolsets`` and the
+    automatic between-turns refresh reuses the build-time selection. Only the desktop/TUI
+    gateway keeps agents alive across turns; every other surface builds a fresh agent whose
+    tools[] already reflects config. No prefix preservation: a disabled toolset must drop,
+    and the prompt rebuild this rides on already breaks the cache."""
+    platform = getattr(agent, "platform", None)
+    if platform not in ("desktop", "tui"):
+        return
     try:
         from tools.mcp_tool_agent import refresh_agent_mcp_tools
-        added = refresh_agent_mcp_tools(agent, quiet_mode=True, content_aware=True)
-        if added:
-            logger.info("Bot Chat capability refresh added tools: %s", sorted(added))
-    except Exception:
-        logger.debug("Bot Chat tool refresh skipped", exc_info=True)
+        from tui_gateway.server import _load_disabled_toolsets, _load_enabled_toolsets
+        refresh_agent_mcp_tools(
+            agent, enabled_override=_load_enabled_toolsets(platform),
+            disabled_override=_load_disabled_toolsets(), quiet_mode=True, content_aware=True)
+    except Exception as exc:
+        logger.warning("Bot Chat capability refresh kept the previous tools for session %s: %s",
+                       agent.session_id, exc)
 
 
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
@@ -820,7 +780,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
                 pass
-            _refresh_bot_chat_tool_snapshot(agent)
+            _refresh_bot_chat_tools(agent)
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
             stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is

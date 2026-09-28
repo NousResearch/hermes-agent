@@ -1,3 +1,4 @@
+import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { $subagentsBySession } from '@/store/subagents'
 
@@ -23,9 +24,16 @@ export function WorkResults({ sessionId }: { sessionId: string }) {
                 ? 'Wymaga uwagi'
                 : 'Przerwano'}
           </summary>
-          <p className="mt-2 whitespace-pre-wrap text-muted-foreground">
-            {item.summary || 'Backend nie dostarczył raportu wyniku. Otwórz rozmowę, aby sprawdzić szczegóły.'}
-          </p>
+          <div className="mt-2 text-muted-foreground">
+            {item.summary ? (
+              // The report is a model answer, markdown and all: rendering it as
+              // raw text is what put literal `**bold**`, `| a | b |` and
+              // backticks on screen above the composer.
+              <CompactMarkdown text={item.summary} />
+            ) : (
+              <p>Backend nie dostarczył raportu wyniku. Otwórz rozmowę, aby sprawdzić szczegóły.</p>
+            )}
+          </div>
           <p className="mt-2 font-medium">Gdzie jest wynik?</p>
           {item.filesWritten.length ? (
             <ul className="mt-1 space-y-1">

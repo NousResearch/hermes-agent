@@ -2,6 +2,7 @@ import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { type FC, useEffect, useState } from 'react'
 
 import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/components/assistant-ui/thread/user-message'
+import { CompactMarkdown } from '@/components/chat/compact-markdown'
 
 // Sender-side inter-agent delivery: `hermes -p <agent> chat … -q "Message
 // from 🤖 <sender>…"` run through the terminal tool IS the messaging
@@ -121,8 +122,10 @@ export const AgentDeliveryNotice: FC<ToolCallMessagePartProps> = props => {
             <summary className="cursor-pointer select-none text-center text-muted-foreground hover:text-muted-foreground">
               show message
             </summary>
-            <div className="mt-1 max-w-[36rem] whitespace-pre-wrap rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
-              {replyBody}
+            <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left">
+              {/* The reply from the other agent is markdown, same as any other
+                  answer — plain `whitespace-pre-wrap` printed its markers. */}
+              <CompactMarkdown text={replyBody} />
             </div>
           </details>
         </div>

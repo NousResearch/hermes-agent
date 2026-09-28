@@ -831,6 +831,10 @@ _LATER_TASK_COLUMNS = (
     ("goal_mode", "goal_mode INTEGER NOT NULL DEFAULT 0"),
     ("goal_max_turns", "goal_max_turns INTEGER"),
     ("completion_contract", "completion_contract TEXT"),
+    ("completion_state", "completion_state TEXT"),
+    ("completion_evidence", "completion_evidence TEXT"),
+    ("requires_live_verification", "requires_live_verification INTEGER NOT NULL DEFAULT 0"),
+    ("verification_owner_id", "verification_owner_id TEXT"),
     ("session_id", "session_id TEXT"),
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),

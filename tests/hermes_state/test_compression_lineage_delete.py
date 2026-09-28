@@ -128,6 +128,42 @@ class TestCompressionLineageDelete:
 
         assert _session_ids(db) == {root, mid, tip}
 
+    def test_deleting_a_tip_removes_its_fork_sibling(self, db: SessionDB):
+        """A fork-sibling continuation (the other child of the same compression fork point) is
+        part of the lineage touching the deleted tip and must not resurface after it."""
+        root, mid, tip = _seed_compression_lineage(db)
+        # Second compression continuation of ``mid`` — the deleted tip's fork-sibling.
+        db.create_session("fork-sid", parent_session_id="mid-sid", source="test")
+        db.append_message("fork-sid", "user", "hello fork-sid")
+        db.append_message("fork-sid", "assistant", "answer fork-sid")
+
+        assert db.delete_session(tip) is True
+
+        remaining = _session_ids(db)
+        assert "fork-sid" not in remaining, "a fork-sibling continuation must not survive the deleted tip"
+        assert remaining == set()
+
+    def test_deleting_a_seed_removes_the_branch_forked_under_it(self, db: SessionDB):
+        """A branch hanging directly under the deleted row is part of the tree being removed —
+        with its own continuations — even though branches under other lineage rows stay behind
+        as accessible orphans (``test_a_branch_child_survives_deleting_its_compression_parent``)."""
+        root, mid, tip = _seed_compression_lineage(db)
+        db.create_session("branch-sid", parent_session_id="tip-sid", source="test")
+        db._conn.execute(
+            "UPDATE sessions SET model_config = ? WHERE id = ?",
+            (json.dumps({"_branched_from": "tip-sid"}), "branch-sid"),
+        )
+        db._conn.commit()
+        db.create_session("branch-cont-sid", parent_session_id="branch-sid", source="test")
+        _mark_compression_parent(db, "branch-sid")
+
+        assert db.delete_session(tip) is True
+
+        remaining = _session_ids(db)
+        assert "branch-sid" not in remaining, "a branch forked under the deleted row must not survive it"
+        assert "branch-cont-sid" not in remaining, "the branch's continuation must not resurface"
+        assert remaining == set()
+
     def test_bulk_delete_removes_whole_lineages(self, db: SessionDB):
         _seed_compression_lineage(db)
         db.create_session("solo-sid", source="test")

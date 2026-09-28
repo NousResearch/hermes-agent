@@ -185,16 +185,9 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
 # branch / delegate / tool children), so a delete removes exactly the rows the pickers would have
 # projected together. Deleting only the visible tip orphans the compressed ancestors
 # (``parent_session_id`` is NULLed for FK safety) and they resurface in session pickers on the next
-# refresh — the session the user just deleted comes back. (#53684)
-_LINEAGE_DESCENDANTS_SQL = """
-WITH RECURSIVE lineage(id) AS (
-    SELECT id FROM sessions WHERE id IN ({ph})
-    UNION
-    SELECT child.id FROM sessions child JOIN lineage ON child.parent_session_id = lineage.id
-    WHERE {edge}
-)
-SELECT id FROM lineage
-"""
+# refresh — the session the user just deleted comes back. The walk widens at every row it
+# reaches: fork-sibling continuations of discovered ancestors and the tree forked under the
+# deleted seed(s) — branch children and their continuations — are part of the lineage too. (#53684)
 _LINEAGE_ANCESTORS_SQL = """
 WITH RECURSIVE lineage(id) AS (
     SELECT parent_session_id FROM sessions WHERE id IN ({ph}) AND parent_session_id IS NOT NULL
@@ -210,14 +203,28 @@ def _compression_lineage_ids(conn, session_ids: List[str]) -> List[str]:
     """All ids in the compression-continuation lineages touching *session_ids*, seeds included.
 
     A seed may sit in the middle of a chain, so the walk goes both up (ancestors) and down
-    (descendants) along the canonical compression-continuation edge. Boundaries are the edge
-    itself: branch / reset / delegate / tool children are not compression continuations, so they
-    stay behind as accessible orphans instead of being deleted with the lineage.
+    (descendants) along the canonical compression-continuation edge, and it widens at every row
+    it reaches: a fork-sibling continuation hanging off a discovered ancestor is part of the
+    same lineage and walks too, and the tree hanging under a seed — branch children forked from
+    the seed and their own continuations — walks with it. Boundaries are the edges themselves:
+    branch children of non-seed lineage rows, and reset / delegate / tool children, are not
+    compression continuations, so they stay behind as accessible orphans instead of being
+    deleted with the lineage (delegate children of doomed rows still cascade separately via
+    ``_delete_delegate_children``).
     """
     seeds = {sid for sid in session_ids if isinstance(sid, str) and sid}
     if not seeds:
         return []
-    child_edge = _COMPRESSION_CHILD_SQL.format(a="child")
+    # Canonical continuation child edge — exactly its documented definition (parent ended
+    # 'compression', child is not a branch / delegate / tool row). Branch children join the walk
+    # only under the seeds themselves (see below).
+    comp_child = (
+        f"({_COMPRESSION_CHILD_SQL.format(a='child')}"
+        f" AND NOT ({_BRANCH_CHILD_SQL.format(a='child')})"
+        f" AND {_delegate_from_json('child.model_config')} IS NULL"
+        f" AND COALESCE(child.source, '') != 'tool')"
+    )
+    branch_child = _BRANCH_CHILD_SQL.format(a="child")
     parent_edge = (
         f"EXISTS (SELECT 1 FROM sessions p WHERE p.id = s.parent_session_id"
         f" AND p.end_reason = 'compression')"
@@ -228,13 +235,41 @@ def _compression_lineage_ids(conn, session_ids: List[str]) -> List[str]:
     found: set[str] = set(seeds)
     for chunk in _id_chunks(sorted(seeds), _SQL_IN_CHUNK):
         ph = _session_ids_placeholders(chunk)
-        ids = [row["id"] for row in conn.execute(
-            _LINEAGE_DESCENDANTS_SQL.format(ph=ph, edge=child_edge), chunk,
-        ).fetchall()]
-        ids += [row["id"] for row in conn.execute(
-            _LINEAGE_ANCESTORS_SQL.format(ph=ph, parent_edge=parent_edge), chunk,
-        ).fetchall()]
-        found.update(sid for sid in ids if sid)
+        found.update(sid for sid in (
+            row["id"] for row in conn.execute(
+                _LINEAGE_ANCESTORS_SQL.format(ph=ph, parent_edge=parent_edge), chunk,
+            ).fetchall()
+        ) if sid)
+    # Fixpoint expansion over two frontiers. ``tree`` = rows under a seed: their child tree
+    # walks on BOTH edges (compression continuations and branches forked under the seed).
+    # ``chain`` = rows reached along the lineage: they widen down the compression edge only, so
+    # a fork-sibling continuation of a discovered ancestor joins the walk while branch children
+    # of non-seed rows stay behind as orphans.
+    tree: set[str] = set(seeds)
+    chain: set[str] = found - tree
+    tree_frontier: List[str] = sorted(tree)
+    chain_frontier: List[str] = sorted(chain)
+    while tree_frontier or chain_frontier:
+        next_tree: set[str] = set()
+        next_chain: set[str] = set()
+        for frontier, edge_sql, into in (
+            (tree_frontier, f"({comp_child} OR {branch_child})", next_tree),
+            (chain_frontier, comp_child, next_chain),
+        ):
+            for chunk in _id_chunks(frontier, _SQL_IN_CHUNK):
+                ph = _session_ids_placeholders(chunk)
+                for row in conn.execute(
+                    f"SELECT id FROM sessions child WHERE child.parent_session_id IN ({ph})"
+                    f" AND {edge_sql}",
+                    chunk,
+                ).fetchall():
+                    if row["id"] and row["id"] not in found:
+                        into.add(row["id"])
+        found.update(next_tree, next_chain)
+        tree.update(next_tree)
+        chain.update(next_chain)
+        tree_frontier = sorted(next_tree)
+        chain_frontier = sorted(next_chain)
     return sorted(found)
 
 
@@ -1657,8 +1692,9 @@ class SessionSessionsMixin:
         expected_display_messages: Optional[Dict[str, List[Dict[str, Any]]]] = None,
         exclude_active_write_guards: bool = False,
     ) -> bool:
-        """Delete a session and its messages; delegate children cascade, branch children are
-        orphaned. *expected_delete_ids*: proceed only if parent + delegate cascade still equals that
+        """Delete a session and its messages; delegate children cascade, branch children of other
+        lineage rows are orphaned (a branch forked under the deleted row is removed with it).
+        *expected_delete_ids*: proceed only if parent + delegate cascade still equals that
         set (re-walked inside the transaction on purpose: export-before-delete fails closed).
         Optional expected ids fence delegate drift; expected display snapshots fence transcript
         drift. Both checks run inside the same write transaction as deletion.
@@ -1671,8 +1707,11 @@ class SessionSessionsMixin:
         ``get_compression_tip`` and ``list_sessions_rich`` use to project roots forward to their
         tips). Deleting only the visible tip orphans the compressed ancestors, which then resurface
         in session pickers on the next refresh as a "deleted session resurrected"; deleting any
-        member removes the whole logical conversation. Branch children are excluded by the edge and
-        stay behind as accessible orphans.
+        member removes the whole logical conversation. The walk widens at every row it reaches,
+        so a fork-sibling continuation of a removed ancestor dies too, and the tree hanging under
+        *session_id* — branch children forked from the deleted row and their own continuations —
+        is removed with it. Branch children of lineage rows other than the deleted one are
+        excluded by the edge and stay behind as accessible orphans.
         """
         removed_ids: List[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None

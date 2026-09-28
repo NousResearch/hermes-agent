@@ -320,11 +320,38 @@ def _same_origin(base_url: str, configured: str) -> bool:
     return bool(want[1]) and got == want
 
 
+def _custom_stored_key_error(bu: str) -> Optional[str]:
+    """Bare 'custom' is BYOK only while the runtime attaches no stored key. The resolver picks
+    the host-gated env keys by HOSTNAME, so a base_url that would receive one must be an origin
+    the operator or the provider registry names; pool and ``model.key_env`` keys already match
+    their configured URL exactly."""
+    from agent.credential_pool import _iter_custom_providers
+    from hermes_cli import runtime_provider as rp
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.runtime_provider_custom import _DIRECT_API_BASE_URLS
+    from hermes_constants import OPENROUTER_BASE_URL
+
+    if not any(rp.has_usable_secret(key) for key in rp._host_gated_env_key_candidates(bu, ollama=True)):
+        return None
+    configured = [
+        rp._get_model_config().get("base_url"), rp.get_secret_str("OPENAI_BASE_URL", ""),
+        OPENROUTER_BASE_URL, *_DIRECT_API_BASE_URLS.values(),
+        *(getattr(p, "inference_base_url", "") for p in PROVIDER_REGISTRY.values()),
+        *(entry.get("base_url") for _, entry in _iter_custom_providers()),
+    ]
+    if any(_same_origin(bu, str(url)) for url in configured if url):
+        return None
+    return (
+        f"base_url {bu!r} is not allowed for provider 'custom'. A stored API key matches its "
+        f"hostname, and a stored credential may only be sent to a configured endpoint (same "
+        f"scheme, host and port); configure the endpoint as a custom provider to use it.")
+
+
 def _validate_cron_base_url(
     provider: Optional[Any], base_url: Optional[Any]) -> Optional[str]:
-    """Reject pairing a named provider's stored credential with an off-origin base_url (a
-    prompt-injected job could exfil the key). Allowed: no override; bare 'custom' (pure BYOK,
-    key derived from the base_url); an override with the same origin as the named provider's
+    """Reject pairing a stored credential with an off-origin base_url (a prompt-injected job
+    could exfil the key). Allowed: no override; bare 'custom' while no stored key would go with
+    it, or at a configured origin; an override with the same origin as the named provider's
     own endpoint. Everything else fails closed. Returns an error string if blocked, else None."""
     bu = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
     if not bu:
@@ -343,8 +370,8 @@ def _validate_cron_base_url(
     except Exception:
         return f"Unable to validate base_url override for provider {prov!r}; refused."
 
-    if prov.lower() == "custom":  # pure BYOK: key keyed by THIS base_url, never a stored secret
-        return None
+    if prov.lower() == "custom":
+        return _custom_stored_key_error(bu)
     if has_named_custom_provider(prov):
         # A NAMED custom provider's STORED key is still sent to an override base_url.
         try:

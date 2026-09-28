@@ -1,0 +1,20 @@
+name: snag-shelf
+repo: https://github.com/aydnOktay/hermes-snag-shelf
+sha: da1b51c53235010ca161bfda67097bfbc74ae277
+description: Everything that snagged - cross-session shelf of failed tool calls.
+  Full Desktop page, chip, pin, fix-prompt insert. No API keys.
+maintainer: aydnOktay
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/aydnOktay/hermes-snag-shelf
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - snag_shelf_list
+  - snag_shelf_clear
+  provides_hooks:
+  - post_tool_call
+  provides_middleware: []
+  requires_env: []

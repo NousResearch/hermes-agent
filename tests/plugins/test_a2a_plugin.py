@@ -40,39 +40,52 @@ def _free_port() -> int:
 # --------------------------------------------------------------------------
 
 class TestConnectionGateScope:
-    """``A2A_PORT`` decides whether the inbound server starts, so it must resolve through the
-    profile-scoped reader. A bare ``os.getenv`` hands every secondary profile the DEFAULT
-    profile's port under multiplexing: all of them instantiate, the first binds and the rest
-    die with ``bind_failed``."""
+    """``A2A_PORT`` decides whether the inbound server starts, so it must resolve through the profile's
+    own scope. A bare ``os.getenv`` handed every secondary profile the DEFAULT profile's port under
+    multiplexing: all instantiated, the first bound, the rest died ``bind_failed`` (#122126)."""
 
-    def test_missing_scoped_port_is_not_connected(self, monkeypatch):
-        import hermes_cli.gateway as gw
+    @staticmethod
+    def _home(tmp_path, name: str, env: str):
+        home = tmp_path / name
+        home.mkdir()
+        (home / ".env").write_text(env)
+        return home
+
+    def test_secondary_profile_never_borrows_launch_env_port(self, tmp_path, monkeypatch):
+        """A→B→A under multiplex: profile A (own A2A_PORT) connects, profile B (none) does not even though
+        os.environ carries the launch value, then A again. The tools gate follows the same scope."""
+        import agent.secret_scope as ss
+        import hermes_constants
         from plugins.platforms import a2a
 
-        seen: list[str] = []
+        monkeypatch.setenv("A2A_PORT", "9902")  # the launch profile's value, bridged into os.environ
+        home_a = self._home(tmp_path, "s6probe-a", "A2A_PORT=9911\n")
+        home_b = self._home(tmp_path, "s6probe-b", "OTHER=1\n")
+        prev = ss._MULTIPLEX_ACTIVE
+        ss.set_multiplex_active(True)
+        try:
+            seen = []
+            for home in (home_a, home_b, home_a):
+                home_tok = hermes_constants.set_hermes_home_override(str(home))
+                tok = ss.set_secret_scope(ss.build_profile_secret_scope(home), profile_home=str(home))
+                try:
+                    seen.append((a2a.is_connected(SimpleNamespace(extra={})), tools._a2a_tools_available()))
+                finally:
+                    ss.reset_secret_scope(tok)
+                    hermes_constants.reset_hermes_home_override(home_tok)
+        finally:
+            ss.set_multiplex_active(prev)
+        assert seen == [(True, True), (False, False), (True, True)]
 
-        def fake_get_env_value(key: str):
-            seen.append(key)
-            return None  # a secondary profile's own scope carries no A2A_PORT
+    def test_standalone_profile_reads_its_own_environ(self, monkeypatch):
+        """T1 (no multiplex): os.environ IS the profile — A2A_PORT there enables; ``extra.enabled`` always wins."""
+        from plugins.platforms import a2a
 
-        monkeypatch.setattr(gw, "get_env_value", fake_get_env_value)
-        monkeypatch.setattr(os, "getenv", lambda *a, **k: pytest.fail("raw os.getenv during enablement"))
+        monkeypatch.delenv("A2A_PORT", raising=False)
         assert a2a.is_connected(SimpleNamespace(extra={})) is False
-        assert seen == ["A2A_PORT"]
-
-    def test_scoped_port_connects(self, monkeypatch):
-        import hermes_cli.gateway as gw
-        from plugins.platforms import a2a
-
-        monkeypatch.setattr(gw, "get_env_value", lambda key: "9902" if key == "A2A_PORT" else None)
-        assert a2a.is_connected(SimpleNamespace(extra={})) is True
-
-    def test_explicit_extra_enabled_wins(self, monkeypatch):
-        import hermes_cli.gateway as gw
-        from plugins.platforms import a2a
-
-        monkeypatch.setattr(gw, "get_env_value", lambda key: None)
         assert a2a.is_connected(SimpleNamespace(extra={"enabled": True})) is True
+        monkeypatch.setenv("A2A_PORT", "9902")
+        assert a2a.is_connected(SimpleNamespace(extra={})) is True
 
 
 # --------------------------------------------------------------------------

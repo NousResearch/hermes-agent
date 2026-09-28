@@ -33,11 +33,11 @@ def validate_config(config) -> bool:
 
 
 def is_connected(config) -> bool:
-    """'Connected' when explicitly enabled (the gateway only instantiates enabled platforms).
+    """'Connected' when explicitly enabled or the profile's OWN scope carries ``A2A_PORT``.
 
-    ``A2A_PORT`` resolves through the shared scope-aware reader. A bare ``os.getenv`` hands every
-    secondary profile the DEFAULT profile's port under multiplexing, so each of them instantiates
-    an inbound server, the first one binds and every other profile dies with ``bind_failed``.
+    Scoped read, never ``os.getenv``: under multiplexing os.environ is the launch profile's, so a raw
+    read enabled an inbound server in every secondary; all fell back to the default port and N-1 died
+    ``bind_failed`` (#122126).
     """
     extra = getattr(config, "extra", {}) or {}
     if extra.get("enabled"):

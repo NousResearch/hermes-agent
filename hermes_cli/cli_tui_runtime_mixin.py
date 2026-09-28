@@ -193,7 +193,7 @@ class CLITuiRuntimeMixin:
         # Skipped during cooldown (unavailable + last probe < 30 s ago) to
         # avoid blocking 2 s on every turn when the backend is persistently down.
         with suppress(Exception):
-            from agent.memory_health import get_health_state
+            from agent.memory_health import get_health_state, run_probe_bounded
             hs = get_health_state()
             if hs.active_provider and not hs.probe_cooldown_active():
                 mm = getattr(getattr(self, 'agent', None), '_memory_manager', None)
@@ -204,7 +204,10 @@ class CLITuiRuntimeMixin:
                         if callable(probe_fn):
                             _health_before = hs.health
                             try:
-                                result = probe_fn()
+                                # Bounded at the host boundary: a third-party
+                                # probe that hangs is a FAILED probe, never a
+                                # frozen CLI (fail-open).
+                                result = run_probe_bounded(probe_fn)
                                 if result is True:
                                     hs.mark_healthy()
                                 elif result is False:

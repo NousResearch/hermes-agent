@@ -215,6 +215,9 @@ class MemoryProvider(ABC):
         (the default).
 
         Implementations MUST be fast (≤2 s timeout) and side-effect-free.
+        The host additionally bounds the call (``memory_health.PROBE_TIMEOUT_S``)
+        and treats expiry as a failed probe, so a hanging implementation can
+        never freeze the CLI.
         Called once per turn from the CLI after-turn hook — not from the
         status-bar renderer.
 

@@ -610,6 +610,44 @@ class TestInitMemoryOwnership:
         assert prov.initialize_called is True
         assert hs.health == "unavailable"
 
+    def test_foreground_init_failure_surfaces_immediately_on_fresh_state(self):
+        """Regression (review): on a fresh process the indicator identity must
+        be bound BEFORE initialize_all() — its failure hook matches on
+        hs.active_provider, and a startup initialization failure must show
+        Unavailable immediately, not sit at Connecting until a later probe."""
+        from unittest.mock import patch as _patch
+
+        hs = get_health_state()  # fresh process: active "", health unknown
+        mock_agent = MagicMock()
+        mock_agent._memory_enabled = False
+        mock_agent._user_profile_enabled = False
+        mock_agent.enabled_toolsets = []
+        mock_agent.disabled_toolsets = []
+        mock_agent._session_db = None
+        mock_agent.session_cwd = None
+        mock_agent.session_id = "fg-session"
+        mock_agent.side_agent = False
+        mock_agent._parent_session_id = None
+
+        prov = _InitFailingProvider("hindsight")
+        with (
+            _patch("tools.memory_tool.get_builtin_memory_config",
+                   return_value={"provider": "hindsight"}),
+            _patch("plugins.memory.load_memory_provider", return_value=prov),
+        ):
+            from agent.agent_init import _init_memory
+
+            _init_memory(
+                mock_agent,
+                {"memory": {}},
+                skip_memory=False,
+                platform="cli",
+            )
+
+        assert prov.initialize_called is True
+        assert hs.active_provider == "hindsight"
+        assert hs.health == "unavailable"
+
     def test_explicitly_skipped_memory_is_not_reported_unavailable(self):
         """``skip_memory=True`` is an intentional off, not a provider failure
         (review: avoid reporting explicitly skipped memory as unavailable) —

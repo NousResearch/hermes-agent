@@ -205,6 +205,35 @@ class TestTuiAfterTurnMemoryHealth:
         assert hs.reason == ""
 
 
+class TestProbeTimeout:
+    """Review: a probe that outlives its budget is a FAILED probe — the CLI
+    thread must never block on a provider probe indefinitely (fail-open)."""
+
+    def test_probe_timeout_is_treated_as_failed_probe(self, monkeypatch):
+        import time as _time
+
+        import agent.memory_health as _mh
+        monkeypatch.setattr(_mh, "PROBE_TIMEOUT_S", 0.05)
+
+        hs = get_health_state()
+        hs.active_provider = "test_provider"
+        hs.mark_healthy()
+
+        provider = SimpleNamespace(
+            name="test_provider",
+            probe_health=Mock(side_effect=lambda: _time.sleep(10) or True),
+        )
+        cli = _make_cli_for_after_turn(provider)
+
+        start = _time.monotonic()
+        HermesCLI._tui_after_turn(cli)
+        elapsed = _time.monotonic() - start
+
+        assert elapsed < 5  # bounded — did not wait for the 10 s hang
+        assert hs.health == "unavailable"
+        assert hs.probe_cooldown_active() is True  # probe failure arms cooldown
+
+
 class TestAfterTurnUiRefresh:
     """Review: the status bar repaints only on UI events — a probe state
     change must invalidate immediately, without a keypress."""

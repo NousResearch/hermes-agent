@@ -8,6 +8,7 @@ reads it — never probes.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -16,6 +17,12 @@ logger = logging.getLogger(__name__)
 # Cooldown (seconds) after a failed probe before retrying.  Prevents a
 # persistently-down backend from adding 2 s of latency to every turn.
 PROBE_COOLDOWN_S = 30.0
+
+# Hard budget for one probe_health() call at the host boundary.  The ABC asks
+# providers to time out on their own (the reference implementation uses 2 s),
+# but the CLI must stay responsive even against a third-party probe that hangs
+# or uses a client without a timeout — expiry is treated as a FAILED probe.
+PROBE_TIMEOUT_S = 3.0
 
 # AIAgent spawn contexts that are NOT the foreground user-facing agent and
 # therefore never own the process-wide MemoryHealthState.  Audited 2026-09-28
@@ -68,6 +75,37 @@ def is_foreground_health_owner(agent, platform: str = "") -> bool:
     return (platform or "") in FOREGROUND_HEALTH_PLATFORMS and not is_background_agent(
         agent, platform
     )
+
+
+def run_probe_bounded(probe_fn, timeout: float | None = None):
+    """Invoke ``probe_fn`` on a worker thread with a hard deadline.
+
+    Returns the probe result (``True`` / ``False`` / ``None``); re-raises the
+    probe's own exception; raises ``TimeoutError`` when the probe outlives its
+    budget.  Callers treat both error cases as a FAILED probe
+    (``record_probe_failure()`` + ``mark_unavailable()``).  The CLI thread must
+    never block on a provider probe indefinitely — fail-open is the whole point
+    of the indicator.
+    """
+    if timeout is None:
+        timeout = PROBE_TIMEOUT_S
+    box: list = []
+
+    def _run() -> None:
+        try:
+            box.append((True, probe_fn()))
+        except Exception as e:  # noqa: BLE001 — re-raised on the caller's thread
+            box.append((False, e))
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(f"probe_health() exceeded {timeout}s")
+    ok, payload = box[0]
+    if not ok:
+        raise payload
+    return payload
 
 
 @dataclass

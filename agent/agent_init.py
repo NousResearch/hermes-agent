@@ -1382,6 +1382,23 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                         _unavailable_reason = _mp.unavailable_reason()
                     _warn_memory_provider_unavailable(_mem_provider_name, _unavailable_reason)
                 if agent._memory_manager.providers:
+                    if _owns_health_state:
+                        # Bind the indicator identity BEFORE initialize_all():
+                        # its failure hook matches on hs.active_provider, and a
+                        # startup initialization failure must surface as
+                        # Unavailable immediately — not sit at Connecting until
+                        # a later probe (§4: an init exception is an operation
+                        # failure).
+                        with suppress(Exception):
+                            from agent.memory_health import get_health_state as _ghs
+                            _hs_bind = _ghs()
+                            _ext_names = [
+                                p.name for p in agent._memory_manager.providers
+                                if p.name != "builtin"
+                            ]
+                            if _ext_names:
+                                _hs_bind.configured_provider = _mem_provider_name
+                                _hs_bind.set_active_provider(_ext_names[0])
                     agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:

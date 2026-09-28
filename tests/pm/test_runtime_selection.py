@@ -318,9 +318,13 @@ def test_shared_home_bin_counts_only_while_its_launcher_serves_this_install(tmp_
     # neither can certify the directory — what resolution picks there has to *lead* here.
     (shared / entry).write_text(
         f"#!/bin/sh\n# {root}\nexec '{tmp_path / 'other' / 'hermes'}' \"$@\"\n", encoding="utf-8")
+    # POSIX resolution honors the execute bit: without it shutil.which never sees the launcher,
+    # so the assertion below would pass for the wrong reason (ownership is never asked).
+    os.chmod(shared / entry, 0o755)
     assert shared not in runtime_paths.launcher_dirs(root)
     (shared / entry).write_text(
         f"#!/bin/sh\nexec '{root / '.hermes' / 'bin' / 'hermes'}' \"$@\"\n", encoding="utf-8")
+    os.chmod(shared / entry, 0o755)
     assert shared in runtime_paths.launcher_dirs(root)
 
 

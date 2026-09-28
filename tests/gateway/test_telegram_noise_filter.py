@@ -36,6 +36,10 @@ NOISY_STATUS_MESSAGES = [
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⏳ Retrying in 4.2s (attempt 1/3)...",
+    # Empty-response retry with the attempt counter, as agent/turn_empty_response.py
+    # formats it (#101138): the counter sits between "retrying" and "in".
+    "⚠️ Empty response from model — retrying (1/3) in 8s",
+    "⚠️ Empty response from model — retrying (2/2) in 12s — high-cost request, reduced retry budget",
     # Buffered overflow/attempt-cap retry chatter (replayed on retry exhaustion).
     "🗜️ Context too large (~250,000 tokens) — compressing (1/3)...",
     "🗜️ Compressed 30 → 12 messages, retrying...",

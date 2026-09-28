@@ -96,12 +96,9 @@ def test_work_committed_on_a_detached_head_stays_reachable(w):
     cp = w.update()
 
     assert w.head() == target or cp.returncode != 0, f"update neither landed nor refused:\n{w.diag(cp)}"
-    with known_failure(r"reachable only from the reflog",
-                       "gated on #124643: switching a detached HEAD to main leaves commits made on it "
-                       "reachable only from the reflog, and the output never mentions them"):
-        assert w.refs_containing(work) or w.head() == work, (
-            f"commit {work[:12]} made on the detached HEAD is reachable only from the reflog after the update:\n"
-            f"{w.diag(cp)}")
+    assert w.refs_containing(work) or w.head() == work, (
+        f"commit {work[:12]} made on the detached HEAD is reachable only from the reflog after the update:\n"
+        f"{w.diag(cp)}")
 
 
 def test_abandoned_interactive_rebase_is_healed_or_refused(w):

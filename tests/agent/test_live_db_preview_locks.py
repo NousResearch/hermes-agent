@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from agent.context_references import _expand_path_reference, parse_context_references
 from hermes_state import SessionDB
 from hermes_cli.web_routers.files import fs_download, fs_read_text
+from tests.posix_lock_probe import own_posix_locks
 
 
 @pytest.mark.platforms("linux")
@@ -43,12 +44,6 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
         lock_fd = os.open(path, os.O_RDONLY)
         fcntl.lockf(lock_fd, fcntl.LOCK_SH, 1, 4096)
 
-        def posix_locks(file):
-            inode = file.stat().st_ino
-            return sorted(line.split(": ", 1)[1] for line in Path("/proc/locks").read_text(encoding="utf-8").splitlines()
-                          if f":{inode} " in line and "POSIX  ADVISORY" in line
-                          and f" {os.getpid()} " in line)
-
         def rival_locked():
             code = ("import sqlite3,sys; c=sqlite3.connect(sys.argv[1], timeout=0); "
                     "c.execute('BEGIN IMMEDIATE'); c.rollback(); c.close()")
@@ -56,7 +51,7 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
                                     capture_output=True, text=True, timeout=10)
             return result.returncode != 0 and "database is locked" in result.stderr
 
-        before = (posix_locks(path), posix_locks(shm))
+        before = (own_posix_locks(path), own_posix_locks(shm))
         assert all(before), "fixture must hold POSIX main and WAL-sidecar locks"
         assert rival_locked(), "second process must be excluded before the preview"
 
@@ -81,7 +76,7 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
             warning, block = _expand_path_reference(ordinary, tmp_path.parent)
             assert warning is None and block is not None and "ordinary readable text" in block
 
-        assert (posix_locks(path), posix_locks(shm)) == before
+        assert (own_posix_locks(path), own_posix_locks(shm)) == before
         assert rival_locked(), "second process entered a still-open write transaction"
         conn.commit()
         code = (

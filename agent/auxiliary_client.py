@@ -5801,7 +5801,22 @@ def _client_cache_key(
     api_key_key = _runtime_cache_discriminator("api_key", api_key or "")
     # Profile home leads the key: callers that omit api_key (pool / Nous auth.json paths) would
     # otherwise share one client across multiplex profiles holding different credentials.
-    return (hermes_home_key(), provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key)
+    return (hermes_home_key(), provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key,
+            _borrowed_main_credential_key(provider, base_url, api_key, runtime))
+
+
+def _borrowed_main_credential_key(provider: str, base_url: Optional[str], api_key: Any, runtime: Dict[str, Any]) -> tuple:
+    """What a keyless ``custom`` route borrows from the main runtime when its client is built.
+
+    The client keeps that credential for its lifetime, so it joins the cache key: otherwise a
+    later runtime (another session, a ``/model`` switch) is served the earlier one's key.
+    """
+    if api_key or _normalize_aux_provider(provider) != "custom":
+        return ()
+    if base_url:
+        borrowed = _read_main_api_key_if_same_host(_to_openai_base_url(base_url).strip())
+        return (_runtime_cache_discriminator("api_key", borrowed),)
+    return (runtime.get("base_url", ""), _runtime_cache_discriminator("api_key", runtime.get("api_key", "")))
 
 
 def _current_event_loop() -> Any:

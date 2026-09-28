@@ -145,6 +145,22 @@ def test_subagent_tool_mirror_follows_tool_progress_not_reasoning(monkeypatch):
         assert [event[0] for event in events if event[0].startswith("tool.")] == expected, sid
 
 
+def test_tool_progress_off_keeps_reasoning_blocks(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "tools-off-reasoning-on", show_reasoning=True, tool_progress="off")
+
+    server._on_tool_progress("tools-off-reasoning-on", "reasoning.available", "_thinking", "finished thought", None)
+    server._on_tool_progress(
+        "tools-off-reasoning-on", "moa.reference", "reference-a", "other model's thoughts", None
+    )
+    server._on_tool_progress(
+        "tools-off-reasoning-on", "tool.output_risk", "terminal", None, None,
+        tool_call_id="t1", risk_metadata={"risk": "high", "findings": ["secret"]},
+    )
+
+    assert [event[0] for event in events] == ["reasoning.available", "moa.reference"]
+
+
 def test_hidden_reasoning_drops_moa_reference_chrome(monkeypatch):
     events = _capture(monkeypatch)
     _session(monkeypatch, "hide-moa", show_reasoning=False, effort="high")

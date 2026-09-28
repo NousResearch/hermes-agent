@@ -371,8 +371,9 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
 # the stable id and args; an id-less duplicate row makes the desktop live view diverge from history.
 
 def _progress_output_risk(sid, name, preview, kw):
+    # A risk badge on a tool row: tool chrome, so it follows display.tool_progress.
     metadata = kw.get("risk_metadata")
-    if isinstance(metadata, dict):
+    if isinstance(metadata, dict) and _tool_progress_enabled(sid):
         _emit("tool.output_risk", sid, {
             "tool_id": str(kw.get("tool_call_id") or ""), "name": str(name), "risk": str(metadata.get("risk") or "low"),
             "findings": [str(item) for item in metadata.get("findings", [])], "redacted": bool(metadata.get("redacted", False)),
@@ -498,8 +499,8 @@ def _on_tool_progress(
     # tool-progress chrome: it must survive display.tool_progress=off like todo.updated does.
     if event_type.startswith("subagent."):
         return _progress_subagent(sid, name, preview, _kwargs, event_type)
-    if not _tool_progress_enabled(sid):
-        return
+    # No blanket tool_progress gate here: reasoning.available and moa.* are reasoning
+    # content that follow display.show_reasoning in their own handlers.
     handler, requires = _PROGRESS_HANDLERS.get(event_type, (None, None))
     if handler is not None and (requires is None or {"name": name, "preview": preview}[requires]):
         handler(sid, name, preview, _kwargs)

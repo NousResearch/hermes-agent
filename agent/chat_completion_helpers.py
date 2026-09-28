@@ -1598,11 +1598,14 @@ def _emit_native_codex_reasoning_summaries(agent, assistant_message, reasoning_t
         return False
     # Use the ordinary delivery owner for writer fencing and plugin observers.
     delivery = getattr(agent, "_fire_reasoning_event", None) or callback
-    for item in native:
+    # Preserve the exact flat view validated by native_reasoning_items: one
+    # newline within an item, two between items. Identified consumers need it too.
+    for item_index, item in enumerate(native):
         for index, part in enumerate(item["summary"]):
             source_id = f"{item['id']}:summary:{index}"
+            separator = "\n" if index else ("\n\n" if item_index else "")
             delivery("start", source_id, "")
-            delivery("delta", source_id, part["text"])
+            delivery("delta", source_id, separator + part["text"])
             delivery("end", source_id, "")
     return True
 

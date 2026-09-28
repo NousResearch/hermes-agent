@@ -363,3 +363,10 @@ test('#109795: a slow but live updater past the ceiling still blocks a second ha
   assert.ok(conflict, 'age alone must not admit a second updater')
   assert.equal(conflict.pid, 1010)
 })
+
+test('markerPath: a profile home shares its install root lock (#123376)', () => {
+  const root = tmpHome('profile-root')
+
+  assert.equal(markerPath(path.join(root, 'profiles', 'work')), path.join(root, '.hermes-update-in-progress'))
+  assert.equal(markerPath(root), path.join(root, '.hermes-update-in-progress'))
+})

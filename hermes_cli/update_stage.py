@@ -34,8 +34,8 @@ MARKER_NAME = ".hermes-update-in-progress"
 
 
 def _process_home() -> Path:
-    """The marker and the shim's log live in the PROCESS home (update_lock.update_marker_path):
-    the shim resolved ``$HERMES_HOME`` or the platform default, never a profile override, and
+    """The shim's log lives in the PROCESS home (the marker in its install root,
+    update_lock.update_marker_path): the shim resolved ``$HERMES_HOME`` or the platform default, never a profile override, and
     the platform default (sudo invoker, data-dir suffix) is not ``~/.hermes`` everywhere."""
     from hermes_constants import get_process_hermes_home
     return get_process_hermes_home()
@@ -58,7 +58,8 @@ def _status_from_marker() -> Path | None:
     update) or no matching file → no UI.
     """
     try:
-        pid = int((_process_home() / MARKER_NAME).read_text(encoding="utf-8-sig")
+        from hermes_cli.update_lock import update_marker_path
+        pid = int(update_marker_path().read_text(encoding="utf-8-sig")
                   .splitlines()[0].strip())
     except (OSError, ValueError, IndexError):
         return None

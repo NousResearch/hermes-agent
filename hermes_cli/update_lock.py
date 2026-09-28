@@ -51,15 +51,34 @@ _MAX_ANCESTRY_DEPTH = 128
 UPDATE_EXIT_CONCURRENT = 2
 
 
+def install_home(home: Path) -> Path:
+    """The install root owning *home*: ``<root>/profiles/<name>`` maps to ``<root>``.
+
+    Same lexical rule as the remote marker probes (``remoteInstallRoot`` in
+    ``electron/remote-lifecycle.ts``, ``managed-ssh-update.ts``) and the Rust/Electron local readers.
+    """
+    parent = home.parent.name
+    return home.parent.parent if (parent.lower() if os.name == "nt" else parent) == "profiles" else home
+
+
 def update_marker_path() -> Path:
     """Path of the shared update marker.
 
-    Uses the *process* Hermes home (never the context-local profile override): the Rust
-    updater resolves ``$HERMES_HOME`` or the platform default and the desktop pins that same
-    value into the updater's env, so a profile-scoped path would be one the other owners never look at.
+    One lock per install, not per profile: it lives in the install root of the *process*
+    Hermes home (never the context-local profile override). A profile gateway runs with
+    ``HERMES_HOME=<root>/profiles/<name>``; a per-profile marker let its launch-time source
+    completion run concurrently with ``hermes update`` (#123376). The Rust updater and the
+    desktop resolve the same root.
     """
     from hermes_constants import get_process_hermes_home
-    return get_process_hermes_home() / MARKER_NAME
+    return install_home(get_process_hermes_home()) / MARKER_NAME
+
+
+def _legacy_marker_paths() -> list[Path]:
+    """Where an older updater run from a profile shell claimed the lock (the profile home)."""
+    from hermes_constants import get_process_hermes_home
+    legacy = get_process_hermes_home() / MARKER_NAME
+    return [] if legacy == update_marker_path() else [legacy]
 
 
 def _pid_alive(pid: int) -> bool:
@@ -338,8 +357,13 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     Mirrors ``readLiveUpdateMarker`` in ``electron/update-marker.ts``: absent, unreadable,
     malformed, dead-pid, and past-the-ceiling-without-verified-identity all mean "no live
     update" (see :func:`marker_owner_is_live`), and a stale marker file is deleted so it can't
-    strand future runs. Never raises.
+    strand future runs. Without *path*, a legacy per-profile marker is honored too. Never raises.
     """
+    if path is None:
+        for legacy in _legacy_marker_paths():
+            holder = read_live_update(path=legacy)
+            if holder is not None:
+                return holder
     marker = path or update_marker_path()
     try:
         lines = marker.read_text(encoding="utf-8-sig").splitlines()
@@ -395,6 +419,7 @@ class UpdateLock:
 
     def __init__(self, *, path: Path | None = None) -> None:
         self.path = path or update_marker_path()
+        self._legacy_paths = [] if path else _legacy_marker_paths()
         self.acquired = False
         self.holder: UpdateHolder | None = None
 
@@ -405,7 +430,9 @@ class UpdateLock:
         is our own orchestrating parent: run under ITS claim and leave its marker untouched on
         release. The ancestry path covers staged updaters older than the env-var export.
         """
-        existing = read_live_update(path=self.path)
+        existing = next(
+            (h for p in (*self._legacy_paths, self.path) if (h := read_live_update(path=p)) is not None), None,
+        )
         # A live claim naming our own pid is a killed update's marker whose pid this retry
         # inherited (containers restart pid numbering): no other live process has our pid, and
         # nothing pre-writes a marker for `hermes update` (it always runs under a parent's claim).

@@ -75,6 +75,37 @@ def test_marker_path_follows_process_hermes_home(tmp_path, monkeypatch):
     assert update_marker_path() == tmp_path / ".hermes-update-in-progress"
 
 
+def test_profile_home_resolves_the_install_wide_marker(tmp_path, monkeypatch):
+    """A profile gateway pins HERMES_HOME=<root>/profiles/<name> (#123376)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "work"))
+    assert update_marker_path() == tmp_path / ".hermes-update-in-progress"
+
+
+def test_profile_process_sees_the_lock_held_at_the_install_root(tmp_path, monkeypatch, other_pid):
+    """`hermes update` holds <root>'s lock; a profile gateway's prepare_launch lock must be refused (#123376)."""
+    (tmp_path / "profiles" / "work").mkdir(parents=True)
+    _claim(tmp_path / ".hermes-update-in-progress", other_pid)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "work"))
+
+    assert read_live_update().pid == other_pid
+    lock = UpdateLock()
+    assert lock.acquire() is False
+    assert lock.holder.pid == other_pid
+
+
+def test_profile_process_still_honors_a_legacy_per_profile_marker(tmp_path, monkeypatch, other_pid):
+    """An older updater run from a profile shell wrote the marker into the profile home."""
+    profile = tmp_path / "profiles" / "work"
+    profile.mkdir(parents=True)
+    _claim(profile / ".hermes-update-in-progress", other_pid)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    lock = UpdateLock()
+    assert lock.acquire() is False
+    assert lock.holder.pid == other_pid
+    assert not (tmp_path / ".hermes-update-in-progress").exists()
+
+
 def test_acquire_writes_pid_and_start_time(marker):
     lock = UpdateLock(path=marker)
 

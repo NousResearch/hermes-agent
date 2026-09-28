@@ -174,8 +174,13 @@ export function cachedProcessStartMs(
   return hit?.value
 }
 
+// One lock per install: a profile home (<root>/profiles/<name>) resolves to <root>,
+// matching update_marker_path() in hermes_cli/update_lock.py (#123376).
 export function markerPath(hermesHome) {
-  return path.join(hermesHome, '.hermes-update-in-progress')
+  const parent = path.basename(path.dirname(hermesHome))
+  const isProfile = (process.platform === 'win32' ? parent.toLowerCase() : parent) === 'profiles'
+
+  return path.join(isProfile ? path.dirname(path.dirname(hermesHome)) : hermesHome, '.hermes-update-in-progress')
 }
 
 // True only if a host process with this pid is currently alive. Signal 0 does

@@ -590,6 +590,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
     from agent.history_commentary import project_history_commentary
+    from agent.prompt_builder import STEER_DISPLAY_KIND
     from agent.turn_failure_copy import untyped_failed_turn_display_kind
 
     # inline_images=False (#116511): render content through the gateway's ``_coerce_message_text``
@@ -615,6 +616,12 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
         if failed_turn:
             message = {**message, "display_kind": failed_turn}
         if not is_compaction_summary_message(message):
+            if message.get("role") == "user" and message.get("display_kind") == STEER_DISPLAY_KIND:
+                from agent.conversation_compression import _extract_steer_text_from_message
+                steer_text = _extract_steer_text_from_message(message)
+                if steer_text:
+                    # Match session.resume without changing replay/export content.
+                    message = {**message, "display_content": steer_text}
             projected_messages.append(message)
             continue
         display_view = project_compaction_message_for_display(message)

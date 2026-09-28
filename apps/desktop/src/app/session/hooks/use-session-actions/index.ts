@@ -886,7 +886,9 @@ export function useSessionActions({
         // and land the session in the wrong profile (#124265). All-profiles
         // view has no owner and keeps the ordinary fallback.
         const projectOwnerProfile =
-          options?.profile === undefined && typeof options?.cwd === 'string' ? (projectProfile() ?? undefined) : undefined
+          options?.profile === undefined && typeof options?.cwd === 'string'
+            ? (projectProfile() ?? undefined)
+            : undefined
 
         const optionProfile = options?.profile ?? projectOwnerProfile
 

@@ -92,7 +92,11 @@ describe('openSessionInNewWindow', () => {
     await openSessionInNewWindow('orphan-not-listed-yet', { watch: true })
 
     expect(open).toHaveBeenCalledWith('s1', { profile: 'research', connectionId: 'remote-a', watch: undefined })
-    expect(open).toHaveBeenCalledWith('child-not-listed-yet', { profile: 'research', connectionId: 'remote-a', watch: true })
+    expect(open).toHaveBeenCalledWith('child-not-listed-yet', {
+      profile: 'research',
+      connectionId: 'remote-a',
+      watch: true
+    })
     expect(open).toHaveBeenCalledWith('orphan-not-listed-yet', { profile: 'work', connectionId: null, watch: true })
     expect(notifyError).not.toHaveBeenCalled()
     // The owner resolver's lazy import is the heavy session-actions module.

@@ -145,4 +145,13 @@ describe('hasNonNvidiaGpuVendor', () => {
     expect(hasNonNvidiaGpuVendor(['0X10DE\n'])).toBe(false)
     expect(hasNonNvidiaGpuVendor(['0x8086\n'])).toBe(true)
   })
+
+  it('treats an unreadable vendor entry as unknown, not a second GPU (single-NVIDIA host + vgem/vkms)', () => {
+    expect(hasNonNvidiaGpuVendor(['0x10de', ''])).toBe(false)
+    expect(hasNonNvidiaGpuVendor(['', '0x10de', ''])).toBe(false)
+  })
+
+  it('ignores garbage that is not a well-formed PCI vendor ID', () => {
+    expect(hasNonNvidiaGpuVendor(['0x10de', 'not-a-vendor-id'])).toBe(false)
+  })
 })

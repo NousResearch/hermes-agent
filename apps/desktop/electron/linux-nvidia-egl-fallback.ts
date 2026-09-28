@@ -35,13 +35,26 @@ export const NVIDIA_BROKEN_EGL_MAJOR = 580
 /** PCI vendor ID for NVIDIA, as reported by /sys/class/drm/<card>/device/vendor. */
 const NVIDIA_PCI_VENDOR_ID = '0x10de'
 
+/** A well-formed PCI vendor ID, e.g. `0x10de`. Anything else is unreadable/unknown, not a GPU. */
+const PCI_VENDOR_ID_RE = /^0x[0-9a-f]+$/
+
 /**
  * True when at least one reported PCI vendor ID names a GPU other than
  * NVIDIA (Intel `0x8086`, AMD `0x1002`, ...) — i.e. a hybrid host that has a
  * working alternative to the broken NVIDIA EGL path.
+ *
+ * An entry that isn't a well-formed vendor ID (empty string from an unreadable
+ * `device/vendor` — e.g. a platform-bus card like vgem/vkms with no PCI
+ * backing) means "unknown," not "confirmed non-NVIDIA": counting it as a
+ * second GPU would suppress the fallback on a single-NVIDIA-GPU host, exactly
+ * the population #40077 needs it for.
  */
 export function hasNonNvidiaGpuVendor(vendorIds: readonly string[]): boolean {
-  return vendorIds.some((id) => String(id || '').trim().toLowerCase() !== NVIDIA_PCI_VENDOR_ID)
+  return vendorIds.some((id) => {
+    const normalized = String(id || '').trim().toLowerCase()
+
+    return PCI_VENDOR_ID_RE.test(normalized) && normalized !== NVIDIA_PCI_VENDOR_ID
+  })
 }
 
 export interface NvidiaEglFallbackDecision {

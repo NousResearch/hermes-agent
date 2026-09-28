@@ -29,8 +29,8 @@ from typing import Callable, Mapping, Optional
 APP_ID = "com.nousresearch.hermes"
 DESKTOP_ENTRY_NAME = f"{APP_ID}.desktop"
 
-# Entry name written before the app-id rename; a successful install converts it into a hidden
-# alias (NoDisplay=true) so pre-rename taskbar pins keep resolving (see _alias_legacy_desktop_entry).
+# Entry name written before the app-id rename; a successful install retires it so the menu does
+# not list Hermes twice (see _remove_legacy_desktop_entry).
 LEGACY_DESKTOP_ENTRY_NAME = "hermes.desktop"
 
 # XDG startup notification: set by an app-grid / menu launch, absent for terminal and detached
@@ -171,6 +171,13 @@ def _inside_checkout(candidate: str, checkout_root: Path, original_argv0: str) -
     for root in {checkout_root, resolved_root}:
         if root is not None and (path == root or root in path.parents):
             return True
+    try:
+        from pm.environments import installs_root
+        inst_root = installs_root().resolve()
+        if path == inst_root or inst_root in path.parents:
+            return True
+    except Exception:
+        pass
     # The `python -m hermes_cli.main` relaunch context surfaces the invoking interpreter as
     # argv[0]; an interpreter is never a launchable entry target (it would persist a bare
     # `<python> desktop`). Compare against argv[0]'s own file, not sys.executable — under test
@@ -423,7 +430,6 @@ def _quote_exec_arg(arg: str) -> str:
 
 
 def render_desktop_entry(exec_command: str, icon: str) -> str:
-    """The app-id entry: identity lives in the file name and ``StartupWMClass``."""
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -437,11 +443,6 @@ def render_desktop_entry(exec_command: str, icon: str) -> str:
         "StartupNotify=true\n"
         f"StartupWMClass={APP_ID}\n"
     )
-
-
-def _render_legacy_alias_entry(exec_command: str, icon: str) -> str:
-    """The app-id entry, hidden from the app grid; ``StartupWMClass`` still groups old pins."""
-    return render_desktop_entry(exec_command, icon) + "NoDisplay=true\n"
 
 
 def refresh_desktop_databases(applications_dir: Path) -> "list[str]":
@@ -612,43 +613,32 @@ def _launcher_entry_management_enabled() -> bool:
         return True
 
 
-def _alias_legacy_desktop_entry(applications_dir: Path, exec_command: str, icon: str) -> bool:
-    """Keep the pre-rename ``hermes.desktop`` as a hidden alias of the app-id entry.
+def _remove_legacy_desktop_entry(applications_dir: Path) -> None:
+    """Delete the pre-rename ``hermes.desktop`` left beside the app-id entry.
 
-    Shells resolve a taskbar pin by the entry file name it was pinned against: deleting the
-    file makes GNOME drop the favourite and Plasma leave an inert item, and nothing can
-    re-pin for the user. The alias stays launchable for old pins without listing Hermes
-    twice. Only a file that still names this app is converted; anything else at that path
-    is left alone. True when the legacy file was (re)written.
+    Without it the menu lists Hermes twice, and an old taskbar pin keeps resolving to an entry
+    that no longer matches the window. Only a file that still names this app is removed —
+    anything else at that path (a hand-written launcher, another vendor's file) is left alone.
     """
     legacy = applications_dir / LEGACY_DESKTOP_ENTRY_NAME
     try:
         text = legacy.read_text(encoding="utf-8-sig")
     except OSError:
-        return False
+        return
     if not any(line.strip() == "Name=Hermes" for line in text.splitlines()):
-        return False
-    alias_contents = _render_legacy_alias_entry(exec_command, icon)
-    if text == alias_contents:
-        return False
+        return
     try:
-        from utils import atomic_write_text
-
-        atomic_write_text(legacy, alias_contents, create_mode=0o755)
-        legacy.chmod(0o755)
+        legacy.unlink()
     except OSError:
-        return False
-    return True
+        pass
 
 
 def install_desktop_entry(project_root: Path) -> Optional[Path]:
     """Create or refresh the app-id entry, respecting the opt-out for existing entries.
 
-    Only the app-id entry is written; a pre-rename ``hermes.desktop`` beside it is converted
-    into a hidden alias once the new entry exists, and only while launcher management is
-    enabled — deleting it instead would silently kill existing taskbar pins (#124492).
-    ``None`` on non-Linux platforms or when the write fails — a convenience, never a reason
-    to fail a launch.
+    Only the app-id entry is written; a pre-rename ``hermes.desktop`` beside it is retired once
+    the new entry exists, and only while launcher management is enabled. ``None`` on non-Linux
+    platforms or when the write fails — a convenience, never a reason to fail a launch.
     """
     if not is_supported():
         return None
@@ -668,33 +658,32 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     icon_value = str(icon) if icon.is_file() else "hermes"
     if icon.is_file() and _install_icon_to_hicolor(icon):
         icon_value = "hermes"
-    exec_command = resolve_exec_command(project_root)
-    contents = render_desktop_entry(exec_command, icon_value)
+    contents = render_desktop_entry(resolve_exec_command(project_root), icon_value)
 
     try:
         entry_path.parent.mkdir(parents=True, exist_ok=True)
         # When nothing changed, skip the rewrite. Then a launch does not
         # churn the menu caches.
-        unchanged = entry_path.is_file() and entry_path.read_text(encoding="utf-8-sig") == contents
-        if not unchanged:
-            # Atomic replace: an interrupted plain write leaves a zero-byte entry, which permanently
-            # breaks the taskbar pin (nothing later rewrites a file that exists at the right path).
-            # The temp+rename dance in utils.atomic_write_text is the codebase's shared implementation — ported
-            # from #80547, which closed unmerged with this piece unlanded.
-            from utils import atomic_write_text
+        if entry_path.is_file() and entry_path.read_text(encoding="utf-8-sig") == contents:
+            return entry_path
+        # Atomic replace: an interrupted plain write leaves a zero-byte entry, which permanently
+        # breaks the taskbar pin (nothing later rewrites a file that exists at the right path).
+        # The temp+rename dance in utils.atomic_write_text is the codebase's shared implementation — ported
+        # from #80547, which closed unmerged with this piece unlanded.
+        from utils import atomic_write_text
 
-            atomic_write_text(entry_path, contents, create_mode=0o755)
-            # Some launchers (and older Plasma) offer the entry only when it is executable.
-            entry_path.chmod(0o755)
+        atomic_write_text(entry_path, contents, create_mode=0o755)
+        # Some launchers (and older Plasma) offer the entry only when it is executable.
+        entry_path.chmod(0o755)
     except OSError:
         return None
 
-    # Converting the old entry is management too: with the opt-out set, an existing
-    # launcher stays untouched even here, in the missing-entry path where the new
-    # entry is still created.
-    aliased = manage_enabled and _alias_legacy_desktop_entry(entry_path.parent, exec_command, icon_value)
-    if aliased or not unchanged:
-        refresh_desktop_databases(entry_path.parent)
+    # Retiring the old entry is management too: with the opt-out set, an existing
+    # launcher stays even here, in the missing-entry path where the new entry is
+    # still created.
+    if manage_enabled:
+        _remove_legacy_desktop_entry(entry_path.parent)
+    refresh_desktop_databases(entry_path.parent)
     return entry_path
 
 

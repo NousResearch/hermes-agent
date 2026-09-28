@@ -40,3 +40,16 @@ def test_bulk_cleanup_spares_a_chat_pinned_before_it_rotated(tmp_path):
         assert db.get_compression_lineage("keep") == ["keep", "keep-2"]
         assert not db.get_session("keep")["archived"]
         assert db.prune_sessions(older_than_days=90, include_pinned=True) == 2
+
+
+def test_orphan_sweep_spares_the_open_tip_of_a_chat_pinned_before_it_rotated(tmp_path):
+    with closing(SessionDB(tmp_path / "state.db")) as db:
+        _pinned_then_rotated(db)
+        db._conn.execute("UPDATE sessions SET pinned = 0, ended_at = NULL, end_reason = NULL,"
+                         " last_activity_at = started_at WHERE id = 'keep-2'")
+        db._conn.commit()
+        sweep = dict(max_idle_seconds=90 * 86400, sources=("cli",), respect_gateway_heartbeats=False)
+
+        assert db.sweep_orphaned_sessions(exclude_pinned=True, **sweep) == []
+        assert db.get_session("keep-2")["ended_at"] is None
+        assert db.sweep_orphaned_sessions(exclude_pinned=False, **sweep) == ["keep-2"]

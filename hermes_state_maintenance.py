@@ -182,7 +182,8 @@ class SessionMaintenanceMixin:
         if not (hb_grace is not None and hb_grace >= 0):
             hb_grace = hb_staleness
         cutoff = (now := time.time()) - max_idle_seconds
-        pin_scope = " AND COALESCE(pinned, 0) = 0" if exclude_pinned else ""
+        pin_scope = (f" AND COALESCE(pinned, 0) = 0 AND sessions.id NOT IN ({_PINNED_TAIL_SQL})"
+                     if exclude_pinned else "")
         orphan_predicate = f"started_at < ? AND {_sql_session_last_active('sessions')} < ?"
         heartbeat_params: Tuple[float, ...] = ()
         if respect_gateway_heartbeats:

@@ -521,3 +521,63 @@ def test_a_stalled_ledger_lock_holder_never_blocks_register_child(tmp_path, monk
     assert len(warnings) == 1, f"{len(warnings)} warnings for two writes past a stalled lock"
     rows = json.loads(ledger.read_text(encoding="utf-8"))
     assert any(r.get("purpose") == "stalled-again" for r in rows), "the row was not written past the timeout"
+
+
+def test_install_id_maps_managed_environment_to_owning_install(tmp_path, monkeypatch):
+    """A PM environment tree is the SAME installation as its parent checkout.
+
+    The environment code copy at installs/<key16>/environments/<gen>/workspace hashed to
+    a foreign install id, so host + child shared one profile but read as two
+    installations (the shared-profile warning fired on every workflow run).
+    """
+    from pm.environments import install_key
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "root"))
+    parent = tmp_path / "root" / "hermes-agent"
+    parent.mkdir(parents=True)
+
+    state = tmp_path / "root" / "installs" / install_key(parent)
+    gen = state / "environments" / ("a" * 32)
+    env_ws = gen / "workspace"
+    env_ws.mkdir(parents=True)
+    # What record_activation_inputs writes on a successful PM install:
+    (state / "inputs").mkdir()
+    (state / "inputs" / ".project-root").write_text(str(parent.resolve()), encoding="utf-8")
+
+    own = pi.install_id(parent)
+    assert pi.install_id(env_ws) == own
+    assert pi.install_id(gen / "venv") == own  # the generation venv maps too
+    assert pi.install_id(env_ws / "agent") == own  # any depth under the environment
+    # The parent's own id is the hash of its path — unchanged contract.
+    import hashlib
+
+    assert own == hashlib.sha256(str(parent.resolve()).lower().encode("utf-8", "replace")).hexdigest()[:12]
+    # Control: empty stamp (Path('.') would silently alias the CWD's install).
+    bad_state = tmp_path / "root" / "installs" / ("f" * 16)
+    bad_gen = bad_state / "environments" / ("b" * 32)
+    bad_gen.mkdir(parents=True)
+    (bad_state / "inputs").mkdir()
+    (bad_state / "inputs" / ".project-root").write_text("", encoding="utf-8")
+    assert pi.install_id(bad_gen) == hashlib.sha256(
+        str(bad_gen.resolve()).lower().encode("utf-8", "replace")).hexdigest()[:12]
+    # Control: a stamp whose parent does not hash to the state dir name cannot alias.
+    (bad_state / "inputs" / ".project-root").write_text(str(parent.resolve()), encoding="utf-8")
+    assert pi.install_id(bad_gen) != own
+    # Control: relative stamp values are never honored.
+    (bad_state / "inputs" / ".project-root").write_text("relative/path", encoding="utf-8")
+    assert pi.install_id(bad_gen) != own
+    # Control: a path under installs/ that is NOT an environment falls back to hashing.
+    stray = state / "scratch"
+    stray.mkdir(parents=True)
+    assert pi.install_id(stray) != own
+    # A second, genuinely different checkout keeps its own distinct id.
+    other = tmp_path / "elsewhere" / "hermes-agent"
+    other.mkdir(parents=True)
+    assert pi.install_id(other) != own
+    # Production shape: the environment child carries a PROFILE home (multiplexer) while
+    # the PM state lives under the machine root the profile resolves to. dependency_home_root
+    # folds profiles/<name> back to the root, so the stamp still resolves and maps.
+    # (memo cleared: without it the assertion would replay the warm cache, not the lookup)
+    pi._OWNED_ENVIRONMENT_IDS.clear()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "root" / "profiles" / "work"))
+    assert pi.install_id(env_ws) == own

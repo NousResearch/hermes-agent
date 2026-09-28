@@ -5,6 +5,7 @@
   "version": "0.0.0",
   "description": "Native desktop shell for Hermes Agent.",
   "author": "Nous Research",
+  "homepage": "https://github.com/NousResearch/hermes-agent",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/NousResearch/hermes-agent.git"
@@ -40,7 +41,7 @@
     "dist:mac:zip": "npm run build && npm run builder -- --mac zip",
     "dist:win": "npm run build && npm run builder -- --win msix",
     "dist:win:msix": "npm run build && npm run builder -- --win msix",
-    "dist:linux": "npm run build && npm run builder -- --linux AppImage deb rpm",
+    "dist:linux": "npm run build && npm run builder -- --linux AppImage deb",
     "perf": "node scripts/perf/run.mjs",
     "update:shim": "bash ../../scripts/desktop-update/repro.sh shim",
     "update:shim:fail": "bash ../../scripts/desktop-update/repro.sh shim-fail",

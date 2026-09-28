@@ -156,3 +156,21 @@ def test_attempt_archive_objects_are_listed_by_their_plain_version(monkeypatch):
 def test_channel_order_boundaries(current, tag, allowed):
     page = rbt.render_page(current, {}, 'https://cdn.example') if current and current != 'garbage' else current
     assert rbt.supersedes(page, tag) is allowed
+
+
+def test_linux_deb_gets_its_own_download_row():
+    """The Ubuntu .deb (fpm `amd64` naming) must be downloadable, not just the
+    AppImage: parse_assets keys it separately and both rows render."""
+    version = '1.2.3'
+    names = [f'releases/tag/v{version}/HermesBundled-{version}-linux-x64.AppImage',
+             f'releases/tag/v{version}/HermesBundled-{version}-linux-amd64.deb']
+    by_app = rbt.parse_assets(names)
+    assert by_app['HermesBundled'][('linux', 'x64')][1] == 'AppImage'
+    assert by_app['HermesBundled'][('linux', 'amd64')][1] == 'deb'
+    rows = dict(rbt.table_rows(by_app))['Hermes Desktop']
+    kinds = [kind for _os, _arch, kind, _name in rows]
+    assert kinds == ['AppImage', 'DEB (.deb)']
+    markdown = rbt.render_tables(by_app, 'https://cdn.example')
+    assert 'HermesBundled-1.2.3-linux-amd64.deb' in markdown
+    page = rbt.render_page(f'v{version}', by_app, 'https://cdn.example')
+    assert 'DEB (.deb)' in page and 'linux-amd64.deb' in page

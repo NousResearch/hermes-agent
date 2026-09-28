@@ -63,23 +63,28 @@ DEFAULT_REPO = "NousResearch/hermes-agent"
 # apps/desktop/electron-builder.config.cjs):
 #   Hermes-0.28.0-mac-arm64.dmg        (bundled)
 #   HermesBundled-0.28.0-win-x64.msix  (bundled)
+#   HermesBundled-0.28.0-linux-x64.AppImage
+#   HermesBundled-0.28.0-linux-amd64.deb  (deb keeps fpm's `_` separators and
+#                                          the dpkg arch name — see
+#                                          getArtifactArchName in builder-util)
 _ASSET_RE = re.compile(
     r"^(?P<app>HermesBundled|HermesLight)-(?P<version>[^-]+)"
-    r"-(?P<os>mac|win|linux)-(?P<arch>x64|arm64)\.(?P<ext>dmg|msix|AppImage)$"
+    r"-(?P<os>mac|win|linux)-(?P<arch>x64|arm64|amd64)\.(?P<ext>dmg|msix|AppImage|deb)$"
 )
 
-_OS_LABEL = {"mac": "macOS", "win": "Windows", "linux": "Linux (AppImage)"}
+_OS_LABEL = {"mac": "macOS", "win": "Windows", "linux": "Linux"}
 _ARCH_LABEL = {
     ("mac", "arm64"): "Apple Silicon (M-series)",
     ("mac", "x64"): "Intel",
     ("win", "x64"): "x86 (64-bit)",
     ("win", "arm64"): "ARM (arm64 / aarch64)",
     ("linux", "x64"): "x86 (64-bit)",
+    ("linux", "amd64"): "x86 (64-bit)",
     ("linux", "arm64"): "arm64",
 }
-_KIND_LABEL = {"dmg": "DMG", "msix": "MSIX", "AppImage": "AppImage"}
+_KIND_LABEL = {"dmg": "DMG", "msix": "MSIX", "AppImage": "AppImage", "deb": "DEB (.deb)"}
 _ROW_ORDER = [("mac", "arm64"), ("mac", "x64"), ("win", "x64"), ("win", "arm64"),
-              ("linux", "x64"), ("linux", "arm64")]
+              ("linux", "x64"), ("linux", "amd64"), ("linux", "arm64")]
 
 
 def parse_assets(names: list[str]) -> dict[str, dict[tuple[str, str], tuple[str, str]]]:
@@ -189,24 +194,27 @@ _COMMIT_EXPECTED = [
      r"^HermesBundled-[^-]+-mac-arm64\.zip$"),
     ("macOS Intel (ZIP)", "darwin-x64",
      r"^HermesBundled-[^-]+-mac-x64\.zip$"),
+    ("Linux x64 (DEB)", "linux-x64",
+     r"^HermesBundled-[^-]+-linux-amd64\.deb$"),
     ("Termux aarch64 (.deb)", "termux", r"^.*\.deb$"),
 ]
 
-# Linux release legs are disabled; they still get a row so a reader can see
-# they were never expected to publish.
-_COMMIT_DISABLED = ["Linux x64 (AppImage)", "Linux ARM64 (AppImage)"]
+# The remaining Linux release leg is disabled; it still gets a row so a
+# reader can see it was never expected to publish.
+_COMMIT_DISABLED = ["Linux ARM64 (AppImage)"]
 
 COMMIT_RECEIPT_NAMES = sorted({leg for _label, leg, _pattern in _COMMIT_EXPECTED})
 _COMMIT_JOBS = {
     "win32-x64": "build-win32-x64", "win32-arm64": "build-win32-arm64",
     "darwin-x64": "build-darwin-x64", "darwin-arm64": "build-darwin-arm64",
     "windows-universal": "assemble-win32-bundle", "termux": "termux-deb",
+    "linux-x64": "build-linux-x64",
 }
 
 
 _SMOKE_SCOPE = (
     "Download availability is independent of smoke status. Each result covers all native legs "
-    "in that format group. Linux bundles are disabled; unsigned Store envelopes are not install-smoked. "
+    "in that format group. Linux ARM64 bundles are disabled; unsigned Store envelopes are not install-smoked. "
     "No-upload dry tags have no download handoff and are not smoke-qualified."
 )
 

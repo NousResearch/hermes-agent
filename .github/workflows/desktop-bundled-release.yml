@@ -13,7 +13,9 @@ name: Desktop Bundled Release
 #   build-win32 (win32-x64 + win32-arm64)   → stage packages + receipts to R2
 #   build-darwin (darwin-arm64 + darwin-x64) → sign + notarize + stage
 #     dmg/zip/blockmap + per-arch feed inputs to the R2 tag archive
-#   build-linux                              → DISABLED for now (dummy skips)
+#   build-linux-x64 (release + commit trust branches) → build the
+#     AppImage + Ubuntu .deb, smoke the payload, stage to the R2 archive
+#   build-linux-arm64                        → dummy skip (#98171)
 #   assemble-win32-bundle                   → native universal bundles
 #     (needs build-win32): all downloadable builds stage without touching feeds.
 #   smoke-darwin / smoke-win32 (per arch) → native install + chat
@@ -1207,17 +1209,206 @@ jobs:
           || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-darwin-x64-commit.result == 'success' && needs.build-darwin-x64-release.result == 'skipped') }}
     steps: *native-build-result-steps
 
-  # ── Linux builders (DISABLED for now) ─────────────────────────────────────
-  build-linux-x64:
-    name: bundled linux-x64 (disabled for now)
-    if: needs.validate.outputs.linux-x64 == 'true'
-    needs: validate
+  # ── Linux builders ──────────────────────────────────────────────────────────
+  # Ubuntu x64 ships the .deb (#86987) beside the AppImage; arm64 stays a
+  # dummy skip until the prebuilt-packages rollout (#98171). The leg mirrors
+  # the darwin trust-branch shape: tag builds write caches and signing
+  # receipts, commit/channel builds read caches. deb/rpm packaging needs the
+  # fpm toolset that prepare-packaging-tools.mjs stages hermetically; the
+  # payload smoke runs on this native runner exactly like pm-bundle.yml.
+  build-linux-x64-release:
+    name: bundled linux-x64
+    if: >-
+      needs.validate.outputs.linux-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && inputs.build_commit == '' && inputs.channel == ''
+    needs: [validate]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Disabled
+    environment: release-signing
+    cache-mode: write
+    timeout-minutes: 360
+    strategy: &linux-strategy
+      fail-fast: false
+      matrix:
+        target:
+          - label: linux-x64
+    env: &linux-env
+      CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
+      HERMES_DESKTOP_VARIANT: bundled
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+      HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
+      HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
+      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
+    steps: &linux-steps
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
+          fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
+
+      - name: Check out trusted channel controller
+        if: needs.validate.outputs.channel-build != ''
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .build/channel-controller
+          persist-credentials: false
+
+      - name: Retrieve pinned channel request
+        if: needs.validate.outputs.channel-build != ''
         shell: bash
-        run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
+        working-directory: .build/channel-controller
+        env:
+          CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
+          CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
+        run: python -m scripts.releases.channel_publish request --out "$RUNNER_TEMP/channel-request.json"
+
+      - name: Resolve the builder toolchain versions
+        id: electron-tools
+        shell: bash
+        run: |
+          node -e '
+            const l = require("./package-lock.json")
+            const eb = l.packages["node_modules/electron-builder"].version
+            if (!eb) process.exit(1)
+            console.log("eb=" + eb)
+          ' >> "$GITHUB_OUTPUT"
+
+      - name: Restore the electron-builder toolchain cache
+        id: electron-tools-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/electron-builder
+          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.electron-tools.outputs.eb }}
+          restore-keys: |
+            eb3-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Restore desktop dependency inputs
+        id: build-cache
+        uses: ./.github/actions/desktop-build-cache
+        with:
+          phase: restore
+          source: ${{ github.workspace }}
+          work: ${{ runner.temp }}/desktop-job
+          cache: ${{ github.workspace }}/.cache/desktop-inputs
+          producer: desktop
+
+      - name: Prepare the complete desktop build
+        id: prepare
+        shell: bash
+        env:
+          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+        run: |
+          args=(--tag "$HERMES_PAYLOAD_TAG")
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then args=(--commit "$HERMES_BUILD_COMMIT"); fi
+          if [ -n "$HERMES_RELEASE_COMMIT" ]; then args+=(--release-commit "$HERMES_RELEASE_COMMIT"); fi
+          if [ -n "${CHANNEL_BUILD:-}" ]; then args=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
+          python3 scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
+            --work "$RUNNER_TEMP/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
+          python3 -m scripts.ci.desktop_commands "$RUNNER_TEMP/desktop-job/prepared.json"
+
+      - name: Save dependency inputs before building
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
+        uses: ./.github/actions/desktop-build-cache
+        with:
+          phase: save
+          source: ${{ github.workspace }}
+          work: ${{ runner.temp }}/desktop-job
+          cache: ${{ github.workspace }}/.cache/desktop-inputs
+          producer: desktop
+          key: ${{ steps.build-cache.outputs.cache-key }}
+
+      - name: Save the electron-builder toolchain
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/electron-builder
+          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.electron-tools.outputs.eb }}
+
+      - name: Build and package
+        shell: bash
+        timeout-minutes: 330
+        env:
+          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          PYTHONUTF8: '1'
+        run: |
+          python3 scripts/bundles/desktop.py --prepared "$RUNNER_TEMP/desktop-job/prepared.json" --variant bundled
+
+      # The bundled payload must boot on the runner that built it, before the
+      # .deb ships it — same contract pm-bundle.yml enforces on linux legs.
+      - name: Smoke test the bundled payload (network disabled)
+        shell: bash
+        run: sudo --preserve-env=PATH unshare --net bash scripts/smoke-payload.sh apps/desktop/build/agent-payload
+
+      - name: Audit bundle architecture
+        shell: bash
+        run: |
+          MATRIX_LABEL="${{ matrix.target.label }}"
+          node apps/desktop/scripts/audit-bundle-arch.mjs \
+            --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
+
+      - name: Stage Linux packages to R2
+        # Same custody rules as the darwin stage step: channel dispatches
+        # stage through the pinned request; empty-tag commit builds have no
+        # feed yml (Linux has no electron-updater feed at all — deb installs
+        # declare updateMechanism 'external', so nothing publishes a yml).
+        # No release_artifacts record: the stable receipts gate on darwin/
+        # win32 only, and Linux has no receipt consumer yet.
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+        shell: bash
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          TARGET: ${{ matrix.target.label }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+              --commit "$RELEASE_COMMIT" \
+              --name "$TARGET" --root apps/desktop/release \
+              --include '*.AppImage' --include '*.deb'
+          else
+            python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
+              --name "$TARGET" --root apps/desktop/release \
+              --include '*.AppImage' --include '*.deb'
+          fi
+
+  build-linux-x64-commit:
+    name: bundled linux-x64 (commit)
+    if: >-
+      !cancelled() && needs.validate.result == 'success'
+      && needs.validate.outputs.linux-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && (inputs.build_commit != '' || inputs.channel != '')
+    needs: [validate]
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    cache-mode: read
+    timeout-minutes: 360
+    strategy: *linux-strategy
+    env: *linux-env
+    steps: *linux-steps
+
+  build-linux-x64:
+    name: bundled linux-x64 result
+    if: >-
+      always() && needs.validate.outputs.linux-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && needs.validate.result == 'success'
+    needs: [validate, build-linux-x64-release, build-linux-x64-commit]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 5
+    env:
+      SELECTED_BUILD_SUCCEEDED: >-
+        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-linux-x64-release.result == 'success' && needs.build-linux-x64-commit.result == 'skipped')
+          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-linux-x64-commit.result == 'success' && needs.build-linux-x64-release.result == 'skipped') }}
+    steps: *native-build-result-steps
 
   build-linux-arm64:
     name: bundled linux-arm64 (disabled for now)
@@ -1228,7 +1419,7 @@ jobs:
     steps:
       - name: Disabled
         shell: bash
-        run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
+        run: echo "::notice::linux arm64 bundled builds are not enabled yet — tracked by #98171 (prebuilt Linux packages)"
 
   stage-receipt-darwin-arm64:
     name: Stage the darwin-arm64 stable receipt

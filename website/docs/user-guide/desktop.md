@@ -22,7 +22,7 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 
 ## Install
 
-Download the app from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md).
+Download the app from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md) — including the Ubuntu `.deb` package, which installs the app without a prior CLI install.
 
 If you already have Hermes installed, simply run
 
@@ -755,8 +755,8 @@ Build installers:
 
 ```bash
 npm run dist:mac     # DMG + zip
-npm run dist:win     # NSIS + MSI
-npm run dist:linux   # AppImage + deb + rpm
+npm run dist:win     # MSIX
+npm run dist:linux   # AppImage + deb
 npm run pack         # unpacked app under release/ (no installer)
 ```
 

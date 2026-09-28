@@ -23,6 +23,7 @@ const {
   appId,
   appNamePascal,
   artifactNamePascal,
+  cliName,
   windowsExecutableName,
   channel,
   msixAppIdWithOrg
@@ -262,7 +263,20 @@ module.exports = {
     synopsis: light
       ? 'Remote-only desktop client for Hermes Agent.'
       : 'Native desktop shell for Hermes Agent.',
-    target: ['AppImage']
+    // The .deb is the Ubuntu install path (#86987): apt/dpkg own the app and
+    // its updates (the build stamp declares updateMechanism 'external' for a
+    // bundled Linux build, so the in-app updater never swaps the package in
+    // place). AppImage stays the portable/canonical Linux artifact. rpm and
+    // the arm64 download-table rows belong to the prebuilt-packages issue
+    // (#98171); adding them here is a one-word change once that lands.
+    target: ['AppImage', 'deb']
+  },
+  deb: {
+    // extraMetadata.name is the Pascal artifact name (HermesBundled), which
+    // would become the dpkg package name — Debian policy wants lowercase
+    // (and a name the user can type in `apt remove`). The kebab CLI name is
+    // the identity users already know.
+    packageName: cliName
   }
 }
 

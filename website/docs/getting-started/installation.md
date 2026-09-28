@@ -25,6 +25,32 @@ Download the package for your platform from the
 - **macOS:** open the DMG, then copy `Hermes.app` to Applications. The ZIP
   artifact carries the signed app used by the automatic updater.
 
+### Desktop package on Ubuntu (`.deb`)
+
+Download the `…-linux-amd64.deb` artifact from the
+[Hermes website](https://hermes-agent.nousresearch.com/) or the release's
+download table, then install it with `apt` (which resolves the GTK/NSS/X11
+runtime libraries the package declares):
+
+```bash
+sudo apt install ./HermesBundled-<version>-linux-amd64.deb
+```
+
+`dpkg -i` works too, but leaves dependency resolution to a following
+`sudo apt -f install` — prefer `apt install ./<file>.deb`.
+
+The `.deb` installs the same bundled app as the other platforms: agent,
+Python, and supported dependencies ride inside the package, so no CLI
+install or `pip`/`uv` setup is required first. Launch it from your
+application menu or `hermes` in a terminal.
+
+**Updating a `.deb` install:** the package manager owns updates. The app's
+in-app updater is deliberately disabled for this install kind (it reports
+"Updates are managed by the package owner outside this app") — download the
+newer `.deb` and install it over the old one (`apt` upgrades in place), or
+move to the AppImage if you want a self-contained single-file app. Removing
+the package is `sudo apt remove hermes`.
+
 Bundled packages contain the agent, Python, supported dependencies, and prebuilt
 interfaces. First launch does not build that base runtime. Provider access and
 optional integrations can still require network access.

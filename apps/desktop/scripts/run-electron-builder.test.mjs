@@ -66,3 +66,21 @@ test('strict builder refuses absent inputs before loading electron-builder', () 
   assert.match(result.stderr, /run preparation again/)
   assert.doesNotMatch(result.stdout, /electron-builder\s+version/)
 })
+
+test('linux source builds default to the deb alongside the AppImage', () => {
+  // #86987: the Ubuntu .deb is a first-class artifact, not an opt-in flag —
+  // a bare linux invocation must prepare both formats, and the packaged
+  // config's target list must agree with the prepare defaults.
+  const calls = []
+  const spawn = (_node, args) => { calls.push(args); return { status: 0 } }
+  assert.equal(runElectronBuilder(['--linux'], { spawn }), 0)
+  const prepare = calls.find(args => args[0].endsWith('prepare-packaging-tools.mjs'))
+  assert.ok(prepare)
+  const formats = prepare.reduce((out, arg, index) => {
+    if (arg === '--format') out.push(prepare[index + 1])
+    return out
+  }, [])
+  assert.deepEqual(formats, ['AppImage', 'deb'])
+  const config = require(path.join(import.meta.dirname, '../electron-builder.config.cjs'))
+  assert.deepEqual(config.linux.target, ['AppImage', 'deb'])
+})

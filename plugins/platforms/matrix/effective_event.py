@@ -60,6 +60,12 @@ async def _encrypted_replacement_content(client: Any, replacement: dict[str, Any
     content = payload.get("content")
     if not isinstance(content, dict):
         return None
+    if "m.relates_to" in content:
+        relation = content["m.relates_to"]
+        outer_relation = encrypted["m.relates_to"]
+        if (not isinstance(relation, dict) or relation.get("rel_type") != "m.replace"
+                or relation.get("event_id") != outer_relation["event_id"]):
+            return None
     revised = content.get("m.new_content")
     return revised if isinstance(revised, dict) else None
 
@@ -143,13 +149,18 @@ async def _effective_event(
         return MatrixEffectiveEvent(content, original_content)
 
     if replacement.get("type") == "m.room.encrypted":
-        _, error = await _decrypt(client, replacement)
+        decrypted_replacement, error = await _decrypt(client, replacement)
         if is_redacted is not None and is_redacted(raw.get("event_id")):
             return MatrixEffectiveEvent({}, original_content, redacted=True)
         if is_redacted is not None and is_redacted(replacement_id):
             return unavailable
         if error is not None:
             return MatrixEffectiveEvent(content, original_content, error=error)
+        clear_relation = event_content(decrypted_replacement).get("m.relates_to")
+        if (clear_relation is not None and (
+                not isinstance(clear_relation, dict) or clear_relation.get("rel_type") != "m.replace"
+                or clear_relation.get("event_id") != raw.get("event_id"))):
+            return MatrixEffectiveEvent(content, original_content)
         try:
             # Mautrix's typed edit serializer synthesises m.new_content even when the payload omitted it.
             revised_content = await _encrypted_replacement_content(client, replacement)

@@ -99,13 +99,12 @@ async def fetch_event_reactions(
     if not isinstance(chunk, list):
         return ReactionSnapshot(error="reactions unavailable: invalid response")
 
+    page = [raw for raw in chunk[:limit] if isinstance(raw, dict)]
+    dependencies = cache.retain_events(room_id, page) if cache is not None else {}
     reactions: list[MatrixReaction] = []
     missing_keys: list[str] = []
-    dependencies: list[MatrixEventContext] = []
     seen: set[tuple[str, str]] = set()
-    for raw in chunk[:limit]:
-        if not isinstance(raw, dict):
-            continue
+    for raw in page:
         unsigned = raw.get("unsigned")
         if isinstance(unsigned, dict) and unsigned.get("redacted_because"):
             continue
@@ -121,8 +120,6 @@ async def fetch_event_reactions(
             continue
         if outer_relation.get("rel_type") != "m.annotation" or outer_relation.get("event_id") != target_event_id:
             continue
-        if cache is not None:
-            dependencies.append(cache.retain(room_id, event_id))
         visible, needs_keys = await _reaction_content(client, raw)
         if needs_keys:
             missing_keys.append(event_id)
@@ -142,7 +139,7 @@ async def fetch_event_reactions(
 
     return ReactionSnapshot(
         tuple(reactions), truncated=bool(response.get("next_batch")), missing_keys=tuple(missing_keys),
-        _dependencies=tuple(dependencies),
+        _dependencies=tuple(dependencies.values()),
     )
 
 

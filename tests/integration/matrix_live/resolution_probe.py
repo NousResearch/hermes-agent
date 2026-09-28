@@ -21,6 +21,7 @@ def _observe(adapter, home):
     decrypt = client.crypto.decrypt_megolm_event
     get_session = client.crypto.crypto_store.get_group_session
     replacement_decrypted = False
+    reaction_page = []
 
     def config():
         path = home / "resolution-config.json"
@@ -33,6 +34,7 @@ def _observe(adapter, home):
         (home / "resolution-started.json").write_text(
             json.dumps({
                 "event_id": event_id,
+                "reaction_page": reaction_page,
                 "adapter_module": type(adapter).__module__,
                 "user_id": adapter._user_id,
                 "home": str(home),
@@ -45,8 +47,11 @@ def _observe(adapter, home):
                 await asyncio.sleep(0.01)
 
     async def observed_request(method, path, *args, **kwargs):
+        nonlocal reaction_page
         response = await request(method, path, *args, **kwargs)
         settings = config() if active.get() else None
+        if settings and settings["barrier"] == "reaction" and str(path).endswith("/m.annotation"):
+            reaction_page = [event["event_id"] for event in response["chunk"]]
         if (
             settings
             and settings["barrier"] == "fetch"
@@ -66,13 +71,24 @@ def _observe(adapter, home):
                 else settings["replacement"]
             )
             if (
-                settings["barrier"] in {"original", "replacement"}
+                settings["barrier"] in {"original", "replacement", "reaction"}
                 and event.event_id == paused_id
             ):
                 await pause(paused_id)
         result = await decrypt(event)
         if settings and event.event_id == settings["replacement"]:
             replacement_decrypted = True
+            if settings["barrier"] == "relation":
+                from plugins.platforms.matrix.effective_event import event_content
+
+                store = client.crypto.crypto_store
+                (home / "resolution-decrypted.json").write_text(json.dumps({
+                    "event_id": str(event.event_id),
+                    "relation": event_content(result).get("m.relates_to"),
+                    "user_id": adapter._user_id,
+                    "home": str(home),
+                    "store_type": f"{type(store).__module__}.{type(store).__qualname__}",
+                }), encoding="utf-8")
         return result
 
     async def observed_session(*args, **kwargs):
@@ -135,13 +151,14 @@ def register(ctx):
             if str(event.redacts) != settings["withdraw"]:
                 return
             cache = adapter._event_context_cache
-            for index in range(cache.max_entries):
-                cache.store(
-                    str(event.room_id),
-                    f"$resolution-pressure{index}",
-                    MatrixEventContext("", "unrelated"),
-                )
-            gc.collect()
+            if settings.get("eviction", True):
+                for index in range(cache.max_entries):
+                    cache.store(
+                        str(event.room_id),
+                        f"$resolution-pressure{index}",
+                        MatrixEventContext("", "unrelated"),
+                    )
+                gc.collect()
             (home / "resolution-redaction.json").write_text(
                 json.dumps({
                     "event_id": str(event.redacts),

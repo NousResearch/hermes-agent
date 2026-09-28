@@ -238,6 +238,57 @@ async def test_pinned_mautrix_typed_edit_keeps_new_content(include_new_content: 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("relation_kind", ["matching", "outer-only", "wrong-target", "wrong-type"])
+async def test_encrypted_replacement_requires_consistent_plaintext_relation(relation_kind: str):
+    mautrix_types = pytest.importorskip("mautrix.types")
+    original = {
+        **_original("$original", "before"), "type": "m.room.encrypted",
+        "origin_server_ts": 1,
+        "content": {
+            "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "original",
+            "session_id": "session", "sender_key": "key", "device_id": "device",
+        },
+    }
+    outer_relation = {"rel_type": "m.replace", "event_id": "$original"}
+    replacement = {
+        **original, "event_id": "$edit",
+        "content": {**original["content"], "ciphertext": "replacement", "m.relates_to": outer_relation},
+    }
+    original["unsigned"] = {"m.relations": {"m.replace": replacement}}
+    plaintext_content = {
+        "msgtype": "m.text", "body": "* after",
+        "m.new_content": {"msgtype": "m.text", "body": "after"},
+    }
+    relations = {
+        "matching": outer_relation,
+        "wrong-target": {"rel_type": "m.replace", "event_id": "$other"},
+        "wrong-type": {"rel_type": "m.thread", "event_id": "$original"},
+    }
+    if relation_kind != "outer-only":
+        plaintext_content["m.relates_to"] = relations[relation_kind]
+    store = _edit_store(json.loads(json.dumps(plaintext_content)))
+    clear_content = json.loads(json.dumps(plaintext_content))
+    if relation_kind == "outer-only":
+        clear_content["m.relates_to"] = outer_relation
+
+    async def decrypt(event):
+        content = clear_content if event.event_id == "$edit" else {"msgtype": "m.text", "body": "before"}
+        return mautrix_types.Event.deserialize({
+            **_original(str(event.event_id), ""), "origin_server_ts": 1, "content": content,
+        })
+
+    client = SimpleNamespace(crypto=SimpleNamespace(decrypt_megolm_event=decrypt, crypto_store=store))
+    state = await effective_event(client, original, cache=MatrixEventContextCache(), room_id=ROOM)
+
+    assert state == (
+        MatrixEffectiveEvent({"msgtype": "m.text", "body": "after"}, original["content"],
+                             edited=True, replacement_id="$edit")
+        if relation_kind in {"matching", "outer-only"} else
+        MatrixEffectiveEvent({"msgtype": "m.text", "body": "before"}, original["content"])
+    )
+
+
+@pytest.mark.asyncio
 async def test_encrypted_edit_requires_actual_new_content_in_typed_payload():
     original = {
         **_original("$child", "before"), "type": "m.room.encrypted",

@@ -267,6 +267,7 @@ import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
+import { createGitProbeTracker } from './git-probe-tracker'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
@@ -3300,6 +3301,14 @@ function resolveUpdateRoot() {
   return candidates.find(isGitCheckout) || candidates[0] || ACTIVE_HERMES_ROOT
 }
 
+// The only runGit() caller is the bundle-skew probe (detectRendererSkew), so
+// tracking every runGit child tracks every outstanding probe (#125243). See
+// git-probe-tracker.ts for why killing survives an app restart.
+const gitProbeTracker = createGitProbeTracker({
+  isWindows: IS_WINDOWS,
+  forceKillProcessTree
+})
+
 function runGit(args, options: any = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const gitBinary = resolveGitBinary()
@@ -3321,9 +3330,12 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
       hiddenWindowsChildOptions({
         cwd: options.cwd,
         env: plan.env,
-        stdio: plan.stdio
+        stdio: plan.stdio,
+        detached: !IS_WINDOWS
       })
     )
+
+    gitProbeTracker.track(child)
 
     let stdout = ''
     let stderr = ''
@@ -3888,10 +3900,12 @@ function killExternalVenvHolders(updateRoot) {
 // gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
 // the whole tree synchronously. The command is not widened: one owned PID,
 // /T /F, nothing else. Failures propagate — close/stop must not discard them.
-// Windows-only: this is called solely from the Windows shim-unlock and
-// close/stop paths, and the backend is NOT spawned detached (so it's not a
-// process-group leader — a POSIX negative-pgid kill would be meaningless
-// here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
+// Windows-only: called from the Windows shim-unlock and close/stop paths
+// (which propagate failures — the backend is NOT spawned detached, so it's
+// not a process-group leader and a POSIX negative-pgid kill would be
+// meaningless there anyway), and via stopBackendChild() from
+// git-probe-tracker.ts's killAll() at quit, whose own try/catch already
+// swallows failures as best-effort cleanup.
 function forceKillProcessTree(pid) {
   if (!IS_WINDOWS) {
     return
@@ -17757,6 +17771,7 @@ app.on('will-quit', () => {
   destroyKeepaliveAgents()
   nativeNotifications.dispose()
   quitFinalization.arm()
+  gitProbeTracker.killAll()
 })
 
 app.on('quit', () => {

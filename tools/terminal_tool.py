@@ -950,7 +950,8 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
-    gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
+    gateway_lifecycle_block, locked_skill_block, reset_foreground_background_guard, self_repo_block,
+    trailing_amp_background_command,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import finalize_foreground_result
@@ -1251,12 +1252,23 @@ def _plan_execution(
         # background=true does), so run it that way instead of spending a model turn on a resend.
         auto_bg = trailing_amp_background_command(command)
         if auto_bg is None:
-            guidance = _foreground_background_guidance(command)
+            guidance = _foreground_background_guidance(command, task_id)
             if guidance:
                 raise _Rejected(_error_json(guidance, status="error"))
+            # Deliberately NOT resetting the rejection counter here: an ordinary compliant
+            # foreground call (any command that doesn't trip the guard) is not evidence the
+            # model learned to background long-running work -- it's just an unrelated command.
+            # Resetting on every one of those let a model that keeps retrying `&` in between
+            # other work escape escalation entirely (confirmed live: git-multibranch reached
+            # count=2 then dropped back to 1 on the very next rejection, never hitting 3).
+            # Only an explicit background=true call (the ``else`` branch below) is the
+            # corrected usage this guard is steering toward, so only that resets.
             if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
                 promoted = timeout
     else:
+        # An explicit background=true call is itself the correct usage this
+        # guard is steering toward.
+        reset_foreground_background_guard(task_id)
         auto_bg = None
 
     return _ExecPlan(

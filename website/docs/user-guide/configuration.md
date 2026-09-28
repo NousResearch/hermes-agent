@@ -545,7 +545,7 @@ Runs commands in a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) clou
 ```yaml
 terminal:
   backend: vercel_sandbox
-  vercel_runtime: node24          # node24 | node22 | python3.13
+  vercel_image: vercel/sandbox/universal:latest   # Vercel managed image or a VCR repository[:tag]
   cwd: /vercel/sandbox            # default workspace root
   container_persistent: true      # Snapshot/restore filesystem
   container_disk: 51200           # Shared default only; custom disk is unsupported
@@ -573,7 +573,7 @@ VERCEL_OIDC_TOKEN="$(vc project token)" hermes chat
 
 OIDC tokens are short-lived and should not be used as the documented deployment path.
 
-**Runtime:** `terminal.vercel_runtime` supports `node24`, `node22`, and `python3.13`. If unset, Hermes defaults to `node24`.
+**Image:** `terminal.vercel_image` picks the container image for fresh sandboxes: a [Vercel managed image](https://vercel.com/docs/sandbox/concepts/images) such as `vercel/sandbox/universal:latest` (the default: Ubuntu, Node.js 24, Python 3.14), `vercel/sandbox/node:26` or `vercel/sandbox/python:3.14`, or a repository from your project's Vercel Container Registry (a bare name resolves to `latest`; a tag or digest pins it). The older `terminal.vercel_runtime` presets (`node24`, `node22`, `python3.13`) are [deprecated by Vercel](https://vercel.com/docs/sandbox/concepts/runtimes); a pinned runtime still works and overrides the image, but the two cannot be combined. Snapshot restores carry their own filesystem and send neither.
 
 **Persistence:** When `container_persistent: true`, Hermes snapshots the sandbox filesystem during cleanup and restores a later sandbox for the same task from that snapshot. Snapshot contents can include Hermes-synced credentials, skills, and cache files that were copied into the sandbox. This preserves filesystem state only; it does not preserve live sandbox identity, PID space, shell state, or running background processes.
 

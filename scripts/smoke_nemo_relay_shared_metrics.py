@@ -305,6 +305,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "hermes.context_peak.count",
         "hermes.install.milestone",
         "hermes.install.snapshot",
+        "hermes.model_reply_issue.count",
         "hermes.model_route.count",
         "hermes.model_tokens.sum",
         "hermes.model_tool_quality.count",
@@ -401,6 +402,9 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     [quality] = by_name["hermes.model_tool_quality.count"]
     if quality["dimensions"] != {"call_role": "primary", "issue": "none", "model": "custom", "provider": "custom"}:
         raise AssertionError(f"Unexpected tool-call quality: {quality}")
+    [reply] = by_name["hermes.model_reply_issue.count"]  # both scripted replies are usable
+    if (reply["dimensions"], reply["value"]) != ({"issue": "none", "model": "custom", "provider": "custom"}, 2):
+        raise AssertionError(f"Unexpected model reply issues: {reply}")
     [peak] = by_name["hermes.context_peak.count"]
     if (peak["dimensions"]["provider"], peak["dimensions"]["model"], peak["dimensions"]["limit_hit"]) != (
         "custom", "custom", "no",
@@ -519,6 +523,7 @@ def _validate_packages(
         "hermes.context_peak.count",
         "hermes.install.milestone",
         "hermes.install.snapshot",
+        "hermes.model_reply_issue.count",
         "hermes.model_route.count",
         "hermes.model_tokens.sum",
         "hermes.model_tool_quality.count",

@@ -291,7 +291,25 @@ def model_metric_name(raw: object, provider: str, *, max_length: int) -> str:
         return model
     if provider == "unknown" or _LOCATION_MODEL.match(model):
         return CUSTOM
+    # Azure calls a deployment by the name its owner chose (``acme-legal-prod``): only a public model id passes.
+    if provider.startswith("azure") and model not in _safe(public_model_ids):
+        return CUSTOM
     return model
+
+
+@functools.cache
+def public_model_ids() -> frozenset[str]:
+    """Model ids Hermes ships in its static catalogs plus every id in the local models.dev cache
+    (never a network call), with and without a ``vendor/`` prefix."""
+    from agent.models_dev import fetch_models_dev
+    from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+    ids = {model for models in _PROVIDER_MODELS.values() for model in models}
+    for entry in fetch_models_dev(allow_network=False).values():
+        if isinstance(entry, dict) and isinstance(entry.get("models"), dict):
+            ids.update(entry["models"])
+    return frozenset(form.lower() for model in ids if isinstance(model, str)
+                     for form in (model, model.rsplit("/", 1)[-1]))
 
 
 # The user's own server or account, never a public model id: a URL or path (``:/``), a weight file,

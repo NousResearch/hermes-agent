@@ -364,7 +364,9 @@ the local-server aliases of `custom` (`ollama`, `local`, `vllm`, `llamacpp`,
 whose endpoint is a loopback server (`lmstudio`, under any of its aliases) keeps its
 name, but its model reads `custom`. A model whose provider is unknown, or whose id is a URL, a file path or a
 network address (`host:port`, an IP address, `localhost`) or an AWS ARN (it carries the account
-id), reads `custom`. The local
+id), reads `custom`. On Azure providers the model id is a deployment name its owner
+chose, so it passes only when it is a public model id (Hermes' model catalogs or
+the local models.dev cache, e.g. `gpt-4o`); `acme-legal-prod` reads `custom`. The local
 subscriber re-runs these rules on the provider/model fields of every mark and drops a
 row they would rewrite.
 

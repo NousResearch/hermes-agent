@@ -1292,6 +1292,10 @@ class GatewaySlashCommandsMixin(
             )
 
             method = detect_install_method(project_root)
+            if method == "external":
+                from hermes_cli.config import external_update_message
+
+                return external_update_message(project_root)
             if method not in {"git", "unknown"}:
                 return (
                     f"✗ `hermes update` does not apply to this install ({method}).\n"

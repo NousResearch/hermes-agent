@@ -1546,6 +1546,8 @@ export const en: Translations = {
       updateAllDone: 'Updates dispatched',
       updateAllFailed: 'Update fan-out failed',
       updateSkippedCloud: 'Managed by Hermes Cloud',
+      updateSkippedExternal: (command: string) =>
+        command ? `Managed externally. Update with ${command}` : 'Managed externally. Update it with its own tool.',
       kindLocal: 'Local',
       kindRemote: 'Remote gateway',
       kindCloud: 'Hermes Cloud',

@@ -1796,6 +1796,8 @@ export const esOverrides = {
       updateAllDone: 'Actualizaciones enviadas',
       updateAllFailed: 'Falló el envío de actualizaciones',
       updateSkippedCloud: 'Administrado por Hermes Cloud',
+      updateSkippedExternal: (command: string) =>
+        command ? `Administrado externamente. Actualiza con ${command}` : 'Administrado externamente. Actualízalo con su propia herramienta.',
       kindLocal: 'Local',
       kindRemote: 'Gateway remoto',
       kindCloud: 'Hermes Cloud',

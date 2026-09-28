@@ -206,11 +206,17 @@ def _read_json(path: Path):
 
 def _unsupported_reason(stamp: dict, root: Path, *, explicit_root: bool, embedded: Optional[str]) -> Optional[dict]:
     """Fields explaining why this install cannot self-update from Git, or None when it can."""
-    from hermes_cli.config import detect_install_method
+    from hermes_cli.config import (
+        detect_install_method, external_update_command, external_update_message, is_external_install,
+    )
     from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE
 
     if stamp.get("source") == "commit-build":
         return {"reason": "commit-build", "message": COMMIT_BUILD_UPDATE_MESSAGE}
+    # Code-scoped, so an explicit --install-root is judged by its own tree, never the host's home.
+    if is_external_install(root):
+        command = external_update_command(root)
+        return {"reason": "external", "message": external_update_message(root), **({"advice": command} if command else {})}
     if stamp.get("payload") in {"bundled", "light", "runtime"} or (
             not explicit_root and detect_install_method(root) in {"docker", "apt"}):
         return {"reason": "not-a-git-checkout"}

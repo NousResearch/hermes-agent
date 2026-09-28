@@ -16,7 +16,10 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
-from hermes_cli.config import format_docker_update_message, recommended_update_command_for_method
+from hermes_cli.config import (
+    external_update_command, external_update_message, format_docker_update_message,
+    recommended_update_command_for_method,
+)
 from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
 from hermes_cli.version_info import get_version_info
 from hermes_cli.web_deps import LateState, late
@@ -60,7 +63,7 @@ _MANAGED_EXTERNALLY_MESSAGE = "Hermes updates are managed outside this dashboard
 _UPDATE_REFUSAL_ERROR_CODES = {
     "docker": "docker_update_unsupported", "image-marker": "docker_update_unsupported",
     "image-marker-invalid": "docker_update_unsupported", "apt": "apt_update_required",
-    "nix": "nix_update_unsupported",
+    "nix": "nix_update_unsupported", "external": "update_managed_externally",
 }
 
 
@@ -255,8 +258,9 @@ async def update_hermes():
 
 
 _NON_APPLYABLE_MESSAGES = {
-    "docker": format_docker_update_message,
-    "apt": lambda: "Hermes is managed by Termux APT; run `pkg upgrade hermes-agent`.",
+    "docker": lambda _root: format_docker_update_message(),
+    "apt": lambda _root: "Hermes is managed by Termux APT; run `pkg upgrade hermes-agent`.",
+    "external": external_update_message,
 }
 
 
@@ -288,17 +292,20 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
             "update_command": "", "message": _MANAGED_EXTERNALLY_MESSAGE,
         }
 
-    install_method = detect_install_method(_server_path("PROJECT_ROOT"))
+    project_root = _server_path("PROJECT_ROOT")
+    install_method = detect_install_method(project_root)
     payload: Dict[str, Any] = {
         "install_method": install_method,
         "current_version": get_version_info().derived_version,
         "behind": None,
         "update_available": False, "can_apply": install_method == "git",
-        "update_command": recommended_update_command_for_method(install_method), "message": None,
+        "update_command": (external_update_command(project_root) if install_method == "external"
+                           else recommended_update_command_for_method(install_method, project_root)),
+        "message": None,
     }
     non_applyable = _NON_APPLYABLE_MESSAGES.get(install_method)
     if non_applyable is not None:
-        payload["message"] = non_applyable()
+        payload["message"] = non_applyable(project_root)
         return payload
 
     # source_check.check_for_updates() handles git / nix-revision paths through the GitHub API and

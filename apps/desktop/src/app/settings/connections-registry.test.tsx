@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-roster'
 import { $connection } from '@/store/session'
+import { $updateStatus } from '@/store/updates'
 import { deferred } from '@/test/deferred'
 
 import {
@@ -65,8 +66,54 @@ beforeEach(() => {
 
 afterEach(() => {
   $connection.set(null)
+  $updateStatus.set(null)
   cleanup()
   vi.clearAllMocks()
+})
+
+describe('externally managed updates', () => {
+  const rowOf = async (label: string) => (await screen.findByText(label)).closest('.\\@container') as HTMLElement
+
+  it('notes the local row when its checkout says another tool owns updates', async () => {
+    $updateStatus.set({ supported: false, reason: 'external', advice: 'rebuild-hermes', message: 'managed externally' })
+    render(<ConnectionsRegistrySection />)
+
+    expect(within(await rowOf('This device')).getByTestId('connection-update-note').textContent).toBe(
+      'Managed externally. Update with rebuild-hermes'
+    )
+    expect(within(await rowOf('Homelab')).queryByTestId('connection-update-note')).toBeNull()
+  })
+
+  it('Update all skips the external install with a note and still updates the others', async () => {
+    const updateAll = vi.fn().mockResolvedValue({
+      ok: true,
+      results: [
+        { connectionId: 'local', kind: 'local', label: 'This device', ok: true, detail: 'update started' },
+        {
+          command: 'rebuild-hermes',
+          connectionId: 'homelab',
+          detail: "This checkout's updates are managed externally — run: rebuild-hermes",
+          kind: 'remote',
+          label: 'Homelab',
+          ok: false,
+          reason: 'managed-externally',
+          skipped: true
+        }
+      ]
+    })
+
+    Object.assign(window.hermesDesktop.connections, { updateAll })
+    render(<ConnectionsRegistrySection />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Update all instances' }))
+
+    await waitFor(async () =>
+      expect(within(await rowOf('Homelab')).getByTestId('connection-update-note').textContent).toBe(
+        'Managed externally. Update with rebuild-hermes'
+      )
+    )
+    expect(updateAll).toHaveBeenCalledOnce()
+    expect(within(await rowOf('This device')).queryByTestId('connection-update-note')).toBeNull()
+  })
 })
 
 describe('ConnectionsRegistrySection', () => {

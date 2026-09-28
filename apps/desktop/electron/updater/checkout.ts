@@ -133,7 +133,12 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     const status: UpdaterStatusWire = await check({ force: true })
 
     if (!status.supported || status.error) {
-      return { ok: false, error: status.error ?? status.reason, message: status.message }
+      return {
+        ok: false,
+        error: status.error ?? status.reason,
+        message: status.message,
+        ...(status.advice ? { command: status.advice } : {})
+      }
     }
 
     const branch: string = status.branch ?? deps.defaultUpdateBranch

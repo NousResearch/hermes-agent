@@ -633,3 +633,27 @@ def test_transcript_latest_returns_newest_steps(
     assert body["has_more"] is True
     full = client.get(url).json()
     assert [m["content"] for m in full["messages"]] == ["root 0", "root 1", "root 2", "cont 0"]
+
+
+def test_transcript_ignores_caller_supplied_metadata_session(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_cli import profiles as profiles_mod
+    from hermes_state import SessionDB
+
+    home = tmp_path / "worker-home"
+    home.mkdir()
+    monkeypatch.setattr(profiles_mod, "resolve_profile_env", lambda name: str(home))
+    db = SessionDB(home / "state.db")
+    db.create_session("private-chat", "cli")
+    db.append_message("private-chat", "user", content="not a kanban run")
+    db.close()
+
+    task_id = _create(client, idempotency_key="transcript-metadata")["task"]["id"]
+    with kbc.connect_closing() as conn:
+        kanban_db.claim_task(conn, task_id)
+        kanban_db.complete_task(
+            conn, task_id, summary="done", metadata={"worker_session_id": "private-chat"})
+
+    body = client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/transcript").json()
+    assert body["session_id"] is None and body["messages"] == []

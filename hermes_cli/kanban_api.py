@@ -745,9 +745,9 @@ def task_transcript(
             run = kanban_db.get_run(conn, run_id)
             if run is None or run.task_id != task_id:
                 raise HTTPException(status_code=404, detail="run not found")
-    session_id = None
-    if run is not None:
-        session_id = run.worker_session_id or (run.metadata or {}).get("worker_session_id")
+    # Only the column the worker stamps at start: run metadata is caller-writable
+    # (``kanban complete --metadata``), so it can't pick which session is read.
+    session_id = run.worker_session_id if run is not None else None
     messages: list[dict[str, Any]] = []
     has_more = False
     if run is not None and session_id:

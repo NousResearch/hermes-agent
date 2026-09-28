@@ -10,6 +10,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+
+class AuthoritativeModelCatalog(list[str]):
+    """Successful provider-owned catalog, including an intentionally empty result."""
+
+
 # Structured catalog types that mean "this row is not a chat completion".
 _GENERATION_TYPES = frozenset({
     "image",

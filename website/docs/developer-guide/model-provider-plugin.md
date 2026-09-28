@@ -115,6 +115,21 @@ Full definition in `providers/base.py`. The most useful ones:
 | `unsupported_response_formats` | `tuple` | `response_format` types the API rejects outright; auxiliary requests omit them instead of paying a guaranteed 400 (DeepSeek: `("json_schema",)`) |
 | `default_aux_model` | str | Cheap model for auxiliary tasks (compression, vision, summarization) |
 
+## Authoritative and public model catalogs
+
+Set `authoritative_model_catalog=True` when `fetch_models()` is the complete source
+of selectable models. Successful lists preserve the provider's order and replace
+curated/models.dev rows; `[]` means a successfully empty catalog, including through
+disk caching and GUI reads. Return `None` (or raise) on failure to retain offline
+`fallback_models`; cached last-good results can still be served during outages.
+Keep fallback models populated so a cold, non-blocking picker can show the provider.
+
+Set `public_model_catalog=True` to allow the generic API-key provider catalog probe
+without a key. This does **not** change inference authentication or strip a key
+when one is available. Both flags default to `False`, retaining the existing
+key-gated, curated-first behavior. Custom `fetch_models()` overrides remain
+responsible for parsing, filtering and ordering their catalog.
+
 ## Declaring model capabilities
 
 Hermes resolves per-model capabilities (`supports_reasoning`, `supports_vision`,

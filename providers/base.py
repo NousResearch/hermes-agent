@@ -117,6 +117,11 @@ class ProviderProfile:
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
     fallback_models: tuple = ()
+    # Successful live lists (including []) replace curated models without reordering.
+    # None / exceptions still fall back; defaults preserve the curated-first merge.
+    authoritative_model_catalog: bool = False
+    # Allow catalog discovery without an API key; inference authentication is unchanged.
+    public_model_catalog: bool = False
     # model_aliases: short name -> id in fallback_models, for providers whose catalog is not
     # in models.dev (external processes); `/model <alias>` resolves here before core guessing.
     model_aliases: dict = field(default_factory=dict)

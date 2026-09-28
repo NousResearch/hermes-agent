@@ -427,6 +427,11 @@ import {
   wrapHandoffForDetachedConsole
 } from './updater-process'
 import {
+  applyVaultMemoryDefaults,
+  resolveVaultSeedDir,
+  type VaultMemoryOutcome
+} from './vault-seed'
+import {
   formatBlockerMessage,
   formatProbeFailedMessage,
   scanVenvBlockers,
@@ -717,6 +722,104 @@ ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
+
+// ---------------------------------------------------------------------------
+// Pamięć ogólna Cześka (vault Obsidiana).
+//
+// Vault: %USERPROFILE%\Documents\Czesiek Vault (na macOS/Linux: ~/Documents/...).
+// Uzasadnienie wyboru i pełny opis kontraktu: electron/vault-seed.ts.
+//
+// Uruchamiane przy każdym starcie (nie tylko po bootstrapie), bo użytkownik po
+// aktualizacji aplikacji ma już marker bootstrapu i nie przejdzie tą ścieżką.
+// Cała operacja jest idempotentna i NIE-FATALNA: nieudany seed nie może
+// zatrzymać uruchomienia asystenta.
+// ---------------------------------------------------------------------------
+let vaultMemoryApplied = false
+
+function obsidianLooksInstalled(): boolean {
+  const candidates = [
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Obsidian', 'Obsidian.exe'),
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'Obsidian', 'Obsidian.exe'),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Obsidian', 'Obsidian.exe')
+  ].filter(Boolean) as string[]
+
+  return candidates.some(candidate => {
+    try {
+      return fs.statSync(candidate).isFile()
+    } catch {
+      return false
+    }
+  })
+}
+
+function openVaultInObsidian(outcome: VaultMemoryOutcome) {
+  // Tylko przy pierwszym zasianiu vaultu — nie chcemy podnosić okna Obsidiana
+  // przy każdym starcie aplikacji.
+  if (!outcome.freshSeed || !outcome.seed || outcome.seed.copied.length === 0) {
+    return
+  }
+
+  // Bez tego Windows pokazałby okno „czym otworzyć obsidian://", gdy Obsidian
+  // nie jest zainstalowany (użytkownik może odmówić instalacji w NSIS).
+  if (!obsidianLooksInstalled()) {
+    rememberLog('[vault] Obsidian nie jest zainstalowany — pomijam otwarcie vaultu.')
+
+    return
+  }
+
+  const readme = path.join(outcome.vaultPath, 'README.md')
+  const uri = `obsidian://open?path=${encodeURIComponent(fs.existsSync(readme) ? readme : outcome.vaultPath)}`
+
+  try {
+    void shell.openExternal(uri).catch(() => {
+      // Obsidian nieobsadzony dla protokołu obsidian:// — nic więcej nie robimy.
+    })
+    rememberLog(`[vault] otwieram vault w Obsidianie: ${uri}`)
+  } catch (error) {
+    rememberLog(`[vault] nie udało się otworzyć vaultu w Obsidianie: ${String(error)}`)
+  }
+}
+
+function ensureVaultMemory(): VaultMemoryOutcome | null {
+  if (vaultMemoryApplied) {
+    return null
+  }
+
+  vaultMemoryApplied = true
+
+  try {
+    let documentsDir = ''
+
+    try {
+      documentsDir = app.getPath('documents')
+    } catch {
+      documentsDir = path.join(os.homedir(), 'Documents')
+    }
+
+    const outcome = applyVaultMemoryDefaults({
+      hermesHome: HERMES_HOME,
+      documentsDir,
+      // W spakowanej aplikacji szablon jedzie w resources/vault-seed
+      // (electron-builder extraResources); w dev czytamy z build/vault-seed.
+      seedDir: resolveVaultSeedDir({ resourcesPath: process.resourcesPath, appRoot: APP_ROOT }),
+      log: line => rememberLog(`[vault] ${line}`)
+    })
+
+    for (const error of outcome.errors) {
+      rememberLog(`[vault] krok pominięty (nie-fatalnie): ${error}`)
+    }
+
+    openVaultInObsidian(outcome)
+
+    return outcome
+  } catch (error) {
+    // applyVaultMemoryDefaults nie rzuca, ale getPath/cokolwiek wyżej mogło —
+    // pamięć ogólna nigdy nie może przewrócić startu aplikacji.
+    rememberLog(`[vault] seed pamięci ogólnej nie powiódł się (nie-fatalnie): ${String(error)}`)
+
+    return null
+  }
+}
 
 // Build-time install stamp -- the git ref this .exe was built against.
 //
@@ -5357,6 +5460,11 @@ async function ensureRuntime(backend) {
     }
 
     rememberLog('[bootstrap] bootstrap complete; marker written. Re-resolving backend.')
+
+    // Świeża instalacja: zasiej pamięć ogólną od razu, żeby pierwszy start
+    // onboardingu miał już vault (w whenReady i tak jest wołane — tu chodzi o
+    // kolejność i czytelny log w tym samym przebiegu bootstrapu).
+    ensureVaultMemory()
 
     // Re-resolve now that the install exists. The new resolution lands in
     // step 3 (bootstrap-complete marker) and we recurse to wire venvPython.
@@ -18469,6 +18577,12 @@ app.whenReady().then(() => {
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
   void ensureLoginShellPath()
+
+  // Pamięć ogólna Cześka: vault + OBSIDIAN_VAULT_PATH + protokół w AGENTS.md.
+  // Idempotentne i nie-fatalne — patrz electron/vault-seed.ts. Wołane przy
+  // każdym starcie, bo po aktualizacji aplikacji marker bootstrapu już istnieje
+  // i ścieżka bootstrapu nie jest w ogóle uruchamiana.
+  ensureVaultMemory()
 
   const systemCa = installWindowsSystemCaTrust(tls)
 

@@ -111,7 +111,7 @@ export function JarvisTipsWindow({
     <Dialog onOpenChange={next => !next && onClose()} open={open}>
       <DialogContent
         bodyClassName="grid max-h-[min(40rem,calc(100vh-4rem))] grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-3 p-4 sm:p-5"
-        className="w-[calc(100vw-2rem)] max-w-3xl"
+        className="jarvis-tips-window w-[calc(100vw-2rem)] max-w-3xl"
         data-testid="jarvis-tips"
       >
         <DialogHeader>
@@ -152,7 +152,7 @@ export function JarvisTipsWindow({
 
             return (
               <li
-                className="grid gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quaternary) p-3"
+                className="jarvis-tips-card grid gap-2 p-3"
                 key={entry.id}
               >
                 <div className="flex items-start gap-2">
@@ -333,19 +333,25 @@ export function JarvisTipsLauncher({
   }
 
   return (
-    <>
+    // The corner wrapper is what puts the trigger in the Pulpit's top corner
+    // (`order: 2`, see glass.css): the host renders it wherever it likes and
+    // the CSS keeps it the right-most control of the top bar.
+    <div className="jarvis-tips-corner" data-testid="jarvis-tips-corner">
       {trigger ? (
         trigger({ onClick: () => setOpen(true) })
       ) : (
         <Button
           aria-label={copy.openLabel}
-          className={cn('min-h-11', className)}
+          className={cn(
+            'jarvis-glass jarvis-glass-hover min-h-11 rounded-full px-4 text-(--ui-text-primary)',
+            className
+          )}
           onClick={() => setOpen(true)}
           size="sm"
           type="button"
           variant="secondary"
         >
-          <Lightbulb className="size-4" />
+          <Lightbulb className="size-4 text-(--ui-accent)" />
           {copy.openLabel}
         </Button>
       )}
@@ -358,6 +364,6 @@ export function JarvisTipsLauncher({
         onUse={use}
         open={open}
       />
-    </>
+    </div>
   )
 }

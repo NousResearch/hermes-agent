@@ -201,7 +201,6 @@ export function JarvisCore({
           />
           <circle className="jarvis-core__inner-ring" cx="100" cy="100" r="55" />
           <circle className="jarvis-core__level-ring" cx="100" cy="100" r="72" />
-          <circle className="jarvis-core__outer-ring" cx="100" cy="100" r="88" />
           <path className="jarvis-core__shine" d="M62 58 C76 42 107 35 129 48" fill="none" />
         </svg>
       </span>

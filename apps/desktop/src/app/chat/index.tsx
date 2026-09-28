@@ -772,6 +772,16 @@ const ChatViewContent = memo(function ChatViewContent({
   // the Appearance intro toggle does not hide it. Memoized because Thread is.
   const dashboardHome = dashboard && isPrimary && shouldShowIntro({ ...introInput, enabled: true })
 
+  // The Dashboard home hero IS the empty session: it owns the surface and has
+  // to sit straight on the wallpaper, so the transcript's reading pane
+  // (styles.css, the `[data-chat-transcript-frame]` fill/blur/border block)
+  // stands down while it shows. Keyed to the HERO, not to bare emptiness:
+  // a tile's plain intro keeps its framed pane, and both translucency modes
+  // stay covered. `!busy` covers the first frames of a run — the moment
+  // Czesiek hands work to Hermes and a delegation report is about to stream,
+  // the pane is back so the user can watch what is being written.
+  const transcriptEmpty = dashboardHome && messagesEmpty && !busy
+
   const activeProfileName = useStoreSelector($profiles, profiles => {
     const row = profiles.find(profile => profile.name === activeGatewayProfile)
 
@@ -925,6 +935,7 @@ const ChatViewContent = memo(function ChatViewContent({
       >
         <div
           className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+          data-chat-transcript-empty={transcriptEmpty ? '' : undefined}
           data-chat-transcript-frame=""
           data-slot="composer-bounds"
           {...dropHandlers}

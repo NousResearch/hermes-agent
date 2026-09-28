@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -9,6 +12,19 @@ import { applyVoiceEngineFromConfig } from '@/store/voice-prefs'
 import { JarvisHomeHero } from './home-hero'
 import { initialJarvisUiState } from './projector'
 import { $jarvisUi, publishJarvisVoiceState } from './store'
+
+/** The jarvis stylesheets sit next to these tests; vitest module URLs are not file URLs. */
+function readJarvisCss(file: string): string {
+  for (const from of ['src/app/jarvis', 'apps/desktop/src/app/jarvis']) {
+    try {
+      return readFileSync(resolve(process.cwd(), from, file), 'utf8')
+    } catch {
+      // Try the next root the runner may have been started from.
+    }
+  }
+
+  throw new Error(`could not read ${file}`)
+}
 
 const insert = vi.hoisted(() => vi.fn())
 
@@ -25,7 +41,7 @@ const FAILING_JOB = { id: 'failing_job:j1', kind: 'failing_job', params: { name:
 function renderHero(props: Partial<React.ComponentProps<typeof JarvisHomeHero>> = {}) {
   const onStartListening = vi.fn()
 
-  render(
+  const view = render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <I18nProvider configClient={null} initialLocale="pl">
         <JarvisHomeHero connected listening={false} onStartListening={onStartListening} {...props} />
@@ -33,7 +49,7 @@ function renderHero(props: Partial<React.ComponentProps<typeof JarvisHomeHero>> 
     </QueryClientProvider>
   )
 
-  return { onStartListening }
+  return { onStartListening, ...view }
 }
 
 afterEach(() => {
@@ -54,30 +70,37 @@ describe('Agent CzesiekHomeHero', () => {
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Chris, dobry wieczór. Co dziś ogarniamy?')
   })
 
-  it('says which voice answers: Gemini Live and its model when Live runs on Gemini', () => {
+  it('wears no status or voice-engine chip under the greeting', () => {
     applyVoiceEngineFromConfig({
       voice: { engine: 'realtime', realtime: { gemini: { model: 'gemini-3.8-live' }, provider: 'gemini' } }
     })
     renderHero()
 
-    const line = screen.getByTestId('jarvis-home-voice-engine').textContent ?? ''
-
-    expect(line).toContain(pl.jarvisShell.home.voiceEngine.gemini)
-    expect(line).toContain('gemini-3.8-live')
+    // Both chips left the screen: the orb and the conversation's own status
+    // strip already say this, and a second copy crowded the actions.
+    expect(screen.queryByTestId('jarvis-home-status')).toBeNull()
+    expect(screen.queryByTestId('jarvis-home-voice-engine')).toBeNull()
+    expect(screen.queryByText(pl.jarvisShell.home.orbStatus.idle)).toBeNull()
+    expect(screen.queryByText(new RegExp(pl.jarvisShell.home.voiceEngine.gemini))).toBeNull()
+    expect(screen.queryByText(/gemini-3\.8-live/)).toBeNull()
 
     applyVoiceEngineFromConfig({ voice: { engine: 'classic' } })
   })
 
-  it('names the live planning, approval and speaking states under the orb', () => {
+  it('keeps the orb reacting to the live states now that the status line is gone', () => {
     renderHero()
 
-    for (const [phase, voice, label] of [
-      ['planning', 'idle', pl.jarvisShell.home.orbStatus.thinking],
-      ['approval', 'idle', pl.jarvisShell.home.orbStatus.approval],
-      ['running', 'speaking', pl.jarvisShell.home.orbStatus.speaking]
+    for (const [phase, voice] of [
+      ['planning', 'idle'],
+      ['approval', 'idle'],
+      ['running', 'speaking']
     ] as const) {
       act(() => $jarvisUi.set({ ...initialJarvisUiState(), task: { id: 't1', phase }, voice }))
-      expect(screen.getByTestId('jarvis-home-status').textContent).toContain(label)
+
+      const core = screen.getByTestId('jarvis-core')
+
+      expect(core.getAttribute('data-task')).toBe(phase)
+      expect(core.getAttribute('data-voice')).toBe(voice)
     }
   })
 
@@ -90,7 +113,6 @@ describe('Agent CzesiekHomeHero', () => {
     act(() => publishJarvisVoiceState('speaking'))
 
     expect(screen.getByTestId('jarvis-core').getAttribute('data-voice')).toBe('speaking')
-    expect(screen.getByTestId('jarvis-home-status').textContent).toContain(pl.jarvisShell.home.orbStatus.speaking)
 
     act(() => publishJarvisVoiceState('idle'))
 
@@ -156,9 +178,70 @@ describe('Agent CzesiekHomeHero', () => {
     const talk = screen.getByRole('button', { name: pl.jarvisShell.home.talk })
 
     expect((talk as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByTestId('jarvis-home-status').textContent).toContain(pl.jarvisShell.home.offline)
+    // No offline chip any more; the disabled control and the engine's own state
+    // carry it.
+    expect(screen.queryByText(pl.jarvisShell.home.offline)).toBeNull()
 
     fireEvent.click(talk)
     expect(onStartListening).not.toHaveBeenCalled()
+  })
+
+  it('lays every action out in one row, with the voice action set apart', () => {
+    renderHero()
+
+    const actions = screen.getByRole('group', { name: pl.jarvisShell.home.actionsLabel })
+    const talk = within(actions).getByRole('button', { name: pl.jarvisShell.home.talk })
+
+    // A single line by construction: no wrapping utility on the container, and
+    // the stylesheet that owns the row says `nowrap`.
+    expect(actions.className).not.toContain('flex-wrap')
+    expect(actions.className).toContain('jarvis-home__actions')
+    expect(readJarvisCss('glass.css')).toMatch(/\.jarvis-home__actions\s*\{[^}]*flex-wrap:\s*nowrap/)
+
+    // Six chips in one row — the four task chips, the voice action behind the
+    // divider, then the day report — and staying on one line is what the CSS
+    // guarantees.
+    expect(actions.querySelectorAll('.jarvis-action')).toHaveLength(6)
+
+    const split = actions.querySelector('.jarvis-home__actions-split')
+
+    expect(split).not.toBeNull()
+    expect(split?.previousElementSibling?.tagName).toBe('BUTTON')
+    expect(split?.nextElementSibling).toBe(talk)
+
+    // The voice action wears its own accent instead of the shared glass chip.
+    expect(talk.className).toContain('jarvis-action--talk')
+    expect(actions.querySelectorAll('.jarvis-action--talk')).toHaveLength(1)
+  })
+
+  it('never puts two microphone controls on this screen', () => {
+    // At rest the hero's talk chip is the only voice control.
+    renderHero()
+
+    expect(screen.getAllByRole('button', { name: pl.jarvisShell.home.talk })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: pl.jarvisShell.home.stopTalking })).toBeNull()
+
+    cleanup()
+
+    // With the conversation live the chip ends it instead: the voice dock the
+    // dashboard shows at the same time owns the microphone, so this screen must
+    // not show a microphone of its own.
+    renderHero({ listening: true })
+
+    const actions = screen.getByRole('group', { name: pl.jarvisShell.home.actionsLabel })
+
+    expect(within(actions).queryByRole('button', { name: pl.jarvisShell.home.talk })).toBeNull()
+    expect(within(actions).getByRole('button', { name: pl.jarvisShell.home.stopTalking })).toBeTruthy()
+    expect(actions.querySelectorAll('.jarvis-action--talk')).toHaveLength(0)
+  })
+
+  it('draws no ring or particle orbit around the orb, and keeps the orb itself', () => {
+    const { container } = renderHero()
+
+    // The loose specks and the dashed outer frame are gone; the orb stays.
+    expect(container.querySelector('.jarvis-home__orbit')).toBeNull()
+    expect(container.querySelector('.jarvis-core__outer-ring')).toBeNull()
+    expect(container.querySelector('.jarvis-core__glass')).not.toBeNull()
+    expect(screen.getByTestId('jarvis-core').getAttribute('data-variant')).toBe('hero')
   })
 })

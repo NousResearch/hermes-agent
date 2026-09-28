@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -11,7 +14,20 @@ import {
   markJarvisOnboardingCompleted
 } from './onboarding-state'
 import { JarvisTipsLauncher } from './tips'
-import { jarvisTipsStorageKey, readJarvisTipsState } from './tips-state'
+import { initialJarvisTipsState, jarvisTipsStorageKey, readJarvisTipsState, writeJarvisTipsState } from './tips-state'
+
+/** The jarvis stylesheets sit next to these tests; vitest module URLs are not file URLs. */
+function readJarvisCss(file: string): string {
+  for (const from of ['src/app/jarvis', 'apps/desktop/src/app/jarvis']) {
+    try {
+      return readFileSync(resolve(process.cwd(), from, file), 'utf8')
+    } catch {
+      // Try the next root the runner may have been started from.
+    }
+  }
+
+  throw new Error(`could not read ${file}`)
+}
 
 const SCOPE = { connectionId: 'local', profile: 'default' }
 
@@ -124,5 +140,33 @@ describe('Agent CzesiekTipsLauncher', () => {
 
     expect(await screen.findByText('Zbadaj temat')).toBeTruthy()
     expect(readJarvisTipsState(window.localStorage, SCOPE).dismissedIds).toEqual([])
+  })
+
+  it('lives in the dashboard top corner and opens as a sheet of glass', async () => {
+    persistOnboarding('chat')
+    // Keep the intro shut: the trigger itself is what this test looks at, and
+    // an open modal hides the rest of the shell from the a11y tree.
+    writeJarvisTipsState({ ...initialJarvisTipsState(), autoOpen: false }, window.localStorage, SCOPE)
+    renderLauncher()
+
+    // The launcher's own wrapper is what the shell orders into the top corner.
+    const corner = screen.getByTestId('jarvis-tips-corner')
+    const trigger = within(corner).getByRole('button', { name: 'Podpowiedzi' })
+
+    expect(corner.className).toContain('jarvis-tips-corner')
+
+    const css = readJarvisCss('glass.css')
+
+    expect(css).toMatch(/main\[data-home='true'\]\s+\.jarvis-tips-corner\s*\{[^}]*order:\s*2/)
+
+    fireEvent.click(trigger)
+
+    // The window is the glass sheet: aurora, hairline, deep shadow, blur.
+    const tipsWindow = await screen.findByTestId('jarvis-tips')
+
+    expect(tipsWindow.className).toContain('jarvis-tips-window')
+    expect(css).toMatch(/\.jarvis-tips-window\s*\{[^}]*backdrop-filter:\s*blur/)
+    expect(css).toMatch(/\.jarvis-tips-card\s*\{[^}]*border-radius/)
+    expect(tipsWindow.querySelectorAll('.jarvis-tips-card').length).toBeGreaterThan(0)
   })
 })

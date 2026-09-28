@@ -396,8 +396,9 @@ function RunningReasoningHarness() {
   )
 }
 
-// A turn that streams reasoning and then settles — the transition the
-// preview latch exists for. `settle()` flips the thread to not-running.
+// A turn that streams reasoning and then settles — the transition that folds
+// the live preview back to its header. `settle()` flips the thread to
+// not-running.
 function renderSettlingReasoning() {
   let setRunning: ((running: boolean) => void) | undefined
 
@@ -621,7 +622,7 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.textContent).not.toContain('```ts')
   })
 
-  it('keeps the height-capped thinking preview scrollable after the turn settles', async () => {
+  it('folds the live thinking preview away when the turn settles', async () => {
     const { container, settle } = renderSettlingReasoning()
 
     const live = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
@@ -636,14 +637,21 @@ describe('assistant-ui streaming renderer', () => {
       expect(within(container).getByRole('button', { name: /Przemyślał/i })).toBeTruthy()
     })
 
-    const settled = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+    // Collapsed by default: the draft must not stay on screen as a second,
+    // full-height answer once the turn is done.
+    expect(container.querySelector('[data-slot="aui_thinking-body"]')).toBeNull()
+    expect(container.textContent).not.toContain('The user asked a question.')
 
-    expect(settled).toContain('max-h-40')
-    expect(settled).toMatch(/\boverflow-auto\b/)
-    expect(settled).not.toMatch(/\boverflow-hidden\b/)
+    // Still readable on demand — and unclipped once the user asks for it.
+    fireEvent.click(within(container).getByRole('button', { name: /Przemyślał/i }))
+
+    const reopened = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(reopened).not.toContain('max-h-40')
+    expect(container.textContent).toContain('The user asked a question.')
   })
 
-  it('does not collapse a live thinking preview when the turn settles', async () => {
+  it('collapses a live thinking preview when the turn settles', async () => {
     const { container, settle } = renderSettlingReasoning()
     const toggle = within(container).getByRole('button', { name: /Myśli/i })
 
@@ -657,9 +665,9 @@ describe('assistant-ui streaming renderer', () => {
         within(container)
           .getByRole('button', { name: /Przemyślał/i })
           .getAttribute('aria-expanded')
-      ).toBe('true')
+      ).toBe('false')
     })
-    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
   })
 
   it('leaves a settling turn collapsed when the collapsed-by-default preference is enabled', async () => {

@@ -40,6 +40,60 @@ automatycznie Hermesa znalezionego na PATH ani modułu z systemowego Pythona.
 Jawne połączenie zdalne lub override deweloperski pozostają osobną możliwością.
 Instalacja deweloperska ze źródeł ma własne reguły wykrywania backendu.
 
+## Pamięć ogólna Cześka (vault + Obsidian)
+
+Domyślna pamięć ogólna to vault Obsidiana w:
+
+- Windows: `%USERPROFILE%\Documents\Czesiek Vault`
+- macOS/Linux: `~/Documents/Czesiek Vault`
+
+Dlaczego tam: Obsidian domyślnie otwiera vaulty z Documents, katalog jest
+per-użytkownik (bez uprawnień administratora, pisanie po prostu działa) i przeżywa
+aktualizację aplikacji. Zawartość to zwykły markdown, który użytkownik może czytać
+i edytować ręcznie — vault jest wspólnym zeszytem, nie zamkniętym systemem.
+
+### Co robi instalator
+
+Instalator NSIS (`apps/desktop/scripts/installer.nsh`, makro `customInstall`) po
+skopiowaniu plików aplikacji uruchamia `resources\bootstrap\install-obsidian.ps1`,
+który:
+
+1. sprawdza, czy Obsidian już jest (typowe ścieżki `Obsidian.exe`, wpisy
+   odinstalowania w rejestrze, `winget list`) — jeśli tak, nic nie robi;
+2. próbuje `winget install -e --id Obsidian.Obsidian --scope user --silent
+   --accept-package-agreements --accept-source-agreements` (winget pobiera
+   instalator od wydawcy), a gdy to zawiedzie — drugą próbę bez `--scope user`;
+3. awaryjnie pobiera oficjalny instalator Windows z `https://obsidian.md/download`
+   (strona odsyła do wydania `obsidianmd/obsidian-releases`) i uruchamia go cicho
+   (`/S`), po czym kasuje plik tymczasowy;
+4. jeśli wszystko zawiedzie — **nie przerywa instalacji Cześka**: zapisuje
+   komunikat w `%LOCALAPPDATA%\AI Evolution Jarvis\hermes-home\logs\obsidian-install.log`
+   i pokazuje okno z komendą do ręcznej instalacji.
+
+**Nie pakujemy binarek Obsidiana do instalatora ani do repozytorium.** Obsidian
+jest darmowy, ale zamknięty; jego licencja nie pozwala na redystrybucję. Instalacja
+odbywa się zawsze z oficjalnego źródła, po stronie użytkownika.
+
+### Co robi aplikacja przy pierwszym starcie
+
+`apps/desktop/electron/vault-seed.ts`, wołane z `electron/main.ts` przy każdym
+starcie (idempotentnie i nie-fatalnie):
+
+- kopiuje szablon pamięci z `resources/vault-seed` (w repo:
+  `apps/desktop/build/vault-seed`) do vaultu, tworząc brakujące katalogi i **nie
+  nadpisując** istniejących plików użytkownika;
+- dopisuje `OBSIDIAN_VAULT_PATH=<vault>` do `…\hermes-home\.env`, jeśli tego klucza
+  jeszcze tam nie ma (reszta pliku bez zmian);
+- dopisuje protokół pamięci do `…\hermes-home\AGENTS.md` (tworzy plik, jeśli go nie
+  ma; istniejącej treści nie nadpisuje);
+- przy pierwszym zasianiu vaultu otwiera go w Obsidianie przez
+  `obsidian://open?path=…`.
+
+Pliki startowe vaultu: `README.md`, `00_KIM_JESTEM.md`, `01_AKTUALNY_KONTEKST.md`,
+`02_PAMIEC_TRWALA.md`, `03_LUDZIE/README.md`, `04_PROJEKTY/README.md`,
+`05_RYTUALY/DZIENNIK.md`, `05_RYTUALY/PORANNY_PRZEGLAD.md`,
+`06_DECYZJE/README.md`, `99_ZADANIA.md`.
+
 ## Ikona i skróty
 
 Ikona pochodzi z logo dostarczonego przez AI Evolution Polska. Plik źródłowy

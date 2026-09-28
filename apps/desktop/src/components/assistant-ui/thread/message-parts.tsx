@@ -18,7 +18,8 @@ import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fall
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
-import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
+import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
+import { ToolIcon } from '@/components/ui/tool-icon'
 import { useI18n } from '@/i18n'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
@@ -133,27 +134,22 @@ const ThinkingDisclosure: FC<{
 }> = ({ children, completedAt, messageRunning = false, pending = false, timestamp, timerKey }) => {
   const { t } = useI18n()
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
-  // `null` = no explicit user toggle yet. Live reasoning remains visible by
-  // default, unless the user opts into the low-jitter collapsed presentation.
+  // `null` = no explicit user toggle yet, so the block follows its own default
+  // (a live preview while streaming, folded once it settles). A user click wins
+  // from then on.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const elapsed = useElapsedSeconds(pending, timerKey)
   const thoughtFor = useMeasuredDuration(pending, timerKey)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)
-  // A live preview that later settles must not unmount its body — that is the
-  // "turn settled and everything jumped" shift. Latch that we showed one so
-  // the clip stays. Groups that mount already complete (earlier thoughts in
-  // a still-running turn) never latch, so they stay collapsed.
-  const [sawLivePreview, setSawLivePreview] = useState(false)
-
-  if (pending && !sawLivePreview) {
-    setSawLivePreview(true)
-  }
-
-  // The collapsed-by-default preference outranks the latch: it opts out of
-  // live previews entirely, so there is nothing to hold open.
-  const showPreview = !reasoningCollapsedByDefault && (pending || sawLivePreview)
+  // Reasoning is a disclosure about the work, never a second answer. It shows
+  // its capped live preview only while the block is still streaming and folds
+  // back to its one-line header the moment it settles — deliberately NO latch:
+  // holding a settled preview open left the whole reasoning draft sitting under
+  // the reply, full height and full width, reading as a second answer nobody
+  // asked for. The collapsed-by-default preference opts out of the preview too.
+  const showPreview = !reasoningCollapsedByDefault && pending
   const open = userOpen ?? showPreview
   const isPreview = userOpen === null && showPreview
 
@@ -216,7 +212,16 @@ const ThinkingDisclosure: FC<{
 
   return (
     <div
-      className="text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)"
+      className={cn(
+        'text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)',
+        // styles.css fades every `data-conversation-scaffold` block to 0.67 so
+        // the reply stays primary — the right resting state for the folded
+        // header, and the reason an opened draft read as washed-out grey on
+        // light wallpapers. Once the user opens it they are reading it, so
+        // paint the disclosure at full strength (the same lift the CSS gives on
+        // hover/focus) instead of through the fade.
+        open && 'opacity-100!'
+      )}
       data-conversation-scaffold=""
       data-slot="aui_thinking-disclosure"
       ref={enterRef}
@@ -231,6 +236,9 @@ const ThinkingDisclosure: FC<{
           </span>
         }
       >
+        <span className={cn(SCAFFOLD_GLYPH_CLASS, 'text-(--ui-text-tertiary)')}>
+          <ToolIcon name="brain" size="0.75rem" />
+        </span>
         <span className={cn(SCAFFOLD_LABEL_CLASS, pending && 'shimmer')}>{thoughtLabel}</span>
       </ScaffoldRow>
       {open && (
@@ -332,7 +340,12 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
 
   return (
     <MarkdownTextContent
-      containerClassName="text-xs leading-snug text-muted-foreground/85"
+      // A draft reads as a note, not as the reply: one notch below the reading
+      // column (0.6875rem, the scaffold/caption size) and in the secondary ink
+      // instead of the reply's foreground. The old `text-muted-foreground/85`
+      // stacked a 0.67 container fade on top of an already dimmed ink, which is
+      // what made an open draft unreadable on light wallpapers.
+      containerClassName="text-[0.6875rem] leading-snug text-muted-foreground"
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
       disableArtifacts
       isRunning={status.type === 'running' || messageRunning}

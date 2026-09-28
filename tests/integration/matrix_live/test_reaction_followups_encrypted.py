@@ -110,10 +110,22 @@ def test_reaction_to_encrypted_split_final_resumes_after_restart(
             f"{path.name}:\n{path.read_text(errors='replace')[-131072:]}"
             for path in sorted((gateway.home / "logs").glob("gateway.log*"))[-2:]
         )
+        barriers = {
+            path.name: json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(gateway.home.glob("*-diagnostics.json"))
+        }
+        checkpoints = {
+            str(path.relative_to(gateway.home)): json.loads(
+                path.read_text(encoding="utf-8")
+            )
+            for path in sorted(gateway.home.rglob("sync-*.json"))
+        }
         details = (
             f"Model requests ({len(gateway.model.main_requests())}):\n"
             f"{json.dumps(requests)}\nPersisted state (exit {result.exit_code}):\n"
             f"{result.output.decode(errors='replace')[-65536:]}\n"
+            f"Native barriers:\n{json.dumps(barriers)}\n"
+            f"Sync checkpoints:\n{json.dumps(checkpoints)}\n"
             f"Gateway file logs:\n{logs}\nGateway container logs:\n{gateway_logs()}"
         )
         for secret in (live_room.bot.access_token, live_room.observer.access_token):
@@ -184,14 +196,46 @@ def test_reaction_to_encrypted_split_final_resumes_after_restart(
             assert not (gateway.home / "room-input-published").exists()
             assert gateway.model.main_requests() == []
             (gateway.home / "room-input-release").touch()
+            _wait_for(
+                lambda: (gateway.home / "text-buffered").exists(),
+                "default text buffer before admission",
+                timeout=10,
+                details=failure_details,
+            )
+            buffered_id = (gateway.home / "text-buffered").read_text(encoding="utf-8")
+            buffered_checkpoints = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in gateway.home.rglob("sync-*.json")
+            ]
+            assert len(buffered_checkpoints) == 1
+            assert buffered_id not in buffered_checkpoints[0].get("accepted_events", [])
+            assert gateway.model.main_requests() == []
+            gateway.restart()
+            assert (gateway.home / "text-buffered-cancelled").read_text(
+                encoding="utf-8"
+            ) == buffered_id
             delivered = delivery.result()
         root = delivered["root"]
         assert (gateway.home / "room-input-published").read_text(
             encoding="utf-8"
         ) == root
         intake_id = delivered["intake_id"]
+        assert delivered["prime_id"] == buffered_id
+        assert intake_id != buffered_id
+        replayed = json.loads(
+            (gateway.home / "startup-replayed-diagnostics.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (replayed["event_id"], replayed["adapter_running"]) == (
+            buffered_id,
+            True,
+        )
         event_ids = delivered["event_ids"]
         assert len(set(event_ids)) == 3
+        assert (gateway.home / "replacement-delivery").read_text(
+            encoding="utf-8"
+        ).splitlines() == event_ids
 
         def final_persisted() -> bool:
             state = persisted_state(live_room.room_id, root)
@@ -222,6 +266,21 @@ def test_reaction_to_encrypted_split_final_resumes_after_restart(
         assert (gateway.home / "intake-blocked").read_text(
             encoding="utf-8"
         ) == intake_id
+        blocked = json.loads(
+            (gateway.home / "intake-blocked-diagnostics.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (blocked["event_id"], blocked["adapter_running"]) == (intake_id, True)
+        assert intake_id in blocked["accepted_events"]
+        record_property(
+            "native_barriers",
+            json.dumps({
+                "buffered_event_id": buffered_id,
+                "startup_replay": replayed,
+                "unfinished_native_sibling": blocked,
+            }),
+        )
         checkpoints = [
             json.loads(path.read_text(encoding="utf-8"))
             for path in gateway.home.rglob("sync-*.json")

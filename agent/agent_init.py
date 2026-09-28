@@ -700,29 +700,11 @@ def _setup_logging(agent):
     # agent.log (INFO+) + errors.log (WARNING+); idempotent so per-message gateway agents
     # don't duplicate handlers.
     from hermes_logging import setup_logging, setup_verbose_logging
-    # The ACTIVE home, not run_agent's import-time freeze: a Desktop serve backend builds
-    # agents for several profiles inside set_hermes_home_override() (#125974), and the
-    # frozen home made setup_logging() see a home it already served — so it never adopted
-    # the profile and logged every profile's records into the launch profile's files.
-    # A home that cannot host logs (a named profile that is missing or tombstoned —
-    # mkdir_under_hermes_home refuses to materialize it on purpose) falls back to the
-    # launch home: logging setup must never take agent construction down.
-    from hermes_constants import get_hermes_home, get_process_hermes_home
-    try:
-        setup_logging(hermes_home=get_hermes_home())
-    except FileNotFoundError:
-        # Never materialize a missing/tombstoned named profile just to host logs
-        # (mkdir_under_hermes_home refuses on purpose). Retry against the process
-        # launch home when it is a different, live home; if that cannot host logs
-        # either, proceed without file logging rather than break construction.
-        try:
-            setup_logging(hermes_home=get_process_hermes_home())
-        except FileNotFoundError:
-            print(
-                "hermes: no usable Hermes home for log files "
-                f"({get_hermes_home()}); logging to files is disabled.",
-                file=sys.stderr,
-            )
+    # The ACTIVE home, not run_agent's import-time freeze: a Desktop serve backend builds agents
+    # for several profiles inside set_hermes_home_override(), and the frozen launch home made
+    # setup_logging() see a home it already served, so it never adopted the profile and every
+    # profile's records landed in the launch profile's agent.log (#125974).
+    setup_logging(hermes_home=get_hermes_home())
 
     if agent.verbose_logging:
         setup_verbose_logging()

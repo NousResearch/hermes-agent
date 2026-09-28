@@ -80,10 +80,19 @@ with SessionDB(db_path=Path(sys.argv[1]) / 'state.db') as db:
     }
     const settleFrames = () => page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
     const pageWithAnchor = async (button: ReturnType<typeof viewport.getByRole>) => {
-      // Capture after Playwright's explicit movement to the page control. Read
-      // only visible groups, so the assertion does not force skipped layout.
+      // Start a real wheel gesture away from either paging edge. This releases
+      // the previous reading hold, as manual scrolling does, before Playwright
+      // positions the page control. Programmatic scrolling alone is not intent.
+      await viewport.hover()
+      const delta = await viewport.evaluate(element =>
+        element.scrollHeight - element.clientHeight - element.scrollTop <= 48 ? -1 : 1
+      )
+      await page.mouse.wheel(0, delta)
+      await settleFrames()
       await button.scrollIntoViewIfNeeded()
       await settleFrames()
+      await expect(button).toBeInViewport()
+      // Capture only visible groups, without forcing skipped descendants.
       const anchor = await viewport.evaluate(element => {
         const bounds = element.getBoundingClientRect()
         const candidates: Array<{ key: string; offset: number }> = []

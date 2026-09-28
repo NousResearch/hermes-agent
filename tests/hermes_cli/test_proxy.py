@@ -365,21 +365,29 @@ def test_server_strips_client_auth_header():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("headers,allowed", [
-    ({}, True),                                                    # plain local client
-    ({"Origin": "http://{authority}"}, True),                      # the proxy's own origin
-    ({"Host": "localhost:{port}"}, True),                          # loopback alias
-    ({"Host": "rebound.example:{port}"}, False),                   # foreign Host
-    ({"Origin": "https://site.example"}, False),                   # cross-site browser request
-    ({"Origin": "null"}, False),                                   # opaque browser origin
+@pytest.mark.parametrize("bound,headers,allowed", [
+    ("127.0.0.1", {}, True),                                              # plain local client
+    ("127.0.0.1", {"Origin": "http://{authority}"}, True),                # the proxy's own origin
+    ("127.0.0.1", {"Host": "localhost:{port}"}, True),                    # loopback alias
+    ("127.0.0.1", {"Host": "localhost.:{port}"}, True),                   # same alias, absolute form
+    ("127.0.0.1", {"Host": "rebound.example:{port}"}, False),             # foreign Host
+    ("127.0.0.1", {"Origin": "https://site.example"}, False),             # cross-site browser request
+    ("127.0.0.1", {"Origin": "null"}, False),                             # opaque browser origin
+    ("0.0.0.0", {"Host": "lan-name.example:{port}"}, True),               # LAN API client, no Origin
+    ("0.0.0.0", {"Host": "rebound.example:{port}",                        # DNS-rebound page: its
+                 "Origin": "http://rebound.example:{port}"}, False),      # Origin equals its Host
+    ("::", {"Host": "rebound.example:{port}",
+            "Origin": "http://rebound.example:{port}"}, False),
 ])
-def test_loopback_proxy_serves_only_local_non_browser_requests(headers, allowed):
-    """A loopback-bound proxy forwards with the operator's credential only for requests whose Host
-    names the loopback listener and that carry no foreign Origin; refused ones never go upstream."""
+def test_loopback_proxy_serves_only_local_non_browser_requests(bound, headers, allowed):
+    """The proxy forwards with the operator's credential only for requests whose Host names its
+    listener (any name on a wildcard LAN bind) and that carry no browser Origin it cannot vouch for;
+    refused ones never go upstream. A wildcard bind has no single origin of its own, and a
+    DNS-rebound page's Origin always equals its Host, so no Origin is trusted there."""
     async def run():
         captured: Dict[str, Any] = {"requests": []}
         upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
-        proxy_runner, proxy_base = await _start_runner(create_app(FakeAdapter(f"{upstream_base}/v1")))
+        proxy_runner, proxy_base = await _start_runner(create_app(FakeAdapter(f"{upstream_base}/v1"), bound_host=bound))
         authority = proxy_base.removeprefix("http://")
         sent = {k: v.format(authority=authority, port=authority.rsplit(":", 1)[1]) for k, v in headers.items()}
         try:

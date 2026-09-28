@@ -173,8 +173,9 @@ hermes proxy start --host 0.0.0.0 --port 8645
 ```
 
 ⚠ **Be aware:** anyone on your network can now use your Portal
-subscription. A wildcard bind skips the `Host` check (any name may reach it);
-the browser `Origin` check still applies. The proxy has no auth of its own — it accepts any bearer.
+subscription. A wildcard bind skips the `Host` check (any name may reach it),
+so it refuses every request that carries a browser `Origin`: browsers cannot use
+a wildcard-bound proxy at all. The proxy has no auth of its own — it accepts any bearer.
 Use a firewall, VPN, or reverse proxy with proper auth if you expose
 this beyond your trusted network.
 

@@ -8,6 +8,7 @@ The one shim: after a *clean* upstream EOF, a ``text/event-stream`` response tha
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import signal
 from typing import Optional
@@ -67,7 +68,15 @@ def _authority_hostname(authority: str) -> str:
         parts.port  # noqa: B018 — raises ValueError on a malformed port
     except ValueError:
         return ""
-    return (parts.hostname or "").lower()
+    # ``localhost.`` is the absolute form of ``localhost``; a rebound name stays foreign either way.
+    return (parts.hostname or "").lower().rstrip(".")
+
+
+def _is_wildcard(bound: str) -> bool:
+    try:
+        return bound in _WILDCARD_HOSTS or ipaddress.ip_address(bound).is_unspecified
+    except ValueError:
+        return False
 
 
 def _local_request_error(host_header: str, origin: Optional[str], bound_host: str) -> Optional[str]:
@@ -76,12 +85,14 @@ def _local_request_error(host_header: str, origin: Optional[str], bound_host: st
     to drive it: a loopback/specific-IP bind accepts only its own Host names (a DNS-rebound
     hostname fails), and any Origin other than the proxy's own is a cross-site browser request.
     Non-browser clients send no Origin and are unaffected. A wildcard bind is an explicit LAN
-    opt-in, so only the Origin rule applies there."""
+    opt-in, so any Host name may reach it; it therefore has no origin of its own to match, and a
+    DNS-rebound page's Origin always equals its Host, so every Origin-bearing request is refused."""
     hostname = _authority_hostname(host_header)
     bound = bound_host.strip("[]").lower()
-    if not hostname or (bound not in _WILDCARD_HOSTS and hostname not in _LOOPBACK_HOSTS | {bound}):
+    wildcard = _is_wildcard(bound)
+    if not hostname or (not wildcard and hostname not in _LOOPBACK_HOSTS | {bound}):
         return "host_not_allowed"
-    if origin is not None and origin.strip().lower() != f"http://{host_header.strip().lower()}":
+    if origin is not None and (wildcard or origin.strip().lower() != f"http://{host_header.strip().lower()}"):
         return "origin_not_allowed"
     return None
 

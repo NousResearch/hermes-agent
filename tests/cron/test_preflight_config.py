@@ -254,8 +254,7 @@ class TestHealthyJobUnaffected:
 
 class TestOptOut:
     def test_preflight_false_restores_old_behavior(self, tmp_path):
-        """cron.preflight: false → job proceeds to resolution and fails the
-        old way (error status, re-alerts every tick, no blocked_config)."""
+        """cron.preflight: false still uses the normal retry alert circuit."""
         (tmp_path / "config.yaml").write_text(
             "cron:\n  preflight: false\n", encoding="utf-8"
         )
@@ -287,7 +286,7 @@ class TestOptOut:
             stored = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
 
         assert stored["last_status"] == "error"
-        assert len(deliveries) == 2  # old behavior: alert every tick
+        assert len(deliveries) == 1
 
 
 class TestSkillReadiness:

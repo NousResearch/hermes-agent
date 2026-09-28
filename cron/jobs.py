@@ -974,6 +974,16 @@ def _job_is_stale_error_recurring(
     from cron.quota_hold import hold_active
     if hold_active(job, now):
         return False  # deliberately parked past a provider usage window, not wedged (#89376)
+    if not job.get("no_agent", False):
+        from cron.job_health import coerce_health, profile_name
+
+        health = coerce_health(
+            job.get("health"),
+            str(job.get("id") or "unknown"),
+            profile_name(get_hermes_home()),
+        )
+        if health.get("state") in {"circuit_open", "suppressed", "half_open"}:
+            return False
     if _job_running_in_this_process(str(job.get("id") or "")):
         return False
     # A fresh fire_claim means the job is running in ANOTHER process sharing this
@@ -1777,6 +1787,75 @@ def _next_run_or_reject_past_oneshot(
     return next_run_at
 
 
+def _effective_health_route(job: Dict[str, Any]) -> Dict[str, str]:
+    """Resolve the model/provider inputs whose change invalidates a provider cooldown."""
+    model = str(job.get("model") or cron_env_setting("HERMES_MODEL") or "").strip()
+    provider = str(job.get("provider") or "").strip()
+    base_url = str(job.get("base_url") or "").strip()
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+
+        config_path = get_hermes_home() / "config.yaml"
+        config = load_user_config_effective(config_path) if config_path.is_file() else {}
+        model_config = config.get("model") or {}
+        cron_config = config.get("cron") or {}
+        if not job.get("model"):
+            cron_model = (
+                str(cron_config.get("model") or "").strip()
+                if isinstance(cron_config, dict)
+                else ""
+            )
+            if cron_model:
+                model = cron_model
+            else:
+                main_model = model_config if isinstance(model_config, str) else (
+                    model_config.get("default")
+                    or model_config.get("model")
+                    or model_config.get("name")
+                    if isinstance(model_config, dict)
+                    else ""
+                )
+                model = str(main_model or model).strip()
+        if not provider:
+            if isinstance(cron_config, dict):
+                provider = str(cron_config.get("model_provider") or "").strip()
+            if not provider and isinstance(model_config, dict):
+                provider = str(model_config.get("provider") or "").strip()
+        if not base_url and isinstance(model_config, dict):
+            base_url = str(model_config.get("base_url") or "").strip()
+    except Exception:
+        pass
+    return {"model": model, "provider": provider, "base_url": base_url}
+
+
+def _sync_health_route(job: Dict[str, Any], now: datetime) -> bool:
+    """Stamp the current route; reset provider health only when a prior route changed."""
+    if job.get("no_agent", False):
+        return False
+    route = _effective_health_route(job)
+    previous = job.get("health_route")
+    job["health_route"] = route
+    if previous is None or previous == route:
+        return previous is None
+    from cron.job_health import default_health, profile_name
+
+    job["health"] = default_health(
+        str(job.get("id") or "unknown"),
+        profile_name(get_hermes_home()),
+        now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
+    from cron.quota_hold import clear_state as clear_quota_hold
+    from cron.unreachable_retry import clear_state as clear_unreachable_retry
+
+    clear_quota_hold(job)
+    clear_unreachable_retry(job)
+    if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
+        next_run_at = compute_next_run(job["schedule"], now.isoformat())
+        if next_run_at:
+            job["next_run_at"] = next_run_at
+    return True
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1830,7 +1909,8 @@ def create_job(
     if deliver is None:
         deliver = "origin" if origin else "local"
     job_id = uuid.uuid4().hex[:12]
-    now = _hermes_now().isoformat()
+    now_dt = _hermes_now()
+    now = now_dt.isoformat()
 
     raw = locals()
     f = {key: norm(raw[key]) for key, norm in _CREATE_FIELD_NORMALIZERS.items()}
@@ -1856,6 +1936,8 @@ def create_job(
     if pinned and not f["model"]:
         f["provider"], f["model"] = _main_model_pin()
     next_run_at = _next_run_or_reject_past_oneshot(parsed_schedule, name, schedule, "")
+
+    from cron.job_health import default_health, profile_name
 
     job = {
         "id": job_id,
@@ -1888,6 +1970,11 @@ def create_job(
         # Targets acked without message_id/raw_response (accepted but UNVERIFIED).
         "last_delivery_unverified": None,
         "failure_streak": 0,
+        "health": default_health(
+            job_id,
+            profile_name(get_hermes_home()),
+            now_dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        ),
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": f["enabled_toolsets"],
@@ -1902,6 +1989,7 @@ def create_job(
     ):
         if value is not None:
             job[key] = value
+    _sync_health_route(job, now_dt)
 
     with _jobs_lock():
         save_jobs(load_jobs() + [job])
@@ -2084,6 +2172,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
+        inference_fields_changed = any(
+            key in updates and updates[key] != job.get(key)
+            for key in ("provider", "model", "base_url")
+        )
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
@@ -2106,6 +2198,15 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
             updated.pop("pending_slot", None)
+        if inference_fields_changed:
+            from cron.job_health import default_health, profile_name
+
+            updated["health"] = default_health(
+                updated["id"],
+                profile_name(get_hermes_home()),
+                _hermes_now().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        _sync_health_route(updated, _hermes_now())
         _fill_missing_next_run(updated)
         _reject_terminal_activation(job, updated, job_id)
         jobs[i] = updated
@@ -2258,6 +2359,13 @@ def rearm_oneshot(job_id: str, run_at: Any) -> Optional[Dict[str, Any]]:
             repeat=repeat, run_claim=None, fire_claim=None)
         _activate_job_record(job)
         job["next_run_at"] = next_run_at
+        from cron.job_health import default_health, profile_name
+
+        job["health"] = default_health(
+            str(job.get("id") or job_ref["id"]),
+            profile_name(get_hermes_home()),
+            now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
         save_jobs(jobs)
         return _normalize_job_record(job)
 
@@ -2343,13 +2451,14 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
 
 def _record_run_outcome(
     job: Dict[str, Any], success: bool, error: Optional[str], delivery_error: Optional[str],
-    status: Optional[str], now: str,
+    status: Optional[str], now: str, *, manual_run: bool,
 ) -> None:
     """Stamp one completed run onto *job*: status fields, failure streak, alert markers, claims."""
     job["last_run_at"] = now
-    job.pop("manual_run_at", None)
-    # The transient manual-run context is single-fire: the run that just completed consumed it.
-    job.pop("manual_run_prompt", None)
+    if manual_run:
+        job.pop("manual_run_at", None)
+        # The transient manual-run context is single-fire and belongs to the claimed attempt.
+        job.pop("manual_run_prompt", None)
     delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())
     job["last_status"] = status or (
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
@@ -2372,7 +2481,9 @@ def _record_run_outcome(
         job["run_claim"] = None
 
 
-def _advance_after_run(job: Dict[str, Any], now: str) -> None:
+def _advance_after_run(
+    job: Dict[str, Any], now: str, *, preserve_pending_manual: bool = False,
+) -> None:
     """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
     completion when the repeat limit is reached or a one-shot has no further run."""
     # If no next run, decide whether this is terminal completion (one-shot) or a transient failure
@@ -2398,6 +2509,11 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
             # written stays inspectable in `cronjob list`; the retention sweep prunes it later.
             _complete_job_record(job)
             return
+
+    if preserve_pending_manual:
+        if job.get("state") != "paused":
+            job["state"] = "scheduled"
+        return
 
     job["next_run_at"] = compute_next_run(job["schedule"], now)
     if job["next_run_at"] is not None:
@@ -2458,20 +2574,66 @@ def mark_job_run(
                     "mark_job_run: job_id %s fire claim owner changed; discarding stale completion",
                     job_id)
                 return False
-        now = _hermes_now().isoformat()
-        _record_run_outcome(job, success, error, delivery_error, status, now)
-        _advance_after_run(job, now)
+        now_dt = _hermes_now()
+        now = now_dt.isoformat()
+        _sync_health_route(job, now_dt)
+        fire_claim = job.get("fire_claim")
+        manual_run = bool(
+            (isinstance(fire_claim, dict) and fire_claim.get("manual"))
+            or (not isinstance(fire_claim, dict) and job.get("manual_run_at"))
+        )
+        pending_manual = bool(
+            not manual_run
+            and job.get("manual_run_at")
+            and job.get("manual_run_at") == job.get("next_run_at")
+        )
+        attempt_route = (
+            fire_claim.get("health_route") if isinstance(fire_claim, dict) else None
+        )
+        health_route_matches = (
+            attempt_route is None or attempt_route == job.get("health_route")
+        )
+        _record_run_outcome(
+            job, success, error, delivery_error, status, now, manual_run=manual_run)
+        if not job.get("no_agent", False) and health_route_matches:
+            from cron.job_health import profile_name, record_result
+
+            health_success = success and not delivery_error
+            health_error = error if not success else delivery_error
+            job["health"] = record_result(
+                job.get("health"),
+                job_id=job_id,
+                profile=profile_name(get_hermes_home()),
+                success=health_success,
+                error=health_error,
+                now=now_dt,
+                manual_run=manual_run,
+                retry_after_seconds=quota_hold_seconds,
+            )
+        _advance_after_run(job, now, preserve_pending_manual=pending_manual)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 
-        if not success and model_unreachable and not is_terminal_job(job):
+        if (
+            not success
+            and model_unreachable
+            and health_route_matches
+            and not pending_manual
+            and not is_terminal_job(job)
+        ):
             plan_retry(job)
-        else:
+        elif not model_unreachable and health_route_matches:
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
-        if not success and quota_hold_seconds and not is_terminal_job(job):
+        if (
+            not success
+            and quota_hold_seconds
+            and health_route_matches
+            and not pending_manual
+            and not is_terminal_job(job)
+        ):
             quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
-        else:
+        elif health_route_matches:
             quota_hold.clear_state(job)
         save_jobs(jobs)
         return True
@@ -2720,6 +2882,27 @@ def claim_job_for_fire(
         if not force and not is_job_runnable(job):
             return False
         now = _hermes_now()
+        _sync_health_route(job, now)
+        manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
+        if not job.get("no_agent", False) and not manual_fire:
+            from cron.job_health import profile_name, suppress_or_claim
+
+            health_action, health = suppress_or_claim(
+                job.get("health"),
+                job_id=job["id"],
+                profile=profile_name(get_hermes_home()),
+                now=now,
+            )
+            if health_action != "run":
+                job["health"] = health
+            if health_action == "suppress":
+                if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
+                    nxt = compute_next_run(job["schedule"], now.isoformat())
+                    if nxt:
+                        job["next_run_at"] = nxt
+                save_jobs(jobs)
+                save_job_suppression_event(job["id"], health, now)
+                return False
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
             return False  # someone holds a fresh claim
         from cron.occurrences import completed_occurrence, scheduled_instant
@@ -2727,7 +2910,6 @@ def claim_job_for_fire(
         # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a
         # scheduler tick ``next_run_at`` is the NEXT occurrence, not the one being run, so
         # stamping it would make completed_occurrence() skip that slot when it arrives.
-        manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
         instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
         # A scheduled tick only ever fires when now >= next_run_at
         # (_evaluate_due_job returns False while the stored occurrence is still
@@ -2755,7 +2937,12 @@ def claim_job_for_fire(
             _activate_job_record(job)
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
-        job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
+        job["fire_claim"] = {
+            "at": now.isoformat(),
+            "by": f"{_machine_id()}:{uuid.uuid4().hex}",
+            "manual": manual_fire,
+            "health_route": copy.deepcopy(job.get("health_route")),
+        }
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
         job.pop("pending_slot", None)
         if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
@@ -3208,6 +3395,20 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     # into both fields, and any rewrite of next_run_at (edit, re-anchor, fire-claim advance) must
     # invalidate the marker. Do not "fix" this with _ensure_aware normalization.
     manual_run = job.get("manual_run_at") == next_run
+    if _sync_health_route(job, now):
+        from cron import quota_hold, unreachable_retry
+
+        scan.persist(
+            job["id"],
+            health=job.get("health"),
+            health_route=job.get("health_route"),
+            next_run_at=job.get("next_run_at"),
+            **{
+                quota_hold.STATE_KEY: job.get(quota_hold.STATE_KEY),
+                quota_hold.SCHEDULE_EXPR_KEY: job.get(quota_hold.SCHEDULE_EXPR_KEY),
+                unreachable_retry.STATE_KEY: job.get(unreachable_retry.STATE_KEY),
+            },
+        )
     from cron.occurrences import completed_occurrence, scheduled_instant
 
     if not manual_run and completed_occurrence(job, next_run):
@@ -3220,6 +3421,28 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     d.next_run_dt = _rearm_stale_error_recurring(d)
     if _instant_after(d.next_run_dt, now):
         return False
+
+    if not job.get("no_agent", False) and not manual_run:
+        from cron.job_health import profile_name, suppress_or_claim
+
+        health_action, health = suppress_or_claim(
+            job.get("health"),
+            job_id=job["id"],
+            profile=profile_name(get_hermes_home()),
+            now=now,
+            claim_probe=False,
+        )
+        if health_action != "run":
+            job["health"] = health
+            scan.persist(job["id"], health=health)
+        if health_action == "suppress":
+            if recurring:
+                next_run_at = compute_next_run(d.schedule, now.isoformat())
+                if next_run_at:
+                    job["next_run_at"] = next_run_at
+                    scan.persist(job["id"], next_run_at=next_run_at)
+            save_job_suppression_event(job["id"], health, now)
+            return False
 
     # Only the dispatch snapshot carries this field; never infer it from a later stamp.
     job["_scheduled_instant"] = None if manual_run else scheduled_instant(job.get("next_run_at"))
@@ -3351,6 +3574,36 @@ def save_job_output(job_id: str, output: str):
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
     _prune_job_output(job_output_dir, _cron_output_keep())
     return output_file
+
+
+def save_job_suppression_event(
+    job_id: str, health: Dict[str, Any], now: datetime
+) -> Path:
+    """Save immutable, sanitized skipped-run evidence beside ordinary run output."""
+    ensure_dirs()
+    output_dir = _job_output_dir(job_id) / "suppressed"
+    _ensure_cron_dir(output_dir)
+    _secure_dir(output_dir)
+    observed_at = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    event_file = output_dir / (
+        f"{now.strftime('%Y-%m-%d_%H-%M-%S')}-{uuid.uuid4().hex[:8]}-skipped.md"
+    )
+    lines = [
+        "## Skipped",
+        "",
+        f"- observed_at: {observed_at}",
+        f"- reason_code: {health.get('reason_code') or 'unknown'}",
+        f"- reason: {health.get('reason_summary') or 'terminal cron failure'}",
+        f"- retry_not_before: {health.get('retry_not_before') or 'unknown'}",
+        f"- suppressed_runs: {int(health.get('suppressed_runs') or 0)}",
+        "",
+    ]
+    atomic_write_text(
+        event_file, "\n".join(lines), tmp_prefix=".suppression_", mode=0o600
+    )
+    _secure_file(event_file)
+    _prune_job_output(output_dir, _cron_output_keep())
+    return event_file
 
 
 # --- Skill reference rewriting (curator integration) ---

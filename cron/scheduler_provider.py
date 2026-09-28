@@ -146,6 +146,10 @@ class CronScheduler(ABC):
         report it as scheduled). Built-in: no-op."""
         return None
 
+    def on_fire_suppressed(self, job_id: str) -> None:
+        """A callback was circuit-suppressed after its next occurrence was persisted."""
+        return None
+
     def recover_interrupted(self) -> int:
         """Run profile-local attempt recovery for every provider lifecycle."""
         from cron.executions import recover_interrupted_executions
@@ -198,6 +202,7 @@ class CronScheduler(ABC):
             raise
         if not isinstance(claimed_job, dict):
             finish_execution(execution["id"], success=False, error="Fire claim was not acquired")
+            self.on_fire_suppressed(job_id)
             return None
         claimed_job["execution_id"] = execution["id"]
         return claimed_job

@@ -83,6 +83,24 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
             assert run["outcome"] == "rate_limited"
 
 
+def test_earlier_runs_trailer_is_not_this_runs_exit(kanban_home):
+    """The log is append-mode across runs: a run that crashes before its epilogue (import
+    error) leaves no trailer, and the PREVIOUS run's ``rc=0`` must not book it as a
+    protocol violation — it is a crash that counts a failure."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a")
+        _dead_worker_with_log(conn, tid, 72001, 0)
+        with open(kb.worker_log_path(tid), "a", encoding="utf-8") as f:
+            f.write(f"\n{kbd._WORKER_START_MARKER} run=2\nModuleNotFoundError: No module named 'hermes_cli'\n")
+
+        kbd.detect_crashed_workers(conn)
+
+        ev = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+        assert ev["kind"] != "protocol_violation"
+        assert kb.get_task(conn, tid).consecutive_failures == 1
+
+
 def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
     """The third consecutive clean exit trips the violation budget and ``recompute_ready``
     must not promote the card back the same tick (``consecutive_failures`` is still below

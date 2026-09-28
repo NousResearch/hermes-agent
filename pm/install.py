@@ -818,15 +818,25 @@ def check(*, include_venv: bool = True) -> list[str]:
     return [f"{name}: {reason}" for name, reason in drift(include_venv=include_venv).items()]
 
 
-def _store_path_dirs() -> list[str]:
+def _store_path_dirs() -> tuple[list[str], list[str]]:
     """Composed PATH dirs of all installed (non-internal, on_path) store
     packages, deps-first, deduped. Includes optional packages that are
     *installed* (facts say so) — an installed git/gh must be on PATH even
-    though it's not in the root closure. Never installs."""
+    though it's not in the root closure. Never installs.
 
+    Returns ``(head, python_tail)``: the ``python`` store package's bin dirs are
+    split out because the running dependency venv IS the pinned interpreter's
+    environment — a standalone tool Python must never shadow the venv's
+    ``python3`` — Python skill scripts run through the terminal tool would lose
+    every third-party module (#125040; same class as #122325). The launcher and
+    diagnostic hook reference the tool Python by exact path, not via PATH, so
+    tail placement (appended after the ambient PATH) keeps it discoverable when
+    nothing else provides ``python3`` while never shadowing the venv.
+    """
     lockfile = _lockfile()
     target = current_target()
-    dirs: list[str] = []
+    head: list[str] = []
+    tail: list[str] = []
     for name in lockfile.names():
         try:
             package = get_package(name)
@@ -846,10 +856,11 @@ def _store_path_dirs() -> list[str]:
         path_dirs = env.get("PATH") or []
         if isinstance(path_dirs, str):
             path_dirs = [path_dirs]
+        bucket = tail if name == "python" else head
         for directory in path_dirs:
-            if directory and directory not in dirs:
-                dirs.append(str(directory))
-    return dirs
+            if directory and directory not in head and directory not in tail:
+                bucket.append(str(directory))
+    return head, tail
 
 
 def activate(*, allow_incomplete: bool = False) -> list[str]:
@@ -875,13 +886,18 @@ def activate(*, allow_incomplete: bool = False) -> list[str]:
     problems = check(include_venv=not allow_incomplete)
     if problems:
         return problems
-    dirs = _store_path_dirs()
-    if not dirs:
-        return []
+    head, python_tail = _store_path_dirs()
     existing = os.environ.get("PATH", "")
-    prefix = os.pathsep.join(dirs)
     existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
-    missing = [d for d in dirs if d.lower() not in existing_lower]
-    if missing:
-        os.environ["PATH"] = os.pathsep.join([*missing, existing]) if existing else os.pathsep.join(missing)
+    missing_head = [d for d in head if d.lower() not in existing_lower]
+    missing_tail = [d for d in python_tail if d.lower() not in existing_lower]
+    # Store tools go first unconditionally — pinned bundled versions win on dev
+    # machines too. The tool Python's bin goes LAST (#125040): the running venv IS
+    # the pinned interpreter's environment, so its python3 must resolve ahead of
+    # the standalone tool Python (skill scripts keep their third-party modules).
+    if missing_head:
+        os.environ["PATH"] = os.pathsep.join([*missing_head, existing]) if existing else os.pathsep.join(missing_head)
+    if missing_tail:
+        current = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join([current, *missing_tail]) if current else os.pathsep.join(missing_tail)
     return []

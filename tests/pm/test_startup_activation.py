@@ -120,3 +120,74 @@ def test_startup_uses_one_verdict(checked_store, monkeypatch, capsys, caplog, su
     else:
         assert all(str(binary.parent) in os.environ["PATH"].split(os.pathsep) for binary in binaries)
         assert "install out of sync" not in diagnostics
+
+def _fake_python_store(tmp_path, monkeypatch, names):
+    """Lockfile + registry with fake packages whose env_for yields per-package bin dirs."""
+    engine = importlib.import_module("pm.install")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
+    monkeypatch.setattr(paths, "repo_root", lambda: tmp_path / "repo")
+    monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
+    monkeypatch.setattr(registry, "_packages", {})
+    lock = Lockfile(paths.lockfile_path())
+    for name in names:
+        package = BinaryPackage()
+        package.name = name
+        package.probe_version = False
+        package.internal = False
+        package.on_path = True
+        package.binary_rel = {"posix": f"bin/{name}", "win32": f"bin/{name}"}
+        package.missing_reason = lambda target: None
+        def env_for(n, root, _n=name):
+            return {"PATH": [str(root / _n / "bin")]}
+        package.env_for = env_for
+        registry._packages[name] = package
+        lock.set_pin(name, "1.0", {"any": {"url": "unused", "sha256": "0" * 64}})
+        lock.save()
+
+    def fake_location(package, lockfile, target):
+        return (package, type("S", (), {"root": tmp_path / "store"})())
+    monkeypatch.setattr(engine, "_installed_location", fake_location)
+    return engine
+
+
+def test_store_path_dirs_splits_python_tail(tmp_path, monkeypatch):
+    """Regression for #125040: the python store package's bin dirs are split out
+    of the prepend head — the running dependency venv IS the pinned interpreter's
+    environment, so the standalone tool Python must never shadow the venv's
+    python3 (skill scripts run through the terminal tool would lose every
+    third-party module)."""
+    engine = _fake_python_store(tmp_path, monkeypatch, ["first", "python"])
+    head, tail = engine._store_path_dirs()
+    assert head == [str(tmp_path / "store" / "first" / "bin")]
+    assert tail == [str(tmp_path / "store" / "python" / "bin")]
+
+
+def test_activate_appends_python_bin_after_ambient_path(tmp_path, monkeypatch):
+    """The full contract: after activate(), a venv python3 already on the ambient
+    PATH resolves ahead of the tool Python's bin, and unrelated store-tool
+    resolution is preserved (tool dir first)."""
+    engine = _fake_python_store(tmp_path, monkeypatch, ["first", "python"])
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    original_path = str(venv_bin)
+    monkeypatch.setenv("PATH", original_path)
+    assert engine.activate() == []
+    parts = os.environ["PATH"].split(os.pathsep)
+    tool_dir = str(tmp_path / "store" / "first" / "bin")
+    python_dir = str(tmp_path / "store" / "python" / "bin")
+    assert tool_dir in parts and python_dir in parts
+    assert parts.index(original_path) < parts.index(python_dir), (
+        "tool Python bin must not shadow the ambient (venv) python3")
+    assert parts.index(tool_dir) < parts.index(python_dir)
+
+
+def test_python_only_store_still_discoverable(tmp_path, monkeypatch):
+    """Tail placement keeps the tool Python discoverable when nothing else
+    provides python3 - it is appended, not dropped."""
+    engine = _fake_python_store(tmp_path, monkeypatch, ["python"])
+    original_path = os.environ["PATH"]
+    monkeypatch.setenv("PATH", original_path)
+    assert engine.activate() == []
+    assert str(tmp_path / "store" / "python" / "bin") in os.environ["PATH"].split(os.pathsep)

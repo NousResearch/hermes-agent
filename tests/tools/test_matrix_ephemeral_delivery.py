@@ -37,6 +37,7 @@ async def test_alias_reaches_connected_native_adapter(monkeypatch, token):
         "chat_id": alias,
         "message_id": "$sent",
         "thread_id": "$root",
+        "chat_type": "dm",
     }
     adapter.send.assert_awaited_once_with(
         alias, "report", metadata={"thread_id": "$root"}
@@ -91,7 +92,7 @@ def test_bare_platform_send_uses_configured_home_thread(
         adapter._client.get_state_event.side_effect = ValueError("state forbidden")
     monkeypatch.setattr(senders, "_live_adapter", lambda *a, **kw: (None, adapter))
     monkeypatch.setattr(model_tools, "_run_async", asyncio.run)
-    monkeypatch.setattr(messaging, "_mirror_sent_message", lambda *a: False)
+    monkeypatch.setattr(messaging, "_mirror_sent_message", lambda *a, **kw: False)
 
     result = json.loads(send_message_tool({"target": "matrix", "message": "report"}))
 

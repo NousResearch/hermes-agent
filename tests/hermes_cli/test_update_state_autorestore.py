@@ -101,7 +101,7 @@ def snapshot_db(tmp_path):
 @pytest.fixture(autouse=True)
 def _isolate_database_holders(monkeypatch):
     # These fixtures own all DB connections. Do not scan other users' /proc FDs.
-    monkeypatch.setattr("hermes_cli.backup_restore._foreign_db_holder_pids", lambda path: [])
+    monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda path: [])
 
 
 def _row_count(db_path: Path) -> int:

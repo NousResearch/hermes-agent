@@ -2903,14 +2903,14 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
                 return str(value)
         return None
 
-    async def _get_room_members(self, room_id: str) -> Optional[set[str]]:
+    async def _get_room_members(self, room_id: str, *, force_refresh: bool = False) -> Optional[set[str]]:
         """Read the complete joined member list from the store or homeserver."""
         client = getattr(self, "_client", None)
         if client is None:
             return None
 
         state_store = getattr(client, "state_store", None)
-        if state_store is not None:
+        if state_store is not None and not force_refresh:
             with suppress(Exception):
                 if await state_store.has_full_member_list(RoomID(room_id)):
                     members = await state_store.get_members(
@@ -3002,7 +3002,7 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
         room_name = await self._get_room_state_value(room_id, "m.room.name", "name")
         room_topic = await self._get_room_state_value(room_id, "m.room.topic", "topic")
         canonical_alias = await self._get_room_state_value(room_id, "m.room.canonical_alias", "alias")
-        members = await self._get_room_members(room_id)
+        members = await self._get_room_members(room_id, force_refresh=force_refresh)
         member_count = len(members) if members is not None else None
         profiles = await self._get_room_member_profiles(room_id) if members is not None else None
         members_digest = None

@@ -15,6 +15,12 @@ class _RoomIdentityInvalidator(Protocol):
     def __call__(self, room_id: str | None = None) -> None: ...
 
 
+class _RoomIdentityResolver(Protocol):
+    def __call__(
+        self, room_id: str, *, force_refresh: bool = False
+    ) -> Awaitable[MatrixRoomIdentity]: ...
+
+
 class MatrixDeliveryMixin:
     _client: Any
     _user_id: str | None
@@ -23,7 +29,7 @@ class MatrixDeliveryMixin:
     _e2ee_mode: str
     _invalidate_room_identities: _RoomIdentityInvalidator
     _refresh_dm_cache: Callable[[], Awaitable[None]]
-    _resolve_room_identity: Callable[[str], Awaitable[MatrixRoomIdentity]]
+    _resolve_room_identity: _RoomIdentityResolver
 
     async def resolve_delivery_target(self, source: SessionSource) -> SessionSource:
         """Resolve the room and reply session shape through this authenticated client."""
@@ -40,7 +46,7 @@ class MatrixDeliveryMixin:
         from gateway.session_identity import replace_source
 
         room_id = await self._resolve_send_target(source.chat_id)
-        identity = await self._resolve_room_identity(room_id)
+        identity = await self._resolve_room_identity(room_id, force_refresh=True)
         chat_type = "unknown"
         if identity.joined_member_count is not None and (
             identity.joined_member_count != 2 or self._user_id

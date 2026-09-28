@@ -35,12 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Cron external worker: run PM's dependency boot (lease the committed generation, activate
-# its site-packages) at this process's own entry, *before* any Hermes package import. A
-# no-op unless this process was spawned as the external worker. See cron/worker_bootstrap.py.
-from cron.worker_bootstrap import WORKER_MARKER, worker_bootstrap
-worker_bootstrap()
-
+from cron.worker_bootstrap import WORKER_MARKER
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting

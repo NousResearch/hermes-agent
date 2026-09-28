@@ -684,31 +684,38 @@ def test_pin_restores_the_committed_generation_site_packages(tmp_path):
     }
 
 
-def test_worker_bootstrap_boots_only_the_marked_worker(tmp_path, monkeypatch):
-    """The PM dependency boot runs in the process ``_launch_external_cron_worker`` marked --
-    and only there: the gateway already booted through ``hermes_bootstrap``, and activation
-    rewrites ``sys.path``, so an unmarked importer of ``cron.scheduler`` keeps its launch
-    contract. The marker is consumed, so the worker's own children do not inherit it."""
+_BOOT_ORDER_PROBE = """
+import json, os, sys
+import pm.environments
+
+boots = []
+pm.environments.activate_dependencies = lambda root: boots.append("cron.jobs" in sys.modules)
+import cron
+print(json.dumps({"boots": boots, "marker": os.environ.get("HERMES_CRON_EXTERNAL_WORKER")}))
+"""
+
+
+@pytest.mark.parametrize("marked", [True, False])
+def test_marked_worker_boots_dependencies_before_cron_jobs(marked):
+    """#122222: ``-m cron.scheduler`` executes ``cron/__init__.py`` first, whose first import
+    (``cron.jobs`` -> ``hermes_yaml`` -> ``ruamel``) is already a dependency, so the marked
+    worker must boot before it -- exactly once, consuming the marker so the worker's own
+    children do not inherit it. An unmarked importer (the gateway already booted through
+    ``hermes_bootstrap``) is never re-booted."""
     import cron.worker_bootstrap as worker_bootstrap
-    import pm.environments
 
-    monkeypatch.setattr(worker_bootstrap, "_root", tmp_path)
-    booted = []
-    monkeypatch.setattr(
-        pm.environments,
-        "activate_dependencies",
-        lambda project_root: booted.append(project_root),
+    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    env = {k: v for k, v in os.environ.items() if k != worker_bootstrap.WORKER_MARKER}
+    env["PYTHONPATH"] = str(repo_root)
+    if marked:
+        env[worker_bootstrap.WORKER_MARKER] = "1"
+    child = subprocess.run(
+        [sys.executable, "-c", _BOOT_ORDER_PROBE],
+        cwd=repo_root, env=env, capture_output=True, text=True, timeout=60,
     )
-
-    monkeypatch.delenv(worker_bootstrap.WORKER_MARKER, raising=False)
-    worker_bootstrap.worker_bootstrap()
-    assert booted == []
-
-    monkeypatch.setenv(worker_bootstrap.WORKER_MARKER, "1")
-    worker_bootstrap.worker_bootstrap()
-    worker_bootstrap.worker_bootstrap()
-    assert booted == [tmp_path]
-    assert worker_bootstrap.WORKER_MARKER not in os.environ
+    assert child.returncode == 0, child.stderr
+    result = json.loads(child.stdout.strip().splitlines()[-1])
+    assert result == {"boots": [False] if marked else [], "marker": None}
 
 
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):

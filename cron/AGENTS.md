@@ -73,7 +73,7 @@ Hardening invariants — each guards a real failure; don't weaken without answer
 - **The restart-safe external worker boots itself.** `_launch_external_cron_worker` pins the
   checkout — and, on a PM install, the committed generation's `site-packages` — on the child's
   `PYTHONPATH` and marks it `HERMES_CRON_EXTERNAL_WORKER`; the child's own entry
-  (`cron/scheduler.py` → `cron/worker_bootstrap.py`) then runs PM's `activate_dependencies`,
+  (`cron/__init__.py` → `cron/worker_bootstrap.py`, ahead of the `cron.jobs` import) then runs PM's `activate_dependencies`,
   which leases that generation for the worker's lifetime and activates it before the first
   application import. Neither half is redundant (the pin is what the child can import through,
   the boot is what keeps the generation alive and its `.pth` files executed) and the gateway

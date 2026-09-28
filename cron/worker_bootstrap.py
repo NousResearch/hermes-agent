@@ -12,8 +12,9 @@ between the gateway's exit and the worker's next import (#122290 review), and it
 ``pm.environments.activate_dependencies`` is exactly that boot -- the same call
 ``hermes_bootstrap`` makes for every other entry point -- and it leases the generation it
 selects for the life of the process. ``worker_bootstrap()`` runs it at the top of
-``cron/scheduler.py`` (after the stdlib-only ``sys.path`` pin, before any Hermes package
-import) and does nothing unless ``_launch_external_cron_worker`` marked this child: the
+``cron/__init__.py`` -- ``-m cron.scheduler`` executes the package before the module, and the
+package's first import (``cron.jobs`` -> ``hermes_yaml`` -> ``ruamel``) is already a
+dependency -- and does nothing unless ``_launch_external_cron_worker`` marked this child: the
 gateway already booted through ``hermes_bootstrap``, and every other importer of
 ``cron.scheduler`` is an interpreter that owns its own dependencies.
 

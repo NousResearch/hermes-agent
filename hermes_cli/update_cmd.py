@@ -1228,12 +1228,13 @@ def _begin_update_receipt_and_plan(args):
 
 
 def _record_update_initiator() -> None:
-    """We hold the update lock, so a live claim naming another pid is our orchestrator's: the
-    Desktop hand-off (posix shim, windows script, Tauri updater) — the metric's ``kind``."""
+    """We hold the update lock, so a claim naming another pid is our orchestrator's: the Desktop
+    hand-off (posix shim, windows script, Tauri updater) — the metric's ``kind``. Read the marker
+    raw: a liveness probe or stale-marker cleanup is lock policy, not a metrics side effect."""
     with _best_effort('Update initiator unavailable: %s'):
-        from hermes_cli.update_lock import read_live_update
-        holder = read_live_update()
-        if holder is not None and holder.pid != os.getpid():
+        from hermes_cli.update_lock import update_marker_path
+        first = update_marker_path().read_text(encoding="utf-8-sig").partition("\n")[0].strip()
+        if first.isdigit() and int(first) != os.getpid():
             _completion_receipt.record_fact("initiator", "desktop")
 
 

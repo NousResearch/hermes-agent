@@ -781,7 +781,7 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
                  timeout: int, sandbox_tools: frozenset, reused: bool,
                  state_reset: bool, exec_start: float) -> Dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
-    from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
+    from tools.code_execution_tool import _sandbox_failure_hint, _stdout_recovery_hint, _truncate_stdout_text
     from agent.redact import redact_sensitive_text
     from tools.ansi_strip import strip_ansi
     def clean(text: str) -> str:
@@ -802,14 +802,13 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
                    "execution_count": kernel.execution_count, "state_reset": state_reset},
     }
     result.update(stdout_metadata)
-    # Cell-side spill (runner clipped before replying): same read_file recipe as the host-side spill.
+    # Cell-side spill (runner clipped before replying): use the host-side recovery guidance.
     cell_spill = str(payload.get("stdout_spill_path", "") or "")
     if cell_spill and payload.get("stdout_clipped"):
         result["stdout_spill_path"] = cell_spill
         result["warning"] = (
-            f"Cell stdout exceeded the inline cap; head shown. FULL output saved to {cell_spill} "
-            f'— page it with read_file(path="{cell_spill}", offset=...) instead of re-running. '
-            "(Kernel state persists: printing a narrower slice next call is often cheaper.)"
+            "Cell stdout exceeded the inline cap; head shown. "
+            + _stdout_recovery_hint(cell_spill)
         )
     if status == "timeout":
         message = (f"Cell timed out after {timeout}s; the session kernel was killed and its "

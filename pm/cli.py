@@ -496,9 +496,10 @@ def _gc_store(store, facts, *, dry_run: bool = False) -> tuple[int, int]:
     lock, and expired partials. Keeps live package entries (recorded in
     facts), partials an in-flight download still owns, and entries pinned in
     ``<store>/.gc-keep``. ``dry_run`` prints the removals instead of doing
-    them — expired partials are still probed (under their own locks, nothing
-    unlinked) so the removal list is the full picture a real gc would act on,
-    and set-aside trees are reported but left for a real run.
+    them — expired partials are still probed (under their own locks where a
+    lock file exists; a dry run creates no lock files) so the removal list
+    is the full picture a real gc would act on, and set-aside trees are
+    reported but left for a real run.
     Returns (removed, kept).
     """
     from pm.download_state import collect_partials

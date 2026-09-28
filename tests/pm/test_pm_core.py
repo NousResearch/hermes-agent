@@ -628,6 +628,9 @@ def test_gc_dry_run_does_not_initialise_the_store(pm_env, capsys):
     assert partial.is_file(), "dry run must not unlink the expired partial"
     assert not runtime.exists(), "dry run must not create the store root"
     assert not (runtime / ".install.lock").exists(), "dry run must not create the lock file"
+    assert not (paths.partials_root() / ".locks").exists(), (
+        "dry run must not create partial lock inodes"
+    )
 
 
 def test_gc_keeps_entries_pinned_in_the_keep_list(pm_env):

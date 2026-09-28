@@ -39,6 +39,39 @@ def test_gc_respects_partial_ownership_and_recent_resume(tmp_path, monkeypatch, 
         assert (partials / ".locks" / "example").is_file()
 
 
+def test_gc_dry_run_probes_partials_without_creating_locks(tmp_path, monkeypatch):
+    """A dry run deletes nothing, so it must create nothing either: probing an
+    expired partial takes its lock only when a lock file already exists, which
+    keeps the .locks dir uncreated on a fresh partials dir (and a read-only or
+    restricted one reportable) instead of minting a lock inode per key."""
+    partials = tmp_path / "partials"
+    partials.mkdir()
+    part = partials / "example.part"
+    part.write_bytes(b"stale")
+    old = time.time() - 10 * 24 * 60 * 60
+    os.utime(part, (old, old))
+    monkeypatch.setattr("pm.paths.partials_root", lambda: partials)
+    store = Store(tmp_path / "store")
+    facts = Facts(store.root / "facts.json")
+
+    removed, _ = _gc_store(store, facts, dry_run=True)
+    assert removed == 1, "an expired partial with no lock file is probeable unlocked"
+    assert part.exists(), "dry run must not unlink the expired partial"
+    assert not (partials / ".locks").exists(), "dry run must not create the .locks dir"
+
+    with partial_lock(partials, "example"):
+        pass  # leaves the lock inode behind with no owner
+    removed, _ = _gc_store(store, facts, dry_run=True)
+    assert removed == 1, "an idle lock file is still openable read-write by a probe"
+    assert sorted(path.name for path in (partials / ".locks").iterdir()) == ["example"]
+
+    with partial_lock(partials, "example"):
+        removed, _ = _gc_store(store, facts, dry_run=True)
+        assert removed == 0, "a held lock still hides the partial from the report"
+        assert part.exists()
+    assert sorted(path.name for path in (partials / ".locks").iterdir()) == ["example"]
+
+
 def test_pause_interrupts_an_owner_wait(tmp_path):
     from threading import Event, Thread
     from pm.downloader import Download, DownloadPaused, Source

@@ -10,12 +10,26 @@ from pm.filesystem import lock_fd
 
 
 @contextmanager
-def partial_lock(root: Path, key: str, *, cancelled=None, wait: bool = True):
+def partial_lock(root: Path, key: str, *, cancelled=None, wait: bool = True, dry_run: bool = False):
     # Lock inodes must survive release: removing one lets a new owner lock a
     # different inode while an older waiter still holds the original handle.
-    locks = root / ".locks"
-    locks.mkdir(parents=True, exist_ok=True)
-    fd = os.open(locks / key, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_path = root / ".locks" / key
+    if dry_run:
+        # A probe mutates nothing, so it must not create the lock file (or the
+        # .locks dir) either. No lock file means no owner to race; one that is
+        # about to be opened by a first-time downloader can still slip past,
+        # which only blurs the would-remove report — nothing is written.
+        try:
+            if not lock_path.exists():
+                yield True
+                return
+            fd = os.open(lock_path, os.O_RDWR)
+        except OSError:
+            yield False
+            return
+    else:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         while not lock_fd(fd, wait=False):
             if not wait:
@@ -39,7 +53,9 @@ def collect_partials(
     """Do not let a GC snapshot race a downloader acquiring ownership.
 
     Returns the partial files this pass removed — or, under ``dry_run``,
-    the ones it verified as expired and would remove; nothing is unlinked.
+    the ones it verified as expired and would remove; nothing is unlinked
+    and no lock files are created, so a dry run works on a read-only or
+    restricted partials dir.
     """
     if not root.is_dir():
         return []
@@ -47,7 +63,7 @@ def collect_partials(
     now = time.time()
     handled: list[str] = []
     for key in sorted(keys):
-        with partial_lock(root, key, wait=False) as acquired:
+        with partial_lock(root, key, wait=False, dry_run=dry_run) as acquired:
             if not acquired:
                 continue
             pair = [root / f"{key}{suffix}" for suffix in (".part", ".ranges")]

@@ -439,7 +439,10 @@ class Store:
         A dry run mutates nothing, so it must not initialise the store either:
         the root is only created and the lock file only opened when a lock is
         actually taken. When the lock file does not exist yet there is nothing
-        to serialise against, so a dry run simply proceeds unlocked.
+        to serialise against, so a dry run simply proceeds unlocked. An
+        installer between its mkdir and its lock open is indistinguishable
+        from that case, so a dry run may briefly report its in-flight staging
+        dirs as removable — the report only, nothing is written.
         """
         from pm.filesystem import lock_fd
         lock = self.root / ".install.lock"

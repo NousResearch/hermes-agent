@@ -2949,7 +2949,8 @@ def _is_secret_config_key(key: str) -> bool:
 
 def _maskable_secret_text(value: Any) -> str:
     """Display text of a scalar that must be masked under a secret key, or ``""``. YAML and
-    ``config set`` coerce an all-digit password or PIN to ``int``, so numbers count too."""
+    ``config set`` coerce an all-digit value (e.g. a numeric password) to ``int``, so numbers
+    count too. Which keys are secret is decided by ``_is_secret_config_key``, not here."""
     if isinstance(value, bool):
         return ""
     if isinstance(value, (int, float)):

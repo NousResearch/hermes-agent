@@ -168,6 +168,52 @@ async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("send_succeeded", [True, False])
+async def test_direct_handoff_completes_review_ownership_after_delivery(
+    monkeypatch, send_succeeded
+):
+    runner, _ = _make_multiplex_runner()
+    outcomes = []
+
+    async def _handle_message(event):
+        event._gateway_review_delivery_complete = (
+            lambda *, delivery_succeeded: outcomes.append(delivery_succeeded)
+        )
+        return "visible handoff response"
+
+    runner._handle_message = _handle_message
+
+    def _transport_factory(_platform, _config, adapters):
+        async def _send(*_args, **_kwargs):
+            return SimpleNamespace(success=send_succeeded)
+
+        return SimpleNamespace(
+            adapter=adapters[Platform.TELEGRAM],
+            send=_send,
+        )
+
+    monkeypatch.setattr(
+        "gateway.delivery.resolve_delivery_transport", _transport_factory
+    )
+
+    if send_succeeded:
+        await runner._process_handoff(
+            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"}
+        )
+    else:
+        with pytest.raises(RuntimeError, match="adapter.send failed"):
+            await runner._process_handoff(
+                {
+                    "id": "cli-session",
+                    "title": "work",
+                    "handoff_platform": "telegram",
+                }
+            )
+
+    assert outcomes == [send_succeeded]
+
+
+@pytest.mark.asyncio
 async def test_secondary_profile_config_load_failure_fails_closed(monkeypatch):
     """A secondary profile whose config cannot load must fail the handoff.
 

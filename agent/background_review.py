@@ -12,44 +12,215 @@ import json
 import logging
 import os
 import threading
-from contextlib import contextmanager, suppress
+import time
+import uuid
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
+from agent.turn_facade_lease import DurableTurnLease
 
 logger = logging.getLogger(__name__)
 
-_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS = 2.0
-
-
 class _BackgroundReviewRun:
-    """Per-review cancellation and request-completion handshake."""
+    """Per-review cancellation and request-completion handshake.
 
-    def __init__(self) -> None:
+    ``admission_gate`` (automatic reviews only) is the foreground-ownership probe, re-evaluated
+    HERE, at admission. The pre-spawn checks cannot be the last word: building the fork takes
+    real time, and a gateway follow-up queued in that window only becomes a live turn after it is
+    delivered — so without this gate the review would still get its full-transcript request onto
+    the wire first. Automatic admission takes the follow-up lock, samples the gate with no other
+    lock held (the host probe takes gateway state), then the foreground registry lock for the
+    live-turn re-check (``live_turn_gate``, registry reads only) and the publication, then the
+    run lock. /refine passes no gate: an explicit review is never preempted.
+    """
+
+    def __init__(
+        self,
+        admission_gate: Optional[Callable[[], Optional[str]]] = None,
+        admission_lock: Any = None,
+        foreground_admission_lock: Any = None,
+        followup_cancellable: bool = True,
+        live_turn_gate: Optional[Callable[[], Optional[str]]] = None,
+    ) -> None:
         self.cancel_requested = threading.Event()
         self.request_done = threading.Event()
+        self.refused_reason: Optional[str] = None
+        # Set by ``_ReviewTurnLease`` when the durable lease stopped the run (a yield stamp or a
+        # lost row): the transcript moved on, so a deferred item is dropped rather than requeued.
+        self.lease_yield_reason: Optional[str] = None
         self._lock = threading.Lock()
+        self._admission_gate = admission_gate
+        self._live_turn_gate = live_turn_gate
+        self._admission_lock = admission_lock
+        self._foreground_admission_lock = foreground_admission_lock
+        self._followup_cancellable = followup_cancellable
         self._review_agent = None
-        self._request_finished = self._cancel_dispatched = False
+        self._parent_agent = None
+        self._review_owner_key = None
+        self._request_finished = self._cancel_dispatched = self._completed = False
+        self._escalation_stage = 0
 
     def begin_request(self, review_agent: Any) -> bool:
-        """Atomically admit the first provider-capable review phase."""
-        with self._lock:
-            if self.cancel_requested.is_set() or self._request_finished:
+        """Atomically admit the first provider-capable review phase.
+
+        The follow-up admission scope is held for the whole sample -> publication window, so a
+        queue insertion either lands first (and the gate refuses) or finds a published fork to
+        cancel. The foreground registry lock is NOT held across the gate: the host probe takes
+        the gateway's per-session state lock, and the gateway's queue fence holds a state lock
+        while it cancels through the registry — a later activation of the same session key owns
+        a fresh state, so a probe holding the registry lock and reaching that state inverts the
+        two orders and wedges the gateway event loop behind a review. The registry lock is taken
+        only for ``live_turn_gate`` (registry reads) together with the publication, so a live-turn
+        registration either lands before that re-check (and refuses) or after the publication
+        (and finds the fork). The RUN lock is taken only for the flag reads and the publication,
+        never across either gate: the fence takes the run lock after its state lock.
+        """
+        admission_scope = self._admission_lock or nullcontext()
+        foreground_scope = self._foreground_admission_lock or nullcontext()
+        with admission_scope:
+            if self._fenced():
                 return False
-            self._review_agent = review_agent
-            return True
+            if reason := self._gate_reason(self._admission_gate):
+                self._refuse(reason)
+                return False
+            with foreground_scope:
+                if reason := self._gate_reason(self._live_turn_gate):
+                    self._refuse(reason)
+                    return False
+                with self._lock:
+                    # Re-read under the publication lock: a cancel may have landed while the
+                    # gates ran.
+                    if self.cancel_requested.is_set() or self._request_finished:
+                        return False
+                    self._review_agent = review_agent
+                    return True
+
+    def _fenced(self) -> bool:
+        """Whether this run is already cancelled or past its request phase."""
+        with self._lock:
+            return self.cancel_requested.is_set() or self._request_finished
+
+    def _refuse(self, reason: str) -> None:
+        """Fence the run exactly like a cancel: nothing may be admitted afterwards, and a deferred
+        review is requeued rather than lost (``run_agent._requeue_deferred_review``)."""
+        with self._lock:
+            self.refused_reason = reason
+            self.cancel_requested.set()
+
+    def _gate_reason(self, gate: Optional[Callable[[], Optional[str]]]) -> Optional[str]:
+        """Body-free reason ``gate`` refuses the review, failing safe on probe errors."""
+        if gate is None:
+            return None
+        try:
+            return gate()
+        except Exception:  # noqa: BLE001 — unknown foreground state blocks lower-priority work
+            from agent.review_admission import REASON_ADMISSION_FAILURE
+
+            logger.warning("Automatic review blocked: %s", REASON_ADMISSION_FAILURE)
+            return REASON_ADMISSION_FAILURE
 
     def cancel(self) -> Any:
-        """Fence startup and return the running fork, if one was admitted."""
+        """Fence startup and return the running fork, if one was admitted.
+
+        A run whose provider phase already returned is complete, not preempted: its writes
+        happened, so it is neither interrupted nor requeued while its cleanup still runs.
+        """
         with self._lock:
+            if self._request_finished or self._completed:
+                return None
             self.cancel_requested.set()
             if self._review_agent is None or self._cancel_dispatched:
                 return None
             self._cancel_dispatched = True
             return self._review_agent
+
+    def escalate_unacknowledged_cancel(self, stage: int) -> None:
+        """Liveness escalation for a fenced run whose admitted fork has not published its exit.
+
+        Stage 1 logs the owner and releases the fork's clients, so a stalled provider stream
+        raises into the loop instead of blocking forever. Stage 2 revokes the fork — the loop's
+        request reservation refuses every further provider call (``conversation_loop``) — and
+        re-issues the hard interrupt inline. Idempotent per stage; a run that was never fenced
+        or has already exited is left alone. The waiter keeps waiting either way: escalation
+        unwedges the fork, it never authorizes the foreground to overlap it.
+        """
+        with self._lock:
+            agent = self._review_agent
+            if (
+                agent is None
+                or self._request_finished
+                or not self.cancel_requested.is_set()
+            ):
+                return
+            pending = range(self._escalation_stage + 1, stage + 1)
+            if not pending:
+                return
+            self._escalation_stage = stage
+        from agent.review_admission import REASON_CANCEL_UNACKNOWLEDGED, REASON_REVIEW_REVOKED
+
+        owner = _review_owner_tag(self, None, None)
+        for step in pending:
+            if step == 1:
+                logger.warning(
+                    "Background review cancel unacknowledged (owner=%s, reason=%s)",
+                    owner, REASON_CANCEL_UNACKNOWLEDGED,
+                )
+                with suppress(Exception):
+                    agent.release_clients()
+            else:
+                logger.warning(
+                    "Background review revoked (owner=%s, reason=%s)", owner, REASON_REVIEW_REVOKED
+                )
+                with suppress(Exception):
+                    agent._review_revoked = True
+                with suppress(Exception):
+                    from agent.interrupt_compat import request_hard_interrupt
+
+                    request_hard_interrupt(
+                        agent, "superseded by a new live turn",
+                        tool_reason="background review superseded",
+                    )
+
+    def cancel_for_pending_followup(self) -> Any:
+        """Fence an automatic review; explicit /refine waits for normal live-turn cancellation."""
+        if not self._followup_cancellable:
+            return None
+        return self.cancel()
+
+    def mark_provider_phase_complete(self) -> None:
+        """Latch completion the moment the provider phase returns, before the lease release,
+        usage attribution and unregister that precede ``request_done``: a cancel landing in that
+        window must not relabel the run preempted. A run fenced mid-phase stays preempted."""
+        with self._lock:
+            if not self.cancel_requested.is_set():
+                self._completed = True
+
+    def owns_request_agent(self, agent: Any) -> bool:
+        """Whether ``agent`` is the fork currently executing this run's request phase."""
+        with self._lock:
+            return self._review_agent is agent and not self._request_finished
+
+    def revoke_if_unadmitted(self) -> bool:
+        """Latch request exit for a fenced run that never admitted a fork.
+
+        Such a run has no worker guaranteed to publish ``request_done`` (the thread may never
+        have started), and ``begin_request`` re-reads ``cancel_requested`` under this same lock,
+        so once the fence is observed here no fork can be admitted later: revoking is
+        all-or-nothing with admission. An explicit /refine that a queue-side fence left
+        un-fenced keeps its worker and is never revoked here.
+        """
+        with self._lock:
+            if (
+                not self.cancel_requested.is_set()
+                or self._review_agent is not None
+                or self._request_finished
+            ):
+                return False
+            self._request_finished = True
+            return True
 
     def mark_request_finished(self) -> bool:
         """Latch request completion once; the caller publishes the event."""
@@ -71,31 +242,79 @@ def _optional_lock(agent: Any, attr: str) -> Iterator[None]:
         yield
 
 
-def prepare_background_review_run(agent: Any) -> Optional[_BackgroundReviewRun]:
+def prepare_background_review_run(
+    agent: Any,
+    *,
+    admission_gate: Optional[Callable[[], Optional[str]]] = None,
+    admission_lock: Any = None,
+    foreground_admission_lock: Any = None,
+    followup_cancellable: bool = True,
+    session_id: Optional[str] = None,
+    profile_key: Optional[str] = None,
+    live_turn_gate: Optional[Callable[[], Optional[str]]] = None,
+) -> Optional[_BackgroundReviewRun]:
     """Install a unique run token on the parent before ``Thread.start()``."""
-    run = _BackgroundReviewRun()
+    run = _BackgroundReviewRun(
+        admission_gate,
+        admission_lock,
+        foreground_admission_lock,
+        followup_cancellable,
+        live_turn_gate=live_turn_gate,
+    )
+    review_session_id = str(
+        session_id if session_id is not None else getattr(agent, "session_id", None) or ""
+    )
     try:
+        from agent import review_admission
+
+        if not review_admission.publish_review_run(
+            run, review_session_id, profile_key
+        ):
+            return None
+        run._parent_agent = agent
         lock = getattr(agent, "_background_review_lock", None)
         if lock is None:
             lock = agent._background_review_lock = threading.Lock()
         with lock:
-            current = getattr(agent, "_background_review_run", None)
-            if current is not None and not current.request_done.is_set():
-                return None
             agent._background_review_run = run
     except (AttributeError, TypeError):
+        with suppress(Exception):
+            from agent import review_admission
+
+            review_admission.remove_review_run(run)
         return None
     return run
+
+
+def _publish_run_exit(agent: Any, run: _BackgroundReviewRun) -> None:
+    """Release ``run``'s canonical ownership and slot, then wake its waiters (ABA-safe)."""
+    from agent import review_admission
+
+    review_admission.remove_review_run(run)
+    parent_agent = getattr(run, "_parent_agent", None) or agent
+    with _optional_lock(parent_agent, "_background_review_lock"):
+        if getattr(parent_agent, "_background_review_run", None) is run:
+            parent_agent._background_review_run = None
+    run.request_done.set()
 
 
 def finish_background_review_run(agent: Any, run: Optional[_BackgroundReviewRun]) -> None:
     """Publish one run's request exit without clearing a successor (ABA-safe)."""
     if run is None or not run.mark_request_finished():
         return
-    with _optional_lock(agent, "_background_review_lock"):
-        if getattr(agent, "_background_review_run", None) is run:
-            agent._background_review_run = None
-    run.request_done.set()
+    _publish_run_exit(agent, run)
+
+
+def _review_owner_tag(
+    run: Optional[_BackgroundReviewRun], profile_key: Optional[str], session_id: Any
+) -> str:
+    """Redacted owner label: the key the run was published under, else the caller's owner."""
+    from agent.review_admission import owner_tag
+
+    key = getattr(run, "_review_owner_key", None)
+    if key:
+        return owner_tag(*key)
+    return owner_tag(profile_key or "", session_id or "")
 
 
 def _interrupt_background_review(review_agent: Any) -> None:
@@ -114,34 +333,147 @@ def _interrupt_background_review(review_agent: Any) -> None:
     try:
         threading.Thread(target=_interrupt, daemon=True, name="bg-review-cancel").start()
     except Exception:
-        logger.debug("Failed to start background-review cancellation thread", exc_info=True)
+        # Thread exhaustion must not leave an admitted fork un-fenced: interrupt on this thread.
+        logger.warning(
+            "Background review cancellation thread could not start; interrupting inline",
+            exc_info=True,
+        )
+        _interrupt()
 
 
-def cancel_background_review_for_live_turn(agent: Any) -> None:
-    """Cancel the current review and await its request-phase acknowledgement. Foreground priority:
-    past the bounded deadline, warn and let the live turn proceed — self-improvement work must
-    never block a user-facing turn.
+def _cancel_background_review(
+    agent: Any, *, pending_followup: bool = False,
+    session_id: Optional[str] = None, profile_key: Optional[str] = None,
+) -> Tuple[Optional[_BackgroundReviewRun], Any]:
+    """Fence the current run and return ``(run, admitted_fork)`` for its caller's policy."""
+    from agent import review_admission
 
-    Foreground priority is preserved: if the review does not acknowledge within the bounded deadline, a
-    warning is logged and the live turn proceeds anyway. See #84423.
-    """
+    review_session_id = str(
+        session_id if session_id is not None else getattr(agent, "session_id", None) or ""
+    )
+    run = review_admission.current_review_run(review_session_id, profile_key)
     with _optional_lock(agent, "_background_review_lock"):
-        run = getattr(agent, "_background_review_run", None)
+        if run is None:
+            run = getattr(agent, "_background_review_run", None)
         legacy_agent = getattr(agent, "_background_review_agent", None)
-    review_agent = legacy_agent if run is None else run.cancel()
+    if run is not None and run.owns_request_agent(agent):
+        return None, None
+    if run is None:
+        return run, legacy_agent
+    already_fenced = run.cancel_requested.is_set()
+    review_agent = run.cancel_for_pending_followup() if pending_followup else run.cancel()
+    if not already_fenced and run.cancel_requested.is_set():
+        # The fence that actually landed logs once, whichever caller it was (live turn, queue-side
+        # follow-up fence, gateway prework, session rebind); a repeated fence adds nothing.
+        logger.info(
+            "Background review cancelled (owner=%s, reason=%s)",
+            _review_owner_tag(run, profile_key, review_session_id),
+            review_admission.REASON_FOLLOWUP_CANCELLED
+            if pending_followup
+            else review_admission.REASON_LIVE_TURN_CANCELLED,
+        )
+    if review_agent is None and run.revoke_if_unadmitted():
+        # No fork was admitted and none can be now: publish the exit here so a foreground waiter
+        # is never left waiting on a worker thread that may never start.
+        _publish_run_exit(agent, run)
+    return run, review_agent
+
+
+def cancel_background_review_for_pending_followup(
+    agent: Any,
+    *,
+    session_id: Optional[str] = None,
+    profile_key: Optional[str] = None,
+) -> None:
+    """Non-blocking queue-side fence. The pending-state admission gate handles unstarted forks;
+    an already admitted fork receives the normal hard interrupt without stalling the gateway loop."""
+    _run, review_agent = _cancel_background_review(
+        agent,
+        pending_followup=True,
+        session_id=session_id,
+        profile_key=profile_key,
+    )
+    if review_agent is not None:
+        _interrupt_background_review(review_agent)
+
+
+# Seconds between the liveness escalation stages of a foreground waiting on a fenced fork.
+_CANCEL_ACK_ESCALATION_SECONDS = 10.0
+
+
+def wait_for_background_review_cancellation(
+    run: Optional[_BackgroundReviewRun],
+) -> None:
+    """Wait outside admission locks for the request-phase cancellation acknowledgement.
+
+    Never fails open: the waiter returns only once the fork publishes its request exit. It does
+    fail LOUD — each elapsed bound escalates (``escalate_unacknowledged_cancel``: client
+    teardown, then revocation) so a fork wedged in a stalled stream or a blocking tool cannot
+    hold the session silently, and the final wait is unbounded.
+    """
+    if run is None:
+        return
+    for stage in (1, 2):
+        if run.request_done.wait(_CANCEL_ACK_ESCALATION_SECONDS):
+            return
+        run.escalate_unacknowledged_cancel(stage)
+    run.request_done.wait()
+
+
+def cancel_background_review_for_live_turn(
+    agent: Any,
+    *,
+    wait: bool = True,
+    session_id: Optional[str] = None,
+    profile_key: Optional[str] = None,
+) -> Optional[_BackgroundReviewRun]:
+    """Cancel the current review and await its provider-capable phase acknowledgement."""
+    run, review_agent = _cancel_background_review(
+        agent, session_id=session_id, profile_key=profile_key
+    )
     # Attribute the review fork's usage to the PARENT session. Snapshot BEFORE unregister/close so counters
     # survive teardown. Placed in this finally so a fork that consumed tokens and THEN raised is still
     # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
     if review_agent is not None:
         _interrupt_background_review(review_agent)
-    if run is None:
+    if wait:
+        wait_for_background_review_cancellation(run)
+    return run
+
+
+def rebind_foreground_review_ownership(agent: Any, session_id: str) -> None:
+    """Alias an active turn to a resumed/rotated session and drain that owner's review."""
+    from agent import review_admission
+
+    token = getattr(agent, "_active_turn_token", None)
+    gateway_admission = getattr(agent, "_gateway_review_admission", None)
+    if (token is None and gateway_admission is None) or not session_id:
         return
-    if not run.request_done.wait(timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS):
-        logger.warning(
-            "Background review did not acknowledge cancellation within %.1fs; "
-            "proceeding with foreground live turn",
-            _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS,
+    profile_key = getattr(agent, "_active_turn_profile_key", None)
+    with review_admission.admission_lock():
+        aliased = token is not None and review_admission.alias_turn_session(
+            token, session_id, profile_key
         )
+        alias_gateway = getattr(gateway_admission, "alias_session", None)
+        if callable(alias_gateway):
+            alias_gateway(session_id)
+            aliased = True
+        elif gateway_admission is not None:
+            gateway_token = getattr(gateway_admission, "token", None)
+            gateway_profile = getattr(gateway_admission, "profile_key", profile_key)
+            if gateway_token is not None and review_admission.alias_turn_session(
+                gateway_token, session_id, gateway_profile
+            ):
+                gateway_admission.session_id = session_id
+                aliased = True
+        if not aliased:
+            return
+        run, review_agent = _cancel_background_review(
+            agent, session_id=session_id, profile_key=profile_key
+        )
+    if review_agent is not None:
+        _interrupt_background_review(review_agent)
+    wait_for_background_review_cancellation(run)
 
 
 # Aux-model routing: by default ("auto") the fork runs on the MAIN model and replays the full
@@ -149,11 +481,17 @@ def cancel_background_review_for_live_turn(agent: Any) -> None:
 # to a DIFFERENT model the cache is cold anyway, so the fork replays a compact digest instead.
 _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
-# ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache read
-# (both compression gates deferred until the first response); compaction then bounds each
-# request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
-# review model's context window available and never exceeds the historical cloud-scale ceiling.
-# Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
+# ``_review_input_budget_exhausted``). Request #1 replays the snapshot as a warm cache read —
+# the replay is bounded at spawn so that request (replay + the inherited system prompt and
+# tools[] + the review prompt) fits this budget (``review_admission.replay_token_budget``; a
+# projection that still exceeds it is refused before any provider call and logged as
+# ``review_input_budget_refused``), both compression gates deferred until the first response;
+# compaction then bounds each request, but nothing else caps the SUM across the tool loop. The
+# default leaves 25% of the review model's context window available and never exceeds the
+# historical cloud-scale ceiling.
+# Override via ``auxiliary.background_review.max_input_tokens``; operators may lower the limit
+# but cannot disable or raise the 600k ceiling — <= 0, larger or invalid values fall back to
+# the derived default.
 _REVIEW_MAX_INPUT_TOKENS_CAP = 600_000
 _REVIEW_INPUT_CONTEXT_FRACTION = 0.75
 _REVIEW_MAX_INPUT_TOKENS_FALLBACK = 120_000
@@ -191,15 +529,21 @@ def _context_derived_review_input_budget(review_agent: Any = None) -> int:
 
 def _review_input_token_budget(
     task_cfg: Optional[Dict[str, Any]] = None, review_agent: Any = None,
-) -> Optional[int]:
-    """Aggregate input-token budget for one review fork (None = unlimited; <= 0 disables). Unset
-    or malformed ``max_input_tokens`` → derived from ``review_agent``'s context window."""
-    task = _background_review_task_config(task_cfg)
-    try:
-        budget = int(task["max_input_tokens"])
-    except (KeyError, TypeError, ValueError):
+) -> int:
+    """Aggregate input-token budget for one automatic review fork. Unset, boolean, malformed or
+    <= 0 ``max_input_tokens`` → derived from ``review_agent``'s resolved context window (75%,
+    capped at the 600k ceiling; 120k when the window is unknown). An explicit value is clamped to
+    the ceiling: an automatic review can be narrowed, never made unbounded (``/refine`` sets None)."""
+    raw = _background_review_task_config(task_cfg).get("max_input_tokens")
+    if raw is None or isinstance(raw, bool):
         return _context_derived_review_input_budget(review_agent)
-    return budget if budget > 0 else None
+    try:
+        budget = int(raw)
+    except (OverflowError, TypeError, ValueError):
+        return _context_derived_review_input_budget(review_agent)
+    if budget <= 0:
+        return _context_derived_review_input_budget(review_agent)
+    return min(budget, _REVIEW_MAX_INPUT_TOKENS_CAP)
 
 
 def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
@@ -768,14 +1112,19 @@ def _snapshot_review_usage(review_agent: Any) -> Dict[str, Any]:
     }
 
 
-def _record_review_usage_to_parent(parent_agent: Any, usage: Dict[str, Any]) -> None:
+def _record_review_usage_to_parent(
+    parent_agent: Any,
+    usage: Dict[str, Any],
+    session_id: Optional[str] = None,
+) -> None:
     """Record a fork's usage against the parent session (best-effort, never raises). The fork has
     ``_session_db = None`` so conversation_loop's DB-gated accounting never sees its calls; route
     them through the aux-accounting chokepoint, which writes only ``session_model_usage`` — never
     the transcript or ``sessions`` row."""
     try:
         session_db = getattr(parent_agent, "_session_db", None)
-        session_id = getattr(parent_agent, "session_id", None)
+        if session_id is None:
+            session_id = getattr(parent_agent, "session_id", None)
         counts = {key: int(usage.get(key) or 0) for key in _USAGE_COUNTERS}
         if session_db is None or not session_id or not any(counts.values()):
             return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
@@ -913,8 +1262,14 @@ def _routed_reasoning_config(task_cfg: Optional[Dict[str, Any]]) -> Optional[Dic
     return parsed
 
 
-def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iterations: int,
-                      task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _fork_init_kwargs(
+    agent: Any,
+    rt: Dict[str, Any],
+    routed: bool,
+    max_iterations: int,
+    session_id: str,
+    task_cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """AIAgent constructor kwargs for the review fork. skip_memory=True: an external memory plugin
     scoped to the parent's session_id would leak the harness prompt into the user's real memory
     namespace; built-in MEMORY.md/USER.md state is re-bound by the caller. Toolsets match the
@@ -925,7 +1280,7 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
         "platform": agent.platform, "provider": rt.get("provider") or agent.provider,
         "api_mode": rt.get("api_mode"), "base_url": rt.get("base_url") or None,
         "api_key": rt.get("api_key") or None, "credential_pool": rt.get("credential_pool"),
-        "request_overrides": rt.get("request_overrides") or {}, "parent_session_id": agent.session_id,
+        "request_overrides": rt.get("request_overrides") or {}, "parent_session_id": session_id,
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None),
         "disabled_toolsets": getattr(agent, "disabled_toolsets", None), "skip_memory": True,
     }
@@ -959,7 +1314,7 @@ def _inherit_parent_tool_surface(review_agent: Any, agent: Any) -> None:
 
 def build_cache_parity_fork(
     agent: Any, task_cfg: Optional[Dict[str, Any]] = None, *, max_iterations: int,
-    write_origin: str = "background_review",
+    write_origin: str = "background_review", session_id: Optional[str] = None,
 ) -> Tuple[Any, Dict[str, Any], bool]:
     """Construct a detached AIAgent fork with warm prompt-cache parity (shared with ``/btw``): same
     runtime/credentials as the parent, byte-identical system prompt / tools[] / reasoning config on
@@ -978,7 +1333,14 @@ def build_cache_parity_fork(
     # (_routed_reasoning_config).
     if not _routed and write_origin == "background_review":
         _warn_ignored_reasoning_effort(agent, task_cfg)
-    review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
+    review_session_id = str(
+        session_id if session_id is not None else getattr(agent, "session_id", None) or ""
+    )
+    review_agent = AIAgent(
+        **_fork_init_kwargs(
+            agent, _rt, _routed, max_iterations, review_session_id, task_cfg
+        )
+    )
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
     # Fork-turn log tag: the fork shares the parent's session_id (and model on the
     # same-model path), so its turn-start/turn-exit log lines are otherwise
@@ -997,7 +1359,7 @@ def build_cache_parity_fork(
     review_agent._skip_mcp_refresh = review_agent._persist_disabled = review_agent.suppress_status_output = True
     review_agent._end_session_on_close = False
     review_agent._session_db = None
-    review_agent.session_id = agent.session_id
+    review_agent.session_id = review_session_id
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
     # the byte-exact prefix key) and pin session_start so any re-render (compression, plugin
     # hooks) stays byte-identical.
@@ -1130,6 +1492,141 @@ class _ReviewForkState:
     review_agent: Any = None
     review_messages: List[Dict] = field(default_factory=list)
     review_usage: Dict[str, Any] = field(default_factory=dict)
+    refusal_reason: Optional[str] = None
+
+
+# A review fork renews its durable row often, and keeps renewing after it is asked to yield: the
+# row is what a foreground waiter in another process (or a user transcript rewrite) stamps to
+# make the review yield, and only the fork's own exit releases it. The TTL bounds a row whose
+# process died without releasing it (a dead local PID is reclaimed at once). Foreground turns
+# keep the longer LEASE_TTL_SECONDS / 60s cadence.
+_REVIEW_LEASE_TTL_SECONDS = 60.0
+_REVIEW_LEASE_REFRESH_SECONDS = 3.0
+
+
+class _ReviewTurnLease(DurableTurnLease):
+    """The review fork's durable session-row lease: it YIELDS to a foreground waiter.
+
+    A foreground turn in another process (CLI resume, Desktop, a second gateway) stamps the row
+    (``SessionDB.acquire_session_turn_lease``); so does a user transcript rewrite
+    (``hermes_state_messages._check_transcript_write_guards``). Each stamper stores its own
+    body-free cause, and the next renewal tick logs THAT slug (``review_preempted_cross_process``
+    / ``review_preempted_by_transcript_edit``), fences the run and hard-interrupts the fork — and
+    keeps renewing: the row is released only by the fork's own exit, so the waiter never decodes
+    beside a still-running fork. The tick doubles as the escalation clock
+    (``escalate_unacknowledged_cancel``), so a wedged fork is unwedged rather than left to the
+    TTL. A holder-fenced renewal miss means the row was reclaimed under the fork (a dead-PID
+    sweep, or a TTL that elapsed with no renewal) and another process may own the session:
+    logged once as ``review_lease_lost``, and the fork is stopped the same way. Either stop is
+    recorded on the run, so a deferred review is dropped instead of replaying a snapshot the
+    transcript has moved past.
+    """
+
+    def __init__(
+        self, review_agent: Any, db: Any, session_id: str, holder: str,
+        review_run: Optional[_BackgroundReviewRun], owner: str,
+    ) -> None:
+        super().__init__(review_agent, db, session_id, holder)
+        self.refresh_interval = _REVIEW_LEASE_REFRESH_SECONDS
+        self.ttl_seconds = _REVIEW_LEASE_TTL_SECONDS
+        self._review_run = review_run
+        self._owner = owner
+        self._yielded_at: Optional[float] = None
+        self._lease_lost = False
+        self._now = time.monotonic  # test seam
+
+    def refresh_tick(self):
+        if self.stop.is_set():
+            return False
+        if self._yielded_at is None and (cause := self._yield_reason()):
+            logger.info("Background review preempted (owner=%s, reason=%s)", self._owner, cause)
+            self._stop_fork(f"background review asked to yield ({cause})", cause)
+        if self._yielded_at is not None:
+            elapsed = self._now() - self._yielded_at
+            if self._review_run is not None and elapsed >= _CANCEL_ACK_ESCALATION_SECONDS:
+                self._review_run.escalate_unacknowledged_cancel(
+                    2 if elapsed >= 2 * _CANCEL_ACK_ESCALATION_SECONDS else 1
+                )
+        if self._lease_lost or self._renewed():
+            return None
+        if self.stop.is_set():
+            return False  # the fork's finally released the row between the checks: not a loss
+        self._lease_lost = True
+        from agent.review_admission import REASON_LEASE_LOST
+
+        logger.warning(
+            "Background review lease lost (owner=%s, reason=%s)", self._owner, REASON_LEASE_LOST
+        )
+        self._stop_fork("session turn lease lost; another process may own the session", REASON_LEASE_LOST)
+        return None
+
+    def _yield_reason(self) -> Optional[str]:
+        """The stamper's slug, or None while nobody asked the review to yield."""
+        try:
+            return self.db.session_turn_lease_yield_reason(self._current_session_id(), self.holder)
+        except Exception:  # noqa: BLE001 — a broken store reads as no yield; the renewal decides
+            return None
+
+    def _renewed(self) -> bool:
+        try:
+            return bool(
+                self.db.refresh_session_turn_lease(
+                    self._current_session_id(), self.holder, ttl_seconds=self.ttl_seconds
+                )
+            )
+        except Exception:  # noqa: BLE001 — an unrenewable row is a lost row
+            logger.debug("Background review lease renewal failed", exc_info=True)
+            return False
+
+    def _stop_fork(self, reason: str, slug: str) -> None:
+        """Fence the run and hard-interrupt the fork, once; starts the escalation clock. ``slug``
+        is recorded on the run before the fence so the requeue policy sees it with the cancel."""
+        if self._yielded_at is not None:
+            return
+        self._yielded_at = self._now()
+        fork = self.agent
+        if self._review_run is not None:
+            self._review_run.lease_yield_reason = slug
+            fork = self._review_run.cancel() or fork
+        with suppress(Exception):
+            from agent.interrupt_compat import request_hard_interrupt
+
+            request_hard_interrupt(fork, reason, tool_reason="background review superseded")
+
+
+def _try_acquire_durable_review_lease(
+    parent_agent: Any,
+    review_agent: Any,
+    session_id: str,
+    review_run: Optional[_BackgroundReviewRun],
+) -> Tuple[Any, Optional[str]]:
+    """Claim the same durable ownership row foreground turns use, without waiting. The holder
+    carries the background-review mark so a foreground waiter can ask it to yield."""
+    db = getattr(parent_agent, "_session_db", None)
+    if db is None or not session_id or not callable(
+        getattr(type(db), "try_acquire_session_turn_lease", None)
+    ):
+        return None, None
+    from agent.review_admission import REASON_DURABLE_BUSY, REASON_DURABLE_FAILURE
+    from hermes_state_compression import BACKGROUND_REVIEW_LEASE_HOLDER_MARK
+
+    holder = f"pid={os.getpid()}{BACKGROUND_REVIEW_LEASE_HOLDER_MARK}{uuid.uuid4().hex}"
+    try:
+        acquired = db.try_acquire_session_turn_lease(
+            session_id, holder, ttl_seconds=_REVIEW_LEASE_TTL_SECONDS
+        )
+    except Exception:  # noqa: BLE001 — uncertain durable ownership must fail safe
+        logger.warning("Automatic review blocked: %s", REASON_DURABLE_FAILURE)
+        return None, REASON_DURABLE_FAILURE
+    if not acquired:
+        return None, REASON_DURABLE_BUSY
+    lease = _ReviewTurnLease(
+        review_agent, db, session_id, holder, review_run,
+        _review_owner_tag(review_run, None, session_id),
+    )
+    review_agent._active_session_turn_lease_holder = holder
+    review_agent._active_session_turn_lease_ttl_seconds = _REVIEW_LEASE_TTL_SECONDS
+    return lease, None
 
 
 def _release_fork_clients(review_agent: Any) -> None:
@@ -1142,7 +1639,7 @@ def _release_fork_clients(review_agent: Any) -> None:
 def _run_review_fork(
     agent: Any, messages_snapshot: List[Dict], prompt: str, task_cfg: Optional[Dict[str, Any]],
     review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, review_memory: bool = False,
-    explicit: bool = False,
+    explicit: bool = False, review_session_id: Optional[str] = None,
 ) -> None:
     """Fork phase (inside thread-scoped silence): build the fork, run the prompt under the tool
     whitelist, snapshot its messages/usage, release its clients. Partial progress lands on ``st``
@@ -1150,8 +1647,18 @@ def _run_review_fork(
     keeps the ``background_review`` origin (curator/skill guards still apply) but marks the fork
     attended, so the unattended-only memory delete gate leaves the full operation set available."""
     st.review_agent, _rt, _routed = build_cache_parity_fork(
-        agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
+        agent,
+        task_cfg,
+        max_iterations=_REVIEW_MAX_ITERATIONS,
+        session_id=review_session_id,
+    )
     st.review_agent._review_attended = explicit
+    if explicit:
+        st.review_agent._review_input_token_budget = None
+    # The loop logs a first-request budget refusal body-free under this tag (no session id).
+    st.review_agent._review_owner_tag = _review_owner_tag(
+        review_run, None, review_session_id or getattr(agent, "session_id", None)
+    )
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
@@ -1175,25 +1682,64 @@ def _run_review_fork(
         from tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
+    durable_lease = None
     try:
-        if review_run is None or review_run.begin_request(st.review_agent):
+        admitted = review_run is None or review_run.begin_request(st.review_agent)
+        refusal_reason = None
+        # /refine is exempt from the replay/budget policy, never from cross-process exclusion.
+        if admitted:
+            durable_lease, refusal_reason = _try_acquire_durable_review_lease(
+                agent,
+                st.review_agent,
+                str(review_session_id or getattr(agent, "session_id", None) or ""),
+                review_run,
+            )
+            if refusal_reason is not None and review_run is not None:
+                review_run._refuse(refusal_reason)
+        if admitted and refusal_reason is None:
+            if durable_lease is not None:
+                durable_lease.build_threads()
+                durable_lease.start()
             # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
-            st.review_agent.run_conversation(
-                user_message=(
-                    prompt + "\n\nYou can only call " + memory_phrase_prompt +
-                    "management tools. Other tools will be denied "
-                    "at runtime — do not attempt them." + prompt_extra
+            if review_run is None or not review_run.cancel_requested.is_set():
+                st.review_agent.run_conversation(
+                    user_message=(
+                        prompt + "\n\nYou can only call " + memory_phrase_prompt +
+                        "management tools. Other tools will be denied "
+                        "at runtime — do not attempt them." + prompt_extra
+                    ),
+                    conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
+                )
+                if review_run is not None:
+                    review_run.mark_provider_phase_complete()
+        elif reason := refusal_reason or (
+            review_run.refused_reason if review_run is not None else None
+        ):
+            # Only a GATE refusal sets a reason; a cancelled run leaves it None and is already
+            # logged by whoever cancelled, so this never doubles up. Body-free slug + hashed owner
+            # tag, like every other skip/defer decision (agent/review_admission.py).
+            st.refusal_reason = reason
+            logger.info(
+                "Background review refused at admission (owner=%s): %s",
+                _review_owner_tag(
+                    review_run, None, review_session_id or getattr(agent, "session_id", None)
                 ),
-                conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
+                reason,
             )
     finally:
+        if durable_lease is not None:
+            durable_lease.stop_refresher()
+            durable_lease.join_threads()
+            durable_lease.release()
         clear_thread_tool_whitelist()
         # Attribute usage to the PARENT session. Snapshot BEFORE unregister/close so counters
         # survive teardown, and in this finally so a fork that consumed tokens then raised is
         # still attributed. The recorder never raises.
         if st.review_agent is not None:
             st.review_usage.update(_snapshot_review_usage(st.review_agent))
-            _record_review_usage_to_parent(agent, st.review_usage)
+            _record_review_usage_to_parent(
+                agent, st.review_usage, review_session_id
+            )
         # Publish completion as soon as the provider-capable phase has returned or startup
         # cancellation has fenced it out (unregister + finish are identity-scoped and idempotent).
         _track_review_fork(agent, st.review_agent, register=False)
@@ -1201,6 +1747,20 @@ def _run_review_fork(
     st.review_messages = list(getattr(st.review_agent, "_session_messages", []))
     _release_fork_clients(st.review_agent)
     st.review_agent = None
+
+
+# User-facing text for a refused explicit /refine (its handler already reported "reviewing").
+_EXPLICIT_REFUSAL_NOTICE = (
+    "⚗ Review skipped: this session is busy in another Hermes process — "
+    "run /refine again once it is free."
+)
+
+
+def _publish_review_notice(agent: Any, text: str) -> None:
+    agent._safe_print(f"  {text}")
+    if agent.background_review_callback:
+        with suppress(Exception):
+            agent.background_review_callback(text)
 
 
 def _publish_review_summary(agent: Any, actions: List[str]) -> None:
@@ -1215,6 +1775,7 @@ def _run_review_in_thread(
     agent: Any, messages_snapshot: List[Dict], prompt: str,
     task_cfg: Optional[Dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
     review_memory: bool = False, explicit: bool = False,
+    review_session_id: Optional[str] = None,
 ) -> None:
     """Daemon-thread worker: build the fork, run the prompt, surface the action summary via
     ``agent._safe_print`` / ``background_review_callback``. ``review_run`` (from
@@ -1226,21 +1787,24 @@ def _run_review_in_thread(
     if review_run is not None and review_run.cancel_requested.is_set():
         finish_background_review_run(agent, review_run)
         return
-    _set_thread_approval_callback(_bg_review_auto_deny)
-    # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
-    # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
-    # check first so the normal path never resolves the runtime twice.
-    if not _parent_can_emit_tool_calls(agent) and not _resolve_review_runtime(agent, task_cfg).get("routed"):
-        logger.warning(
-            "Background review skipped: provider %r cannot emit Hermes tool calls, "
-            "so the review fork could not write memories or skills. Set "
-            "auxiliary.background_review.{provider,model} to route the review to a normal model.",
-            getattr(agent, "provider", "?"),
-        )
-        _set_thread_approval_callback(None)
-        return
     st = _ReviewForkState()
+    # Every exit past this point publishes the prepared run's exit in the ``finally``: a pre-fork
+    # failure (runtime resolution raising) must not leave the parent slot and the canonical
+    # registry entry owned by a run nobody will finish, or the next live turn on this session
+    # waits on ``request_done`` forever.
     try:
+        _set_thread_approval_callback(_bg_review_auto_deny)
+        # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
+        # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
+        # check first so the normal path never resolves the runtime twice.
+        if not _parent_can_emit_tool_calls(agent) and not _resolve_review_runtime(agent, task_cfg).get("routed"):
+            logger.warning(
+                "Background review skipped: provider %r cannot emit Hermes tool calls, "
+                "so the review fork could not write memories or skills. Set "
+                "auxiliary.background_review.{provider,model} to route the review to a normal model.",
+                getattr(agent, "provider", "?"),
+            )
+            return
         # Silence stdout/stderr for THIS thread only: a process-global redirect would blank every
         # other thread's console for the whole review.
         # A process-global ``contextlib.redirect_stdout(devnull)`` here would also blank
@@ -1249,7 +1813,23 @@ def _run_review_in_thread(
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
         with thread_scoped_silence():
-            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
+            _run_review_fork(
+                agent,
+                messages_snapshot,
+                prompt,
+                task_cfg,
+                review_run,
+                st,
+                review_memory,
+                explicit,
+                review_session_id,
+            )
+        if st.refusal_reason is not None:
+            # Logged with the owner tag at the refusal site. A /refine was already reported as
+            # started by its handler, so the user hears the outcome on the review's own channel.
+            if explicit:
+                _publish_review_notice(agent, _EXPLICIT_REFUSAL_NOTICE)
+            return
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.
         try:
@@ -1302,11 +1882,19 @@ _PROMPT_NAME_BY_SCOPE = {
 }
 
 
+def review_prompt_for_scope(agent: Any, review_memory: bool, review_skills: bool) -> str:
+    """The review prompt a review of this scope runs; per-agent overrides
+    (``agent._MEMORY_REVIEW_PROMPT`` etc.) keep working. Known at spawn, so the replay bound can
+    count it against the fork's first request."""
+    name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
+    return getattr(agent, name, globals()[name])
+
+
 def spawn_background_review_thread(
     agent: Any, messages_snapshot: List[Dict], review_memory: bool = False,
     review_skills: bool = False, focus: Optional[str] = None,
     task_cfg: Optional[Dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
-    explicit: bool = False,
+    explicit: bool = False, review_session_id: Optional[str] = None,
 ):
     """Return ``(target, prompt)``; the caller builds the ``threading.Thread`` so test patches of
     ``run_agent.threading.Thread`` keep working. ``focus`` (``/refine [instructions]``) is appended
@@ -1316,9 +1904,45 @@ def spawn_background_review_thread(
     memory operation set."""
     if task_cfg is None:
         task_cfg = _background_review_task_config()
-    # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
-    name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
-    prompt = getattr(agent, name, globals()[name])
+    if review_run is None:
+        from agent import review_admission
+
+        automatic = focus is None and not explicit
+        profile_key = review_admission.current_profile_key()
+        review_session_id = str(
+            review_session_id
+            if review_session_id is not None
+            else getattr(agent, "session_id", None) or ""
+        )
+        review_run = prepare_background_review_run(
+            agent,
+            admission_gate=(
+                lambda: review_admission.foreground_block_reason(
+                    agent, None, profile_key, review_session_id
+                )
+                if automatic
+                else None
+            ),
+            admission_lock=(
+                getattr(agent, "followup_pending_lock", None) if automatic else None
+            ),
+            foreground_admission_lock=(
+                review_admission.admission_lock() if automatic else None
+            ),
+            followup_cancellable=automatic,
+            session_id=review_session_id,
+            profile_key=profile_key,
+            live_turn_gate=(
+                lambda: review_admission.live_turn_block_reason(
+                    review_session_id, None, profile_key
+                )
+                if automatic
+                else None
+            ),
+        )
+        if review_run is None:
+            raise RuntimeError("background review already active for this session")
+    prompt = review_prompt_for_scope(agent, review_memory, review_skills)
     if focus := (focus or "").strip():
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "
@@ -1328,7 +1952,8 @@ def spawn_background_review_thread(
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
         _run_review_in_thread(
             agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
-            review_memory=review_memory, explicit=explicit)
+            review_memory=review_memory, explicit=explicit,
+            review_session_id=review_session_id)
 
     return _target, prompt
 

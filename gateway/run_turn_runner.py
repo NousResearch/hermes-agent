@@ -1248,6 +1248,9 @@ class TurnRunner:
         runner = self._runner
         agent._notification_config = ctx.user_config
         agent._notification_platform = ctx.source.platform
+        gateway_review_admission = getattr(ctx, "gateway_review_admission", None)
+        if gateway_review_admission is not None:
+            gateway_review_admission.bind_agent(agent)
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
@@ -1269,6 +1272,41 @@ class TurnRunner:
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
         agent._gateway_turn_context_notes = "\n\n".join(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
+
+        # The post-turn review is spawned from the agent thread before the gateway drains a
+        # same-session message queued while that turn was busy. Give review admission a
+        # non-consuming, body-free probe so foreground follow-ups win without a review request.
+        followup_state = None
+        followup_epoch = 0
+        state_factory = getattr(ctx._status_adapter, "followup_admission_state", None)
+        if ctx.session_key and callable(state_factory):
+            followup_state = state_factory(ctx.session_key)
+            with followup_state.lock:
+                followup_epoch = followup_state.epoch
+
+        def _followup_pending() -> bool:
+            probe = getattr(ctx._status_adapter, "has_pending_message", None)
+            if not (ctx.session_key and callable(probe)):
+                return False
+            if followup_state is None:
+                return bool(probe(ctx.session_key) or runner._overflow_queue(ctx.session_key))
+            with followup_state.lock:
+                return bool(
+                    followup_state.epoch != followup_epoch
+                    or probe(ctx.session_key)
+                    or runner._overflow_queue(ctx.session_key)
+                )
+
+        agent.followup_pending_callback = _followup_pending
+        agent.followup_pending_lock = getattr(followup_state, "lock", None)
+        register_cancel = getattr(ctx._status_adapter, "register_followup_review_cancel", None)
+        if ctx.session_key and callable(register_cancel):
+            def _cancel_review_for_followup() -> None:
+                from agent.background_review import cancel_background_review_for_pending_followup
+
+                cancel_background_review_for_pending_followup(agent)
+
+            register_cancel(ctx.session_key, _cancel_review_for_followup)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.

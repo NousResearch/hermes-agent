@@ -573,8 +573,16 @@ class RecallGuardMiddleware(InboundMiddleware):
         )
         # Set pending + signal directly (bypass handle_message to avoid busy-ack).
         # May overwrite a user message pending in the same ~200ms window — acceptable.
-        adapter._pending_messages[session_key] = MessageEvent(
+        recall_event = MessageEvent(
             text=recall_text, message_type=MessageType.TEXT, source=cls._build_source(adapter, group_code, from_account), internal=True)
+
+        def _queue_recall() -> bool:
+            adapter._pending_messages[session_key] = recall_event
+            return True
+
+        # The recall runs as the next live turn, so publish it to review admission like every other
+        # accepted follow-up; a recall with no in-flight turn patches the transcript and never lands here.
+        adapter.apply_followup_queue_mutation(session_key, _queue_recall)
         active_event = adapter._active_sessions.get(session_key)
         if active_event is not None:
             active_event.set()

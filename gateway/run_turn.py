@@ -96,6 +96,207 @@ def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+@dataclasses.dataclass
+class _GatewayReviewAdmission:
+    """Foreground ownership spanning gateway prework through confirmed delivery."""
+
+    session_id: str
+    profile_key: str
+    token: int
+    context: Any = None
+    agent: Any = None
+    _candidate: Optional[Dict[str, Any]] = None
+    _finished: bool = False
+    _lock: Any = dataclasses.field(default_factory=threading.Lock)
+
+    @classmethod
+    async def begin(
+        cls, owner: Any, session_id: str, profile_key: str
+    ) -> "_GatewayReviewAdmission":
+        from agent import review_admission
+        from agent.background_review import (
+            cancel_background_review_for_live_turn,
+            wait_for_background_review_cancellation,
+        )
+
+        with review_admission.admission_lock():
+            token = review_admission.note_turn_started(session_id, profile_key)
+            review_run = cancel_background_review_for_live_turn(
+                owner,
+                wait=False,
+                session_id=session_id,
+                profile_key=profile_key,
+            )
+        try:
+            await asyncio.to_thread(wait_for_background_review_cancellation, review_run)
+        except BaseException:
+            review_admission.note_turn_finished(session_id, token, profile_key)
+            raise
+        return cls(session_id, profile_key, token)
+
+    @property
+    def owner_tag(self) -> str:
+        """Hashed (profile, session) owner for log lines; never the raw identifiers."""
+        from agent import review_admission
+
+        return review_admission.owner_tag(self.profile_key, self.session_id)
+
+    def bind_agent(self, agent: Any) -> None:
+        """Route this gateway turn's automatic candidate to the delivery owner."""
+        with self._lock:
+            self.agent = agent
+            self.context = copy_context()
+            self._candidate = None
+        agent._gateway_review_admission = self
+        # Session hygiene in ``_hmwa_prepare_turn`` can rotate the session BEFORE this bind, when
+        # neither the facade token nor this admission is on the agent for the rotation to alias.
+        # Alias only (no wait on the event-loop thread): the facade's own cancel + wait for the
+        # rotated id runs right after this on the executor thread.
+        current = str(getattr(agent, "session_id", None) or "")
+        if current and current != self.session_id:
+            self.alias_session(current)
+
+    def alias_session(self, session_id: str) -> None:
+        """Keep outer gateway ownership on a compression/resume child."""
+        from agent import review_admission
+
+        with review_admission.admission_lock():
+            if review_admission.alias_turn_session(
+                self.token, session_id, self.profile_key
+            ):
+                with self._lock:
+                    self.session_id = session_id
+
+    def capture_candidate(
+        self,
+        agent: Any,
+        messages: List[Dict[str, Any]],
+        *,
+        review_memory: bool,
+        review_skills: bool,
+    ) -> None:
+        """Freeze the terminal candidate on this delivery owner, never on a cached agent."""
+        from agent.turn_finalizer import _clone_background_review_messages
+
+        candidate = {
+            "messages_snapshot": _clone_background_review_messages(messages),
+            "review_memory": review_memory,
+            "review_skills": review_skills,
+            "_spawning_turn_token": self.token,
+            "_review_profile_key": self.profile_key,
+            "_review_session_id": str(getattr(agent, "session_id", None) or self.session_id),
+        }
+        with self._lock:
+            if not self._finished:
+                self._candidate = candidate
+
+    def adopt_candidate(
+        self, candidate: Dict[str, Any], owner: "_GatewayReviewAdmission"
+    ) -> bool:
+        """Carry a nested turn's confirmed candidate until this turn's ownership is released.
+
+        ``/retry`` typed while this turn's reply is on the wire rewinds the transcript and nests
+        the retried turn, whose delivery completes first. Spawning there is refused (this token
+        is still live) and this turn's own candidate — the transcript ``/retry`` retracted —
+        would be reviewed instead. The nested candidate replaces it and spawns when THIS turn
+        releases, gated by this turn's delivery outcome like its own. False once this turn has
+        finished: the nested ``owner`` then spawns on its own.
+        """
+        from agent import review_admission
+
+        with self._lock:
+            if self._finished:
+                return False
+            superseded = self._candidate
+            self._candidate = candidate
+            if self.agent is None:
+                self.agent, self.context = owner.agent, owner.context
+        if isinstance(superseded, dict):
+            logger.info(
+                "Background review candidate superseded (owner=%s): %s",
+                review_admission.owner_tag(
+                    self.profile_key,
+                    superseded.get("_review_session_id") or self.session_id,
+                ),
+                review_admission.REASON_CANDIDATE_SUPERSEDED,
+            )
+        return True
+
+    def finish(
+        self,
+        *,
+        delivery_succeeded: bool,
+        cause: Optional[str] = None,
+        outer: Optional["_GatewayReviewAdmission"] = None,
+    ) -> Optional[threading.Thread]:
+        """Release once; start the latest candidate only after a successful terminal delivery.
+
+        The spawn runs on its own thread: every caller sits on the gateway event loop, and the
+        spawn pipeline (config read, replay bound, structural clone, runtime resolution) is
+        O(transcript). Ownership is released HERE, before the hop, so the spawn's foreground
+        probe observes the truth. A dropped candidate logs why (``cause`` names a drain
+        handoff) so a starved review is as greppable as a refused one. ``outer`` is the turn
+        whose delivery window this turn was nested in: while it still owns the session the
+        candidate is handed to it (``adopt_candidate``) instead of being refused at spawn.
+        """
+        with self._lock:
+            if self._finished:
+                return None
+            self._finished = True
+        from agent import review_admission
+
+        review_admission.note_turn_finished(
+            self.session_id, self.token, self.profile_key
+        )
+        candidate = self._candidate
+        self._candidate = None
+        agent = self.agent
+        if agent is not None:
+            if getattr(agent, "_gateway_review_admission", None) is self:
+                agent._gateway_review_admission = None
+        if not isinstance(candidate, dict):
+            return None
+        if not delivery_succeeded:
+            logger.info(
+                "Background review skipped (owner=%s): %s",
+                review_admission.owner_tag(
+                    self.profile_key, candidate.get("_review_session_id") or self.session_id
+                ),
+                cause or review_admission.REASON_DELIVERY_UNCONFIRMED,
+            )
+            return None
+        if (
+            isinstance(outer, _GatewayReviewAdmission)
+            and outer is not self
+            and outer.adopt_candidate(candidate, self)
+        ):
+            return None
+        if self.context is None or agent is None:
+            return None
+        # The Context captured at bind time carries the turn's profile/secret scope; the loop
+        # thread's own context is the launch profile's, so it is entered explicitly here.
+        spawner = threading.Thread(
+            target=self.context.run,
+            args=(agent._spawn_background_review,),
+            kwargs=candidate,
+            daemon=True,
+            name="bg-review-spawn",
+        )
+        try:
+            spawner.start()
+        except Exception:  # noqa: BLE001 — ownership is already released: greppable, never fatal
+            logger.warning(
+                "Background review delivery completion failed (owner=%s, reason=%s)",
+                review_admission.owner_tag(
+                    self.profile_key, candidate.get("_review_session_id") or self.session_id
+                ),
+                review_admission.REASON_COMPLETION_ERROR,
+                exc_info=True,
+            )
+            return None
+        return spawner
+
+
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
     """One verdict for "this failed turn is a context overflow", shared by transcript persistence
     (#1630 skip) and the user-facing reply so the two can never disagree.
@@ -2168,6 +2369,32 @@ class GatewayTurnMixin:
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+        from agent import review_admission
+        from hermes_constants import hermes_home_key
+
+        profile_key = review_admission.current_profile_key()
+        with suppress(Exception):
+            profile_key = hermes_home_key(
+                self._resolve_profile_home_for_source(source)
+            )
+        gateway_review_admission = await _GatewayReviewAdmission.begin(
+            self, str(session_entry.session_id), profile_key
+        )
+        # The completion is parked where its delivery owner reads it: the live session Event for
+        # an adapter task (a drain handoff re-uses the Event; an inline dispatch reads it for the
+        # turn it nests), or the event itself for a direct-call ingress that completes ownership
+        # from its own event (the CLI->gateway handoff) — it may run beside a live adapter task on
+        # the same chat, whose Event carries that task's own completion.
+        delivery_carrier = event
+        if not getattr(event, "_gateway_review_completes_on_event", False):
+            with suppress(Exception):
+                adapter = self._delivery_adapter_for(source)
+                delivery_carrier = (
+                    getattr(adapter, "_active_sessions", {}).get(_quick_key) or event
+                )
+        delivery_carrier._gateway_review_delivery_complete = (
+            gateway_review_admission.finish
+        )
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -2220,6 +2447,7 @@ class GatewayTurnMixin:
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                gateway_review_admission=gateway_review_admission,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -3800,7 +4028,6 @@ class GatewayTurnMixin:
         response: Any, result: Any, stream_task: Any,
     ) -> Any:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``)."""
-        from gateway.platforms.base import merge_pending_message_event
         from gateway.run import _preserve_queued_followup_history_offset
         source, session_id, session_key, run_generation = (
             turn_ctx.source, turn_ctx.session_id, turn_ctx.session_key, turn_ctx.run_generation,
@@ -3824,7 +4051,9 @@ class GatewayTurnMixin:
             )
             adapter = self._delivery_adapter_for(source)
             if adapter and pending_event:
-                merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                # Fenced merge: this re-queue is the next live turn, so it must publish to review
+                # admission like every other slot write (_hm_merge_pending_for_source).
+                self._hm_merge_pending_for_source(source, session_key, pending_event)
             elif adapter and hasattr(adapter, 'queue_message'):
                 adapter.queue_message(session_key, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
@@ -3933,6 +4162,13 @@ class GatewayTurnMixin:
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                # The follow-up is bound to the OUTER admission like the first turn: ``bind_agent``
+                # then runs per turn, so a first turn's non-terminal candidate never outlives the
+                # follow-up that superseded it, and the spawn Context is the terminal turn's.
+                # Read like ``TurnRunner._wire_turn_agent_callbacks``: ``TurnContext`` defaults the
+                # field to None, and upstream drives this seam with turn-context doubles carrying
+                # only the fields main reads.
+                gateway_review_admission=getattr(turn_ctx, "gateway_review_admission", None),
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -4260,6 +4496,7 @@ class GatewayTurnMixin:
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
+        gateway_review_admission: Optional[_GatewayReviewAdmission] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -4298,6 +4535,7 @@ class GatewayTurnMixin:
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
+            gateway_review_admission=gateway_review_admission,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

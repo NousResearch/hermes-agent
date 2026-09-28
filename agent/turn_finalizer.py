@@ -757,10 +757,33 @@ def finalize_turn(
         and (_should_review_memory or _should_review_skills)
     ):
         with suppress(Exception):
-            agent._spawn_background_review(
-                messages_snapshot=list(messages), review_memory=_should_review_memory,
-                review_skills=_should_review_skills,
-            )
+            gateway_admission = getattr(agent, "_gateway_review_admission", None)
+            if gateway_admission is not None:
+                gateway_admission.capture_candidate(
+                    agent,
+                    messages,
+                    review_memory=_should_review_memory,
+                    review_skills=_should_review_skills,
+                )
+            elif getattr(agent, "_active_session_turn_lease_holder", None):
+                agent._post_turn_background_review_candidate = {
+                    "messages_snapshot": _clone_background_review_messages(messages),
+                    "review_memory": _should_review_memory,
+                    "review_skills": _should_review_skills,
+                    "_spawning_turn_token": getattr(agent, "_active_turn_token", None),
+                    "_review_profile_key": getattr(
+                        agent, "_active_turn_profile_key", None
+                    ),
+                    "_review_session_id": str(
+                        getattr(agent, "session_id", None) or ""
+                    ),
+                }
+            else:
+                agent._spawn_background_review(
+                    messages_snapshot=_clone_background_review_messages(messages),
+                    review_memory=_should_review_memory,
+                    review_skills=_should_review_skills,
+                )
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.

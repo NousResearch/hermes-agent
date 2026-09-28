@@ -551,7 +551,13 @@ CREATE TABLE IF NOT EXISTS session_turn_leases (
     conversation_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,
     acquired_at REAL NOT NULL,
-    expires_at REAL NOT NULL
+    expires_at REAL NOT NULL,
+    -- Stamped on a background-review holder, which yields on its next renewal tick, by a
+    -- waiting foreground turn (hermes_state_compression.py) or a user transcript rewrite
+    -- (hermes_state_messages.py). yield_reason is the stamper's body-free slug
+    -- (agent/review_admission.py); the fork logs that cause (agent/background_review.py).
+    yield_requested_at REAL,
+    yield_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS async_delegations (

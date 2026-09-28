@@ -14,17 +14,37 @@ say nothing at all.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import agent.background_review as bg  # noqa: E402
+from agent import review_admission  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def clear_review_admission_state():
+    """One failed assertion must not leak a process-global session admission into later tests."""
+    with review_admission._lock:
+        review_admission._live_turns.clear()
+        review_admission._review_runs.clear()
+        review_admission._turn_keys.clear()
+        review_admission._tokens = itertools.count(1)
+    yield
+    with review_admission._lock:
+        review_admission._live_turns.clear()
+        review_admission._review_runs.clear()
+        review_admission._turn_keys.clear()
+        review_admission._tokens = itertools.count(1)
 
 
 def _fake_parent(client, *, runtime=None) -> SimpleNamespace:
@@ -75,6 +95,54 @@ def test_fork_is_skipped_when_the_provider_cannot_emit_tool_calls(caplog):
     mock_aiagent.assert_not_called()
     # The user needs to know which knob makes the review work again.
     assert "auxiliary.background_review" in caplog.text
+
+
+def test_incapable_provider_finishes_prepared_review_ownership():
+    client = MagicMock()
+    client.SUPPORTS_HERMES_TOOL_CALLS = False
+    agent = _fake_parent(client)
+    run = bg.prepare_background_review_run(agent)
+    assert run is not None
+
+    with patch("tools.terminal_tool.set_approval_callback"):
+        bg._run_review_in_thread(
+            agent,
+            [{"role": "user", "content": "hi"}],
+            "review please",
+            review_run=run,
+        )
+
+    assert run.request_done.is_set()
+    assert agent._background_review_run is None
+
+
+def test_runtime_resolution_failure_still_finishes_prepared_review_ownership():
+    """A pre-fork failure (runtime resolution raising on the worker thread) must still publish
+    the prepared run's exit: otherwise the parent slot and the canonical registry entry stay
+    owned by a run nobody will ever finish, and every later live turn on the session blocks in
+    ``wait_for_background_review_cancellation`` forever."""
+    client = MagicMock()
+    client.SUPPORTS_HERMES_TOOL_CALLS = False
+    agent = _fake_parent(client)
+
+    def _boom():
+        raise RuntimeError("runtime unavailable")
+
+    agent._current_main_runtime = _boom
+    run = bg.prepare_background_review_run(agent)
+    assert run is not None
+
+    with patch("tools.terminal_tool.set_approval_callback"):
+        bg._run_review_in_thread(
+            agent,
+            [{"role": "user", "content": "hi"}],
+            "review please",
+            review_run=run,
+        )
+
+    assert run.request_done.is_set()
+    assert agent._background_review_run is None
+    assert review_admission.current_review_run("s1") is None
 
 
 def test_fork_is_spawned_when_the_provider_can_emit_tool_calls():

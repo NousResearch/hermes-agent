@@ -30,6 +30,8 @@ docker exec -u pn "$NAME" bash -c '
   agent-browser --version
   ls /opt/playwright/chromium-*/chrome-linux*/chrome >/dev/null || { echo "missing headed chromium"; exit 1; }
   python3 -c "from PIL import ImageGrab"  # the Screen pane thumbnail is grabbed inside the sandbox
+  # an ssh login session (pam_env) must find the browser the way docker exec does
+  env -i bash -c ". <(sed s/^/export\\ / /etc/environment); [ \"\$PLAYWRIGHT_BROWSERS_PATH\" = /opt/playwright ]"
   sudo -n true
   [ "$(id -u)" = 1000 ]'
 

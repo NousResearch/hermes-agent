@@ -86,4 +86,9 @@ RUN echo "pn ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/pn && chmod 0440 /etc/sudo
 # Runtime dir for dbus/Xvnc; containers have no logind to create it. Both /tmp
 # paths above are fixed by the X11 protocol / seeded per container, never shared.
 ENV XDG_RUNTIME_DIR=/tmp/hermes-runtime
+# Dockerfile ENV reaches `docker exec` only. When this image is the target of the
+# ssh backend (sshd added on top), a login session gets its environment from PAM,
+# so the browser location must also live where pam_env reads it or agent-browser
+# reports "Chrome not found" over ssh while working under docker exec.
+RUN printf 'PLAYWRIGHT_BROWSERS_PATH=/opt/playwright\nXDG_RUNTIME_DIR=/tmp/hermes-runtime\n' >> /etc/environment
 CMD ["sleep", "infinity"]

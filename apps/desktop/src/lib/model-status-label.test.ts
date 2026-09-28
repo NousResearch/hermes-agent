@@ -44,6 +44,18 @@ describe('model-status-label', () => {
     expect(displayModelName('model-20251101-x')).toBe('Model 20251101 X')
   })
 
+  it('peels a date pin under a quant or context suffix the reviewer cases missed (#124884)', () => {
+    // The peel used to be guarded on `!variant && !quant`, so a pin exposed by
+    // a quant strip was never re-tested — and the `[1m]` slice ran after the
+    // loop, so a pin under it was not trailing either. Both regress vs the
+    // unconditional strip this PR replaces.
+    expect(modelDisplayParts('qwen3-max-20251101-Q4_K_XL')).toEqual({ name: 'Qwen3 Max', tag: 'Q4' })
+    expect(modelDisplayParts('claude-sonnet-4-5-20251101[1m]')).toEqual({ name: 'Sonnet 4.5', tag: '1M' })
+    // Base left the variant in the name here (the pin hid it from the split);
+    // the peel now keeps it a tag, matching the pin-under-variant case above.
+    expect(modelDisplayParts('glm-5.3-thinking-20251101[1m]')).toEqual({ name: 'GLM 5.3', tag: 'Thinking 1M' })
+  })
+
   it('renders the Anthropic 1M-context route suffix as a tag, never raw brackets', () => {
     expect(modelDisplayParts('claude-sonnet-5[1m]')).toEqual({ name: 'Sonnet 5', tag: '1M' })
     expect(modelDisplayParts('claude-fable-5-1[1m]')).toEqual({ name: 'Fable 5.1', tag: '1M' })

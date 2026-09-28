@@ -707,7 +707,7 @@ export function ModelCatalogMenu({
                             </span>
                             {metaTags.map(chip => (
                               <span
-                                className="min-w-0 shrink-[999] truncate rounded-sm border border-(--ui-stroke-secondary) bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] font-medium uppercase leading-none tracking-wide text-(--ui-text-tertiary)"
+                                className="min-w-0 shrink truncate rounded-sm border border-(--ui-stroke-secondary) bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] font-medium uppercase leading-none tracking-wide text-(--ui-text-tertiary)"
                                 key={chip}
                               >
                                 {chip}

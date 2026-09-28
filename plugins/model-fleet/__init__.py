@@ -453,12 +453,15 @@ def _resolve_in_profile(home: Path, provider: str, model: str):
 
 
 def _apply_profiles(provider: str, model: str, result, settings: Dict[str, Any],
-                   stamp: str, dry_run: bool) -> Tuple[List[str], List[str]]:
+                   stamp: str, dry_run: bool, *,
+                   backed_up_configs: Optional[set[Path]] = None) -> Tuple[List[str], List[str]]:
     """Write model.* + delegation.* into every in-scope profile config."""
     from hermes_cli.config import read_user_config_raw
     from hermes_cli.model_switch import model_selection_config_updates
     from utils import atomic_roundtrip_yaml_update
 
+    if backed_up_configs is None:
+        backed_up_configs = set()
     changed: List[str] = []
     backups: List[str] = []
     for label, home in _profile_homes(settings):
@@ -491,8 +494,9 @@ def _apply_profiles(provider: str, model: str, result, settings: Dict[str, Any],
             # The active home's own config.yaml is already backed up in _apply_sync,
             # before persist_model_selection rewrote it. Re-copying here would clobber
             # that pre-change copy with post-change content (same stamp, same filename).
-            if cfg_path != _active_config_path():
+            if cfg_path != _active_config_path() and cfg_path not in backed_up_configs:
                 backups.append(_backup_or_abort(cfg_path, stamp))
+                backed_up_configs.add(cfg_path)
         for key, value in updates.items():
             atomic_roundtrip_yaml_update(cfg_path, f"model.{key}", value)
         for key, value in delegation_updates.items():
@@ -563,41 +567,54 @@ def _apply_crons(provider: str, model: str, settings: Dict[str, Any], stamp: str
 
 
 def _apply_auxiliary(provider: str, model: str, settings: Dict[str, Any], stamp: str,
-                     dry_run: bool) -> Tuple[List[str], List[str]]:
-    """Repoint auxiliary.<task> for every task that declares a model."""
+                     dry_run: bool, *,
+                     backed_up_configs: Optional[set[Path]] = None) -> Tuple[List[str], List[str]]:
+    """Repoint declared auxiliary task models in every selected home."""
+    import yaml
+
     from utils import atomic_roundtrip_yaml_update
 
-    cfg_path = _hermes_home() / "config.yaml"
-    if not cfg_path.is_file():
-        return [], []
-    try:
-        import yaml
-
-        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8-sig")) or {}
-    except Exception as exc:
-        return [f"auxiliary: config unreadable ({exc})"], []
-    aux = cfg.get("auxiliary") or {}
-    if not isinstance(aux, dict):
-        return [], []
-    tasks = [t for t, spec in sorted(aux.items()) if isinstance(spec, dict) and spec.get("model")]
-    if not tasks:
-        return ["auxiliary: no task declares a model"], []
-    if dry_run:
-        return [f"auxiliary: would set {len(tasks)} task(s) → {provider}/{model}"], []
+    if backed_up_configs is None:
+        backed_up_configs = set()
+    changed: List[str] = []
     backups: List[str] = []
-    if settings["backup"]:
-        # Skip the active config: it is already backed up in _apply_sync before the
-        # first write. A second copy under the same stamp would overwrite that
-        # pre-change copy with a post-change one, making a restore a silent no-op.
-        if cfg_path != _active_config_path():
+    for label, home in _profile_homes(settings):
+        cfg_path = home / "config.yaml"
+        prefix = f"auxiliary/{label}:"
+        if not cfg_path.is_file():
+            changed.append(f"{prefix} SKIPPED - config missing")
+            continue
+        try:
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8-sig"))
+            if not isinstance(cfg, dict):
+                raise ValueError("config root is not a mapping")
+        except Exception as exc:
+            changed.append(f"{prefix} SKIPPED - config unreadable ({exc})")
+            continue
+        aux = cfg.get("auxiliary", {})
+        if not isinstance(aux, dict):
+            changed.append(f"{prefix} SKIPPED - auxiliary is not a mapping")
+            continue
+        tasks = [t for t, spec in sorted(aux.items()) if isinstance(spec, dict) and spec.get("model")]
+        if not tasks:
+            changed.append(f"{prefix} SKIPPED - no task declares a model")
+            continue
+        if dry_run:
+            changed.append(f"{prefix} would set {len(tasks)} task(s) -> {provider}/{model}")
+            continue
+        # Preserve the pre-change copy from the active or profile pass under this stamp.
+        if (settings["backup"] and cfg_path != _active_config_path()
+                and cfg_path not in backed_up_configs):
             backups.append(_backup_or_abort(cfg_path, stamp))
-    for task in tasks:
-        atomic_roundtrip_yaml_update(cfg_path, f"auxiliary.{task}.provider", provider)
-        atomic_roundtrip_yaml_update(cfg_path, f"auxiliary.{task}.model", model)
-        # endpoint / key pins belong to the old provider — clear them with the route
-        atomic_roundtrip_yaml_update(cfg_path, f"auxiliary.{task}.base_url", None)
-        atomic_roundtrip_yaml_update(cfg_path, f"auxiliary.{task}.api_key", None)
-    return [f"auxiliary: set {len(tasks)} task(s) → {provider}/{model}"], backups
+            backed_up_configs.add(cfg_path)
+        for task in tasks:
+            atomic_roundtrip_yaml_update(cfg_path, f"auxiliary.{task}.provider", provider)
+            atomic_roundtrip_yaml_update(cfg_path, f"auxiliary.{task}.model", model)
+            # Endpoint and key pins belong to the old provider; clear them with the route.
+            atomic_roundtrip_yaml_update(cfg_path, f"auxiliary.{task}.base_url", None)
+            atomic_roundtrip_yaml_update(cfg_path, f"auxiliary.{task}.api_key", None)
+        changed.append(f"{prefix} set {len(tasks)} task(s) -> {provider}/{model}")
+    return changed, backups
 
 
 def _close_match_hint(token: str, models: List[str], limit: int = 5) -> str:
@@ -660,10 +677,9 @@ def _apply_sync(provider: str, model: str, dry_run: bool, with_auxiliary: bool) 
         lines += ["", "Re-run without `--dry-run` to apply."]
         return "\n".join(lines)
 
-    # Back the active config up BEFORE anything writes to it. The active home is also
-    # enumerated as the "default" profile by _apply_profiles(), which would otherwise
-    # take a second copy under the same stamp AFTER persist_model_selection() and
-    # overwrite this pre-change copy — making a restore a silent no-op.
+    # Back the active config up BEFORE anything writes to it. It may also be selected
+    # by _profile_homes(), as default or a named profile. Later passes must preserve
+    # this pre-change copy rather than overwrite it after persist_model_selection().
     try:
         backups: List[str] = []
         if settings["backup"]:
@@ -689,10 +705,13 @@ def _commit(provider: str, model: str, result, settings: Dict[str, Any], stamp: 
             backups: List[str]) -> str:
     from hermes_cli.model_switch import persist_model_selection
 
+    backed_up_configs: set[Path] = {_active_config_path()} if backups else set()
     persist_model_selection(result)
-    profile_changes, profile_backups = _apply_profiles(provider, model, result, settings, stamp, False)
+    profile_changes, profile_backups = _apply_profiles(
+        provider, model, result, settings, stamp, False, backed_up_configs=backed_up_configs)
     cron_changes, cron_skipped, cron_backups = _apply_crons(provider, model, settings, stamp, False)
-    aux_changes, aux_backups = _apply_auxiliary(provider, model, settings, stamp, False) if \
+    aux_changes, aux_backups = _apply_auxiliary(
+        provider, model, settings, stamp, False, backed_up_configs=backed_up_configs) if \
         settings["include_auxiliary"] else ([], [])
 
     lines = [f"**Install switched to `{provider}/{model}`**", ""]

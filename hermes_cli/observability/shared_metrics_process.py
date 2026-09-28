@@ -14,6 +14,7 @@ import atexit
 import json
 import logging
 import os
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -75,13 +76,17 @@ def begin_process(kind: str) -> None:
     try:
         from hermes_constants import get_hermes_home
 
+        from .shared_metrics_setup import markers_dir as setup_markers_dir
         from .shared_metrics_update import _collection_on, purge_pending_updates
 
         if _STATE:
             return
         _STATE["kind"] = kind  # watchdog turn rows name the surface even when this home is off
         if not _collection_on():
-            purge_pending_updates(get_hermes_home())  # parked while on, never to be counted once off
+            home = get_hermes_home()
+            purge_pending_updates(home)  # parked while on, never to be counted once off
+            for directory in (markers_dir(home), setup_markers_dir(home)):  # likewise pending exits/setups
+                shutil.rmtree(directory, ignore_errors=True)
             return
         from gateway.status import get_process_start_time
 

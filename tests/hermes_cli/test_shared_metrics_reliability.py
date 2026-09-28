@@ -168,6 +168,19 @@ def test_begin_process_marks_then_stamps_clean_and_crash(marks, monkeypatch):
     assert (record["state"], record["crash_class"]) == ("crash", "import_error")
 
 
+def test_opted_out_start_purges_markers_left_while_opted_in(marks, monkeypatch):
+    from hermes_cli.observability import shared_metrics_setup as setup_metrics
+
+    left = [process_metrics.markers_dir(marks.home) / "cli-1.json", setup_metrics.markers_dir(marks.home) / "tui-1-1.json"]
+    for marker in left:
+        marker.parent.mkdir(parents=True)
+        marker.write_text(json.dumps({"pid": 1, "started_at": 0, "surface": "tui", "provider": "xai", "state": "running"}))
+    monkeypatch.setattr(process_metrics, "_STATE", {})
+    marks.policy["on"] = False
+    process_metrics.begin_process("cli")
+    assert not any(marker.parent.exists() for marker in left)  # nothing reports "abandoned"/"killed" on re-enable
+
+
 def test_v3_schema_accepts_exactly_the_contract_values():
     from pathlib import Path
 

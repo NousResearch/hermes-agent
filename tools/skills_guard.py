@@ -294,7 +294,12 @@ THREAT_PATTERNS = [
     (r'pastebin\.com|hastebin\.com|ghostbin\.',
      "paste_service", "medium", "network", "references paste service (possible data staging)"),
     # ── Obfuscation: encoding and eval ──
-    (r'base64\s+(-d|--decode)\s*\|', "base64_decode_pipe", "high", "obfuscation", "base64 decodes and pipes to execution"),
+    # The decode may read a file or a redirect before the pipe (`base64 -d payload.b64 | sh`,
+    # `base64 --decode < p | sh`), short flags may be combined (`-di`), and openssl decodes base64
+    # too; `||` is not a pipe.
+    (r'(?:\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b|\bopenssl\s+(?:base64|enc)\b[^|;&\n]*?\s-d\b)'
+     r'[^|;&\n]*\|(?!\|)',
+     "base64_decode_pipe", "high", "obfuscation", "base64 decodes and pipes to execution"),
     (r'\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}.*\\x[0-9a-fA-F]{2}',
      "hex_encoded_string", "medium", "obfuscation", "hex-encoded string (possible obfuscation)"),
     (r'\beval\s*\(\s*["\']', "eval_string", "high", "obfuscation", "eval() with string argument"),

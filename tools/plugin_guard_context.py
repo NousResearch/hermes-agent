@@ -272,16 +272,21 @@ def is_regex_alternation_token(finding: Finding, line: str) -> bool:
 
 # ── (6) base64 decode piped to a non-interpreter ────────────────────────────────────────────
 # ``base64_decode_pipe`` describes "decodes and pipes to execution". ``gh api … | base64 -d |
-# grep '^sha:'`` decodes data for a text filter; the shape is only execution when the consumer
-# is a shell/interpreter or ``eval``/``source``/``exec``. A data consumer steps down to medium.
-_DECODE_CONSUMER = re.compile(r"base64\s+(?:-d|--decode)\s*\|\s*(?:\w+=\S*\s+)*(?:\S*/)?(?P<cmd>[A-Za-z0-9_.+-]+)")
+# grep '^sha:'`` decodes data for a text filter; the shape is only execution when a consumer
+# is a shell/interpreter or ``eval``/``source``/``exec``. Every stage after the decode counts:
+# ``base64 -d | gunzip | sh`` executes although its first consumer is a filter. A pipeline of
+# data consumers only steps down to medium.
+_PIPE_CONSUMER = re.compile(r"\s*(?:\w+=\S*\s+)*(?:\S*/)?(?P<cmd>[A-Za-z0-9_.+-]+)")
 _INTERPRETERS = re.compile(r"^(?:sh|bash|zsh|dash|ksh|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo)$")
 
 
 def is_data_decode(line: str) -> bool:
-    """``base64 -d`` whose pipe target is a non-interpreter command (grep, jq, tee, tar …)."""
-    m = _DECODE_CONSUMER.search(line)
-    return m is not None and _INTERPRETERS.match(m.group("cmd")) is None
+    """``base64 -d`` whose pipe stages are all non-interpreter commands (grep, jq, tee, tar …)."""
+    m = _PATTERN_BY_ID["base64_decode_pipe"].search(line)
+    if m is None:
+        return False
+    consumers = [c.group("cmd") for c in map(_PIPE_CONSUMER.match, line[m.end():].split("|")) if c]
+    return bool(consumers) and not any(_INTERPRETERS.match(cmd) for cmd in consumers)
 
 
 # ── (7) loopback address with port ───────────────────────────────────────────────────────────

@@ -436,11 +436,14 @@ def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _profile_cli_args(profile: Optional[str]) -> List[str]:
-    """``["-p", <name>]`` for a validated non-default profile, else ``[]``. Hub actions run in
+    """``["-p", <name>]`` for a validated named profile, else ``[]``. Hub actions run in
     a fresh ``hermes`` subprocess whose ``_apply_profile_override()`` reads ``-p`` from argv —
-    the only mechanism that reaches import-time-bound globals like ``skills_hub.SKILLS_DIR``."""
+    the only mechanism that reaches import-time-bound globals like ``skills_hub.SKILLS_DIR``.
+    ``default`` is a real named target, not an alias for the dashboard's own profile:
+    selector-less argv would make the child resolve the ambient ``HERMES_HOME`` (the launch
+    profile under a pooled ``-p X serve``), not the default home."""
     requested = (profile or "").strip()
-    if not requested or requested.lower() in {"current", "default"}:
+    if not requested or requested.lower() == "current":
         return []
     from hermes_cli import profiles as profiles_mod
     _resolve_profile_dir(requested)

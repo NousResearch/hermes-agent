@@ -308,6 +308,7 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _clone(url: str, target: Path) -> None:
+    from hermes_cli.git_credentials import run_git_with_credential_fallback
     from hermes_cli.plugins_cmd import _resolve_git_executable
     from hermes_cli.plugins_cmd_git import _safe_git_error
 
@@ -315,8 +316,9 @@ def _clone(url: str, target: Path) -> None:
     if not git:
         raise MarketplaceError("git is not installed or not in PATH.")
     try:
-        result = subprocess.run(
+        result = run_git_with_credential_fallback(
             [git, "clone", "--depth", "1", url, str(target)],
+            url,
             capture_output=True,
             text=True,
             encoding="utf-8",

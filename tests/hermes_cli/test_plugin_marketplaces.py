@@ -21,6 +21,22 @@ from hermes_cli.plugin_marketplaces import (
 )
 
 
+def test_marketplace_clone_uses_git_credential_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import hermes_cli.git_credentials as credentials
+    import hermes_cli.plugin_marketplaces as marketplaces
+
+    calls = []
+
+    def fake_git(args, url, **kwargs):
+        calls.append((args, url, kwargs))
+        return subprocess.CompletedProcess(args, 0, '', '')
+
+    monkeypatch.setattr(credentials, 'run_git_with_credential_fallback', fake_git)
+    marketplaces._clone('https://example.com/private.git', tmp_path / 'clone')
+    assert calls[0][1] == 'https://example.com/private.git'
+    assert calls[0][0][1:3] == ['clone', '--depth']
+
+
 def _git(repo: Path, *args: str) -> str:
     env = {
         **os.environ,

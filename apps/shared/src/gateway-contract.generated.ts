@@ -4047,12 +4047,16 @@ export interface PluginsManageParams {
   identifier?: string | null
   repo?: string | null
   catalog_name?: string | null
+  marketplace_id?: string | null
+  marketplace_plugin_name?: string | null
+  source_id?: string | null
+  url?: string | null
   force?: boolean | null
   ref?: string | null
   accept_capabilities?: boolean | null
   values?: Record<string, unknown> | null
 }
-export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding'
+export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding' | 'marketplaces' | 'marketplace_add' | 'marketplace_refresh' | 'marketplace_remove'
 /** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
@@ -4080,6 +4084,9 @@ export interface PluginsManageResult {
   error?: string | null
   written?: string[] | null
   onboarding?: OnboardingCatalogPlugin[] | null
+  marketplace?: Record<string, unknown> | null
+  marketplaces?: Record<string, unknown>[] | null
+  removed?: boolean | null
 }
 /** ``methods_tools._plugin_rows`` + ``plugins_cmd_catalog.catalog_row_fields`` provenance. */
 export interface AgentPluginRow {
@@ -4100,6 +4107,10 @@ export interface AgentPluginRow {
   catalog_version?: string | null
   update_available?: boolean | null
   pinned_sha?: string | null
+  marketplace_id?: string | null
+  marketplace_name?: string | null
+  marketplace_plugin_name?: string | null
+  marketplace_tree_sha?: string | null
   settings_schema?: PluginSettingField[] | null
 }
 export interface PluginServerRow {

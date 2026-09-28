@@ -1646,6 +1646,10 @@ export const setCurrentProvider = (next: Updater<string>) => {
 export const setCurrentModelTransient = (next: Updater<string>) => updateAtom($currentModel, next)
 export const setCurrentProviderTransient = (next: Updater<string>) => updateAtom($currentProvider, next)
 
+/** The provider the composer last PERSISTED, independent of any transient
+ *  preview currently painted on the atom. */
+export const getStoredComposerProvider = (): string => storedComposerString(COMPOSER_PROVIDER_KEY) ?? ''
+
 export const getCurrentModelSource = (): ComposerModelSource => {
   const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)
 

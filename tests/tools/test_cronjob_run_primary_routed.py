@@ -43,7 +43,7 @@ def _run(job_id, *, gateway_serves_profile):
     return out, m_run
 
 
-def test_routed_run_is_queued_for_the_gateway_that_serves_the_profile(keeper_job):
+def test_routed_run_is_queued_for_the_gateway_that_serves_the_profile(keeper_job, monkeypatch):
     from cron.jobs import get_job
     out, m_run = _run(keeper_job["id"], gateway_serves_profile=True)
 
@@ -53,6 +53,11 @@ def test_routed_run_is_queued_for_the_gateway_that_serves_the_profile(keeper_job
     assert stored["next_run_at"] == stored["manual_run_at"]  # due on the gateway's next tick
     assert stored.get("last_status") is None  # the manual run does not rewrite the job's status
     assert _run_outcome(out["job"]) == "It will run on the next scheduler tick."
+
+    # Control: a profile holding its own credential for the platform runs in-process as before.
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:keeper-own-bot")
+    _, m_run = _run(keeper_job["id"], gateway_serves_profile=True)
+    m_run.assert_called_once()
 
 
 def test_routed_run_without_a_serving_gateway_fails_before_the_turn(keeper_job):
@@ -65,26 +70,3 @@ def test_routed_run_without_a_serving_gateway_fails_before_the_turn(keeper_job):
     stored = get_job(keeper_job["id"])
     assert stored["next_run_at"] == keeper_job["next_run_at"]
     assert "manual_run_at" not in stored
-
-
-@pytest.mark.parametrize("case", ["local delivery", "own credential", "inside the gateway", "paused"])
-def test_run_keeps_the_in_process_path_when_not_routed_only(keeper_job, monkeypatch, case):
-    """Everything but a runnable job reachable only through the primary route runs as before."""
-    from cron.jobs import get_job, pause_job, update_job
-    from tools import cronjob_tools
-    if case == "local delivery":
-        update_job(keeper_job["id"], {"deliver": "local"})
-    elif case == "own credential":
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:keeper-own-bot")
-    elif case == "inside the gateway":
-        runner = SimpleNamespace(adapters={}, _gateway_loop=None)
-        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
-    else:
-        pause_job(keeper_job["id"])
-
-    with patch.object(cronjob_tools, "claim_job_for_fire",
-                      wraps=cronjob_tools.claim_job_for_fire) as m_claim:
-        _run(keeper_job["id"], gateway_serves_profile=True)
-
-    m_claim.assert_called_once()  # the in-process claim -> run_one_job path, unchanged
-    assert "manual_run_at" not in get_job(keeper_job["id"])

@@ -194,6 +194,9 @@ def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(t
 
     state_file = tmp_path / "gateway_state.json"
     monkeypatch.setattr(gw_status, "_get_runtime_status_path", lambda: state_file)
+    # A multi-profile host: without unserved profiles the box is empty regardless of liveness,
+    # so the dead/stale cases below would pass vacuously.
+    monkeypatch.setattr(mode, "unserved_profiles", lambda: ["other_profile"])
 
     # 1. Stopped gateway
     state_file.write_text(json.dumps({
@@ -233,7 +236,6 @@ def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(t
     }), encoding="utf-8")
     monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: True)
     monkeypatch.setattr(gw_status, "runtime_status_is_stale", lambda r: False)
-    monkeypatch.setattr(mode, "unserved_profiles", lambda: ["other_profile"])
     lines = mode.recorded_standalone_warning_lines()
     assert any("STANDALONE" in line for line in lines)
     assert any("real standalone reason" in line for line in lines)

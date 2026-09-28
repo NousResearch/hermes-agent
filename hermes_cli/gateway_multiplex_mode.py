@@ -342,4 +342,3 @@ def recorded_standalone_warning_lines() -> list[str]:
     if not reason:
         return []
     return standalone_warning_lines(MultiplexDecision(False, "guard", str(reason)))
-

@@ -181,6 +181,14 @@ class TestBreakawayFallback:
         assert not second_flags & 0x01000000  # fallback drops only the breakaway bit
         assert second_flags == _NO_BREAKAWAY_FLAGS
         assert adapter._bridge_process is mock_proc
+        # Each attempt stamps the breakaway state (gateway_windows._spawn_detached pattern):
+        # a fallback-spawned bridge stays in the parent's job, and without the stamp a
+        # job-teardown kill is indistinguishable from a clean exit.
+        from hermes_cli._subprocess_compat import _WINDOWS_GATEWAY_BREAKAWAY_ENV
+        first_env = mock_popen.call_args_list[0].kwargs["env"]
+        second_env = mock_popen.call_args_list[1].kwargs["env"]
+        assert first_env[_WINDOWS_GATEWAY_BREAKAWAY_ENV] == "1"
+        assert second_env[_WINDOWS_GATEWAY_BREAKAWAY_ENV] == "0"
 
     @pytest.mark.asyncio
     async def test_breakaway_allowed_keeps_breakaway_flags(self):
@@ -204,6 +212,8 @@ class TestBreakawayFallback:
         assert result is True
         assert mock_popen.call_count == 1
         assert mock_popen.call_args.kwargs["creationflags"] & 0x01000000
+        from hermes_cli._subprocess_compat import _WINDOWS_GATEWAY_BREAKAWAY_ENV
+        assert mock_popen.call_args.kwargs["env"][_WINDOWS_GATEWAY_BREAKAWAY_ENV] == "1"
 
     @pytest.mark.asyncio
     async def test_posix_keeps_start_new_session_no_windows_fallback(self):

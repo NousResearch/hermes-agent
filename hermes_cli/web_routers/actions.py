@@ -217,6 +217,22 @@ def _update_refused(error: str, message: str, update_command: str) -> Dict[str, 
     }
 
 
+def _unreachable_feed_branch() -> Optional[str]:
+    """The checkout branch to update from when the release feed is known unreachable.
+
+    Reads the last cached check result instead of probing the feed a second time:
+    only a recorded ``channel_error`` means "known unreachable", and the branch is
+    the one that check compared against — never a blindly defaulted name.
+    """
+    from hermes_cli.source_check import cached_check_status
+
+    status = cached_check_status() or {}
+    if not isinstance(status.get("channel_error"), dict):
+        return None
+    branch = status.get("branch") or status.get("currentBranch")
+    return branch if isinstance(branch, str) and branch and branch != "HEAD" else None
+
+
 @router.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
@@ -249,9 +265,16 @@ async def update_hermes():
         return response
 
     action_id = secrets.token_hex(16)
+    # An unreadable release feed cannot pin a target and would fail the whole run,
+    # so the update follows the branch the checkout is already on instead.
+    branch = _unreachable_feed_branch()
+    subcommand = ["update", "--branch", branch] if branch else ["update"]
     with http_failure("Failed to spawn hermes update", 500, "Failed to start update"):
-        proc = _spawn_hermes_action(["update"], "hermes-update", env_overrides={"HERMES_ACTION_ID": action_id})
-    return {"ok": True, "pid": proc.pid, "name": "hermes-update", "action_id": action_id}
+        proc = _spawn_hermes_action(subcommand, "hermes-update", env_overrides={"HERMES_ACTION_ID": action_id})
+    response = {"ok": True, "pid": proc.pid, "name": "hermes-update", "action_id": action_id}
+    if branch:
+        response["message"] = f"Release feed unreachable — updating from origin/{branch}."
+    return response
 
 
 _NON_APPLYABLE_MESSAGES = {
@@ -270,6 +293,9 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
     dashboard button can apply in place), update_command, message (guidance for
     non-applyable methods) and, for git installs that are behind, commits
     [{sha, summary, author, at}] (additive; existing consumers ignore it).
+    ``channel_error`` {code, message, branch} is additive too: it means the
+    release feed was unreadable and ``behind`` was computed against the git
+    branch instead.
     """
     if is_commit_build(_server_path("PROJECT_ROOT")):
         return {
@@ -303,17 +329,25 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
 
     # source_check.check_for_updates() handles git / nix-revision paths through the GitHub API and
     # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
+    channel_error = None
+    channel_branch = None
     try:
         from hermes_cli.source_check import check_for_updates
 
         with _config_profile_scope(profile):
             status = await asyncio.to_thread(check_for_updates, force=force)
         behind = status.get("behind")
+        channel_error = status.get("channel_error")
+        channel_branch = status.get("branch") or status.get("currentBranch")
     except Exception:
         _log.exception("Update check failed")
         behind = None
 
     payload["behind"] = behind
+    if isinstance(channel_error, dict):
+        # Additive: an unreachable release feed no longer blanks the check, it
+        # degrades the comparison to the git branch. Clients warn and keep going.
+        payload["channel_error"] = {**channel_error, "branch": channel_branch}
     if behind is None:
         payload["message"] = "Couldn't reach the update source — try again later."
     elif behind == 0:

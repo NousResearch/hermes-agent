@@ -17,7 +17,9 @@ import urllib.error
 import urllib.request
 
 from hermes_constants import get_hermes_home
-from hermes_cli.source_releases import OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, resolve_source_target
+from hermes_cli.source_releases import (
+    OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, SourceTarget, resolve_source_target,
+)
 
 logger = logging.getLogger(__name__)
 UPDATE_AVAILABLE_NO_COUNT = -1
@@ -243,19 +245,46 @@ def _checked_out_branch(current_branch: Optional[str], fallback: Optional[str]) 
     return current_branch if current_branch and current_branch != "HEAD" else fallback
 
 
-def _cached_status(cache_file: Path, identity: dict, now: float) -> Optional[dict]:
-    """A still-fresh supported status cached for exactly this identity, else None.
+def _degraded(status: dict) -> bool:
+    """True when a cached result carries a failure or an unreachable release feed."""
+    return bool(status.get("error") or status.get("channel_error"))
+
+
+def _fresh_status_cached(cached, now: float) -> Optional[dict]:
+    """The cached status when it is a still-fresh supported result for ``now``, else None.
 
     Failures expire sooner so a transient network error does not hide updates for a day.
     """
-    cached = _read_json(cache_file)
-    if not (isinstance(cached, dict) and cached.get("identity") == identity
-            and isinstance(cached.get("status"), dict) and cached["status"].get("supported") is True):
+    if not (isinstance(cached, dict) and isinstance(cached.get("status"), dict)
+            and cached["status"].get("supported") is True):
         return None
-    status = cached.get("status", {})
-    ttl = _UPDATE_CHECK_FAILURE_CACHE_SECONDS if status.get("error") else _UPDATE_CHECK_CACHE_SECONDS
+    status = cached["status"]
+    ttl = _UPDATE_CHECK_FAILURE_CACHE_SECONDS if _degraded(status) else _UPDATE_CHECK_CACHE_SECONDS
     ts = cached.get("ts")
     return status if isinstance(ts, (float, int)) and 0 <= now - ts < ttl else None
+
+
+def _cached_status(cache_file: Path, identity: dict, now: float) -> Optional[dict]:
+    """A still-fresh supported status cached for exactly this identity, else None."""
+    cached = _read_json(cache_file)
+    if not (isinstance(cached, dict) and cached.get("identity") == identity):
+        return None
+    return _fresh_status_cached(cached, now)
+
+
+def cached_check_status(*, install_root: Path | None = None, home: Path | None = None) -> Optional[dict]:
+    """The most recent still-fresh check status for this install, or None.
+
+    Read-only and probe-free: the dashboard's apply path reads the result the check
+    itself cached, so a recorded ``channel_error`` — and nothing inferred locally —
+    is what makes the release feed "known unreachable".
+    """
+    from hermes_cli.config import get_project_root
+    from hermes_cli.update_channel import install_id
+
+    root = Path(install_root if install_root is not None else get_project_root()).resolve()
+    home = Path(home if home is not None else get_hermes_home()).resolve()
+    return _fresh_status_cached(_read_json(home / "source-checks" / f"{install_id(root)}.json"), time.time())
 
 
 def _write_cache(cache_file: Path, identity: dict, now: float, result: dict) -> None:
@@ -267,16 +296,33 @@ def _write_cache(cache_file: Path, identity: dict, now: float, result: dict) -> 
         logger.debug("Could not cache source check: %s", exc)
 
 
+def _channel_failure(result: dict, channel: str, exc: Exception) -> None:
+    """Fail closed: a channel that cannot be trusted pins nothing and probes no branch."""
+    result.update(error="release-unavailable", message=f"Could not resolve the {channel} source channel: {exc}")
+
+
 def _resolve_channel(result: dict, channel: str, co: _Checkout):
     """Resolve a release channel's target into ``result``; the SourceTarget, or None on error.
 
     A target with a pinned commit is final; one without names a branch to follow instead.
+    ``main`` IS the source branch, so a channel-read failure there degrades to the same
+    branch target an unpublished record produces — recorded additively as ``channel_error``
+    so callers can warn — while every other channel fails closed. This is the check path
+    only; ``hermes update`` keeps refusing to apply against an unreadable channel.
     """
+    from hermes_cli.release_channels import ChannelError, ChannelNotFound
+
     try:
         source_target = resolve_source_target(channel, [co.git] if not co.embedded else None, co.root,
                                               repository=co.repository or OFFICIAL_REPOSITORY)
+    except ChannelError as exc:
+        if isinstance(exc, ChannelNotFound) or channel != "main":
+            _channel_failure(result, channel, exc)
+            return None
+        result["channel_error"] = {"code": "release-unavailable", "message": str(exc)}
+        return SourceTarget(channel, channel, co.repository or OFFICIAL_REPOSITORY, branch="main")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        result.update(error="release-unavailable", message=f"Could not resolve the {channel} source channel: {exc}")
+        _channel_failure(result, channel, exc)
         return None
     if source_target.commit:
         target = source_target.commit

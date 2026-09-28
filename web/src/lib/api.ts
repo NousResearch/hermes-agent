@@ -1886,6 +1886,13 @@ export interface HookCreate {
   approve?: boolean;
 }
 
+export interface UpdateChannelError {
+  code: string;
+  message: string;
+  // The branch `behind` was compared against when the feed was unreadable.
+  branch: string | null;
+}
+
 export interface UpdateCheckResponse {
   install_method: string;
   current_version: string;
@@ -1896,6 +1903,9 @@ export interface UpdateCheckResponse {
   can_apply: boolean;
   update_command: string;
   message: string | null;
+  // Additive: the release feed was unreadable, so `behind` came from the git
+  // branch comparison rather than a pinned channel target.
+  channel_error?: UpdateChannelError | null;
 }
 
 export interface SystemStats {

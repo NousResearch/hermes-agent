@@ -464,3 +464,97 @@ def test_branch_tip_failure_names_the_cause(installation):
     status = check_for_updates(install_root=root, home=home, force=True)
     assert status["error"] == "fetch-failed"
     assert "HTTP 503" in status["message"]
+
+
+def test_unavailable_main_channel_still_compares_the_origin_branch(installation):
+    """An unreadable channel archive must not blank the check for ``main``.
+
+    ``main`` IS the source branch (its record can only add a retirement), so the
+    branch comparison still runs and the channel failure is reported additively
+    as ``channel_error`` instead of as a fatal ``error``.
+    """
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    responses[MAIN_CHANNEL] = (403, "blocked in this region")
+    responses["/repos/fixture/fork/commits/main"] = (200, head)
+    git("checkout", "--detach", base, cwd=linked)
+    compare = f"/repos/fixture/fork/compare/{base}...{head}"
+    responses[compare] = (200, {"ahead_by": 1, "commits": [
+        {"sha": head, "commit": {"message": "remote tip", "author": {"name": "Fixture"},
+                                 "committer": {"date": "2026-09-01T00:00:00Z"}}}]})
+
+    status = check_for_updates(install_root=linked, home=home, channel="main", force=True)
+
+    assert "error" not in status, status
+    assert status["branch"] == "main"
+    assert status["targetSha"] == head
+    assert status["behind"] == 1
+    assert status["updateAvailable"] is True
+    assert status["commits"][0]["summary"] == "remote tip"
+    assert status["channel_error"] == {"code": "release-unavailable",
+                                       "message": "Channel read unavailable: HTTP 403"}
+    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/main", compare]
+
+
+def test_unavailable_non_main_channel_still_fails_closed(installation):
+    """Only ``main`` degrades to its branch: every other channel keeps failing
+    closed, with no branch probe and no pinned target."""
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    name = "preview-" + uuid4().hex[:12]
+    channel_path = f"/releases/channels/{name}.json"
+    responses[channel_path] = (403, "blocked in this region")
+
+    status = check_for_updates(install_root=linked, home=home, channel=name, force=True)
+
+    assert status["error"] == "release-unavailable", status
+    assert status["behind"] is None
+    assert "targetSha" not in status and "channel_error" not in status
+    assert requests == [channel_path]
+
+
+def test_readable_channel_reports_no_channel_error(installation):
+    """A reachable feed keeps the pre-existing shape: no additive channel_error."""
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    branch_path = "/repos/fixture/fork/commits/feature%2Fgui"
+    responses[branch_path] = (200, head)
+
+    status = check_for_updates(install_root=linked, home=home, channel="main", force=True)
+
+    assert "error" not in status and "channel_error" not in status, status
+    assert status["branch"] == "feature/gui"
+    assert status["targetSha"] == head and status["behind"] == 0
+    assert requests == [MAIN_CHANNEL, branch_path]
+
+
+def test_cached_check_status_is_probe_free_and_hides_stale_failures(installation, monkeypatch):
+    """The dashboard's apply path reads the cached check instead of probing again;
+    a stale degraded result is never reused."""
+    from hermes_cli import source_check
+
+    root, linked, home, base, head, responses, requests, git = installation
+    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: linked)
+    responses[MAIN_CHANNEL] = (403, "blocked in this region")
+    responses["/repos/fixture/fork/commits/main"] = (200, head)
+
+    assert source_check.cached_check_status(home=home) is None
+    status = source_check.check_for_updates(install_root=linked, home=home, channel="main", force=True)
+    assert status["channel_error"]["code"] == "release-unavailable"
+
+    cached = source_check.cached_check_status(home=home) or {}
+    assert cached.get("channel_error") == status["channel_error"]
+    # The branch the check compared against: this worktree's own checked-out branch.
+    assert cached.get("branch") == "feature/gui"
+    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/feature%2Fgui"]
+
+    # Degraded results expire on the short (failure) TTL, so an outage recorded an
+    # hour ago cannot keep steering the apply path.
+    cache = next((home / "source-checks").glob("*.json"))
+    raw = json.loads(cache.read_text())
+    raw["ts"] -= source_check._UPDATE_CHECK_FAILURE_CACHE_SECONDS + 1
+    cache.write_text(json.dumps(raw))
+    assert source_check.cached_check_status(home=home) is None

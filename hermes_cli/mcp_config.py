@@ -1,22 +1,26 @@
 """MCP Server Management CLI — ``hermes mcp`` subcommand."""
 
 import asyncio
+import copy
 import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
     cfg_get,
+    is_managed,
     load_config,
+    managed_error,
     save_config,
     get_env_value,
     save_env_value,
     get_hermes_home,  # noqa: F401 — used by test mocks
 )
 from hermes_cli.colors import Colors, color
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool_config import _ENV_VAR_PATTERN
 from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled
@@ -233,14 +237,16 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     """Add or update a server entry in config.yaml.
 
     Returns False when a high-signal exfiltration-shaped stdio command is rejected (shell+egress
-    payloads are blocked rather than whitelisting command families).
+    payloads are blocked rather than whitelisting command families), or when the install is
+    managed — ``save_config`` refuses every write there, so reporting True would print a success
+    line for a save that never touched disk.
     """
     if not _validate_or_warn(name, server_config):
         return False
     config = load_config()
     config.setdefault("mcp_servers", {})[name] = server_config
     save_config(config)
-    return True
+    return not is_managed()
 
 
 def _validate_or_warn(name: str, server_config: dict) -> bool:
@@ -251,6 +257,139 @@ def _validate_or_warn(name: str, server_config: dict) -> bool:
     if issues:
         _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
     return not issues
+
+
+def _served_profile_scope() -> List[Tuple[str, Path]]:
+    """``(profile_name, home)`` pairs the host gateway serves — the same signal the
+    multiplexer reads, so the scope message matches what is actually live."""
+    from hermes_cli.profiles import profiles_to_serve
+    return list(profiles_to_serve(multiplex=True))
+
+
+def _active_profile_name() -> str:
+    """Active profile id; ``"default"`` when nothing names one (never raises)."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
+def _info_profile_scope() -> None:
+    """Name the profile scope explicitly when more than one profile is live.
+
+    Single-profile hosts get no extra line: there is nothing to contrast against.
+    A fan-out save already names its profiles, so only single-profile saves call this."""
+    try:
+        multiple = len(_served_profile_scope()) > 1
+    except Exception:
+        return
+    if multiple:
+        _info(
+            f"Scoped to profile '{_active_profile_name()}'"
+            " \u2014 other profiles do not inherit MCP servers.")
+
+
+def _propagate_bearer_env_all_profiles(
+    server_config: dict, written: List[Tuple[str, Path]]) -> None:
+    """Copy freshly captured bearer token(s) into each written sibling profile's ``.env``.
+
+    The fanned-out server config references ``${MCP_<NAME>_API_KEY}``; without the value in
+    their own ``.env`` the sibling copies would 401. Same operator, same host — same secret.
+    OAuth grants are NOT copied: tokens live per-profile by design, each profile signs in itself.
+    Best-effort per profile: one unwritable ``.env`` warns instead of aborting the rest."""
+    headers = server_config.get("headers")
+    if not isinstance(headers, dict):
+        return
+    names = set()
+    for value in headers.values():
+        if isinstance(value, str):
+            names.update(_ENV_VAR_PATTERN.findall(value))
+    active = _active_profile_name()
+    for var in sorted(names):
+        if not _ENV_VAR_NAME_RE.match(var):
+            continue
+        value = get_env_value(var)
+        if not value:
+            continue
+        for profile_name, home in written:
+            if profile_name == active:
+                continue  # already in the active profile's .env via _save_bearer_auth_token
+            token = set_hermes_home_override(str(home))
+            try:
+                save_env_value(var, value)
+            except Exception as exc:
+                _warning(f"Could not copy {var} to profile '{profile_name}': {exc}")
+            finally:
+                reset_hermes_home_override(token)
+
+
+def _save_mcp_server_all_profiles(name: str, server_config: dict) -> List[Tuple[str, Path]]:
+    """Write *server_config* into every served profile's ``config.yaml`` via the normal
+    per-profile writer. Returns the ``(profile_name, home)`` pairs written, active first.
+
+    The active profile keeps the managed/normalizing ``save_config`` path; siblings get a
+    raw round-trip merge (``atomic_config_write``) so their files gain exactly one key.
+    Empty when the entry is rejected, or when the install is managed: ``save_config`` refuses
+    every write there (Nix / package-manager installs), and the sibling ``atomic_config_write``
+    path must honor the same guard rather than writing the profiles the operator was refused.
+    Active first, and empty means nothing was written anywhere."""
+    from hermes_cli.config import atomic_config_write, read_user_config_raw
+
+    if not _validate_or_warn(name, server_config):
+        return []
+    if is_managed():
+        managed_error("save an MCP server in every profile")
+        return []
+    active = _active_profile_name()
+    served = _served_profile_scope()
+    # ponytail: active-first ordering is display-only; per-profile writes are sequential.
+    # Parallel fan-out if profile counts ever grow large.
+    ordered = sorted(served, key=lambda item: item[0] != active)
+    written: List[Tuple[str, Path]] = []
+    for profile_name, home in ordered:
+        if profile_name == active:
+            if _save_mcp_server(name, server_config):
+                written.append((profile_name, Path(home)))
+            continue
+        config_path = Path(home) / "config.yaml"
+        raw = read_user_config_raw(config_path)
+        servers = raw.get("mcp_servers")
+        if not isinstance(servers, dict):
+            servers = {}
+            raw["mcp_servers"] = servers
+        servers[name] = copy.deepcopy(server_config)
+        atomic_config_write(config_path, raw)
+        written.append((profile_name, Path(home)))
+    if len(written) > 1:
+        _propagate_bearer_env_all_profiles(server_config, written)
+        if server_config.get("auth") == "oauth":
+            _info(
+                f"OAuth tokens stay per-profile \u2014 sign each one in with:"
+                f" hermes -p <profile> mcp login {name}")
+    return written
+
+
+def _persist_mcp_server(
+    name: str, server_config: dict, *, all_profiles: bool) -> List[Tuple[str, Path]]:
+    """Save to the active profile, or to every served profile with ``--all-profiles``.
+    Returns the ``(profile_name, home)`` pairs written (empty when rejected)."""
+    if all_profiles:
+        return _save_mcp_server_all_profiles(name, server_config)
+    if _save_mcp_server(name, server_config):
+        return [(_active_profile_name(), Path(get_hermes_home()))]
+    return []
+
+
+def _report_mcp_saved(name: str, written: List[Tuple[str, Path]], *, detail: str = "") -> None:
+    """One success line per save: the file for a single profile, the profile list for a fan-out."""
+    if len(written) > 1:
+        _success(f"Saved '{name}' in {len(written)} profiles: "
+                 f"{', '.join(profile for profile, _ in written)}{detail}")
+        _info(f"Undo the fan-out with: hermes mcp remove {name} --all-profiles")
+    else:
+        _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml{detail}")
+        _info_profile_scope()
 
 
 def _lookup_server(
@@ -266,7 +405,10 @@ def _lookup_server(
 
 
 def _remove_mcp_server(name: str) -> bool:
-    """Remove a server from config.yaml.  Returns True if it existed."""
+    """Remove a server from config.yaml.  Returns True if it existed AND was written.
+
+    False under a managed install: ``save_config`` refuses the write, so claiming success
+    would report a removal that never reached disk (same guard as ``_save_mcp_server``)."""
     config = load_config()
     servers = config.get("mcp_servers") or {}
     if name not in servers:
@@ -275,7 +417,42 @@ def _remove_mcp_server(name: str) -> bool:
     if not servers:
         config.pop("mcp_servers", None)
     save_config(config)
-    return True
+    return not is_managed()
+
+
+def _remove_mcp_server_all_profiles(name: str) -> List[Tuple[str, Path]]:
+    """Remove *name* from every served profile's ``config.yaml``, active first.
+
+    The counterpart to ``_save_mcp_server_all_profiles``: a fan-out add must be undoable with
+    one command, so this walks the same served scope and drops the key from each profile that
+    has it. Returns the ``(profile_name, home)`` pairs removed from. Empty when the server is
+    absent everywhere, or under a managed install (``save_config`` refuses writes there, and
+    the sibling ``atomic_config_write`` path must honor the same guard)."""
+    from hermes_cli.config import atomic_config_write, read_user_config_raw
+
+    if is_managed():
+        managed_error("remove an MCP server from every profile")
+        return []
+    active = _active_profile_name()
+    served = _served_profile_scope()
+    ordered = sorted(served, key=lambda item: item[0] != active)
+    removed: List[Tuple[str, Path]] = []
+    for profile_name, home in ordered:
+        if profile_name == active:
+            if _remove_mcp_server(name):
+                removed.append((profile_name, Path(home)))
+            continue
+        config_path = Path(home) / "config.yaml"
+        raw = read_user_config_raw(config_path)
+        servers = raw.get("mcp_servers")
+        if not isinstance(servers, dict) or name not in servers:
+            continue
+        del servers[name]
+        if not servers:
+            raw.pop("mcp_servers", None)
+        atomic_config_write(config_path, raw)
+        removed.append((profile_name, Path(home)))
+    return removed
 
 
 def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
@@ -611,6 +788,7 @@ def _choose_tools(name: str, tools: List[Tuple[str, str]], server_config: Dict[s
 def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
     name = args.name
+    all_profiles = bool(getattr(args, "all_profiles", False))
     url = getattr(args, "url", None)
     # --command uses dest="mcp_command" (see hermes_cli/main.py for why the dest is renamed).
     command = getattr(args, "mcp_command", None)
@@ -672,39 +850,57 @@ def cmd_mcp_add(args):
         _info(_probe_failure_next_step(name, exc))
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
-            if _save_mcp_server(name, server_config):
-                _success(f"Saved '{name}' to config (disabled)")
+            written = _persist_mcp_server(name, server_config, all_profiles=all_profiles)
+            if written:
+                _report_mcp_saved(name, written, detail=" (disabled)")
                 _info("Fix the issue, then: hermes mcp test " + name)
         return
 
     if not tools:
         _warning("Server connected but reported no tools.")
-        if _confirm("Save config anyway?", default=True) and _save_mcp_server(name, server_config):
-            _success(f"Saved '{name}' to config")
+        if _confirm("Save config anyway?", default=True):
+            written = _persist_mcp_server(name, server_config, all_profiles=all_profiles)
+            if written:
+                _report_mcp_saved(name, written)
         return
 
     tool_count = _choose_tools(name, tools, server_config)
     if tool_count is None:
         return
     server_config["enabled"] = True
-    if _save_mcp_server(name, server_config):
+    written = _persist_mcp_server(name, server_config, all_profiles=all_profiles)
+    if written:
         print()
-        _success(
-            f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{len(tools)} tools enabled)"
-        )
+        _report_mcp_saved(
+            name, written, detail=f" ({tool_count}/{len(tools)} tools enabled)")
         _info("Start a new session to use these tools, or run /reload-mcp to load them into open sessions.")
 
 
 def cmd_mcp_remove(args):
     """Remove an MCP server from config."""
     name = args.name
-    if _lookup_server(name, _get_mcp_servers()) is None:
-        return
-    if not _confirm(f"Remove server '{name}'?", default=True):
-        _info("Cancelled.")
-        return
-    _remove_mcp_server(name)
-    _success(f"Removed '{name}' from config")
+    if getattr(args, "all_profiles", False):
+        # Counterpart to `add --all-profiles`: a fan-out that cannot be undone in one command
+        # is a trap, so the same scope decides what gets removed.
+        if not _confirm(f"Remove server '{name}' from every served profile?", default=True):
+            _info("Cancelled.")
+            return
+        removed = _remove_mcp_server_all_profiles(name)
+        if len(removed) > 1:
+            _success(f"Removed '{name}' from {len(removed)} profiles: "
+                     f"{', '.join(profile for profile, _ in removed)}")
+        elif removed:
+            _success(f"Removed '{name}' from config")
+        elif not is_managed():  # managed refusal already reported by managed_error
+            _info(f"Server '{name}' was not found in any served profile.")
+    else:
+        if _lookup_server(name, _get_mcp_servers()) is None:
+            return
+        if not _confirm(f"Remove server '{name}'?", default=True):
+            _info("Cancelled.")
+            return
+        if _remove_mcp_server(name):  # False under a managed install: managed_error already shown
+            _success(f"Removed '{name}' from config")
     # Route OAuth cleanup through MCPOAuthManager so any provider cached in this process (e.g. from
     # an earlier `hermes mcp test`) is evicted too.
     try:

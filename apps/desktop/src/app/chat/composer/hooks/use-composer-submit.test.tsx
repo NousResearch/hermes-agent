@@ -2,10 +2,13 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEffect, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
+import { $connectionRequests, type ConnectionRequest } from '@/store/connection-request'
+import { $gateway } from '@/store/gateway'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -580,6 +583,87 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     expect(respond).not.toHaveBeenCalled()
     expect(hasOpenServerRequest('req-other-session')).toBe(true)
     expect($clarifyRequests.get()['other-session']).toBeDefined()
+  })
+})
+
+describe('useComposerSubmit with a connection card parked on the session', () => {
+  afterEach(() => {
+    cleanup()
+    $connectionRequests.set({})
+    $gateway.set(null)
+    vi.restoreAllMocks()
+  })
+
+  const parkConnection = () => {
+    const connection: ConnectionRequest = {
+      toolCallId: 'call-connection',
+      opId: 'op-connection',
+      seq: 1,
+      deadlineAt: 1_800_000_000,
+      sessionId: 'runtime-session',
+      targets: [
+        {
+          name: 'gmail',
+          kind: 'connector',
+          action: 'connect',
+          state: 'pending',
+          detail: '',
+          connectUrl: null,
+          connectionId: '',
+          tools: [],
+          requiredEnv: [],
+          instructions: null,
+          discoveryError: null
+        }
+      ],
+      settled: false,
+      settledBy: null
+    }
+
+    $connectionRequests.set({ 'runtime-session': connection })
+  }
+
+  it.each(['/btw what is the task?', '/BTW what is the task?', '/btw'])(
+    'keeps the connection card answerable while dispatching %s',
+    async text => {
+      parkConnection()
+      vi.spyOn(sessionOwnerUtils, 'resolveSessionOwner').mockRejectedValue(new Error('test no owner'))
+      const gatewayRequest = vi.fn(async () => ({}))
+      $gateway.set({ request: gatewayRequest } as NonNullable<ReturnType<typeof $gateway.get>>)
+      const { hook, onSubmit, onSteer } = renderSubmitHook({ busy: true, text })
+
+      act(() => {
+        hook.result.current.submitDraft()
+      })
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(text, expect.anything()))
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(gatewayRequest).not.toHaveBeenCalledWith('connection.respond', expect.anything())
+      expect($connectionRequests.get()['runtime-session']?.settled).toBe(false)
+    }
+  )
+
+  it('still continues the connection request for an ordinary reply', async () => {
+    parkConnection()
+    vi.spyOn(sessionOwnerUtils, 'resolveSessionOwner').mockRejectedValue(new Error('test no owner'))
+    const gatewayRequest = vi.fn(async () => ({}))
+    $gateway.set({ request: gatewayRequest } as NonNullable<ReturnType<typeof $gateway.get>>)
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'continue without connecting' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('continue without connecting'))
+    await waitFor(() =>
+      expect(gatewayRequest).toHaveBeenCalledWith(
+        'connection.respond',
+        expect.objectContaining({
+          op_id: 'op-connection',
+          result: { settled_by: 'continue' }
+        })
+      )
+    )
   })
 })
 

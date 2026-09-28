@@ -1,71 +1,61 @@
-"""Source option validation from Dan Montgomery's reaction menu contribution."""
+"""Bounded choices for a Matrix reaction menu."""
 
-from typing import Any, Dict, List
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
 
 MIN_OPTIONS = 1
 MAX_OPTIONS = 5
 
-# Reaction reserved by the menu choreography itself (reload / regenerate).
-# An option may NOT claim it.
-RELOAD_EMOJI = "♻️"  # ♻️
-
 
 class MenuValidationError(ValueError):
-    """Raised when an option list fails validation."""
+    """A menu cannot be rendered within the supported limits."""
 
 
-def validate_options(options: Any) -> List[Dict[str, Any]]:
-    """Validate and normalise a menu's option list.
+def _text(value: object, field: str, limit: int) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+        raise MenuValidationError(f"{field} must be non-empty text of at most {limit} characters")
+    return value.strip()
 
-    Each option is a dict with:
-      * ``emoji``    (str, required) — the reaction key / number anchor.
-      * ``label``    (str, required) — human-readable choice text.
-      * ``payload``  (str, required) — injected as the synthetic turn body.
-      * ``terminal`` (bool, optional, default False) — when True the chosen
-        path ends the menu lifecycle: no ``♻️`` reload reaction is seeded.
 
-    Rules: 1–5 options; ``emoji``/``label``/``payload`` non-empty; emoji unique
-    within the menu and never the reserved ``♻️``; ``silent: true`` is reserved
-    and rejected in v1 (spec §8).
+@dataclass(frozen=True)
+class MenuOption:
+    emoji: str
+    label: str
+    payload: str
 
-    Returns the normalised list.  Raises :class:`MenuValidationError` otherwise.
-    """
-    if not isinstance(options, list):
-        raise MenuValidationError("options must be a list")
-    if not (MIN_OPTIONS <= len(options) <= MAX_OPTIONS):
-        raise MenuValidationError(
-            f"a menu needs {MIN_OPTIONS}–{MAX_OPTIONS} options, got {len(options)}"
-        )
 
-    normalized: List[Dict[str, Any]] = []
-    seen_emoji: set[str] = set()
-    for idx, opt in enumerate(options):
-        if not isinstance(opt, dict):
-            raise MenuValidationError(f"option {idx} must be an object")
-        if opt.get("silent"):
-            raise MenuValidationError(
-                "silent menus are reserved and not supported in this version"
-            )
-        emoji = str(opt.get("emoji", "")).strip()
-        label = str(opt.get("label", "")).strip()
-        payload = str(opt.get("payload", "")).strip()
-        if not emoji:
-            raise MenuValidationError(f"option {idx} is missing 'emoji'")
-        if not label:
-            raise MenuValidationError(f"option {idx} is missing 'label'")
-        if not payload:
-            raise MenuValidationError(f"option {idx} is missing 'payload'")
-        if emoji == RELOAD_EMOJI:
-            raise MenuValidationError(
-                f"option {idx} uses the reserved reload reaction {RELOAD_EMOJI}"
-            )
-        if emoji in seen_emoji:
-            raise MenuValidationError(f"duplicate emoji {emoji!r} in menu")
-        seen_emoji.add(emoji)
-        normalized.append({
-            "emoji": emoji,
-            "label": label,
-            "payload": payload,
-            "terminal": bool(opt.get("terminal", False)),
-        })
-    return normalized
+@dataclass(frozen=True)
+class ReactionMenu:
+    prompt: str
+    options: tuple[MenuOption, ...]
+    context_id: str | None = None
+
+    @classmethod
+    def from_arguments(cls, prompt: object, options: object, context_id: object = None) -> ReactionMenu:
+        prompt = _text(prompt, "prompt", 500)
+        if context_id is not None:
+            context_id = _text(context_id, "context_id", 128)
+        if not isinstance(options, list) or not MIN_OPTIONS <= len(options) <= MAX_OPTIONS:
+            raise MenuValidationError(f"a menu needs {MIN_OPTIONS} to {MAX_OPTIONS} options")
+
+        normalized = []
+        seen_emoji: set[str] = set()
+        for index, option in enumerate(options):
+            if not isinstance(option, dict) or set(option) != {"emoji", "label", "payload"}:
+                raise MenuValidationError(f"option {index} must contain emoji, label and payload")
+            emoji = _text(option["emoji"], "emoji", 32)
+            label = _text(option["label"], "label", 120)
+            payload = _text(option["payload"], "payload", 2000)
+            if emoji in seen_emoji:
+                raise MenuValidationError(f"duplicate emoji {emoji!r} in menu")
+            seen_emoji.add(emoji)
+            normalized.append(MenuOption(emoji, label, payload))
+        return cls(prompt, tuple(normalized), context_id)
+
+    def choice_body(self, option: MenuOption) -> str:
+        return "[menu-choice]\n" + json.dumps({
+            "prompt": self.prompt, "context_id": self.context_id,
+            "emoji": option.emoji, "label": option.label, "payload": option.payload,
+        }, ensure_ascii=False)

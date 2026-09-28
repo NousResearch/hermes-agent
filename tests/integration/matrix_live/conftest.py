@@ -428,6 +428,11 @@ def _gateway_ready(log: str, room_id: str) -> bool:
 
 
 @pytest.fixture
+def gateway_script() -> list[Response] | None:
+    return None
+
+
+@pytest.fixture
 def gateway_extra_config() -> str:
     return ""
 
@@ -452,6 +457,7 @@ def gateway(
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
     gateway_home_setup: Callable[[Path], None],
+    gateway_script: list[Response] | None,
 ) -> Iterator[LiveGateway]:
     param = getattr(request, "param", GatewaySettings())
     settings = GatewaySettings(mode=param) if isinstance(param, str) else param
@@ -470,7 +476,9 @@ def gateway(
             "    enabled: true\n" + f'    reply_to_mode: "{settings.reply_to_mode}"\n',
             1,
         )
-    script = [] if mode == "inspection" else [Text(settings.reply)]
+    script: list[Response] = gateway_script if gateway_script is not None else (
+        [] if mode == "inspection" else [Text(settings.reply)]
+    )
     with FakeLLMServer(
         script, bind_host=route.bind_host, default_text=settings.reply if mode == "inspection" else "ok",
     ) as model:
@@ -508,7 +516,6 @@ def gateway(
             stream.write(
                 "MATRIX_HOMESERVER=http://synapse:8008\n"
                 f"MATRIX_ACCESS_TOKEN={live_room.bot.access_token}\n"
-                f"MATRIX_ALLOWED_USERS={live_room.observer.user_id}\n"
                 f"MATRIX_HOME_ROOM={room_id}\n"
                 "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\n"
             )

@@ -598,10 +598,28 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             merged_content = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
             )
-            had_api_sidecar = "api_content" in prev
+            incoming_api = msg.get("api_content")
+            if not isinstance(incoming_api, str):
+                incoming_api = None
+            had_api_sidecar = "api_content" in prev or incoming_api is not None
             prev["content"] = merged_content
-            # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
+            # The previous sidecar described the old content. The new turn's sidecar is
+            # where a memory prefetch lives, and it is not in ``content`` (#121836).
             drop_stale_api_content(prev)
+            if incoming_api and incoming_api != new_content:
+                # The new sidecar is the visible turn plus an injected tail
+                # (the memory block). ``prev_content in incoming_api`` is not
+                # that: the earlier text often appears only inside
+                # <memory-context>, and treating that as "already present"
+                # drops the turn from the wire.
+                if new_content and incoming_api.startswith(new_content):
+                    prev["api_content"] = merged_content + incoming_api[len(new_content):]
+                elif merged_content and incoming_api.startswith(merged_content):
+                    prev["api_content"] = incoming_api
+                elif prev_content:
+                    prev["api_content"] = prev_content + "\n\n" + incoming_api
+                else:
+                    prev["api_content"] = incoming_api
             # Pop the persist marker only when the durable row actually changed: a merge that
             # reproduces the persisted bytes (e.g. an empty incoming turn) keeps its stamp.
             if merged_content != prev_content or had_api_sidecar:

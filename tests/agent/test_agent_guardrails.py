@@ -165,6 +165,28 @@ class TestSanitizeApiMessages:
         assert out[4]["tool_calls"][0]["id"] == "call_123_d2"
         assert out[5]["tool_call_id"] == "call_123_d2"
 
+    def test_cross_turn_reuse_far_apart_in_parallel_batch_is_stable(self):
+        # Observed in a 500+ turn Antigravity session: a server-issued id reappeared
+        # ~200 turns later inside a parallel batch, and Gemini rejected the whole
+        # request with HTTP 400 INVALID_ARGUMENT until the reused id was renamed.
+        def call(cid):
+            return {"id": cid, "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        msgs = [{"role": "user", "content": "go"},
+                {"role": "assistant", "content": "", "tool_calls": [call("call_325040")]},
+                {"role": "tool", "tool_call_id": "call_325040", "content": "a"}]
+        for i in range(200):
+            msgs += [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]
+        msgs += [{"role": "assistant", "content": "", "tool_calls": [call("call_9"), call("call_325040")]},
+                 {"role": "tool", "tool_call_id": "call_9", "content": "b"},
+                 {"role": "tool", "tool_call_id": "call_325040", "content": "c"}]
+        out = AIAgent._sanitize_api_messages(msgs)
+        ids = [tc["id"] for m in out if m.get("tool_calls") for tc in m["tool_calls"]]
+        assert len(ids) == len(set(ids)) == 3
+        assert [m["tool_call_id"] for m in out[-2:]] == ["call_9", "call_325040_d2"]
+        assert out[-3]["tool_calls"][1]["id"] == "call_325040_d2"
+        # Sanitizing the sanitized copy again (every retry does) is a no-op.
+        assert AIAgent._sanitize_api_messages(out) == out
+
 
 
 # ---------------------------------------------------------------------------

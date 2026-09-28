@@ -68,6 +68,7 @@ function advance(ms: number) {
 /** Quiet room, then TTS starts and the user talks over it at `speechLevel`. */
 async function talkOverPlayback(speechLevel: number, thresholdMultiplier?: number | null) {
   let playing = false
+  micLevel = 0
   const onSpeech = vi.fn()
   const stop = monitorSpeechDuringPlayback({ isPlaying: () => playing, onSpeech, thresholdMultiplier })
 

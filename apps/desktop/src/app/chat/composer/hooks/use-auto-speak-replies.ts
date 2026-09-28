@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { releaseUnplayedSpokenReply, spokenReplyOf } from '@/lib/spoken-reply'
-import { playSpeechText } from '@/lib/voice-playback'
+import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -32,7 +32,8 @@ interface UseAutoSpeakReplies {
 /**
  * Pure-TTS auto-speak: when `voice.auto_tts` is on, read each completed assistant
  * turn aloud — no dictation, no conversation loop. Stays off while a full voice
- * conversation runs (it speaks replies itself) and never overlaps clips: a reply
+ * conversation runs (it speaks replies itself — and a clip still playing when one
+ * starts is cut, not left to talk over it) and never overlaps clips: a reply
  * landing mid-playback is held and spoken on the playback-idle edge. Always reads
  * the latest reply, so a backlog collapses to the newest.
  */
@@ -82,7 +83,8 @@ export function useAutoSpeakReplies({
       // several. The claim key is the turn, not the row id: hydration rewrites
       // the row id, and a second claim would start a second clip.
       void ownsAmbientCue(`speak:${reply.turnKey ?? reply.id}`).then(owns => {
-        if (!owns || attempt !== attemptSeq) {
+        // A conversation may have started while the claim was in flight.
+        if (!owns || attempt !== attemptSeq || latest.current.conversationActive) {
           return
         }
 
@@ -117,4 +119,13 @@ export function useAutoSpeakReplies({
       stops.forEach(f => f())
     }
   }, [$messages, enabled, sessionId])
+
+  // Gating new clips isn't enough: a read-aloud clip already playing (or
+  // queued on the audio timeline) when a voice conversation starts would talk
+  // over it. Only our own source is cut — the conversation's audio is its own.
+  useEffect(() => {
+    if (conversationActive && $voicePlayback.get().source === 'read-aloud') {
+      stopVoicePlayback()
+    }
+  }, [conversationActive])
 }

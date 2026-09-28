@@ -19,6 +19,17 @@ import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 // tick, so legitimately long speech is never cut off).
 const PLAYBACK_STALL_MS = 15_000
 
+// The streamed rung's audio clock (AudioContext.currentTime) never pauses
+// while the context runs, so a clock frozen this long means the context is
+// suspended (autoplay denial, device loss) — nothing is audible and the
+// scheduled timeline would all play at once whenever something resumed it.
+const SPEECH_STREAM_STALL_MS = 2_000
+const SPEECH_STREAM_WATCHDOG_MS = 100
+
+// How long one AudioContext.resume() may take. Without a user gesture
+// Chromium leaves the promise pending instead of rejecting it.
+const AUDIO_RESUME_TIMEOUT_MS = 500
+
 let currentAudio: HTMLAudioElement | null = null
 // Every live playback registers its barge-in stop here: streaming sessions
 // (kill the WebSocket + AudioContext) and data-URL audio elements (cut
@@ -40,6 +51,25 @@ let inFlight: { done: Promise<boolean>; turnKey: string } | null = null
 // cheap no-op fallback for other surfaces.
 let unlockCtx: AudioContext | null = null
 
+/** Resume a context, bounded; true once it is actually running. */
+async function resumeWithin(context: AudioContext, ms: number = AUDIO_RESUME_TIMEOUT_MS): Promise<boolean> {
+  if (context.state === 'running') {
+    return true
+  }
+
+  let timer: number | undefined
+
+  await Promise.race([
+    context.resume().catch(() => undefined),
+    new Promise<void>(resolve => {
+      timer = window.setTimeout(resolve, ms)
+    })
+  ])
+  window.clearTimeout(timer)
+
+  return (context.state as AudioContextState) === 'running'
+}
+
 async function unlockAutoplay(): Promise<void> {
   if (typeof window === 'undefined') {
     return
@@ -56,8 +86,9 @@ async function unlockAutoplay(): Promise<void> {
     unlockCtx = new Ctor()
   }
 
+  // Bounded: a resume() that never settles must not wedge the caller's retry.
   if (unlockCtx.state === 'suspended') {
-    await unlockCtx.resume()
+    await resumeWithin(unlockCtx)
   }
 }
 
@@ -209,8 +240,9 @@ export interface SpeechStreamSession {
   finish: () => void
   /**
    * 'done'    — audio fully played (or barged via stopVoicePlayback)
-   * 'fallback'— no audio ever produced; caller should speak the accumulated
-   *             text through `playSpeechText` instead.
+   * 'fallback'— the reply could not be spoken through this session (nothing
+   *             audible, or the rest of the queue failed mid-reply); caller
+   *             should speak the accumulated text through `playSpeechText`.
    */
   done: Promise<'done' | 'fallback'>
 }
@@ -232,6 +264,8 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   const queue: string[] = []
   let synthesizing = false
   let playing: HTMLAudioElement | null = null
+  // Cancels an in-flight provider request on barge-in / teardown.
+  const synthesis = new AbortController()
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
 
@@ -249,6 +283,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
 
       settled = true
       liveStops.delete(stop)
+      synthesis.abort()
 
       if (playing) {
         playing.pause()
@@ -261,6 +296,61 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   })
 
   liveStops.add(stop)
+
+  /** Play one clip to its end. Same guards as the data-URL rung: one autoplay
+   *  unlock retry, and a stall watchdog so a clip that never fires
+   *  `ended`/`error` can't wedge the queue. */
+  const playClip = (url: string) =>
+    new Promise<void>((resolve, reject) => {
+      const audio = new Audio(url)
+      let stall: null | number = null
+      playing = audio
+
+      const cleanup = () => {
+        if (stall !== null) {
+          window.clearTimeout(stall)
+          stall = null
+        }
+
+        audio.removeEventListener('timeupdate', armStall)
+      }
+
+      const fail = (error: unknown) => {
+        cleanup()
+        reject(error instanceof Error ? error : new Error('Playback failed'))
+      }
+
+      function armStall() {
+        if (stall !== null) {
+          window.clearTimeout(stall)
+        }
+
+        stall = window.setTimeout(() => fail(new Error('Playback stalled')), PLAYBACK_STALL_MS)
+      }
+
+      audio.addEventListener(
+        'ended',
+        () => {
+          cleanup()
+          resolve()
+        },
+        { once: true }
+      )
+      audio.addEventListener('error', () => fail(new Error('Playback failed')), { once: true })
+      audio.addEventListener('timeupdate', armStall)
+      armStall()
+      void audio.play().catch(async () => {
+        try {
+          await unlockAutoplay()
+
+          if (!settled) {
+            await audio.play()
+          }
+        } catch (error) {
+          fail(error)
+        }
+      })
+    })
 
   const pump = async () => {
     if (synthesizing || settled) {
@@ -276,12 +366,13 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         let bytes: ArrayBuffer
 
         try {
-          bytes = await synthesizeSpeechClientDirect(tts, sentence)
+          bytes = await synthesizeSpeechClientDirect(tts, sentence, synthesis.signal)
         } catch {
-          // Provider rejected mid-reply. Nothing played yet → let the caller
-          // fall back to the relay with the full text. Mid-playback → treat
-          // what played as the playback (replaying would stutter).
-          settle(started ? 'done' : 'fallback')
+          // Provider rejected or timed out with this sentence (and maybe more)
+          // still unspoken. 'done' here would silently drop the rest of the
+          // reply; 'fallback' lets the caller speak it another way — a
+          // repeated opening beats a reply that stops mid-sentence.
+          settle('fallback')
 
           return
         }
@@ -298,15 +389,11 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
 
         try {
-          await new Promise<void>((resolve, reject) => {
-            const audio = new Audio(url)
-            playing = audio
-            audio.addEventListener('ended', () => resolve(), { once: true })
-            audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
-            void audio.play().catch(reject)
-          })
+          await playClip(url)
         } catch {
-          settle(started ? 'done' : 'fallback')
+          // Autoplay still denied after the unlock retry, a decode error, or a
+          // stall — with the rest of the queue unspoken (see above).
+          settle('fallback')
 
           return
         } finally {
@@ -386,10 +473,17 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   let context: AudioContext | null = null
   let streamRate = 24_000
   let nextStartAt = 0
+  let firstStartAt: null | number = null
   let carry: null | Uint8Array = null
   let started = false
+  let audible = false
   let settled = false
   let finished = false
+  let draining = false
+  let watchdog: null | number = null
+  let lastClock = -1
+  let lastClockAdvanceAt = 0
+  const scheduled = new Set<AudioBufferSourceNode>()
   const pendingSends: string[] = []
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
@@ -409,12 +503,28 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       settled = true
       liveStops.delete(stop)
 
+      if (watchdog !== null) {
+        window.clearInterval(watchdog)
+        watchdog = null
+      }
+
       try {
         ws.close()
       } catch {
         // already closed
       }
 
+      // Drop everything still queued on the timeline, not just the context:
+      // a closed-but-lingering context must never flush a backlog later.
+      for (const source of scheduled) {
+        try {
+          source.stop()
+        } catch {
+          // never started / already ended
+        }
+      }
+
+      scheduled.clear()
       void context?.close().catch(() => undefined)
       context = null
       resolve(value)
@@ -433,9 +543,67 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
   liveStops.add(stop)
 
+  // Settle from what the audio clock actually did, never from the timeline
+  // length: on a suspended context currentTime is frozen, so a delay derived
+  // from `nextStartAt - currentTime` would hold `done` (and the mic re-arm
+  // gated on it) for the whole backlog.
+  const checkClock = () => {
+    if (!context) {
+      return
+    }
+
+    const clock = context.currentTime
+    const now = Date.now()
+
+    if (clock > lastClock) {
+      lastClock = clock
+      lastClockAdvanceAt = now
+    }
+
+    if (firstStartAt !== null && clock > firstStartAt) {
+      audible = true
+    }
+
+    if (draining && clock >= nextStartAt) {
+      settle('done')
+    } else if (now - lastClockAdvanceAt >= SPEECH_STREAM_STALL_MS) {
+      // Nothing was ever heard → the caller speaks the text another way.
+      settle(audible ? 'done' : 'fallback')
+    }
+  }
+
   const finishWhenDrained = () => {
-    const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
-    window.setTimeout(() => settle('done'), remainingMs + 100)
+    draining = true
+
+    if (!context) {
+      settle(started ? 'done' : 'fallback')
+
+      return
+    }
+
+    checkClock()
+  }
+
+  // Autoplay policy can hand back a suspended context when playback wasn't
+  // started by a user gesture (e.g. a wake-word-started voice turn). Electron
+  // chat windows set autoplayPolicy: no-user-gesture-required, but the
+  // dashboard-embedded surface relies on this: resume, then retry through the
+  // shared unlock context; still suspended → fall back rather than buffer
+  // audio nobody hears.
+  const ensureAudible = async (ctx: AudioContext) => {
+    if (await resumeWithin(ctx)) {
+      return
+    }
+
+    await unlockAutoplay().catch(() => undefined)
+
+    if (context !== ctx || settled) {
+      return
+    }
+
+    if (!(await resumeWithin(ctx)) && context === ctx) {
+      settle(audible ? 'done' : 'fallback')
+    }
   }
 
   const schedule = (data: ArrayBuffer) => {
@@ -475,9 +643,12 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     const source = context.createBufferSource()
     source.buffer = buffer
     source.connect(context.destination)
+    scheduled.add(source)
+    source.onended = () => scheduled.delete(source)
 
     const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
     source.start(startAt)
+    firstStartAt ??= startAt
     nextStartAt = startAt + buffer.duration
 
     if (!started) {
@@ -508,14 +679,12 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     if (frame.type === 'start') {
       streamRate = frame.sample_rate || 24_000
       context = new AudioContext()
+      lastClock = context.currentTime
+      lastClockAdvanceAt = Date.now()
+      watchdog = window.setInterval(checkClock, SPEECH_STREAM_WATCHDOG_MS)
 
-      // Autoplay policy can hand back a suspended context when playback wasn't
-      // started by a user gesture (e.g. a wake-word-started voice turn). Resume
-      // it so the first reply is audible instead of silently buffering. Electron
-      // chat windows also set autoplayPolicy: no-user-gesture-required, but the
-      // dashboard-embedded surface relies on this resume.
-      if (context.state === 'suspended') {
-        void context.resume().catch(() => undefined)
+      if (context.state !== 'running') {
+        void ensureAudible(context)
       }
 
       nextStartAt = 0

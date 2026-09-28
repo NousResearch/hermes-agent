@@ -4,6 +4,11 @@ import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
 
 type BrowserAudioContext = typeof AudioContext
 
+/** How long start() waits for a suspended meter context to reach 'running'.
+ *  Past this the take records on, but its meter is unverified: a suspended
+ *  analyser reads flat, so `heardSpeech=false` is no proof of silence. */
+const METER_RESUME_TIMEOUT_MS = 300
+
 export interface MicRecorderOptions {
   onLevel?: (level: number) => void
   onError?: (error: Error) => void
@@ -27,6 +32,10 @@ export interface MicRecording {
   /** The level meter failed during this take, so `heardSpeech` is unknown
    *  rather than false. */
   meterFailed?: boolean
+  /** The meter's AudioContext was not running when capture began, so the
+   *  opening of the take went unmetered and `heardSpeech` is unknown rather
+   *  than false. Unlike `meterFailed`, the device is not considered broken. */
+  meterUnverified?: boolean
 }
 
 export interface MicRecorderErrorCopy {
@@ -96,6 +105,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const startedAtRef = useRef(0)
   const heardSpeechRef = useRef(false)
   const meterFailedRef = useRef(false)
+  const meterUnverifiedRef = useRef(false)
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
@@ -123,7 +133,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
   useEffect(() => () => cleanup(), [])
 
-  const startMeter = (stream: MediaStream, options: MicRecorderOptions) => {
+  const startMeter = async (stream: MediaStream, options: MicRecorderOptions) => {
     const audioWindow = window as Window & { webkitAudioContext?: BrowserAudioContext }
     const AudioContextCtor = window.AudioContext || audioWindow.webkitAudioContext
 
@@ -183,10 +193,6 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
         }
       })
 
-      if (audioContext.state === 'suspended') {
-        audioContext.resume().catch(failIfCurrent)
-      }
-
       const tick = () => {
         analyser.getByteTimeDomainData(data)
 
@@ -233,6 +239,26 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       }
 
       tick()
+
+      // Capture is already rolling; a suspended analyser reads flat, so speech
+      // right after the mic opens would read as silence and the take would be
+      // dropped unheard. Wait (bounded) for the context to run — past the
+      // bound the take is kept, but flagged so STT judges it instead.
+      if (audioContext.state !== 'running') {
+        let timer: number | undefined
+
+        await Promise.race([
+          audioContext.resume().catch(failIfCurrent),
+          new Promise<void>(resolve => {
+            timer = window.setTimeout(resolve, METER_RESUME_TIMEOUT_MS)
+          })
+        ])
+        window.clearTimeout(timer)
+
+        if (audioContextRef.current === audioContext && (audioContext.state as AudioContextState) !== 'running') {
+          meterUnverifiedRef.current = true
+        }
+      }
     } catch {
       failMeter()
     }
@@ -311,6 +337,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     recorderRef.current = recorder
     heardSpeechRef.current = false
     meterFailedRef.current = false
+    meterUnverifiedRef.current = false
     silenceTriggeredRef.current = false
     silenceStartedAtRef.current = null
     startedAtRef.current = Date.now()
@@ -327,6 +354,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       const durationMs = Date.now() - startedAtRef.current
       const heardSpeech = heardSpeechRef.current
       const meterFailed = meterFailedRef.current
+      const meterUnverified = meterUnverifiedRef.current
 
       chunksRef.current = []
       cleanup()
@@ -344,7 +372,8 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
         audio: new Blob(chunks, { type: recordingType }),
         durationMs,
         heardSpeech,
-        meterFailed
+        meterFailed,
+        meterUnverified
       })
     }
 
@@ -359,7 +388,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
     recorder.start()
     setRecording(true)
-    startMeter(stream, options)
+    await startMeter(stream, options)
   }
 
   const stop: MicRecorderHandle['stop'] = () =>

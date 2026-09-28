@@ -70,8 +70,8 @@ interface Conversation {
  *  the captured utterance anyway. */
 const INTERRUPT_SETTLE_TIMEOUT_MS = 5_000
 
-/** A take whose level meter died is sent to STT (the meter can't say whether
- *  it heard speech) unless it is shorter than this. */
+/** A take whose level meter died or never came up is sent to STT (the meter
+ *  can't say whether it heard speech) unless it is shorter than this. */
 const METER_FAILURE_MIN_CLIP_MS = 750
 
 /** Back-to-back takes with a dead meter mean the device isn't recovering;
@@ -205,7 +205,7 @@ export function useVoiceConversation({
     }
   }
 
-  const dropSpeechSession = () => {
+  const releaseSpeechSession = () => {
     cancelFallbackPollRef.current?.()
     stopBargeMonitorRef.current?.()
     stopBargeMonitorRef.current = null
@@ -215,6 +215,17 @@ export function useVoiceConversation({
     speechSessionRef.current = null
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
+  }
+
+  /** Abandon the current reply: release the session AND cut whatever it (or a
+   *  read-aloud clip) still has scheduled, so stale audio never plays into the
+   *  next turn. */
+  const dropSpeechSession = () => {
+    releaseSpeechSession()
+
+    if ($voicePlayback.get().status !== 'idle') {
+      stopVoicePlayback()
+    }
   }
 
   const handleTurn = useCallback(
@@ -251,12 +262,13 @@ export function useVoiceConversation({
         }
 
         // `heardSpeech` comes from the level meter alone. When the meter died
-        // (AudioContext device error) it is unknown, not false — let STT judge
-        // the clip instead of silently dropping the turn (#75329).
+        // (AudioContext device error, #75329) or wasn't running yet when
+        // capture began, it is unknown, not false — let STT judge the clip
+        // instead of silently dropping the turn.
         const transcribable =
           result?.heardSpeech ||
           forceTranscribe ||
-          (meterFailed && (result?.durationMs ?? 0) >= METER_FAILURE_MIN_CLIP_MS)
+          ((meterFailed || Boolean(result?.meterUnverified)) && (result?.durationMs ?? 0) >= METER_FAILURE_MIN_CLIP_MS)
 
         if (!result || !transcribable || !onTranscribeAudio) {
           if (enabledRef.current && !mutedRef.current && !busyRef.current && statusRef.current !== 'speaking') {
@@ -444,7 +456,7 @@ export function useVoiceConversation({
         return
       }
 
-      dropSpeechSession()
+      releaseSpeechSession()
 
       // An external stopVoicePlayback() (Stop/Esc) silences the current reply;
       // it does not end hands-free conversation mode. end() owns that path and
@@ -952,6 +964,10 @@ export function useVoiceConversation({
 
     setMuted(false)
     awaitingSpokenResponseRef.current = false
+    speechStartSequenceRef.current = 0
+    // Also cuts a read-aloud clip or a previous conversation's reply still
+    // playing (or queued on a suspended audio timeline) — it must not talk
+    // over, or play after, the conversation that starts now.
     dropSpeechSession()
     consumePendingResponse()
     // A fresh conversation: its owner is resolved now and kept to the end.

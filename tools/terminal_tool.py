@@ -253,16 +253,8 @@ _container_alias_lock = threading.Lock()
 def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
     """Record *cwd* as *session_key*'s working directory (after a completed
     command, or on workspace-override registration). None/empty keys collapse
-    to ``"default"``; non-string / empty cwds are ignored.
-
-    Keys are qualified under a routed scope (``HERMES_HOME`` override): a
-    multiplexed host serves every profile in one process, and header-less
-    API-server clients derive the same fingerprint session id from identical
-    opening messages, so a raw key would let profile B's ``cd`` land in
-    profile A's session record (#123989). Read side qualifies identically,
-    so all callers (terminal results, file-ops rescue, delegation cwd copy,
-    code-execution lookup) stay consistent without per-site edits.
-    """
+    to ``"default"``; non-string / empty cwds are ignored. Keys are routed-profile
+    qualified (:func:`_qualify_task_key`); the read/clear side qualifies identically."""
     if not isinstance(cwd, str) or not cwd.strip():
         return
     key = _qualify_task_key(str(session_key or "default"))
@@ -273,8 +265,7 @@ def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
 
 def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
     """Recorded cwd for *session_key*, or None. No fallback chain on purpose:
-    callers decide what an absent record means. None/empty keys read
-    ``"default"``. Qualified the same way as :func:`record_session_cwd`."""
+    callers decide what an absent record means. None/empty keys read ``"default"``."""
     with _session_cwd_lock:
         return _session_cwd.get(_qualify_task_key(str(session_key or "default")))
 
@@ -472,36 +463,18 @@ def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
         return f"home:{override}"
 
 
-def _home_scope_qualifier() -> str:
-    """Profile/home qualifier prefix for task-keyed env records, or "" when none applies.
-
-    A routed (``HERMES_HOME`` override) scope — every multiplexed gateway turn, default profile
-    included — must not share *-keyed state with another profile just because the raw keys
-    match. Under persistent Docker the container key already carries the profile (branches 3/4);
-    this qualifier covers the remaining raw-id keys (session-isolated backends, cwd records).
-    Mirrors :func:`_routed_home_task_key`'s naming: ``profile:<name>`` when the override resolves
-    to a profile directory, else ``home:<realpath>``.
-    """
-    from hermes_constants import get_hermes_home_override, profile_name_for_home
-
-    override = get_hermes_home_override()
-    if not override:
-        return ""
-    profile = profile_name_for_home(override)
-    if profile == "default":
-        return "profile:default"
-    if profile:
-        return f"profile:{profile}"
-    try:
-        return f"home:{os.path.realpath(override)}"
-    except OSError:
-        return f"home:{override}"
-
-
 def _qualify_task_key(key: str) -> str:
-    """Prefix *key* with the active home qualifier when one is active, else return it."""
-    qualifier = _home_scope_qualifier()
-    return f"{qualifier}:{key}" if qualifier else key
+    """Prefix a session-derived key with the routed profile/home, or return it unchanged.
+
+    A multiplexed host serves every profile in one process, and session ids are not
+    profile-unique (a header-less API client's ``api-<digest>`` fingerprint, a DM chat id
+    shared by two bots), so raw session keys in ``_active_environments`` / ``_session_cwd``
+    would hand profile B the sandbox and cwd profile A created (#123989). Persistent Docker
+    already keys the profile (branches 3/4); this covers the per-session keys. CLI and
+    single-profile gateways (no routed home) keep the historical raw key.
+    """
+    scope = _routed_home_task_key(profile_scoped=True)
+    return f"{scope}:{key}" if scope else key
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -513,9 +486,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     2. Per-session isolation (docker + ``container_persistent: false``): each
        session's task_id is its own key (a fresh chat gets a fresh sandbox with only
        ITS mounts); delegate_task children follow the alias registry to the parent.
-       Under a routed scope the key is qualified with the profile/home
-       (:func:`_qualify_task_key`) so two multiplex profiles whose fingerprint-derived
-       session ids collide cannot share one sandbox (#123989).
+       Routed profiles qualify the key (:func:`_qualify_task_key`, #123989).
     3. Session key present (WebUI per-session, gateway per-message): persistent
        Docker is PROFILE-scoped — ``shared:<key>`` opt-in, else ``profile:<name>``,
        with the default profile staying literally ``"default"`` so CLI and
@@ -531,14 +502,6 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         return task_id
     scope = _session_scope()
     if task_id and scope.session_isolated:
-        # Session-isolated backends (docker + container_persistent: false, plugin equivalents)
-        # key the raw per-session id — which for header-less API-server clients is the
-        # fingerprint-derived ``api-<digest>`` (#123989). A multiplexed host serves every profile
-        # in ONE process, so two profiles whose conversations open with the same text share the
-        # digest and, unqualified, would attach to each other's sandbox. A routed scope
-        # (HERMES_HOME override — multiplex turns named AND default, per-profile TUI/desktop RPC,
-        # cron ticks) therefore qualifies the key; plain CLI/single-profile gateways keep the
-        # historical raw key.
         return _qualify_task_key(_resolve_container_alias(task_id))
     # Per-session isolation: when a session key is present (the WebUI streaming layer sets it per-session,
     # the gateway per-message via contextvars), scope the container to it so switching profiles can't reuse
@@ -558,7 +521,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     if not session_key:
         return _routed_home_task_key(scope.docker_profile_scoped) or "default"
     if not scope.docker_profile_scoped:
-        return f"session:{session_key}"
+        return _qualify_task_key(f"session:{session_key}")
     profile = _current_session_profile() or "default"
     return "default" if profile == "default" else f"profile:{profile}"
 
@@ -1437,8 +1400,7 @@ def terminal_tool(
 
         # Session key for cwd records: the contextvar doesn't cross tool-worker
         # threads, so fall back to the raw task_id (the top-level agent's
-        # session_key) as a stable anchor. Record/read functions qualify the
-        # key under a routed scope (#123989), so every caller stays symmetric.
+        # session_key) as a stable anchor.
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")

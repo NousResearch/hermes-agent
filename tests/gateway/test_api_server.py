@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import asyncio
+import hashlib
 import json
 import time
 import types
@@ -1403,20 +1404,16 @@ class TestDeriveChatSessionId:
         b = _derive_chat_session_id("You are a robot.", "Hello")
         assert a != b
 
-    def test_identical_text_on_different_profiles_yields_different_ids(self):
-        """Under multiplexing the id keys process-global session stores and persistent Docker
-        sandboxes (``hermes-task-id``): two header-less conversations opening with the same text
-        on different profiles must not share one session/container (#123989)."""
-        a = _derive_chat_session_id("sys", "hello", "default")
-        b = _derive_chat_session_id("sys", "hello", "research")
-        assert a != b
-
-    def test_profile_none_matches_default_and_is_stable(self):
-        """A standalone listener (no profile-prefix middleware, ContextVar default None) lands on
-        the same namespace as an explicit ``default`` profile, and stays stable across turns."""
-        assert _derive_chat_session_id("sys", "hello") == _derive_chat_session_id("sys", "hello", "default")
-        assert _derive_chat_session_id("sys", "hello", "research") == _derive_chat_session_id(
-            "sys", "hello", "research")
+    def test_routed_profile_namespaces_the_id_without_moving_default(self):
+        """Two header-less conversations opening with identical text on different profiles must
+        not share one session/sandbox key (#123989); default/standalone ids stay byte-identical
+        so live conversations survive the upgrade."""
+        legacy = "api-" + hashlib.sha256(b"sys\nhello").hexdigest()[:16]
+        assert _derive_chat_session_id("sys", "hello") == legacy
+        assert _derive_chat_session_id("sys", "hello", "default") == legacy
+        research = _derive_chat_session_id("sys", "hello", "research")
+        assert research != legacy
+        assert research == _derive_chat_session_id("sys", "hello", "research")
 
 
 # ---------------------------------------------------------------------------

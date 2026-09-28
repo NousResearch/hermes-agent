@@ -23,17 +23,6 @@ if "hermes_cli.main" not in sys.modules:
     if _early_recovery.restore_interrupted_pull():
         _early_recovery.relaunch_after_restore()
 
-# One TLS authority: trust the OS store before ANY import in this process can
-# reach a provider SDK. The `hermes` CLI installs it in hermes_cli.main and
-# main() (below) covers the console script — but embeddings that do
-# `from run_agent import AIAgent` directly bypass both, and a lazily-fired
-# install loses the import race against botocore et al., which cache
-# ssl.SSLContext at their own import time (RecursionError on Python 3.14,
-# #126808). Never raises; a no-op once installed.
-from agent.ssl_verify import install_truststore
-
-install_truststore()
-
 import json
 import logging
 logger = logging.getLogger(__name__)

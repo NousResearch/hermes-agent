@@ -74,33 +74,6 @@ with httpx.Client(verify=resolve_httpx_verify()) as client:
     assert "truststore unavailable" in child.stderr
 
 
-def test_run_agent_import_installs_truststore_before_provider_sdks():
-    """Embeddings that ``import run_agent`` directly get the CLI's TLS timing.
-
-    botocore caches ``ssl.SSLContext`` at its own import time; once
-    truststore is injected, exercising that cached class recurses forever
-    inside CPython 3.14's ``options`` setter (#126808). Provider SDKs only
-    become importable after ``hermes_bootstrap`` activates them, so the
-    module-level install in run_agent.py — which runs after the bootstrap —
-    must beat any botocore import a consumer can issue.
-    """
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    pytest.importorskip("botocore")
-    pytest.importorskip("truststore")
-    repo = Path(__file__).resolve().parents[2]
-    child = subprocess.run([sys.executable, "-c", """
-import ssl
-import run_agent
-from botocore.httpsession import create_urllib3_context
-create_urllib3_context()
-assert ssl.SSLContext.__module__.startswith("truststore")
-"""], cwd=repo, capture_output=True, text=True, timeout=120)
-    assert child.returncode == 0, child.stderr
-
-
 def test_install_truststore_is_idempotent_under_repeat_calls():
     """One injection per process, whichever guarded path runs first.
 

@@ -17,7 +17,7 @@ from pathlib import Path
 from agent.file_safety import get_nt_namespace_error
 from tools import file_state
 from tools.binary_extensions import (
-    OLE_COMPOUND_MAGIC,
+    CONTAINER_DOCUMENT_MAGICS,
     has_ambiguous_document_extension,
     has_binary_extension,
     has_opaque_document_extension,
@@ -468,18 +468,23 @@ def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
     return "unavailable"
 
 
-def _is_ole_compound_file(filepath: str, task_id: str) -> bool:
-    """True when the file at ``filepath`` exists and starts with the OLE compound-document
-    signature. A missing, text or unreadable file is not a container."""
+def _is_container_document_file(filepath: str, task_id: str) -> bool:
+    """True when the file at ``filepath`` starts with a document-container signature
+    (OLE compound document or ZIP package, ``CONTAINER_DOCUMENT_MAGICS``), or exists but
+    cannot be read: a file the guard cannot verify is refused, not waved through. A
+    missing or plain-text file is not a container."""
     try:
         resolved = Path(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = Path(_expand_tilde(filepath))
     try:
         with resolved.open("rb") as fh:
-            return fh.read(len(OLE_COMPOUND_MAGIC)) == OLE_COMPOUND_MAGIC
-    except OSError:
+            head = fh.read(max(len(magic) for magic in CONTAINER_DOCUMENT_MAGICS))
+    except (FileNotFoundError, NotADirectoryError):
         return False
+    except OSError:
+        return True
+    return any(head.startswith(magic) for magic in CONTAINER_DOCUMENT_MAGICS)
 
 
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
@@ -496,12 +501,12 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
 
-    ``.pot`` is refused only when the existing file is an OLE compound document: the same
-    suffix is the gettext PO template, a plain-text format (#92131).
+    ``.pot`` is refused only when the existing file carries a container signature (OLE or
+    ZIP): the same suffix is the gettext PO template, a plain-text format (#92131).
     """
     ext = os.path.splitext(filepath)[1].lower()
     if has_opaque_document_extension(filepath) or (
-            has_ambiguous_document_extension(filepath) and _is_ole_compound_file(filepath, task_id)):
+            has_ambiguous_document_extension(filepath) and _is_container_document_file(filepath, task_id)):
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "

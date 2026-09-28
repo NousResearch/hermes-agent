@@ -21,6 +21,7 @@ from tools.binary_extensions import (
     is_pdf_path,
 )
 from tools.file_tools import patch_tool, write_file_tool
+from tools.file_tools_write_guards import _check_binary_document_write
 
 
 def _make_minimal_docx(path: Path) -> None:
@@ -203,13 +204,53 @@ class TestWriteFileToolGuard:
 
     def test_write_file_rejects_ole_powerpoint_template_pot(self, tmp_path: Path):
         # The other .pot: a legacy PowerPoint template is an OLE compound file and
-        # a text write would destroy it, exactly like .ppt.
+        # a text write would destroy it, exactly like .ppt. Pin the refusal to THIS
+        # guard: the stale-overwrite blocker also refuses an unread file, with a
+        # different message, so a bare error check passes without the sniff.
         pot = tmp_path / "corporate.pot"
         pot.write_bytes(OLE_COMPOUND_MAGIC + b"\x00" * 504)
         original = pot.read_bytes()
         result = json.loads(write_file_tool(str(pot), "edited text"))
-        assert result.get("error"), "text write into an OLE .pot must be refused"
+        assert "binary document" in result.get("error", ""), result
         assert pot.read_bytes() == original, "template bytes must be untouched"
+
+    def test_write_file_rejects_zip_package_named_pot(self, tmp_path: Path):
+        # A renamed .potx (OOXML zip), or any other ZIP package under the ambiguous
+        # suffix, carries the ZIP signature rather than the OLE one and stays protected.
+        pot = tmp_path / "corporate_template.pot"
+        _make_minimal_docx(pot)
+        original = pot.read_bytes()
+        result = json.loads(write_file_tool(str(pot), "edited text"))
+        assert "binary document" in result.get("error", ""), result
+        assert pot.read_bytes() == original
+        assert zipfile.is_zipfile(pot)
+
+    def test_pot_guard_decides_on_the_leading_bytes(self, tmp_path: Path):
+        ole = tmp_path / "legacy.pot"
+        ole.write_bytes(OLE_COMPOUND_MAGIC + b"\x00" * 504)
+        zipped = tmp_path / "modern.pot"
+        _make_minimal_docx(zipped)
+        text = tmp_path / "messages.pot"
+        text.write_text(GETTEXT_TEMPLATE, encoding="utf-8")
+        assert "binary document" in (_check_binary_document_write(str(ole)) or "")
+        assert "binary document" in (_check_binary_document_write(str(zipped)) or "")
+        assert _check_binary_document_write(str(text)) is None
+        assert _check_binary_document_write(str(tmp_path / "new.pot")) is None
+
+    def test_pot_guard_refuses_an_existing_pot_it_cannot_read(self, tmp_path: Path, monkeypatch):
+        # An existing .pot whose bytes cannot be checked (permissions, ACL) is
+        # refused rather than assumed to be a text template.
+        pot = tmp_path / "locked.pot"
+        pot.write_text(GETTEXT_TEMPLATE, encoding="utf-8")
+        real_open = Path.open
+
+        def denied(self, *args, **kwargs):
+            if self.name == "locked.pot":
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", denied)
+        assert "binary document" in (_check_binary_document_write(str(pot)) or "")
 
 
 class TestPatchToolGuard:
@@ -258,6 +299,19 @@ class TestPatchToolGuard:
         result = json.loads(patch_tool(mode="patch", patch=v4a))
         err = result.get("error") or ""
         assert "binary document" not in err.lower()
+
+    def test_patch_replace_rejects_zip_package_named_pot(self, tmp_path: Path):
+        # patch has no read-before-write step, so this is the path that silently
+        # destroyed a ZIP container named .pot when only the OLE signature was checked.
+        pot = tmp_path / "corporate_template.pot"
+        _make_minimal_docx(pot)
+        original = pot.read_bytes()
+        result = json.loads(
+            patch_tool(mode="replace", path=str(pot),
+                       old_string="good", new_string="great"))
+        assert "binary document" in result.get("error", ""), result
+        assert pot.read_bytes() == original
+        assert zipfile.is_zipfile(pot)
 
     def test_patch_replace_rejects_sqlite_wal_sidecar(self, tmp_path: Path):
         with _make_wal_db(tmp_path / "state.db") as wal:

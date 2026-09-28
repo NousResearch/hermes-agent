@@ -34,12 +34,20 @@ OPAQUE_DOCUMENT_EXTENSIONS = frozenset({
 # and a container format share it, so only the file's bytes can decide. ``.pot``
 # is a legacy PowerPoint template (OLE compound file) but far more often the
 # gettext PO template every i18n workflow writes as text (#92131). The write
-# guard sniffs the existing file's leading bytes; a new or text ``.pot`` is a
-# translation template.
+# guard sniffs the existing file's leading bytes for a container signature
+# (CONTAINER_DOCUMENT_MAGICS); a new or text ``.pot`` is a translation template.
 AMBIGUOUS_DOCUMENT_EXTENSIONS = frozenset({".pot"})
 
 # Signature every OLE compound document (legacy .doc/.xls/.ppt/.pot) starts with.
 OLE_COMPOUND_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+# Local-file header every non-empty ZIP archive starts with. OOXML (.docx/.pptx/
+# .potx), ODF and EPUB are ZIP packages, so a container renamed to an ambiguous
+# suffix carries this signature instead of the OLE one.
+ZIP_LOCAL_FILE_MAGIC = b"PK\x03\x04"
+
+# Leading bytes that mark a file as a document container a text write destroys.
+CONTAINER_DOCUMENT_MAGICS = (OLE_COMPOUND_MAGIC, ZIP_LOCAL_FILE_MAGIC)
 
 
 # SQLite journal sidecars (``x.db-wal``, ``x.sqlite3-shm``, ``x.db-journal``)

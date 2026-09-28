@@ -388,11 +388,14 @@ class GatewayModelCommandsMixin:
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with contextlib.suppress(Exception):
                 home = self._resolve_profile_home_for_source(source)
+        session_id = None
+        with contextlib.suppress(Exception):
+            session_id = getattr(self._cached_agent_for(ctx.session_key), "session_id", None)
         token = set_hermes_home_override(str(home)) if home else None
         try:
             record_model_switch(
                 from_provider=ctx.route_provider, to_provider=result.target_provider, surface="gateway",
-                from_model=ctx.current_model)
+                from_model=ctx.current_model, session_id=session_id)
         finally:
             if token is not None:
                 reset_hermes_home_override(token)

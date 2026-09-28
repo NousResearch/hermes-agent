@@ -229,21 +229,25 @@ def records_delivery(send: Callable[..., Any]) -> Callable[..., Any]:
 
     @functools.wraps(send)
     async def wrapper(self, *args: Any, **kwargs: Any) -> Any:
+        chat_id = kwargs.get("chat_id", args[0] if args else None)
         try:
             result = await send(self, *args, **kwargs)
         except Exception as exc:
-            _submit(_record_delivery, self, exc=exc)
+            _submit(_record_delivery, self, exc=exc, chat_id=chat_id)
             raise
         if isinstance(getattr(result, "success", None), bool):
-            _submit(_record_delivery, self, result)
+            _submit(_record_delivery, self, result, chat_id=chat_id)
         return result
 
     return wrapper
 
 
-def _record_delivery(adapter: Any, result: Any = None, *, exc: BaseException | None = None) -> None:
+def _record_delivery(
+    adapter: Any, result: Any = None, *, exc: BaseException | None = None, chat_id: Any = None,
+) -> None:
     failure_class = "none" if exc is None and result.success else delivery_failure_class(result, exc)
-    _emit("PLATFORM_DELIVERY_MARK", delivery_fields, platform=adapter, failure_class=failure_class)
+    _emit("PLATFORM_DELIVERY_MARK", delivery_fields, platform=_source_platform(adapter, chat_id),
+          failure_class=failure_class)
 
 
 def stops_reply_clock(send_or_edit: Callable[..., Any]) -> Callable[..., Any]:
@@ -269,6 +273,19 @@ _reply_lock = threading.Lock()
 # One connector adapter fronting several platforms: the turn started under the platform the message
 # came in on (``discord``), its reply leaves through this adapter.
 _FRONTING_PLATFORMS = frozenset({"relay"})
+
+
+def _source_platform(adapter: Any, chat_id: Any) -> Any:
+    """The platform a fronting adapter's chat really lives on (the relay connector learned it from
+    the inbound, else its primary platform); the adapter's own platform otherwise. Read-only."""
+    platform = getattr(adapter, "platform", None)
+    if str(getattr(platform, "value", platform) or "") not in _FRONTING_PLATFORMS or chat_id in (None, ""):
+        return adapter
+    resolve = getattr(adapter, "_chat_platform", None)
+    try:
+        return (resolve(str(chat_id)) if callable(resolve) else None) or adapter
+    except Exception:
+        return adapter
 
 
 def _clock_key(platform: Any, chat_id: Any) -> tuple[str, str] | None:
@@ -297,15 +314,22 @@ def stop_reply_clock(adapter: Any, chat_id: Any, result: Any = None) -> None:
     if key is None or (result is not None and getattr(result, "success", False) is not True):
         return
     with _reply_lock:
-        started = _reply_clocks.pop(key, None)
+        started, started_key = _reply_clocks.pop(key, None), key
         if started is None and key[0] in _FRONTING_PLATFORMS:
             fronted = [k for k in _reply_clocks if k[1] == key[1]]
-            started = _reply_clocks.pop(fronted[0]) if len(fronted) == 1 else None
+            started_key = fronted[0] if len(fronted) == 1 else key
+            started = _reply_clocks.pop(started_key) if len(fronted) == 1 else None
     # A turn that ended without a reply leaves its clock behind; an unrelated send hours later
     # must not be read as that turn's reply.
     if started is not None and time.monotonic() - started[0] <= _REPLY_CLOCK_MAX_AGE:
-        _submit(_in_home, started[1], _emit, "REPLY_LATENCY_MARK", reply_latency_fields,
-                platform=adapter, seconds=time.monotonic() - started[0])
+        # Labelled by the platform the message came in on, not the connector that carried the reply.
+        platform = started_key[0] if started_key[0] not in _FRONTING_PLATFORMS else None
+        _submit(_in_home, started[1], _emit_reply_latency, adapter, chat_id, platform, time.monotonic() - started[0])
+
+
+def _emit_reply_latency(adapter: Any, chat_id: Any, platform: Any, seconds: float) -> None:
+    _emit("REPLY_LATENCY_MARK", reply_latency_fields,
+          platform=platform or _source_platform(adapter, chat_id), seconds=seconds)
 
 
 def reply_latency_fields(*, platform: Any, seconds: float) -> dict[str, str]:

@@ -359,7 +359,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         from hermes_cli.observability.shared_metrics_events import record_model_switch
 
         record_model_switch(
-            from_provider=current_provider, to_provider=target_provider, surface="acp", from_model=current_model)
+            from_provider=current_provider, to_provider=target_provider, surface="acp", from_model=current_model,
+            session_id=state.session_id)
         return current_provider, target_provider, new_model
 
     @staticmethod

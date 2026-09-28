@@ -11,6 +11,7 @@ from agent.relay_runtime import RUNTIME_INSTANCE_KEY
 from hermes_cli.config import detect_install_method
 from hermes_constants import get_hermes_home
 
+from . import shared_metrics_engagement as engagement
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_fields import milestones_for
 from .shared_metrics_contract import (
@@ -102,6 +103,19 @@ class SharedMetricsSubscriber:
             self.store.record_milestone(milestone, age, self._client_resource)
             self._milestones_done.add(milestone)
 
+    def _record_engagement(self, event: Any, classified: list[tuple[str, dict, int]]) -> None:
+        """Fold a turn start/end or an attended turn's model into the local daily engagement rollup."""
+        surface, route = engagement.interaction_surface(classified), engagement.turn_route(event)
+        if surface is None and route is None:
+            return
+        with self._lock:
+            if not self._active:
+                return
+            try:
+                engagement.record(self.store, self._client_resource, surface=surface, route=route)
+            except Exception:
+                logger.warning("Unable to update the Hermes engagement rollup", exc_info=True)
+
     def take_saved(self, ticket: str) -> int:
         """How many events carrying ``ticket`` settled without a store error (and forget the ticket)."""
         with self._lock:
@@ -117,7 +131,9 @@ class SharedMetricsSubscriber:
                 return
         ticket = metadata.get(COMMIT_TICKET_KEY) if isinstance(metadata, dict) else None
         saved = True  # a row the contract rejects is settled too: no retry can change that
-        for metric_name, dimensions, amount in self._classify(event):
+        classified = self._classify(event)
+        self._record_engagement(event, classified)
+        for metric_name, dimensions, amount in classified:
             with self._lock:
                 if not self._active:
                     return

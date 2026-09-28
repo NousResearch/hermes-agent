@@ -6,7 +6,7 @@ import json
 import logging
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -261,6 +261,37 @@ class SharedMetricsStore:
         with self._connection() as connection:
             self._record_counter_in_transaction(
                 connection, metric_name, dimensions, resource, _utc_now().date().isoformat(), amount
+            )
+
+    def update_rollup_state(
+        self, state_key: str,
+        update: Callable[[dict[str, Any] | None], tuple[dict[str, Any], list[tuple[str, dict, dict, str]]]],
+    ) -> None:
+        """Read-modify-write one JSON rollup state and record the ``(metric, dimensions, resource,
+        period_start)`` rows ``update`` closes, in one write transaction: every process of the profile
+        serializes here, so a closed period is emitted exactly once. Rows the contract rejects are
+        dropped (never retried) so one bad row cannot wedge the rollup."""
+        with self._write() as connection:
+            row = connection.execute(
+                "SELECT value FROM telemetry_state WHERE key = ?", (state_key,)
+            ).fetchone()
+            try:
+                state = json.loads(row["value"]) if row is not None else None
+            except (TypeError, ValueError):
+                state = None
+            new_state, rows = update(state if isinstance(state, dict) else None)
+            valid = [
+                r for r in rows
+                if counter_dimensions_are_valid(r[0], r[1]) and client_resource_is_valid(r[2])
+            ]
+            if valid:
+                self._install_id(connection)
+            for metric_name, dimensions, resource, period_start in valid:
+                self._record_counter_in_transaction(connection, metric_name, dimensions, resource, period_start)
+            connection.execute(
+                "INSERT INTO telemetry_state(key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (state_key, _compact_json(new_state)),
             )
 
     def recorded_milestones(self) -> frozenset[str]:

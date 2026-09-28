@@ -20,6 +20,7 @@ from hermes_cli.version_info import get_version_info
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
 from . import shared_metrics_efficiency as eff
+from . import shared_metrics_engagement as engagement_
 from . import shared_metrics_fields as fields_
 from . import shared_metrics_model as model_
 from .shared_metrics_contract import MODEL_CALL_SCOPE, SUBSCRIBER_NAME, TASK_SCOPE
@@ -162,15 +163,22 @@ class _MetricsSession:
     model_state: model_.ModelSessionState = field(default_factory=model_.ModelSessionState)
     lineage_root: str = ""
     efficiency: eff.SessionEfficiency = field(default_factory=eff.SessionEfficiency)
+    route_run: engagement_.RouteRun = field(default_factory=engagement_.RouteRun)
+    api_calls: int = 0
+    tool_call_total: int = 0
+    replies: int = 0
 
 
 @dataclass
 class _PeakLineage:
-    """Open segments of one conversation (compression rotates the session id) and their merged peak."""
+    """Open segments of one conversation (compression rotates the session id), their merged peak and
+    session tally, and the conversation's current-model turn run."""
 
     open: set[str] = field(default_factory=set)
     peak: model_.ModelSessionState = field(default_factory=model_.ModelSessionState)
     tools: eff.ToolUsage = field(default_factory=eff.ToolUsage)
+    tally: engagement_.SessionTally = field(default_factory=engagement_.SessionTally)
+    run: engagement_.RouteRun = field(default_factory=engagement_.RouteRun)
 
 
 def _absorb_peak(into: model_.ModelSessionState, segment: model_.ModelSessionState) -> None:
@@ -396,6 +404,7 @@ class _Runtime:
             model_call.fields = contract.model_call_fields(event)
             self._join_lineage(session, session.tasks.get(model_call.task_id))
             if finish:
+                session.replies += 1
                 session.model_state.observe_call(model_call.fields, event.get("usage"), event.get("context_length"))
                 self._observe_turn_call(session, session.tasks.get(model_call.task_id), model_call, event)
                 model_call.ttft_bucket = fields_.ttft_bucket(event)
@@ -841,6 +850,8 @@ class _Runtime:
             tool_call_count=len(task.tool_call_ids) + task.unidentified_tool_calls,
             retry_count=task.retry_count,
         )
+        if not session.closing:
+            self._join_lineage(session, task)
         self._count_session_turn(session, task, fields["outcome"])
         if not session.closing:
             self._observe_model_turn(session, task, fields)
@@ -868,6 +879,8 @@ class _Runtime:
             session.first_turn_ns = task.started_ns
         session.turns += 1
         session.failed_turns += outcome == "failed"
+        session.api_calls += len(task.model_call_ids)
+        session.tool_call_total += len(task.tool_call_ids) + task.unidentified_tool_calls
         session.last_outcome = outcome
         session.last_turn_ns = monotonic_ns()
 
@@ -875,6 +888,13 @@ class _Runtime:
         """A turn the user saw end (session-close aborts excluded): trailing-failure state and interrupts."""
         route = task.model_route or session.model_state.last_route
         session.model_state.observe_turn(fields["outcome"], route, session.last_turn_ns)
+        if task.model_route is not None:
+            self._with_route_run(session, lambda run: run.observe(task.model_route))
+            if model_.attended(task.start_fields):
+                self._guarded(
+                    "Hermes shared-metrics engagement mark failed", self._mark,
+                    session, None, contract.ENGAGEMENT_TURN_MARK, dict(task.model_route),
+                )
         if fields["end_reason"] == "user_cancelled" and route is not None and model_.attended(task.start_fields):
             self._guarded(
                 "Hermes shared-metrics friction mark failed", self._mark,
@@ -962,36 +982,65 @@ class _Runtime:
         with self._lineage_lock:
             self._lineages.setdefault(root, _PeakLineage()).open.add(session.session_id)
 
-    def _close_lineage_segment(
-        self, session: _MetricsSession, counted: bool
-    ) -> tuple[dict[str, str] | None, eff.ToolUsage | None]:
-        """This session's context peak and tool usage, or, for a lineage segment, the conversation's
-        merged ones once its last open segment closes (None before that)."""
+    def _with_route_run(self, session: _MetricsSession, update: Callable[[engagement_.RouteRun], Any]) -> Any:
+        """Apply ``update`` to the conversation's model-turn run (the lineage's, shared by its segments)."""
+        with self._lineage_lock:
+            lineage = self._lineages.get(session.lineage_root) if session.lineage_root else None
+            return update(lineage.run if lineage is not None else session.route_run)
+
+    def _close_segment(
+        self, session: _MetricsSession, counted: bool,
+    ) -> tuple[model_.ModelSessionState | None, engagement_.SessionTally | None, eff.ToolUsage | None]:
+        """This session's context peak, tally and tool usage, or, for a lineage segment, the
+        conversation's merged ones once its last open segment closes (None before that)."""
         state = session.model_state if counted else None
+        tally = engagement_.SessionTally(
+            session.start_fields, session.turns, session.failed_turns, session.last_outcome,
+            session.first_turn_ns, session.last_turn_ns, session.api_calls, session.tool_call_total, session.replies,
+        ) if counted else None
         tools = session.efficiency.tools if counted and model_.attended(session.start_fields) else eff.ToolUsage()
         tools.surface = (session.start_fields or {}).get("execution_surface", "unknown")
         with self._lineage_lock:
             lineage = self._lineages.get(session.lineage_root) if session.lineage_root else None
             if lineage is None:
-                return (state.context_peak_fields() if state is not None else None), tools
+                return state, tally, tools
             lineage.open.discard(session.session_id)
-            if state is not None:
+            if state is not None and tally is not None:
                 _absorb_peak(lineage.peak, state)
+                lineage.tally.absorb(tally)
             lineage.tools.absorb(tools)
             if lineage.open:
-                return None, None
+                return None, None, None
             del self._lineages[session.lineage_root]
-        return lineage.peak.context_peak_fields(), lineage.tools
+        return lineage.peak, lineage.tally, lineage.tools
 
-    def _emit_model_session_marks(self, session: _MetricsSession, counted: bool) -> None:
-        peak, tools = self._close_lineage_segment(session, counted)
-        marks = [(contract.CONTEXT_PEAK_MARK, peak), *(tools.rows() if tools is not None else ())]
+    def _emit_session_summary(self, session: _MetricsSession) -> None:
+        """One hermes.session.count and context-peak row per closed top-level conversation (delegated
+        children excluded; compression-rotated segments merged), its tool usage, plus a quick-abandon friction."""
+        start = session.start_fields
+        counted = bool(session.turns) and start is not None and start.get("entrypoint") != "delegated"
+        peak, tally, tools = self._close_segment(session, counted)
+        marks = [
+            (contract.CONTEXT_PEAK_MARK, peak.context_peak_fields() if peak is not None else None),
+            (contract.SESSION_MARK, tally.fields() if tally is not None else None),
+            *(tools.rows() if tools is not None else ()),
+        ]
         abandoned = session.model_state.quick_abandon_route(monotonic_ns()) if counted else None
-        if abandoned is not None and model_.attended(session.start_fields):
+        if abandoned is not None and model_.attended(start):
             marks.append((contract.MODEL_FRICTION_MARK, model_.friction_fields("quick_abandon", abandoned)))
         for mark, data in marks:
             if data is not None:
-                self._guarded("Hermes shared-metrics model session mark failed", self._mark, session, None, mark, data)
+                self._guarded("Hermes shared-metrics session summary failed", self._mark, session, None, mark, data)
+
+    def record_switch_after(self, session_id: str) -> None:
+        """A counted /model switch: how many turns the model being left served in this conversation."""
+        session = self._session({"session_id": session_id})
+        if session is None:
+            return
+        with session.lock:
+            taken = self._with_route_run(session, lambda run: run.take())
+        if taken is not None:
+            self.record_process_mark(contract.MODEL_SWITCH_AFTER_MARK, engagement_.switch_after_fields(*taken))
 
     def record_friction(self, signal: str, session_id: str, fallback_route: dict[str, str], turns: int = 1) -> None:
         """A user friction action, attributed to the session's last primary model when known; an
@@ -1009,23 +1058,6 @@ class _Runtime:
         if data is not None:
             self.record_process_mark(contract.MODEL_FRICTION_MARK, data)
             self._emit_rows(None, wasted)
-
-    def _emit_session_summary(self, session: _MetricsSession) -> None:
-        """One hermes.session.count row per closed top-level session (delegated children excluded)."""
-        start = session.start_fields
-        counted = bool(session.turns) and start is not None and start.get("entrypoint") != "delegated"
-        self._emit_model_session_marks(session, counted)
-        if not counted:
-            return
-        summary = fields_.session_fields(
-            start, turns=session.turns, failed_turns=session.failed_turns,
-            last_outcome=session.last_outcome,
-            active_ms=max(0, session.last_turn_ns - session.first_turn_ns) // 1_000_000,
-        )
-        self._guarded(
-            "Hermes shared-metrics session summary failed", self._mark,
-            session, None, contract.SESSION_MARK, summary,
-        )
 
     def record_process_mark(self, mark: str, data: dict[str, Any]) -> None:
         """A process-level fact with no owning task (setup, installs, commands, switches)."""
@@ -1331,6 +1363,16 @@ def record_known_cache_break(cause: str, route: dict[str, str], session_id: str)
     runtime = _get_runtime(retry_failed=True)
     if runtime is not None:
         runtime._safe(runtime.record_known_cache_break, cause, route, session_id)
+
+
+def record_model_switch_after(session_id: str) -> None:
+    """Count turns-before-switch for a session this process served; never creates a runtime (a
+    runtime that does not exist saw no turns). Callers are already in the owning profile's scope."""
+    if not session_id or not enabled() or not relay_runtime.relay_instrumentation_enabled():
+        return
+    runtime = _RUNTIMES.get(relay_runtime.current_profile_key())
+    if isinstance(runtime, _Runtime):
+        runtime._safe(runtime.record_switch_after, session_id)
 
 
 def _run_task_hook(method: str, *, retry_failed: bool = False, **event: Any) -> None:

@@ -97,8 +97,10 @@ def record_gateway_slash_command(event: Any) -> None:
 
 def record_model_switch(
     *, from_provider: str | None, to_provider: str | None, surface: str, from_model: str | None = None,
+    session_id: str | None = None,
 ) -> None:
-    """``from_model`` also counts the switch as friction against the model the user left."""
+    """``from_model`` also counts the switch as friction against the model the user left;
+    ``session_id`` (the switched session) also counts how many turns that model served first."""
     _emit(
         contract.MODEL_SWITCH_MARK, fields_.model_switch_fields,
         from_provider=from_provider, to_provider=to_provider, surface=surface,
@@ -107,6 +109,13 @@ def record_model_switch(
         from .shared_metrics_model import record_model_friction
 
         record_model_friction("switch_away", provider=from_provider, model=from_model)
+    if session_id:
+        try:
+            from .relay_shared_metrics import record_model_switch_after
+
+            record_model_switch_after(str(session_id))
+        except Exception:
+            logger.debug("Shared-metrics model_switch_after not recorded", exc_info=True)
 
 
 def record_fallback(*, from_provider: str | None, to_provider: str | None, reason: Any) -> None:

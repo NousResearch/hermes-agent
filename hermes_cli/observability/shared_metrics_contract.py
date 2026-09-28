@@ -80,6 +80,14 @@ CONTEXT_PEAK_METRIC = "hermes.context_peak.count"
 # ---- end v4 model ----
 # ---- v4 install ----
 STARTUP_LATENCY_METRIC = "hermes.startup.latency"
+# ---- v5 engagement ----
+# Not a counter: one attended turn's serving model, folded into the local daily engagement rollup.
+ENGAGEMENT_TURN_MARK = "hermes.engagement.turn"
+ENGAGEMENT_DAY_METRIC = "hermes.engagement.day.count"
+ENGAGEMENT_SURFACE_METRIC = "hermes.engagement.surface_day.count"
+MODEL_SWITCH_AFTER_MARK = "hermes.model_switch_after"
+MODEL_SWITCH_AFTER_METRIC = "hermes.model_switch_after.count"
+# ---- end v5 engagement ----
 MODEL_IDENTIFIER_MAX_LENGTH = 256
 PROVIDER_IDENTIFIER_MAX_LENGTH = 64
 _METRIC_IDENTIFIER_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._:/@+-")
@@ -295,6 +303,23 @@ _INSTALL_V4_SNAPSHOT_DIMENSIONS = {
     "behind_bucket": BEHIND_BUCKETS, "gpu_class": GPU_CLASSES, "local_model_provider_used": YES_NO,
     "ram_bucket": RAM_BUCKETS, "release_channel": RELEASE_CHANNELS, "version_age_bucket": VERSION_AGE_BUCKETS,
 }
+
+# ---- v5 engagement ----
+ENGAGEMENT_SURFACES = frozenset({"acp", "cli", "cron", "desktop", "gateway", "tui"})
+ACTIVE_MINUTES_BUCKETS = frozenset({"0", "lt_5m", "5m_to_30m", "30m_to_2h", "2h_to_6h", "gte_6h"})
+SURFACES_USED_BUCKETS = frozenset({"0", "1", "2", "3", "gte_4"})
+TURNS_BEFORE_SWITCH_BUCKETS = frozenset({"1", "2_to_3", "4_to_10", "11_to_30", "gte_31"})
+# SIZE_BUCKETS plus a longer tail: agentic conversations run to thousands of messages.
+LONG_SIZE_BUCKETS = SIZE_BUCKETS | frozenset({"251_to_1000", "gte_1001"})
+_LONG_SIZE_THRESHOLDS = (
+    (1, "0"), (2, "1"), (3, "2"), (6, "3_to_5"), (11, "6_to_10"), (26, "11_to_25"),
+    (101, "26_to_100"), (251, "101_to_250"), (1001, "251_to_1000"),
+)
+
+
+def long_size_bucket(count: int) -> str:
+    return _bucket(max(0, int(count)), _LONG_SIZE_THRESHOLDS, "gte_1001")
+# ---- end v5 engagement ----
 
 # ---- v4 reliability ----
 UPDATE_RUN_MARK = UPDATE_RUN_METRIC = "hermes.update.run"
@@ -628,6 +653,14 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     TOOL_ENABLED_UNUSED_METRIC: {"toolset": TOOLSET_NAMES, "used": YES_NO},
     CACHE_BREAK_METRIC: {"cause": CACHE_BREAK_CAUSES},
     # ---- end v5 efficiency ----
+    # ---- v5 engagement ----
+    ENGAGEMENT_DAY_METRIC: {
+        "active_minutes_bucket": ACTIVE_MINUTES_BUCKETS, "active_profile_count_bucket": SIZE_BUCKETS,
+        "surfaces_used_count": SURFACES_USED_BUCKETS,
+    },
+    ENGAGEMENT_SURFACE_METRIC: {"active_minutes_bucket": ACTIVE_MINUTES_BUCKETS, "surface": ENGAGEMENT_SURFACES},
+    MODEL_SWITCH_AFTER_METRIC: {"turns_before_switch_bucket": TURNS_BEFORE_SWITCH_BUCKETS},
+    # ---- end v5 engagement ----
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -655,7 +688,20 @@ _IDENTIFIER_FIELDS: dict[str, dict[str, int]] = {
     WASTED_TOKENS_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
     CACHE_BREAK_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
     # ---- end v5 efficiency ----
+    # ---- v5 engagement ----
+    ENGAGEMENT_DAY_METRIC: {
+        "primary_model": MODEL_IDENTIFIER_MAX_LENGTH, "primary_provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
+    },
+    MODEL_SWITCH_AFTER_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    # ---- end v5 engagement ----
 }
+# ---- v5 engagement ----
+# Conversation volume on the session row: new fields, so rows recorded before them still package.
+SESSION_VOLUME_DIMENSIONS = dict.fromkeys(
+    ("message_count_bucket", "model_call_count_bucket", "tool_call_count_bucket"), LONG_SIZE_BUCKETS,
+)
+_COUNTER_DIMENSION_VALUES[SESSION_METRIC] = {**_COUNTER_DIMENSION_VALUES[SESSION_METRIC], **SESSION_VOLUME_DIMENSIONS}
+# ---- end v5 engagement ----
 # metric -> closed dimension field set
 _METRIC_FIELDS: dict[str, frozenset[str]] = {
     name: frozenset(contract) | frozenset(_IDENTIFIER_FIELDS.get(name, ()))
@@ -677,6 +723,9 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
         _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(_INSTALL_V4_SNAPSHOT_DIMENSIONS),
     ),
 }
+# ---- v5 engagement ----
+_LEGACY_METRIC_FIELDS[SESSION_METRIC] = (_METRIC_FIELDS[SESSION_METRIC] - set(SESSION_VOLUME_DIMENSIONS),)
+# ---- end v5 engagement ----
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
 # Counters whose value is a summed quantity rather than an event count.
 SUM_METRICS = frozenset({MODEL_TOKENS_METRIC})
@@ -716,6 +765,9 @@ _DECISION_MARK_METRICS = {
     TOOL_OUTPUT_TRUNCATION_MARK: TOOL_OUTPUT_TRUNCATION_METRIC, TOOL_OVERHEAD_MARK: TOOL_OVERHEAD_METRIC,
     TOOL_ENABLED_UNUSED_MARK: TOOL_ENABLED_UNUSED_METRIC, CACHE_BREAK_MARK: CACHE_BREAK_METRIC,
     # ---- end v5 efficiency ----
+    # ---- v5 engagement ----
+    MODEL_SWITCH_AFTER_MARK: MODEL_SWITCH_AFTER_METRIC,
+    # ---- end v5 engagement ----
 }
 
 

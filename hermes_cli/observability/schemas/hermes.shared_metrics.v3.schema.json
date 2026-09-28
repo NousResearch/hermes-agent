@@ -228,6 +228,15 @@
           },
           {
             "$ref": "#/$defs/cache_break_counter"
+          },
+          {
+            "$ref": "#/$defs/engagement_day_counter"
+          },
+          {
+            "$ref": "#/$defs/engagement_surface_day_counter"
+          },
+          {
+            "$ref": "#/$defs/model_switch_after_counter"
           }
         ]
       }
@@ -1192,8 +1201,18 @@
             },
             "turn_count_bucket": {
               "$ref": "#/$defs/size_bucket"
+            },
+            "message_count_bucket": {
+              "$ref": "#/$defs/long_size_bucket"
+            },
+            "model_call_count_bucket": {
+              "$ref": "#/$defs/long_size_bucket"
+            },
+            "tool_call_count_bucket": {
+              "$ref": "#/$defs/long_size_bucket"
             }
-          }
+          },
+          "description": "v5 engagement: message/model-call/tool-call buckets are optional so session rows recorded before them still validate; one row per conversation (compression-rotated segments merged)."
         },
         "value": {
           "type": "integer",
@@ -3245,6 +3264,194 @@
           "minimum": 1
         }
       }
+    },
+    "engagement_day_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.engagement.day.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "active_minutes_bucket",
+            "active_profile_count_bucket",
+            "primary_model",
+            "primary_provider",
+            "surfaces_used_count"
+          ],
+          "properties": {
+            "active_minutes_bucket": {
+              "enum": [
+                "0",
+                "lt_5m",
+                "5m_to_30m",
+                "30m_to_2h",
+                "2h_to_6h",
+                "gte_6h"
+              ]
+            },
+            "active_profile_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            },
+            "primary_model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "primary_provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "surfaces_used_count": {
+              "enum": [
+                "0",
+                "1",
+                "2",
+                "3",
+                "gte_4"
+              ]
+            }
+          },
+          "description": "v5 engagement: one per closed UTC day with activity: total active time (inter-interaction gaps capped at 5 minutes), surfaces used, and the model that served most attended turns (none when no attended turn). active_profile_count_bucket: distinct profiles of the host with a user turn that day, reported only on the root (default) profile's row; other profiles' rows carry 0."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "engagement_surface_day_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.engagement.surface_day.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "active_minutes_bucket",
+            "surface"
+          ],
+          "properties": {
+            "active_minutes_bucket": {
+              "enum": [
+                "0",
+                "lt_5m",
+                "5m_to_30m",
+                "30m_to_2h",
+                "2h_to_6h",
+                "gte_6h"
+              ]
+            },
+            "surface": {
+              "enum": [
+                "acp",
+                "cli",
+                "cron",
+                "desktop",
+                "gateway",
+                "tui"
+              ]
+            }
+          },
+          "description": "v5 engagement: one per surface used on a closed UTC day, with that surface's active time."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_switch_after_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_switch_after.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "provider",
+            "turns_before_switch_bucket"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "turns_before_switch_bucket": {
+              "enum": [
+                "1",
+                "2_to_3",
+                "4_to_10",
+                "11_to_30",
+                "gte_31"
+              ]
+            }
+          },
+          "description": "v5 engagement: one per /model switch away from a model that served turns in the conversation, with how many."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "long_size_bucket": {
+      "description": "v5 engagement: size_bucket with a longer tail for conversation volume.",
+      "enum": [
+        "0",
+        "1",
+        "2",
+        "3_to_5",
+        "6_to_10",
+        "11_to_25",
+        "26_to_100",
+        "101_to_250",
+        "gte_251",
+        "251_to_1000",
+        "gte_1001"
+      ]
     }
   }
 }

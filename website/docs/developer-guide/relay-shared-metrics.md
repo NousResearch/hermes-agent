@@ -294,7 +294,7 @@ itself ships.
 
 | Metric | Dimensions | Question it answers |
 |---|---|---|
-| `hermes.session.count` | entrypoint, surface, platform, turn/failed-turn buckets, active-duration bucket, last outcome | How deep is real usage per surface; do sessions end right after a failure? |
+| `hermes.session.count` | entrypoint, surface, platform, turn/failed-turn buckets, active-duration bucket, last outcome, message / model-call / tool-call count buckets (`0` … `101_to_250`, `251_to_1000`, `gte_1001`) | How deep is real usage per surface; do sessions end right after a failure? One row per conversation: the session ids a compression rotation continues it under merge into one row. Messages are user turns + primary-model replies + tool results; model calls are logical primary API requests (retries excluded). |
 | `hermes.install.milestone` | milestone, install age bucket | How long from install to first success, first gateway message, first cron run, first delegation, first created skill, first long session? Recorded once per install. |
 | `hermes.setup.completed` | surface (`cli`/`desktop`), provider | Which providers people choose at setup, and on which surface. |
 | `hermes.model_tokens.sum` | call role, model, provider, auxiliary task, token type | Token volume per model/provider, prompt-cache share, and what auxiliary work (compression, titles, vision, ...) costs. The value is a token sum, not an event count. |
@@ -311,6 +311,10 @@ itself ships.
 | `hermes.platform.health` | platform, event (`connect_ok`/`connect_failed`/`reconnect`/`disconnect`), error class (`auth`/`network`/`rate_limited`/`config`/`other`) | Which messaging platforms fail to connect or drop, and why. Classified from exception types, HTTP statuses and Hermes's own fatal codes, never error text. |
 | `hermes.platform.delivery` | platform, outcome (`sent`/`failed`), failure class (`rate_limited`/`too_long`/`auth`/`network`/`forbidden`/`other`) | How often replies fail to reach the user per platform (one count per logical reply, retries included). |
 | `hermes.gateway.reply_latency` | platform, first-response bucket (`lt_2s` … `gte_60s`) | Time from an accepted inbound message to the first visible reply text (stream first chunk or final message). |
+
+Replies the relay connector carries report the platform the conversation lives
+on (the inbound's platform, else the platform the connector fronts), never
+`relay`; `relay` remains only when neither is known.
 | `hermes.cron.run` | outcome (`success`/`failed`/`missed`/`skipped`), delivery kind (`local`/`platform`/`webhook`/`none`/`other`), duration bucket | Do scheduled jobs run, fail, get skipped by a gate or overlap, or get missed while Hermes was down. Job names, prompts, schedules and targets are never included. |
 | `hermes.startup.latency` | surface (`cli`, `tui`, `desktop_attach`, `gateway_boot`, `serve_boot`), latency bucket (`lt_500ms` … `gte_10s`) | How long each surface takes from launch to usable, so startup regressions show per surface and release. One row per process start: CLI = process start to first rendered prompt (or a `-q` query dispatched; Kanban workers excluded), TUI = Ink process start to gateway ready, Desktop = app start to backend attached, gateway = process start to adapters connected, `hermes serve` = process start to listening. Not counted: a process re-exec'd in place (e.g. `hermes sessions browse` resuming a session) and each dashboard Chat-tab terminal; a TUI/Desktop reconnect to the same backend never re-counts. |
 | `hermes.update.run` | kind, outcome, failed_stage, duration_bucket, from_version_age_bucket, apply_mode | Whether updates succeed, how long they take, where they fail, and how stale the version being updated from was. `hermes update` rows are derived from the final update receipt, once per run (`kind` is `desktop` when Desktop's source-checkout hand-off ran it); a run the pre-update interpreter finishes is parked locally with only these fields, only while collection is on, and counted by the next start; Desktop packaged self-updates (`apply_mode=package`) are reported once by the app, after the restart that applies them. |
@@ -366,6 +370,39 @@ the curator, delegated subagents' own turns) is not a user turn.
 | `hermes.tool_enabled_unused.count` | toolset (a toolset Hermes ships; MCP servers, plugins and user toolsets read `custom`), used (`yes`/`no`) | Which default toolsets are paid for but never used. One row per enabled toolset per closed interactive conversation (bounded by the shipped toolsets). |
 | `hermes.cache_break.count` | provider, model, cause (`compression`, `model_switch`, `toolset_change`, `system_prompt_rebuild`, `provider_reported_miss`, `cache_expired`) | How often Hermes throws away a warm prompt cache, and why. `compression` is expected; `model_switch`, `toolset_change` (the tool array changed mid-conversation) and `system_prompt_rebuild` (a continuing conversation rebuilt its system prompt instead of replaying the stored bytes) are Hermes-known causes; `provider_reported_miss` is a primary call reading zero cached tokens right after a warm read on the same model with no Hermes-known cause, `cache_expired` the same after at least five idle minutes. A known cause is not counted again as a miss. |
 <!-- ---- end v5 efficiency ---- -->
+
+<!-- ---- v5 engagement ---- -->
+#### Engagement and implicit model satisfaction
+
+| Metric | Dimensions | Question it answers |
+|---|---|---|
+| `hermes.engagement.surface_day.count` | surface (`cli`, `tui`, `desktop`, `gateway`, `acp`, `cron`), active-minutes bucket (`0`, `lt_5m`, `5m_to_30m`, `30m_to_2h`, `2h_to_6h`, `gte_6h`) | How long each surface is actually used per day. One row per surface used on a closed UTC day. |
+| `hermes.engagement.day.count` | active-minutes bucket, surfaces-used count (`0`–`3`, `gte_4`), primary provider, primary model, active-profile count bucket | Days active per week, multi-surface use, and next-day / next-week return by model. One row per closed UTC day with activity. |
+| `hermes.model_switch_after.count` | provider, model (the model switched away from), turns-before-switch bucket (`1`, `2_to_3`, `4_to_10`, `11_to_30`, `gte_31`) | How long users stay on a model before `/model` leaves it. Counts the old model's turns in the conversation (compression segments included); a switch before any turn on the current model is not counted. |
+
+Active time is accumulated locally per UTC day: the sum of the gaps between
+consecutive interactions (a user-owned turn starting or ending: interactive
+surfaces, gateway messages and cron runs; delegated children, background
+review, batch and API/python embedding are excluded), each gap capped at 5
+minutes. The day's rows are recorded once the day closes, by the first
+interaction on a later day, in one database transaction, so a day is reported
+exactly once per profile however many processes see the rollover; they are
+dated to the day they describe. The primary model is the one that served the
+most attended turns that day (`none` when none did), named by the model-route
+rules. Days active per week and return by model are derived server-side from
+these daily rows and the existing `install_id`: Hermes keeps no weekly window
+and no identifier beyond `install_id` for them.
+
+`active_profile_count_bucket` counts the distinct profiles of the host with a
+user-owned turn (the interactions above) that UTC day. Every profile folds its turns into one host
+accumulator kept in the root (default) profile's database, as opaque local
+hashes of each profile's home that never leave it, so a profile counts once
+whichever process or multiplexed runtime served it. Only the root profile's
+day row carries the count (it reports a day even when the root itself was
+idle, with `0` active minutes and surfaces); every other profile's row reads
+`0`. When the root profile has collection off, nothing is written to its
+database and the count is not reported.
+<!-- ---- end v5 engagement ---- -->
 
 Local state is written under:
 

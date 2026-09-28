@@ -365,7 +365,8 @@ def _apply_model_switch(
 
         record_model_switch(
             from_provider=_switch_away_provider(agent, explicit_provider, current_provider),
-            to_provider=result.target_provider, surface=_session_source(session), from_model=current_model)
+            to_provider=result.target_provider, surface=_session_source(session), from_model=current_model,
+            session_id=getattr(agent, "session_id", None))
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,

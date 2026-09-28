@@ -120,7 +120,8 @@ def test_a_relay_delivered_turn_stops_the_clock_its_inbound_started(rows):
                          source=SimpleNamespace(platform=Platform.SLACK, chat_id="C2", thread_id=None))
     smg.start_reply_clock(event.source)
     asyncio.run(relay.send_final_ledgered(event, "k", "final answer", {}, reply_to=None))
-    assert rows("hermes.gateway.reply_latency") == [{"first_response_bucket": "lt_2s", "platform": "relay"}] * 2
+    assert rows("hermes.gateway.reply_latency") == [
+        {"first_response_bucket": "lt_2s", "platform": "discord"}, {"first_response_bucket": "lt_2s", "platform": "slack"}]
     assert not smg._reply_clocks
 
 

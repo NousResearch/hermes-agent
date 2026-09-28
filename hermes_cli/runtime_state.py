@@ -36,8 +36,6 @@ INSTALL_LOCK_TIMEOUT_SECONDS = 10.0
 
 # A lease file younger than this is never a prune candidate: its creator may still sit between
 # ``O_CREAT|O_EXCL`` and ``flock`` (two syscalls; the window is microseconds, the margin generous).
-LEASE_GRACE_SECONDS = 60.0
-
 @contextmanager
 def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_SECONDS):
     """Hold the per-install dependency lock; yields True when held, False when the wait expired.
@@ -155,13 +153,21 @@ def lease_directory(generation: Path) -> Callable[[], None]:
     leases = generation / ".leases"
     leases.mkdir(exist_ok=True)
     _prune_unlocked_leases(leases)
-    lease = leases / uuid.uuid4().hex
-    fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-    try:
-        _lock(fd, wait=True)
-    except BaseException:
+    while True:
+        lease = leases / uuid.uuid4().hex
+        fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        try:
+            _lock(fd, wait=True)
+        except BaseException:
+            os.close(fd)
+            raise
+        # Create and flock are two syscalls; a peer's prune (pm workers and launch run outside
+        # ``runtime_lock``) can lock-and-unlink the file in between, and we would then hold an
+        # unlinked inode invisible to every collector. The pruner only unlinks while holding the
+        # lock, so once we hold it the path is either still ours or already gone for good.
+        if lease.exists():
+            break
         os.close(fd)
-        raise
 
     def release() -> None:
         atexit.unregister(release)
@@ -215,10 +221,7 @@ def _prune_unlocked_leases(leases: Path) -> bool:
     the selected generation too, which generation GC intentionally never visits.
 
     Fail closed: a lease this user cannot open (root-owned 0o600 from a ``sudo hermes`` on the
-    same checkout) is held, never a boot failure; a lease younger than ``LEASE_GRACE_SECONDS``
-    is held too, because ``lease_directory`` creates and locks in two syscalls and callers
-    outside ``runtime_lock`` (pm workers, launch) would otherwise prune a peer's lease in
-    between — leaving that peer locking an unlinked inode for its lifetime.
+    same checkout) is held, never a boot failure.
     """
     held = False
     for lease in leases.glob("*"):
@@ -230,7 +233,7 @@ def _prune_unlocked_leases(leases: Path) -> bool:
             held = True
             continue
         try:
-            if time.time() - os.fstat(fd).st_mtime < LEASE_GRACE_SECONDS or not _lock(fd, wait=False):
+            if not _lock(fd, wait=False):
                 held = True
             else:
                 with suppress(OSError):

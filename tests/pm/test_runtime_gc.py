@@ -71,7 +71,6 @@ os._exit(0)
     leases = generation / ".leases"
     stale = list(leases.iterdir())
     assert len(stale) == 1
-    os.utime(stale[0], (0, 0))  # past LEASE_GRACE_SECONDS: nobody can still be between create and flock
 
     release = lease_directory(generation)
     try:
@@ -85,9 +84,9 @@ os._exit(0)
 
 
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root opens mode-0 files")
-def test_prune_keeps_unopenable_and_just_created_sibling_leases(tmp_path):
-    """A lease this user cannot open (root-owned, `sudo hermes` on the same checkout) or one a
-    peer created but has not flocked yet is HELD: boot never raises, GC never collects."""
+def test_prune_keeps_unopenable_sibling_lease(tmp_path):
+    """A lease this user cannot open (root-owned, `sudo hermes` on the same checkout) is HELD:
+    boot never raises and GC never collects."""
     from hermes_cli.runtime_state import lease_directory, leases_held
 
     generation = _generation(tmp_path / "pm-runtime", "selected")
@@ -95,15 +94,39 @@ def test_prune_keeps_unopenable_and_just_created_sibling_leases(tmp_path):
     leases.mkdir()
     foreign = leases / "foreign"
     foreign.touch()
-    os.utime(foreign, (0, 0))
     foreign.chmod(0)
-    fresh = leases / "fresh"
-    fresh.touch()
     try:
         lease_directory(generation)()
-        assert foreign.exists() and fresh.exists()
+        assert foreign.exists()
         assert leases_held(generation)
-        os.utime(fresh, (0, 0))
-        assert leases_held(generation) and not fresh.exists()
     finally:
         foreign.chmod(0o600)
+
+
+def test_lease_taken_while_a_peer_pruned_it_is_retaken(tmp_path, monkeypatch):
+    """A peer's prune can lock-and-unlink our lease between create and flock; the writer must
+    end up holding a lease the collectors can see, never an unlinked inode."""
+    from hermes_cli import runtime_state
+    from hermes_cli.runtime_state import lease_directory, leases_held
+
+    generation = _generation(tmp_path / "pm-runtime", "selected")
+    leases = generation / ".leases"
+    real_lock = runtime_state._lock
+    raced = []
+
+    def racing_lock(fd, *, wait, **kw):
+        if wait and not raced:  # the writer's first take: a peer pruned the file first
+            for stray in leases.iterdir():
+                stray.unlink()
+            raced.append(fd)
+        return real_lock(fd, wait=wait, **kw)
+
+    monkeypatch.setattr(runtime_state, "_lock", racing_lock)
+    release = lease_directory(generation)
+    try:
+        assert raced
+        assert len(list(leases.iterdir())) == 1
+        assert leases_held(generation)
+    finally:
+        release()
+    assert list(leases.iterdir()) == []

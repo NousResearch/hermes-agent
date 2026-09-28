@@ -1527,3 +1527,28 @@ test('a failed open releases its claim so the remaining holder can still close t
   await live.close()
   assert.equal(state.exits, 1, 'the failed opener left no phantom claim behind')
 })
+
+test('#103288: every spawn uses the injected sshBinary; the default stays bare ssh', async () => {
+  const commands: string[] = []
+
+  const spawnFn: any = (cmd: string) => {
+    commands.push(cmd)
+
+    return fakeChild({ code: 0 })
+  }
+
+  const custom = createSshProbeConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn, sshBinary: 'C:\\Program Files\\Git\\usr\\bin\\ssh.exe' }
+  )
+
+  await custom.open()
+  await custom.exec('true')
+  assert.ok(commands.length >= 2, 'open + exec both spawned')
+  assert.deepEqual([...new Set(commands)], ['C:\\Program Files\\Git\\usr\\bin\\ssh.exe'])
+
+  commands.length = 0
+  const plain = createSshProbeConnection({ host: 'box', user: 'me' }, { spawnFn })
+  await plain.open()
+  assert.deepEqual([...new Set(commands)], ['ssh'])
+})

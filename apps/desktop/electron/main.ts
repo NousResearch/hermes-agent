@@ -91,11 +91,14 @@ import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
   isSshAuthFailedBootFailure,
+  isSshClientFailedBootFailure,
   shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure,
-  shouldLatchSshAuthFailure
+  shouldLatchSshAuthFailure,
+  shouldLatchSshClientFailure,
+  sshClientFailedError
 } from './backend-start-failure'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
 import {
@@ -504,6 +507,7 @@ import {
 import { ensureLoginShellPath } from './shell-path'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { resolveSourcePython } from './source-python'
+import { resolveSshBinary } from './ssh-binary'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
@@ -966,6 +970,10 @@ const HERMES_HOME: string = resolveDesktopHermesHome({
 // Start-menu / .desktop entry ran with no `--js-flags` at all. Apply them here
 // from config.yaml, before `ready` — Chromium copies `js-flags` to renderer
 // processes only from the browser's pre-launch command line.
+// `desktop.ssh_path` (#103288) rides the same pre-window read: an explicit
+// Windows ssh client for when the in-box OpenSSH is missing or broken.
+let desktopSshPathOverride = ''
+
 {
   let desktopLaunchYaml: string = ''
 
@@ -976,6 +984,7 @@ const HERMES_HOME: string = resolveDesktopHermesHome({
   }
 
   const desktopLaunchConfig = readDesktopLaunchConfig(desktopLaunchYaml)
+  desktopSshPathOverride = desktopLaunchConfig.sshPath || ''
 
   // `desktop.renderer_accessibility: false` must reach packaged launches too,
   // not only the `hermes desktop` launcher's env bridge (#118271).
@@ -10048,11 +10057,25 @@ async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promi
   }
 }
 
+// The ssh client every desktop spawn uses (#103288): `desktop.ssh_path`, then
+// the in-box System32 OpenSSH, then Git for Windows' ssh.exe, then PATH.
+// Bare `ssh` on every other platform.
+function desktopSshBinary(): string {
+  return resolveSshBinary({
+    platform: process.platform,
+    override: desktopSshPathOverride,
+    env: {
+      systemRoot: process.env.SystemRoot || process.env.windir || 'C:\\Windows',
+      localAppData: process.env.LOCALAPPDATA || '',
+      programFiles: process.env['ProgramFiles'] || 'C:\\Program Files',
+      programFilesX86: process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+    },
+    fs: { existsSync: fileExists, readdirSync: dir => fs.readdirSync(dir) }
+  })
+}
+
 async function effectiveSshConfigFingerprint(sshConfig) {
-  const ssh =
-    process.platform === 'win32'
-      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-      : 'ssh'
+  const ssh = desktopSshBinary()
 
   const args = ['-G']
 
@@ -10065,7 +10088,17 @@ async function effectiveSshConfigFingerprint(sshConfig) {
   }
 
   args.push('--', sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host)
-  const output = await execText(ssh, args, { timeout: 10_000 })
+  let output: string
+
+  try {
+    output = await execText(ssh, args, { timeout: 10_000 })
+  } catch (error) {
+    // `ssh -G` only parses local config, so a failure here is the local client
+    // itself (missing, broken, or a bad ssh_config) and retrying cannot fix
+    // it. Tag it terminal so boot lands on the failure overlay instead of
+    // re-driving the same probe every ~2s (#103288).
+    throw sshClientFailedError(ssh, error)
+  }
 
   return crypto.createHash('sha256').update(output).digest('hex')
 }
@@ -10188,6 +10221,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
       {
         rememberLog: sshRememberLog,
+        sshBinary: desktopSshBinary(),
         ownershipId: sshOwnershipKey(profile),
         scope,
         effectiveConfigFingerprint: sshConfig.effectiveConfigFingerprint
@@ -10651,7 +10685,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
 
     const ssh = createSshProbeConnection(
       { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
-      { rememberLog: sshRememberLog }
+      { rememberLog: sshRememberLog, sshBinary: desktopSshBinary() }
     )
 
     try {
@@ -11627,7 +11661,7 @@ async function openManagedSshUpdateTransport(
 
   const ssh = createSshProbeConnection(
     { host: config.host, user: config.user, port: config.port, keyPath: config.keyPath },
-    { rememberLog: sshRememberLog }
+    { rememberLog: sshRememberLog, sshBinary: desktopSshBinary() }
   )
 
   await ssh.open()
@@ -13367,6 +13401,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     const message = error instanceof Error ? error.message : String(error)
     const hostKeyChanged = isHostKeyChangedBootFailure(error)
     const sshAuthFailed = isSshAuthFailedBootFailure(error)
+    const sshClientFailed = isSshClientFailedBootFailure(error)
 
     // Carry structured Cloud-down metadata through the boot-progress / IPC
     // boundary when present, so the renderer overlay can key on it rather than
@@ -13408,6 +13443,14 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }
 
+    // A dead local ssh client (`ssh -G` failed) is terminal too (#103288):
+    // every retry re-runs the same local probe, so boot looped every ~2s and
+    // the user never reached Settings. Latch it so the overlay holds still;
+    // reset/repair/apply-config release it (desktop.ssh_path needs a restart).
+    if (shouldLatchSshClientFailure({ attemptedRemote, isReauth: false, isSshClientFailed: sshClientFailed })) {
+      backendStartFailure = error instanceof Error ? error : new Error(message)
+    }
+
     // A confirmed reauth rejection latches separately: it can't self-heal, and
     // leaving it unlatched hides the overlay's "Sign in" button on every retry.
     if (shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth: isReauthRequiredError(error) })) {
@@ -13430,7 +13473,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
           attemptedRemote,
           isReauth: isReauthRequiredError(error),
           isHostKeyChanged: hostKeyChanged,
-          isSshAuthFailed: sshAuthFailed
+          isSshAuthFailed: sshAuthFailed,
+          isSshClientFailed: sshClientFailed
         }),
         running: false,
         statusCode: Number.isInteger(statusCode) ? statusCode : undefined
@@ -15781,10 +15825,7 @@ ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
     throw new Error('SSH host is required.')
   }
 
-  const ssh =
-    process.platform === 'win32'
-      ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-      : 'ssh'
+  const ssh = desktopSshBinary()
 
   return new Promise((resolve, reject) => {
     const child = spawn(ssh, ['-G', '--', value], hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'pipe'] }))
@@ -16046,7 +16087,7 @@ async function probeSshProfileInventory(connection) {
 
   const ssh = createSshProbeConnection(
     { host: sshConfig.host, user: sshConfig.user, port: sshConfig.port, keyPath: sshConfig.keyPath },
-    { rememberLog: sshRememberLog }
+    { rememberLog: sshRememberLog, sshBinary: desktopSshBinary() }
   )
 
   try {
@@ -18133,6 +18174,7 @@ const terminalIpc = registerTerminalIpc({
   findOnPath,
   rememberLog,
   activeSshTerminalTarget,
+  sshBinary: desktopSshBinary,
   ensureBackend: webContentsId => ensureTerminalBackend(webContentsId),
   getSshConnectionState: scope => sshConnections.get(scope)
 })

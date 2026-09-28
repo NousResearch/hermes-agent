@@ -381,6 +381,15 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         explicit_cwd = bool(raw_cwd) and (remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
     _enable_gateway_prompts()
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+    composer_override_profile = None
+    if session_model_override and _flag(params, "follow_profile_config"):
+        # A composer pick on a Bot Chat must remember the profile model it
+        # diverged from. Without this marker, resume treats the row as an
+        # unmarked profile-following chat and silently falls back to the
+        # profile default instead of restoring the pick.
+        with _profile_build_scope(profile_home):
+            profile_model, profile_provider = _config_model_target()
+        composer_override_profile = {"model": profile_model, "provider": profile_provider}
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
@@ -393,6 +402,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
             "cwd": _completion_cwd(params), "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
+            "composer_override_profile": composer_override_profile,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id, "pending_title": _str_param(params, "title") or None,

@@ -71,9 +71,14 @@ def _build_sink_writer(writer_type: type[NotionWriter] | type[LinearWriter]):
 
 
 def build_pipeline_runtime(gateway: Any) -> TeamsMeetingPipeline:
+    return build_pipeline_from_config(gateway.config)
+
+
+def build_pipeline_from_config(gateway_config: Any, *, store: TeamsPipelineStore | None = None) -> TeamsMeetingPipeline:
+    """Shared gateway/replay construction; explicit stores remain caller-owned."""
     teams_sender = None
-    teams_config = gateway.config.platforms.get(Platform("teams"))
-    pipeline_config = build_pipeline_runtime_config(gateway.config)
+    teams_config = gateway_config.platforms.get(Platform("teams"))
+    pipeline_config = build_pipeline_runtime_config(gateway_config)
     if teams_config and teams_config.enabled and (pipeline_config.get("teams_delivery") or {}).get("enabled"):
         try:
             from plugins.platforms.teams.summary_writer import TeamsSummaryWriter
@@ -82,7 +87,8 @@ def build_pipeline_runtime(gateway: Any) -> TeamsMeetingPipeline:
         else:
             teams_sender = TeamsSummaryWriter(platform_config=teams_config)
     return TeamsMeetingPipeline(
-        graph_client=build_graph_client(), store=TeamsPipelineStore(resolve_teams_pipeline_store_path()),
+        graph_client=build_graph_client(),
+        store=store if store is not None else TeamsPipelineStore(resolve_teams_pipeline_store_path()),
         config=pipeline_config, teams_sender=teams_sender,
         notion_writer=_build_sink_writer(NotionWriter) if (pipeline_config.get("notion") or {}).get("enabled") else None,
         linear_writer=_build_sink_writer(LinearWriter) if (pipeline_config.get("linear") or {}).get("enabled") else None,

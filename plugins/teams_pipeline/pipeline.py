@@ -373,8 +373,10 @@ class TeamsMeetingPipeline:
             ("linear", "writing_linear", self.config.linear, self.linear_writer),
             ("teams", "sending_teams", self.config.teams_delivery, self.teams_sender))
         for name, status, config, sink in sinks:
-            if not (config and config.get("enabled") and sink):
+            if not (config and config.get("enabled")):
                 continue
+            if sink is None:
+                raise TeamsPipelineSinkError(f"Enabled {name} sink has no writer configured.")
             job = self._persist_job(job, status=status)
             sink_key = f"{name}:{payload.meeting_ref.meeting_id}"
             existing = self.store.get_sink_record(sink_key)

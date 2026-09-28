@@ -4789,6 +4789,28 @@ class TestCustomEndpointApiKeyInheritance:
 
         assert captured.get("api_key") == "no-key-required"
 
+    @pytest.mark.parametrize("aux_base_url,inherits", [
+        ("https://gw.example.com:443/v2", True),
+        ("http://gw.example.com/v1", False),
+        ("https://gw.example.com:8443/v1", False),
+    ])
+    def test_main_key_follows_only_the_identical_origin(self, monkeypatch, aux_base_url, inherits):
+        """Same hostname is not the same endpoint: a different scheme or port must not
+        receive the main key; the identical origin (default port spelled out) still does."""
+        import agent.auxiliary_client as ac
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        fake_config = {"model": {"api_key": "sk-main-config-key", "base_url": "https://gw.example.com/v1"}}
+        captured: dict = {}
+
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
+             patch.object(ac, "_create_openai_client", side_effect=lambda **kw: captured.update(kw) or MagicMock()):
+            resolve_provider_client("custom", model="test-model",
+                                    explicit_base_url=aux_base_url, explicit_api_key=None)
+
+        assert (captured.get("api_key") == "sk-main-config-key") is inherits
+
 
 class TestNoProgressTimeoutTaskConfigGating:
     """#108104: ``auxiliary.<task>.no_progress_timeout`` must only reach the request kwargs

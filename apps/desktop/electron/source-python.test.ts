@@ -12,7 +12,7 @@ const ROOT: string = path.join(path.sep, 'checkout')
 function checkout(present: string[] = [], exists: boolean = true) {
   const files = new Set(present.map(entry => path.join(ROOT, entry)))
 
-  return { root: ROOT, fileExists: (candidate: string): boolean => (exists && files.has(candidate)) }
+  return { root: ROOT, fileExists: (candidate: string): boolean => exists && files.has(candidate) }
 }
 
 test('a checkout with no virtualenv resolves to no interpreter, never a PATH Python', (): void => {
@@ -58,12 +58,15 @@ test('an explicit developer interpreter wins, and is only honoured when it exist
   const { root, fileExists } = checkout(['venv/bin/python'], true)
   const withPreferred = (candidate: string): boolean => candidate === preferred || fileExists(candidate)
 
-  assert.equal(resolveSourcePython(root, { override: preferred, fileExists: withPreferred, isWindows: false }), preferred)
+  assert.equal(
+    resolveSourcePython(root, { override: preferred, fileExists: withPreferred, isWindows: false }),
+    preferred
+  )
   // An override naming a file that is gone does not resurrect a PATH Python;
   // it falls through to the checkout, then to null.
+  assert.equal(resolveSourcePython(root, { override: preferred, fileExists, isWindows: false }), aged)
   assert.equal(
-    resolveSourcePython(root, { override: preferred, fileExists, isWindows: false }),
-    aged
+    resolveSourcePython(ROOT, { override: preferred, fileExists: checkout().fileExists, isWindows: false }),
+    null
   )
-  assert.equal(resolveSourcePython(ROOT, { override: preferred, fileExists: checkout().fileExists, isWindows: false }), null)
 })

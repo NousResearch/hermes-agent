@@ -14,7 +14,7 @@ import {
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $autoSpeakReplies, $bargeInThresholdMultiplier } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $bargeInThresholdMultiplier, $voiceSilenceMs } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -142,7 +142,6 @@ export function useVoiceConversation({
   // a torn-down window).
   const cancelFallbackPollRef = useRef<(() => void) | null>(null)
 
-   
   useEffect(() => () => cancelFallbackPollRef.current?.(), [])
 
   const clearTurnTimeout = () => {
@@ -291,9 +290,12 @@ export function useVoiceConversation({
 
     try {
       // VAD tuning mirrors `tools.voice_mode` defaults so the browser loop matches the CLI.
+      // `silenceMs` honours `voice.silence_duration` (seeded by useHermesConfig): only a
+      // user-set value overrides the desktop's tuned 1.25 s hold, which every turn sits
+      // through as dead air.
       await handle.start({
         silenceLevel: 0.075,
-        silenceMs: 1_250,
+        silenceMs: $voiceSilenceMs.get(),
         idleSilenceMs: 12_000,
         onError: error => {
           notifyError(error, voiceCopy.microphoneFailed)

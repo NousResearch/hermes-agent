@@ -6,7 +6,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { HermesGateway } from '@/hermes'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { $gateway } from '@/store/gateway'
-import { $approvalRequest, APPROVAL_RESPOND_REQUEST_TIMEOUT_MS, clearAllPrompts, sessionApprovalRequests, setApprovalRequest } from '@/store/prompts'
+import {
+  $approvalRequest,
+  APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+  clearAllPrompts,
+  sessionApprovalRequests,
+  setApprovalRequest
+} from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
@@ -88,12 +94,13 @@ describe('PendingApprovalStack', () => {
     // the description. The card must show what would actually run.
     setRequest('<terminal> (plugin approval rule)', undefined, { requestId: 'apr-synth' })
     // setRequest stamps a generic description; overwrite with the plugin one.
-    $approvalRequest.get() && setApprovalRequest({
-      command: '<terminal> (plugin approval rule)',
-      description: 'Plugin requires approval for terminal: run\npwd',
-      requestId: 'apr-synth',
-      sessionId: 'sess-1'
-    })
+    $approvalRequest.get() &&
+      setApprovalRequest({
+        command: '<terminal> (plugin approval rule)',
+        description: 'Plugin requires approval for terminal: run\npwd',
+        requestId: 'apr-synth',
+        sessionId: 'sess-1'
+      })
     render(<PendingApprovalStack />)
 
     expect(screen.getByText(/Plugin requires approval for terminal: run/)).toBeTruthy()

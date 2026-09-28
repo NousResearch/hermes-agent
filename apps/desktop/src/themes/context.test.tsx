@@ -5,7 +5,6 @@ import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './bac
 import { skinPref, ThemeProvider, useTheme } from './context'
 import { everforestTheme } from './presets'
 
-
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
 const bloomberg = (foreground: string) => ({
@@ -15,8 +14,7 @@ const bloomberg = (foreground: string) => ({
 
 const cssVar = (name: string) => window.document.documentElement.style.getPropertyValue(name)
 
-const customStyleEl = () =>
-  window.document.getElementById('hermes-desktop-custom-css') as HTMLStyleElement | null
+const customStyleEl = () => window.document.getElementById('hermes-desktop-custom-css') as HTMLStyleElement | null
 
 describe('ThemeProvider ← backend skin sync', () => {
   beforeEach(() => {
@@ -315,7 +313,11 @@ describe('ThemeProvider customCSS injection', () => {
 
     act(() =>
       ingestBackendSkin(
-        { name: 'mono', colors: { background: '#ff00ff', ui_text: '#00ff00' }, customCSS: '.status-bar { background: black; }' },
+        {
+          name: 'mono',
+          colors: { background: '#ff00ff', ui_text: '#00ff00' },
+          customCSS: '.status-bar { background: black; }'
+        },
         { apply: true }
       )
     )
@@ -337,7 +339,10 @@ describe('ThemeProvider customCSS injection', () => {
     )
 
     act(() =>
-      ingestBackendSkin({ name: 'default', colors: { background: '#123456' }, customCSS: '.chat-input { font-size: 18px; }' }, { apply: true })
+      ingestBackendSkin(
+        { name: 'default', colors: { background: '#123456' }, customCSS: '.chat-input { font-size: 18px; }' },
+        { apply: true }
+      )
     )
 
     expect(customStyleEl()?.textContent).toBe('.chat-input { font-size: 18px; }')

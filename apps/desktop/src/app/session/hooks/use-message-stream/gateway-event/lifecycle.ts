@@ -1,6 +1,7 @@
 import type { GatewayEvent } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
+import { clearClarifyRequest } from '@/store/clarify'
 import {
   notifyCronChanged,
   notifyPairingChanged,
@@ -12,6 +13,7 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { clearAllPrompts } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
@@ -105,6 +107,13 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
       // Heal while the cached stored-id mapping is still intact, then drop.
       markRuntimeGone(reclaimedRuntimeId)
       dropSessionState(reclaimedRuntimeId)
+      // A prompt keyed to the dead runtime must not outlive it. The runtime id
+      // rotates on every resume (cold/lazy/eager all mint a fresh sid), so the
+      // new runtime's turn-end clears can never remove an entry keyed to THIS
+      // one — a stale approval would re-mount the floating "needs approval"
+      // bar whenever the reclaimed conversation is reopened (#86577).
+      clearAllPrompts(reclaimedRuntimeId)
+      clearClarifyRequest(undefined, reclaimedRuntimeId)
       // A tile bound to the reclaimed runtime would otherwise render an
       // empty transcript forever: its view reads $sessionStates[runtime]
       // (just dropped) and its resume effect is gated on !runtimeId, so a

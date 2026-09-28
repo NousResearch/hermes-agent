@@ -435,15 +435,6 @@ class PluginLoaderMixin:
             logger.warning("Plugin '%s' skipped: %s", plugin_key, reason)
             self._plugins[plugin_key] = loaded
             return
-        # After the compat-removal date an external plugin that still imports pre-decomposition paths is
-        # skipped with a clear reason instead of dying on ImportError mid-register (hermes_cli.plugin_compat).
-        from hermes_cli.plugin_compat import disable_reason
-        reason = disable_reason(manifest)
-        if reason:
-            loaded.error = reason
-            logger.warning("Plugin '%s' not loaded: %s", manifest.name, reason)
-            self._plugins[plugin_key] = loaded
-            return
         registration_start = len(self._registration_order)
         module_name = self._policy_module_name(manifest)
         self._track_tool_override_policy(manifest, module_name)

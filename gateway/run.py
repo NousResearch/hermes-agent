@@ -42,6 +42,7 @@ from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import pre_agent_fallback_notice
+from gateway.turn_executor import _UnboundedThreadExecutor
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -57,8 +58,6 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # offline update queue, #46621).
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
-# Size of the pool that runs turn bodies (blocking agent work).
-_TURN_MAX_WORKERS = 10
 # Size of the separate pool for best-effort session HOUSEKEEPING; why it is separate: _run_housekeeping_in_executor.
 _HOUSEKEEPING_MAX_WORKERS = 4
 
@@ -427,6 +426,12 @@ def _ensure_windows_gateway_venv_imports() -> None:
         return
 
     project_root = Path(__file__).resolve().parent.parent
+    from pm.environments import committed_venv
+
+    # A PM install's store Python was already activated onto the committed generation by
+    # hermes_bootstrap; overlaying the leftover pre-PM venv loads a foreign ABI (#122183).
+    if committed_venv(project_root) is not None:
+        return
     candidates: list[Path] = []
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))
@@ -503,6 +508,8 @@ def _seed_hygiene_system_prompt(agent: Any, session_row: Optional[Dict[str, Any]
             stored_prompt = raw_prompt
 
     agent._cached_system_prompt = stored_prompt
+    # Compaction otherwise rebuilds the prompt at the commit boundary from this agent's reduced toolset.
+    agent._retain_seeded_system_prompt = True
     return bool(stored_prompt)
 
 
@@ -1148,6 +1155,10 @@ def _build_replay_entry(
             entry[_rkey] = _rval
     if preserve_timestamp and msg.get("timestamp"):
         entry["timestamp"] = msg["timestamp"]
+    # Replay rewrites are view-only: keep the durable-row stamp so marker-only
+    # flushes skip rows already in state.db (#121462/#123462).
+    if msg.get("_db_persisted"):
+        entry["_db_persisted"] = True
     return entry
 
 
@@ -1636,6 +1647,35 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     return list(profiles_to_serve(multiplex=True))
 
 
+def _recover_pending_flushes(runner) -> int:
+    """Replay every ``pending_messages`` spool this gateway owns into state.db; return the count.
+
+    ``_get_flush_dir`` follows the active HERMES_HOME, so a routed turn on a multiplexed gateway spools
+    its stalled transcript backlog under ``profiles/<name>/`` and the runtime drain forgets it on
+    restart. After the launch home, replay each served profile inside its own home so the default
+    store ``recover_pending_to_db`` opens is that profile's state.db (#123584).
+    """
+    from gateway.shutdown_flush import recover_pending_to_db
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    resolver = runner.session_store.resolve_session_id_for_key
+    recovered = recover_pending_to_db(session_resolver=resolver)
+    if not getattr(runner.config, "multiplex_profiles", False):
+        return recovered
+    launch_home = Path(get_hermes_home()).resolve()
+    for name, home in _multiplex_profile_homes(runner.config):
+        if Path(home).resolve() == launch_home or not (Path(home) / "pending_messages").is_dir():
+            continue
+        token = set_hermes_home_override(str(home))
+        try:
+            recovered += recover_pending_to_db(session_resolver=resolver)
+        except Exception:  # one profile's unreadable spool must not strand the others'
+            logger.warning("Pending-message recovery failed for profile %s", name, exc_info=True)
+        finally:
+            reset_hermes_home_override(token)
+    return recovered
+
+
 def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     """Profile homes the in-process ticker visits: the served set PLUS the process-active
     profile: ``profiles_to_serve`` lists default + every live named profile, but a ``--profile
@@ -1716,6 +1756,20 @@ def _handoff_watch_scopes(runner: object) -> list:
     except Exception:
         logger.debug("Could not resolve multiplex homes for handoff watcher", exc_info=True)
     return scopes
+
+
+async def _resolve_handoff_watch_scopes(runner: object) -> list:
+    """``_handoff_watch_scopes`` for an on-loop watcher tick. Multiplex resolution walks the filesystem
+    (``profiles_to_serve``), so it hops to the executor; single-profile mode does no I/O and returns the
+    root poll directly — no per-tick thread spawn on the unbounded executor. A config-less stand-in
+    (tests) and a runner without the executor hop fall through to the plain resolver."""
+    config = getattr(runner, "config", None)
+    if config is not None and not getattr(config, "multiplex_profiles", False):
+        return [(None, None)]
+    offload = getattr(runner, "_run_in_executor_with_context", None)
+    if callable(offload):
+        return await offload(_handoff_watch_scopes, runner)
+    return _handoff_watch_scopes(runner)
 
 
 async def _reclaim_stale(runner: object) -> None:
@@ -2123,21 +2177,6 @@ os.environ["HERMES_QUIET"] = "1"  # gateway runs quiet: no debug output, cwd use
 
 # Terminal cwd: config.yaml terminal.cwd is canonical (bridged above); MESSAGING_CWD is legacy fallback.
 from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
-
-_configured_cwd = os.environ.get("TERMINAL_CWD", "")
-if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
-    _resolved_cwd = resolve_placeholder_terminal_cwd(
-        configured_cwd=_configured_cwd,
-        terminal_backend=os.environ.get("TERMINAL_ENV", ""),
-        messaging_cwd=os.getenv("MESSAGING_CWD"),
-        docker_mount_cwd_to_workspace=os.getenv(
-            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower()
-        in {"true", "1", "yes"},
-        home_fallback=str(Path.home()))
-    if _resolved_cwd is None:
-        os.environ.pop("TERMINAL_CWD", None)
-    else:
-        os.environ["TERMINAL_CWD"] = _resolved_cwd
 
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
@@ -3782,10 +3821,10 @@ class GatewayRunner(
             # The store owns/sweeps it at shutdown; this cache holds only the async wrapper (close_all).
             # Both caches resolve the SAME ``_default_db_path()``, so the process was holding two writer
             # connections and two read pools against one state.db — the fd budget doubled for nothing, and
-            # doubled again per profile on a multiplexed gateway (#98573). A borrowed wrapper cannot go
-            # stale in practice: the store's cache only drops handles in close_all_db_handles() (shutdown),
-            # and while the store's own open is failing there is nothing to borrow, so nothing is cached
-            # here either.
+            # doubled again per profile on a multiplexed gateway (#98573). A borrowed wrapper goes stale only
+            # when the registry tears its generation down (profile unserve/delete); both caches then drop
+            # the dead handle and reopen through the registry. While the store's own open is failing there
+            # is nothing to borrow, so nothing is cached here either.
             store = getattr(self, "session_store", None)
             borrowed = getattr(store, "_db", None) if store is not None else None
             if borrowed is not None:
@@ -4292,17 +4331,16 @@ class GatewayRunner(
         Callers of this helper bound their await with ``asyncio.wait_for`` and, on timeout, log
         "the worker thread is left to finish on its own" and proceed. That bounds the AWAIT but
         NOT the OCCUPANCY: a ``concurrent.futures`` work item that has already begun executing is
-        not cancellable, so an abandoned worker keeps its pool slot until its blocking call
-        returns. On a shared pool, N abandonments retire N turn slots for ANY N — the failure is
-        scale-invariant, so raising ``max_workers`` does not fix it. Housekeeping therefore gets
-        its own bounded pool; exhausting that one delays only more housekeeping, which is
-        best-effort by construction.
+        not cancellable, so an abandoned worker keeps its thread until its blocking call returns.
+        The turn pool is unbounded (one thread per turn), so sharing it would let wedged
+        housekeeping grow threads without limit. Housekeeping therefore gets its own bounded pool;
+        exhausting that one delays only more housekeeping, which is best-effort by construction.
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._get_housekeeping_executor(), copy_context().run, func, *args)
 
-    def _get_or_create_pool(self, attr: str, max_workers: int, prefix: str) -> concurrent.futures.ThreadPoolExecutor:
+    def _get_or_create_pool(self, attr: str, make_pool: Callable[[], concurrent.futures.Executor]) -> concurrent.futures.Executor:
         """Return (creating under ``_executor_lock``) the pool at ``attr``; one lock + closing flag fences both."""
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
@@ -4313,17 +4351,28 @@ class GatewayRunner(
                 raise RuntimeError("Gateway is shutting down; executor unavailable")
             executor = getattr(self, attr, None)
             if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=prefix)
+                executor = make_pool()
                 setattr(self, attr, executor)
             return executor
 
-    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
-        """Return the gateway-owned executor for blocking agent work."""
-        return GatewayRunner._get_or_create_pool(self, "_executor", _TURN_MAX_WORKERS, "hermes-gateway")
+    def _get_executor(self) -> concurrent.futures.Executor:
+        """Return the gateway-owned, UNBOUNDED executor for turn bodies and other blocking agent work.
 
-    def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        A turn body holds its thread for the whole turn (every tool call blocks), so a finite pool
+        silently queued already-accepted turns behind running ones. Actual bound: one live turn per
+        session, plus turns abandoned by the inactivity timeout (run_turn keeps no handle; their
+        thread runs to completion). ``max_concurrent_sessions`` is the only admission cap and is
+        unset by default.
+        """
+        return GatewayRunner._get_or_create_pool(
+            self, "_executor", lambda: _UnboundedThreadExecutor(thread_name_prefix="hermes-gateway"))
+
+    def _get_housekeeping_executor(self) -> concurrent.futures.Executor:
         """Return the gateway-owned executor for best-effort session housekeeping."""
-        return GatewayRunner._get_or_create_pool(self, "_housekeeping_executor", _HOUSEKEEPING_MAX_WORKERS, "hermes-gateway-hk")
+        return GatewayRunner._get_or_create_pool(
+            self, "_housekeeping_executor",
+            lambda: concurrent.futures.ThreadPoolExecutor(
+                max_workers=_HOUSEKEEPING_MAX_WORKERS, thread_name_prefix="hermes-gateway-hk"))
 
     @staticmethod
     def _stop_pool(executor) -> list:
@@ -5787,6 +5836,22 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
 
+    # Messaging-only defaults belong to startup, not incidental imports by the TUI.
+    configured_cwd = os.environ.get("TERMINAL_CWD", "")
+    if not configured_cwd or configured_cwd in CWD_PLACEHOLDERS:
+        resolved_cwd = resolve_placeholder_terminal_cwd(
+            configured_cwd=configured_cwd,
+            terminal_backend=os.environ.get("TERMINAL_ENV", ""),
+            messaging_cwd=os.getenv("MESSAGING_CWD"),
+            docker_mount_cwd_to_workspace=os.getenv(
+                "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower()
+            in {"true", "1", "yes"},
+            home_fallback=str(Path.home()))
+        if resolved_cwd is None:
+            os.environ.pop("TERMINAL_CWD", None)
+        else:
+            os.environ["TERMINAL_CWD"] = resolved_cwd
+
     from hermes_cli.resource_limits import apply_nofile_soft_limit
     apply_nofile_soft_limit()
 
@@ -5914,10 +5979,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
 
     def _recover_pending() -> None:
-        from gateway.shutdown_flush import recover_pending_to_db
-        recovered = recover_pending_to_db(
-            session_resolver=runner.session_store.resolve_session_id_for_key,
-        )
+        recovered = _recover_pending_flushes(runner)
         if recovered:
             logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
 
@@ -6101,75 +6163,3 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
 
 if __name__ == "__main__":
     main()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Awaitable  # noqa: F401,E402
-from contextvars import Context  # noqa: F401,E402
-from typing import Union  # noqa: F401,E402
-import faulthandler  # noqa: F401,E402
-import functools  # noqa: F401,E402
-import inspect  # noqa: F401,E402
-from dotenv import load_dotenv  # noqa: F401,E402
-import queue  # noqa: F401,E402
-from datetime import timedelta  # noqa: F401,E402
-from datetime import timezone  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT': ('gateway.restart', 'DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT'),
-    'DEFAULT_HEARTBEAT_INTERVAL_S': ('gateway.shutdown_watchdog', 'DEFAULT_HEARTBEAT_INTERVAL_S'),
-    'DEFAULT_LEASE_WAIT': ('gateway.turn_lease', 'DEFAULT_LEASE_WAIT'),
-    'DEFAULT_LOOP_WATCHDOG_INTERVAL_S': ('gateway.shutdown_watchdog', 'DEFAULT_LOOP_WATCHDOG_INTERVAL_S'),
-    'DEFAULT_LOOP_WATCHDOG_MAX_STRIKES': ('gateway.shutdown_watchdog', 'DEFAULT_LOOP_WATCHDOG_MAX_STRIKES'),
-    'DEFAULT_LOOP_WATCHDOG_TIMEOUT_S': ('gateway.shutdown_watchdog', 'DEFAULT_LOOP_WATCHDOG_TIMEOUT_S'),
-    'EphemeralReply': ('gateway.platforms.base', 'EphemeralReply'),
-    'GATEWAY_FATAL_CONFIG_EXIT_CODE': ('gateway.restart', 'GATEWAY_FATAL_CONFIG_EXIT_CODE'),
-    'GATEWAY_SERVICE_RESTART_EXIT_CODE': ('gateway.restart', 'GATEWAY_SERVICE_RESTART_EXIT_CODE'),
-    'SessionEntry': ('gateway.session', 'SessionEntry'),
-    'TranscriptReadError': ('gateway.session_transcript', 'TranscriptReadError'),
-    'TurnContext': ('gateway.turn_context', 'TurnContext'),
-    'TurnLeaseTimeoutError': ('gateway.turn_lease', 'TurnLeaseTimeoutError'),
-    'TurnRunner': ('gateway.run_turn_runner', 'TurnRunner'),
-    'arm_shutdown_watchdog': ('gateway.shutdown_watchdog', 'arm_shutdown_watchdog'),
-    'atomic_json_write': ('utils', 'atomic_json_write'),
-    'base_url_hostname': ('utils', 'base_url_hostname'),
-    'build_auto_tts_output_path': ('gateway.platforms.base', 'build_auto_tts_output_path'),
-    'build_channel_continuity_note': ('gateway.session', 'build_channel_continuity_note'),
-    'build_session_context': ('gateway.session', 'build_session_context'),
-    'build_session_context_prompt': ('gateway.session', 'build_session_context_prompt'),
-    'consume_detached_task_result': ('agent.async_utils', 'consume_detached_task_result'),
-    'is_global_startup_conflict': ('gateway.restart', 'is_global_startup_conflict'),
-    'is_shared_multi_user_session': ('gateway.session', 'is_shared_multi_user_session'),
-    'is_truthy_value': ('utils', 'is_truthy_value'),
-    'looks_like_telegram_private_chat_id': ('gateway.delivery', 'looks_like_telegram_private_chat_id'),
-    'loop_heartbeat_forever': ('gateway.shutdown_watchdog', 'loop_heartbeat_forever'),
-    'merge_pending_message_event': ('gateway.platforms.base', 'merge_pending_message_event'),
-    'neutralize_untrusted_inline_text': ('gateway.session', 'neutralize_untrusted_inline_text'),
-    'parse_cron_drain_timeout': ('gateway.restart', 'parse_cron_drain_timeout'),
-    'parse_restart_after_turn_timeout': ('gateway.restart', 'parse_restart_after_turn_timeout'),
-    'parse_restart_drain_timeout': ('gateway.restart', 'parse_restart_drain_timeout'),
-    'parse_signal_interrupt_grace_timeout': ('gateway.restart', 'parse_signal_interrupt_grace_timeout'),
-    'project_compaction_message_for_display': ('agent.compaction_display', 'project_compaction_message_for_display'),
-    'repair_explicit_computer_use_media_paths': ('gateway.media_repair', 'repair_explicit_computer_use_media_paths'),
-    'resolve_cron_drain_budget': ('gateway.restart', 'resolve_cron_drain_budget'),
-    'resolve_delivery_transport': ('gateway.delivery', 'resolve_delivery_transport'),
-    'resolve_shutdown_watchdog_delay': ('gateway.shutdown_watchdog', 'resolve_shutdown_watchdog_delay'),
-    'start_loop_liveness_watchdog': ('gateway.shutdown_watchdog', 'start_loop_liveness_watchdog'),
-    't': ('agent.i18n', 't'),
-    'utf16_len': ('gateway.platforms.base', 'utf16_len'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

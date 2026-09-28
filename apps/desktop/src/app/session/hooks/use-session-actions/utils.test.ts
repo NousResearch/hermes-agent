@@ -8,8 +8,12 @@ import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentBranch,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentModel,
+  setCurrentProvider,
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
@@ -709,6 +713,61 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     const unacknowledged = msg('user-new', 'user', 'A new request', { timestamp: 6 })
     expect(preserveLocalPendingTurnMessages([answer], [...previous, unacknowledged])).toEqual([answer, unacknowledged])
+  })
+
+  it('drops the acknowledged prompt when a compaction handoff precedes its committed copy', () => {
+    // #121088: an in-place compaction handoff (or preserved-task notice) is a
+    // synthetic USER-role row, so the committed copy of the prompt is no
+    // longer the newest user row — and one lands after the reply too. A
+    // newest-only compare misses the committed copy and re-appends the
+    // optimistic row below the whole refreshed turn.
+    const previous = [
+      msg('1-user', 'user', 'first', { rowId: 100 }),
+      msg('2-assistant', 'assistant', 'first answer', { rowId: 101 }),
+      msg('user-optimistic', 'user', 'unable to publish')
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first', { rowId: 100 }),
+      msg('2-assistant-stored', 'assistant', 'first answer', { rowId: 101 }),
+      msg('3-handoff', 'user', 'Context was compacted; continuing.'),
+      msg('4-user-stored', 'user', 'unable to publish', { rowId: 200 }),
+      msg('5-assistant-stored', 'assistant', 'stored answer', { rowId: 201 }),
+      msg('6-notice', 'user', 'Preserved task notice')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-handoff',
+      '4-user-stored',
+      '5-assistant-stored',
+      '6-notice'
+    ])
+  })
+
+  it('still keeps a genuinely unacknowledged repetition of an older question', () => {
+    // The committed twin of a genuine repeat predates the acknowledged
+    // boundary and never enters the newly committed window, so widening
+    // the acknowledged-prompt compare must not swallow it.
+    const previous = [
+      msg('1-user', 'user', 'what time is it?', { rowId: 100 }),
+      msg('2-assistant', 'assistant', 'noon', { rowId: 101 }),
+      msg('user-optimistic', 'user', 'what time is it?')
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'what time is it?', { rowId: 100 }),
+      msg('2-assistant-stored', 'assistant', 'noon', { rowId: 101 }),
+      msg('3-system-user', 'user', 'Preserved task notice')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-system-user',
+      'user-optimistic'
+    ])
   })
 
   it('keeps a newer equal reply and its prompt until that occurrence is persisted', () => {
@@ -2062,6 +2121,42 @@ describe('overlayConcurrentMessageChanges', () => {
 
     expect(overlayConcurrentMessageChanges(page, [page[0]], [page[0], errored]).at(-1)).toBe(errored)
   })
+
+  // The committed row and the settled live row capture the same reply at two
+  // moments while it kept streaming, so one is routinely a prefix of the
+  // other (#123993): accept either as a forward extension, as the sibling
+  // removeRepresentedLocalLiveProjection already does (2494b95929).
+  it('folds a settled live row that lags behind the committed row into one reply', () => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'A2 finished while away', { rowId: 4 })
+    ]
+
+    const current = [page[0], msg('assistant-stream-1-2', 'assistant', 'A2 finished', { pending: false })]
+
+    const overlaid = overlayConcurrentMessageChanges(page, [], current)
+
+    expect(overlaid.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['4-assistant', 'A2 finished while away']
+    ])
+  })
+
+  it('folds a settled live row that ran past the committed row into one reply', () => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'A2 finished', { rowId: 4 })
+    ]
+
+    const current = [page[0], msg('assistant-stream-1-2', 'assistant', 'A2 finished while away', { pending: false })]
+
+    const overlaid = overlayConcurrentMessageChanges(page, [], current)
+
+    expect(overlaid.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['4-assistant', 'A2 finished']
+    ])
+  })
 })
 
 describe('preserveEquivalentTranscript', () => {
@@ -2095,5 +2190,119 @@ describe('preserveEquivalentTranscript', () => {
     const next = [msg('u-1', 'user', 'hello', { pending: true })]
 
     expect(preserveEquivalentTranscript(current, next)).toBe(next)
+  })
+})
+
+describe('preserveLocalPendingTurnMessages attachment rewrites (#120978)', () => {
+  it('drops the rowId-less pasted-attachment prompt once the rewritten copy commits', () => {
+    // A pasted clipboard image is rewritten on the durable side (marker lines,
+    // no data: ref) while the optimistic local row keeps the bare caption and
+    // the data: ref — exact text/refs equality can never match them and the
+    // optimistic row was re-appended below the newest turn.
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-1790168309-ab12cd', 'user', 'unable to publish', {
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first', { rowId: 1 }),
+      msg('2-assistant-stored', 'assistant', 'first answer', { rowId: 2 }),
+      msg('3-user-stored', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]\n[screenshot]', {
+        rowId: 3
+      })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-user-stored'
+    ])
+  })
+
+  it('never tolerance-matches a plain repeat prompt without attachment evidence', () => {
+    // The gating invariant: rewrite markers on the stored side AND attachment
+    // evidence on the local side. A bare repeated caption is a genuine new
+    // question and must survive.
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-plain-repeat', 'user', 'unable to publish')
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first', { rowId: 1 }),
+      msg('2-assistant-stored', 'assistant', 'first answer', { rowId: 2 }),
+      msg('3-user-stored', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]', { rowId: 3 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-user-stored',
+      'user-plain-repeat'
+    ])
+  })
+
+  it('never tolerance-matches a rowId-bearing optimistic row it provably is not (#122079)', () => {
+    // The submit receipt binds user_row_id onto the optimistic row while the
+    // stored page still ends at the earlier paste, so the row reaches the
+    // dedupe compare carrying a rowId none of the committed candidates hold.
+    // The tolerant arm must stay inside the identity gate: pasting the same
+    // captioned screenshot twice is a genuine new turn, not a duplicate.
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-1790168309-ab12cd', 'user', 'unable to publish', {
+        rowId: 901,
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first', { rowId: 1 }),
+      msg('2-assistant-stored', 'assistant', 'first answer', { rowId: 2 }),
+      msg('3-user-stored', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]\n[screenshot]', {
+        rowId: 3
+      })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-user-stored',
+      'user-1790168309-ab12cd'
+    ])
+  })
+})
+
+describe('applyStoredSessionPreviewRuntimeInfo does not persist the preview', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    setCurrentModel('user-pick')
+    setCurrentProvider('anthropic')
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  // The preview is provisional: it paints while session.resume is still in
+  // flight. An abandoned resume never repairs the selection afterwards, so a
+  // persisting paint strands a manual model with an EMPTY provider in
+  // localStorage — every later session.create pairs that model with the
+  // profile provider and fails the coherence gate.
+  it('moves the visible model/provider without persisting them', () => {
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '', model: 'claude-opus-5-5' }, 'session-next')
+
+    // Visible paint happened…
+    expect($currentModel.get()).toBe('claude-opus-5-5')
+    expect($currentProvider.get()).toBe('')
+
+    // …but nothing was persisted: the composer's sticky selection survives.
+    expect(localStorage.getItem('hermes.desktop.composer.model')).toBe('user-pick')
+    expect(localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
   })
 })

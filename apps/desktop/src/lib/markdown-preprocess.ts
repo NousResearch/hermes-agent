@@ -45,7 +45,15 @@ const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // must not end the span — the same distinction findClosingSingleDollar draws
 // via isEscapedAt. The two alternatives are disjoint on their first character,
 // so the body cannot backtrack ambiguously.
-const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?:[^\n$\\]|\\[^\n])+?(?<!\\)\$)/g
+//
+// The inline branch deliberately has NO lookbehind on its CLOSING `$`: the
+// body alternation consumes escape pairs atomically, so any `$` the engine
+// reaches after the body is by construction unescaped — a trailing `\\$`
+// (escaped backslash, valid TeX) would otherwise defeat a one-character
+// lookbehind and unshield the span ($a\\$ mis-split, #92371). The display
+// branch keeps its guard: its `[\s\S]*?` body does not step over escape
+// pairs, so it genuinely needs it.
+const MATH_SPAN_SPLIT_RE = /((?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?:[^\n$\\]|\\[^\n])+?\$)/g
 const LATEX_DISPLAY_OPEN_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\[[ \t]*\r?$/
 const LATEX_DISPLAY_CLOSE_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\\{1,2}\][ \t]*\r?$/
 const CUSTOM_DISPLAY_MATH_LINE_RE = /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\[\/math\][ \t]*\r?$/
@@ -89,9 +97,12 @@ const MARKDOWN_LINK_SPLIT_RE = new RegExp(
   'gm'
 )
 
-// Only strip bare localhost root URLs in prose. URLs with actual path segments
-// (e.g. http://localhost:8080/piwo) are user-facing content and must survive.
-const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?(?=\s|$)/gi
+// A fenced block whose entire body is a loopback URL is the preview-pane
+// hand-off: the widget already paints that address, so the whole block is
+// dropped instead of painting the raw text twice. Bare loopback URLs in
+// PROSE are user-facing content and must survive (#121683) — "dev server at
+// http://localhost:3000" is the address the reader needs, wherever it sits
+// in the sentence.
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 // Autolink-shaped spans (bare or angle-bracketed http(s) URLs) that must be
@@ -113,13 +124,76 @@ const DIRECTIVE_LINE_ONLY_RE = /^[ \t]*::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\}
 const HTML_TAG_RE = /<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s+[^<>]*?)?\/?>/g
 
 const SAFE_HTML_TAG_NAMES = new Set([
-  'a', 'abbr', 'b', 'blockquote', 'br', 'cite', 'code', 'data', 'del', 'details',
-  'div', 'em', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
-  'i', 'img', 'ins', 'kbd', 'li', 'mark', 'ol', 'p', 'pre', 'q', 'rp', 'rt',
-  'ruby', 's', 'samp', 'small', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
-  'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul', 'var', 'wbr'
+  'a',
+  'abbr',
+  'b',
+  'blockquote',
+  'br',
+  'cite',
+  'code',
+  'data',
+  'del',
+  'details',
+  'div',
+  'em',
+  'figcaption',
+  'figure',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'i',
+  'img',
+  'ins',
+  'kbd',
+  'li',
+  'mark',
+  'ol',
+  'p',
+  'pre',
+  'q',
+  'rp',
+  'rt',
+  'ruby',
+  's',
+  'samp',
+  'small',
+  'span',
+  'strong',
+  'sub',
+  'summary',
+  'sup',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'u',
+  'ul',
+  'var',
+  'wbr'
 ])
+
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+
+// Web-citation transport markers (Gemini-style grounding): private-use
+// delimiters U+E200/U+E201 wrap a `citeturn<n>search<m>` id list, with U+E202
+// separating ids — `\uE200citeturn0search11\uE202turn2search0\uE201`, or the
+// single-id `\uE200citeturn0search0\uE201`. The delimiters paint as
+// replacement glyphs (the reported "triple bars") and the ids are protocol
+// noise a reader cannot follow to a source (#120587). Strip the whole marker;
+// a marker that cannot be resolved is dropped, never invented into a link.
+// The bare no-delimiter alternative only fires with the `cite` head, so plain
+// prose can't trip it. Scoped to this shape: stray private-use characters
+// (icon fonts, user content) are left alone.
+const CITATION_TRANSPORT_MARKER_RE =
+  /\uE200(?:cite)?(?:\uE202?turn\d+search\d+)+\uE201?|citeturn\d+search\d+(?:turn\d+search\d+)*/gu
+
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
@@ -345,6 +419,7 @@ function escapeUnknownHtmlLikeTags(text: string): string {
     return tag.replace(/</g, '&lt;').replace(/>/g, '&gt;')
   })
 }
+
 // Rewrite filesystem-path links to the renderer's hash-href door (#82140).
 // A plain path/file: href names a file on the AGENT's machine: Streamdown's
 // URL hardening blocks `file:`/`~/` outright, and an absolute path renders
@@ -371,7 +446,7 @@ function rewriteProseSegment(segment: string): string {
       autoLinkRawUrls(
         routeFileLinksToPreview(
           escapeUnknownHtmlLikeTags(
-            segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            segment.replace(/`{3,}/g, '').replace(CITATION_TRANSPORT_MARKER_RE, '').replace(CITATION_MARKER_RE, '')
           )
         )
       )
@@ -583,9 +658,12 @@ const CJK_RE = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufa
  * Escaping only the OPENING `$` is enough: the closing `$` loses its partner
  * and renders literally. Real math is untouched — its body carries no CJK —
  * and `$$` display runs are skipped by the same `$$`-run guard the currency
- * escape uses. The one accepted tradeoff: genuine inline math whose body
- * names a CJK variable (`$x = 变量$`) renders as literal prose. Losing one
- * equation is far cheaper than corrupting a sentence's copy-out.
+ * escape uses. A non-CJK span is consumed through its closer: otherwise that
+ * closer is scanned as the next opener, and CJK prose between two formulas
+ * makes the escape land on the first equation's real closing `$`. The one
+ * accepted tradeoff: genuine inline math whose body names a CJK variable
+ * (`$x = 变量$`) renders as literal prose. Losing one equation is far cheaper
+ * than corrupting a sentence's copy-out.
  */
 function escapeCjkProseDollars(text: string): string {
   let out = ''
@@ -605,6 +683,8 @@ function escapeCjkProseDollars(text: string): string {
     const body = text.slice(cursor + 1, closingIndex)
 
     if (!CJK_RE.test(body)) {
+      cursor = closingIndex
+
       continue
     }
 

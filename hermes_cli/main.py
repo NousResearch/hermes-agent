@@ -426,6 +426,9 @@ _startup_fast.ensure_project_root_on_path()
 # HERMES_HOME set, and the flag stripped so argparse never sees it. Falls back
 # to ~/.hermes/active_profile for the sticky default.
 _PROFILE_NAME_RE = r"^[a-z0-9][a-z0-9_-]{0,63}$"  # mirrors hermes_cli.profiles._PROFILE_ID_RE
+# Set only when -p/--profile was on argv. Sticky active_profile must not count:
+# `hermes desktop` with no flag must not overwrite Desktop's stored profile.
+_explicit_cli_profile: str | None = None
 
 
 def _inside_mcp_add_args(argv: list, index: int) -> bool:
@@ -575,8 +578,19 @@ def _s6_supervised_gateway_run(argv: list) -> bool:
     return _s6_running()
 
 
+def explicit_cli_profile() -> str | None:
+    """Profile named by a consumed ``-p``/``--profile`` flag, else None.
+
+    Sticky ``active_profile`` is not explicit. Desktop launch must not overwrite
+    its stored profile when the user omitted the flag.
+    """
+    return _explicit_cli_profile
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
+    global _explicit_cli_profile
+    _explicit_cli_profile = None
     argv = sys.argv[1:]
     profile_name, consume, profile_index = _scan_profile_flag(argv)
 
@@ -622,6 +636,8 @@ def _apply_profile_override() -> None:
         print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
         return
     os.environ["HERMES_HOME"] = hermes_home
+    if consume > 0:
+        _explicit_cli_profile = profile_name
     # Strip the flag from argv so argparse doesn't choke
     if consume > 0 and profile_index is not None:
         start = profile_index + 1  # +1 because argv is sys.argv[1:]
@@ -855,6 +871,7 @@ from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py 
     _desktop_macos_relaunchable_fixup,
     _desktop_packaged_executable,
     _install_rebuilt_desktop_app,
+    _installed_desktop_apps,
 )
 from hermes_cli.main_web_build import (
     _sweep_stale_bytecode_if_checkout_changed,
@@ -3672,31 +3689,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import hashlib  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import stat  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'line_input': ('hermes_cli.cli_output', 'line_input'),
-}
-
-_plugin_compat_prev_getattr = __getattr__
-
-
-def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        return _plugin_compat_prev_getattr(name)
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

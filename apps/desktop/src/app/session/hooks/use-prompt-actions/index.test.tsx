@@ -1169,7 +1169,10 @@ describe('usePromptActions /background', () => {
 
     await handle!.submitText('/background anything')
 
-    expect(requestGateway).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'background anything' }))
+    expect(requestGateway).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'background anything' })
+    )
     expect(renderedSeedTexts(seeds).some(text => text.includes('legacy gateway'))).toBe(true)
   })
 })

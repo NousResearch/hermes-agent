@@ -422,7 +422,8 @@ export const zhHant = defineLocale({
     plugins: {
       openFolder: '開啟桌面外掛資料夾',
       installModal: {
-        installUncertain: 'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
+        installUncertain:
+          'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
         repoPlaceholder: 'https://github.com/owner/repo',
@@ -677,7 +678,9 @@ export const zhHant = defineLocale({
       toursTitle: '導覽',
       toursDesc: '讓 Hermes 逐步標示每個位置，帶你認識應用程式。開始使用滿30天後自動關閉，你可以重新開啟。',
       composerPopoutTitle: '懸浮輸入框',
-      composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',
+      composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉時，輸入框停靠在底部。',
+      fileBrowserTitle: '檔案瀏覽器',
+      fileBrowserDesc: '開啟工作區時，在聊天旁顯示檔案瀏覽器。標題列的切換按鈕也會變更此設定。',
       vibeHeartsTitle: '心情愛心',
       vibeHeartsDesc: '當你說謝謝、愛你、good bot 或送出愛心時飄出的愛心。與上方的訊息回應是兩回事。',
       embedsTitle: '內嵌預覽',
@@ -1376,6 +1379,7 @@ export const zhHant = defineLocale({
       restartFailed: '無法重新啟動後端',
       auxiliaryTitle: '輔助模型',
       resetAllToMain: '全部重設為主要模型',
+      staleAuxDismiss: '不再顯示',
       auxiliaryDesc: '輔助任務預設使用主要模型。您可以為任何任務指定專用模型。',
       setToMain: '設為主要模型',
       change: '變更',
@@ -2085,11 +2089,6 @@ export const zhHant = defineLocale({
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',
     sections: { sessions: '工作階段', system: '系統', usage: '使用量' },
-    sectionDescriptions: {
-      sessions: '搜尋和管理工作階段',
-      system: '狀態、記錄和系統動作',
-      usage: '一段時間內的詞元、費用和技能活動'
-    },
     nav: {
       newChat: { title: '新工作階段', detail: '開始新的工作階段' },
       settings: { title: '設定', detail: '設定 Hermes 桌面端' },
@@ -2130,6 +2129,7 @@ export const zhHant = defineLocale({
     actionStartedWaiting: '動作已啟動，等待狀態…',
     loadingStatus: '正在載入狀態…',
     recentLogs: '最近記錄',
+    logSearchPlaceholder: '搜尋記錄行…',
     noLogs: '尚未載入記錄。',
     days: count => `${count} 天`,
     statSessions: '工作階段',
@@ -2153,6 +2153,13 @@ export const zhHant = defineLocale({
 
   messaging: {
     search: '搜尋訊息平台…',
+    statusFilter: {
+      all: '全部',
+      bad: '錯誤',
+      good: '已連線',
+      muted: '未啟用',
+      warn: '需要注意'
+    },
     loading: '正在載入訊息平台…',
     loadFailed: '訊息平台載入失敗',
     states: {
@@ -2399,6 +2406,7 @@ export const zhHant = defineLocale({
     skillsLabel: '技能',
     notSet: '未設定',
     soulDesc: '內建於此設定檔的系統提示詞與角色指令。',
+    soulMissing: '此設定檔尚無 SOUL.md 檔案。在下方輸入指令並儲存即可建立。config.yaml 中的人格預設需另外管理。',
     soulOptional: '選填',
     soulPlaceholder: mode => `此設定檔的系統提示詞 / 角色說明。\n留空則保留${mode}預設值。`,
     soulPlaceholderCloned: '複製的',
@@ -2550,6 +2558,8 @@ export const zhHant = defineLocale({
     nameLabel: '名稱',
     namePlaceholder: '例如：每日摘要',
     promptLabel: '提示詞',
+    scriptLabel: '指令碼',
+    scriptBadge: '指令碼',
     promptPlaceholder: '代理每次執行時應做什麼？',
     frequencyLabel: '頻率',
     deliverLabel: '傳遞至',
@@ -3000,6 +3010,8 @@ export const zhHant = defineLocale({
     restoredDraftNotice: '已還原你未送出的訊息',
     restoredDraftUndo: '復原',
     queueEdit: '編輯',
+    queueExpand: '展開',
+    queueCollapse: '收起',
     queueSendNext: '下一個',
     queueSteer: '引導 — 立即修正目前回合',
     queueSend: '傳送',
@@ -3008,6 +3020,8 @@ export const zhHant = defineLocale({
     queueResumeTip: '已被停止操作暫停 — 繼續傳送排隊的回合',
     queueStuckTitle: '佇列訊息未送出',
     queueStuckBody: '佇列中的對話多次傳送失敗。它仍在佇列中，請重試傳送。',
+    queueDroppedTitle: '已捨棄佇列內容',
+    queueDroppedBody: '該背景佇列項目因工作階段多次嘗試後仍無法恢復而遭捨棄。佇列中的其他內容不受影響。',
     previewUnavailable: '預覽不可用',
     previewLabel: label => `預覽 ${label}`,
     couldNotPreview: label => `無法預覽 ${label}`,
@@ -3064,6 +3078,7 @@ export const zhHant = defineLocale({
     goalWaiting: '目標等待中',
     subagents: count => `${count} 個子代理`,
     todos: (done, total) => `任務 ${done}/${total}`,
+    previousTodos: (done, total) => `先前任務 ${done}/${total}`,
     running: '執行中',
     stop: '停止',
     dismiss: '關閉',
@@ -3245,6 +3260,7 @@ export const zhHant = defineLocale({
     updateNow: '立即更新',
     maybeLater: '稍後再說',
     moreChanges: count => `另有 ${count} 項變更。`,
+    copyFullLog: '複製完整更新日誌',
     manualTitle: '從終端機更新',
     manualUnavailableTitle: '無法從這裡更新',
     manualBody: '您是從命令列安裝的 Hermes，因此更新也需要在那裡執行。請將此指令貼到終端機：',
@@ -3499,7 +3515,11 @@ export const zhHant = defineLocale({
     noAuthenticatedProviders: '沒有已驗證的提供方。',
     addProvider: '新增提供方…',
     addCustomModel: '新增自訂模型',
-    removeCustomModel: '移除自訂模型'
+    removeCustomModel: '移除自訂模型',
+    resetToDefaults: '恢復預設',
+    resetConfirm: '將模型可見性恢復為預設？',
+    resetDescription: '你對模型顯示與隱藏的選擇將被清除，每個提供方都會恢復預設清單。你新增的自訂模型會保留並顯示。',
+    resetAction: '恢復'
   },
 
   shell: {
@@ -3954,8 +3974,8 @@ export const zhHant = defineLocale({
           body: provider => `${provider} 傳回了伺服器錯誤。請稍後重試或切換服務商。`
         },
         timeout: {
-          title: '回覆逾時',
-          body: provider => `${provider} 未及時回應。請重試以重新傳送。`
+          title: '無法連線到 AI 服務',
+          body: provider => `無法連線到 ${provider}，或其未及時回應。請檢查網路連線後重試。`
         },
         ssl_cert_verification: {
           title: '安全連線失敗',
@@ -3993,6 +4013,8 @@ export const zhHant = defineLocale({
       preparingAudio: '正在準備音訊...',
       stopReading: '停止朗讀',
       readAloud: '朗讀',
+      copyFullResponse: '複製完整回覆',
+      readAloudFullResponseHint: '按住 Shift 點擊：朗讀完整回覆',
       editMessage: '編輯訊息',
       stop: '停止',
       restorePrevious: '還原至上一個檢查點',
@@ -4036,7 +4058,8 @@ export const zhHant = defineLocale({
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
       lateAnswerTip: '將此回答起草為後續訊息',
-      lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'
+      lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。',
+      notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
     },
     tool: {
       copyCode: '複製程式碼',
@@ -4327,6 +4350,11 @@ export const zhHant = defineLocale({
   ui: {
     search: {
       clear: '清除搜尋'
+    },
+    logs: {
+      bottom: '記錄底端',
+      search: '搜尋記錄…',
+      top: '記錄頂端'
     },
     pagination: {
       label: '分頁',

@@ -16,8 +16,9 @@ describe('preprocessMarkdown', () => {
 
     expect(output).not.toContain('```')
     expect(output).toContain("Here's your scene:")
-    // Bare localhost URLs (with or without trailing slash) are still stripped.
-    expect(output).not.toContain('http://localhost:8812/')
+    // Loopback URLs in prose are user-facing content (#121683): the address
+    // autolinks instead of being deleted from the sentence.
+    expect(output).toContain('<http://localhost:8812/>')
     expect(output).toContain('- **Multicolored cube**')
   })
 
@@ -34,8 +35,9 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown(input)
 
     expect(output).not.toContain('```')
-    // Bare localhost URLs (with or without trailing slash) are still stripped.
-    expect(output).not.toContain('http://localhost:8812/')
+    // Loopback URLs in prose are user-facing content (#121683): the address
+    // autolinks instead of being deleted from the sentence.
+    expect(output).toContain('<http://localhost:8812/>')
     expect(output).toContain('- **Scroll wheel** - zoom')
   })
 
@@ -543,7 +545,8 @@ describe('preprocessMarkdown', () => {
   // punctuation, so remark-math reads it as a literal dollar and the sentence
   // renders as prose with recoverable copy-out.
   it('does not pair two bare dollars around CJK prose as inline math (#103546)', () => {
-    const input = '...的经典嫌疑是 **$connection 被别的写者整包覆盖**（丢了 `isFullscreen` 字段）...搜 `$connection` 的所有写者：'
+    const input =
+      '...的经典嫌疑是 **$connection 被别的写者整包覆盖**（丢了 `isFullscreen` 字段）...搜 `$connection` 的所有写者：'
 
     const output = preprocessMarkdown(input)
 
@@ -571,6 +574,18 @@ describe('preprocessMarkdown', () => {
     expect(output).not.toContain('\\$x^2')
   })
 
+  it('keeps every real inline math span when CJK prose separates them (#123163)', () => {
+    expect(preprocessMarkdown('$E = mc^2$ 代入 $x$ 求解')).toBe('$E = mc^2$ 代入 $x$ 求解')
+    expect(preprocessMarkdown('$a$ 与 $b$ 之间的说明')).toBe('$a$ 与 $b$ 之间的说明')
+    expect(preprocessMarkdown('$a$ 甲 $b$ 乙 $c$ 丙')).toBe('$a$ 甲 $b$ 乙 $c$ 丙')
+    // Backslash commands are real math too; the closer must not be re-opened.
+    expect(preprocessMarkdown('根据 $\\alpha$ 和 $\\beta$ 计算')).toBe('根据 $\\alpha$ 和 $\\beta$ 计算')
+  })
+
+  it('still escapes a CJK variable inside one equation and keeps the next span (#103546)', () => {
+    expect(preprocessMarkdown('$x = 变量$ 与 $y$')).toBe('\\$x = 变量\\$ 与 $y$')
+  })
+
   it('leaves real inline math adjacent to CJK untouched (#103546)', () => {
     const output = preprocessMarkdown('其中 $\\alpha = 1$，所以')
 
@@ -582,5 +597,24 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown('公式 $$E = mc^2$$ 成立')
 
     expect(output).toContain('$$E = mc^2$$')
+  })
+
+  it('shields inline math closed after an escaped backslash', () => {
+    // #92371: in `$x[2]\\$` the `\\` is an escaped backslash (a literal
+    // backslash, valid TeX), so the final `$` really closes the span. A
+    // one-character lookbehind on the closer saw the backslash and refused
+    // to shield, letting the prose citation-marker rewrite eat `[2]`.
+    const output = preprocessMarkdown(String.raw`Per the paper, $x[2]\\$ is the value.`)
+
+    expect(output).toBe(String.raw`Per the paper, $x[2]\\$ is the value.`)
+
+    // Minimal shape: the span containing only a+escaped-backslash.
+    expect(preprocessMarkdown(String.raw`$a\\$ plain`)).toBe(String.raw`$a\\$ plain`)
+  })
+
+  it('still escapes bare currency dollars next to an escaped-backslash span', () => {
+    // The fix must not widen the math branch into currency: an escaped `\$`
+    // stays a price opener, an escaped `\\` stays a literal backslash.
+    expect(preprocessMarkdown(String.raw`costs \$5 and $a\\$ ok`)).toBe(String.raw`costs \$5 and $a\\$ ok`)
   })
 })

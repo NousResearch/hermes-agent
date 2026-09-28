@@ -4380,9 +4380,6 @@ class TelegramAdapter(BasePlatformAdapter):
         if not state:
             await query.answer(text="Picker expired — run the command again.")
             return
-        # Same auth gate as approval buttons: strangers in a shared group must not flip session state.
-        if not await self._callback_authorized(query, self._callback_ctx(query), _UNAUTHORIZED):
-            return
         try:
             choice = state["choices"][int(data[3:])]
         except (ValueError, IndexError):
@@ -4717,7 +4714,8 @@ class TelegramAdapter(BasePlatformAdapter):
             (("cp:",), self._handle_choice_picker_callback)):
             if data.startswith(prefixes):
                 chat_id = str(query.message.chat_id) if query.message else None
-                if chat_id:
+                # One auth gate for every chat-id picker: strangers in a shared group must not drive the owner's picker.
+                if chat_id and await self._callback_authorized(query, cb, _UNAUTHORIZED):
                     await handler(query, data, chat_id)
                 return
         for prefix, handler in (
@@ -7296,27 +7294,3 @@ def register(ctx) -> None:
         install_hint="Run `hermes setup` to install Telegram support.", setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config,
         allowed_users_env="TELEGRAM_ALLOWED_USERS", allow_all_env="TELEGRAM_ALLOW_ALL_USERS", cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import threading  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'atomic_replace': ('utils', 'atomic_replace'),
-    'cache_document_from_bytes': ('gateway.platforms.base', 'cache_document_from_bytes'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

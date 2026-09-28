@@ -500,6 +500,8 @@ def local_models_status():
     import pm
 
     current = pm.installed_package(binaries.BACKEND_PACKAGES[runtime_backend]) if runtime_backend else None
+    # The pane must list models from the old per-profile layout even while the runtime is off.
+    _quiet(bootstrap.adopt_legacy_models, [], warn="legacy model adoption failed: %r")
     mdir = bootstrap.models_dir()
     running = _state_endpoint()
     # Resident models from the live router ({} when down): Loaded pills + eject. A failed read is never
@@ -621,7 +623,8 @@ def local_models_catalog():
     budget = hardware.probe_budget(planning=True)
     # The reason key ships with the row so the Recommended badge's tooltip is the branch that actually
     # fired, not a re-derivation that can drift.
-    recommended, recommended_reason = catalog.recommended_entry(budget, _eligible_entries()) or (None, None)
+    recommended, recommended_reason = catalog.recommended_entry(
+        budget, _eligible_entries(), backend=_runtime_section().get("backend", "auto")) or (None, None)
     recommended_id = recommended.id if recommended is not None else None
     # Completeness-checked staging (split parts all present) — same answer the picker and router see, so a
     # mid-download model never reads as downloaded.
@@ -754,7 +757,8 @@ def _quickstart_target(body: QuickstartBody, budget):
     if body.model_id:
         candidates = [_entry_or_404(body.model_id)]
     else:
-        picked = catalog.recommended_entry(budget, _eligible_entries())
+        picked = catalog.recommended_entry(
+            budget, _eligible_entries(), backend=_runtime_section().get("backend", "auto"))
         if picked is None:
             raise HTTPException(
                 status_code=409,

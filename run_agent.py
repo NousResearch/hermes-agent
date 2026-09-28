@@ -1050,7 +1050,7 @@ class AIAgent(
 
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only
-        results paired with an earlier assistant ``todo`` call count — a forged bare ``role: tool`` message
+        results paired with an earlier assistant Todo-tool call count — a forged bare ``role: tool`` message
         must not seed the store (GHSA-5g4g-6jrg-mw3g)."""
         found = self._latest_todo_response(history)
         if found is not None:
@@ -1092,8 +1092,9 @@ class AIAgent(
 
     @classmethod
     def _tool_response_matches_todo_call(cls, history: List[Dict[str, Any]], tool_index: int) -> bool:
-        """True when the nearest prior assistant message issued a ``todo`` call with this ``tool_call_id``; a
-        ``user``/``system`` boundary or missing id means unpaired → must not hydrate."""
+        """True when the nearest prior assistant message issued a Todo-tool call (legacy aliases and the
+        ``tool_call`` bridge canonicalized) with this ``tool_call_id``; a ``user``/``system`` boundary or
+        missing id means unpaired → must not hydrate."""
         tool_call_id = history[tool_index].get("tool_call_id") if 0 <= tool_index < len(history) else None
         if not tool_call_id:
             return False
@@ -1107,11 +1108,12 @@ class AIAgent(
 
     @classmethod
     def _assistant_has_todo_tool_call(cls, assistant_msg: Dict[str, Any], tool_call_id: str) -> bool:
-        """True when the assistant message issued a ``todo`` call with this id."""
+        """True when the paired call resolves to the registered Todo tool."""
+        from tools.todo_tool import is_todo_tool_call
+
         tool_calls = assistant_msg.get("tool_calls")
         return isinstance(tool_calls, list) and any(
-            cls._get_tool_call_id_static(tc) == tool_call_id and cls._get_tool_call_name_static(tc) == "todo"
-            for tc in tool_calls
+            cls._get_tool_call_id_static(tc) == tool_call_id and is_todo_tool_call(tc) for tc in tool_calls
         )
 
     @property
@@ -1574,54 +1576,3 @@ if __name__ == "__main__":
     from agent.legacy_cli import main as _legacy_cli_main
 
     raise SystemExit(_legacy_cli_main(run=main))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from types import SimpleNamespace  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import copy  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'COMPRESSED_SUMMARY_METADATA_KEY': ('agent.context_compressor', 'COMPRESSED_SUMMARY_METADATA_KEY'),
-    'ContextCompressor': ('agent.context_compressor', 'ContextCompressor'),
-    'DEFAULT_AGENT_IDENTITY': ('agent.prompt_builder', 'DEFAULT_AGENT_IDENTITY'),
-    'FailoverReason': ('agent.error_classifier', 'FailoverReason'),
-    'OpenAI': ('agent.process_bootstrap', 'OpenAI'),
-    'atomic_json_write': ('utils', 'atomic_json_write'),
-    'build_context_files_prompt': ('agent.prompt_builder', 'build_context_files_prompt'),
-    'build_environment_hints': ('agent.prompt_builder', 'build_environment_hints'),
-    'build_skills_system_prompt': ('agent.prompt_builder', 'build_skills_system_prompt'),
-    'check_toolset_requirements': ('model_tools', 'check_toolset_requirements'),
-    'convert_scratchpad_to_think': ('agent.trajectory', 'convert_scratchpad_to_think'),
-    'estimate_request_tokens_rough': ('agent.model_metadata', 'estimate_request_tokens_rough'),
-    'file_mutation_result_landed': ('agent.tool_result_classification', 'file_mutation_result_landed'),
-    'flatten_message_text': ('agent.message_content', 'flatten_message_text'),
-    'get_tool_definitions': ('model_tools', 'get_tool_definitions'),
-    'handle_function_call': ('model_tools', 'handle_function_call'),
-    'is_truthy_value': ('utils', 'is_truthy_value'),
-    'jittered_backoff': ('agent.retry_utils', 'jittered_backoff'),
-    'load_soul_md': ('agent.prompt_builder', 'load_soul_md'),
-    'normalize_usage': ('agent.usage_pricing', 'normalize_usage'),
-    'redact_sensitive_text': ('agent.redact', 'redact_sensitive_text'),
-    'request_hard_interrupt': ('agent.interrupt_compat', 'request_hard_interrupt'),
-    'sanitize_context': ('agent.memory_manager', 'sanitize_context'),
-    'user_originated_turn_view': ('agent.context_compressor', 'user_originated_turn_view'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

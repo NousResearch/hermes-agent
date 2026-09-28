@@ -62,6 +62,8 @@ export function useSlashCompletions(options: {
    *  session's repo, so the catalog and each query are fetched and cached per
    *  session. */
   sessionId?: string | null
+  /** The tile's routed profile: scopes the palette while a draft has no session yet (#124651). */
+  profile?: string | null
   /** Desktop theme list — `/skin` is owned client-side, so its arg completions
    *  come from here, not the backend (whose skin list is CLI/TUI-only). */
   skinThemes?: DesktopThemeCommandOption[]
@@ -70,12 +72,18 @@ export function useSlashCompletions(options: {
   adapter: Unstable_TriggerAdapter
   loading: boolean
 } {
-  const { gateway, sessionId, skinThemes, activeSkin } = options
+  const { gateway, sessionId, profile, skinThemes, activeSkin } = options
   const { locale } = useI18n()
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
-  const sessionParams = useMemo(() => (sessionId ? { session_id: sessionId } : {}), [sessionId])
-  const catalogKey = sessionId ? `catalog:${sessionId}` : 'catalog'
+
+  const sessionParams = useMemo(
+    () => (sessionId ? { session_id: sessionId } : profile ? { profile } : {}),
+    [sessionId, profile]
+  )
+
+  const scopeKey = sessionId ?? (profile ? `profile:${profile}` : '')
+  const catalogKey = scopeKey ? `catalog:${scopeKey}` : 'catalog'
 
   // Warm argument_mode before the first `/` so Space treats /review as text.
   useEffect(() => {
@@ -206,7 +214,7 @@ export function useSlashCompletions(options: {
           return { items, query }
         }
 
-        const result = await cachedSlashCompletion(`slash:${sessionId ?? ''}:${text.toLowerCase()}`, () =>
+        const result = await cachedSlashCompletion(`slash:${scopeKey}:${text.toLowerCase()}`, () =>
           gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
             text,
             ...sessionParams
@@ -238,8 +246,7 @@ export function useSlashCompletions(options: {
             return { ...item, text: `${prefix}${argText}` }
           })
           .filter(
-            item =>
-              isArgCompletion || isDesktopSlashSuggestionWithOptions(item.text, { exactAlias: exactAliasQuery })
+            item => isArgCompletion || isDesktopSlashSuggestionWithOptions(item.text, { exactAlias: exactAliasQuery })
           )
           .map(item => ({
             ...item,
@@ -275,7 +282,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin, sessionId, catalogKey, sessionParams]
+    [gateway, skinThemes, activeSkin, scopeKey, catalogKey, sessionParams]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
@@ -317,9 +324,9 @@ export function useSlashCompletions(options: {
         return true
       }
 
-      return hasCachedSlashCompletion(query ? `slash:${sessionId ?? ''}:${text.toLowerCase()}` : catalogKey)
+      return hasCachedSlashCompletion(query ? `slash:${scopeKey}:${text.toLowerCase()}` : catalogKey)
     },
-    [skinThemes, sessionId, catalogKey]
+    [skinThemes, scopeKey, catalogKey]
   )
 
   return useLiveCompletionAdapter({ enabled, epoch: `${epoch}:${locale}`, fetcher, isCached, toItem })

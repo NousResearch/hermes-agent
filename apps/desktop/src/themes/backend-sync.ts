@@ -34,10 +34,12 @@ const BACKEND_THEMES_KEY = 'hermes-desktop-backend-themes-v1'
 // Electron reads the active local `display.skin` before it creates the
 // renderer. Seed it alongside the existing cache so an unreachable primary
 // gateway cannot leave a first-time custom skin unknown to the theme registry.
-const localSkinPayload = typeof window === 'undefined' ? null : window.hermesDesktop?.localSkin ?? null
+const localSkinPayload = typeof window === 'undefined' ? null : (window.hermesDesktop?.localSkin ?? null)
 const localSkin = localSkinPayload?.skin ?? null
 export const localDisplaySkinName = (localSkin?.name ?? '').trim() || null
-export const localDisplaySkinProfile = localDisplaySkinName ? (localSkinPayload?.profile ?? '').trim() || 'default' : null
+export const localDisplaySkinProfile = localDisplaySkinName
+  ? (localSkinPayload?.profile ?? '').trim() || 'default'
+  : null
 
 const readCached = (): Record<string, DesktopTheme> =>
   Object.fromEntries(

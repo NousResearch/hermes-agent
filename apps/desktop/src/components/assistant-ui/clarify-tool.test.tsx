@@ -755,6 +755,99 @@ describe('ClarifyTool batch card', () => {
     expect((screen.getByRole('button', { name: /Confirm and continue/ }) as HTMLButtonElement).disabled).toBe(true)
   })
 
+  // #98645: when the request never reaches this window the preview used to
+  // sit disabled for the tool's whole 300s timeout with nothing said.
+  it('asks the backend to re-deliver a request that never arrived, then says it did not reach the app', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const request = vi.fn(async (..._args: unknown[]) => ({ events: [], open_requests: [] }))
+      $activeSessionId.set('session-1')
+      $gateway.set({ request } as never)
+      renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+      expect(screen.queryByText(/didn't reach the app/)).toBeNull()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000)
+      })
+
+      expect(request.mock.calls[0]?.slice(0, 2)).toEqual([
+        'session.events.since',
+        { last_seen: Number.MAX_SAFE_INTEGER, session_id: 'session-1' }
+      ])
+      expect(screen.getByRole('status').textContent).toMatch(/didn't reach the app.*Press Stop/)
+      expect(document.querySelector('[data-clarify-batch-preview]')?.getAttribute('aria-busy')).toBeNull()
+      // Nothing on the card can answer, so the actions go rather than sit disabled.
+      expect(screen.queryByRole('button', { name: /Confirm and continue/ })).toBeNull()
+      expect(screen.queryByRole('button', { name: /Skip/ })).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('goes live when the re-delivery finds the request still open on the backend', async () => {
+    vi.useFakeTimers()
+
+    try {
+      liveServerRequest('request-batch')
+
+      // The channel re-delivers `open_requests` to the request handlers (which
+      // park the clarify) before the call resolves.
+      const request = vi.fn(async (method: string) => {
+        if (method === 'session.events.since') {
+          setClarifyRequest({
+            choices: null,
+            multiSelect: false,
+            question: '',
+            questions: [
+              { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+              { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+            ],
+            requestId: 'request-batch',
+            sessionId: 'session-1'
+          })
+        }
+
+        return { events: [], open_requests: [] }
+      })
+
+      $activeSessionId.set('session-1')
+      $gateway.set({ request } as never)
+      renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000)
+      })
+
+      expect((screen.getByRole('button', { name: /red/ }) as HTMLButtonElement).disabled).toBe(false)
+      expect(document.querySelector('[data-clarify-batch-preview]')).toBeNull()
+      expect(screen.queryByText(/didn't reach the app/)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the same notice on a single-question card whose request never arrived', async () => {
+    vi.useFakeTimers()
+
+    try {
+      $activeSessionId.set('session-1')
+      $gateway.set({ request: vi.fn(async () => ({ events: [], open_requests: [] })) } as never)
+      renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000)
+      })
+
+      expect(screen.getByRole('status').textContent).toMatch(/didn't reach the app/)
+      expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
+      expect(screen.queryByRole('button', { name: /Skip/ })).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('swaps the preview for the live form and answers with the request qids', async () => {
     const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
     $activeSessionId.set('session-1')
@@ -931,6 +1024,107 @@ describe('ClarifyTool batch card', () => {
       expect(respond).toHaveBeenCalledWith({})
     })
     expect(request).not.toHaveBeenCalled()
+  })
+
+  // ─── Single-entry batch (one-question questions[]) ────────────────────────
+  // #95907 made `questions[]` the only advertised shape, so a single question
+  // now arrives as a one-entry batch on BOTH sides: tool args carry
+  // `questions:[{question, choices}]` and the gateway wire carries
+  // `questions:[{qid, question, choices}]` with no top-level question. The
+  // batch card must mount for the one-entry case exactly as it does for 2+.
+
+  function singleBatchArgs(): { questions: { question: string; choices: string[] }[] } {
+    return {
+      questions: [
+        {
+          choices: ['Local Markdown under .scratch/', 'GitHub Issues', 'Linear', 'GitLab Issues'],
+          question: 'Which issue tracker should this repository use?'
+        }
+      ]
+    }
+  }
+
+  function liveSingleBatchProps(): ToolCallMessagePartProps {
+    const args = singleBatchArgs()
+
+    return {
+      addResult: vi.fn(),
+      args,
+      argsText: JSON.stringify(args),
+      isError: false,
+      respondToApproval: vi.fn(),
+      result: undefined,
+      resume: vi.fn(),
+      status: { type: 'running' },
+      toolCallId: 'clarify-single-batch',
+      toolName: 'clarify',
+      type: 'tool-call'
+    }
+  }
+
+  function singleBatchRequest() {
+    return {
+      choices: null,
+      multiSelect: false,
+      question: '',
+      questions: [
+        {
+          choices: ['Local Markdown under .scratch/', 'GitHub Issues', 'Linear', 'GitLab Issues'],
+          multiSelect: false,
+          qid: 'q0',
+          question: 'Which issue tracker should this repository use?'
+        }
+      ],
+      requestId: 'request-single-batch',
+      sessionId: 'session-1'
+    }
+  }
+
+  it('renders a one-entry batch as the batch card, not a blank/spinner single card', () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    setClarifyRequest(singleBatchRequest())
+    renderClarify(<ClarifyTool {...liveSingleBatchProps()} />)
+
+    expect(screen.getByText('Which issue tracker should this repository use?')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /GitHub Issues/ })).toBeTruthy()
+    expect(document.querySelector('form[data-clarify-batch]')?.getAttribute('data-clarify-batch')).toBe('1')
+  })
+
+  it('mounts the batch card once the wire request lands after the tool row (#98645 timing)', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+
+    // Tool row mounts FIRST with the model's args; the gateway wire (with the
+    // qid the renderer needs) arrives a beat later — same ordering as
+    // tool.start → clarify.request in a live session.
+    const { rerender } = renderClarify(<ClarifyTool {...liveSingleBatchProps()} />)
+
+    await act(async () => {
+      setClarifyRequest(singleBatchRequest())
+    })
+    rerender(clarifyTree(<ClarifyTool {...liveSingleBatchProps()} />))
+
+    await waitFor(() => {
+      expect(screen.getByText('Which issue tracker should this repository use?')).toBeTruthy()
+    })
+    expect(screen.getByRole('button', { name: /GitHub Issues/ })).toBeTruthy()
+
+    // And the single pick answers with the qid-keyed lock.
+    fireEvent.click(screen.getByRole('button', { name: /GitHub Issues/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.lock', {
+        answer: 'GitHub Issues',
+        question_id: 'q0',
+        request_id: 'request-single-batch'
+      })
+    })
   })
 
   it('renders the settled batch with all questions and answers', () => {

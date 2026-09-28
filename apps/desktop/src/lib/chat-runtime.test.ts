@@ -12,6 +12,7 @@ import {
   createToolMergeCache,
   messageCreatedAt,
   optimisticAttachmentRef,
+  personalityNamesFromConfig,
   toRuntimeMessage
 } from './chat-runtime'
 
@@ -90,11 +91,24 @@ describe('optimisticAttachmentRef', () => {
 
   it('renders an OS-drop blob: preview as a markdown image (no IPC data URL)', () => {
     const blobUrl = 'blob:https://desktop/preview-1'
+
     const ref = optimisticAttachmentRef(
       attachment({ kind: 'image', label: 'Lattice.png', detail: 'C:\\shot.png', previewUrl: blobUrl })
     )
 
     expect(ref).toBe(`![Lattice.png](${blobUrl})`)
+  })
+
+  it('percent-encodes a blob ref alt so brackets in a filename cannot break it', () => {
+    const blobUrl = 'blob:file:///07aa165b-55f6-4167-96c0-68f45ce7de27'
+
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', label: 'shot[1].png', detail: '/tmp/shot[1].png', previewUrl: blobUrl })
+    )
+
+    // `]` in the raw label would end the alt span in the Markdown-image form
+    // the directive parser matches, leaking the raw expression into text.
+    expect(ref).toBe(`![shot%5B1%5D.png](${blobUrl})`)
   })
 
   it('passes non-image attachments straight through to attachmentDisplayText', () => {
@@ -247,5 +261,42 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
       .map(part => (part as { toolCallId: string }).toolCallId)
 
     expect(ids).toEqual(['call-a', 'call-b'])
+  })
+})
+
+describe('personalityNamesFromConfig', () => {
+  it('reads root-level personalities the runtime honours (#123297)', () => {
+    expect(personalityNamesFromConfig({ personalities: { root_persona: '...' } })).toEqual(['root_persona'])
+  })
+
+  it('merges root and agent blocks, deduping name clashes', () => {
+    const names = personalityNamesFromConfig({
+      personalities: { root_persona: 'r', shared: 'root' },
+      agent: { personalities: { agent_persona: 'a', shared: 'agent' } }
+    })
+
+    // Direct array equality pins membership, dedupe, AND order in one assertion:
+    // `available_personalities()` inserts the root block before `agent.personalities`,
+    // and a clashing name keeps its first-insert (root) position, so the GUI listing
+    // must match that exact order.
+    expect(names).toEqual(['root_persona', 'shared', 'agent_persona'])
+  })
+
+  it('ignores non-object or array blocks', () => {
+    expect(personalityNamesFromConfig({ personalities: ['nope'], agent: { personalities: 'nope' } })).toEqual([])
+    expect(personalityNamesFromConfig(null)).toEqual([])
+  })
+
+  it('folds keys like the runtime: case/whitespace fold and dedupe, neutral names dropped', () => {
+    // The runtime (`available_personalities`) folds each key `str(name).strip().lower()`
+    // and skips the neutral spellings, so the dropdown must not offer a row the runtime
+    // never resolves. `Catgirl` and `catgirl` are one personality; `  Spaced  ` resolves
+    // to `spaced`; `none`/`default`/`neutral` resolve to nothing.
+    const names = personalityNamesFromConfig({
+      personalities: { Catgirl: 'r', '  Spaced  ': 'r', none: 'r', Default: 'r', NEUTRAL: 'r' },
+      agent: { personalities: { catgirl: 'a' } }
+    })
+
+    expect(names).toEqual(['catgirl', 'spaced'])
   })
 })

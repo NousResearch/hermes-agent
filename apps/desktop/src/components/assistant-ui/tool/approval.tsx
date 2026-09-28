@@ -35,6 +35,7 @@ import {
   sessionApprovalRequests,
   sessionApprovalStackSize
 } from '@/store/prompts'
+import { $showToolActivity } from '@/store/tool-activity'
 import { setToolDisclosureOpen } from '@/store/tool-view'
 
 import { isApprovalActivity } from './approval-activity'
@@ -78,6 +79,7 @@ export const PendingApprovalStack: FC = () => {
 function ApprovalActivity({ floating, visible }: { floating: boolean; visible: boolean }) {
   const { t } = useI18n()
   const reduced = useReducedMotion()
+  const showToolActivity = useStore($showToolActivity)
 
   const summary = useAuiState(state => {
     if (!visible) {
@@ -117,6 +119,12 @@ function ApprovalActivity({ floating, visible }: { floating: boolean; visible: b
       )
       .join('\n')
   })
+
+  // The pending approval stays. The run summary beside it is tool feed and
+  // follows display.tool_progress alongside the other process rows.
+  if (!showToolActivity) {
+    return null
+  }
 
   return (
     <AnimatePresence initial={false}>
@@ -281,8 +289,9 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
   // on otherwise. Show the description whenever the command is missing or one
   // of these synthetic labels; a real command keeps rendering as the command.
   const SYNTHETIC_COMMAND_RE = /^<[^>]+> \(/
-  const showsDescription =
-    !hasCommand || SYNTHETIC_COMMAND_RE.test(request.command.trim())
+
+  const showsDescription = !hasCommand || SYNTHETIC_COMMAND_RE.test(request.command.trim())
+
   const details = showsDescription ? request.description.trim() : request.command.trim()
 
   const respond = useCallback(

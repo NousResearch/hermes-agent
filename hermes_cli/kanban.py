@@ -219,7 +219,7 @@ def _verified_origin_session_id() -> Optional[str]:
             return session_id if state.get_session(session_id) else None
         finally:
             state.close()
-    except (OSError, RuntimeError, ValueError):
+    except Exception:  # no state.db (or unusable state) must not block board creation
         return None
 
 

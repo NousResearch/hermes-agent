@@ -48,6 +48,19 @@ def test_cli_create_stamps_only_verified_profile_session(kanban_home, monkeypatc
         assert kb.get_task(conn, second["id"]).created_by == "user"
 
 
+def test_cli_create_with_session_env_and_missing_state_db_still_succeeds(
+        kanban_home, monkeypatch, capsys):
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers())
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")
+    assert kc.kanban_command(parser.parse_args(["kanban", "create", "operator-card", "--json"])) == 0
+    task_id = json.loads(capsys.readouterr().out)["id"]
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.session_id is None
+        assert task.created_by == "user"
+
+
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------

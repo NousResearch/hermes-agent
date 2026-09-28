@@ -18,8 +18,10 @@
  *  - the Vazirmatn font stack falling back to system faces.
  *  - broken Persian copy (missing keys falling back to English mid-surface).
  *
- * One baseline per covered page (16 as of 2026-09-28, including /mcp with its
- * per-page server/catalog fixtures via MCP_API_OVERRIDES below).
+ * One baseline per covered page (17 as of 2026-09-28, including /mcp with its
+ * per-page server/catalog fixtures via MCP_API_OVERRIDES below) plus element
+ * baselines for the densest mixed-content rows (files entry row, cron meta
+ * strip, MCP server card).
  * Baselines: `npx playwright test --update-snapshots` (see config). On CI PRs,
  * diffs are surfaced as artifacts, not failures — same policy as the desktop
  * visual suite.
@@ -763,6 +765,42 @@ test.describe("Persian RTL visual snapshots", () => {
     } finally {
       mkdirSync(info.outputDir, { recursive: true });
       writeFileSync(info.outputPath("cron-job-meta-actual.png"), shot);
+    }
+  });
+
+  test("mcp server card pins mixed-direction identity chrome (Latin name + URL, Persian badges)", async ({
+    page,
+  }) => {
+    // The github-mcp fixture card is the MCP surface's sharpest mixed-content
+    // element: a Latin server name and URL (user data, LTR runs) inside
+    // Persian chrome — transport badge, «احراز هویت: oauth», the env-var chip
+    // «۱ متغیر محیطی» and the action buttons. The full-page /mcp snapshot
+    // covers the whole surface; this element baseline isolates one card so a
+    // badge-order or URL-island regression is reviewable in isolation.
+    await stubBackend(page, MCP_API_OVERRIDES);
+    await seedPersian(page);
+    await page.setViewportSize(VIEWPORT);
+    await page.goto("/mcp", { waitUntil: "domcontentloaded" });
+    await assertRtlBoot(page);
+    await page.waitForLoadState("networkidle");
+
+    // The stubbed servers actually rendered (fixture names).
+    await expect(page.getByText("github-mcp")).toBeVisible();
+    await expect(page.getByText("filesystem-bridge")).toBeVisible();
+    await expect(page.getByText("weather-legacy")).toBeVisible();
+
+    const card = page
+      .locator("div.border.bg-background-base\\/80")
+      .filter({ hasText: "github-mcp" })
+      .first();
+    await expect(card).toBeVisible();
+    const shot = await card.screenshot({ animations: "disabled" });
+    const info = test.info();
+    try {
+      await expect(shot).toMatchSnapshot("mcp-server-card.png");
+    } finally {
+      mkdirSync(info.outputDir, { recursive: true });
+      writeFileSync(info.outputPath("mcp-server-card-actual.png"), shot);
     }
   });
 });

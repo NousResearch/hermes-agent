@@ -4,6 +4,7 @@ import * as path from 'node:path'
 
 import { build } from 'esbuild'
 
+import { resolveElectronBinary } from './electron-binary'
 import { _electron, expect, test } from './test'
 
 /** Native Chromium geometry, without a backend or the app's other scroll observers. */
@@ -28,7 +29,10 @@ app.whenReady().then(() => {
     globalName: 'TimelinePosition',
     write: false
   })
-  const app = await _electron.launch({ args: ['--no-sandbox', main] })
+  const app = await _electron.launch({
+    executablePath: resolveElectronBinary([path.resolve('.'), path.resolve('../..')]),
+    args: ['--no-sandbox', main]
+  })
 
   try {
     const page = await app.firstWindow()
@@ -104,6 +108,8 @@ app.whenReady().then(() => {
 
       return measurements
     })
+
+    console.log('Timeline geometry measurements:', JSON.stringify(results))
 
     for (const row of results) {
       expect(row.actual).toBe(row.wanted)

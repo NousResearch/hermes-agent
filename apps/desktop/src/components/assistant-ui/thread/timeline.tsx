@@ -272,6 +272,7 @@ const ActiveThreadTimeline: FC = () => {
       position.invalidate(records)
       schedule()
     })
+
     const content = viewport.querySelector('[data-slot="aui_thread-content"]')
     const resize = new ResizeObserver(schedule)
 

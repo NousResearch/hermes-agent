@@ -153,6 +153,116 @@ async def test_skills_help_lists_all_installed_commands(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("description", "native_description"),
+    [
+        (
+            "Use ``literal ```/help` literal`` here. Try `/help skills`.",
+            "Use ``literal ```/help` literal`` here. Try `!help skills`.",
+        ),
+        (
+            "Use ``literal `/help` literal`` here. Try `/help skills`.",
+            "Use ``literal `/help` literal`` here. Try `!help skills`.",
+        ),
+        (
+            "Example:\n```/help```\nTry `/help skills`.",
+            "Example:\n```/help```\nTry `!help skills`.",
+        ),
+        (
+            "Example:\n   ```/help```\nTry `/help skills`.",
+            "Example:\n   ```/help```\nTry `!help skills`.",
+        ),
+        (
+            "Use ``literal\n`/help`\nliteral`` here. Try `/help skills`.",
+            "Use ``literal\n`/help`\nliteral`` here. Try `!help skills`.",
+        ),
+        (
+            "Try `/help\nskills`.",
+            "Try `!help\nskills`.",
+        ),
+        (
+            "Example:\n ```text\n`/help`\n ```\nTry `/help skills`.",
+            "Example:\n ```text\n`/help`\n ```\nTry `!help skills`.",
+        ),
+        (
+            "Example:\n```text\n`/help`\n```\nTry `/help skills`.",
+            "Example:\n```text\n`/help`\n```\nTry `!help skills`.",
+        ),
+        (
+            "Example:\n~~~text\n`/help`\n~~~\nTry `/help skills`.",
+            "Example:\n~~~text\n`/help`\n~~~\nTry `!help skills`.",
+        ),
+        (
+            "Example:\r\n~~~text\r\n`/help`\r\n~~~\r\nTry `/help skills`.",
+            "Example:\r\n~~~text\r\n`/help`\r\n~~~\r\nTry `!help skills`.",
+        ),
+        (
+            "Example:\n~~~text\t\n`/help`\n~~~\t\nTry `/help skills`.",
+            "Example:\n~~~text\t\n`/help`\n~~~\t\nTry `!help skills`.",
+        ),
+        (
+            "Example:\n````text\n```\n`/help`\n`````\n````\nTry `/help skills`.",
+            "Example:\n````text\n```\n`/help`\n`````\n````\nTry `!help skills`.",
+        ),
+        (
+            "Example:\n```{.text #example}\n`/help`\n```\nTry `/help skills`.",
+            "Example:\n```{.text #example}\n`/help`\n```\nTry `!help skills`.",
+        ),
+    ],
+    ids=[
+        "double-with-triple-and-single",
+        "double-with-single",
+        "inline-triple",
+        "indented-inline-triple",
+        "multiline-double",
+        "multiline-command",
+        "indented-multiline-span",
+        "backtick-fence",
+        "tilde-fence",
+        "crlf-fence",
+        "fence-trailing-tabs",
+        "exact-fence-close",
+        "fence-attributes",
+    ],
+)
+async def test_matrix_catalogues_preserve_literal_spans_and_later_commands(
+    description: str,
+    native_description: str,
+    installed_skill_commands: dict[str, dict[str, str]],
+):
+    from gateway.run import GatewayRunner
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    installed_skill_commands["/research-00"]["description"] = description
+    runner = object.__new__(GatewayRunner)
+    adapter = object.__new__(MatrixAdapter)
+    entry_count = len(gateway_help_lines()) + 2 + len(installed_skill_commands)
+    pages = (entry_count + 19) // 20
+    requests = [
+        ("help", ""),
+        ("help", "skills"),
+        *[("commands", str(page)) for page in range(1, pages + 1)],
+    ]
+    actual = []
+    expected = []
+    for command, args in requests:
+        reply = await getattr(runner, f"_handle_{command}_command")(
+            _event(f"/{command} {args}".rstrip(), Platform.MATRIX)
+        )
+        canonical = execute_command(
+            command, CommandContext(surface="gateway", args=args)
+        ).text
+        native = native_description.join(
+            _expected_reply(part, Platform.MATRIX, installed_skill_commands)
+            for part in canonical.split(description)
+        )
+        actual.append((reply, adapter._markdown_to_html(reply)))
+        expected.append((native, adapter._markdown_to_html(native)))
+
+    assert actual == expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("unsupported_slug", ["123-research", "研究"])
 async def test_matrix_help_only_advertises_native_bangs_for_invocable_skill_slugs(
     unsupported_slug: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

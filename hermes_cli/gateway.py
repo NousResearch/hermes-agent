@@ -4134,13 +4134,10 @@ def host_multiplexer_serving(profile_name: str | None = None):
         gateway = host_gateway_serving(name or "default")
         if gateway is None:
             return None
-        # The host record is HOST-wide, and two Hermes tenants on one host (separate HERMES_HOMEs)
-        # each expose a profile named 'default': a same-named profile under ANOTHER tenant root is a
-        # collision, not coverage. decide() / _claim_host_gateway_role already start beside such an
-        # owner; the CLI guards read this probe and refused with exit 78 instead (#121352).
-        from hermes_constants import get_default_hermes_root
-        from gateway.status import _same_hermes_home
-        if not _same_hermes_home(get_default_hermes_root(home=gateway.home), get_default_hermes_root()):
+        # Same predicate as decide() / _claim_host_gateway_role: another tenant's multiplexer
+        # "serving default" is a name collision, and the CLI guards refused on it with exit 78 (#121352).
+        from gateway.host_attach import launched_by_other_tenant
+        if launched_by_other_tenant(gateway.home, get_hermes_home()):
             logger.debug("Host gateway %s belongs to another Hermes home; not ours", gateway.describe())
             return None
         return gateway

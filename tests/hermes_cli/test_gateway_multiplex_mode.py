@@ -217,15 +217,16 @@ def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(t
     monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: False)
     assert mode.recorded_standalone_warning_lines() == []
 
-    # 3. Stale heartbeat
+    # 3. Stale heartbeat but LIVE PID: a paused/wedged standalone gateway still warns (the
+    # heartbeat is a health signal, not liveness).
     state_file.write_text(json.dumps({
         "gateway_state": "running",
         "pid": os.getpid(),
         "updated_at": "2020-01-01T00:00:00Z",
-        "multiplex_standalone_reason": "orphan reason",
+        "multiplex_standalone_reason": "wedged reason",
     }), encoding="utf-8")
     monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: True)
-    assert mode.recorded_standalone_warning_lines() == []
+    assert any("wedged reason" in line for line in mode.recorded_standalone_warning_lines())
 
     # 4. Live and fresh record emits warning
     state_file.write_text(json.dumps({

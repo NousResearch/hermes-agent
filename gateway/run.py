@@ -5465,9 +5465,16 @@ def _claim_host_gateway_role(force: bool = False) -> None:
                        hr.describe(owner) if owner else "another process")
         return
     from gateway.host_attach import (
-        ATTACH_CHANNEL_WAIT_S, START, host_gateway, standalone_attach_decision,
+        ATTACH_CHANNEL_WAIT_S, START, host_gateway, launched_by_other_tenant, standalone_attach_decision,
     )
     from hermes_cli.profiles import profile_is_standalone
+    if owner is not None and launched_by_other_tenant(owner.home, get_hermes_home()):
+        # The lock is per OS user, so a second tenant root can never win it against the first:
+        # refusing 75 here would retry forever and its gateway would never start (#121352).
+        logger.warning(
+            "Another Hermes home's gateway owns this host (%s); starting this home's gateway beside it.",
+            hr.describe(owner))
+        return
     if profile_is_standalone(get_hermes_home()):
         # Recheck after losing the atomic lock: the pre-lock served set may be stale.
         live_owner = host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)

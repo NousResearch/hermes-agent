@@ -68,3 +68,27 @@ def test_priority_honors_anthropic_manual_first():
     pool._entries[1] = replace(pool._entries[1], source="env:ANTHROPIC_API_KEY")
     assert pool.move_entry("row1", 0).priority == 1
     assert [e.id for e in pool.entries()] == ["row0", "row1"]
+
+
+def test_load_pool_serves_healthy_rows_beside_non_object_rows(tmp_path, monkeypatch, caplog):
+    """A non-object row in auth.json cannot take the provider's other pooled credentials down."""
+    import json
+
+    from agent.credential_pool import load_pool
+
+    pasted = "sk-or-v1-PASTED-AS-A-BARE-STRING"
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    healthy = {"id": "healthy", "label": "manual key", "auth_type": "api_key", "priority": 0,
+               "source": "manual", "access_token": "sk-or-healthy"}
+    (home / "auth.json").write_text(json.dumps(
+        {"version": 1, "credential_pool": {"openrouter": [pasted, None, 7, healthy]}}))
+
+    with caplog.at_level("DEBUG"):
+        entry = load_pool("openrouter").select()
+
+    assert entry is not None and entry.id == "healthy"
+    assert entry.runtime_api_key == "sk-or-healthy"
+    assert pasted not in caplog.text

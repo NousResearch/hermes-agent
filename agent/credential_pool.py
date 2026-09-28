@@ -2696,6 +2696,7 @@ def get_env_prefer_dotenv(key: str) -> str:
 # Providers already warned about env-key -> pool ingestion, once per process
 # (#81952 expected-behavior #3).
 _ENV_INGESTION_WARNED: set[str] = set()
+_NON_OBJECT_WARNED: set[str] = set()  # providers warned about non-object auth.json rows
 
 
 def _warn_env_ingestion_once(provider: str, env_var: str) -> None:
@@ -2896,20 +2897,19 @@ def load_pool(provider: str) -> CredentialPool:
         # before the clone-strip / root write-through existed (#100339).
         auth_mod.heal_forked_single_use_oauth_grants(provider)
     raw_entries = read_credential_pool(provider)
-    disk_ids = {e.get("id") for e in raw_entries if isinstance(e, dict) and e.get("id")}
+    if (junk := sorted({type(e).__name__ for e in raw_entries} - {"dict"})) and provider not in _NON_OBJECT_WARNED:
+        _NON_OBJECT_WARNED.add(provider)  # building a junk row raised, and callers took that as "no pool"
+        logger.warning("credential_pool[%s]: ignoring non-object row(s) of type %s (dropped on the next pool save)",
+                       provider, ", ".join(junk))  # row types only: a bare string row may be a pasted key
+    raw_entries = [e for e in raw_entries if isinstance(e, dict)]
+    disk_ids = {e.get("id") for e in raw_entries if e.get("id")}
     # Ownership (auth.json read) after the heal above; re-read at the tail only if _persist() ran.
     owns_provider: Optional[bool] = None
-    changed = any(
-        isinstance(payload, dict) and sanitize_borrowed_credential_payload(payload, provider) != payload
-        for payload in raw_entries
-    )
+    changed = any(sanitize_borrowed_credential_payload(payload, provider) != payload for payload in raw_entries)
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
     raw_needs_auth_normalization = any(
-        isinstance(payload, dict)
-        and _normalize_pool_auth_type(
-            provider, payload.get("access_token"), payload.get("auth_type", AUTH_TYPE_API_KEY),
-        ) != payload.get("auth_type", AUTH_TYPE_API_KEY)
-        for payload in raw_entries
+        _normalize_pool_auth_type(provider, payload.get("access_token"), payload.get("auth_type", AUTH_TYPE_API_KEY))
+        != payload.get("auth_type", AUTH_TYPE_API_KEY) for payload in raw_entries
     )
     if raw_needs_auth_normalization:
         # A profile may be reading this provider from the global-root fallback.

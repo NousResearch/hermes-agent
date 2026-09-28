@@ -496,13 +496,15 @@
   opacity: 1;
 }
 
-/* Banner slot: a fixed 120px strip whether the entry ships an image or not. */
+/* Banner slot: the catalog's 2:1 banner ratio (48 of 56 shipped banners are exactly 2:1), so
+   authored images render whole instead of losing their top and bottom to a fixed-height crop.
+   Same width on every card in the grid, so the same height. */
 .cardImage,
 .cardImagePlaceholder {
   display: block;
   width: 100%;
-  height: 120px;
-  flex: 0 0 120px;
+  aspect-ratio: 2 / 1;
+  flex: 0 0 auto;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
@@ -521,7 +523,7 @@
 }
 
 .cardImagePlaceholderIcon {
-  font-size: 2.2rem;
+  font-size: 3rem;
   line-height: 1;
   opacity: 0.45;
   filter: saturate(0.6);
@@ -1438,4 +1440,18 @@ a.pickBtn {
 
 [data-theme="light"] .filterPanelOpen {
   border-color: rgba(28, 30, 33, 0.12);
+}
+
+/* Legal footer under the catalog grid. */
+.legalNote {
+  margin: 2.5rem 0 0;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--ifm-font-color-secondary);
+  line-height: 1.6;
+}
+
+.legalNote a {
+  color: inherit;
+  text-decoration: underline;
 }

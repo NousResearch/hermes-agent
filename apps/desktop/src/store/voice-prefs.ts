@@ -102,6 +102,39 @@ export function applyBargeInThresholdFromConfig(config: ConfigPayload) {
   $bargeInThresholdMultiplier.set(Number.isFinite(value) && value > 0 ? value : null)
 }
 
+// `voice.silence_duration` (seconds) — how long the user must stay quiet
+// before the conversation loop treats the utterance as finished. Documented
+// default 3.0 (hermes_cli/config_defaults.py), honoured by the CLI/TUI/gateway
+// capture paths (cli_voice_mixin.py, tui_gateway/methods_voice.py) but
+// previously hardcoded to 1.25 s in the desktop renderer's mic loop, so a
+// mid-thought pause cut the turn off and `hermes config set` had no effect.
+// Stored in ms because that is what the loop's timers consume.
+//
+// `/api/config` merges DEFAULT_CONFIG, so an untouched install reports the
+// backend default (3.0) rather than omitting the key; only a value the user
+// actually changed (≠ the /api/config/defaults payload) overrides the
+// desktop's tuned default — reading it unconditionally would triple the hold
+// for everyone who never touched the key.
+const DESKTOP_SILENCE_MS_DEFAULT = 1_250
+const BACKEND_SILENCE_SECONDS_DEFAULT = 3.0
+
+export const $voiceSilenceMs = atom<number>(DESKTOP_SILENCE_MS_DEFAULT)
+
+function silenceSeconds(raw: unknown): number | null {
+  // `true` must not coerce to 1 s — YAML hands back a bare boolean for a typo'd value.
+  const value = typeof raw === 'number' ? raw : typeof raw === 'boolean' ? NaN : Number(raw)
+
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+/** Seed the silence window from a loaded config payload (mount / refresh). */
+export function applyVoiceSilenceMsFromConfig(config: ConfigPayload, defaults?: ConfigPayload) {
+  const seconds = silenceSeconds(voiceValue(config, 'silence_duration'))
+  const defaultSeconds = silenceSeconds(voiceValue(defaults, 'silence_duration')) ?? BACKEND_SILENCE_SECONDS_DEFAULT
+
+  $voiceSilenceMs.set(seconds !== null && seconds !== defaultSeconds ? seconds * 1_000 : DESKTOP_SILENCE_MS_DEFAULT)
+}
+
 // `voice.thinking_sound` — ambient bubble blips while the agent works during a
 // voice conversation (default on, matching the backend default).
 export const $thinkingSoundEnabled = atom<boolean>(true)

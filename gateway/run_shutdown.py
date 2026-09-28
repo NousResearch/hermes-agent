@@ -181,6 +181,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         active_agents: dict = dataclasses.field(default_factory=dict)
         timed_out: bool = False
         drain_elapsed: float = 0.0
+        notification_task: Optional[asyncio.Task] = None
         # API-server runs still live when the adapters were released; the adapter map is empty by the
         # time the SessionDB close gate runs, so the count has to be taken before ``adapters.clear()``.
         api_live: int = 0
@@ -1846,6 +1847,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._clear_plugin_message_injector()
         self._draining = True
         self._mark_api_runs_shutdown_requested()
+        cancel_startup = getattr(self, "_cancel_startup_connect_task", None)
+        if callable(cancel_startup):
+            await cancel_startup()
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
         if callable(stop_room_worker):
@@ -1863,9 +1867,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         if callable(stop_watchdog):
             await stop_watchdog()
         await self._cancel_secondary_profile_reconnect_tasks()
-        # Notify all chats with active agents BEFORE draining — adapters are still connected here.
-        await self._notify_active_sessions_of_shutdown()
-        logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
+        # A notice can wait on a crypto transaction that adapter teardown must cancel.
+        ctx.notification_task = asyncio.create_task(
+            self._notify_active_sessions_of_shutdown()
+        )
+        logger.info(
+            "Shutdown phase: notify_active_sessions started at +%.2fs", ctx.elapsed()
+        )
 
     async def _stop_drain_active_work(self, timeout: float, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Pre-mark resume_pending, drain agents/cron/API work into ``ctx``."""
@@ -1981,6 +1989,14 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         cancel_completion_batches = getattr(self, "_cancel_process_completion_batch_tasks", None)
         if cancel_completion_batches is not None:
             await cancel_completion_batches()
+        if ctx.notification_task is not None:
+            if not ctx.notification_task.done():
+                ctx.notification_task.cancel()
+            with (
+                suppress(asyncio.CancelledError),
+                _log_suppressed(logging.DEBUG, "Shutdown notification failed: %s"),
+            ):
+                await ctx.notification_task
         for platform, adapter in list(self.adapters.items()):
             await self._bounded_adapter_teardown(adapter, platform)
         # Disconnect secondary-profile adapters (multiplex mode).

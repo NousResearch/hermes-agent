@@ -43,6 +43,8 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # 401/403/404 = the login cannot see this repository (wrong profile identity
         # or missing grant), not a transient API failure. Persist only the status
         # code + endpoint, never gh's stderr (credentials/host details).
+        if _is_feature_unavailable_403(exc.stdout, exc.stderr):
+            raise _FeatureUnavailable(f"HTTP 403 plan-gated on {endpoint.split('?')[0]}") from None
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
@@ -53,6 +55,26 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
+
+
+class _FeatureUnavailable(RuntimeError):
+    """GitHub refused an endpoint because the repo's plan lacks the feature (free-tier private repo),
+    not because the login cannot see the repo. Callers decide whether the feature is optional."""
+
+
+def _is_feature_unavailable_403(stdout: str | None, stderr: str | None) -> bool:
+    if not isinstance(stdout, str):
+        return False
+    try:
+        body = json.loads(stdout)
+    except ValueError:
+        return False
+    while isinstance(body, list) and len(body) == 1:
+        body = body[0]
+    return (isinstance(body, dict)
+            and body.get("message") == "Upgrade to GitHub Pro or make this repository public to enable this feature."
+            and (str(body.get("status", "")) == "403"
+                 or isinstance(stderr, str) and "(HTTP 403)" in stderr))
 
 
 class _GateAuthError(RuntimeError):
@@ -135,8 +157,11 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _FeatureUnavailable:
+            rules = []  # rulesets need GitHub Pro on private repos; branch protection above still applies
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":

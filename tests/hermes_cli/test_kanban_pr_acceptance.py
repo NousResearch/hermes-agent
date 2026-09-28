@@ -13,7 +13,8 @@ from hermes_cli.kanban_db_connect import connect
 
 @pytest.fixture
 def github(tmp_path, monkeypatch):
-    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": []}
+    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": [],
+             "classic_required": True, "rules_403": None}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -23,8 +24,19 @@ def github(tmp_path, monkeypatch):
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                        {"context": "required", "app": {"databaseId": 1}}
+                    ] if state["classic_required"] else []}}}}}}
             elif "/rules/branches/" in self.path:
+                if state["rules_403"]:
+                    body = {"message": "Upgrade to GitHub Pro or make this repository public to enable this feature.",
+                            "documentation_url": "https://docs.github.com/rest/repos/rules",
+                            "status": "403"}
+                    if state["rules_403"] == "slurp":
+                        body = [body]
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(json.dumps(body).encode())
+                    return
                 value = [[]]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
@@ -60,9 +72,14 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
-                  f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+    gh.write_text(f"#!{sys.executable}\nimport json,sys,urllib.request,urllib.error\n"
+    f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
+    "try:\n print(urllib.request.urlopen(u).read().decode())\n"
+    "except urllib.error.HTTPError as error:\n"
+    " body=error.read().decode()\n sys.stdout.write(body)\n"
+    " try:\n  payload=json.loads(body)\n  while isinstance(payload,list) and len(payload)==1: payload=payload[0]\n  message=payload.get('message','') if isinstance(payload,dict) else ''\n"
+    " except ValueError:\n  message=''\n"
+    " sys.stderr.write(f'gh: {message} (HTTP {error.code})\\n')\n sys.exit(1)\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -107,6 +124,37 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("body_shape", ["dict", "slurp"])
+@pytest.mark.parametrize("conclusion", ["success", "failure"])
+def test_rules_feature_403_keeps_classic_required_evidence(github, body_shape, conclusion):
+    github.update(rules_403=body_shape, conclusion=conclusion)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
+        ok = kb.complete_task(conn, tid, result="done", metadata={
+            "published_pr": "https://github.com/acme/repo/pull/7"})
+        assert ok is (conclusion == "success")
+        receipts = [json.loads(row[0]) for row in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+        assert receipts[-1]["required"] == [{"context": "required", "app_id": 1}]
+        assert receipts[-1]["classification"] == conclusion
+        assert "Upgrade to GitHub Pro" not in json.dumps(receipts[-1])
+
+
+@pytest.mark.platforms("posix")
+def test_rules_feature_403_does_not_make_empty_required_set_succeed(github):
+    github.update(rules_403="dict", classic_required=False)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done", metadata={
+            "published_pr": "https://github.com/acme/repo/pull/7"})
+        receipts = [json.loads(row[0]) for row in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+        assert receipts[-1]["required"] == []
+        assert receipts[-1]["classification"] == "missing"
+        assert "No repository-required checks are configured" in receipts[-1]["detail"]
 
 
 @pytest.mark.platforms("linux")

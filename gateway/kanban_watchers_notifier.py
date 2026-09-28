@@ -66,11 +66,19 @@ MAX_SEND_FAILURES = 12
 _LOCAL_PATH_RE = re.compile(r"(?<![\w:/])(?:/(?:Users|home|private|tmp|var|etc|workspace)/[^\s,;]+|" r"[A-Za-z]:\\[^\s,;]+)")
 
 
-def _safe_review_reason(value: Any, limit: int = 160) -> str:
-    """Return a mobile-friendly review reason safe for external delivery."""
+def _redact_for_delivery(value: Any) -> str:
+    """Redact a payload value before it reaches the origin chat — a safety boundary, not
+    logging, so ``force=True`` regardless of the user's ``security.redact_secrets`` setting.
+    Every notifier formatter routes payload text through this (or ``_safe_review_reason``,
+    which adds its own local-path scrub and ellipsis-limit on top)."""
     from agent.redact import redact_sensitive_text
 
-    reason = redact_sensitive_text("" if value is None else str(value), force=True, redact_url_credentials=True)
+    return redact_sensitive_text("" if value is None else str(value), force=True, redact_url_credentials=True)
+
+
+def _safe_review_reason(value: Any, limit: int = 160) -> str:
+    """Return a mobile-friendly review reason safe for external delivery."""
+    reason = _redact_for_delivery(value)
     reason = " ".join(_LOCAL_PATH_RE.sub("[local path]", reason).split())
     if len(reason) > limit:
         reason = reason[: limit - 1].rstrip() + "…"
@@ -362,15 +370,16 @@ def _payload(ev: Any, key: str) -> Any:
 
 
 def _clip(ev: Any, key: str, fmt: str, limit: int) -> str:
-    """``fmt`` applied to the truncated payload value, or ``""`` when absent."""
+    """``fmt`` applied to the truncated, redacted payload value, or ``""`` when absent."""
     value = _payload(ev, key)
-    return fmt.format(str(value)[:limit]) if value else ""
+    return fmt.format(_redact_for_delivery(value)[:limit]) if value else ""
 
 
 _NL = "\n{}"
 
 
 def _first_line(text: str, limit: int) -> str:
+    text = _redact_for_delivery(text)
     lines = text.strip().splitlines()
     return lines[0][:limit] if lines else text[:limit]
 
@@ -394,7 +403,7 @@ def _fmt_review_requested(ev, n) -> tuple:
     wake_handoff = None
     summary = _payload(ev, "summary")
     if summary:
-        summary = str(summary)
+        summary = _redact_for_delivery(summary)
         handoff = f"\n{summary[:200]}"
         wake_handoff = _first_line(summary, 200)
     return f"👀 {n.head} ready for review — {n.title}{handoff}", wake_handoff, None

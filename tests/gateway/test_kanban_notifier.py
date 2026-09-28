@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 
 from gateway.config import Platform
 from gateway.kanban_watchers_common import (
@@ -639,6 +640,10 @@ class _StubEvent:
 
 class _StubNotif:
     head = "H123"
+    title = "deploy"
+    task = None
+    task_id = "t1"
+    board_tag = ""
 
 
 def _fmt_block_loop(payload):
@@ -796,3 +801,40 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+# ---------------------------------------------------------------------------
+# Every notifier ping is delivered to the origin chat, an external boundary —
+# a worker summary, block reason, or provider error may carry a secret the
+# worker's tool output picked up. Only `changes_requested` routed its text
+# through `_safe_review_reason`; the rest rendered the raw payload.
+# ---------------------------------------------------------------------------
+
+_SECRET = "sk-proj-" + "a" * 48
+
+
+@pytest.mark.parametrize("kind,payload", [
+    ("completed", {"summary": "used key " + _SECRET}),
+    ("review_requested", {"summary": _SECRET}),
+    ("blocked", {"reason": _SECRET}),
+    ("gave_up", {"failures": 3, "error": "401 " + _SECRET}),
+    ("block_loop_detected", {"kind": "transient", "recurrences": 2, "reason": _SECRET}),
+])
+def test_notifier_ping_never_carries_a_raw_secret(kind, payload):
+    """A secret in summary/reason/error must never reach the rendered chat message,
+    for every event kind the notifier formats — not only `changes_requested`."""
+    from gateway.kanban_watchers_notifier import _EVENT_FORMATTERS
+
+    msg, wake_handoff, _ = _EVENT_FORMATTERS[kind](_StubEvent(payload), _StubNotif())
+    assert _SECRET not in msg
+    assert _SECRET not in (wake_handoff or "")
+
+
+def test_changes_requested_still_redacts_a_secret_reason():
+    """Control: the one formatter that already redacted must keep doing so."""
+    from gateway.kanban_watchers_notifier import _EVENT_FORMATTERS
+
+    payload = {"reason": _SECRET, "reviewer": "r", "implementer": "i"}
+    msg, _, reason_text = _EVENT_FORMATTERS["changes_requested"](_StubEvent(payload), _StubNotif())
+    assert _SECRET not in msg
+    assert _SECRET not in (reason_text or "")

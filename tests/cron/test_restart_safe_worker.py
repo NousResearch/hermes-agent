@@ -648,6 +648,69 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
     assert "PYTHONPATH" not in worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
 
 
+
+def test_pin_restores_the_committed_generation_site_packages(tmp_path):
+    """#122222: the sanitizer drops the generation ``activate_dependencies`` put on our
+    ``sys.path``, and the worker inherits the store Python, which owns no dependencies. The
+    pin hands the child PM's committed generation -- after the checkout, before the entries
+    the sanitizer kept -- and invents nothing when no generation is committed."""
+    import cron.scheduler_worker_env as worker_env_mod
+    import pm.environments
+
+    repo_root = tmp_path / "hermes-agent"
+    repo_root.mkdir()
+    version = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    venv = pm.environments.install_state_dir(repo_root) / "environments" / "gen1" / "venv"
+    (venv / "lib" / f"python{version}").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(f"version = {version}\n", encoding="utf-8")
+    selected = pm.environments.site_packages(venv)
+    selected.mkdir()
+    pm.environments.runtime_facts_path(repo_root).write_text(
+        json.dumps({"packages": {"venv": {"environment": str(venv)}}, "schema": 1}),
+        encoding="utf-8",
+    )
+
+    env = worker_env_mod.pin_hermes_tree_on_pythonpath(
+        {"PYTHONPATH": str(tmp_path / "kept")}, repo_root
+    )
+    assert env["PYTHONPATH"].split(os.pathsep) == [
+        str(repo_root), str(selected), str(tmp_path / "kept"),
+    ]
+
+    # A runner that owns its dependencies has no committed generation: tree only.
+    pm.environments.runtime_facts_path(repo_root).unlink()
+    assert worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root) == {
+        "PYTHONPATH": str(repo_root)
+    }
+
+
+def test_worker_bootstrap_boots_only_the_marked_worker(tmp_path, monkeypatch):
+    """The PM dependency boot runs in the process ``_launch_external_cron_worker`` marked --
+    and only there: the gateway already booted through ``hermes_bootstrap``, and activation
+    rewrites ``sys.path``, so an unmarked importer of ``cron.scheduler`` keeps its launch
+    contract. The marker is consumed, so the worker's own children do not inherit it."""
+    import cron.worker_bootstrap as worker_bootstrap
+    import pm.environments
+
+    monkeypatch.setattr(worker_bootstrap, "_root", tmp_path)
+    booted = []
+    monkeypatch.setattr(
+        pm.environments,
+        "activate_dependencies",
+        lambda project_root: booted.append(project_root),
+    )
+
+    monkeypatch.delenv(worker_bootstrap.WORKER_MARKER, raising=False)
+    worker_bootstrap.worker_bootstrap()
+    assert booted == []
+
+    monkeypatch.setenv(worker_bootstrap.WORKER_MARKER, "1")
+    worker_bootstrap.worker_bootstrap()
+    worker_bootstrap.worker_bootstrap()
+    assert booted == [tmp_path]
+    assert worker_bootstrap.WORKER_MARKER not in os.environ
+
+
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     import cron.scheduler as scheduler
 

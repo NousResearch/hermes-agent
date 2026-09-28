@@ -55,6 +55,16 @@ MODEL_SWITCH_METRIC = "hermes.model_switch.count"
 FALLBACK_METRIC = "hermes.fallback.count"
 SLASH_COMMAND_METRIC = "hermes.slash_command.count"
 EXTENSION_INSTALL_METRIC = "hermes.extension.install.count"
+# ---- v4 loop ----
+MEMORY_OP_MARK = "hermes.memory.op"
+CURATOR_RUN_MARK = "hermes.curator.run"
+DELEGATION_RUN_MARK = "hermes.delegation.run"
+EXECUTION_BACKEND_MARK = "hermes.execution_backend"
+MEMORY_OP_METRIC = "hermes.memory.op.count"
+CURATOR_RUN_METRIC = "hermes.curator.run.count"
+DELEGATION_RUN_METRIC = "hermes.delegation.run.count"
+EXECUTION_BACKEND_METRIC = "hermes.execution_backend.count"
+# ---- end v4 loop ----
 MODEL_IDENTIFIER_MAX_LENGTH = 256
 PROVIDER_IDENTIFIER_MAX_LENGTH = 64
 _METRIC_IDENTIFIER_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._:/@+-")
@@ -182,6 +192,30 @@ EXTENSION_NAMES = _CatalogValues(
     "bundled_skill_names", "mcp_catalog_names", "plugin_catalog_names", extra=frozenset({"custom"})
 )
 DISPLAY_LANGUAGES = _CatalogValues("display_languages", extra=frozenset({"other"}))
+
+# ---- v4 loop ----
+MEMORY_OPS = frozenset({"add", "other", "read", "remove", "replace", "search"})
+MEMORY_OP_OUTCOMES = frozenset({"failed", "rejected", "success"})
+# Who asked: the user's turn, or the unattended self-improvement review fork.
+MEMORY_OP_ORIGINS = frozenset({"background_review", "foreground"})
+CURATOR_OUTCOMES = frozenset({"failed", "skipped", "success"})
+CURATOR_TRIGGERS = frozenset({"manual", "scheduled"})
+DELEGATION_OUTCOMES = frozenset({"cancelled", "failed", "partial", "success"})
+DELEGATION_DEPTHS = frozenset({"1", "2", "3", "gte_4"})
+DELEGATION_MODES = frozenset({"background", "foreground"})
+EXECUTION_KINDS = frozenset({"browser", "code", "terminal"})
+# Shipped browser backends: tools/browser_{camofox,lightpanda,tool_cdp,tool_cloud,extension_router}.py
+# plus the bundled cloud providers in plugins/browser/.
+BROWSER_BACKENDS = frozenset({
+    "browser-use", "browserbase", "camofox", "cdp", "extension", "firecrawl", "lightpanda", "local", "other",
+})
+CODE_BACKENDS = frozenset({"local", "other", "remote"})
+EXECUTION_BACKENDS_BY_KIND = {
+    "browser": BROWSER_BACKENDS, "code": CODE_BACKENDS, "terminal": TERMINAL_BACKENDS,
+}
+EXECUTION_BACKENDS = BROWSER_BACKENDS | CODE_BACKENDS | TERMINAL_BACKENDS
+EXECUTION_OUTCOMES = frozenset({"failed", "success"})
+# ---- end v4 loop ----
 
 _ARCHITECTURE_ALIASES = {
     "amd64": "x86_64", "x64": "x86_64", "x86_64": "x86_64",
@@ -322,6 +356,24 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "kind": EXTENSION_KINDS, "name": EXTENSION_NAMES, "outcome": EXTENSION_OUTCOMES,
         "source": EXTENSION_SOURCES,
     },
+    # ---- v4 loop ----
+    MEMORY_OP_METRIC: {
+        "op": MEMORY_OPS, "origin": MEMORY_OP_ORIGINS, "outcome": MEMORY_OP_OUTCOMES,
+        "provider": MEMORY_PROVIDERS,
+    },
+    CURATOR_RUN_METRIC: {
+        "archived_bucket": COUNT_BUCKETS, "created_bucket": COUNT_BUCKETS, "merged_bucket": COUNT_BUCKETS,
+        "outcome": CURATOR_OUTCOMES, "patched_bucket": COUNT_BUCKETS, "trigger": CURATOR_TRIGGERS,
+    },
+    DELEGATION_RUN_METRIC: {
+        "depth": DELEGATION_DEPTHS, "mode": DELEGATION_MODES, "outcome": DELEGATION_OUTCOMES,
+        "subagent_count_bucket": COUNT_BUCKETS,
+    },
+    EXECUTION_BACKEND_METRIC: {
+        "backend": EXECUTION_BACKENDS, "error_class": TOOL_ERROR_CLASSES, "kind": EXECUTION_KINDS,
+        "outcome": EXECUTION_OUTCOMES,
+    },
+    # ---- end v4 loop ----
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -365,6 +417,10 @@ _DECISION_MARK_METRICS = {
     COMPRESSION_MARK: COMPRESSION_METRIC, MODEL_SWITCH_MARK: MODEL_SWITCH_METRIC,
     FALLBACK_MARK: FALLBACK_METRIC, SLASH_COMMAND_MARK: SLASH_COMMAND_METRIC,
     EXTENSION_INSTALL_MARK: EXTENSION_INSTALL_METRIC,
+    # ---- v4 loop ----
+    MEMORY_OP_MARK: MEMORY_OP_METRIC, CURATOR_RUN_MARK: CURATOR_RUN_METRIC,
+    DELEGATION_RUN_MARK: DELEGATION_RUN_METRIC, EXECUTION_BACKEND_MARK: EXECUTION_BACKEND_METRIC,
+    # ---- end v4 loop ----
 }
 
 

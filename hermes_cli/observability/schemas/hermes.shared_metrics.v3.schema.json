@@ -150,6 +150,18 @@
           },
           {
             "$ref": "#/$defs/extension_install_counter"
+          },
+          {
+            "$ref": "#/$defs/memory_op_counter"
+          },
+          {
+            "$ref": "#/$defs/curator_run_counter"
+          },
+          {
+            "$ref": "#/$defs/delegation_run_counter"
+          },
+          {
+            "$ref": "#/$defs/execution_backend_counter"
           }
         ]
       }
@@ -1450,6 +1462,265 @@
                 "local",
                 "other",
                 "url"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "memory_op_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.memory.op.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "origin",
+            "outcome",
+            "provider"
+          ],
+          "properties": {
+            "op": {
+              "enum": [
+                "add",
+                "other",
+                "read",
+                "remove",
+                "replace",
+                "search"
+              ]
+            },
+            "origin": {
+              "enum": [
+                "background_review",
+                "foreground"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "failed",
+                "rejected",
+                "success"
+              ]
+            },
+            "provider": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "curator_run_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.curator.run.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "archived_bucket",
+            "created_bucket",
+            "merged_bucket",
+            "outcome",
+            "patched_bucket",
+            "trigger"
+          ],
+          "properties": {
+            "archived_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "created_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "merged_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "outcome": {
+              "enum": [
+                "failed",
+                "skipped",
+                "success"
+              ]
+            },
+            "patched_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "trigger": {
+              "enum": [
+                "manual",
+                "scheduled"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "delegation_run_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.delegation.run.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "depth",
+            "mode",
+            "outcome",
+            "subagent_count_bucket"
+          ],
+          "properties": {
+            "depth": {
+              "enum": [
+                "1",
+                "2",
+                "3",
+                "gte_4"
+              ]
+            },
+            "mode": {
+              "enum": [
+                "background",
+                "foreground"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "partial",
+                "success"
+              ]
+            },
+            "subagent_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "execution_backend_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.execution_backend.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backend",
+            "error_class",
+            "kind",
+            "outcome"
+          ],
+          "properties": {
+            "backend": {
+              "enum": [
+                "browser-use",
+                "browserbase",
+                "camofox",
+                "cdp",
+                "daytona",
+                "docker",
+                "extension",
+                "firecrawl",
+                "lightpanda",
+                "local",
+                "modal",
+                "other",
+                "remote",
+                "singularity",
+                "ssh"
+              ]
+            },
+            "error_class": {
+              "enum": [
+                "blocked",
+                "contract_violation",
+                "exception",
+                "interrupted",
+                "invalid_arguments",
+                "none",
+                "timeout",
+                "tool_error",
+                "unknown"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "browser",
+                "code",
+                "terminal"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "failed",
+                "success"
               ]
             }
           }

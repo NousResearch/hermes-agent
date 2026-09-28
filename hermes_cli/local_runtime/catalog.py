@@ -8,6 +8,7 @@ Builds proven end-to-end on real hardware are marked validated; day-0 entries sh
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import threading
@@ -305,6 +306,10 @@ def refresh_catalog(force: bool = False) -> bool:
     after the TTL. Returns True when a fetched document replaced the catalog."""
     global CATALOG, _last_refresh_attempt
 
+    from hermes_cli.model_catalog import _load_catalog_config
+
+    if not _load_catalog_config()["enabled"]:
+        return False
     now = time.monotonic()
     with _refresh_lock:
         if not force and now - _last_refresh_attempt < _REFRESH_TTL_S:
@@ -326,9 +331,17 @@ def refresh_catalog(force: bool = False) -> bool:
 def refresh_catalog_soon() -> None:
     """TTL-gated background refresh; returns immediately. The current request serves the catalog
     it already has — the refresh lands for the next one."""
+    from hermes_cli.model_catalog import _load_catalog_config
+
+    if not _load_catalog_config()["enabled"]:
+        return
     if time.monotonic() - _last_refresh_attempt < _REFRESH_TTL_S:
         return
-    threading.Thread(target=refresh_catalog, daemon=True, name="catalog-refresh").start()
+    # The backend serves several profiles; the worker must recheck its caller's
+    # opt-out, not the process default's (same context handoff as model_catalog).
+    context = contextvars.copy_context()
+    threading.Thread(target=lambda: context.run(refresh_catalog),
+                     daemon=True, name="catalog-refresh").start()
 
 
 def catalog_by_id() -> dict[str, CatalogEntry]:

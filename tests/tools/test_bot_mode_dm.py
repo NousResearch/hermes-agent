@@ -1214,3 +1214,71 @@ def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkey
 
     assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
     assert reply in capsys.readouterr().out
+
+
+# ── runner boot: dependency selection ────────────────────────────────────────
+
+
+def _run_runner_entry(monkeypatch, argv):
+    """Execute bot_mode_dm.py the way ``_delivery_command`` spawns it: as ``__main__``."""
+    import runpy
+
+    monkeypatch.setattr(sys, "argv", [str(Path(bot_mode_dm.__file__))] + list(argv))
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(bot_mode_dm.__file__), run_name="__main__")
+    return exit_info.value.code
+
+
+def test_runner_entry_selects_dependencies_before_the_delivery_path(monkeypatch):
+    """The runner is spawned as ``[sys.executable, <bot_mode_dm.py>, --run-delivery, …]``. When the
+    spawner's ``sys.executable`` is the bare runtime — Desktop-spawned ``serve --isolated`` backends
+    run the store python and receive their dependencies only through an in-process ``sys.path``
+    selection — the child inherits no selection and died on ``No module named 'ruamel'`` while
+    importing the delivery path (``hermes_cli.active_sessions``). The runner must therefore select
+    the committed dependency generation itself, before that import."""
+    import pm.environments
+
+    selected = []
+    monkeypatch.setattr(pm.environments, "activate_dependencies", lambda root: selected.append(Path(root)))
+
+    # The delivery lane selects first, then falls through to the delivery path, which exits 1
+    # here because the query file does not exist.
+    code = _run_runner_entry(monkeypatch, ["--run-delivery", "stdin", "/nonexistent/query.json"])
+
+    assert code == 1
+    assert selected == [Path(bot_mode_dm.__file__).resolve().parent.parent]
+
+
+def test_runner_entry_fails_loudly_when_dependencies_cannot_be_selected(monkeypatch, capsys):
+    """A runner that cannot select dependencies must say so with the repair remedy instead of
+    surfacing the raw import error as an ambiguous, unrepeatable delivery outcome."""
+    import pm.environments
+
+    def _boom(_root):
+        raise RuntimeError("no dependency generation is committed")
+
+    monkeypatch.setattr(pm.environments, "activate_dependencies", _boom)
+
+    assert _run_runner_entry(monkeypatch, ["--run-delivery", "stdin", "/nonexistent/query.json"]) == 1
+    assert "hermes pm repair" in capsys.readouterr().err
+
+
+def test_reply_waiter_reports_its_outcome_without_the_dependency_selection(monkeypatch, capsys):
+    """``--wait-reply`` is stdlib only and its stdout *is* the sender's completion notification
+    (``bot_relay.waiter_command``), so it must not be gated on a selection that can fail: with no
+    stdout the sender learns nothing about the delivery it is waiting on."""
+    import pm.environments
+
+    selected = []
+
+    def _boom(root):
+        selected.append(Path(root))
+        raise RuntimeError("no dependency generation is committed")
+
+    monkeypatch.setattr(pm.environments, "activate_dependencies", _boom)
+
+    code = _run_runner_entry(monkeypatch, ["--wait-reply", "/nonexistent/reply.json", "@peer on local", "0"])
+
+    assert code == 1
+    assert selected == []
+    assert "No reply from @peer on local" in capsys.readouterr().out

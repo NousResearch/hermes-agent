@@ -824,5 +824,25 @@ def _session_title(agent: Any) -> str:
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    _root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(_root))
+    # The runner is spawned as ``[sys.executable, <this file>, --run-delivery, ...]``. When the
+    # spawning process's ``sys.executable`` is the bare runtime — Desktop-spawned
+    # ``serve --isolated`` backends run the store python and only get their dependencies via
+    # an in-process ``sys.path`` selection — the child inherits no selection at all and dies
+    # importing the delivery path (``hermes_cli.active_sessions`` → ``ruamel``). Select the
+    # committed dependency generation here, exactly as ``hermes_bootstrap`` does at boot.
+    #
+    # Only the delivery lane is gated: ``--wait-reply`` is stdlib only by contract and its
+    # stdout *is* the sender's completion notification (``bot_relay.waiter_command``), so an
+    # install that cannot select a generation must still let the waiter report the outcome
+    # instead of exiting before it can print anything.
+    if sys.argv[1:2] == ["--run-delivery"]:
+        try:
+            from pm.environments import activate_dependencies
+
+            activate_dependencies(_root)
+        except (RuntimeError, OSError) as exc:
+            print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
+            raise SystemExit(1) from None
     raise SystemExit(_delivery_main(sys.argv[1:]))

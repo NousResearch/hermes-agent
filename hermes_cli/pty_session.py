@@ -12,6 +12,7 @@ from typing import Callable, Dict, Optional, Tuple
 
 WS_CLOSE_PROCESS_EXITED = 4410
 WS_CLOSE_SUPERSEDED = 4409
+WS_CLOSE_IDLE_REAP = 4411
 TUI_FORCE_REDRAW = b"\x0c"
 
 
@@ -50,6 +51,7 @@ class PtySession:
         self.alive = True
         self.attached = False
         self.last_detached_at: Optional[float] = None
+        self.last_activity = time.monotonic()
         self._read_timeout = read_timeout
         self._ws = None
         self._attach_generation = 0
@@ -111,6 +113,7 @@ class PtySession:
         self._attach_generation += 1
         self.attached = True
         self.last_detached_at = None
+        self.last_activity = time.monotonic()
         if snap := self.buffer.snapshot():
             try:
                 await ws.send_bytes(snap)
@@ -132,6 +135,11 @@ class PtySession:
         self._ws = None
         self.attached = False
         self.last_detached_at = time.monotonic()
+
+    def touch(self, ws) -> None:
+        """Stamp client liveness. Ignored for a socket that is not the current viewer."""
+        if self._ws is ws:
+            self.last_activity = time.monotonic()
 
     async def close(self) -> None:
         self.alive = False
@@ -167,11 +175,13 @@ async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) 
 
 
 class PtySessionRegistry:
-    def __init__(self, *, ttl: float, max_sessions: int, buffer_cap: int, read_timeout: float) -> None:
+    def __init__(self, *, ttl: float, max_sessions: int, buffer_cap: int, read_timeout: float,
+                 attached_idle_ttl: float = 0.0) -> None:
         self._ttl = ttl
         self._max = max_sessions
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
+        self._attached_idle_ttl = attached_idle_ttl
         self._sessions: Dict[str, PtySession] = {}
         # The get-or-spawn decision spans awaits (reap_idle, the spawn thread,
         # session.start), so two connections racing one attach token both saw
@@ -208,19 +218,35 @@ class PtySessionRegistry:
         if s is not None:
             s.detach(ws)
 
+    def touch(self, key: str, ws) -> None:
+        s = self._sessions.get(key)
+        if s is not None:
+            s.touch(ws)
+
+    def _is_reapable(self, s: "PtySession", now: float) -> bool:
+        if not s.alive:
+            return True
+        if not s.attached:
+            return s.last_detached_at is not None and (now - s.last_detached_at) > self._ttl
+        # An attached session is otherwise immortal: a tab that vanished without a FIN gets no
+        # protocol ping on a loopback bind, so silence is the only available signal (#110849).
+        return self._attached_idle_ttl > 0 and (now - s.last_activity) > self._attached_idle_ttl
+
+    async def _reap_session(self, key: str) -> None:
+        session = self._sessions.pop(key, None)
+        if session is None:
+            return
+        await _close_ws(session._ws, WS_CLOSE_IDLE_REAP)
+        await session.close()
+
     async def reap_idle(self, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now
-        doomed = [
-            key for key, s in self._sessions.items()
-            if not s.alive or (not s.attached and s.last_detached_at is not None and (now - s.last_detached_at) > self._ttl)
-        ]
+        doomed = [key for key, s in self._sessions.items() if self._is_reapable(s, now)]
         for key in doomed:
             # Reaps overlap (attach_or_spawn and the background reaper) and close()
             # awaits, so a concurrent reap can have popped this key already — skip
             # it instead of raising KeyError into the websocket handler.
-            session = self._sessions.pop(key, None)
-            if session is not None:
-                await session.close()
+            await self._reap_session(key)
 
     def _reap_one_idle_or_raise(self) -> None:
         idle = [s for s in self._sessions.values() if not s.attached and s.last_detached_at is not None]
@@ -228,6 +254,7 @@ class PtySessionRegistry:
             raise RegistryFull()
         oldest = min(idle, key=lambda s: s.last_detached_at or 0.0)
         self._sessions.pop(oldest.key, None)
+        # Filtered to detached, so there is no attached socket to notify.
         asyncio.create_task(oldest.close())
 
     async def close_all(self) -> None:

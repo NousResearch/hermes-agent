@@ -100,3 +100,29 @@ def test_estimate_from_text_no_task(client, monkeypatch):
 
 def test_estimate_from_text_requires_title(client):
     assert client.post("/api/plugins/kanban/estimate", json={"title": "  ", "body": "x"}).json()["ok"] is False
+
+
+def test_estimate_flattens_segmented_content(client, monkeypatch):
+    """Relays returning segmented (list) content must still yield an estimate.
+
+    The old `(content or "").strip()` raised AttributeError inside its try —
+    the except silently turned every estimate into a parse failure.
+    """
+    task_id = client.post("/api/plugins/kanban/tasks", json={"title": "segmented relay"}).json()["task"]["id"]
+
+    import agent.auxiliary_client as aux
+
+    segmented = [
+        {"type": "thinking", "thinking": "internal"},
+        {"type": "text", "text": '{"est_tokens": 3000, "complexity": "S", "rationale": "one file"}'},
+    ]
+
+    def fake_call_llm(**kwargs):
+        return _fake_resp(segmented)
+
+    monkeypatch.setattr(aux, "call_llm", fake_call_llm)
+
+    body = client.post(f"/api/plugins/kanban/tasks/{task_id}/estimate").json()
+    assert body["ok"] is True, body
+    assert body["est_tokens"] == 3000
+    assert body["complexity"] == "S"

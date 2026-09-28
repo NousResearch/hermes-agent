@@ -236,19 +236,24 @@ class TurnRunner:
         return pl if pl > 0 else 40
 
     def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
-        """(full, short) fenced blocks for a terminal command on markdown platforms, else (None, None).
+        """(full, short) fenced blocks for terminal/code tools on markdown platforms.
 
         No language tag: Slack mrkdwn renders it as a literal first code line. Verbose shows the FULL
         command; "all"/"new" truncate to one line capped at ``tool_preview_length``. Consecutive
-        terminal calls drop the repeated header so back-to-back commands render as adjacent blocks.
+        calls from the same tool drop the repeated header so back-to-back blocks render as adjacent.
         """
         if not (
-            getattr(adapter, "supports_code_blocks", False) and tool_name == "terminal" and isinstance(args, dict)
-            and isinstance(args.get("command"), str) and args["command"].strip()
+            getattr(adapter, "supports_code_blocks", False)
+            and tool_name in ("terminal", "execute_code")
+            and isinstance(args, dict)
         ):
             return None, None
-        cmd_full = args["command"].rstrip()
-        header = "" if self._ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+        arg_name = "command" if tool_name == "terminal" else "code"
+        code_arg = args.get(arg_name)
+        if not isinstance(code_arg, str) or not code_arg.strip():
+            return None, None
+        cmd_full = code_arg.rstrip()
+        header = "" if self._ctx.last_code_block_tool[0] == tool_name else f"{emoji} {tool_name}\n"
         cap = self._preview_cap()
         lines = cmd_full.splitlines()
         cmd_short = lines[0] if lines else cmd_full
@@ -270,7 +275,7 @@ class TurnRunner:
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
         verbose = ctx.progress_mode == "verbose"
         code = code_full if verbose else code_short
-        ctx.last_was_terminal_block[0] = code is not None
+        ctx.last_code_block_tool[0] = tool_name if code is not None else None
         if verbose:
             if code is None and args:
                 from agent.display import get_tool_preview_max_len

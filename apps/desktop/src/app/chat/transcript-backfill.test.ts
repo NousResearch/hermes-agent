@@ -26,6 +26,16 @@ const chat = (id: string, rowId?: number): ChatMessage => ({
   ...(rowId !== undefined ? { rowId } : {})
 })
 
+// A folded assistant bubble as hydration produces it: the top-level rowId is
+// the bubble's FIRST source row, and only the final reply's text part is
+// stamped with the turn's actual last row (sourceRowId).
+const foldedBubble = (id: string, firstRowId: number, finalSourceRowId: number): ChatMessage => ({
+  id,
+  role: 'assistant',
+  rowId: firstRowId,
+  parts: [{ type: 'text', text: id, sourceRowId: finalSourceRowId }]
+})
+
 // A stored SessionMessage row: distinct timestamps keep toChatMessages ids
 // unique and the row id survives as ChatMessage.rowId.
 const row = (rowId: number, text: string) => ({
@@ -281,6 +291,27 @@ describe('messagesIfTranscriptBehind retention tips (#123909)', () => {
     const page = [chat('a'), chat('b'), chat('c')]
 
     expect(messagesIfTranscriptBehind(local, page)).toBe(page)
+  })
+
+  it('treats a folded bubble as current on its highest source row, not its first (#125975)', () => {
+    // The window's own bubble settled live: `rowId` bound straight to the
+    // turn's final row (use-message-stream's withPersistedIdentity). The
+    // refreshed page renders the identical bubble through hydration, whose
+    // fold never advances a bubble's top-level `rowId` past its first source
+    // row — only the final reply's text part carries the true last row, as
+    // `sourceRowId`. Comparing `rowId` alone never converges on this shape.
+    const local = [chat('old-a', 110), chat('old-b', 111), chat('tip-user', 118), chat('tip-reply', 119)]
+
+    const page = [
+      chat('old-a', 110),
+      chat('old-b', 111),
+      chat('mid-turn', 115),
+      chat('tip-user', 118),
+      foldedBubble('tip-reply', 116, 119)
+    ]
+
+    expect(page.length).toBeGreaterThan(local.length)
+    expect(messagesIfTranscriptBehind(local, page)).toBeNull()
   })
 })
 

@@ -32,6 +32,23 @@ function authoredMessageCount(messages: ChatMessage[]): number {
 }
 
 /**
+ * Highest durable backend row a folded bubble addresses. `rowId` is the
+ * bubble's first source row (live settle keeps it, hydration's fold never
+ * advances it as later rows absorb in); the final response's exact row only
+ * ever lands on its text part's `sourceRowId`. Comparing `rowId` alone made
+ * the same bubble report two different tips — its own first row live, a
+ * stale first row once hydrated — so the guard never converged (#125975).
+ */
+function bubbleTip(message: ChatMessage): number | undefined {
+  const candidates = [
+    message.rowId,
+    ...message.parts.map(part => (part.type === 'text' ? part.sourceRowId : undefined))
+  ].filter((value): value is number => typeof value === 'number')
+
+  return candidates.length ? Math.max(...candidates) : undefined
+}
+
+/**
  * Latest persisted backend row the view carries. Retention only ever releases
  * the head (rows older than the window plus its budget — see
  * app/chat/transcript-retention.ts), so the last durable row is always the
@@ -39,10 +56,10 @@ function authoredMessageCount(messages: ChatMessage[]): number {
  */
 function lastDurableRowId(messages: readonly ChatMessage[]): number | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const rowId = messages[index].rowId
+    const tip = bubbleTip(messages[index])
 
-    if (typeof rowId === 'number') {
-      return rowId
+    if (tip !== undefined) {
+      return tip
     }
   }
 

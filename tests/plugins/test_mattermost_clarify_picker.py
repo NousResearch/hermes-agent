@@ -21,6 +21,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from plugins.platforms.mattermost.adapter_clarify import (
+    format_clarify_picker_body,
+    numeric_labels_for,
+)
+
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -405,3 +410,57 @@ class TestReactionDispatch:
         # Approval handler ran, picker handler did NOT.
         mock_approve.assert_called_once()
         mock_clarify.assert_not_called()
+
+# ─── pure-helper tests for format_clarify_picker_body (v3 display-fix) ─────
+
+
+class TestClarifyPickerBodyHelper:
+    """Layout helper tests (no adapter fixture needed)."""
+
+    def test_single_choice_layout(self):
+        out = format_clarify_picker_body("Pick one", ["one"], ["Yes"])
+        # No typeable-hint line when only 1 choice (hint says "reply with 1"
+        # alone is noise).
+        assert "❓ Pick one" in out
+        assert ":one: Yes" in out
+        assert "Tap an emoji" not in out
+        assert "reply with 1" not in out
+
+    def test_three_choices_with_typeable_hint(self):
+        out = format_clarify_picker_body(
+            "Where?",
+            ["one", "two", "three"],
+            ["PL", "UK", "IS"],
+        )
+        # All three emoji short-names present, in one body line.
+        assert ":one: PL" in out
+        assert ":two: UK" in out
+        assert ":three: IS" in out
+        # Typeable-fallback hint shows "1 / 2 / 3" and the tap-instruction.
+        assert "1 / 2 / 3" in out
+        assert "Tap an emoji above to answer" in out
+
+    def test_keycap_ten_maps_to_numeric_ten(self):
+        labels = numeric_labels_for(
+            ["one","two","three","four","five","six","seven","eight","nine","keycap_ten"]
+        )
+        # Index-based: 10th position → "10", NOT "ten".
+        assert labels == ["1","2","3","4","5","6","7","8","9","10"]
+
+    def test_twelve_choices_keeps_all_visible(self):
+        # Real Mattermost picker caps at 12. The pure helper itself takes any
+        # length; the cap is in the adapter (line ~1004 ``[:12]``). Here we
+        # confirm the helper renders ALL 12 options without truncation when
+        # the adapter passes them in.
+        twelve = ["one","two","three","four","five","six",
+                  "seven","eight","nine","keycap_ten","a","b"]
+        out = format_clarify_picker_body(
+            "Pick",
+            twelve,
+            [str(i) for i in range(1, 13)],
+        )
+        for emoji in twelve:
+            assert f":{emoji}:" in out, f"missing emoji {emoji!r}"
+        # Typeable hint lists all 12 numeric labels.
+        assert "12" in out
+        assert "Tap an emoji above to answer" in out

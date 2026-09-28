@@ -17,7 +17,7 @@ import os
 import re
 from pathlib import Path
 from urllib.parse import unquote as _unquote
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from gateway.config import Platform, PlatformConfig
@@ -108,6 +108,10 @@ class _MattermostClarifyPicker:
     choices: List[str]     # emoji short names (e.g. ["one","two",...])
     responses: List[str]   # human labels in the same order
     expires_at: float
+    # ``numeric_labels`` is set on register (parallel to ``choices``: "1", "2", ..., "10" for
+    # ``keycap_ten``). It feeds the typeable-fallback hint line on the card body. Empty default
+    # for backwards compat with registered entries created before the v3 display fix.
+    numeric_labels: List[str] = field(default_factory=list)
     resolved: bool = False
 
 
@@ -1007,13 +1011,14 @@ class MattermostAdapter(BasePlatformAdapter):
         if len(self._clarify_picker_prompts_by_event) >= _CLARIFY_PICKER_MAX:
             oldest = next(iter(self._clarify_picker_prompts_by_event))
             self._clarify_picker_prompts_by_event.pop(oldest, None)
-        # Build the card body — same shape as the matrix picker (one line per
-        # choice with the emoji short name, then "React to choose.").
-        body_lines = [f"❓ {question}", ""]
-        for emoji, label in zip(reactions, flat_choices):
-            body_lines.append(f":{emoji}: {label}")
-        body_lines += ["", "React to choose."]
-        body = "\n".join(body_lines)
+        # Build the card body — single-row options with tap-or-type hint
+        # replaces the legacy plain inline list. Pure helper, easy to unit-test.
+        from plugins.platforms.mattermost.adapter_clarify import (
+            format_clarify_picker_body, numeric_labels_for,
+        )
+        body = format_clarify_picker_body(
+            question=question, choices=reactions, responses=flat_choices,
+        )
         # Send the card. If send fails, fall back to the base text path so the
         # user can still answer by typing.
         result = await self.send(chat_id, body, metadata=metadata)
@@ -1025,6 +1030,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._clarify_picker_prompts_by_event[post_id] = _MattermostClarifyPicker(
             chat_id=chat_id, post_id=post_id, clarify_id=clarify_id,
             choices=reactions, responses=flat_choices,
+            numeric_labels=numeric_labels_for(reactions),
             expires_at=_time.time() + _CLARIFY_PICKER_TTL_SECONDS,
         )
         # Seed reactions AFTER the post is on the server — same ordering as

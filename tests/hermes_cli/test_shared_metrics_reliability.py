@@ -171,3 +171,25 @@ def test_v3_schema_accepts_exactly_the_contract_values():
         dims = by_name[metric]["properties"]["dimensions"]["properties"]
         assert {field: set(spec["enum"]) for field, spec in dims.items()} == {
             field: set(values) for field, values in contract._COUNTER_DIMENSION_VALUES[metric].items()}
+
+
+def test_graceful_gateway_exit_stamps_the_marker_clean(marks, monkeypatch):
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(process_metrics, "_STATE", {})
+    monkeypatch.setattr(sys, "excepthook", lambda *a: None)
+    monkeypatch.setattr(process_metrics.atexit, "register", lambda *a, **k: None)
+    monkeypatch.setattr(process_metrics.threading, "Thread", lambda **k: SimpleNamespace(start=lambda: None))
+    process_metrics.begin_process("gateway")
+
+    class _Exited(Exception):
+        pass
+
+    def fake_exit(code):
+        raise _Exited(code)
+
+    monkeypatch.setattr(gateway_run.os, "_exit", fake_exit)  # os._exit skips atexit: no stamp from there
+    with pytest.raises(_Exited):
+        gateway_run._exit_after_graceful_shutdown(1)
+    marker = process_metrics.markers_dir(marks.home) / f"gateway-{os.getpid()}.json"
+    assert json.loads(marker.read_text())["state"] == "clean"

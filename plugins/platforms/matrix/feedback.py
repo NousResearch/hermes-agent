@@ -29,8 +29,8 @@ class MatrixFeedbackMixin:
         if outcome != ProcessingOutcome.SUCCESS and (actions := getattr(self, "_reaction_followup_actions", None)):
             self._discard_followup_action(self._event_session_key(event))
         msg_id, room_id = event.message_id, event.source.chat_id
-        if self._read_receipts_mode.should_send_on_completion(outcome) and msg_id and room_id:
-            receipt_id = event.metadata.get("matrix_read_receipt_event_id") or msg_id
+        receipt_id = event.read_receipt_message_id or msg_id
+        if self._read_receipts_mode.should_send_on_completion(outcome) and receipt_id and room_id:
             self._background_read_receipt(room_id, receipt_id)
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
             return

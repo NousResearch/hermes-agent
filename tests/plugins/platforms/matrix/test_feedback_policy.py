@@ -2,18 +2,300 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
 from agent import secret_scope
-from gateway.config import Platform, PlatformConfig, load_gateway_config
-from gateway.run import _profile_runtime_scope
-from gateway.platforms.event import ProcessingOutcome
+from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
+from gateway.run import GatewayRunner, _profile_runtime_scope
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.platforms.base import ExecApprovalPrompt, SendResult
+from gateway.turn_context import TurnContext
 from hermes_cli.config import atomic_config_write
 from plugins.platforms.matrix.adapter import MatrixAdapter
+
+
+def _intake_adapter(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> tuple[MatrixAdapter, MagicMock, AsyncMock]:
+    monkeypatch.delenv("MATRIX_REACTIONS", raising=False)
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+    adapter = MatrixAdapter(
+        PlatformConfig(
+            enabled=True,
+            typing_indicator=False,
+            extra={
+                "read_receipts": mode,
+                "reactions": False,
+                "auto_thread": False,
+                "user_id": "@hermes:example.org",
+            },
+        )
+    )
+    adapter._dm_rooms["!room:example.org"] = False
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._download_and_cache_media = AsyncMock(
+        side_effect=lambda *args: f"/tmp/{args[1]}.ogg"
+    )
+    receipts = MagicMock()
+    sender = AsyncMock(return_value=SendResult(success=True, message_id="$reply"))
+    adapter._background_read_receipt = receipts
+    adapter.send = sender
+    adapter.stop_typing = AsyncMock()
+    return adapter, receipts, sender
+
+
+async def _text_input(adapter: MatrixAdapter, event_id: str, body: str) -> None:
+    await adapter._handle_text_message(
+        "!room:example.org",
+        "@alice:example.org",
+        event_id,
+        0,
+        {"body": body, "m.mentions": {"user_ids": ["@hermes:example.org"]}},
+        {},
+    )
+
+
+def _busy_runner(
+    monkeypatch: pytest.MonkeyPatch, adapter: MatrixAdapter, mode: str
+) -> GatewayRunner:
+    runner = GatewayRunner(config=GatewayConfig())
+    runner.adapters[Platform.MATRIX] = adapter
+    runner._busy_input_mode = mode
+    runner._busy_text_mode = "interrupt"
+    monkeypatch.setattr(runner, "_is_user_authorized_for_source", lambda source: True)
+    adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
+    return runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["immediate", "after_processing", "disabled"])
+@pytest.mark.parametrize("aggregation", ["batch", "queued-photos", "queued-text"])
+async def test_aggregated_turn_receipts_cover_the_latest_native_input(
+    monkeypatch, mode, aggregation
+):
+    adapter, receipts, _sender = _intake_adapter(monkeypatch, mode)
+    batch_ready, started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    sleep = asyncio.sleep
+
+    async def timer(delay):
+        if delay == 0:
+            await sleep(0)
+            return
+        await batch_ready.wait()
+
+    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", timer)
+    seen = []
+
+    async def respond(event):
+        seen.append((event.message_id, event.text, list(event.media_urls)))
+        started.set()
+        await release.wait()
+        return "done"
+
+    adapter.set_message_handler(respond)
+    room = "!room:example.org"
+    try:
+        if aggregation == "batch":
+            await _text_input(adapter, "$first", "first")
+            await _text_input(adapter, "$second", "second")
+            batch_ready.set()
+            await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        else:
+            adapter._text_batch_delay_seconds = 0
+            runner = _busy_runner(monkeypatch, adapter, "queue")
+            await _text_input(adapter, "$opening", "opening")
+            await asyncio.wait_for(started.wait(), 2)
+            if aggregation == "queued-photos":
+                for event_id, body in (("$first", "first"), ("$second", "second")):
+                    await adapter._handle_media_message(
+                        room,
+                        "@alice:example.org",
+                        event_id,
+                        0,
+                        {
+                            "body": body,
+                            "msgtype": "m.image",
+                            "url": f"mxc://example.org/{event_id}",
+                            "m.mentions": {"user_ids": ["@hermes:example.org"]},
+                        },
+                        {},
+                        "m.image",
+                    )
+            else:
+                adapter._busy_text_mode = "queue"
+                runner._busy_text_mode = "queue"
+                await _text_input(adapter, "$first", "first")
+                await _text_input(adapter, "$second", "second")
+
+        await asyncio.wait_for(started.wait(), 2)
+        arrival_ids = (
+            ["$first", "$second"]
+            if aggregation == "batch"
+            else ["$opening", "$first", "$second"]
+        )
+        assert receipts.call_args_list == (
+            [call(room, event_id) for event_id in arrival_ids]
+            if mode == "immediate"
+            else []
+        )
+        release.set()
+        while adapter._background_tasks:
+            await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 2)
+        photos = (
+            ["/tmp/$first.ogg", "/tmp/$second.ogg"]
+            if aggregation == "queued-photos"
+            else []
+        )
+        retained_id = "$second" if aggregation == "queued-text" else "$first"
+        merged_text = (
+            "first\n\nsecond" if aggregation == "queued-photos" else "first\nsecond"
+        )
+        assert seen == (
+            [] if aggregation == "batch" else [("$opening", "opening", [])]
+        ) + [
+            (retained_id, merged_text, photos),
+        ]
+        completed_ids = (
+            ["$second"] if aggregation == "batch" else ["$opening", "$second"]
+        )
+        expected_ids = {
+            "immediate": arrival_ids,
+            "after_processing": completed_ids,
+            "disabled": [],
+        }[mode]
+        assert receipts.call_args_list == [
+            call(room, event_id) for event_id in expected_ids
+        ]
+    finally:
+        release.set()
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["immediate", "after_processing", "disabled"])
+@pytest.mark.parametrize(
+    "route",
+    [
+        "redirect",
+        "steer",
+        "claimed-voice",
+        "priority-redirect",
+        "priority-steer",
+        "slash-steer",
+    ],
+)
+@pytest.mark.parametrize("outcome", list(ProcessingOutcome))
+async def test_injected_turn_receipts_cover_the_latest_accepted_input(
+    monkeypatch, mode, route, outcome
+):
+    adapter, receipts, sender = _intake_adapter(monkeypatch, mode)
+    adapter._text_batch_delay_seconds = 0
+    runner = _busy_runner(
+        monkeypatch, adapter, "interrupt" if "redirect" in route else "steer"
+    )
+    receiver = MagicMock(_supports_active_turn_redirect=True)
+    receiver._active_children = []
+    receiver.redirect.return_value = receiver.steer.return_value = True
+    runner._transcribe_and_echo_pending_voice = AsyncMock(
+        return_value=("voice transcript", ["voice transcript"])
+    )
+    started, release = asyncio.Event(), asyncio.Event()
+    opening = []
+
+    async def respond(event):
+        opening.append(event)
+        turn = runner._session_state(adapter._event_session_key(event)).turn
+        turn.agent, turn.event = receiver, event
+        turn.ctx = TurnContext(
+            event_message_id=event.message_id, inbound_message_id=event.message_id
+        )
+        started.set()
+        await release.wait()
+        return "done"
+
+    adapter.set_message_handler(respond)
+    incoming = []
+
+    async def inject(event, key):
+        incoming.append(event)
+        if route == "priority-redirect":
+            await runner._hm_busy_interrupt(event, event.source, receiver, key)
+            return True
+        if route == "priority-steer":
+            runner._hm_busy_steer(event, receiver, key)
+            return True
+        if route == "slash-steer":
+            event.text = "/steer " + event.text
+            await runner._busy_steer_command(event, key, event.source)
+            return True
+        return await runner._handle_active_session_busy_message(event, key)
+
+    adapter.set_busy_session_handler(inject)
+    room = "!room:example.org"
+    try:
+        await _text_input(adapter, "$opening", "opening")
+        await asyncio.wait_for(started.wait(), 2)
+        if route == "claimed-voice":
+            await adapter._handle_media_message(
+                room,
+                "@alice:example.org",
+                "$voice",
+                0,
+                {
+                    "body": "voice.ogg",
+                    "msgtype": "m.audio",
+                    "url": "mxc://example.org/voice",
+                    "org.matrix.msc3245.voice": {},
+                },
+                {},
+                "m.audio",
+            )
+            await _text_input(adapter, "$correction", "@hermes:example.org")
+        else:
+            await _text_input(adapter, "$correction", "correction")
+        assert [event.message_id for event in incoming] == (
+            ["$voice"] if route == "claimed-voice" else ["$correction"]
+        )
+        assert adapter._pending_messages == {}
+        verb = receiver.redirect if "redirect" in route else receiver.steer
+        verb.assert_called_once()
+        arrival_ids = (
+            ["$opening", "$voice", "$correction"]
+            if route == "claimed-voice"
+            else ["$opening", "$correction"]
+        )
+        assert receipts.call_args_list == (
+            [call(room, event_id) for event_id in arrival_ids]
+            if mode == "immediate"
+            else []
+        )
+        if outcome == ProcessingOutcome.CANCELLED:
+            await adapter.cancel_session_processing(
+                adapter._event_session_key(opening[0])
+            )
+        else:
+            if outcome == ProcessingOutcome.FAILURE:
+                sender.return_value = SendResult(success=False, error="refused")
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 2)
+        expected_ids = {
+            "immediate": arrival_ids,
+            "after_processing": []
+            if outcome == ProcessingOutcome.CANCELLED
+            else ["$correction"],
+            "disabled": [],
+        }[mode]
+        assert receipts.call_args_list == [
+            call(room, event_id) for event_id in expected_ids
+        ]
+        assert [event.message_id for event in opening] == ["$opening"]
+    finally:
+        release.set()
+        await adapter.cancel_background_tasks()
 
 
 @pytest.mark.parametrize("section", ["matrix", "platforms", "gateway"])

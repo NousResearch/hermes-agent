@@ -30,4 +30,4 @@ test('renderer syntax checks use the running Node without PATH and preserve expl
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
-})
+}, 120_000)

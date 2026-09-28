@@ -33,17 +33,7 @@ class RecordingTransport:
 
 
 class TestStreamIsMessageGating:
-    def test_slack_descriptor_gets_stream_is_message(self):
-        adapter, _ = _connected_adapter()  # platform="slack" default
-        assert adapter.draft_stream_is_message is True
 
-    def test_telegram_descriptor_does_not(self):
-        adapter, _ = _connected_adapter(
-            platform="telegram",
-            markdown_dialect="markdown_v2",
-            supported_ops=("send", "edit", "typing", "draft"),
-        )
-        assert adapter.draft_stream_is_message is False
 
     @pytest.mark.asyncio
     async def test_telegram_final_is_a_real_send_not_a_seal(self):

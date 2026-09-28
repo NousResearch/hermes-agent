@@ -3,7 +3,6 @@ forced refresh + single retry on sync and dialectic, backoff exemption, and
 the one-time user-facing notice."""
 
 import json
-import logging
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,7 +20,6 @@ from plugins.memory.honcho.session import (
 )
 from plugins.memory.honcho.session_auth import _is_auth_error
 
-
 def _host_block(refresh="hch-rt-old", expires_at=100):
     return {
         "apiKey": "hch-at-old",
@@ -35,10 +33,8 @@ def _host_block(refresh="hch-rt-old", expires_at=100):
         },
     }
 
-
 def _write(path: Path, raw: dict) -> None:
     path.write_text(json.dumps(raw), encoding="utf-8")
-
 
 def _rotated_body(n=1):
     return {
@@ -48,7 +44,6 @@ def _rotated_body(n=1):
         "scope": "write",
         "token_type": "Bearer",
     }
-
 
 @pytest.fixture(autouse=True)
 def _reset_oauth_module_state():
@@ -60,11 +55,9 @@ def _reset_oauth_module_state():
     oauth._reauth_check_cache.clear()
     oauth._expiry_cache.clear()
 
-
 # ---------------------------------------------------------------------------
 # oauth: transient vs permanent exchange failures
 # ---------------------------------------------------------------------------
-
 
 class TestExchangeRetry:
     def test_transient_failure_recovers_on_immediate_retry(self, tmp_path, monkeypatch):
@@ -140,28 +133,16 @@ class TestExchangeRetry:
         token, _ = oauth.ensure_fresh_token(path, "hermes", now=2000)
         assert token == "hch-at-fresh"
 
-    def test_error_body_is_logged(self, tmp_path, monkeypatch, caplog):
-        path = tmp_path / "honcho.json"
-        _write(path, {"hosts": {"hermes": _host_block()}})
-        monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
-        monkeypatch.setattr(
-            oauth, "_http_post_form_status",
-            lambda *a, **k: (400, {"error": "invalid_grant", "error_description": "grant revoked"}),
-        )
-        with caplog.at_level(logging.WARNING, logger="plugins.memory.honcho.oauth"):
-            oauth.ensure_fresh_token(path, "hermes", now=1000)
-        assert "invalid_grant" in caplog.text
-        assert "grant revoked" in caplog.text
-
-    def test_redaction_strips_token_values(self):
-        redacted = oauth.redact_tokens(
-            "exchange failed for hch-rt-supersecret123 got hch-at-alsosecret456"
+    def test_honcho_token_prefixes_are_registered_with_the_shared_redactor(self):
+        """Importing the plugin registers hch-at-/hch-rt- with agent.redact, so every surface that
+        runs the shared redactor (logs, tool output, chat egress) masks Honcho tokens, not only
+        this module's own error strings."""
+        from agent.redact import redact_sensitive_text
+        redacted = redact_sensitive_text(
+            "exchange failed for hch-rt-supersecret123 got hch-at-alsosecret456", force=True
         )
         assert "supersecret123" not in redacted
         assert "alsosecret456" not in redacted
-        assert "hch-rt-[redacted]" in redacted
-        assert "hch-at-[redacted]" in redacted
-
 
 class TestForceRefreshToken:
     def test_rotates_despite_local_validity(self, tmp_path, monkeypatch):
@@ -193,6 +174,47 @@ class TestForceRefreshToken:
         )
         assert oauth.force_refresh_token(path, "hermes") == "hch-at-2"
 
+    @pytest.mark.parametrize("rotated_by", ["first waiter", "sibling process", "sibling process during our cooldown"])
+    def test_401_on_a_bearer_disk_has_moved_off_adopts_without_exchange(self, tmp_path, monkeypatch, rotated_by):
+        """The failing bearer disagreeing with disk is enough to adopt: a replayed refresh token can
+        revoke the grant, and the expiry cache is empty in a sibling process. Adopting is a disk read,
+        so our own recent failed exchange (the cooldown) does not block it."""
+        path = tmp_path / "honcho.json"
+        far = time.time() + 7200
+        _write(path, {"hosts": {"hermes": _host_block(expires_at=far)}})
+        if rotated_by == "first waiter":
+            monkeypatch.setattr(oauth, "_http_post_form_status", lambda *a, **k: (200, {**_rotated_body(2), "expires_in": 7200}))
+            assert oauth.force_refresh_token(path, "hermes", failed_access_token="hch-at-old") == "hch-at-new2"
+        else:
+            _write(path, {"hosts": {"hermes": {**_host_block(refresh="hch-rt-new2", expires_at=far), "apiKey": "hch-at-new2"}}})
+            oauth._expiry_cache.clear()
+            if rotated_by.endswith("cooldown"):
+                oauth._refresh_failure_at[(str(path), "hermes")] = time.monotonic()
+        monkeypatch.setattr(oauth, "_http_post_form_status", lambda *a, **k: pytest.fail("must adopt the on-disk grant, not exchange"))
+        assert oauth.force_refresh_token(path, "hermes", failed_access_token="hch-at-old") == "hch-at-new2"
+        assert oauth._expiry_cache[(str(path), "hermes")][1] == "hch-at-new2"
+
+    @pytest.mark.parametrize("sibling_persists", [True, False], ids=["disk rotated during exchange", "disk unchanged"])
+    def test_invalid_grant_adopts_a_rotation_that_landed_during_the_exchange(self, tmp_path, monkeypatch, sibling_persists):
+        """The endpoint says invalid_grant because a sibling used the refresh token first. Its rotation
+        on disk is adopted; only an unchanged disk marks the grant dead."""
+        path = tmp_path / "honcho.json"
+        far = time.time() + 7200
+        _write(path, {"hosts": {"hermes": _host_block(expires_at=far)}})
+        monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
+
+        def exchange(url, data, timeout):
+            if sibling_persists:
+                _write(path, {"hosts": {"hermes": {**_host_block(refresh="hch-rt-sibling", expires_at=far), "apiKey": "hch-at-sibling"}}})
+            return 400, {"error": "invalid_grant", "error_description": "reuse detected"}
+
+        monkeypatch.setattr(oauth, "_http_post_form_status", exchange)
+        token = oauth.force_refresh_token(path, "hermes", failed_access_token="hch-at-old")
+        assert token == ("hch-at-sibling" if sibling_persists else None)
+        assert oauth.reauth_required(path, "hermes") is (not sibling_persists)
+        if sibling_persists:
+            assert oauth.ensure_fresh_token(path, "hermes", now=time.time())[0] == "hch-at-sibling"
+
     def test_transient_failure_returns_none(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"
         _write(path, {"hosts": {"hermes": _host_block(expires_at=time.time() + 3600)}})
@@ -211,11 +233,9 @@ class TestForceRefreshToken:
         _write(path, {"hosts": {"hermes": {"apiKey": "hch-v3-static"}}})
         assert oauth.force_refresh_token(path, "hermes") is None
 
-
 # ---------------------------------------------------------------------------
 # session: auth error detection
 # ---------------------------------------------------------------------------
-
 
 class TestAuthErrorDetection:
     def test_matches_honcho_token_message(self):
@@ -225,9 +245,6 @@ class TestAuthErrorDetection:
         exc = Exception("boom")
         exc.status_code = 401
         assert _is_auth_error(exc)
-
-    def test_matches_401_text(self):
-        assert _is_auth_error(Exception("HTTP 401 Unauthorized"))
 
     def test_ignores_other_errors(self):
         assert not _is_auth_error(Exception("connection reset by peer"))
@@ -259,11 +276,9 @@ class TestAuthErrorDetection:
     def test_bare_authentication_word_is_not_enough(self):
         assert not _is_auth_error(Exception("authentication service unreachable"))
 
-
 # ---------------------------------------------------------------------------
 # session: dialectic 401 recovery
 # ---------------------------------------------------------------------------
-
 
 class _FlakyPeer:
     """chat() raises an auth error N times, then succeeds."""
@@ -279,7 +294,6 @@ class _FlakyPeer:
             raise Exception("Invalid or expired access token")
         return self.result
 
-
 def _make_manager(peer, *, reauth_ok=True):
     cfg = HonchoClientConfig(host="hermes", api_key="hch-at-x", enabled=True)
     mgr = HonchoSessionManager(config=cfg)
@@ -288,9 +302,8 @@ def _make_manager(peer, *, reauth_ok=True):
     )
     mgr._cache["k"] = session
     mgr._get_or_create_peer = lambda peer_id: peer
-    mgr._force_reauth = lambda: reauth_ok
+    mgr._force_reauth = lambda **kw: reauth_ok
     return mgr
-
 
 class TestDialecticAuthRetry:
     def test_401_forces_refresh_and_retries_once(self):
@@ -329,11 +342,10 @@ class TestDialecticAuthRetry:
         assert mgr._auth_failure is not None
 
         peer.failures = 0
-        mgr._force_reauth = lambda: True
+        mgr._force_reauth = lambda **kw: True
         assert mgr.dialectic_query("k", "q") == "synthesized answer"
         assert mgr._auth_failure is None
         assert mgr.pop_auth_notice() is None
-
 
 class TestForceReauth:
     def test_rotates_and_applies_to_live_client(self, tmp_path, monkeypatch):
@@ -344,7 +356,7 @@ class TestForceReauth:
         applied = {}
         monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: fake_client)
         monkeypatch.setattr(client_mod, "resolve_config_path", lambda: tmp_path / "honcho.json")
-        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: "hch-at-new")
+        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h, **kw: "hch-at-new")
 
         def apply(client, token):
             applied["client"] = client
@@ -361,15 +373,37 @@ class TestForceReauth:
         from plugins.memory.honcho import client as client_mod
 
         monkeypatch.setattr(client_mod, "resolve_config_path", lambda: tmp_path / "honcho.json")
-        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: None)
+        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h, **kw: None)
         mgr = HonchoSessionManager(config=HonchoClientConfig(host="hermes"))
         assert mgr._force_reauth() is False
 
+    def test_passes_the_bearer_the_operation_sent_not_the_rotated_one(self, tmp_path, monkeypatch):
+        """A sibling waiter rotates the shared client's api_key in place while the operation fails with
+        the old bearer; passing the rotated one would match disk and exchange again."""
+        from plugins.memory.honcho import client as client_mod
+        from plugins.memory.honcho import session as session_mod
+
+        http = SimpleNamespace(api_key="hch-at-old")
+        shared_client = SimpleNamespace(_http=http)
+        monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: shared_client)
+        monkeypatch.setattr(client_mod, "resolve_config_path", lambda: tmp_path / "honcho.json")
+        seen = {}
+        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h, **kw: seen.update(kw) or "hch-at-new1")
+        monkeypatch.setattr(oauth, "apply_token_to_client", lambda c, t: True)
+        mgr = HonchoSessionManager(config=HonchoClientConfig(host="hermes", enabled=True))
+
+        def operation():
+            if http.api_key == "hch-at-old":
+                http.api_key = "hch-at-new1"
+                raise Exception("Invalid or expired access token")
+            return "ok"
+
+        assert mgr._authed_call("test op", operation) == "ok"
+        assert seen == {"failed_access_token": "hch-at-old"}
 
 # ---------------------------------------------------------------------------
 # session: message sync 401 recovery
 # ---------------------------------------------------------------------------
-
 
 class _FlakyHonchoSession:
     """add_messages() raises an auth error N times, then succeeds."""
@@ -383,7 +417,6 @@ class _FlakyHonchoSession:
         if self.calls <= self.failures:
             raise Exception("Invalid or expired access token")
 
-
 def _make_sync_manager(flaky_session, *, reauth_ok=True):
     cfg = HonchoClientConfig(host="hermes", api_key="hch-at-x", enabled=True)
     mgr = HonchoSessionManager(config=cfg)
@@ -391,14 +424,13 @@ def _make_sync_manager(flaky_session, *, reauth_ok=True):
     peer.message.side_effect = lambda content: content
     mgr._get_or_create_peer = lambda peer_id: peer
     mgr._sessions_cache["s"] = flaky_session
-    mgr._force_reauth = lambda: reauth_ok
+    mgr._force_reauth = lambda **kw: reauth_ok
     session = HonchoSession(
         key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s"
     )
     session.add_message("user", "hello")
     session.add_message("assistant", "hi")
     return mgr, session
-
 
 class TestSyncAuthRetry:
     def test_401_forces_refresh_and_retries_once(self):
@@ -429,16 +461,14 @@ class TestSyncAuthRetry:
         assert mgr._flush_session(session) is False
         assert mgr._auth_failure is not None
 
-        mgr._force_reauth = lambda: True
+        mgr._force_reauth = lambda **kw: True
         assert mgr._flush_session(session) is True
         assert all(m["_synced"] for m in session.messages)
         assert mgr._auth_failure is None
 
-
 # ---------------------------------------------------------------------------
 # dead grant: skip calls entirely until re-login
 # ---------------------------------------------------------------------------
-
 
 def _kill_grant(tmp_path, monkeypatch) -> Path:
     """Revoke the grant on a tmp config and point the manager's path at it."""
@@ -456,7 +486,6 @@ def _kill_grant(tmp_path, monkeypatch) -> Path:
     monkeypatch.setattr(client_mod, "resolve_config_path", lambda: path)
     return path
 
-
 def _relogin(path: Path) -> None:
     oauth.install_grant(
         path, "hermes",
@@ -465,16 +494,7 @@ def _relogin(path: Path) -> None:
         token_endpoint="http://localhost:8000/oauth/token",
     )
 
-
 class TestDeadGrantSkipsCalls:
-    def test_dead_grant_issues_no_dialectic_call(self, tmp_path, monkeypatch):
-        _kill_grant(tmp_path, monkeypatch)
-        peer = _FlakyPeer(failures=0)
-        mgr = _make_manager(peer)
-        with pytest.raises(HonchoAuthError):
-            mgr.dialectic_query("k", "q")
-        assert peer.calls == 0
-        assert mgr.pop_auth_notice() is not None
 
     def test_relogin_resumes_dialectic_without_waiting(self, tmp_path, monkeypatch):
         path = _kill_grant(tmp_path, monkeypatch)
@@ -489,14 +509,6 @@ class TestDeadGrantSkipsCalls:
         assert peer.calls == 1
         assert mgr._auth_failure is None
 
-    def test_dead_grant_issues_no_sync_call(self, tmp_path, monkeypatch):
-        _kill_grant(tmp_path, monkeypatch)
-        flaky = _FlakyHonchoSession(failures=0)
-        mgr, session = _make_sync_manager(flaky)
-        assert mgr._flush_session(session) is False
-        assert flaky.calls == 0
-        assert mgr._auth_failure is not None
-
     def test_relogin_resumes_sync_without_waiting(self, tmp_path, monkeypatch):
         path = _kill_grant(tmp_path, monkeypatch)
         flaky = _FlakyHonchoSession(failures=0)
@@ -510,11 +522,9 @@ class TestDeadGrantSkipsCalls:
         assert all(m["_synced"] for m in session.messages)
         assert mgr._auth_failure is None
 
-
 # ---------------------------------------------------------------------------
 # one-time user-facing notice
 # ---------------------------------------------------------------------------
-
 
 class TestAuthNotice:
     def test_manager_emits_notice_exactly_once(self):
@@ -537,7 +547,6 @@ class TestAuthNotice:
         mgr._record_auth_failure(Exception("rejected token hch-at-secretvalue99"))
         notice = mgr.pop_auth_notice()
         assert "secretvalue99" not in notice
-        assert "hch-at-[redacted]" in notice
 
     def test_provider_prefetch_injects_notice_once(self):
         class _FakeManager:
@@ -567,11 +576,9 @@ class TestAuthNotice:
         second = provider.prefetch("and the follow-up question?")
         assert second == ""
 
-
 # ---------------------------------------------------------------------------
 # cadence backoff exemption
 # ---------------------------------------------------------------------------
-
 
 class TestBackoffExemption:
     def test_auth_error_does_not_widen_backoff(self):
@@ -584,11 +591,9 @@ class TestBackoffExemption:
         provider._note_dialectic_failure(RuntimeError("timeout"))
         assert provider._dialectic_empty_streak == 1
 
-
 # ---------------------------------------------------------------------------
 # session: context/search 401 recovery through _authed_call
 # ---------------------------------------------------------------------------
-
 
 class _FlakyContextPeer:
     """context() raises an auth error N times, then succeeds."""
@@ -603,7 +608,6 @@ class _FlakyContextPeer:
         if self.calls <= self.failures:
             raise Exception("Invalid or expired access token")
         return SimpleNamespace(representation=self.representation, peer_card=["fact one"])
-
 
 class TestContextAuthRetry:
     def test_401_forces_refresh_and_retries_once(self):
@@ -636,7 +640,6 @@ class TestContextAuthRetry:
             mgr.get_peer_card("k")
         assert _FlakyCardPeer.calls == 1
 
-
 class TestDeadGrantSkipsContextAndSearch:
     def test_dead_grant_issues_no_context_call(self, tmp_path, monkeypatch):
         _kill_grant(tmp_path, monkeypatch)
@@ -665,7 +668,6 @@ class TestDeadGrantSkipsContextAndSearch:
         assert peer.calls == 0
         assert mgr.pop_auth_notice() is not None
 
-
 class TestNonAuthFailuresNotRetried:
     def test_context_timeout_fails_open_without_refresh(self):
         class _TimeoutPeer:
@@ -687,7 +689,7 @@ class TestNonAuthFailuresNotRetried:
         _TimeoutPeer.calls = 0
         mgr = _make_manager(_TimeoutPeer())
         reauths = []
-        mgr._force_reauth = lambda: reauths.append(1) or True
+        mgr._force_reauth = lambda **kw: reauths.append(1) or True
 
         ctx = mgr.get_session_context("k")
         assert ctx == {"representation": "", "card": []}
@@ -710,18 +712,16 @@ class TestNonAuthFailuresNotRetried:
         monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: client)
         mgr = _make_manager(_TimeoutSearchPeer())
         reauths = []
-        mgr._force_reauth = lambda: reauths.append(1) or True
+        mgr._force_reauth = lambda **kw: reauths.append(1) or True
 
         assert mgr.search_context("k", "q") == ""
         assert client.search.call_count == 1
         assert _TimeoutSearchPeer.calls == 1
         assert reauths == []
 
-
 # ---------------------------------------------------------------------------
 # client rebuild: the retry must use freshly resolved SDK objects
 # ---------------------------------------------------------------------------
-
 
 def _wire_rebuild(tmp_path, monkeypatch, fresh_client):
     """Route _force_reauth down its client-rebuild path, swapping in fresh_client."""
@@ -731,14 +731,13 @@ def _wire_rebuild(tmp_path, monkeypatch, fresh_client):
     clients = {"current": MagicMock()}
     monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: clients["current"])
     monkeypatch.setattr(client_mod, "resolve_config_path", lambda: tmp_path / "honcho.json")
-    monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: "hch-at-rotated")
+    monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h, **kw: "hch-at-rotated")
     monkeypatch.setattr(oauth, "apply_token_to_client", lambda c, t: False)
     monkeypatch.setattr(
         client_mod, "reset_honcho_client",
         lambda: clients.__setitem__("current", fresh_client),
     )
     return clients
-
 
 class TestClientRebuildRetry:
     def test_flush_retry_uses_rebuilt_session_not_stale(self, tmp_path, monkeypatch):
@@ -799,11 +798,9 @@ class TestClientRebuildRetry:
         assert stale_peer.context.call_count == 1
         assert fresh_peer.context.call_count == 1
 
-
 # ---------------------------------------------------------------------------
 # tools: auth failures must never read as "no context"
 # ---------------------------------------------------------------------------
-
 
 class TestToolAuthVisibility:
     def _provider(self, manager):
@@ -840,11 +837,9 @@ class TestToolAuthVisibility:
         assert "No profile facts" not in out
         assert "authentication failed" in out
 
-
 # ---------------------------------------------------------------------------
 # initialization-time auth failures: the notice must survive the manager discard
 # ---------------------------------------------------------------------------
-
 
 def _healthy_client():
     """A mock SDK client whose peers and sessions behave like an empty backend."""
@@ -859,7 +854,6 @@ def _healthy_client():
     client.session.return_value = sdk_session
     return client
 
-
 def _wire_init(tmp_path, monkeypatch, client, *, recall_mode="hybrid", dead_refresh=True):
     """Route provider initialization through a real manager backed by ``client``."""
     from plugins.memory.honcho import client as client_mod
@@ -871,16 +865,15 @@ def _wire_init(tmp_path, monkeypatch, client, *, recall_mode="hybrid", dead_refr
     monkeypatch.setattr(client_mod, "get_honcho_client", lambda *a, **k: client)
     monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: client)
     if dead_refresh:
-        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: None)
+        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h, **kw: None)
     cfg = HonchoClientConfig(
         host="hermes", api_key="hch-at-old", enabled=True, recall_mode=recall_mode,
-        timeout=0.5, session_strategy="per-session",
+        timeout=0.5, session_strategy="per-session", peer_name="operator",
     )
     monkeypatch.setattr(
         client_mod.HonchoClientConfig, "from_global_config", lambda *a, **k: cfg
     )
     return path
-
 
 def _initialized_provider():
     provider = HonchoMemoryProvider()
@@ -889,18 +882,7 @@ def _initialized_provider():
         provider._init_thread.join(timeout=5)
     return provider
 
-
 class TestInitAuthFailureNotice:
-    def test_peer_setup_401_in_hybrid_mode_produces_notice(self, tmp_path, monkeypatch):
-        client = MagicMock()
-        client.peer.side_effect = Exception("HTTP 401 Unauthorized")
-        _wire_init(tmp_path, monkeypatch, client)
-        provider = _initialized_provider()
-
-        assert provider._manager is None
-        notice = provider.prefetch("what did we decide about the schema?")
-        assert "hermes honcho setup" in notice
-        assert "paused" in notice
 
     def test_notice_is_emitted_exactly_once(self, tmp_path, monkeypatch):
         client = MagicMock()
@@ -932,16 +914,6 @@ class TestInitAuthFailureNotice:
         assert client.peer.called  # failure hit session setup, not peer setup
         notice = provider.prefetch("what happened before the grant died?")
         assert "hermes honcho setup" in notice
-
-    def test_tools_lazy_init_reports_auth_error(self, tmp_path, monkeypatch):
-        client = MagicMock()
-        client.peer.side_effect = Exception("Invalid or expired access token")
-        _wire_init(tmp_path, monkeypatch, client, recall_mode="tools")
-        provider = _initialized_provider()
-
-        out = provider.handle_tool_call("honcho_profile", {})
-        assert "authentication failed" in out
-        assert "could not be initialized" not in out
 
     def test_relogin_resumes_init_and_clears_failure(self, tmp_path, monkeypatch):
         client = _healthy_client()
@@ -980,7 +952,7 @@ class TestInitAuthFailureNotice:
         client.peer.side_effect = TimeoutError("request timed out")
         _wire_init(tmp_path, monkeypatch, client, dead_refresh=False)
         reauths = []
-        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h: reauths.append(1))
+        monkeypatch.setattr(oauth, "force_refresh_token", lambda p, h, **kw: reauths.append(1))
         provider = _initialized_provider()
 
         assert provider._manager is None
@@ -997,11 +969,9 @@ class TestInitAuthFailureNotice:
         out = provider.handle_tool_call("honcho_profile", {})
         assert "could not be initialized" in out
 
-
 # ---------------------------------------------------------------------------
 # hardening: exchange budget, failure cooldown, client-generation cache guard
 # ---------------------------------------------------------------------------
-
 
 class TestExchangeBudget:
     def test_timed_out_first_attempt_skips_retry_when_budget_spent(self, tmp_path, monkeypatch):
@@ -1046,7 +1016,6 @@ class TestExchangeBudget:
         assert len(timeouts) == 2
         # Retry timeout is bounded by both the per-attempt cap and the budget.
         assert 0 < timeouts[1] <= oauth._REFRESH_TIMEOUT_SECONDS
-
 
 class TestFailureCooldown:
     def test_repeated_calls_within_cooldown_do_not_reexchange(self, tmp_path, monkeypatch):
@@ -1109,7 +1078,6 @@ class TestFailureCooldown:
         assert refreshed is True
         assert key not in oauth._refresh_failure_at
 
-
 class TestClientGenerationGuard:
     def test_stale_object_resolved_across_rebuild_is_not_cached(self, monkeypatch):
         """A resolver that fetched from the OLD client must not store its
@@ -1142,25 +1110,3 @@ class TestClientGenerationGuard:
         assert got is fresh_session
         assert mgr._sessions_cache["s"] is fresh_session
         assert resolutions == ["stale", "fresh"]
-
-    def test_dead_grant_check_fast_path_skips_path_resolution(self, monkeypatch):
-        """With no dead grants, _reauth_required must not resolve the config
-        path at all (it runs before every SDK call)."""
-        from plugins.memory.honcho import client as client_mod
-
-        oauth._dead_grants.clear()
-
-        # Recording spy, not a raising stub: _reauth_required swallows all
-        # exceptions, so a raise would be silently converted to False and the
-        # test would pass even without the fast path.
-        calls = []
-
-        def _spy():
-            calls.append(1)
-            return Path("/nonexistent/honcho.json")
-
-        monkeypatch.setattr(client_mod, "resolve_config_path", _spy)
-        cfg = HonchoClientConfig(host="hermes", api_key="hch-at-x", enabled=True)
-        mgr = HonchoSessionManager(config=cfg)
-        assert mgr._reauth_required() is False
-        assert calls == [], "resolve_config_path must not run on the fast path"

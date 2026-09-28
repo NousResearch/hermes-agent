@@ -9,12 +9,13 @@
  */
 
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { useCallback, useMemo, useRef } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
+import type { WorkspaceMode } from '@/contrib/types'
 import { useI18n } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
@@ -30,6 +31,7 @@ import {
 } from '@/store/session-request-router'
 import {
   $sessionStates,
+  $sessionTiles,
   isSessionRemote,
   patchSessionTile,
   sessionTileDelegate,
@@ -49,7 +51,7 @@ import {
   applyReloadOptimistic,
   applyRewindOptimistic,
   durableRowIdsForRebind,
-  finalizeInterruptedMessages,
+  finalizeUserInterruptedMessages,
   planEdit,
   planReload,
   planRestore,
@@ -89,7 +91,16 @@ export function listTileSessionRow(deps: {
   runtimeId: string
   sessions: readonly SessionInfo[]
   storedSessionId: string
+  workspaceMode?: WorkspaceMode
 }): boolean {
+  // Bot Mode tabs mirror hidden relationship chats (canonical Bot Chats stay
+  // off the Sessions list by design — the bot row is the only door), so a
+  // first send must not seed a flagless row the refresh keep-list would then
+  // hold forever (#113273).
+  if (deps.workspaceMode === 'bots') {
+    return false
+  }
+
   const preview = deps.preview.trim()
 
   if (!preview || deps.sessions.some(session => sessionMatchesStoredId(session, deps.storedSessionId))) {
@@ -203,7 +214,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       preview,
       runtimeId,
       sessions: $sessions.get(),
-      storedSessionId: storedIdRef.current
+      storedSessionId: storedIdRef.current,
+      workspaceMode: $sessionTiles.get().find(tile => tile.storedSessionId === storedIdRef.current)?.workspaceMode
     })
   }, [])
 
@@ -332,7 +344,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
     update(state => ({
       ...state,
-      messages: finalizeInterruptedMessages(state.messages, state.streamId),
+      messages: finalizeUserInterruptedMessages(state.messages, state.streamId),
       busy: false,
       awaitingResponse: false,
       streamId: null,
@@ -362,6 +374,37 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       notifyError(err, copy.stopFailed)
     }
   }, [bindRecoveredRuntime, copy.stopFailed, requestSessionGateway, update])
+
+  // A hidden note mid-turn rides session.steer into the model's next tool
+  // result: no optimistic bubble, no user turn. The main composer has the same
+  // primitive in use-prompt-actions.
+  const injectHiddenPrompt = useCallback(
+    async (rawText: string): Promise<boolean> => {
+      const text = rawText.trim()
+      const sessionId = runtimeIdRef.current
+
+      if (!text || !sessionId) {
+        return false
+      }
+
+      try {
+        const { result } = await withSessionNotFoundResume(
+          sessionId,
+          storedIdRef.current,
+          liveId => requestSessionGateway<{ status?: string }>('session.steer', { session_id: liveId, text }),
+          {
+            requestGateway: requestSessionGateway,
+            onRecovered: bindRecoveredRuntime
+          }
+        )
+
+        return result?.status === 'queued'
+      } catch {
+        return false
+      }
+    },
+    [bindRecoveredRuntime, requestSessionGateway]
+  )
 
   const steerPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
@@ -652,6 +695,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       dismissError,
       editMessage,
       handleThreadMessagesChange,
+      injectHiddenPrompt,
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,
@@ -662,6 +706,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       dismissError,
       editMessage,
       handleThreadMessagesChange,
+      injectHiddenPrompt,
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,

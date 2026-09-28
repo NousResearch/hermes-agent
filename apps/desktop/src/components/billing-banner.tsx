@@ -3,7 +3,6 @@ import { useStore } from '@nanostores/react'
 import { StatusRow } from '@/components/chat/status-row'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { $billingBlock, billingCtaLabel, clearBillingBlock, runBillingRecovery } from '@/store/billing-block'
 
@@ -47,18 +46,16 @@ export function BillingBanner({ sessionId }: { sessionId: null | string }) {
           >
             {billingCtaLabel(block, copy)}
           </Button>
-          <Tip label={copy.dismiss}>
-            <Button
-              aria-label={copy.dismiss}
-              className="size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-              onClick={() => clearBillingBlock(sessionId)}
-              size="icon-xs"
-              type="button"
-              variant="ghost"
-            >
-              <Codicon name="close" size="0.75rem" />
-            </Button>
-          </Tip>
+          <Button
+            aria-label={copy.dismiss}
+            className="size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
+            onClick={() => clearBillingBlock(sessionId)}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="close" size="0.75rem" />
+          </Button>
         </>
       }
       trailingVisible

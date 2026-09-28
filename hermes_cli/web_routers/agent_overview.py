@@ -45,7 +45,7 @@ def get_agent_overview(limit: int = Query(100, ge=1, le=100), offset: int = Quer
     from hermes_state import SessionDB
 
     rows, canonical, errors, profile_rows = [], [], [], []
-    targets = _profile_targets("GET /api/profiles/agent-overview", lightweight=True, errors=errors)
+    targets = _profile_targets("GET /api/profiles/agent-overview", errors=errors)
     total, remaining_offset = 0, offset
     # Page across profiles in deterministic order. Unlike the sidebar's capped
     # recency over-fetch, the DB offset advances even beyond 500 rows/profile.

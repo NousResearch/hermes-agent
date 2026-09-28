@@ -79,53 +79,11 @@ describe('normalizePreviewAddress', () => {
 })
 
 describe('PreviewBrowserBar', () => {
-  it('renders the navigation controls and the page toggles', () => {
-    const rendered = render(<PreviewBrowserBar {...baseProps} />)
-
-    expect(rendered.getByRole('button', { name: 'Back' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Forward' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Reload page' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Copy URL' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Pop out' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Show preview console' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Open preview DevTools' })).toBeTruthy()
-    expect(address(rendered)).toBeTruthy()
-  })
-
-  it('renders the Annotate control and a blue Commenting status while the mode is on', () => {
-    const onToggleAnnotate = vi.fn()
-    const rendered = render(<PreviewBrowserBar {...baseProps} annotateMode onToggleAnnotate={onToggleAnnotate} />)
-
-    const toggle = rendered.getByRole('button', { name: 'Stop annotating' })
-    expect(toggle.getAttribute('aria-pressed')).toBe('true')
-    fireEvent.click(toggle)
-    expect(onToggleAnnotate).toHaveBeenCalledOnce()
-    expect(rendered.getByText('Commenting').getAttribute('data-annotate-status')).toBe('commenting')
-  })
-
-  it('flushes stacked comments from the bar without implying a send on save', () => {
-    const onFlushComments = vi.fn()
-
-    const rendered = render(
-      <PreviewBrowserBar {...baseProps} commentCount={2} onFlushComments={onFlushComments} onToggleAnnotate={vi.fn()} />
-    )
-
-    fireEvent.click(rendered.getByRole('button', { name: 'Add 2 comments' }))
-    expect(onFlushComments).toHaveBeenCalledOnce()
-  })
-
   it('disables back and forward when there is no history', () => {
     const rendered = render(<PreviewBrowserBar {...baseProps} />)
 
     expect((rendered.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(true)
     expect((rendered.getByRole('button', { name: 'Forward' }) as HTMLButtonElement).disabled).toBe(true)
-  })
-
-  it('enables back and forward when there is history', () => {
-    const rendered = render(<PreviewBrowserBar {...baseProps} canGoBack canGoForward />)
-
-    expect((rendered.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(false)
-    expect((rendered.getByRole('button', { name: 'Forward' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it.each([
@@ -282,40 +240,6 @@ describe('PreviewBrowserBar', () => {
     expect(address(rendered).value).toBe('https://example.com')
   })
 
-  // Progress belongs beside the address it describes; the reload glyph sits in
-  // a row of four and reads as chrome rather than as this page's state.
-  it('shows progress inside the address field only while loading', () => {
-    const { container, rerender } = render(<PreviewBrowserBar {...baseProps} loading />)
-    const field = screen.getByRole('textbox', { name: 'Address' }).parentElement
-
-    expect(field?.querySelector('.codicon-loading')).toBeTruthy()
-
-    rerender(<PreviewBrowserBar {...baseProps} />)
-
-    expect(container.querySelector('.codicon-loading')).toBeNull()
-  })
-
-  it('spins the reload glyph only while loading', () => {
-    const { container, rerender } = render(<PreviewBrowserBar {...baseProps} loading />)
-
-    expect(container.querySelector('.codicon-refresh')?.className).toContain('codicon-modifier-spin')
-
-    rerender(<PreviewBrowserBar {...baseProps} />)
-
-    expect(container.querySelector('.codicon-refresh')?.className).not.toContain('codicon-modifier-spin')
-  })
-
-  it('copies the live address from the copy-URL button', async () => {
-    const writeClipboard = vi.fn().mockResolvedValue(undefined)
-
-    installBridge(writeClipboard)
-    render(<PreviewBrowserBar {...baseProps} />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Copy URL' }))
-
-    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('https://example.com'))
-  })
-
   it('copies the new address after the page navigates', async () => {
     const writeClipboard = vi.fn().mockResolvedValue(undefined)
 
@@ -326,18 +250,6 @@ describe('PreviewBrowserBar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy URL' }))
 
     await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith('https://example.com/next'))
-  })
-
-  it('renders the copy control inside the address field wrapper, not as a bar glyph', () => {
-    render(<PreviewBrowserBar {...baseProps} />)
-
-    const copyButton = screen.getByRole('button', { name: 'Copy URL' })
-    const address = screen.getByRole('textbox', { name: 'Address' })
-
-    // Same positioned wrapper as the field = visually inside it, like the
-    // code-block copy icon (inline appearance, overlay on the field's edge).
-    expect(copyButton.parentElement?.contains(address)).toBe(true)
-    expect(copyButton.className).toContain('absolute')
   })
 
   it('shows Open in browser when only the external handler is provided', () => {

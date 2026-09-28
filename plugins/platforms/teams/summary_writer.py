@@ -1,8 +1,6 @@
 """Pipeline-facing Teams outbound delivery (meeting-summary writer).
 
 Lives inside the Teams platform plugin so the meeting pipeline reuses one Teams
-integration surface. httpx is imported lazily: plugin discovery imports this
-module on every CLI start, but only ``incoming_webhook`` delivery needs it.
 """
 
 from __future__ import annotations
@@ -14,6 +12,8 @@ from urllib.parse import quote
 
 from gateway.config import PlatformConfig
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+
+import httpx
 
 
 def _parse_bool(value: Any, *, default: bool = False) -> bool:
@@ -90,7 +90,6 @@ class TeamsSummaryWriter:
         return merged
 
     async def _write_summary_via_incoming_webhook(self, payload: Any, config: dict[str, Any]) -> dict[str, Any]:
-        import httpx  # lazy — see module docstring
         webhook_url = str(config.get("incoming_webhook_url") or "").strip()
         if not webhook_url:
             raise ValueError("TEAMS_INCOMING_WEBHOOK_URL is required for incoming_webhook mode.")

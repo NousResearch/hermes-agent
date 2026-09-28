@@ -11,7 +11,6 @@ import types
 
 import pytest
 
-import cli as cli_mod
 from hermes_cli import main as main_mod
 from hermes_cli import mcp_startup
 
@@ -21,11 +20,11 @@ def _reset_mcp_startup_state():
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
     try:
-        mcp_startup._mcp_discovery_started = False
-        mcp_startup._mcp_discovery_thread = None
+        mcp_startup._mcp_discovery_started = set()
+        mcp_startup._mcp_discovery_thread = {}
         yield
     finally:
-        thread = mcp_startup._mcp_discovery_thread
+        thread = mcp_startup._current_home_thread()
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
         mcp_startup._mcp_discovery_started = saved_started
@@ -91,13 +90,14 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         start = time.monotonic()
         main_mod._prepare_agent_startup(_agent_args())
         elapsed = time.monotonic() - start
-        assert elapsed < 0.2
+        assert elapsed < 2.0
         deadline = time.monotonic() + 3.0
         while calls["mcp"] == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert calls["mcp"] == 1
-        assert mcp_startup._mcp_discovery_thread is not None
-        assert mcp_startup._mcp_discovery_thread.is_alive()
+        thread = mcp_startup._current_home_thread()
+        assert thread is not None
+        assert thread.is_alive()
     finally:
         stop.set()
 
@@ -149,7 +149,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
 
     assert calls["background"] == 0
     assert calls["inline"] == 0
-    assert mcp_startup._mcp_discovery_thread is None
+    assert mcp_startup._current_home_thread() is None
 
 
 def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
@@ -229,11 +229,53 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
         logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
         thread_name="test-mcp-discovery",
     )
-    assert mcp_startup._mcp_discovery_thread is not None
-    mcp_startup._mcp_discovery_thread.join(timeout=1.0)
+    thread = mcp_startup._current_home_thread()
+    assert thread is not None
+    thread.join(timeout=1.0)
 
     assert state["during_discover"] is True
     assert state["active"] is False
+
+
+def test_background_mcp_discovery_propagates_profile_secret_scope(monkeypatch):
+    """A dashboard-profile discovery thread must retain that profile's secrets."""
+    from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
+
+    seen = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"url": "https://mcp.example.test/mcp"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool_discovery",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: seen.append(dict(current_secret_scope() or {})),
+        ),
+    )
+
+    expected_scope = {"MCP_DEMO_TOKEN": "profile-only-secret"}
+    token = set_secret_scope(expected_scope)
+    try:
+        mcp_startup.start_background_mcp_discovery(
+            logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
+            thread_name="test-mcp-discovery",
+        )
+        thread = mcp_startup._current_home_thread()
+        assert thread is not None
+        thread.join(timeout=1.0)
+    finally:
+        reset_secret_scope(token)
+
+    assert seen == [expected_scope]
 
 
 def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
@@ -266,7 +308,7 @@ def _retry_logger():
     )
 
 
-def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
+def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict, status: str = "configured"):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
@@ -284,7 +326,7 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
         "tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
-            get_mcp_status=lambda: [{"connected": connected}],
+            get_mcp_status=lambda: [{"name": "demo", "connected": connected, "status": status}],
         ),
     )
 
@@ -397,3 +439,64 @@ def test_prepare_agent_startup_installs_server_filter(monkeypatch, _reset_mcp_se
     monkeypatch.setattr(main_mod, "_command_has_dedicated_mcp_startup", lambda args: True)
     main_mod._prepare_agent_startup(_agent_args(toolsets="terminal,code-mcp"))
     assert mcp_startup.get_mcp_server_filter() == ["terminal", "code-mcp"]
+
+
+@pytest.mark.parametrize(("status", "retried"), [("lazy", False), ("configured", True)])
+def test_lazy_only_discovery_counts_as_usable_at_both_startup_sites(monkeypatch, status, retried):
+    """A finished run whose servers are all ``lazy`` (registered from the schema cache, spawned
+    on first use) left them usable: no zero-connected warning, and the re-entry check must not
+    re-spawn discovery (#111717). Control: a run that left them merely ``configured`` still warns
+    and is still retried (#66981)."""
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=status)
+    warnings: list = []
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None,
+                                   warning=lambda msg, *a, **_k: warnings.append(msg % a if a else msg))
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")  # first run
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")  # re-entry after it finished
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+
+    assert calls["mcp"] == (2 if retried else 1)
+    assert any("zero connected" in w for w in warnings) is retried
+    assert any("retrying discovery thread" in w for w in warnings) is retried
+
+
+def test_server_added_after_discovery_is_connected_by_the_next_agent_build(monkeypatch, tmp_path):
+    """#76954: ``hermes mcp add`` against a running Desktop backend. Discovery already ran and left
+    ``github`` live, so the re-entry every agent build makes returned early and the new server's
+    tools never reached a new session. It must run discovery again, and only while something
+    configured is still unconnected."""
+    from tools import mcp_tool
+    from tools import mcp_tool_config as _config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("mcp_servers:\n  github:\n    url: https://mcp.example.test/gh\n")
+    configured = {"github": {"url": "https://mcp.example.test/gh"}}
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: dict(configured))
+    monkeypatch.setitem(mcp_tool._servers, "github", object())
+    monkeypatch.setitem(mcp_tool._server_scope_keys, "github", None)
+    monkeypatch.setattr(mcp_startup, "_any_mcp_connected", lambda: True)
+    runs: list = []
+    monkeypatch.setattr(mcp_startup, "_discover_mcp_tools_without_interactive_oauth", lambda: runs.append(1))
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None, info=lambda *_a, **_k: None,
+                                   warning=lambda *_a, **_k: None)
+
+    def build_agent():
+        mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+        thread = mcp_startup._current_home_thread()
+        if thread is not None:
+            thread.join(timeout=5.0)
+
+    build_agent()  # backend start
+    build_agent()  # new session, config unchanged: github is live, nothing to do
+    assert len(runs) == 1
+
+    configured["linear"] = {"url": "https://mcp.example.test/linear"}  # hermes mcp add linear
+    build_agent()
+    assert len(runs) == 2

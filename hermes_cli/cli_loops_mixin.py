@@ -18,6 +18,20 @@ def _preview(payload: str) -> str:
     return f"{payload[:80]}{'...' if len(payload) > 80 else ''}"
 
 
+_QUEUE_USAGE = ("Usage: /queue <prompt> | /queue list | /queue edit N <prompt> | "
+                "/queue rm N | /queue move FROM TO | /queue clear")
+# management verb -> (handler, takes a leading item index). Verbs without an index are
+# only management when they stand alone; index verbs only when a number follows.
+_QUEUE_VERBS: dict[str, tuple[str, bool]] = {
+    "list": ("_queue_list", False), "ls": ("_queue_list", False), "show": ("_queue_list", False),
+    "clear": ("_queue_clear", False),
+    "edit": ("_queue_edit", True), "set": ("_queue_edit", True),
+    "rm": ("_queue_remove", True), "remove": ("_queue_remove", True), "delete": ("_queue_remove", True),
+    "del": ("_queue_remove", True), "pop": ("_queue_remove", True),
+    "move": ("_queue_move", True),
+}
+
+
 def _print_decision_message(decision: dict) -> bool:
     """Print a manager decision's ``message`` (if any) via _cprint; True when one was printed."""
     from cli import _cprint
@@ -88,10 +102,12 @@ class CLILoopsMixin:
             ctx_len = None
             if agent and hasattr(agent, "context_compressor"):
                 ctx_len = agent.context_compressor.context_length
+            from agent.context_pin import is_context_pinned
             build_welcome_banner(
                 console=cc, model=self.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
                 tools=tools, enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider)
+                context_length=ctx_len, provider=self.provider,
+                context_pinned=is_context_pinned(ctx_len, getattr(agent, "_config_context_length", None)))
         _cprint(_FRESH_START)
         self._print_random_tip()
 
@@ -102,7 +118,7 @@ class CLILoopsMixin:
         if len(parts) == 1:
             # No argument: show current title and session ID.
             if not self._session_db:
-                _cprint(f"  {format_session_db_unavailable()}")
+                _cprint(f"  {format_session_db_unavailable(details=True)}")
                 return
             _cprint(f"  Session ID: {self.session_id}")
             session = self._session_db.get_session(self.session_id)
@@ -118,7 +134,7 @@ class CLILoopsMixin:
             _cprint("  Usage: /title <your session title>")
             return
         if not self._session_db:
-            _cprint(f"  {format_session_db_unavailable()}")
+            _cprint(f"  {format_session_db_unavailable(details=True)}")
             return
         # Sanitize early so feedback matches what gets stored. A rejection (e.g. too
         # long) prints that one reason and stops — never a second, contradictory
@@ -265,15 +281,131 @@ class CLILoopsMixin:
         except Exception as e:
             print(f"Plugin system error: {e}")
 
-    def _cmd_queue(self, cmd_original: str):
-        from cli import _cprint, _slash_args
-        payload = self._expand_paste_references(_slash_args(cmd_original))
-        if not payload:
-            _cprint("  Usage: /queue <prompt>")
+    # ── /queue: enqueue, list, edit, rm, move, clear ─────────────────
+    # A queued next-turn prompt can be inspected and changed before it is sent.
+
+    def _pending_input_items(self) -> list:
+        """Snapshot of queued next-turn prompts (raw items; may include ``_VoiceInputMessage``)."""
+        with self._pending_input.mutex:
+            return list(self._pending_input.queue)
+
+    def _mutate_pending_input(self, mutate) -> tuple[list, list]:
+        """Apply ``mutate(items) -> items`` to the queued prompts under the queue's own mutex,
+        so a voice/interrupt ``put`` from another thread can't slip between snapshot and
+        write-back. Returns ``(before, after)``."""
+        q = self._pending_input
+        with q.mutex:
+            before = list(q.queue)
+            after = list(mutate(list(before)))
+            q.queue.clear()
+            q.queue.extend(after)
+            q.unfinished_tasks = len(after)
+            if after:
+                q.not_empty.notify_all()
+        return before, after
+
+    def _queue_enqueue(self, text: str) -> None:
+        from cli import _cprint
+        payload = self._expand_paste_references(text)
+        self._pending_input.put(payload)
+        when = " for the next turn" if self._agent_running else ""
+        _cprint(f"  Queued{when}: {_preview(payload)}")
+
+    def _queue_list(self, rest: str) -> None:
+        from cli import _VoiceInputMessage, _cprint
+        items = self._pending_input_items()
+        if not items:
+            _cprint("  Queue is empty." + ("" if rest else "  " + _QUEUE_USAGE))
+            return
+        _cprint(f"  Queue ({len(items)} pending):")
+        for idx, item in enumerate(items, 1):
+            tag = " [voice]" if isinstance(item, _VoiceInputMessage) else ""
+            _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}{tag}")
+
+    def _queue_clear(self, rest: str) -> None:
+        from cli import _cprint
+        before, _ = self._mutate_pending_input(lambda items: [])
+        _cprint(f"  Cleared {len(before)} queued prompt{'s' if len(before) != 1 else ''}.")
+
+    def _queue_remove(self, rest: str) -> None:
+        from cli import _cprint
+        idx = int(rest)
+        removed: list = []
+        before, _ = self._mutate_pending_input(
+            lambda items: (removed.append(items.pop(idx - 1)) or items) if 1 <= idx <= len(items) else items)
+        if removed:
+            _cprint(f"  Removed queue item {idx}: {_preview(str(removed[0]))}")
         else:
-            self._pending_input.put(payload)
-            when = " for the next turn" if self._agent_running else ""
-            _cprint(f"  Queued{when}: {_preview(payload)}")
+            _cprint(f"  Queue item {idx} not found. Current size: {len(before)}")
+
+    def _queue_edit(self, rest: str) -> None:
+        from cli import _VoiceInputMessage, _cprint
+        idx_text, _, new_prompt = rest.partition(" ")
+        if not new_prompt.strip():
+            _cprint("  Usage: /queue edit <number> <new prompt>")
+            return
+        idx = int(idx_text)
+        new_text = self._expand_paste_references(new_prompt.strip())
+
+        def _edit(items: list) -> list:
+            if 1 <= idx <= len(items):
+                # A voice-queued item keeps its sentinel so the concise voice-response
+                # prefix still applies (#65827).
+                voice = isinstance(items[idx - 1], _VoiceInputMessage)
+                items[idx - 1] = _VoiceInputMessage(new_text) if voice else new_text
+            return items
+
+        before, after = self._mutate_pending_input(_edit)
+        if before == after:
+            _cprint(f"  Queue item {idx} not found. Current size: {len(before)}")
+        else:
+            _cprint(f"  Updated queue item {idx}: {_preview(new_text)}")
+
+    def _queue_move(self, rest: str) -> None:
+        from cli import _cprint
+        bits = rest.split()
+        if len(bits) != 2 or not bits[1].isdigit():
+            _cprint("  Usage: /queue move <from> <to>")
+            return
+        src, dst = int(bits[0]), int(bits[1])
+
+        def _move(items: list) -> list:
+            if 1 <= src <= len(items) and 1 <= dst <= len(items):
+                items.insert(dst - 1, items.pop(src - 1))
+            return items
+
+        before, after = self._mutate_pending_input(_move)
+        if before == after and src != dst:
+            _cprint(f"  Queue move out of range. Current size: {len(before)}")
+        else:
+            _cprint(f"  Moved queue item {src} to {dst}.")
+
+    def _cmd_queue(self, cmd_original: str):
+        """``/queue <prompt>`` enqueues; a leading management verb whose arguments fit
+        (``list``/``clear`` alone, ``edit N …``/``rm N``/``move A B``) manages the queue
+        instead. Anything else — ``clear the logs``, ``edit the config`` — is still a prompt;
+        ``/queue add <prompt>`` forces enqueueing."""
+        from cli import _cprint, _slash_args
+        payload = _slash_args(cmd_original)
+        if not payload:
+            self._queue_list("")
+            return
+        verb, _, rest = payload.partition(" ")
+        verb, rest = verb.lower(), rest.strip()
+        if verb == "add":
+            if rest:
+                self._queue_enqueue(rest)
+            else:
+                _cprint("  Usage: /queue add <prompt>")
+            return
+        handler, takes_index = _QUEUE_VERBS.get(verb, (None, False))
+        is_management = handler is not None and (
+            rest.split(None, 1)[0].isdigit() if takes_index and rest else not rest
+        )
+        if is_management:
+            getattr(self, handler)(rest)
+        else:
+            self._queue_enqueue(payload)
 
     def _cmd_steer(self, cmd_original: str):
         # Inject a message after the next tool call without interrupting: while the
@@ -385,6 +517,35 @@ class CLILoopsMixin:
             finally:
                 self._heartbeat_watchdog_started = False
         threading.Thread(target=_loop, daemon=True, name="heartbeat-watchdog").start()
+
+    def _maybe_resume_parked_goal(self) -> None:
+        """Idle hook run from process_loop: when a parked /goal's barrier has lifted (the process
+        exited, the timer elapsed, or the wait aged past its cap), queue the continuation so the
+        loop resumes WITHOUT waiting for an unrelated turn to re-evaluate it. The barrier used to be
+        checked only lazily, on the next turn; a session with nothing else arriving stayed parked
+        indefinitely (one run: 3 h 22 min on a grandchild's poller)."""
+        now = time.time()
+        if now - getattr(self, "_last_goal_barrier_check", 0.0) < 5.0:
+            return
+        self._last_goal_barrier_check = now
+        try:
+            if not self._pending_input.empty():
+                return
+            mgr = self._get_goal_manager()
+            state = getattr(mgr, "state", None) if mgr is not None else None
+            if state is None or state.status != "active":
+                return
+            if not (state.waiting_on_pid is not None or state.waiting_on_session is not None or state.waiting_until):
+                return  # not parked
+            if mgr.is_waiting():
+                return  # barrier still holds (is_waiting() also applies the age cap)
+            prompt = mgr.next_continuation_prompt()
+            if prompt:
+                from cli import _DIM, _RST, _cprint
+                _cprint(f"  {_DIM}▶ Goal barrier lifted — resuming.{_RST}")
+                self._pending_input.put(prompt)
+        except Exception as exc:
+            logging.debug("parked-goal resume check failed: %s", exc)
 
     def _maybe_fire_loop_tick(self) -> None:
         """Idle hook run from process_loop: fire a due /loop wakeup.
@@ -531,13 +692,16 @@ class CLILoopsMixin:
         last_response = self._last_assistant_response_text()
         if not last_response.strip():
             return
+        _active_deleg = 0
         try:
-            from hermes_cli.goals import gather_background_processes as _gather_bg
-            _bg_procs = _gather_bg()
+            from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
+            # Only THIS session's processes: subagents' pollers must not park the parent's goal.
+            _bg_procs = _gather_bg(owner_task_id=getattr(self, "session_id", None) or None)
+            _active_deleg = count_active_delegations(getattr(self.agent, "session_id", None))
         except Exception:
             _bg_procs = None
         decision = mgr.evaluate_after_turn(
-            last_response, user_initiated=True, background_processes=_bg_procs)
+            last_response, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
         _print_decision_message(decision)
         if decision.get("should_continue"):
             prompt = decision.get("continuation_prompt")

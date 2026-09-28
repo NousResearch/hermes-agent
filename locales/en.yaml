@@ -21,7 +21,7 @@ approval:
   prompt_smart_deny: "      Choice [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Timeout - denying command"
+  timeout:         "      ⏱ No answer in {waited} — the command was not run. Ask again to retry, or raise the limit: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ Allowed once"
   allowed_session: "      ✓ Allowed for this session"
   allowed_always:  "      ✓ Added to permanent allowlist"
@@ -101,6 +101,9 @@ gateway:
     switch_failed:         "Branch created but failed to switch to it."
     branched_one:          "⑂ Branched to **{title}** ({count} message copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
     branched_many:         "⑂ Branched to **{title}** ({count} messages copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
+    branched_thread_one:   "⑂ Branched to **{title}** in a new thread ({count} message copied)\nThread: {thread}\nOriginal: `{parent}` — this chat stays on it\nBranch: `{new}`\nUse `/branch --here` to branch in this chat instead."
+    branched_thread_many:  "⑂ Branched to **{title}** in a new thread ({count} messages copied)\nThread: {thread}\nOriginal: `{parent}` — this chat stays on it\nBranch: `{new}`\nUse `/branch --here` to branch in this chat instead."
+    thread_fallback:       "No thread could be created here, so the branch replaced this chat's session."
 
   commands:
     usage:                 "Usage: `/commands [page]`"
@@ -194,7 +197,7 @@ gateway:
       blocked:             "blocked; needs attention"
       review_requested:    "handed off for review; the implementation is done"
       changes_requested:   "review requested changes (BLOCK); implementation is not approved"
-      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
+      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
@@ -354,6 +357,7 @@ gateway:
     last_activity:         "**Last Activity:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · free tier · nous/welcome · /login to sign in"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
@@ -399,7 +403,7 @@ gateway:
     not_git_repo:            "✗ Not a git repository — cannot update."
     hermes_cmd_not_found:    "✗ Could not locate the `hermes` command. Hermes is running, but the update command could not find the executable on PATH or via the current Python interpreter. Try running `hermes update` manually in your terminal."
     start_failed:            "✗ Failed to start update: {error}"
-    starting:                "⚕ Starting Hermes update… I'll stream progress here."
+    starting:                "☤ Starting Hermes update… I'll stream progress here."
 
   usage:
     rate_limits:              "⏱️ **Rate Limits:** {state}"

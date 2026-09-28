@@ -13,7 +13,7 @@ from time import monotonic_ns
 from typing import Any, Callable
 
 from agent import relay_runtime
-from hermes_cli import __version__
+from hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
@@ -162,7 +162,7 @@ class _Runtime:
         self._send_thread: threading.Thread | None = None
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
-            SharedMetricsStore(), __version__, runtime_id=self.host.runtime_id
+            SharedMetricsStore(), get_version_info().base_version, runtime_id=self.host.runtime_id
         )
         self.relay.subscribers.register(self._subscriber_name, self.subscriber)
         self.host.retain_managed_execution(self._subscriber_name)
@@ -738,11 +738,13 @@ class _Runtime:
             retry_count=task.retry_count,
         )
         try:
-            self._guarded(
+            popped = self._guarded(
                 "Hermes shared-metrics task close failed",
-                self._run_in_task, task, relay_runtime.pop_relay_scope, self.relay, task.handle,
+                self._run_in_task, task, relay_runtime.pop_relay_scope_if_top, self.relay, task.handle,
                 output=fields, metadata=self._event_metadata(),
             )
+            if popped is False:
+                logger.debug("Left shared-metrics task scope %s under a concurrent turn's scope; session close drains it", task_id)
         finally:
             session.tasks.pop(task_id, None)
             session.retired_turn_ids.extend(task.turn_ids)
@@ -1046,46 +1048,3 @@ def _reset_for_tests() -> None:
     for runtime in runtimes:
         if isinstance(runtime, _Runtime):
             runtime.shutdown()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def prepare_session_start() -> None:
-    """Register the subscriber before any producer opens the session scope."""
-    if enabled():
-        _get_runtime(retry_failed=True)
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'CLIENT_ACTIVE_MARK': ('hermes_cli.observability.shared_metrics_contract', 'CLIENT_ACTIVE_MARK'),
-    'MODEL_CALL_PROFILE_MODEL': ('hermes_cli.observability.shared_metrics_contract', 'MODEL_CALL_PROFILE_MODEL'),
-    'SCHEMA_KEY': ('hermes_cli.observability.shared_metrics_contract', 'SCHEMA_KEY'),
-    'SCHEMA_VERSION': ('hermes_cli.observability.shared_metrics_contract', 'SCHEMA_VERSION'),
-    'SKILL_LIFECYCLE_MARK': ('hermes_cli.observability.shared_metrics_contract', 'SKILL_LIFECYCLE_MARK'),
-    'SKILL_LOAD_MARK': ('hermes_cli.observability.shared_metrics_contract', 'SKILL_LOAD_MARK'),
-    'TOOL_APPROVAL_MARK': ('hermes_cli.observability.shared_metrics_contract', 'TOOL_APPROVAL_MARK'),
-    'TOOL_CALL_SCOPE': ('hermes_cli.observability.shared_metrics_contract', 'TOOL_CALL_SCOPE'),
-    'model_call_fields': ('hermes_cli.observability.shared_metrics_contract', 'model_call_fields'),
-    'skill_lifecycle_fields': ('hermes_cli.observability.shared_metrics_contract', 'skill_lifecycle_fields'),
-    'skill_load_fields': ('hermes_cli.observability.shared_metrics_contract', 'skill_load_fields'),
-    'task_start_fields': ('hermes_cli.observability.shared_metrics_contract', 'task_start_fields'),
-    'task_terminal_fields': ('hermes_cli.observability.shared_metrics_contract', 'task_terminal_fields'),
-    'task_terminal_state': ('hermes_cli.observability.shared_metrics_contract', 'task_terminal_state'),
-    'tool_approval_outcome': ('hermes_cli.observability.shared_metrics_contract', 'tool_approval_outcome'),
-    'tool_category': ('hermes_cli.observability.shared_metrics_contract', 'tool_category'),
-    'tool_terminal_fields': ('hermes_cli.observability.shared_metrics_contract', 'tool_terminal_fields'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -51,7 +51,7 @@ def test_profile_enumeration_failure_is_not_successful_empty_coverage(env, enume
     assert body['total'] == 0
     assert 'PRIVATE_' not in json.dumps(body)
     # Existing sidebar callers keep their best-effort fallback contract.
-    assert profiles_router._profile_targets('test legacy caller', lightweight=True) == [('default', home)]
+    assert profiles_router._profile_targets('test legacy caller') == [('default', home)]
     assert sorted(path.name for path in original_iterdir(home)) == before
     assert list(original_iterdir(profile_root)) == []
 

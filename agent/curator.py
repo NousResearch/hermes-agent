@@ -1122,7 +1122,13 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             conv_result = review_agent.run_conversation(user_message=prompt)
         final = str(conv_result.get("final_response") or "").strip() if isinstance(conv_result, dict) else ""
         result_meta["final"] = final
-        result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")
+        error = conv_result.get("error") if isinstance(conv_result, dict) else None
+        if isinstance(conv_result, dict) and (conv_result.get("failed") or error):
+            result_meta["error"] = str(error or "review failed")
+            summary = f"error: {result_meta['error']}"
+        else:
+            summary = final or "no change"
+        result_meta["summary"] = (summary[:240] + "…") if len(summary) > 240 else summary
         # Tool calls for the report; arguments truncated to 400 chars so a giant skill_manage create doesn't blow it up.
         fns = (tc.get("function") or {} for msg in getattr(review_agent, "_session_messages", []) or [] if isinstance(msg, dict)
                for tc in (msg.get("tool_calls") or []) if isinstance(tc, dict))

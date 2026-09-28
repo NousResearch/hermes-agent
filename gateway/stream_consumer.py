@@ -18,7 +18,7 @@ import secrets
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
@@ -162,6 +162,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._in_think_block = False  # think-tag filter state (mirrors CLI _stream_delta)
         self._think_buffer = ""
         self._before_finalize_notified = False
+        self._source_receipt_segments: list[dict] = []
+        self._handled_final_source: Optional[str] = None
+        self._correction_attempted = False
         self._reset_message_state()
 
         # Transports, resolved in run().  Draft: animated frames via adapter.send_draft;
@@ -195,6 +198,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # ``_stream_ledger`` mirrors ``_accumulated`` but is NOT truncated when
         # overflow splits seal head chunks (reconcilable turn-final payload).
         self._accumulated = self._stream_ledger = ""
+        self._source_offset = 0  # exact raw ledger offset, including trimmed split newlines
+        self._source_receipt: Optional[dict] = None
         self._last_sent_text = ""    # skip redundant edits
         self._fallback_final_send = False
         self._fallback_prefix = ""
@@ -452,7 +457,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
         # Retain the segment's visible text so has_delivered_text still matches.
-        finalized = self._clean_for_display(self._last_sent_text).strip()
+        if self._source_receipt and self._source_receipt["uncertain"]:
+            self._source_receipt_segments.append(self._source_receipt)
+            finalized = ""  # uncertainty is not has_delivered_text evidence
+        else:
+            finalized = self._clean_for_display(self._last_sent_text).strip()
         if finalized:
             self._delivered_segment_texts.append(finalized)
         # Also clears the final flags: what we delivered was an interim preamble.  Safe:
@@ -571,7 +580,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         await self._suppress_silence_marker()
                         return
 
-                if self._should_edit(tick) and (
+                # Guard before first-send overflow: a lost first POST has no ID,
+                # but still owns its attempted source span.
+                source_uncertain = bool(self._source_receipt and self._source_receipt["uncertain"])
+                if not source_uncertain and self._should_edit(tick) and (
                     self._accumulated or (self._use_native_streaming and self._tool_progress_active)
                 ):
                     # Seal first: it clears the message id, so a remainder still over the limit
@@ -581,18 +593,37 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     await self._seal_overflow_heads()
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
-                    if not self._use_native_streaming and self._first_send_overflows():
+                    if (not self._use_native_streaming and not self._delivery_ambiguous
+                            and self._first_send_overflows()):
                         if await self._split_first_send(tick):
                             return
                         if self._first_send_overflows():
                             # A head send failed: keep the full text for the fallback final, and
                             # skip the boundary reset below that would clear it.
                             self._signal_flush(tick.flush_event)
+                            # Yield so finish/cancel can arrive after a failed head send.
+                            await asyncio.sleep(0.05)
                             continue
                     # The split tail goes out now, so a commentary or tool boundary drained in
                     # this tick still lands after it instead of being dropped.
                     await self._push_update(tick)
 
+                if self._delivery_ambiguous:
+                    if self._source_receipt:
+                        if tick.got_done:
+                            return
+                        if tick.got_segment_break or tick.commentary_text is not None:
+                            await self._send_source_suffix(self._clean_for_display(self._stream_ledger), final=False)
+                            self._reset_segment_state()
+                            if tick.commentary_text is not None:
+                                await self._deliver_commentary(tick.commentary_text)
+                        if tick.got_flush:
+                            self._signal_flush(tick.flush_event)
+                        await asyncio.sleep(0.05)
+                        continue
+                    if tick.got_flush:
+                        self._signal_flush(tick.flush_event)
+                    return  # legacy ambiguous delivery has no source-span contract
                 if tick.got_done:
                     await self._finalize_turn(tick)
                     return
@@ -625,7 +656,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # runs can pair new consumer code with an old in-memory adapter lacking
         # message_len_fn_for_chat (#72628), which then falls back to message_len_fn.
         len_fn, _ = self._fallback_len_budget()
-        return len_fn, max(500, self._raw_message_limit() - len_fn(self.cfg.cursor) - 100)
+        raw_limit = self._raw_message_limit()
+        # A cursor is cosmetic: omit an oversized one rather than crowd out text.
+        # Copy the config because several consumers may share it.
+        if len_fn(self.cfg.cursor) >= max(1, raw_limit - 100):
+            self.cfg = replace(self.cfg, cursor="")
+        return len_fn, max(1, raw_limit - len_fn(self.cfg.cursor) - 100)
 
     async def _start_transports(self) -> None:
         """Resolve native/draft transport; native wins (adapters declaring it can't edit).
@@ -696,6 +732,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         ownership).  Split delivery: wholesale adoption would repeat sealed heads, refusing
         makes the gateway resend the ENTIRE body — so append only the suffix when the final
         strictly prefix-extends the ledger."""
+        if self._source_receipt and self._source_receipt["uncertain"]:
+            # Keep the request receipt frozen even if the final rewrites its prefix.
+            self._accumulated = self._stream_ledger = final_raw
+            return
         if not (self._accumulated or self._message_id or self._last_sent_text):
             return
         if not self._turn_split_delivery:
@@ -803,8 +843,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return self._message_id is None and self._overflows()
 
     async def _seal_overflow_heads(self) -> None:
-        """Existing message overflowing: seal it with the head, start a new message for the rest."""
-        while self._overflows() and self._message_id is not None and self._edit_supported:
+        """Seal overflowing heads, including first sends on source-aware adapters."""
+        # Source-aware continuations must retain raw offsets and classify lost
+        # acknowledgements through _send_or_edit, including fresh sealed heads.
+        # The generic numbered-chunk sender does not carry that receipt contract.
+        while (self._overflows() and self._edit_supported
+               and (self._message_id is not None or self._source_receipt is not None
+                    or getattr(self.adapter, "source_delivery_receipts", False) is True)):
             cp_budget = _custom_unit_to_cp(self._accumulated, self._safe_limit, self._len_fn)
             split_at = self._accumulated.rfind("\n", 0, cp_budget)
             if split_at < cp_budget // 2:
@@ -816,7 +861,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             ok = await self._send_or_edit(chunk, finalize=True, is_turn_final=False)
             if self._fallback_final_send or not ok:
                 break  # keep the full text intact for the fallback final send
-            self._accumulated = self._accumulated[split_at:].lstrip("\n")
+            remainder = self._accumulated[split_at:].lstrip("\n")
+            self._source_offset += len(self._accumulated) - len(remainder)
+            self._accumulated = remainder
             self._message_id = None
             self._last_sent_text = ""
             self._turn_split_delivery = True
@@ -874,6 +921,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     async def _finalize_edit_path(self, tick: "_Tick") -> None:
         """Edit-transport finalize (the non-native got_done branches, in priority order)."""
+        if self._delivery_ambiguous:
+            return
         if self._fallback_final_send:
             await self._send_fallback_final(self._accumulated)
         elif self._final_response_sent:

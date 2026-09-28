@@ -91,6 +91,14 @@ def _looks_like_int(value: Optional[str]) -> bool:
         return False
 
 
+class DeliveryError(RuntimeError):
+    """A failed send with its receipt retained for replay decisions."""
+
+    def __init__(self, message: str, result: Any):
+        super().__init__(message)
+        self.result = result
+
+
 def _send_result_error(result: Any) -> Optional[str]:
     """Error string of a failed SendResult object / plain result dict ("" if none), or None on success."""
     get = result.get if isinstance(result, dict) else (lambda name, default=None: getattr(result, name, default))
@@ -318,5 +326,5 @@ class DeliveryRouter:
             send_metadata["thread_id"] = await _ensure_named_dm_topic(adapter, target.chat_id, named_topic, refresh=True)
             send_metadata["telegram_dm_topic_created_for_send"] = True
         if error is not None:
-            raise RuntimeError(error or f"{target.platform.value} delivery failed")
+            raise DeliveryError(error or f"{target.platform.value} delivery failed", result)
         return result

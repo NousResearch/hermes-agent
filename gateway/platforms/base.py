@@ -4758,6 +4758,28 @@ class BasePlatformAdapter(ABC):
                         candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
+            # Don't split inside a Markdown link either (#125885): a ``[label](url)`` cut
+            # mid-span renders as literal bracket text on both sides. A label that spans
+            # the split (no ``]`` in the candidate) or a URL that spans it (``](`` with no
+            # ``)``) backs the split off to before the link starts.
+            candidate = remaining[:split_at]
+            lb = candidate.rfind("[")
+            while lb > 0 and candidate[lb - 1] in "\\!":
+                lb = candidate.rfind("[", 0, lb)
+            if lb > 0:
+                close_idx = candidate.find("]", lb)
+                spans_split = (
+                    close_idx < 0
+                    or (
+                        candidate[close_idx + 1:close_idx + 2] == "("
+                        and candidate.find(")", close_idx + 2) < 0
+                    )
+                )
+                if spans_split:
+                    safe_split = max(
+                        candidate.rfind(" ", 0, lb), candidate.rfind("\n", 0, lb))
+                    if safe_split > _cp_limit // 4:
+                        split_at = safe_split
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
             full_chunk = prefix + chunk_body

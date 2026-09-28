@@ -44,6 +44,7 @@ export type AutoUpdateOutcome =
   | 'failed'
   | 'skipped-dirty'
   | 'skipped-unsupported'
+  | 'skipped-busy'
   | 'check-failed'
   | 'deferred-timeout'
 
@@ -74,6 +75,7 @@ const OUTCOMES: ReadonlySet<string> = new Set<AutoUpdateOutcome>([
   'failed',
   'skipped-dirty',
   'skipped-unsupported',
+  'skipped-busy',
   'check-failed',
   'deferred-timeout'
 ])

@@ -276,7 +276,12 @@ async function attempt(retries: number): Promise<void> {
   }
 
   // A manual apply may already be running (user clicked first) — never double up.
+  // The session is already claimed in main by this point, so record the outcome:
+  // otherwise the rest of this login has no attempt to show and the About card
+  // silently stops mentioning automatic updates.
   if ($updateApply.get().applying) {
+    await report(claim.sessionKey, 'skipped-busy', { target: status ? targetLabel(status) : undefined })
+
     return
   }
 

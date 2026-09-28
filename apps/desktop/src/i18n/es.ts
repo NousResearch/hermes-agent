@@ -4639,6 +4639,7 @@ export const esOverrides = {
         failed: 'falló',
         'skipped-dirty': 'omitida (cambios locales)',
         'skipped-unsupported': 'no compatible con esta instalación',
+        'skipped-busy': 'omitida (ya había una actualización en curso)',
         'check-failed': 'no se pudo comprobar',
         'deferred-timeout': 'omitida (la pasarela siguió ocupada)'
       }

@@ -126,6 +126,17 @@ describe('parseAutoUpdateState', () => {
       parseAutoUpdateState({ enabled: true, lastAttempt: { sessionKey: 'x', at: 1, outcome: 'exploded' } }).lastAttempt
     ).toBeUndefined()
   })
+
+  it('round-trips every outcome the busy and skip paths can report', () => {
+    // Contract between the write path (recordAutoUpdateOutcome) and the read
+    // path: an outcome the renderer reports must survive a disk round-trip,
+    // otherwise the About card loses the attempt it is meant to show.
+    for (const outcome of ['handed-off', 'skipped-busy', 'skipped-dirty', 'deferred-timeout'] as const) {
+      const written = recordAutoUpdateOutcome(claim().nextState, { sessionKey: 'login-A', outcome }, NOW)
+
+      expect(parseAutoUpdateState(JSON.parse(JSON.stringify(written))).lastAttempt?.outcome).toBe(outcome)
+    }
+  })
 })
 
 describe('gatewayRecordBusy', () => {

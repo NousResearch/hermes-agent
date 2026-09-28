@@ -24,7 +24,7 @@ vi.mock('@/store/updates', async () => {
 })
 
 import { notify } from '@/store/notifications'
-import { $updateChecking, $updateOverlayOpen, $updateStatus } from '@/store/updates'
+import { $updateApply, $updateChecking, $updateOverlayOpen, $updateStatus } from '@/store/updates'
 
 import { _resetAutoUpdateForTests, autoUpdateCheckVerdict, runAutoUpdateOnLaunch } from './auto-update'
 
@@ -74,6 +74,7 @@ describe('runAutoUpdateOnLaunch', () => {
     $updateOverlayOpen.set(false)
     $updateStatus.set(null)
     $updateChecking.set(false)
+    $updateApply.set({ ...$updateApply.get(), applying: false })
     auto = {
       get: vi.fn(),
       set: vi.fn(),
@@ -126,6 +127,21 @@ describe('runAutoUpdateOnLaunch', () => {
     expect(auto.report).toHaveBeenCalledWith(
       expect.objectContaining({ sessionKey: 'S1', outcome: 'failed', message: 'network' })
     )
+  })
+
+  it('records skipped-busy when a manual apply already owns the running update', async () => {
+    // The claim in main consumed this login session, so the attempt must be
+    // recorded: a manual "Update now" that beat us here is not a silent stand-down.
+    auto.claim.mockResolvedValue({ action: 'run', reason: 'first-launch-after-login', sessionKey: 'S1' })
+    updates.checkUpdates.mockResolvedValue(behind())
+    $updateApply.set({ ...$updateApply.get(), applying: true })
+
+    runAutoUpdateOnLaunch()
+    await settle()
+
+    expect(updates.applyUpdates).not.toHaveBeenCalled()
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect(auto.report).toHaveBeenCalledWith({ sessionKey: 'S1', outcome: 'skipped-busy', target: 'main' })
   })
 
   it('does nothing when main says skip', async () => {

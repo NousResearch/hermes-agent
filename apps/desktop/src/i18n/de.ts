@@ -4648,6 +4648,7 @@ export const deOverrides = {
         failed: 'fehlgeschlagen',
         'skipped-dirty': 'übersprungen (lokale Änderungen)',
         'skipped-unsupported': 'für diese Installation nicht unterstützt',
+        'skipped-busy': 'übersprungen (eine Aktualisierung lief bereits)',
         'check-failed': 'Prüfung fehlgeschlagen',
         'deferred-timeout': 'übersprungen (Gateway blieb beschäftigt)'
       }

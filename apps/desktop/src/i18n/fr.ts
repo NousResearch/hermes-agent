@@ -4662,6 +4662,7 @@ export const frOverrides = {
         failed: 'échec',
         'skipped-dirty': 'ignorée (modifications locales)',
         'skipped-unsupported': 'non prise en charge pour cette installation',
+        'skipped-busy': 'ignorée (une mise à jour était déjà en cours)',
         'check-failed': 'vérification impossible',
         'deferred-timeout': 'ignorée (passerelle restée occupée)'
       }

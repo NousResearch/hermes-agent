@@ -3610,6 +3610,7 @@ export interface Translations {
         | 'failed'
         | 'skipped-dirty'
         | 'skipped-unsupported'
+        | 'skipped-busy'
         | 'check-failed'
         | 'deferred-timeout',
         string

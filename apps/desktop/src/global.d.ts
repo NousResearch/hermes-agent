@@ -859,6 +859,7 @@ export type DesktopAutoUpdateOutcome =
   | 'failed'
   | 'skipped-dirty'
   | 'skipped-unsupported'
+  | 'skipped-busy'
   | 'check-failed'
   | 'deferred-timeout'
 

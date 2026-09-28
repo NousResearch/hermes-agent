@@ -4328,6 +4328,7 @@ export const en: Translations = {
         failed: 'failed',
         'skipped-dirty': 'skipped (local changes)',
         'skipped-unsupported': 'not supported for this install',
+        'skipped-busy': 'skipped (an update was already running)',
         'check-failed': 'could not check',
         'deferred-timeout': 'skipped (gateway stayed busy)'
       }

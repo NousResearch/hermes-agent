@@ -3,7 +3,13 @@ import { describe, expect, it } from 'vitest'
 import { TRANSLATIONS } from '@/i18n/catalog'
 import { en } from '@/i18n/en'
 
-import { defaultBindings, KEYBIND_ACTIONS, KEYBIND_READONLY, keybindAction, keybindActionAllowedInEditableTarget } from './actions'
+import {
+  defaultBindings,
+  KEYBIND_ACTIONS,
+  KEYBIND_READONLY,
+  keybindAction,
+  keybindActionAllowedInEditableTarget
+} from './actions'
 import { canonicalizeCombo } from './combo'
 
 // Relationship checks between the action table and its consumers, not the

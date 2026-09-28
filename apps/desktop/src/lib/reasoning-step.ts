@@ -16,7 +16,10 @@ export type ReasoningStepDirection = -1 | 1
  *  the fallback for an unset/unknown value. */
 const DEFAULT_STEP_LEVEL = DEFAULT_REASONING_EFFORT as ReasoningStepLevel
 
-export function normalizeReasoningStepLevel(effort: string, fallback: string = DEFAULT_REASONING_EFFORT): ReasoningStepLevel {
+export function normalizeReasoningStepLevel(
+  effort: string,
+  fallback: string = DEFAULT_REASONING_EFFORT
+): ReasoningStepLevel {
   const value = normalize(effort || fallback)
 
   if (value === 'none') {
@@ -60,7 +63,11 @@ export async function writeSessionReasoningEffort(
   sessionId: string,
   effort: ReasoningStepLevel | 'max' | 'ultra'
 ): Promise<ReasoningStepLevel> {
-  const result = await request<{ value?: unknown }>('config.set', { key: 'reasoning', session_id: sessionId, value: effort })
+  const result = await request<{ value?: unknown }>('config.set', {
+    key: 'reasoning',
+    session_id: sessionId,
+    value: effort
+  })
 
   return normalizeReasoningStepLevel(typeof result?.value === 'string' ? result.value : effort)
 }

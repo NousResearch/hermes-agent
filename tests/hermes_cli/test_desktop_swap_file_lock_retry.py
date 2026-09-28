@@ -63,7 +63,7 @@ def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeyp
 
 def test_swap_gives_up_after_bounded_retries_and_keeps_live_app(tmp_path, monkeypatch, caplog):
     """A lock that never clears: bounded attempts, real OSError surfaced in the log, live app untouched."""
-    desktop_dir, staging, live_exe, slept, _live_root = _staged_over_live(tmp_path, monkeypatch)
+    desktop_dir, staging, live_exe, slept, live_root = _staged_over_live(tmp_path, monkeypatch)
     real_rename = os.rename
     attempts = {"n": 0}
 
@@ -80,5 +80,5 @@ def test_swap_gives_up_after_bounded_retries_and_keeps_live_app(tmp_path, monkey
     assert attempts["n"] == len(main_desktop._DESKTOP_SWAP_RENAME_RETRY_DELAYS_S) + 1
     assert len(slept) == len(main_desktop._DESKTOP_SWAP_RENAME_RETRY_DELAYS_S)
     assert live_exe.read_text(encoding="utf-8") == "old"
-    assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
+    assert not (live_root.parent / (live_root.name + ".previous")).exists()
     assert any("Access is denied" in r.message and "live app kept" in r.message for r in caplog.records)

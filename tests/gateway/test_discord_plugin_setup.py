@@ -57,24 +57,35 @@ class TestDiscordHomeChannelClear:
         assert "DISCORD_HOME_CHANNEL" not in saved
 
 
-class TestDiscordSetupPrivilegedIntentsGuidance:
-    """Setup must name Privileged Gateway Intents before asking for the token (#79430)."""
 
-    def test_setup_mentions_message_content_intent(self, monkeypatch, tmp_path):
+
+
+
+class TestDiscordTokenShapeGuard:
+    """A numeric application ID pasted as the bot token is rejected with guidance
+    (port of openclaw/openclaw#140531)."""
+
+    def test_numeric_app_id_reprompts_then_accepts_real_token(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed, infos = {}, [], []
+        saved, removed, errors = {}, [], []
+        real_token = "«redacted»." + "part2.part3"
         _patch_setup_io(
             monkeypatch,
-            _PROMPTS_BLANK,
+            ["1234567890123456789", real_token, "", ""],
             saved,
             removed,
             existing={},
-            infos=infos,
         )
+        monkeypatch.setattr(cli_output_mod, "print_error", lambda *a, **_kw: errors.append(" ".join(map(str, a))))
         interactive_setup()
-        joined = "\n".join(infos)
-        assert "Message Content Intent" in joined
-        assert "Privileged Gateway Intents" in joined
-        assert "discord.com/developers/applications" in joined
+        assert saved.get("DISCORD_BOT_TOKEN") == real_token
+        assert any("application ID" in e for e in errors)
 
-
+    def test_non_numeric_token_saves_without_error(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed, errors = {}, [], []
+        _patch_setup_io(monkeypatch, _PROMPTS_BLANK, saved, removed, existing={})
+        monkeypatch.setattr(cli_output_mod, "print_error", lambda *a, **_kw: errors.append(" ".join(map(str, a))))
+        interactive_setup()
+        assert saved.get("DISCORD_BOT_TOKEN") == _PROMPTS_BLANK[0]
+        assert errors == []

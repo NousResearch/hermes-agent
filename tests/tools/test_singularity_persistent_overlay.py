@@ -8,6 +8,8 @@ components must go through the shared sanitizer in tools.environments.base.
 
 from tools.environments import singularity as singularity_env
 from tools.environments.path_utils import sanitize_task_id_for_path
+from tools.terminal_tool import _active_environments
+from tools.terminal_tool_lifecycle import cleanup_all_environments
 
 
 def _stub_singularity(monkeypatch, tmp_path):
@@ -78,3 +80,31 @@ def test_distinct_session_keys_get_distinct_overlay_dirs(monkeypatch, tmp_path):
         names.add(env._overlay_dir.name)
 
     assert len(names) == 2, f"overlay dirs collided: {names}"
+
+
+def test_cleanup_all_environments_spares_persistent_overlay_tree(monkeypatch, tmp_path):
+    """The at-exit orphan sweep must not rmtree ``hermes-overlays``.
+
+    That tree is the persistent-filesystem state ``SingularityEnvironment.cleanup()``
+    deliberately survives and registers in the cross-process snapshot store
+    (``$HERMES_HOME/singularity_snapshots.json``); the sweep's ``hermes-*`` glob
+    matches it by name. Wiping it on process exit breaks the persistent-filesystem
+    contract and destroys overlays another running process (gateway / cron / CLI
+    sharing the same scratch root, e.g. ``/scratch/$USER/hermes-agent`` on HPC)
+    still has bound into a live container."""
+    scratch = tmp_path / "scratch"
+    overlay_file = scratch / "hermes-overlays" / "overlay-default" / "upper" / "data.txt"
+    overlay_file.parent.mkdir(parents=True)
+    overlay_file.write_text("persistent state")
+    orphan = scratch / "hermes-junk-stale"
+    orphan.mkdir()
+
+    import tools.terminal_tool_lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "_get_scratch_dir", lambda: scratch)
+    _active_environments.clear()
+
+    cleanup_all_environments()
+
+    assert overlay_file.exists(), "persistent overlay tree was wiped by the orphan sweep"
+    assert not orphan.exists(), "stale scratch dirs are still swept"

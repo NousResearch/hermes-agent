@@ -51,10 +51,13 @@ def _spillover_retention_hours() -> int:
     Falls back to the legacy 24h cache age when the config is unreadable."""
     try:
         from hermes_cli.config import load_config_readonly
-        days = int((load_config_readonly().get("sessions") or {}).get("retention_days", 90))
+        days = float((load_config_readonly().get("sessions") or {}).get("retention_days", 90))
     except Exception:
         return SPILLOVER_MAX_AGE_HOURS
-    return SPILLOVER_MAX_AGE_HOURS if days < 0 else days * 24
+    # ``retention_days: 0`` is legal (ended sessions pruned at once) but session prune never
+    # touches OPEN sessions, while a zero-hour spill cutoff deletes the file the first spill
+    # just wrote (the pointer then names a missing path). Floor at the legacy cache age.
+    return max(SPILLOVER_MAX_AGE_HOURS, int(days * 24))
 
 
 def cleanup_spillover_cache(max_age_hours: int | None = None) -> int:

@@ -155,14 +155,19 @@ export function ChatSidebar({
     void api
       .getModelInfo(profile)
       .then(r => {
-        // A fallback (primary provider unavailable / rate-limited) has to be
-        // visible: it changes which model answers and what it costs, and it is
-        // invisible in config.yaml. Badge the model actually serving turns.
-        const fallbackActive = !!(r?.fallback_active && r?.active_model)
+        // Badge the model that is really serving turns, not the configured one:
+        // the runtime can switch models with no config change (provider outage,
+        // rate limit, or a different default written to config.yaml) and the badge
+        // has to follow it. `active_model` is the model of the last real call --
+        // fallbacks included -- with `fallback_active` marking a fallback. It is
+        // absent until the first call (or once stale), so fall back to the
+        // configured model name.
+        const active = String(r?.active_model || '').trim()
+        const fallbackActive = !!(r?.fallback_active && active)
         setFallbackInfo(
           fallbackActive ? { active: String(r.active_model), configured: String(r?.model || '') } : null
         )
-        if (fallbackActive) setEffectiveModel(String(r.active_model))
+        if (active) setEffectiveModel(active)
         else if (r?.model) setEffectiveModel(String(r.model))
         setSupportsReasoning(!!r?.capabilities?.supports_reasoning)
         // Bump so ReasoningPicker re-reads the saved effort for the new model.
@@ -369,7 +374,9 @@ export function ChatSidebar({
   // starts and ends on the agent side, with no event this card could listen to.
   useEffect(() => {
     refreshEffectiveModel()
-    const fallbackPoll = setInterval(refreshEffectiveModel, 10000)
+    // Short interval: the badge has to follow a runtime model switch (fallback,
+    // or a new default) instead of waiting for the reader to send /model.
+    const fallbackPoll = setInterval(refreshEffectiveModel, 3000)
     return () => clearInterval(fallbackPoll)
   }, [refreshEffectiveModel, version])
 

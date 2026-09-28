@@ -1203,12 +1203,37 @@ def _run_review_fork(
     st.review_agent = None
 
 
+def _localize_review_summary(text: str) -> str:
+    """界面语言为中文时，把「自我改进复盘」提示翻成中文（技能名/路径保持原样，便于核对）。
+
+    英文界面（HERMES_LANGUAGE=en）输出逐字节不变。
+    """
+    try:
+        from agent.i18n import get_language
+
+        if not (get_language() or "").lower().startswith("zh"):
+            return text
+    except Exception:
+        return text
+    import re as _re
+
+    out = text.replace("💾 Self-improvement review:", "💾 自我改进复盘：")
+    out = _re.sub(r"Skill '([^']+)' created", r"技能 '\1' 已创建", out)
+    out = _re.sub(r"Skill '([^']+)' patched", r"技能 '\1' 已更新", out)
+    out = _re.sub(r"Skill '([^']+)' rewritten", r"技能 '\1' 已重写", out)
+    out = _re.sub(r"Skill '([^']+)' (written|saved)", r"技能 '\1' 已写入", out)
+    out = _re.sub(r"Skill '([^']+)' deleted", r"技能 '\1' 已删除", out)
+    out = out.replace("Memory updated", "记忆已更新")
+    return out
+
+
 def _publish_review_summary(agent: Any, actions: List[str]) -> None:
     summary = " · ".join(dict.fromkeys(actions))
-    agent._safe_print(f"  💾 Self-improvement review: {summary}")
+    line = _localize_review_summary(f"💾 Self-improvement review: {summary}")
+    agent._safe_print(f"  {line}")
     if agent.background_review_callback:
         with suppress(Exception):
-            agent.background_review_callback(f"💾 Self-improvement review: {summary}")
+            agent.background_review_callback(line)
 
 
 def _run_review_in_thread(

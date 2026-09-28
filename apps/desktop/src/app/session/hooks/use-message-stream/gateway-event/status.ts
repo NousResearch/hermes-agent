@@ -1,4 +1,5 @@
 import { isSessionNotOwnedError } from '@/app/session/hooks/use-prompt-actions/utils'
+import { takeSideTaskClaim } from '@/contrib/side-task-claims'
 import { translateNow, TRANSLATIONS } from '@/i18n'
 import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import { textPart } from '@/lib/chat-messages'
@@ -149,9 +150,14 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // session. Persistent transcript line, matching the TUI's `[btw "q"]`
     // — without it Desktop only ever showed the acknowledgement (#99065).
     const text = coerceGatewayText(payload?.text).trim()
+    const taskId = String(payload?.task_id ?? '').trim()
+
+    // A plugin rendering this answer on its own surface claimed the task.
+    if (takeSideTaskClaim(taskId)) {
+      return true
+    }
 
     if (text && sessionId) {
-      const taskId = String(payload?.task_id ?? '').trim()
       const question = coerceGatewayText(payload?.question).trim()
       const header = `[btw${question ? ` "${question}"` : ''}${taskId ? ` (${taskId})` : ''}]`
 
@@ -218,10 +224,14 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // system line — without it the completion was indistinguishable from a
     // lost task (#97635).
     const text = coerceGatewayText(payload?.text).trim()
+    const taskId = String(payload?.task_id ?? '').trim()
+
+    // A plugin rendering this result on its own surface claimed the task.
+    if (takeSideTaskClaim(taskId)) {
+      return true
+    }
 
     if (text && sessionId) {
-      const taskId = String(payload?.task_id ?? '').trim()
-
       flushQueuedDeltas(sessionId)
       updateSessionState(sessionId, state => ({
         ...state,

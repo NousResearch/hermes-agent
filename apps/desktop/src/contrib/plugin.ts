@@ -19,6 +19,7 @@ import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } 
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
 import { registry } from './registry'
+import { claimSideTask } from './side-task-claims'
 import type { Contribution } from './types'
 
 export type { PluginRestOptions } from '@/hermes'
@@ -90,6 +91,12 @@ export interface PluginContext {
    *  callback) can never outlive the plugin the way a bare `host.onEvent`
    *  there would. */
   onEvent: (type: string, listener: GatewayEventListener) => () => void
+  /** Own a `/background` or `/btw` answer: the core skips the transcript line
+   *  it would append for this task id. Claim from the `prompt.background` /
+   *  `prompt.btw` reply or from your own completion listener (plugin listeners
+   *  run before app dispatch). Consumed on delivery; released on unload, so an
+   *  answer is never lost to a plugin that went away. */
+  claimSideTask: (taskId: string) => () => void
   /** Scoped timers: cleared when the plugin unloads/reloads/disables, so a
    *  poller cannot outlive the plugin the way a bare `setInterval` does (the
    *  host never sees a bare global — it is the author's leak). Each returns
@@ -288,6 +295,7 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     registerMany: cs => track(registry.registerMany(cs.map(scope))),
     onDispose: fn => void track(fn),
     onEvent: (type, listener) => track(onGatewayEvent(type, listener)),
+    claimSideTask: taskId => track(claimSideTask(taskId)),
     ...createPluginLifetime(track),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),

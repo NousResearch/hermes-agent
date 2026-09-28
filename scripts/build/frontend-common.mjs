@@ -73,6 +73,35 @@ export function productOutput(source, out, inputs) {
   return { source: src, out: dest }
 }
 
+// Windows renamePublication retries (#126914): the staged->out rename fails
+// transiently while an antivirus scanner walks the fresh staging tree
+// (EPERM -4048 on Sophos) or a just-drained process's handles close. The
+// compiler behind the product ran for minutes; a bounded ~2s retry budget is
+// noise against that and must not become a process-killing "fix".
+export const PUBLISH_RENAME_ATTEMPTS = 6
+export const PUBLISH_RENAME_BACKOFF_MS = 400
+const PUBLISH_RENAME_TRANSIENT_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
+
+function pauseSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+export function renamePublication(staged, out, deps = {}) {
+  const rename = deps.rename ?? renameSync
+  const sleep = deps.sleep ?? pauseSync
+  const attempts = deps.attempts ?? PUBLISH_RENAME_ATTEMPTS
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      rename(staged, out)
+      return
+    } catch (error) {
+      if (!PUBLISH_RENAME_TRANSIENT_CODES.has(error?.code) || attempt >= attempts) throw error
+      sleep(PUBLISH_RENAME_BACKOFF_MS)
+    }
+  }
+}
+
 // Never delete the last successful product before a compiler succeeds. The
 // staging and backup directories are siblings so publication stays on one FS.
 export function publishDirectory(staged, out, { source } = {}) {
@@ -83,7 +112,7 @@ export function publishDirectory(staged, out, { source } = {}) {
   const previous = existsSync(out)
   if (previous) renameSync(out, backup)
   try {
-    renameSync(staged, out)
+    renamePublication(staged, out)
   } catch (error) {
     if (previous) renameSync(backup, out)
     throw error

@@ -4501,6 +4501,14 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   await stopBackendsForUpdate()
 
+  // The updater's products stage atomically renames fresh staging trees over
+  // `hermes_cli/web_dist` and friends (#126914): a gateway alive across this
+  // hand-off holds those files mapped and the rename fails EPERM after the
+  // multi-minute build. stopBackendsForUpdate covers Desktop-owned backends
+  // only; once we exit, nothing else would stop the Startup `.vbs` gateway.
+  // Drain it exactly like the uninstall path (releaseBackendLock) does.
+  stopGatewayBeforeUpdate(venvHermesShimPath(updateRoot), HERMES_HOME)
+
   const child = spawnUpdaterProcess(updater, updaterArgs, {
     cwd: HERMES_HOME,
     env: {

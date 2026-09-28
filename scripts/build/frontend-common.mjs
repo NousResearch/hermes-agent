@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { setTimeout } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
@@ -101,7 +102,25 @@ export async function withProduct(out, compile, { source } = {}) {
     await compile(product, scratch)
     publishDirectory(product, out, { source })
   } finally {
-    rmSync(scratch, { recursive: true, force: true })
+    rmTree(scratch)
+  }
+}
+
+// macOS's Finder/Spotlight can drop a fresh .DS_Store (or xattr) into a
+// directory while we're removing it, making rmSync throw ENOTEMPTY on the
+// first pass. That file is cosmetic garbage — retry the removal so the race
+// can't abort an otherwise-clean product build.
+export async function rmTree(dir) {
+  const maxAttempts = 5
+  for (let attempt = 1; ; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (error?.code !== 'ENOTEMPTY' || attempt >= maxAttempts) throw error
+      // Give Finder a beat to finish writing/clear the directory.
+      await setTimeout(50)
+    }
   }
 }
 

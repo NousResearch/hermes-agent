@@ -307,9 +307,22 @@ function IdleView({
       </div>
 
       <div className="grid gap-3">
-        {groups.map(group => (
+        {groups.map((group, index) => (
           <div key={group.id}>
-            <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+              {index === 0 && commits.length > 0 && (
+                <CopyButton
+                  appearance="icon"
+                  buttonSize="icon-xs"
+                  className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
+                  iconClassName="size-3"
+                  label={u.copyFullLog}
+                  side="left"
+                  text={handleCopyFullLog}
+                />
+              )}
+            </div>
             <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
               {group.items.map(item => (
                 <li className="flex items-start gap-2" key={item}>
@@ -321,18 +334,6 @@ function IdleView({
           </div>
         ))}
       </div>
-
-      {commits.length > 0 && (
-        <CopyButton
-          buttonSize="sm"
-          buttonVariant="outline"
-          className="w-full font-medium"
-          label={u.copyFullLog}
-          text={handleCopyFullLog}
-        >
-          {u.copyFullLog}
-        </CopyButton>
-      )}
 
       <div className="grid gap-2">
         <Button className="font-semibold" onClick={onInstall} size="lg">

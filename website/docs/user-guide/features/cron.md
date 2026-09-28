@@ -577,7 +577,6 @@ When scheduling jobs, you specify where the output goes:
 | `"matrix"` | Matrix home room | Uses `MATRIX_HOME_ROOM` |
 | `"matrix:!room:server.org"` | Specific Matrix room by ID | Direct delivery |
 | `"matrix:#alias:server.org"` | Specific Matrix room by alias | Resolved server-side |
-| `"matrix:@user:server.org"` | Matrix DM target | By MXID |
 | `"matrix:!room:server.org/$evt"` | Specific Matrix thread | `room/$threadEventId` (matrix.to convention) |
 | `"mattermost"` | Mattermost home channel | |
 | `"email"` | Email | |

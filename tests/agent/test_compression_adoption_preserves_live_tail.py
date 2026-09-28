@@ -25,12 +25,14 @@ summarizer instead.
 
 from __future__ import annotations
 
+import copy
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.context_compressor import _DB_PERSISTED_MARKER
 from hermes_state import SessionDB
 
 
@@ -153,6 +155,47 @@ def test_adoption_preserves_unpersisted_live_user_tail(tmp_path: Path) -> None:
         f"agent._persist_user_message_idx={agent._persist_user_message_idx!r}, "
         f"len(adopted_parent_rows)={len(parent_rows)}"
     )
+
+
+def test_adopted_snapshot_rows_are_not_recloned_as_foreign_tail(tmp_path: Path) -> None:
+    """Rows included in the adopted snapshot must not be cloned after its handoff."""
+
+    def _keep_protected_tail(messages, **_kw):
+        tail = [
+            {
+                key: value
+                for key, value in copy.deepcopy(message).items()
+                if key not in {_DB_PERSISTED_MARKER, "_row_id"}
+            }
+            for message in messages[-2:]
+        ]
+        return [{"role": "user", "content": "[CONTEXT COMPACTION] summary"}, *tail]
+
+    adopted_db = SessionDB(db_path=tmp_path / "adopted.db")
+    adopted_agent, adopted_messages = _seed_drifted_session(adopted_db, "ADOPTED_PARENT")
+    adopted_agent.context_compressor.compress.side_effect = _keep_protected_tail
+
+    adopted_agent._compress_context(adopted_messages, "sys", approx_tokens=120_000)
+
+    adopted_child = _contents(adopted_db.get_messages_as_conversation(adopted_agent.session_id))
+    assert adopted_child.count("LIVE USER INSTRUCTION") == 1
+
+    control_db = SessionDB(db_path=tmp_path / "control.db")
+    control_db.create_session("CONTROL_PARENT", source="desktop")
+    control_db.append_message("CONTROL_PARENT", "user", "persisted question")
+    control_db.append_message("CONTROL_PARENT", "assistant", "persisted answer")
+    control_messages = [
+        *control_db.get_messages_as_conversation("CONTROL_PARENT"),
+        {"role": "user", "content": "LIVE USER INSTRUCTION"},
+    ]
+    control_agent = _build_agent_with_db(control_db, "CONTROL_PARENT")
+    control_agent._persist_user_message_idx = len(control_messages) - 1
+    control_agent.context_compressor.compress.side_effect = _keep_protected_tail
+
+    control_agent._compress_context(control_messages, "sys", approx_tokens=120_000)
+
+    control_child = _contents(control_db.get_messages_as_conversation(control_agent.session_id))
+    assert control_child.count("LIVE USER INSTRUCTION") == 1
 
 
 @pytest.mark.parametrize(

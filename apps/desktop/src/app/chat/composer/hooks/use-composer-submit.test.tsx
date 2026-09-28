@@ -3,6 +3,7 @@ import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEf
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+import { registry } from '@/contrib/registry'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
@@ -15,8 +16,10 @@ import {
 } from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 
+import { COMPOSER_AREAS, type ComposerMiddleware } from '../contrib'
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
+import type { ChatBarProps } from '../types'
 
 import { useComposerSubmit } from './use-composer-submit'
 
@@ -647,5 +650,91 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
 
     // The approval card is still the turn's owner; only its own buttons answer it.
     expect(hasBlockingPromptRequest('runtime-session')).toBe(true)
+  })
+})
+
+describe('useComposerSubmit busy steer passes through the middleware chain (#126917)', () => {
+  const disposers: Array<() => void> = []
+
+  function addMiddleware(id: string, handler: ComposerMiddleware['handler']) {
+    disposers.push(
+      registry.register({ id, area: COMPOSER_AREAS.middleware, data: { handler } satisfies ComposerMiddleware })
+    )
+  }
+
+  afterEach(() => {
+    cleanup()
+    clearQueuedPrompts('stored-session')
+    disposers.splice(0).forEach(d => d())
+    vi.restoreAllMocks()
+  })
+
+  it('rewrites a busy steer with the contributed middleware before onSteer', async () => {
+    addMiddleware('reply-prefix', draft => ({ ...draft, text: `[reply] ${draft.text}` }))
+
+    const { hook, onSteer, onSubmit } = renderSubmitHook({ busy: true, text: 'course correct' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteer).toHaveBeenCalledExactlyOnceWith('[reply] course correct'))
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('restores the untransformed draft when the middleware chain cancels the steer', async () => {
+    addMiddleware('gate', () => null)
+
+    const { hook, loadIntoComposer, onSteer, onSubmit } = renderSubmitHook({ busy: true, text: 'course correct' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledExactlyOnceWith('course correct', []))
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session')).toEqual([])
+  })
+
+  it('queues the transformed text flagged, so the later drain runs the chain exactly once', async () => {
+    addMiddleware('reply-prefix', draft => ({ ...draft, text: `[reply] ${draft.text}` }))
+
+    const { hook, onSteer, onSubmit } = renderSubmitHook({ busy: true, text: 'course correct' })
+    onSteer.mockResolvedValue(false) // turn already ended: the steer falls back to the queue
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() =>
+      expect(getQueuedPrompts('stored-session')).toEqual([
+        expect.objectContaining({ text: '[reply] course correct', middlewareApplied: true })
+      ])
+    )
+
+    // The drain rides onSubmit (the wrapper): the flag must make it skip the
+    // chain, or the rewrite would double-apply on delivery. The harness mock
+    // is zero-arg, so forward through the real signature.
+    const submitFromQueue = onSubmit as unknown as ChatBarProps['onSubmit']
+    onSubmit.mockClear()
+
+    const entry = getQueuedPrompts('stored-session')[0]!
+
+    await act(async () => {
+      await submitFromQueue(entry.text, {
+        attachments: entry.attachments,
+        fromQueue: true,
+        middlewareApplied: entry.middlewareApplied
+      })
+    })
+
+    // Called exactly once, with the flag the drain forwards.
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('[reply] course correct', {
+      attachments: [],
+      fromQueue: true,
+      middlewareApplied: true
+    })
   })
 })

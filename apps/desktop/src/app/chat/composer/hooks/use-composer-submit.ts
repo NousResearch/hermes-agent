@@ -323,10 +323,13 @@ export function useComposerSubmit({
 
     // The draft is already cleared, so a refused or failed redirect must keep
     // the only copy: queue it for the next turn, or restore it when there is
-    // no queue yet (a new chat is busy before its first session exists).
-    const keep = () => {
+    // no queue yet (a new chat is busy before its first session exists). The
+    // queue gets the middleware-rewritten words, flagged as already processed;
+    // the no-queue restore always puts the RAW words back — the composer only
+    // ever holds untransformed text, so a later send re-runs the chain once.
+    const keepForNextTurn = (keptText: string) => {
       if (activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [], middlewareApplied: true })
+        enqueueQueuedPrompt(activeQueueSessionKey, { text: keptText, attachments: [], middlewareApplied: true })
       } else {
         restore()
       }
@@ -347,10 +350,10 @@ export function useComposerSubmit({
         return Promise.resolve(onSteer(draft.text))
           .then(accepted => {
             if (!accepted) {
-              keep()
+              keepForNextTurn(draft.text)
             }
           })
-          .catch(keep)
+          .catch(() => keepForNextTurn(draft.text))
       })
       .catch(restore)
   }

@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registry } from '@/contrib/registry'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -13,6 +14,7 @@ import {
 import { setSessionsLoading } from '@/store/session'
 
 import type { QueueEditState } from '../composer-utils'
+import { COMPOSER_AREAS, type ComposerMiddleware } from '../contrib'
 import type { ChatBarProps } from '../types'
 
 import { useComposerQueue } from './use-composer-queue'
@@ -239,6 +241,100 @@ describe('useComposerQueue park integration', () => {
 
     expect(onSteer).not.toHaveBeenCalled()
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('steerQueuedNow runs the middleware chain and delivers the rewrite (#126917)', async () => {
+    const disposer = registry.register({
+      area: COMPOSER_AREAS.middleware,
+      data: { handler: draft => ({ ...draft, text: `[reply] ${draft.text}` }) } satisfies ComposerMiddleware,
+      id: 'reply-prefix'
+    })
+
+    try {
+      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'steer me' })
+      const onSteer = vi.fn(async () => true)
+      const { hook } = renderQueueHook({ busy: true, onSteer })
+
+      await act(async () => {
+        expect(await hook.result.current.steerQueuedNow(entry!.id)).toBe(true)
+      })
+
+      expect(onSteer).toHaveBeenCalledWith('[reply] steer me')
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+    } finally {
+      disposer()
+    }
+  })
+
+  it('a middleware-cancelled steerQueuedNow leaves the entry queued untouched (#126917)', async () => {
+    const disposer = registry.register({
+      area: COMPOSER_AREAS.middleware,
+      data: { handler: () => null } satisfies ComposerMiddleware,
+      id: 'gate'
+    })
+
+    try {
+      const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'kept on cancel' })
+      const onSteer = vi.fn(async () => true)
+      const { hook } = renderQueueHook({ busy: true, onSteer })
+
+      await act(async () => {
+        expect(await hook.result.current.steerQueuedNow(entry!.id)).toBe(false)
+      })
+
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+      expect(getQueuedPrompts(SESSION_KEY)[0]?.text).toBe('kept on cancel')
+    } finally {
+      disposer()
+    }
+  })
+
+  it('a flagged steer-fallback entry drains through onSubmit without a second middleware pass (#126917)', async () => {
+    let middlewareCalls = 0
+
+    const disposer = registry.register({
+      area: COMPOSER_AREAS.middleware,
+      data: {
+        handler: draft => {
+          middlewareCalls++
+
+          return { ...draft, text: `[reply] ${draft.text}` }
+        }
+      } satisfies ComposerMiddleware,
+      id: 'counter'
+    })
+
+    try {
+      // Flagged: the chain already ran when the steer was attempted.
+      const entry = enqueueQueuedPrompt(SESSION_KEY, {
+        attachments: [],
+        middlewareApplied: true,
+        text: 'steer fallback'
+      })
+
+      const onSteer = vi.fn(async () => false)
+      const { hook, onSubmit } = renderQueueHook({ busy: true, onSteer })
+
+      await act(async () => {
+        expect(await hook.result.current.steerQueuedNow(entry!.id)).toBe(false)
+      })
+
+      expect(middlewareCalls).toBe(0)
+
+      // Turn settles → the flagged entry drains. onSubmit here is the mock,
+      // so assert the flag the drain forwards: the composer's submit wrapper
+      // reads it to skip the chain (the rewrite would otherwise re-apply).
+      hook.rerender({ busy: false })
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+      expect(onSubmit).toHaveBeenCalledWith(
+        'steer fallback',
+        expect.objectContaining({ fromQueue: true, middlewareApplied: true })
+      )
+      expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+    } finally {
+      disposer()
+    }
   })
 
   it('a delivered steer lifts the park so the rest of the queue flows', async () => {

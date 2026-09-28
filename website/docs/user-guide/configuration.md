@@ -851,7 +851,7 @@ memory:
   auto_apply_literal_preserving_reviews: false  # opt in to strictly text-preserving unattended edits
 ```
 
-With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. When approval is off, background additions apply automatically, but unattended replacements/removals remain staged unless `auto_apply_literal_preserving_reviews` is explicitly enabled; even then, only changes retaining all old entry text verbatim auto-apply. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
+With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. When approval is off, independent background additions save if they fit — even when a mixed batch's destructive proposal remains pending. Unattended replacements/removals remain staged unless `auto_apply_literal_preserving_reviews` is explicitly enabled; even then, only changes retaining all old entry text verbatim auto-apply. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
 
 ## Context File Truncation
 

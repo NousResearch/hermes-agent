@@ -295,6 +295,33 @@ class MemoryStore:
         # content) but still refuse a failed read — add rewrites the WHOLE file.
         return self._mutate(target, _add, skip_drift=True)
 
+    def add_independent_entries(self, target: str, contents: List[str]) -> Dict[str, Any]:
+        """Save each eligible addition that fits, without requiring the rest of a staged batch.
+
+        Called only after the original batch has been validated and its destructive entries
+        pinned. A skipped duplicate/oversized entry is not reported as saved. The write and
+        resulting count share one lock and disk snapshot; no hidden consolidation failures.
+        """
+        cleaned = [content.strip() for content in contents if isinstance(content, str) and content.strip()]
+        if not cleaned:
+            return {"success": True, "additions_saved": 0}
+        for content in cleaned:
+            if scan_error := _scan_memory_content(content):
+                return _error(scan_error)
+
+        def _add_fitting(entries, limit):
+            working = list(entries)
+            saved = 0
+            for content in cleaned:
+                if content not in working and len(ENTRY_DELIMITER.join(working + [content])) <= limit:
+                    working.append(content)
+                    saved += 1
+            if not saved:
+                return {"success": True, "additions_saved": 0}
+            return working, "Independent additions saved.", {"additions_saved": saved}
+
+        return self._mutate(target, _add_fitting, skip_drift=True)
+
     def replace(self, target: str, old_text: str, new_content: str,
                 matched_entry: Optional[str] = None) -> Dict[str, Any]:
         """Find the entry containing old_text (whole-entry exact match first) and

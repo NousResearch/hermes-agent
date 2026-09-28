@@ -166,10 +166,9 @@ def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _background_delete_gate(store, action, operations, target="memory", content=None,
                             old_text=None) -> Optional[str]:
     """Unattended review auto-applies only literal-preserving changes when approval is off.
-    Other replace/remove operations — including mixed batches — are staged whole,
-    since a background paraphrase cannot establish that no unique fact was lost.
-    The review fork's reply is never published back, so merely denying the write
-    would silently lose the proposal. A staging failure fails closed."""
+    When a destructive batch needs approval, its independent additions may still save;
+    stage the original batch so approving it replays those additions idempotently.
+    A staging failure fails closed."""
     from tools.skill_provenance import is_unattended_review
 
     if not is_unattended_review():
@@ -205,13 +204,40 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
                      f"on {target}): {detail}")[:200],
             origin=wa.current_origin())
+        additions_saved = 0
+        if operations is not None and not approval_required:
+            # Pre-saving a replacement's output (or an entry later removed/replaced)
+            # would change replay semantics: replace Alpha->Beta; add Beta would
+            # otherwise produce two Betas on approval. Keep those dependent adds
+            # exclusively in the pinned proposal.
+            pinned_ops = payload["operations"]
+            dependent = {
+                (op.get("content") or op.get("new_text") or "").strip()
+                for op in pinned_ops if op.get("action") == "replace"
+            } | {
+                op["matched_entry"] for op in pinned_ops
+                if op.get("action") in _BG_DELETE_ACTIONS and op.get("matched_entry")
+            }
+            independent = [
+                (op.get("content") or op.get("new_text") or "").strip()
+                for op in pinned_ops if op.get("action") == "add" and
+                (op.get("content") or op.get("new_text") or "").strip() not in dependent
+            ]
+            if independent:
+                saved = store.add_independent_entries(target, independent)
+                if saved.get("success"):
+                    additions_saved = saved.get("additions_saved", 0)
         reason = ("Memory write approval is on. " if approval_required else
                   "Background review could not retain all existing memory text verbatim. "
                   if literal_auto_enabled else
                   "Automatic literal-preserving review is not enabled. ")
+        saved_note = (f"{additions_saved} add operation(s) saved independently; "
+                      "approval will replay them idempotently. " if additions_saved else "")
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": (reason + f"The proposed {'batch' if operations is not None else action} "
+            "additions_saved": additions_saved,
+            "message": (saved_note + reason +
+                        f"The proposed {'batch' if operations is not None else action} "
                         "was staged for your approval — review it with /memory pending "
                         "(approve to apply, discard to drop)."),
         }, ensure_ascii=False)

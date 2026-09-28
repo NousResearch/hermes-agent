@@ -911,8 +911,12 @@ class TestBackgroundReviewDeleteGate:
         # Fail-closed: the original entry is untouched.
         assert "entry the fork must not rewrite" in store._entries_for("memory")
 
-    def test_batch_containing_remove_staged_whole_batch(self, store, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("approval_on", [False, True])
+    def test_batch_saves_independent_add_before_staging_destructive_proposal(
+            self, store, tmp_path, monkeypatch, approval_on):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        if approval_on:
+            monkeypatch.setattr("tools.write_approval.write_approval_enabled", lambda subsystem: True)
         store.add("memory", "rule one")
         token = set_current_write_origin("background_review")
         try:
@@ -923,8 +927,79 @@ class TestBackgroundReviewDeleteGate:
         finally:
             reset_current_write_origin(token)
         assert result["staged"] is True
-        # Atomic: the batch is only a proposal — its add must not land either.
-        assert "fork consolidation" not in store._entries_for("memory")
+        assert result["additions_saved"] == (0 if approval_on else 1)
+        if not approval_on:
+            assert "saved independently" in result["message"]
+        assert "staged for your approval" in result["message"]
+        assert store._entries_for("memory") == (["rule one"] if approval_on else
+                                                 ["rule one", "fork consolidation"])
+        from tools.memory_tool import apply_memory_pending
+        from tools.write_approval import MEMORY, get_pending
+        record = get_pending(MEMORY, result["pending_id"])
+        assert record is not None
+        assert [op["action"] for op in record["payload"]["operations"]] == ["remove", "add"]
+        assert apply_memory_pending(record["payload"], store)["success"] is True
+        assert store._entries_for("memory") == ["fork consolidation"]
+
+    def test_batch_addition_without_room_stays_pending_with_destructive_change(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        old = "A" * 240
+        store.add("memory", old)
+        store.add("memory", "B" * 240)
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "remove", "old_text": old},
+                {"action": "add", "content": "C" * 40},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["staged"] is True and result["additions_saved"] == 0
+        assert store._entries_for("memory") == [old, "B" * 240]
+
+    @pytest.mark.parametrize("existing, added, final", [
+        (None, "Beta", ["Beta"]),
+        ("Gamma", "Gamma", ["Beta", "Gamma"]),
+    ])
+    def test_batch_does_not_report_dependent_or_duplicate_add_as_saved(
+            self, store, tmp_path, monkeypatch, existing, added, final):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "Alpha")
+        if existing:
+            store.add("memory", existing)
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "replace", "old_text": "Alpha", "content": "Beta"},
+                {"action": "add", "content": added},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["staged"] is True and result["additions_saved"] == 0
+        assert "saved independently" not in result["message"]
+        assert store._entries_for("memory") == (["Alpha", existing] if existing else ["Alpha"])
+        from tools.memory_tool import apply_memory_pending
+        from tools.write_approval import MEMORY, get_pending
+        record = get_pending(MEMORY, result["pending_id"])
+        assert record is not None
+        assert apply_memory_pending(record["payload"], store)["success"] is True
+        assert store._entries_for("memory") == final
+
+    def test_batch_saves_fitting_add_when_another_add_needs_pending_cleanup(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        old = "A" * 455
+        store.add("memory", old)
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "remove", "old_text": old},
+                {"action": "add", "content": "B" * 60},
+                {"action": "add", "content": "C" * 12},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["staged"] is True and result["additions_saved"] == 1
+        assert store._entries_for("memory") == [old, "C" * 12]
 
     def test_lossless_replace_stages_without_opt_in(self, store, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -994,7 +1069,7 @@ class TestBackgroundReviewDeleteGate:
         finally:
             reset_current_write_origin(token)
         assert result["staged"] is True
-        assert store._entries_for("memory") == ["Important unique fact.", "Other unique fact."]
+        assert store._entries_for("memory") == ["Important unique fact.", "Other unique fact.", "New fact."]
         from tools.write_approval import MEMORY, get_pending
         record = get_pending(MEMORY, result["pending_id"])
         assert record is not None

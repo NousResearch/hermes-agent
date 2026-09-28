@@ -299,7 +299,7 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 
 | `write_approval` | Behaviour |
 |------------------|-----------|
-| `false` (default) | Foreground writes and background additions save automatically. Unattended background `replace`/`remove` normally stage for approval; a separate, default-off opt-in below permits only literal-preserving edits to auto-save. |
+| `false` (default) | Foreground writes and standalone background additions save automatically. In an unattended mixed batch, independent additions also save immediately if they fit, while the complete destructive proposal remains pending (approval replays already-saved additions idempotently). Background `replace`/`remove` normally stage; the separate, default-off opt-in below permits only literal-preserving edits to auto-save. |
 | `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
 
 > To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
@@ -328,12 +328,16 @@ hermes config set memory.auto_apply_literal_preserving_reviews true
 
 The check happens against the complete final memory state under the write lock:
 each old entry must remain unchanged or appear at the start of a resulting entry,
-followed by a space or newline. This also applies to mixed batches as one unit.
-Paraphrases, translations, and any loss of original text still stage for approval.
-This option does not override `memory.write_approval: true`, does not grant a
-skill-only review access to memory, and does not reload memory into an existing
-session's frozen prompt snapshot. Turn the opt-in off with the same command and
-`false`.
+followed by a space or newline. A whole mixed batch saves at once only when this
+condition holds. Otherwise independently addable facts save now, one at a time
+when they fit (with approval off), while the **original batch** is staged for
+approval; confirming it later skips already-saved additions. An addition
+produced or targeted by a proposed edit, or one that needs space freed by an
+unapproved deletion, stays pending with that batch. Paraphrases,
+translations, and any loss of original text still require approval. This option
+does not override `memory.write_approval: true`, does not grant a skill-only review
+access to memory, and does not reload memory into an existing session's frozen
+prompt snapshot. Turn the opt-in off with the same command and `false`.
 
 A staged `replace` or `remove` records the full entry it targets, and
 `/memory pending` shows it. Literal preservation is a textual guarantee, not a
@@ -370,9 +374,10 @@ display:
 > per-platform via `display.platforms.<platform>.memory_notifications`.
 
 Successful skill batches name each applied operation in both `on` and `verbose`
-mode, including supporting-file writes/removals and skill deletion. Staged writes
-awaiting approval and rolled-back batches are not reported as completed changes.
-Batch summaries use the applied results rather than assuming requested writes ran.
+mode, including supporting-file writes/removals and skill deletion. A pending
+memory batch may report an independently saved addition along with its staged
+proposal; it does **not** report the proposed removals/replacements as completed.
+Fully rolled-back batches are not reported as completed changes.
 
 ## Running the review on a cheaper model (`auxiliary.background_review`)
 

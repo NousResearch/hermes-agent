@@ -2181,6 +2181,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             agent._provider_fallback_active = True
             agent._provider_fallback_route = (str(fb_model), str(fb_provider))
             _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
+            from hermes_cli.observability.shared_metrics_events import record_fallback
+            record_fallback(from_provider=old_provider, to_provider=fb_provider, reason=reason)
             # The stale-call streak measured the OLD provider; carrying it over would
             # short-circuit the fresh fallback before its first stream attempt.
             _reset_stale_streak(agent)
@@ -3376,7 +3378,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 has_truncated_tool_args = True
             mock_tool_calls.append(SimpleNamespace(
                 id=tc["id"], type=tc["type"], extra_content=tc.get("extra_content"),
-                function=SimpleNamespace(name=tc["function"]["name"], arguments=arguments)))
+                function=SimpleNamespace(name=tc["function"]["name"], arguments=arguments,
+                                         args_repaired=arguments != tc["function"]["arguments"])))
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,

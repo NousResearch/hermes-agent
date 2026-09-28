@@ -21,7 +21,9 @@ const $enabled = atom(true)
 mirrorDisplayToggle('display.test_toggle', STORAGE_KEY, $enabled)
 
 const sets = () =>
-  request.mock.calls.filter(([, method]) => method === 'config.set').map(([profile, , params]) => ({ ...params, profile }))
+  request.mock.calls
+    .filter(([, method]) => method === 'config.set')
+    .map(([profile, , params]) => ({ ...params, profile }))
 
 beforeEach(() => {
   localStorage.clear()

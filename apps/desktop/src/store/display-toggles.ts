@@ -43,9 +43,9 @@ function push(mirror: Mirror): void {
     key: mirror.configKey,
     value: mirror.read() ? 'true' : 'false'
   }).catch(() => {
-      // Not connected, or a gateway too old to know the key. The next toggle
-      // and the next connection both try again.
-    })
+    // Not connected, or a gateway too old to know the key. The next toggle
+    // and the next connection both try again.
+  })
 }
 
 /** Keep `display.<configKey>` on the live gateway in step with a renderer atom. */

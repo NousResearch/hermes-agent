@@ -221,6 +221,7 @@ describe('MessagingView enable switch', () => {
     // #96542 (second mechanism): A's in-flight getMessagingPlatforms resolves
     // AFTER the switch to B and must not repaint A's redacted token under B.
     const tokenA = '123456:AAE-profile-a-token'
+
     let resolveA: (value: unknown) => void = () => {}
 
     getMessagingPlatforms.mockImplementation((profile?: null | string) =>

@@ -204,6 +204,8 @@ describe('installDesktopPluginFromGit', () => {
       git('add', '.')
       git('-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '--amend', '-qm', 'reviewed')
       const sha = git('rev-parse', 'HEAD')
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'tag', '-a', 'reviewed', '-m', 'reviewed')
+      const requestedRef = subdir ? git('rev-parse', 'reviewed') : sha
       fs.writeFileSync(entry, newerBytes)
       git('add', '.')
       git('-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '-qm', 'unreviewed')
@@ -215,7 +217,7 @@ describe('installDesktopPluginFromGit', () => {
       const target = path.join(appRoot, catalogName)
 
       const result = await installDesktopPluginFromGit('git', identifier, appRoot, false, {
-        ref: subdir ? sha.toUpperCase() : sha,
+        ref: requestedRef.toUpperCase(),
         catalogName
       })
 

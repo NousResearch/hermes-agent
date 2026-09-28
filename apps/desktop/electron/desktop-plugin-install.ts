@@ -315,8 +315,14 @@ function sparseCheckoutPattern(subdir: string): string {
 // A subdirectory install is a blobless clone with a sparse checkout of that folder: a plugin inside
 // a monorepo (Hindsight: 170 MB at depth 1, 2 MB for its plugin folder) otherwise downloads every
 // file in the repository and times out on slow connections.
-async function cloneToTemp(gitBin: string, gitUrl: string, subdir: string | null, ref?: string): Promise<string> {
+async function cloneToTemp(
+  gitBin: string,
+  gitUrl: string,
+  subdir: string | null,
+  ref?: string
+): Promise<{ cloneRoot: string; sha?: string }> {
   const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'hermes-plugin-'))
+  let sha: string | undefined
 
   try {
     await runGitOrThrow(gitBin, [
@@ -341,14 +347,20 @@ async function cloneToTemp(gitBin: string, gitUrl: string, subdir: string | null
         env: noninteractiveGitEnv(),
         timeoutMs: GIT_TIMEOUT_MS
       })
-      if (head.code !== 0 || head.stdout.trim().toLowerCase() !== ref) {
+      const commit = await execGit(gitBin, ['rev-parse', '--verify', `${ref}^{commit}`], {
+        cwd: tmpRoot,
+        env: noninteractiveGitEnv(),
+        timeoutMs: GIT_TIMEOUT_MS
+      })
+      if (head.code !== 0 || commit.code !== 0 || head.stdout.trim() !== commit.stdout.trim()) {
         throw new Error(`Git checkout did not resolve to requested commit ${ref}.`)
       }
+      sha = head.stdout.trim()
     } else if (subdir) {
       await runGitOrThrow(gitBin, ['checkout', 'HEAD'], tmpRoot)
     }
 
-    return tmpRoot
+    return { cloneRoot: tmpRoot, sha }
   } catch (err) {
     await fsp.rm(tmpRoot, { recursive: true, force: true }).catch(() => undefined)
     throw err
@@ -384,7 +396,7 @@ export async function probePluginRepo(gitBin: string, identifier: string): Promi
   try {
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
     const { warnings, insecure } = insecureSchemeWarnings(gitUrl)
-    const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)
+    const { cloneRoot } = await cloneToTemp(gitBin, gitUrl, subdir)
 
     try {
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)
@@ -450,7 +462,7 @@ export async function installDesktopPluginFromGit(
     }
     const sha = ref?.toLowerCase()
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
-    const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir, sha)
+    const { cloneRoot, sha: installedSha } = await cloneToTemp(gitBin, gitUrl, subdir, sha)
 
     try {
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)
@@ -500,7 +512,7 @@ export async function installDesktopPluginFromGit(
         await writeDesktopHalfMarker(staged, {
           package: packageName,
           repo: subdir ? `${gitUrl}#${subdir}` : gitUrl,
-          sha,
+          sha: installedSha,
           catalogName,
           // The published folder, not the temp clone. The clone is deleted
           // below; a source that disappears is ghost-pruned on the next

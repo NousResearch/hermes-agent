@@ -731,19 +731,32 @@ def handle_content_policy_refusal(
 
     if agent._has_pending_fallback():
         agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
-        # A successful fallback returns before the terminal warning below, so record the
-        # native cause here or it is lost — an operator can't tell a safety refusal from a
-        # rate limit / transport error after the fact (#124874). Metadata only; the refusal
-        # text (which can carry the blocked content) is logged solely on the terminal path.
-        logger.warning(
-            "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s "
-            "native_stop_reason=%s stop_details=%s",
-            agent.log_prefix, agent.model, agent.provider,
-            getattr(response, "stop_reason", None) or "n/a", _stop_details or "n/a",
-        )
+    # ``model``/``provider`` are swapped in place on a successful switch, so capture the
+    # refused backend now for the trace below.
+    _primary_model, _primary_provider = agent.model, agent.provider
+    # Drop the free-text explanation from the metadata trace — it can carry the blocked
+    # content and is unbounded; the terminal path is where the (capped) text is logged.
+    # Keep the category so the trace still tells a safety refusal from a guardrail block.
+    _stop_meta: Any = _stop_details
+    if isinstance(_stop_details, dict) and _stop_details.get("explanation"):
+        _stop_meta = {
+            **{k: v for k, v in _stop_details.items() if k != "explanation"},
+            "explanation_len": len(str(_stop_details["explanation"])),
+        }
     # Label the failover with the accurate reason so the user-facing notice reads
     # "content policy blocked the request", not the generic "provider failure".
     if agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
+        # A successful fallback returns here before the terminal warning below, so record the
+        # native cause or it is lost — an operator can't tell a safety refusal from a rate
+        # limit / transport error after the fact (#124874). Logged only on an actual switch,
+        # so a refusal with a pending chain that fails to activate emits one terminal warning
+        # below, not two. Metadata only — the free-text explanation is dropped (see _stop_meta).
+        logger.warning(
+            "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s "
+            "native_stop_reason=%s stop_details=%s",
+            agent.log_prefix, _primary_model, _primary_provider,
+            getattr(response, "stop_reason", None) or "n/a", _stop_meta or "n/a",
+        )
         active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
         return RefusalVerdict("break", None, active_system_prompt)
 

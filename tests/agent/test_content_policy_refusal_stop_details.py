@@ -57,6 +57,36 @@ def test_refusal_that_falls_back_still_logs_native_stop_reason(caplog):
     # Cause recorded before the fallback even though the terminal warning is skipped.
     messages = [r.getMessage() for r in caplog.records]
     assert any("native_stop_reason=refusal" in m and "general_harms" in m for m in messages)
+    # Metadata only: the free-text explanation (which can carry the blocked content and is
+    # unbounded) is not written on this pre-fallback trace — only its length.
+    assert not any("classifier halt" in m for m in messages)
+    assert any("explanation_len=" in m or "'explanation_len'" in m for m in messages)
     # Failover activated with the accurate, specific reason.
     _, kwargs = agent._try_activate_fallback.call_args
     assert kwargs.get("reason") == FailoverReason.content_policy_blocked
+
+
+def test_refusal_with_unusable_chain_warns_once_not_twice(caplog):
+    """A pending chain that fails to activate must not log the native cause twice: the
+    pre-fallback trace fires only on an actual switch, so this path emits exactly one
+    (terminal) content_filter warning, and that one carries the capped refusal text."""
+    agent = _agent()
+    agent._has_pending_fallback.return_value = True
+    agent._try_activate_fallback.return_value = False
+    response = SimpleNamespace(
+        content=[], stop_reason="refusal", usage=None, model="claude",
+        stop_details={"type": "refusal", "category": "general_harms", "explanation": "classifier halt"},
+    )
+    with caplog.at_level(logging.WARNING):
+        verdict = handle_content_policy_refusal(
+            agent, response, TurnRetryState(), thinking_spinner=None, messages=[], api_messages=[], api_kwargs={},
+            active_system_prompt=None, conversation_history=[], api_call_count=1, effective_task_id="t", turn_id="u",
+            api_request_id="r", api_start_time=0.0, retry_count=0, max_retries=0,
+        )
+    assert verdict.action == "return"
+    content_filter_warnings = [
+        r.getMessage() for r in caplog.records if "finish_reason=content_filter" in r.getMessage()
+    ]
+    assert len(content_filter_warnings) == 1
+    # The single terminal warning is the one that surfaces the refusal text.
+    assert "classifier halt" in content_filter_warnings[0]

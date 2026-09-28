@@ -430,7 +430,7 @@ def gmail_reply(args):
                 "userId": "me",
                 "id": args.message_id,
                 "format": "metadata",
-                "metadataHeaders": ["From", "Subject", "Message-ID"],
+                "metadataHeaders": ["From", "Subject", "Message-ID", "References"],
             },
         )
         headers = _headers_dict(original)
@@ -446,7 +446,10 @@ def gmail_reply(args):
             message["From"] = args.from_header
         if headers.get("message-id"):
             message["In-Reply-To"] = headers["message-id"]
-            message["References"] = headers["message-id"]
+            # RFC 5322 3.6.4: the parent's References chain comes before its msg-id.
+            message["References"] = (
+                headers.get("references", "") + " " + headers["message-id"]
+            ).strip()
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         result = _run_gws(
@@ -460,7 +463,7 @@ def gmail_reply(args):
     service = build_service("gmail", "v1")
     original = service.users().messages().get(
         userId="me", id=args.message_id, format="metadata",
-        metadataHeaders=["From", "Subject", "Message-ID"],
+        metadataHeaders=["From", "Subject", "Message-ID", "References"],
     ).execute()
     headers = _headers_dict(original)
 
@@ -475,7 +478,10 @@ def gmail_reply(args):
         message["From"] = args.from_header
     if headers.get("message-id"):
         message["In-Reply-To"] = headers["message-id"]
-        message["References"] = headers["message-id"]
+        # RFC 5322 3.6.4: the parent's References chain comes before its msg-id.
+        message["References"] = (
+            headers.get("references", "") + " " + headers["message-id"]
+        ).strip()
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
     body = {"raw": raw, "threadId": original["threadId"]}

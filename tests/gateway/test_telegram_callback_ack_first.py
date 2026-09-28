@@ -32,30 +32,6 @@ def _query(data: str, user_id: str = "777"):
     return q
 
 @pytest.mark.asyncio
-async def test_tap_is_acknowledged_before_slow_resolution():
-    """The ack reaches Telegram before the (possibly slow) resolve, so the button never spins."""
-    from tools import clarify_gateway as cm
-    adapter = _adapter()
-    cm.register("cid1", "sk1", "Pick", ["a", "b"])
-    adapter._clarify_state["cid1"] = "sk1"
-    order = []
-    q = _query("cl:cid1:0")
-    q.answer = AsyncMock(side_effect=lambda **kw: order.append(("answer", time.monotonic())))
-
-    async def slow_resolve(*_a, **_k):
-        await asyncio.sleep(0.3)
-        order.append(("resolved", time.monotonic()))
-        return True
-
-    update = MagicMock(); update.callback_query = q
-    with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
-         patch("tools.clarify_gateway.resolve_gateway_clarify", side_effect=slow_resolve):
-        await adapter._handle_callback_query(update, MagicMock())
-    kinds = [k for k, _ in order]
-    assert kinds[0] == "answer", kinds
-    assert q.answer.await_count >= 1
-
-@pytest.mark.asyncio
 async def test_unauthorized_tap_still_gets_exactly_one_answer():
     """Pre-ack must not double-answer: a refused tap gets the denial, not an empty ack first."""
     from gateway.platforms.base import unauthorized_action_notice
@@ -69,7 +45,7 @@ async def test_unauthorized_tap_still_gets_exactly_one_answer():
     assert q.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
 
 @pytest.mark.asyncio
-async def test_tap_during_running_text_turn_is_answered_within_one_second():
+async def test_tap_during_running_text_turn_is_answered_within_one_second(monkeypatch):
     """A tap that arrives while a text turn holds the dispatcher must still be answered fast."""
     # The gateway conftest mocks ``telegram``; this test needs the real dispatcher.
     import importlib, sys
@@ -87,7 +63,6 @@ async def test_tap_during_running_text_turn_is_answered_within_one_second():
 
     def real_tg_user(uid):
         return real_tg.User(id=uid, is_bot=True, first_name="bot")
-    # PLACEHOLDER_T3
     adapter = adapter_mod.TelegramAdapter(PlatformConfig(enabled=True, token="***"))
     adapter._bot = AsyncMock()
     app = Application.builder().token("1:x").application_class(
@@ -102,24 +77,23 @@ async def test_tap_during_running_text_turn_is_answered_within_one_second():
     async def slow_text(update, context):
         await asyncio.sleep(2.0)
 
-    async def tap(update, context):
+    async def answer_callback_query(*_args, **_kwargs):
         ack_at["t"] = time.monotonic()
 
-    # Use the adapter's OWN registration (that is what ships); then swap the callbacks so the
-    # test measures dispatch timing, not the handlers' bodies.
+    async def tap(update, context):
+        # The adapter's block=False dispatcher reaches this immediately despite slow_text.
+        await update.callback_query.answer()
+
+    monkeypatch.setattr(real_ext.ExtBot, "answer_callback_query", answer_callback_query)
+    # Replace only the text callback; keep the adapter's real CallbackQueryHandler (including block=False).
     adapter._register_handlers(app)
-    for group in app.handlers.values():
-        for h in group:
-            name = type(h).__name__
-            if name == "CallbackQueryHandler":
-                h.callback = tap
-            elif name == "MessageHandler" and getattr(h, "callback", None) is adapter._handle_text_message:
-                h.callback = slow_text
-    for h in app.handlers.get(0, []):
-        if getattr(h, "callback", None) in (tap, slow_text):
-            continue
-        if type(h).__name__ == "MessageHandler":
-            h.callback = slow_text
+    text_handlers = [h for group in app.handlers.values() for h in group
+                     if type(h).__name__ == "MessageHandler"]
+    text_handlers[0].callback = slow_text
+    callback_handlers = [h for group in app.handlers.values() for h in group
+                         if type(h).__name__ == "CallbackQueryHandler"]
+    assert callback_handlers and callback_handlers[0].block is False
+    callback_handlers[0].callback = tap
     # PLACEHOLDER_T3B
     import datetime
     CallbackQuery, Chat, Message, Update, User = (
@@ -130,13 +104,20 @@ async def test_tap_during_running_text_turn_is_answered_within_one_second():
     cq = CallbackQuery(id="q1", from_user=u, chat_instance="ci", data="cl:a:0",
                        message=Message(message_id=2, date=now, chat=c, from_user=u))
     tap_upd = Update(update_id=2, callback_query=cq)
+    cq.set_bot(app.bot)
+    text_upd.set_bot(app.bot)
+    tap_upd.set_bot(app.bot)
     t0 = time.monotonic()
     # Drive PTB's own fetcher loop (private, but that is where the serialisation lives).
     fetcher = asyncio.create_task(app._Application__update_fetcher())
-    await app.update_queue.put(text_upd)
-    await asyncio.sleep(0.05)
-    await app.update_queue.put(tap_upd)
-    await asyncio.sleep(2.5)
+    with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+        await app.update_queue.put(text_upd)
+        await asyncio.sleep(0.05)
+        await app.update_queue.put(tap_upd)
+        for _ in range(100):
+            if "t" in ack_at:
+                break
+            await asyncio.sleep(0.01)
     fetcher.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await fetcher

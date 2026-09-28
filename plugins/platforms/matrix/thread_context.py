@@ -29,12 +29,14 @@ except ImportError:
         GET = "GET"
 
 
-async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dict] | None:
+async def history_entry(client: Any, raw: dict, cache: MatrixEventContextCache, room_id: str) -> tuple[MatrixEventContext, dict] | None:
     if raw.get("type", "m.room.message") not in {"m.room.message", "m.room.encrypted"}:
         return None
     if MatrixRelation.from_content(event_content(raw).get("m.relates_to")).is_edit:
         return None
-    state = await effective_event(client, raw)
+    state = await effective_event(
+        client, raw, is_redacted=lambda target: cache.is_redacted(room_id, target),
+    )
     content = state.content
     if content is None:
         return MatrixEventContext(
@@ -56,6 +58,7 @@ async def history_entry(client: Any, raw: dict) -> tuple[MatrixEventContext, dic
     return MatrixEventContext(
         sender, text, is_image=content.get("msgtype") == "m.image",
         state_error=state.error["error"] if state.error else None,
+        replacement_id=state.replacement_id,
     ), state.original_content
 
 
@@ -130,7 +133,7 @@ async def fetch_thread_entries(
         raw_root = await asyncio.wait_for(client.api.request(Method.GET, root_path), timeout=10.0)
         if (isinstance(raw_root, dict) and raw_root.get("event_id") == thread_id
                 and raw_root.get("room_id", room_id) == room_id):
-            parsed_root = await history_entry(client, raw_root)
+            parsed_root = await history_entry(client, raw_root, cache, room_id)
             if parsed_root is not None:
                 root = cache.store(room_id, thread_id, parsed_root[0])
     except Exception as exc:
@@ -154,7 +157,7 @@ async def fetch_thread_entries(
             continue
         if raw.get("room_id", room_id) != room_id:
             continue
-        parsed = await history_entry(client, raw)
+        parsed = await history_entry(client, raw, cache, room_id)
         if parsed is None:
             continue
         entry, content = parsed
@@ -172,7 +175,7 @@ async def fetch_thread_entries(
     snapshots = await fetch_reactions_for_events(client, room_id, reaction_ids)
     by_id = dict(zip(reaction_ids, snapshots))
     entries = [
-        cache.history_entry(room_id, event_id) or entry
+        cache.recheck(room_id, cache.history_entry(room_id, event_id) or entry)
         for event_id, entry in zip(entry_ids, entries)
     ]
     return [

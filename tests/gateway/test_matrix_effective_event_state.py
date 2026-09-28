@@ -52,6 +52,7 @@ def _edited(original: dict, body: str) -> dict:
 def _adapter(client) -> SimpleNamespace:
     return SimpleNamespace(
         _client=client, _joined_rooms={ROOM}, _user_id="@bot:example.org",
+        _event_context_cache=MatrixEventContextCache(),
         _is_allowed_matrix_room_event=AsyncMock(return_value=True),
         _is_dm_room=AsyncMock(return_value=False),
         _is_sender_authorized=lambda *_args, **_kwargs: True,
@@ -229,7 +230,7 @@ async def test_pinned_mautrix_typed_edit_keeps_new_content(include_new_content: 
 
     assert isinstance(decrypted_edit.content.serialize().get("m.new_content"), dict)
     assert state == (
-        MatrixEffectiveEvent({"msgtype": "m.text", "body": "after"}, original["content"], edited=True)
+        MatrixEffectiveEvent({"msgtype": "m.text", "body": "after"}, original["content"], edited=True, replacement_id="$edit")
         if include_new_content else
         MatrixEffectiveEvent({"msgtype": "m.text", "body": "before"}, original["content"])
     )
@@ -308,7 +309,7 @@ async def test_encrypted_edit_is_visible_in_room_catch_up():
     with patch.dict(sys.modules, {"mautrix": mautrix, "mautrix.types": mautrix.types}):
         entries = await fetch_room_entries(client, MatrixEventContextCache(), ROOM, "$current", limit=1)
 
-    assert entries == [MatrixEventContext(SENDER, "after")]
+    assert entries == [MatrixEventContext(SENDER, "after", event_id="$original", replacement_id="$edit")]
     assert [call.args[0] for call in crypto.decrypt_megolm_event.await_args_list] == [
         raw, raw["unsigned"]["m.relations"]["m.replace"],
     ]
@@ -372,8 +373,11 @@ async def test_reply_retries_catch_up_event_after_decryption_keys_arrive(missing
         "[encrypted message could not be decrypted]" if missing == "original" else "before"
     )
     assert earlier == [MatrixEventContext(SENDER, expected_earlier,
-                                          state_error="missing decryption keys")]
-    assert reply == MatrixEventContext(SENDER, "before" if missing == "original" else "after")
+                                          state_error="missing decryption keys", event_id="$target")]
+    assert reply == MatrixEventContext(
+        SENDER, "before" if missing == "original" else "after", event_id="$target",
+        replacement_id="$edit" if missing == "edit" else None,
+    )
     assert [call.args[1] for call in client.api.request.await_args_list if "/event/" in call.args[1]] == [
         f"/_matrix/client/v3/rooms/{quote(ROOM, safe='')}/event/%24target"
     ]
@@ -405,9 +409,10 @@ async def test_catch_up_renders_edited_room_and_thread_messages():
     room = await fetch_room_entries(client, cache, ROOM, "$current", limit=2)
     thread = await fetch_thread_entries(client, cache, ROOM, "$root", limit=2, before_event_id="$current")
 
-    assert room == [MatrixEventContext(SENDER, "after room")]
+    assert room == [MatrixEventContext(SENDER, "after room", event_id="$room", replacement_id="$edit")]
     assert thread == [
-        MatrixEventContext(SENDER, "root after"), MatrixEventContext(SENDER, "after thread"),
+        MatrixEventContext(SENDER, "root after", event_id="$root", replacement_id="$edit"),
+        MatrixEventContext(SENDER, "after thread", event_id="$child", replacement_id="$edit"),
     ]
 
 
@@ -427,7 +432,7 @@ async def test_room_catch_up_keeps_redaction_even_when_original_body_is_stale():
 
     entries = await fetch_room_entries(client, MatrixEventContextCache(), ROOM, "$current", limit=1)
 
-    assert entries == [MatrixEventContext(SENDER, "[redacted]", redacted=True)]
+    assert entries == [MatrixEventContext(SENDER, "[redacted]", redacted=True, event_id="$child")]
 
 
 @pytest.mark.asyncio
@@ -481,8 +486,8 @@ async def test_catch_up_keeps_redaction_received_during_reaction_lookup(scope: s
         entries = await pending
 
     assert entries == [
-        MatrixEventContext(SENDER, "", redacted=True) if event_id == target
-        else MatrixEventContext(SENDER, "retained text")
+        MatrixEventContext(SENDER, "", redacted=True, event_id=event_id) if event_id == target
+        else MatrixEventContext(SENDER, "retained text", event_id=event_id)
         for event_id in event_ids
     ]
 
@@ -502,7 +507,7 @@ async def test_reply_target_uses_raw_aggregated_state_and_blocks_redacted_origin
     original["unsigned"]["redacted_because"] = {"event_id": "$redaction"}
     redacted = await cache.resolve(client, ROOM, "$child")
 
-    assert (edited, redacted) == (MatrixEventContext(SENDER, "after"), None)
+    assert (edited, redacted) == (MatrixEventContext(SENDER, "after", event_id="$child", replacement_id="$edit"), None)
     client.get_event.assert_not_awaited()
 
 
@@ -531,7 +536,7 @@ async def test_reply_refetch_does_not_restore_text_redacted_during_decryption():
         result = await pending
 
     assert result is None
-    assert cache.history_entry(ROOM, "$image") == MatrixEventContext(SENDER, "", redacted=True)
+    assert cache.history_entry(ROOM, "$image") == MatrixEventContext(SENDER, "", redacted=True, event_id="$image")
 
 
 @pytest.mark.asyncio
@@ -558,4 +563,226 @@ async def test_thread_root_fetch_failure_uses_redaction_received_during_request(
     cache.redact(ROOM, "$root")
     release.set()
 
-    assert await pending == [MatrixEventContext(SENDER, "", redacted=True)]
+    assert await pending == [MatrixEventContext(SENDER, "", redacted=True, event_id="$root")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["event", "room", "thread"])
+@pytest.mark.parametrize("replacement", [False, True])
+async def test_bounded_read_rechecks_redaction_after_reactions(kind: str, replacement: bool):
+    from tests.gateway.test_matrix import _make_adapter
+
+    started, release = asyncio.Event(), asyncio.Event()
+    raw = _original("$target", "before" if replacement else "withdrawn secret",
+                    root="$root" if kind == "thread" else None)
+    if replacement:
+        raw = _edited(raw, "withdrawn secret")
+
+    async def request(_method, path, **_kwargs):
+        if "/event/" in path:
+            return raw
+        if "/messages" in path or "/m.thread" in path:
+            return {"chunk": [raw]}
+        if "/m.annotation" in path:
+            started.set()
+            await release.wait()
+            return {"chunk": [{
+                "type": "m.reaction", "event_id": "$reaction", "sender": SENDER,
+                "content": {"m.relates_to": {
+                    "rel_type": "m.annotation", "event_id": "$target", "key": "👍",
+                }},
+            }], "next_batch": "more"}
+        raise AssertionError(path)
+
+    adapter = _make_adapter()
+    adapter._client = SimpleNamespace(
+        api=SimpleNamespace(request=AsyncMock(side_effect=request)),
+        sync_store=SimpleNamespace(get_next_batch=AsyncMock(return_value="boundary")),
+    )
+    adapter._joined_rooms = {ROOM}
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    target = "$root" if kind == "thread" else "$target"
+    pending = asyncio.create_task(adapter.read_matrix_context(kind, ROOM, target, 2, requester=SENDER))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts="$edit" if replacement else "$target"))
+    finally:
+        release.set()
+        result = await pending
+
+    expected = {
+        "event_id": "$target", "sender": SENDER, "body": "before" if replacement else "[redacted]",
+        "msgtype": "m.text" if replacement else None,
+        "thread_id": "$root" if kind == "thread" else None,
+        "timestamp": None, "sender_authorized": True,
+    }
+    if replacement:
+        expected["reactions"] = [{
+            "event_id": "$reaction", "sender": SENDER, "emoji": "👍",
+            "target_event_id": "$target", "sender_authorized": True,
+        }]
+        expected["reactions_truncated"] = True
+    else:
+        expected["redacted"] = True
+    assert result == {"events": [expected], "errors": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["reply", "reply-inline", "room", "thread"])
+@pytest.mark.parametrize("replacement", [False, True])
+async def test_formatting_rechecks_redaction_after_last_display_name_lookup(scope: str, replacement: bool):
+    from tests.gateway.test_matrix import _make_adapter
+    from plugins.platforms.matrix.reply_context import MatrixReplyContext
+
+    started, release = asyncio.Event(), asyncio.Event()
+    target = "$root" if scope == "thread" else "$target"
+    raws = [_original(target, "withdrawn secret"), _original("$later", "retained text")]
+    if replacement:
+        raws[0] = _edited(_original(target, "before"), "withdrawn secret")
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "boundary"}
+        if "/event/" in path:
+            return raws[0]
+        if "/messages" in path or "/m.thread" in path:
+            return {"chunk": list(reversed(raws))}
+        if "/m.annotation" in path:
+            return {"chunk": []}
+        raise AssertionError(path)
+
+    calls = 0
+
+    async def display_name(_room, _sender):
+        nonlocal calls
+        calls += 1
+        if calls == (2 if scope == "room" else 1):
+            started.set()
+            await release.wait()
+        return "Alice"
+
+    adapter = _make_adapter()
+    adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)))
+    adapter._get_display_name = display_name
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    if scope == "reply-inline":
+        await adapter._event_context_cache.resolve(adapter._client, ROOM, target)
+    if scope in {"reply", "reply-inline"}:
+        body = f"> <{SENDER}> withdrawn secret\n\nquestion" if scope == "reply-inline" else "question"
+        context = adapter._extract_reply_context(
+            ROOM, body, {"m.in_reply_to": {"event_id": target}}, sender=SENDER, chat_type="group",
+        )
+    elif scope == "room":
+        context = adapter.fetch_room_context(ROOM, "$current")
+    else:
+        context = adapter.fetch_thread_context(ROOM, "$root", before_event_id="$current")
+    pending = asyncio.create_task(context)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts="$edit" if replacement else target))
+    finally:
+        release.set()
+        result = await pending
+
+    withdrawn = ("[event content unavailable]\n[Matrix event state unavailable: replacement was redacted.]"
+                 if replacement else "[redacted]")
+    expected = {
+        "reply": MatrixReplyContext("question", target, None, SENDER, "Alice", False, True),
+        "reply-inline": MatrixReplyContext("question", target, None, SENDER, "Alice", False, False),
+        "room": f"[Recent room messages]\n[Alice] {withdrawn}\n[Alice] retained text",
+        "thread": f"[Earlier messages in this thread]\n[Alice] {withdrawn}",
+    }
+    assert result == expected[scope]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encrypted", [False, True])
+@pytest.mark.parametrize("valid", [False, True])
+async def test_live_typed_edit_resolves_actual_payload_before_caching(encrypted: bool, valid: bool):
+    from tests.gateway.test_matrix import _make_adapter
+
+    mautrix_types = pytest.importorskip("mautrix.types")
+    raw = _edited(_original("$target", "before"), "after")
+    replacement = raw["unsigned"]["m.relations"]["m.replace"]
+    content = json.loads(json.dumps(replacement["content"]))
+    if not valid:
+        content.pop("m.new_content")
+    replacement["content"] = json.loads(json.dumps(content))
+    typed = mautrix_types.Event.deserialize({**replacement, "content": json.loads(json.dumps(content)),
+                                           "origin_server_ts": 1})
+    if encrypted:
+        typed["mautrix"] = {"was_encrypted": True}
+        raw = {**raw, "type": "m.room.encrypted", "content": {"ciphertext": "original"}}
+        raw["unsigned"]["m.relations"]["m.replace"] = {
+            **replacement, "type": "m.room.encrypted",
+            "content": {"ciphertext": "replacement", "session_id": "sess", "m.relates_to": {
+                "rel_type": "m.replace", "event_id": "$target",
+            }},
+        }
+    adapter = _make_adapter()
+    adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+    adapter._event_context_cache.store(ROOM, "$target", MatrixEventContext(SENDER, "before"))
+    adapter._client = SimpleNamespace(
+        api=SimpleNamespace(request=AsyncMock(return_value=raw)),
+        crypto=SimpleNamespace(crypto_store=_edit_store(content)),
+    )
+    with patch("plugins.platforms.matrix.effective_event._decrypt", new_callable=AsyncMock) as decrypt:
+        decrypt.side_effect = [(SimpleNamespace(content={"msgtype": "m.text", "body": "before"}), None),
+                               (typed, None)]
+        await adapter._on_room_message(typed)
+        result = await adapter._event_context_cache.resolve(adapter._client, ROOM, "$target")
+
+    assert result == MatrixEventContext(
+        SENDER, "after" if valid else "before", event_id="$target",
+        replacement_id="$edit" if valid else None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["reply", "room", "thread", "live"])
+@pytest.mark.parametrize("remaining_edit", [False, True])
+async def test_redacting_effective_replacement_invalidates_original_and_recovers_content(source: str, remaining_edit: bool):
+    from tests.gateway.test_matrix import _make_adapter
+
+    target = "$root" if source == "thread" else "$target"
+    raw = _edited(_original(target, "before"), "withdrawn secret")
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "boundary"}
+        if "/messages" in path:
+            return {"chunk": [raw]}
+        if "/event/" in path:
+            return raw
+        if "/m.thread" in path or "/m.annotation" in path:
+            return {"chunk": []}
+        raise AssertionError(path)
+
+    adapter = _make_adapter()
+    adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)))
+    adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+    cache = adapter._event_context_cache
+    if source == "room":
+        await fetch_room_entries(adapter._client, cache, ROOM, "$current", limit=2)
+    elif source == "thread":
+        await fetch_thread_entries(adapter._client, cache, ROOM, target, limit=2, before_event_id="$current")
+    elif source == "live":
+        cache.store(ROOM, target, MatrixEventContext(SENDER, "before"))
+        replacement = raw["unsigned"]["m.relations"]["m.replace"]
+        await adapter._on_room_message(SimpleNamespace(**replacement))
+    before = await cache.resolve(adapter._client, ROOM, target)
+    if remaining_edit:
+        earlier = _edited(_original(target, "before"), "remaining valid edit")
+        earlier["unsigned"]["m.relations"]["m.replace"]["event_id"] = "$earlier"
+        raw.clear()
+        raw.update(earlier)
+    await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts="$edit"))
+    after = await cache.resolve(adapter._client, ROOM, target)
+
+    assert (before, after) == (
+        MatrixEventContext(SENDER, "withdrawn secret", event_id=target, replacement_id="$edit"),
+        MatrixEventContext(SENDER, "remaining valid edit" if remaining_edit else "before", event_id=target,
+                           replacement_id="$earlier" if remaining_edit else None),
+    )

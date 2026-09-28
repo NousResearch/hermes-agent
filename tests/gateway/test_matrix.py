@@ -1517,7 +1517,7 @@ async def test_sent_matrix_message_is_available_as_reply_context():
     cached = await adapter._event_context_cache.resolve(None, "!room:example.org", "$sent")
 
     assert (result.success, result.message_id, cached) == (
-        True, "$sent", MatrixEventContext("@bot:example.org", "hello from the bot"),
+        True, "$sent", MatrixEventContext("@bot:example.org", "hello from the bot", event_id="$sent"),
     )
 
 
@@ -1542,8 +1542,8 @@ async def test_successful_matrix_edit_updates_cached_reply_target():
         sent.success, edited.success, failed.success, after_success, after_failure,
     ) == (
         True, True, False,
-        MatrixEventContext("@bot:example.org", "final answer"),
-        MatrixEventContext("@bot:example.org", "final answer"),
+        MatrixEventContext("@bot:example.org", "final answer", event_id="$sent", replacement_id="$edit"),
+        MatrixEventContext("@bot:example.org", "final answer", event_id="$sent", replacement_id="$edit"),
     )
 
 
@@ -1834,7 +1834,7 @@ async def test_thread_fetch_uses_mautrix_get_method():
             client, cache, "!room:example.org", "$root", limit=5, before_event_id="$current",
         )
 
-    assert entries == [MatrixEventContext("@alice:example.org", "root")]
+    assert entries == [MatrixEventContext("@alice:example.org", "root", event_id="$root")]
     assert [call.args[1:] + (call.kwargs["query_params"],) for call in _history_request_calls(client)] == [
         ("/_matrix/client/v3/rooms/%21room%3Aexample.org/context/%24current", {"limit": "0"}),
         ("/_matrix/client/v3/rooms/%21room%3Aexample.org/messages",
@@ -1903,7 +1903,7 @@ async def test_thread_backfill_omits_child_redacted_during_relations_fetch():
     client = MagicMock()
     client.api.request = AsyncMock(side_effect=relations)
     cache = MatrixEventContextCache()
-    root = MatrixEventContext("@alice:example.org", "root")
+    root = MatrixEventContext("@alice:example.org", "root", event_id="$root")
     cache.store(room_id, "$root", root)
     fetching = asyncio.create_task(fetch_thread_entries(
         client, cache, room_id, "$root", limit=5, before_event_id="$current",
@@ -1920,7 +1920,7 @@ async def test_thread_backfill_omits_child_redacted_during_relations_fetch():
     rendered = await adapter._format_history_context(room_id, entries, "Recent thread messages")
 
     assert (entries, rendered) == (
-        [root, MatrixEventContext("@alice:example.org", "", redacted=True)],
+        [root, MatrixEventContext("@alice:example.org", "", redacted=True, event_id="$child")],
         "[Recent thread messages]\n[Alice] root\n[Alice] [redacted]",
     )
 
@@ -1968,8 +1968,8 @@ async def test_thread_fetch_uses_anchored_context_when_cursor_is_missing(start):
         )
 
     assert entries == [
-        MatrixEventContext("@alice:example.org", "Earlier"),
-        MatrixEventContext("@alice:example.org", "Secret"),
+        MatrixEventContext("@alice:example.org", "Earlier", event_id="$earlier"),
+        MatrixEventContext("@alice:example.org", "Secret", event_id="$encrypted"),
     ]
     decrypt.assert_awaited_once()
     assert [call.kwargs["query_params"] for call in _history_request_calls(client)] == [
@@ -2000,7 +2000,7 @@ async def test_thread_fetch_uses_anchored_context_when_relations_rejects_cursor(
         limit=3, before_event_id="$current",
     )
 
-    assert entries == [MatrixEventContext("@alice:example.org", "Earlier")]
+    assert entries == [MatrixEventContext("@alice:example.org", "Earlier", event_id="$earlier")]
     assert [call.kwargs["query_params"] for call in _history_request_calls(client)] == [
         {"limit": "0"},
         {"from": "incompatible-context-token", "dir": "b", "limit": "3"},
@@ -2044,7 +2044,7 @@ async def test_catch_up_filters_by_original_relation_after_bundled_edits():
     client = MagicMock()
     client.api.request = AsyncMock(side_effect=request)
     cache = MatrixEventContextCache()
-    root = MatrixEventContext("@alice:example.org", "Root")
+    root = MatrixEventContext("@alice:example.org", "Root", event_id="$root")
     cache.store(room_id, "$root", root)
 
     room_entries = await fetch_room_entries(client, cache, room_id, "$current", limit=2)
@@ -2074,7 +2074,7 @@ async def test_catch_up_limit_one_reads_one_earlier_room_event():
 
     entries = await fetch_room_entries(client, MatrixEventContextCache(), room_id, "$current", limit=1)
 
-    assert entries == [MatrixEventContext("@alice:example.org", "Earlier")]
+    assert entries == [MatrixEventContext("@alice:example.org", "Earlier", event_id="$earlier")]
 
 
 @pytest.mark.asyncio
@@ -2094,7 +2094,7 @@ async def test_room_catch_up_without_a_zero_limit_context_cursor():
 
     entries = await fetch_room_entries(client, MatrixEventContextCache(), room_id, "$current", limit=1)
 
-    assert entries == [MatrixEventContext("@alice:example.org", "Earlier")]
+    assert entries == [MatrixEventContext("@alice:example.org", "Earlier", event_id="$earlier")]
     assert [call.kwargs["query_params"] for call in _history_request_calls(client)] == [
         {"limit": "0"}, {"limit": "2"},
     ]
@@ -2121,14 +2121,14 @@ async def test_thread_fallback_limit_one_reads_one_earlier_event():
     client = MagicMock()
     client.api.request = AsyncMock(side_effect=request)
     cache = MatrixEventContextCache()
-    root = MatrixEventContext("@alice:example.org", "Root")
+    root = MatrixEventContext("@alice:example.org", "Root", event_id="$root")
     cache.store(room_id, "$root", root)
 
     entries = await fetch_thread_entries(
         client, cache, room_id, "$root", limit=1, before_event_id="$current",
     )
 
-    assert entries == [root, MatrixEventContext("@alice:example.org", "Earlier")]
+    assert entries == [root, MatrixEventContext("@alice:example.org", "Earlier", event_id="$earlier")]
 
 
 # ---------------------------------------------------------------------------

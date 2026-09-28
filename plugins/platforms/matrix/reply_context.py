@@ -38,6 +38,8 @@ class MatrixEventContext:
     reaction_keys_missing: bool = False
     reactions_unavailable: bool = False
     state_error: str | None = None
+    event_id: str | None = None
+    replacement_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -136,18 +138,45 @@ class MatrixEventContextCache:
             return None
         key = room_id, event_id
         prior = self._entries.get(key)
-        if prior is not None and prior.redacted and not entry.redacted:
+        if prior is not None and prior.redacted:
             if not prior.sender and entry.sender:
                 prior = replace(prior, sender=entry.sender)
                 self._entries[key] = prior
             return prior
+        entry = replace(entry, event_id=event_id)
+        entry = self.recheck(room_id, entry)
         self._entries[key] = entry
         self._entries.move_to_end(key)
         while len(self._entries) > self.max_entries:
             self._entries.popitem(last=False)
         return entry if entry.redacted or entry.text or entry.media_path else None
 
-    def apply_edit(self, room_id: str, sender: str, content: dict) -> None:
+    def is_redacted(self, room_id: str, event_id: str | None) -> bool:
+        if event_id is None:
+            return False
+        entry = self._entries.get((room_id, event_id))
+        return entry is not None and entry.redacted
+
+    def invalidate(self, room_id: str, event_id: str) -> None:
+        if not self.is_redacted(room_id, event_id):
+            self._entries.pop((room_id, event_id), None)
+
+    def recheck(self, room_id: str, entry: MatrixEventContext) -> MatrixEventContext:
+        current = self.history_entry(room_id, entry.event_id) if entry.event_id else None
+        if current is not None and current.redacted:
+            return current
+        if entry.replacement_id and self.is_redacted(room_id, entry.replacement_id):
+            if current is not None and current.replacement_id != entry.replacement_id:
+                return current
+            return MatrixEventContext(
+                entry.sender, "[event content unavailable]", event_id=entry.event_id,
+                state_error="replacement was redacted",
+            )
+        return entry
+
+    def apply_edit(
+        self, room_id: str, sender: str, content: dict, *, replacement_id: str | None = None,
+    ) -> None:
         relation = content.get("m.relates_to")
         target = relation.get("event_id") if isinstance(relation, dict) else None
         replacement = content.get("m.new_content")
@@ -166,9 +195,13 @@ class MatrixEventContextCache:
             media_path=prior.media_path if prior else None,
             media_type=prior.media_type if prior else None,
             is_image=prior.is_image if prior else False,
+            replacement_id=replacement_id,
         ))
 
     def redact(self, room_id: str, event_id: str) -> None:
+        for key, entry in list(self._entries.items()):
+            if key[0] == room_id and entry.replacement_id == event_id:
+                self._entries.pop(key)
         prior = self._entries.get((room_id, event_id))
         sender = prior.sender if prior is not None else ""
         self.store(room_id, event_id, MatrixEventContext(sender, "", redacted=True))
@@ -202,7 +235,9 @@ class MatrixEventContextCache:
             raw = await asyncio.wait_for(client.api.request(Method.GET, path), self.timeout_seconds)
             if not isinstance(raw, dict) or raw.get("event_id") != event_id or raw.get("room_id", room_id) != room_id:
                 return current_cached()
-            state = await effective_event(client, raw)
+            state = await effective_event(
+                client, raw, is_redacted=lambda target: self.is_redacted(room_id, target),
+            )
             if state.redacted:
                 self.redact(room_id, event_id)
                 return None
@@ -235,6 +270,7 @@ class MatrixEventContextCache:
             media_type=media[1] if media else None,
             is_image=msgtype == "m.image",
             state_error=state.error["error"] if state.error else None,
+            replacement_id=state.replacement_id,
         )
         stored = self.store(room_id, event_id, entry)
         return stored if stored is not None and not stored.redacted else None

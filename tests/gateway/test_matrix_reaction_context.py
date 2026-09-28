@@ -10,7 +10,7 @@ import pytest
 
 from plugins.platforms.matrix.read_context import read_matrix_context
 from plugins.platforms.matrix.reaction_context import MatrixReaction, fetch_event_reactions
-from plugins.platforms.matrix.reply_context import MatrixEventContext
+from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 
 
 @pytest.mark.asyncio
@@ -43,6 +43,7 @@ async def test_event_read_includes_current_reactions_once_per_sender_and_emoji()
         api=SimpleNamespace(request=AsyncMock(side_effect=request)),
     )
     adapter = SimpleNamespace(
+        _event_context_cache=MatrixEventContextCache(),
         _client=client, _joined_rooms={room_id}, _user_id="@bot:example.org",
         _is_allowed_matrix_room_event=AsyncMock(return_value=True),
         _is_dm_room=AsyncMock(return_value=True),

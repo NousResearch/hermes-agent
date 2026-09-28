@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from plugins.platforms.matrix.relations import MatrixRelation
 
@@ -17,6 +17,7 @@ class MatrixEffectiveEvent:
     edited: bool = False
     redacted: bool = False
     error: dict[str, str] | None = None
+    replacement_id: str | None = None
 
 
 def event_content(event: Any) -> dict[str, Any]:
@@ -78,10 +79,13 @@ async def _decrypt(client: Any, raw: dict[str, Any]) -> tuple[Any | None, dict[s
     return event, None
 
 
-async def effective_event(client: Any, raw: dict[str, Any]) -> MatrixEffectiveEvent:
+async def effective_event(
+    client: Any, raw: dict[str, Any], *, is_redacted: Callable[[str | None], bool] | None = None,
+) -> MatrixEffectiveEvent:
     original_content = event_content(raw)
     unsigned = raw.get("unsigned")
-    if isinstance(unsigned, dict) and unsigned.get("redacted_because"):
+    if ((isinstance(unsigned, dict) and unsigned.get("redacted_because"))
+            or (is_redacted is not None and is_redacted(raw.get("event_id")))):
         return MatrixEffectiveEvent({}, original_content, redacted=True)
 
     event: Any = raw
@@ -94,11 +98,14 @@ async def effective_event(client: Any, raw: dict[str, Any]) -> MatrixEffectiveEv
     replacement = _replacement(raw)
     if replacement is None or MatrixRelation.from_content(original_content.get("m.relates_to")).is_edit:
         return MatrixEffectiveEvent(content, original_content)
+    replacement_id = replacement.get("event_id")
     relation = event_content(replacement).get("m.relates_to")
     if (
         replacement.get("room_id", raw.get("room_id")) != raw.get("room_id")
         or replacement.get("sender") != raw.get("sender")
         or replacement.get("type") != raw.get("type")
+        or not isinstance(replacement_id, str) or not replacement_id
+        or (is_redacted is not None and is_redacted(replacement_id))
         or "state_key" in replacement or "state_key" in raw
         or not isinstance(relation, dict)
         or relation.get("rel_type") != "m.replace"
@@ -122,11 +129,12 @@ async def effective_event(client: Any, raw: dict[str, Any]) -> MatrixEffectiveEv
             })
     else:
         revised_content = event_content(replacement).get("m.new_content")
-    if not isinstance(revised_content, dict):
+    if (not isinstance(revised_content, dict)
+            or (is_redacted is not None and is_redacted(replacement_id))):
         return MatrixEffectiveEvent(content, original_content)
 
     original_relation = content.get("m.relates_to")
     content = {key: value for key, value in revised_content.items() if key != "m.relates_to"}
     if original_relation is not None:
         content["m.relates_to"] = original_relation
-    return MatrixEffectiveEvent(content, original_content, edited=True)
+    return MatrixEffectiveEvent(content, original_content, edited=True, replacement_id=replacement_id)

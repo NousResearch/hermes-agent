@@ -470,19 +470,6 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
     def latest_versions(self, target: str, locked=None) -> list[str]:
         return node_latest_versions()
 
-    def verify(self, entry: Path, target: str) -> str:
-        # Official linux Node links libatomic.so.1. Install the distro
-        # package and probe once more before the pin is rejected.
-        from pm.libatomic import repair_node_libatomic_failure
-
-        reason = _BionicDebArm.verify(self, entry, target)
-        return repair_node_libatomic_failure(
-            reason,
-            target=target,
-            host=current_target(),
-            retry=lambda: _BionicDebArm.verify(self, entry, target),
-        )
-
 
 @register
 class TermuxDocker(Package):

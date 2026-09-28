@@ -59,8 +59,9 @@ def preferred_manager(release: dict[str, str], available: list[str]) -> Optional
 
     Family comes from ID / ID_LIKE so a host with both apt and dnf (rare,
     but Alma must not be handed Debian's ``libatomic1`` name) gets the
-    package name its own manager ships. Unknown releases fall through to
-    the first manager that is actually installed.
+    package name its own manager ships. A known family never falls back
+    to another family's manager. Unknown releases need one unambiguous
+    manager; dnf and yum count as one RPM choice, with dnf preferred.
     """
     tokens = _release_tokens(release)
     wanted: list[str] = []
@@ -78,10 +79,12 @@ def preferred_manager(release: dict[str, str], available: list[str]) -> Optional
     for name in wanted:
         if name in present:
             return name
-    for name in _FALLBACK:
-        if name in present:
-            return name
-    return None
+    if wanted:
+        return None
+    candidates = [name for name in _FALLBACK if name in present]
+    if "dnf" in candidates and "yum" in candidates:
+        candidates.remove("yum")
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def read_os_release() -> dict[str, str]:

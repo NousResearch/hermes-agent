@@ -44,7 +44,10 @@ def test_parse_os_release_strips_quotes() -> None:
         ("ID=opensuse-tumbleweed\nID_LIKE=\"opensuse suse\"\n", ["zypper"], "zypper"),
         ("ID=arch\n", ["pacman"], "pacman"),
         ("ID=alpine\n", ["apk"], "apk"),
-        ("ID=almalinux\n", ["apt-get"], "apt-get"),
+        ("ID=almalinux\n", ["apt-get"], None),
+        ("ID=custom\n", ["apt-get", "dnf"], None),
+        ("ID=custom\n", ["dnf"], "dnf"),
+        ("ID=custom\n", ["dnf", "yum"], "dnf"),
         ("ID=\n", [], None),
     ],
 )
@@ -111,45 +114,103 @@ def test_failed_install_keeps_the_probe_error_and_names_the_command(monkeypatch)
     assert "exited 127" in reason
 
 
-@pytest.mark.platforms("posix")
-def test_verify_installs_libatomic_then_accepts_node(tmp_path: Path, monkeypatch) -> None:
-    node = tmp_path / "bin" / "node"
-    _script(node, f'#!/bin/sh\necho "{_LOADER}" >&2\nexit 127\n')
+@pytest.fixture
+def node_store(tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import tarfile
 
-    def install_and_fix() -> bool:
-        _script(node, "#!/bin/sh\nexit 0\n")
-        return True
+    from pm import paths
+    from pm.lock import Lockfile
+    from pm.store import Store, current_target
 
-    monkeypatch.setattr("pm.libatomic.try_install_libatomic", install_and_fix)
-    monkeypatch.setattr("pm.packages.current_target", lambda: "linux-x64")
-    assert Nodejs().verify(tmp_path, "linux-x64") == ""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    lock = Lockfile(tmp_path / "lock.json")
+    monkeypatch.setattr(paths, "lockfile_path", lambda: lock.path)
+    ready = tmp_path / "libatomic-ready"
+    script = (
+        f'#!/bin/sh\n[ -f "{ready}" ] && exit 0\n'
+        f'echo "{_LOADER}" >&2\nexit 127\n'
+    ).encode()
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as payload:
+        member = tarfile.TarInfo("node-v1.0/bin/node")
+        member.size, member.mode = len(script), 0o755
+        payload.addfile(member, io.BytesIO(script))
+    data = archive.getvalue()
+    digest = hashlib.sha256(data).hexdigest()
+    target = current_target()
+    lock.set_pin("node", "1.0", {target: {
+        "url": "https://example.invalid/node.tar.gz", "sha256": digest,
+    }})
+    lock.save()
+    store = Store(paths.store_root())
+    cached = store.entry(f"fetch-{digest}")
+    cached.mkdir(parents=True)
+    (cached / "node.tar.gz").write_bytes(data)
+    monkeypatch.setattr("pm.libatomic.libatomic_present", ready.is_file)
+    monkeypatch.setattr("pm.libatomic.read_os_release", lambda: {"ID": "almalinux"})
+    monkeypatch.setattr("pm.libatomic.available_managers", lambda: ["dnf", "apt-get"])
+    monkeypatch.setattr("pm.libatomic._is_root", lambda: True)
+    return store, target, ready, script, digest
 
 
-@pytest.mark.platforms("posix")
-def test_verify_names_the_dnf_command_when_install_cannot_run(
-    tmp_path: Path, monkeypatch
-) -> None:
-    node = tmp_path / "bin" / "node"
-    _script(node, f'#!/bin/sh\necho "{_LOADER}" >&2\nexit 127\n')
-    probes = {"n": 0}
-    real_verify = Nodejs.verify
+@pytest.mark.platforms("linux")
+def test_verify_and_doctor_never_install_libatomic(node_store, monkeypatch, capsys):
+    from pm import paths
+    from pm.cli import cmd_doctor
+    from pm.lock import Facts
+    from pm.store import tree_digest
 
-    def counting_install() -> bool:
-        probes["n"] += 1
-        return False
+    store, target, _, script, digest = node_store
+    package = Nodejs()
+    entry = store.entry(package.store_entry("1.0", target))
+    _script(entry / "bin/node", script.decode())
+    facts = Facts(paths.facts_path())
+    facts.record("node", "1.0", entry.name, package.env(entry, target), store.root,
+                 target=target, artifacts=[digest], digest=tree_digest(entry))
+    before = paths.facts_path().read_bytes()
+    attempts = []
+    monkeypatch.setattr("pm.libatomic._run_install", attempts.append)
 
-    monkeypatch.setattr("pm.libatomic.try_install_libatomic", counting_install)
-    monkeypatch.setattr(
-        "pm.libatomic.remediation_for_host",
-        lambda: "official Node links libatomic.so.1, which is not installed; "
-        "install it with `sudo dnf install -y libatomic` and rerun `hermes update`",
-    )
-    monkeypatch.setattr("pm.packages.current_target", lambda: "linux-x64")
-    reason = real_verify(Nodejs(), tmp_path, "linux-x64")
-    assert probes["n"] == 1
-    assert "sudo dnf install -y libatomic" in reason
-    assert "libatomic.so.1" in reason
-    assert "exited 127" in reason
+    assert "libatomic.so.1" in package.verify(entry, target)
+    assert cmd_doctor(None) == 1
+    assert "installed but failed verification" in capsys.readouterr().out
+    assert attempts == []
+    assert paths.facts_path().read_bytes() == before
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+def test_native_install_repairs_libatomic_or_keeps_actionable_error(
+    node_store, monkeypatch, repair_succeeds
+):
+    import importlib
+
+    from pm.package import InstallError
+
+    install = importlib.import_module("pm.install")
+    store, target, ready, _, _ = node_store
+    attempts = []
+
+    def install_library(argv):
+        attempts.append(argv)
+        if repair_succeeds:
+            ready.touch()
+
+    monkeypatch.setattr("pm.libatomic._run_install", install_library)
+    facts = install._facts()
+    if repair_succeeds:
+        entry = install._install(Nodejs(), install._lockfile(), facts, store, target)
+        assert Nodejs().verify(entry, target) == ""
+        assert facts.get("node")["entry"] == entry.name
+    else:
+        with pytest.raises(InstallError, match="dnf install -y libatomic") as error:
+            install._install(Nodejs(), install._lockfile(), facts, store, target)
+        assert "exited 127" in str(error.value)
+        assert facts.get("node") is None
+    assert attempts == [["dnf", "install", "-y", "libatomic"]]
 
 
 def test_try_install_uses_passwordless_dnf_on_alma(monkeypatch) -> None:

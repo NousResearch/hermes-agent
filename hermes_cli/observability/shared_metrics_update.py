@@ -173,7 +173,7 @@ def report_pending_updates() -> None:
             return
         for path in sorted(directory.glob("*.json")):
             try:
-                receipt = json.loads(path.read_text(encoding="utf-8"))
+                receipt = json.loads(path.read_text(encoding="utf-8-sig"))
                 path.unlink()  # claim first: a concurrent start that loses the unlink records nothing
             except (OSError, ValueError):
                 continue

@@ -127,7 +127,7 @@ def _claim(path: Path) -> Path | None:
     else:
         record_path = None
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     if record_path is None and record.get("state") == "running" and runtime_status_pid_is_live(record):
@@ -169,7 +169,7 @@ def _report_dead_markers(home: Path, own: Path) -> None:
             if claimed is None:
                 continue
             try:
-                record = json.loads(claimed.read_text(encoding="utf-8"))
+                record = json.loads(claimed.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
                 record = None
             if isinstance(record, dict):

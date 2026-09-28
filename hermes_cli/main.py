@@ -1884,7 +1884,9 @@ def cmd_chat(args):
 
     try:
         from cli import main as cli_main
+        from hermes_cli.observability.shared_metrics_process import begin_process
 
+        begin_process("cli")
         cli_main(**kwargs)
     except ValueError as e:
         print(f"Error: {e}")
@@ -2796,6 +2798,8 @@ def cmd_dashboard(args):
     # (Docker/s6, CI, --no-open pipelines) fall through to start_server's
     # fail-closed SystemExit unchanged.
     _maybe_setup_dashboard_auth_interactively(args)
+    if _headless_backend:
+        from hermes_cli.observability.shared_metrics_process import begin_process; begin_process("serve")
 
     # The in-browser Chat tab (embedded TUI over PTY/WebSocket) is always
     # available — desktop and dashboard both rely on `/api/ws` + `/api/pty`.

@@ -2728,6 +2728,8 @@ def _abandon_timed_out_gateway_turn(
             request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT, tool_reason=_INTERRUPT_TOOL_REASON_TIMEOUT)
         except Exception:
             logger.debug("Timed-out agent interrupt failed", exc_info=True)
+        from hermes_cli.observability.shared_metrics_process import record_watchdog_turn_abort
+        record_watchdog_turn_abort(agent)
 
     try:
         _reap_gateway_turn_processes(

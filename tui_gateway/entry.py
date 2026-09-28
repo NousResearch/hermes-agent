@@ -276,6 +276,9 @@ def main():
         logger.warning("TUI message injector did not install", exc_info=True)
     _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
+    from hermes_cli.observability.shared_metrics_process import begin_process
+
+    begin_process("tui")
 
     # One TLS authority: trust the OS store process-wide before any
     # outbound call resolves a CA bundle (see agent/ssl_verify.py).

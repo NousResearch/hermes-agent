@@ -57,6 +57,8 @@ interface ComposerTriggerPopoverProps {
   items: readonly Unstable_TriggerItem[]
   kind: '@' | '/' | ':'
   loading: boolean
+  error?: boolean
+  onRetry?: () => void
   onHover: (index: number) => void
   onPick: (item: Unstable_TriggerItem) => void
   placement?: 'bottom' | 'top'
@@ -83,6 +85,8 @@ export function ComposerTriggerPopover({
   items,
   kind,
   loading,
+  error,
+  onRetry,
   onHover,
   onPick,
   placement = 'top',
@@ -167,6 +171,12 @@ export function ComposerTriggerPopover({
             <GlyphSpinner ariaLabel={copy.lookupLoading} className="text-foreground/70" spinner="braille" />
             <span>{copy.lookupLoading}</span>
           </div>
+        ) : error ? (
+          <CompletionDrawerEmpty title={copy.lookupFailed}>
+            <button className="text-foreground underline" onClick={onRetry} type="button">
+              {copy.lookupRetry}
+            </button>
+          </CompletionDrawerEmpty>
         ) : (
           <CompletionDrawerEmpty title={copy.lookupNoMatches}>
             {kind === '@' ? (

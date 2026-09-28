@@ -24,8 +24,8 @@ export function cachedSlashCompletion<T>(key: string, fetcher: () => Promise<T>)
     staleTime: SLASH_COMPLETIONS_TTL_MS,
     // A completion is only worth having while the popover is open. Retrying a
     // failed lookup with backoff would spend seconds answering a keystroke the
-    // user has already typed past; the caller falls back to an empty list and
-    // the next keystroke asks again.
+    // user has already typed past; the caller reports a failed lookup and
+    // the next keystroke or explicit retry asks again.
     retry: false
   })
 }

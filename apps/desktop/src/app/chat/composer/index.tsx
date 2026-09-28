@@ -1408,11 +1408,13 @@ export function ChatBar({
             {trigger && !argStageEmpty && (
               <ComposerTriggerPopover
                 activeIndex={triggerActive}
+                error={trigger.kind === '/' && slash.error}
                 items={triggerItems}
                 kind={trigger.kind}
                 loading={triggerLoading}
                 onHover={setTriggerActive}
                 onPick={replaceTriggerWithChip}
+                onRetry={slash.retry}
                 scope={trigger.scope}
               />
             )}

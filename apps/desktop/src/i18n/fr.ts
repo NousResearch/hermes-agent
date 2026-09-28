@@ -4228,6 +4228,8 @@ export const frOverrides = {
     wakeWordPausedVoice: phrase => `Mot d'activation : « ${phrase} » — en pause pendant la conversation vocale`,
     lookupLoading: 'Recherche…',
     lookupNoMatches: 'Aucune correspondance.',
+    lookupFailed: 'Commandes indisponibles.',
+    lookupRetry: 'Réessayer',
     lookupTry: 'Essayez',
     lookupOr: 'ou',
     commonCommands: 'Commandes courantes',

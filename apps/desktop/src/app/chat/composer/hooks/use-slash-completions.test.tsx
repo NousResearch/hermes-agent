@@ -42,18 +42,28 @@ const commandsOf = (items: readonly Unstable_TriggerItem[]) =>
   items.map(item => (item.metadata as { command?: string })?.command)
 
 function harness(gateway: HermesGateway, options: { profile?: string } = {}) {
-  const api: { search?: (query: string) => readonly Unstable_TriggerItem[] } = {}
+  const api: {
+    search?: (query: string) => readonly Unstable_TriggerItem[]
+    error?: boolean
+    retry?: () => void
+  } = {}
 
   function Probe() {
-    const { adapter } = useSlashCompletions({ gateway, ...options })
+    const { adapter, error, retry } = useSlashCompletions({ gateway, ...options })
     api.search = adapter.search
+    api.error = error
+    api.retry = retry
 
     return null
   }
 
   render(<Probe />)
 
-  return api as { search: (query: string) => readonly Unstable_TriggerItem[] }
+  return api as {
+    search: (query: string) => readonly Unstable_TriggerItem[]
+    error: boolean
+    retry: () => void
+  }
 }
 
 /** Drive the adapter until its async fetch has settled into `search`'s result. */
@@ -77,6 +87,36 @@ afterEach(() => {
 })
 
 describe('useSlashCompletions', () => {
+  it.each(['', 'new'])('distinguishes a failed lookup from no matches and retries query %j', async query => {
+    let disconnected = true
+
+    const request = vi.fn().mockImplementation((method: string) => {
+      if (method === 'commands.catalog' && query) {
+        return Promise.resolve(CATALOG)
+      }
+
+      return disconnected
+        ? Promise.reject(new Error('WebSocket disconnected'))
+        : Promise.resolve(
+            method === 'commands.catalog' ? CATALOG : { items: [{ text: '/new', display: '/new', kind: 'command' }] }
+          )
+    })
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(await completions(api, query)).toEqual([])
+    expect(api.error).toBe(true)
+
+    disconnected = false
+    await act(async () => api.retry())
+    expect(commandsOf(await completions(api, query))).toContain('/new')
+    expect(api.error).toBe(false)
+
+    request.mockResolvedValue({ items: [] })
+    expect(await completions(api, 'nothing-matches')).toEqual([])
+    expect(api.error).toBe(false)
+  })
+
   it('serves the bare-slash catalog from cache instead of re-requesting it', async () => {
     const request = vi.fn().mockResolvedValue(CATALOG)
     const api = harness({ request } as unknown as HermesGateway)

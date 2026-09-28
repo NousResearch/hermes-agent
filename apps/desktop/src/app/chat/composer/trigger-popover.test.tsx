@@ -42,6 +42,36 @@ afterEach(() => {
   cleanup()
 })
 
+it('offers retry for a failed lookup and reserves No matches for an empty answer', () => {
+  const onRetry = vi.fn()
+
+  const popover = (error: boolean) => (
+    <I18nProvider configClient={null} initialLocale="en">
+      <ComposerTriggerPopover
+        activeIndex={0}
+        error={error}
+        items={[]}
+        kind="/"
+        loading={false}
+        onHover={vi.fn()}
+        onPick={vi.fn()}
+        onRetry={onRetry}
+      />
+    </I18nProvider>
+  )
+
+  const { rerender } = render(popover(true))
+
+  expect(screen.getByText('Commands unavailable.')).toBeTruthy()
+  expect(screen.queryByText('No matches.')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(onRetry).toHaveBeenCalledTimes(1)
+
+  rerender(popover(false))
+  expect(screen.getByText('No matches.')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+})
+
 describe('ComposerTriggerPopover keyboard scrolling', () => {
   const items = [slashItem('/first'), slashItem('/second'), slashItem('/third')]
 

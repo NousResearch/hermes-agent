@@ -2734,6 +2734,8 @@ export const ja = defineLocale({
     wakeWordPausedVoice: phrase => `ウェイクワード:「${phrase}」— 音声チャット中は一時停止`,
     lookupLoading: '検索中…',
     lookupNoMatches: '一致なし。',
+    lookupFailed: 'コマンドを取得できません。',
+    lookupRetry: '再試行',
     lookupTry: '試す',
     lookupOr: 'または',
     commonCommands: '一般的なコマンド',

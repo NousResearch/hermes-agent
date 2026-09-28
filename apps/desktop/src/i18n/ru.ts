@@ -2937,6 +2937,8 @@ export const ru = defineLocale({
     wakeWordPausedVoice: phrase => `Слово-пробуждение: «${phrase}» — приостановлено во время голосового чата`,
     lookupLoading: 'Ищем…',
     lookupNoMatches: 'Нет совпадений.',
+    lookupFailed: 'Команды недоступны.',
+    lookupRetry: 'Повторить',
     lookupTry: 'Попробуйте',
     lookupOr: 'или',
     commonCommands: 'Частые команды',

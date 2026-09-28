@@ -24,12 +24,19 @@ _REASON_USER_INTERRUPT = "user interrupt"
 USER_INTERRUPT_REASONS = frozenset({_REASON_HARD_STOP, _REASON_NEW_MESSAGE, _REASON_USER_INTERRUPT})
 
 
-def interrupt_issuer(agent) -> Optional[str]:
-    """Slug of the system producer behind the pending interrupt, or ``None`` for a human stop."""
+def system_interrupt_cause(agent) -> str:
+    """Human-readable cause recorded by the system producer behind the pending interrupt,
+    or ``""`` for a human stop. Same classification as :func:`interrupt_issuer` (which
+    slugifies this for the turn exit reason); the plain text is for user-facing walls."""
     reason = getattr(agent, "_tool_interrupt_reason", None)
     if not reason or reason in USER_INTERRUPT_REASONS:
-        return None
-    return str(reason).strip().replace(" ", "_")
+        return ""
+    return str(reason).strip()
+
+
+def interrupt_issuer(agent) -> Optional[str]:
+    """Slug of the system producer behind the pending interrupt, or ``None`` for a human stop."""
+    return system_interrupt_cause(agent).replace(" ", "_") or None
 
 
 def interrupted_during_api_call_reason(agent) -> str:

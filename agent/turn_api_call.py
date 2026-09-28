@@ -207,7 +207,14 @@ def handle_api_interrupt(
         append_message(messages, {"role": "assistant", "content": _partial})
         final_response = _partial
     else:
-        final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
+        # Name the system producer (lease loss, liveness watchdog, gateway shutdown…) when one
+        # is recorded: the bare timer wall fuses every hard-interrupt path into one
+        # undiagnosable message (#126748). The prefix stays byte-identical for the
+        # ACP/TUI/gateway sentinel suppression.
+        from agent.interrupt_control import system_interrupt_cause
+        _cause = system_interrupt_cause(agent)
+        _cause_note = f", cause: {_cause}" if _cause else ""
+        final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed{_cause_note})."
     agent._persist_session(messages, conversation_history)
     return ApiInterruptVerdict("break", thinking_spinner, interrupted, final_response)
 

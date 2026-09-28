@@ -18,6 +18,11 @@
  * there), or when `HERMES_DESKTOP_DISABLE_GPU=0` keeps the GPU on.
  * `HERMES_DESKTOP_NVIDIA_SWIFTSHADER` overrides detection both ways.
  *
+ * Also skipped on a hybrid host that has a second, non-NVIDIA GPU (#125388):
+ * forcing SwiftShader there trades a healthy iGPU (Chromium's own GPU-process
+ * fallback already lands on it once the NVIDIA EGL probe fails) for CPU
+ * rendering, plus the SwiftShader software path's separate color-pipeline bug.
+ *
  * Pure + dependency-free so it can be unit-tested and called before app ready.
  */
 
@@ -26,6 +31,18 @@ const OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 
 /** First driver major with the broken EGL/X11 probing (580.x and newer). */
 export const NVIDIA_BROKEN_EGL_MAJOR = 580
+
+/** PCI vendor ID for NVIDIA, as reported by /sys/class/drm/<card>/device/vendor. */
+const NVIDIA_PCI_VENDOR_ID = '0x10de'
+
+/**
+ * True when at least one reported PCI vendor ID names a GPU other than
+ * NVIDIA (Intel `0x8086`, AMD `0x1002`, ...) — i.e. a hybrid host that has a
+ * working alternative to the broken NVIDIA EGL path.
+ */
+export function hasNonNvidiaGpuVendor(vendorIds: readonly string[]): boolean {
+  return vendorIds.some((id) => String(id || '').trim().toLowerCase() !== NVIDIA_PCI_VENDOR_ID)
+}
 
 export interface NvidiaEglFallbackDecision {
   enable: boolean
@@ -54,11 +71,13 @@ export function decideNvidiaEglFallback(options: {
   platform?: NodeJS.Platform
   isWsl?: boolean
   remoteDisplayReason?: string | null
+  hasNonNvidiaGpu?: boolean
 }): NvidiaEglFallbackDecision {
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
   const isWsl = options.isWsl ?? false
   const remoteDisplayReason = options.remoteDisplayReason ?? null
+  const hasNonNvidiaGpu = options.hasNonNvidiaGpu ?? false
   const driverMajor = options.driverMajor
 
   const nvidiaOverride = String(env.HERMES_DESKTOP_NVIDIA_SWIFTSHADER || '')
@@ -97,6 +116,12 @@ export function decideNvidiaEglFallback(options: {
   const detected = driverMajor !== null && driverMajor >= NVIDIA_BROKEN_EGL_MAJOR
 
   if (!detected && !OVERRIDE_ON.has(nvidiaOverride)) {
+    return { enable: false, reason: null }
+  }
+
+  // Hybrid host: don't trade a healthy secondary GPU for CPU rendering unless
+  // the user explicitly asked for SwiftShader.
+  if (detected && hasNonNvidiaGpu && !OVERRIDE_ON.has(nvidiaOverride)) {
     return { enable: false, reason: null }
   }
 

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { decideNvidiaEglFallback, NVIDIA_BROKEN_EGL_MAJOR, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
+import {
+  decideNvidiaEglFallback,
+  hasNonNvidiaGpuVendor,
+  NVIDIA_BROKEN_EGL_MAJOR,
+  parseNvidiaDriverMajor
+} from './linux-nvidia-egl-fallback'
 
 const LINUX = { env: {}, platform: 'linux' as const, isWsl: false, remoteDisplayReason: null }
 
@@ -88,5 +93,56 @@ describe('decideNvidiaEglFallback', () => {
         env: { HERMES_DESKTOP_NVIDIA_SWIFTSHADER: 'off' }
       }).enable
     ).toBe(false)
+  })
+
+  it('stays off on a hybrid host with a healthy non-NVIDIA GPU (#125388)', () => {
+    expect(
+      decideNvidiaEglFallback({
+        ...LINUX,
+        driverMajor: 580,
+        hasNonNvidiaGpu: true
+      }).enable
+    ).toBe(false)
+  })
+
+  it('still enables on a single-GPU NVIDIA host (no other GPU detected)', () => {
+    expect(
+      decideNvidiaEglFallback({
+        ...LINUX,
+        driverMajor: 580,
+        hasNonNvidiaGpu: false
+      }).enable
+    ).toBe(true)
+  })
+
+  it('HERMES_DESKTOP_NVIDIA_SWIFTSHADER=1 forces SwiftShader even on a hybrid host', () => {
+    const decision = decideNvidiaEglFallback({
+      ...LINUX,
+      driverMajor: 580,
+      hasNonNvidiaGpu: true,
+      env: { HERMES_DESKTOP_NVIDIA_SWIFTSHADER: '1' }
+    })
+
+    expect(decision.enable).toBe(true)
+  })
+})
+
+describe('hasNonNvidiaGpuVendor', () => {
+  it('is false when NVIDIA is the only reported vendor', () => {
+    expect(hasNonNvidiaGpuVendor(['0x10de'])).toBe(false)
+  })
+
+  it('is true when a non-NVIDIA vendor is also present (hybrid host)', () => {
+    expect(hasNonNvidiaGpuVendor(['0x10de', '0x8086'])).toBe(true)
+    expect(hasNonNvidiaGpuVendor(['0x1002'])).toBe(true)
+  })
+
+  it('is false for an empty list', () => {
+    expect(hasNonNvidiaGpuVendor([])).toBe(false)
+  })
+
+  it('tolerates whitespace and casing from sysfs reads', () => {
+    expect(hasNonNvidiaGpuVendor(['0X10DE\n'])).toBe(false)
+    expect(hasNonNvidiaGpuVendor(['0x8086\n'])).toBe(true)
   })
 })

@@ -319,7 +319,7 @@ import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
-import { decideNvidiaEglFallback, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
+import { decideNvidiaEglFallback, hasNonNvidiaGpuVendor, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
@@ -752,6 +752,28 @@ if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
   console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
 }
 
+// #125388: on a hybrid host, a second non-NVIDIA GPU (via /sys/class/drm) is a
+// healthy fallback of its own — Chromium's GPU-process crash recovery lands on
+// it once the NVIDIA EGL probe fails there. Sysfs only; no subprocess.
+function hasNonNvidiaGpuOnLinux(): boolean {
+  try {
+    const vendorIds = fs
+      .readdirSync('/sys/class/drm')
+      .filter((name) => /^card\d+$/.test(name))
+      .map((card) => {
+        try {
+          return fs.readFileSync(`/sys/class/drm/${card}/device/vendor`, 'utf8')
+        } catch {
+          return ''
+        }
+      })
+
+    return hasNonNvidiaGpuVendor(vendorIds)
+  } catch {
+    return false
+  }
+}
+
 // #40077: NVIDIA driver 580+ breaks ANGLE's EGL probing (Invalid visual ID),
 // killing the GPU process at startup. Route ANGLE through its SwiftShader
 // backend instead — the app then launches and stays up (CPU rendering, slow
@@ -772,7 +794,8 @@ const NVIDIA_EGL_FALLBACK = decideNvidiaEglFallback({
   env: process.env,
   platform: process.platform,
   isWsl: IS_WSL,
-  remoteDisplayReason: REMOTE_DISPLAY_REASON
+  remoteDisplayReason: REMOTE_DISPLAY_REASON,
+  hasNonNvidiaGpu: process.platform === 'linux' && hasNonNvidiaGpuOnLinux()
 })
 
 if (NVIDIA_EGL_FALLBACK.enable) {

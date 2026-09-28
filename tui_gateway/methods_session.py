@@ -535,6 +535,7 @@ def _(rid, params: dict, db) -> dict:
         db_path = getattr(db, "db_path", None)
         include_subagents = bool(db_path) and show_subagent_sessions(Path(db_path).parent)
         rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
+                             archived_only=_flag(params, "archived_only"),
                              include_subagents=include_subagents)[:limit]
         return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
     except Exception as e:

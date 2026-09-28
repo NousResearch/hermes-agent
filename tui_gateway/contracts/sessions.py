@@ -214,6 +214,7 @@ class SessionListParams(ProfileParams):
     title: str | None = None  # exact-title lookup (title as identity); windowless
     limit: int | None = None
     include_hidden: bool = False
+    archived_only: bool = False
 
 
 class SessionListRow(Result):

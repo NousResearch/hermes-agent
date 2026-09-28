@@ -57,6 +57,28 @@ def test_archive_resolves_stored_id_without_live_session(db):
     assert db.get_session("stored-chat")["archived"] == 0
 
 
+def test_session_list_recovers_archived_session_without_losing_messages(db):
+    db.create_session("recoverable-chat", source="cli")
+    db.append_message("recoverable-chat", role="user", content="still here")
+
+    def listed(params):
+        response = srv.handle_request({"id": "list", "method": "session.list", "params": params})
+        assert "error" not in response, response
+        return {row["id"] for row in response["result"]["sessions"]}
+
+    assert "recoverable-chat" in listed({})
+    assert "recoverable-chat" not in listed({"archived_only": True})
+
+    assert "error" not in _call("session.archive", {"session_id": "recoverable-chat"})
+    assert "recoverable-chat" not in listed({})
+    assert "recoverable-chat" in listed({"archived_only": True})
+    assert [row["content"] for row in db.get_messages("recoverable-chat")] == ["still here"]
+
+    assert "error" not in _call("session.archive", {"session_id": "recoverable-chat", "archived": False})
+    assert "recoverable-chat" in listed({})
+    assert "recoverable-chat" not in listed({"archived_only": True})
+
+
 def test_archive_accepts_session_key_alias(db):
     """``session_key`` is the documented alias of ``session_id`` (the list rows carry it)."""
     _seed(db, "keyed-chat")

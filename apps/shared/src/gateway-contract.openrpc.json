@@ -30121,6 +30121,11 @@
             "default": false,
             "title": "Include Hidden",
             "type": "boolean"
+          },
+          "archived_only": {
+            "default": false,
+            "title": "Archived Only",
+            "type": "boolean"
           }
         },
         "title": "SessionListParams",

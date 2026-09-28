@@ -2973,6 +2973,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not reply_to or self._reply_to_mode == "off":
             return None
         try:
+            # Text/news threads share their parent-channel starter's ID, but cannot reply to it.
+            # Forum/media starters live inside the thread and remain valid reply targets.
+            if (isinstance(channel, discord.Thread) and int(reply_to) == channel.id
+                    and isinstance(channel.parent, discord.TextChannel)):
+                return None
             return self._message_reference_from_ids(reply_to, channel)
         except (ValueError, TypeError) as e:
             logger.debug("Could not build reply-to reference: %s", e)

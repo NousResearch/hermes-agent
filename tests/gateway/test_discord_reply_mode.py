@@ -95,6 +95,36 @@ class TestSendWithReplyToMode:
     """Tests for send() method respecting reply_to_mode."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("parent_kind,reply_to,mode,keep_reference", [
+        ("text", "300", "first", False),
+        ("text", "300", "all", False),
+        ("text", "301", "first", True),
+        ("other", "300", "first", True),
+        ("unknown", "300", "first", True),
+        ("text", "301", "off", False),
+    ], ids=["starter-first", "starter-all", "follow-up", "other-parent", "uncached-parent", "off"])
+    async def test_thread_starter_reply_policy_without_discord_dependency(
+        self, monkeypatch, parent_kind, reply_to, mode, keep_reference,
+    ):
+        """The default CI mock must exercise the guard even without the Discord extra."""
+        from plugins.platforms.discord import adapter as discord_adapter
+
+        thread_type, text_type = type("Thread", (), {}), type("TextChannel", (), {})
+        monkeypatch.setattr(discord_adapter.discord, "Thread", thread_type)
+        monkeypatch.setattr(discord_adapter.discord, "TextChannel", text_type, raising=False)
+        adapter, channel, _ = _make_discord_adapter(mode)
+        channel.__class__ = thread_type
+        channel.id = 300
+        channel.guild = SimpleNamespace(id=100)
+        channel.parent = {"text": text_type(), "other": object(), "unknown": None}[parent_kind]
+
+        result = await adapter.send("300", "answer", reply_to=reply_to)
+
+        assert result.success, result.error
+        assert (channel.send.await_args.kwargs["reference"] is not None) is keep_reference
+        channel.fetch_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_off_mode_no_reply_reference(self):
         adapter, channel, ref_msg = _make_discord_adapter("off")
         adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]

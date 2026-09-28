@@ -1,0 +1,533 @@
+"""Image packs bind selections to current bot, room policy and profile."""
+
+from __future__ import annotations
+
+import asyncio
+from copy import deepcopy
+from contextlib import ExitStack
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from urllib.parse import quote
+
+import pytest
+from typing import Any
+
+matrix_types = pytest.importorskip("mautrix.types")
+StateEvent = matrix_types.StateEvent
+RoomEncryptionStateEventContent = matrix_types.RoomEncryptionStateEventContent
+RoomID = matrix_types.RoomID
+MemoryStateStore = pytest.importorskip("mautrix.client.state_store").MemoryStateStore
+
+from agent.secret_scope import is_multiplex_active, set_multiplex_active
+from gateway.run import _profile_runtime_scope
+from gateway.config import PlatformConfig
+from gateway.session_context import clear_session_vars, set_session_vars
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from plugins.platforms.matrix.adapter import MatrixAdapter
+
+ROOM = "!room:example.org"
+BOT = "@hermes:example.org"
+USER = "@alice:example.org"
+PACK: dict[str, Any] = {
+    "pack": {"display_name": "/new same label", "usage": ["sticker"]},
+    "images": {
+        "fox": {
+            "url": "mxc://example.org/fox",
+            "body": "Fox.png",
+            "info": {"mimetype": "image/png", "size": 20, "w": 1, "h": 2},
+        }
+    },
+}
+
+
+def make_adapter(home, event_type="m.room.image_pack"):
+    adapter = MatrixAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test",
+            extra={
+                "homeserver": "https://example.org",
+                "user_id": BOT,
+                "require_mention": False,
+            },
+        )
+    )
+    adapter._joined_rooms = {ROOM, "!reference:example.org"}
+    adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    adapter.set_authorization_check(lambda *_args, **_kwargs: True)
+    adapter._resolve_store_dir()
+    state = StateEvent.deserialize({
+        "type": event_type,
+        "state_key": "",
+        "room_id": ROOM,
+        "sender": BOT,
+        "event_id": "$pack",
+        "origin_server_ts": 1000,
+        "content": deepcopy(PACK),
+    })
+
+    async def get_state_event(room_id, kind, state_key="", **kwargs):
+        if str(kind) in {"m.room.image_pack", "im.ponies.room_emotes"}:
+            return StateEvent.deserialize_content({
+                **deepcopy(PACK),
+                "__mautrix_event_type": kind,
+            })
+        if str(kind) == "m.room.create":
+            return {"sender": USER, "content": {"room_version": "10"}}
+        return {}
+
+    client = SimpleNamespace(
+        mxid=BOT,
+        crypto=None,
+        get_state=AsyncMock(return_value=[state]),
+        get_state_event=AsyncMock(side_effect=get_state_event),
+        get_account_data=AsyncMock(return_value={}),
+        send_message_event=AsyncMock(return_value="$sent"),
+        api=SimpleNamespace(
+            get_txn_id=lambda: "txn",
+            request=AsyncMock(return_value={"event_id": "$sent"}),
+        ),
+    )
+    adapter._client = client
+    return adapter, client
+
+
+@pytest.fixture
+def multiplex_profiles():
+    previous = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        yield
+    finally:
+        set_multiplex_active(previous)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", ["m.room.image_pack", "im.ponies.room_emotes"])
+@pytest.mark.parametrize("catalog_case", ["valid", "bounds", "malformed", "usage"])
+async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
+    tmp_path, event_type, catalog_case, multiplex_profiles
+):
+    homes = [tmp_path / "a", tmp_path / "b"]
+    for home in homes:
+        home.mkdir()
+    adapters = {}
+    selections = {}
+    for home in [homes[0], homes[1], homes[0]]:
+        scope = ExitStack()
+        scope.enter_context(
+            _profile_runtime_scope(
+                home,
+                prepared_secret_scope={
+                    "MATRIX_ACCESS_TOKEN": f"test-{home.name}",
+                    "MATRIX_ALLOWED_USERS": USER,
+                },
+            )
+        )
+        if home not in adapters:
+            adapters[home] = make_adapter(home, event_type)
+        adapter, client = adapters[home]
+        reference_type = (
+            "m.image_pack.rooms"
+            if event_type == "m.room.image_pack"
+            else "im.ponies.emote_rooms"
+        )
+
+        async def account(kind):
+            if kind == reference_type:
+                return {
+                    "rooms": {
+                        "!reference:example.org": {"": {}, "named": {}},
+                        "!empty:example.org": {},
+                        "!denied:example.org": {"": {}},
+                    }
+                }
+            if kind == "im.ponies.user_emotes":
+                return deepcopy(PACK)
+            return {}
+
+        client.get_account_data.side_effect = account
+        tokens = set_session_vars(
+            platform="matrix",
+            chat_id=ROOM,
+            user_id=USER,
+            thread_id="$root",
+            message_id="$question",
+            session_key="session",
+            transport_adapter=adapter,
+        )
+        try:
+            catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
+            assert {
+                **catalog,
+                "packs": [
+                    {
+                        **pack,
+                        "items": [
+                            {**item, "selection_id": "selected"}
+                            for item in pack["items"]
+                        ],
+                    }
+                    for pack in catalog["packs"]
+                ],
+            } == {
+                "untrusted_data": True,
+                "account_user_id": BOT,
+                "truncated": False,
+                "errors": [
+                    {
+                        "source": "account_reference",
+                        "error": "Matrix room is not allowed or joined",
+                    }
+                ],
+                "packs": [
+                    {
+                        "source": source,
+                        "event_type": kind,
+                        "room_id": room,
+                        "state_key": key,
+                        "account_user_id": account_user,
+                        "display_name": "/new same label",
+                        "description": None,
+                        "attribution": None,
+                        "items": [
+                            {
+                                "selection_id": "selected",
+                                "shortcode": "fox",
+                                **PACK["images"]["fox"],
+                            }
+                        ],
+                    }
+                    for source, kind, room, key, account_user in [
+                        ("room", event_type, ROOM, "", None),
+                        (
+                            "account_reference",
+                            event_type,
+                            "!reference:example.org",
+                            "",
+                            BOT,
+                        ),
+                        (
+                            "account_reference",
+                            event_type,
+                            "!reference:example.org",
+                            "named",
+                            BOT,
+                        ),
+                        ("bot_account", "im.ponies.user_emotes", None, None, BOT),
+                    ]
+                ],
+            }
+            assert not any(
+                call.args[0] in ("!denied:example.org", "!empty:example.org")
+                for call in client.get_state_event.await_args_list
+            )
+            item = catalog["packs"][0]["items"][0]
+            assert {**item, "selection_id": "selected"} == {
+                "selection_id": "selected",
+                "shortcode": "fox",
+                "body": "Fox.png",
+                "url": "mxc://example.org/fox",
+                "info": {"mimetype": "image/png", "size": 20, "w": 1, "h": 2},
+            }
+            for foreign_home, foreign_selection in selections.items():
+                if foreign_home != home:
+                    refused = await adapter.matrix_image_packs(
+                        "send", ROOM, requester=USER, selection_id=foreign_selection
+                    )
+                    assert refused == {
+                        "error": "Matrix image selection is unavailable; list packs again"
+                    }
+            foreign_scope = set_hermes_home_override(
+                homes[1] if home == homes[0] else homes[0]
+            )
+            try:
+                assert await adapter.matrix_image_packs(
+                    "send", ROOM, requester=USER, selection_id=item["selection_id"]
+                ) == {
+                    "error": "Matrix image selection is unavailable; list packs again",
+                }
+            finally:
+                reset_hermes_home_override(foreign_scope)
+            selections[home] = item["selection_id"]
+            result = await adapter.matrix_image_packs(
+                "send",
+                ROOM,
+                requester=USER,
+                selection_id=item["selection_id"],
+                reply_to="$question",
+                thread_id="$root",
+            )
+            assert result == {"success": True, "event_id": "$sent"}
+            call = client.api.request.await_args
+            assert (
+                str(call.args[0]),
+                str(call.args[1]),
+                call.args[2],
+                call.kwargs,
+            ) == (
+                "PUT",
+                f"_matrix/client/v3/rooms/{quote(ROOM, safe='')}/send/m.sticker/txn",
+                {
+                    **PACK["images"]["fox"],
+                    "m.relates_to": {
+                        "m.in_reply_to": {"event_id": "$question"},
+                        "rel_type": "m.thread",
+                        "event_id": "$root",
+                        "is_falling_back": False,
+                    },
+                },
+                {"metrics_method": "sendMessageEvent"},
+            )
+            original_state = client.get_state.return_value
+            varied = deepcopy(PACK)
+            if catalog_case == "bounds":
+                varied["images"] = {
+                    f"fox{index}": PACK["images"]["fox"] for index in range(101)
+                }
+            if catalog_case == "malformed":
+                varied["images"] = {
+                    "http": {"url": "https://example.org/fox"},
+                    "bool": {"url": "mxc://example.org/fox", "info": {"w": True}},
+                    "array": {"url": "mxc://example.org/fox", "info": []},
+                    "large": {
+                        "url": "mxc://example.org/fox",
+                        "info": {"size": adapter._max_media_bytes + 1},
+                    },
+                    "nested": {
+                        "url": "mxc://example.org/fox",
+                        "info": {"extra": [1] * 257},
+                    },
+                }
+            if catalog_case == "usage":
+                varied["images"] = {
+                    "inherit": {"url": "mxc://example.org/fox", "usage": []},
+                    "emoji": {"url": "mxc://example.org/fox", "usage": ["emoticon"]},
+                    "native": {"url": "mxc://example.org/fox"},
+                }
+            if catalog_case != "valid":
+                client.get_state.return_value = [
+                    StateEvent.deserialize({
+                        "type": event_type,
+                        "state_key": "",
+                        "room_id": ROOM,
+                        "sender": BOT,
+                        "event_id": "$pack",
+                        "origin_server_ts": 1000,
+                        "content": varied,
+                    })
+                ]
+                checked = await adapter.matrix_image_packs("list", ROOM, requester=USER)
+                if catalog_case == "bounds":
+                    assert (
+                        checked["truncated"],
+                        [len(pack["items"]) for pack in checked["packs"]],
+                    ) == (True, [100])
+                    client.get_state.return_value = original_state * 1001
+                    assert await adapter.matrix_image_packs(
+                        "list", ROOM, requester=USER
+                    ) == {
+                        "error": "Matrix room state exceeds the image-pack discovery budget",
+                    }
+                if catalog_case == "malformed":
+                    assert checked["packs"][0]["items"] == []
+                    assert [error["error"] for error in checked["errors"]] == [
+                        "image URL is not MXC",
+                        "image w must be a non-negative integer",
+                        "image info must be an object",
+                        "image exceeds the Matrix media limit",
+                        "image metadata exceeds the catalog budget",
+                        "Matrix room is not allowed or joined",
+                    ]
+                if catalog_case == "usage":
+                    assert [
+                        item["shortcode"] for item in checked["packs"][0]["items"]
+                    ] == (
+                        ["inherit", "emoji", "native"]
+                        if event_type == "m.room.image_pack"
+                        else ["inherit", "native"]
+                    )
+                client.get_state.return_value = original_state
+        finally:
+            clear_session_vars(tokens)
+            scope.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        "changed-image",
+        "removed-pack",
+        "revoked",
+        "replaced-client",
+        "power",
+        "expired",
+        "crypto-revoked",
+        "crypto-owner",
+        "crypto-power",
+        "server",
+        "late-encryption",
+        "late-encryption-missing",
+        "api-replaced",
+        "token-changed",
+        "reference-removed",
+        "after-write-owner",
+    ],
+)
+async def test_send_rechecks_selection_and_admission_after_await(
+    tmp_path, monkeypatch, change
+):
+    from plugins.platforms.matrix import image_packs
+
+    clock = [1000.0]
+    monkeypatch.setattr(
+        image_packs, "time", SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    scope = set_hermes_home_override(tmp_path)
+    adapter, client = make_adapter(tmp_path)
+    tokens = set_session_vars(
+        platform="matrix",
+        chat_id=ROOM,
+        user_id=USER,
+        session_key="session",
+        transport_adapter=adapter,
+    )
+    try:
+        if change.startswith("crypto-") or change == "late-encryption":
+            client.crypto = object()
+        if change.startswith("late-encryption"):
+            client.state_store = MemoryStateStore()
+            await client.state_store.set_encryption_info(RoomID(ROOM), None)
+            client.encrypt = AsyncMock(return_value={"ciphertext": "encrypted"})
+        references = {"rooms": {"!reference:example.org": {"": {}}}}
+        if change == "reference-removed":
+            client.get_account_data.side_effect = lambda kind: (
+                references if kind == "m.image_pack.rooms" else {}
+            )
+        catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
+        selected_pack = (
+            catalog["packs"][1]
+            if change == "reference-removed"
+            else catalog["packs"][0]
+        )
+        selected = selected_pack["items"][0]["selection_id"]
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = client.get_state_event.side_effect
+        original_api = client.api
+        pack_reads = [0]
+
+        crypto_case = change.startswith("crypto-")
+        if crypto_case:
+
+            async def encrypt(room_id, kind, content):
+                entered.set()
+                await release.wait()
+                return {"ciphertext": "encrypted"}
+
+            client.encrypt = AsyncMock(side_effect=encrypt)
+
+        async def paused(room_id, kind, state_key="", **kwargs):
+            if crypto_case and str(kind) == "m.room.encryption":
+                return {"algorithm": "m.megolm.v1.aes-sha2"}
+            if str(kind) == "m.room.image_pack" and not crypto_case:
+                pack_reads[0] += 1
+                entered.set()
+                await release.wait()
+                if change == "changed-image":
+                    return {**PACK, "images": {"fox": {"url": "mxc://example.org/new"}}}
+                if change == "removed-pack":
+                    return {}
+            if (
+                change.startswith("late-encryption")
+                and str(kind) == "m.room.encryption"
+            ):
+                if await client.state_store.is_encrypted(RoomID(ROOM)):
+                    return {"algorithm": "m.megolm.v1.aes-sha2"}
+            if (
+                change in ("power", "crypto-power")
+                and str(kind) == "m.room.power_levels"
+            ):
+                return {
+                    "events": {
+                        "m.sticker": 50,
+                        "m.room.encrypted": 50 if release.is_set() else 0,
+                    },
+                    "users_default": 0,
+                }
+            return await original(room_id, kind, state_key, **kwargs)
+
+        client.get_state_event.side_effect = paused
+        sending = asyncio.create_task(
+            adapter.matrix_image_packs(
+                "send", ROOM, requester=USER, selection_id=selected
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        if change in ("revoked", "crypto-revoked"):
+            adapter.set_authorization_check(lambda *_args, **_kwargs: False)
+        if change in ("replaced-client", "crypto-owner"):
+            adapter._client = SimpleNamespace(mxid=BOT)
+        if change == "expired":
+            clock[0] += image_packs.SELECTION_TTL + 1
+        if change == "server":
+            client.api.request.side_effect = RuntimeError(
+                "M_FORBIDDEN: server refused sticker"
+            )
+        if change == "after-write-owner":
+
+            async def accepted(*args, **kwargs):
+                adapter._client = SimpleNamespace(mxid=BOT)
+                return {"event_id": "$sent"}
+
+            client.api.request.side_effect = accepted
+        if change == "api-replaced":
+            adapter._client.api = SimpleNamespace()
+        if change == "token-changed":
+            adapter._client.api.token = "different-bot-token"
+        if change == "reference-removed":
+            references["rooms"].clear()
+        if change.startswith("late-encryption"):
+            previous_admit = adapter._is_dm_room
+            learned = False
+
+            async def learn_encryption(room):
+                nonlocal learned
+                if not learned and pack_reads[0] >= 2:
+                    learned = True
+                    await client.state_store.set_encryption_info(
+                        RoomID(ROOM), RoomEncryptionStateEventContent()
+                    )
+                return await previous_admit(room)
+
+            adapter._is_dm_room = learn_encryption
+        release.set()
+        result = await asyncio.wait_for(sending, timeout=2)
+        if change == "late-encryption":
+            assert result == {"success": True, "event_id": "$sent"}
+            assert str(client.api.request.await_args.args[1]).endswith(
+                "/send/m.room.encrypted/txn"
+            )
+            assert client.api.request.await_args.args[2] == {"ciphertext": "encrypted"}
+            client.encrypt.assert_awaited_once()
+            return
+        if change == "after-write-owner":
+            assert result == {
+                "success": True,
+                "event_id": "$sent",
+                "warning": (
+                    "Matrix image-pack owner or profile changed after the server accepted the sticker"
+                ),
+            }
+            original_api.request.assert_awaited_once()
+            return
+        assert "error" in result, result
+        if change == "server":
+            assert result == {"error": "M_FORBIDDEN: server refused sticker"}
+            client.api.request.assert_awaited_once()
+            return
+        original_api.request.assert_not_awaited()
+    finally:
+        clear_session_vars(tokens)
+        reset_hermes_home_override(scope)

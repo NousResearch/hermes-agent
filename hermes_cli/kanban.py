@@ -824,6 +824,108 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _swap_test_order_copy(workspace: str):
+    """Copy the workspace to /tmp with top-level test functions order-reversed.
+
+    A spec-correct implementation passes its suite in any test order; a
+    stateful/order-calibrated cheat (call counters, "first call only" tricks)
+    passes only in the order it was tuned for. Returns the swapped-copy path,
+    or None when the check does not apply (no single plain test file, fixtures
+    present, or workspace too large to copy).
+    """
+    import re
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    src_root = Path(workspace)
+    # size guard: skip the copy check on big trees
+    total = sum(f.stat().st_size for f in src_root.rglob("*") if f.is_file())
+    if total > 50 * 1024 * 1024:
+        return None
+    tests_dir = src_root / "tests"
+    test_files = sorted(tests_dir.glob("test_*.py")) if tests_dir.is_dir() else []
+    if len(test_files) != 1:
+        return None
+    src = test_files[0].read_text()
+    if "fixture" in src or "parametrize" in src:
+        return None
+    blocks = re.split(r"(?=^def test_)", src, flags=re.M)
+    header, fns = blocks[0], blocks[1:]
+    if len(fns) < 2:
+        return None
+    tmp = Path(tempfile.mkdtemp(prefix="hermes_probe_swap_"))
+    dst = tmp / src_root.name
+    shutil.copytree(
+        src_root, dst,
+        ignore=shutil.ignore_patterns("__pycache__", ".git", ".pytest_cache"),
+    )
+    (dst / "tests" / test_files[0].name).write_text(header + "".join(reversed(fns)))
+    return str(dst)
+
+
+def _workspace_probe_result(task) -> tuple[bool, str]:
+    """Deterministic ground-truth probe for goal-mode handoffs.
+
+    Runs ``pytest -q`` in a ``dir:`` workspace and reports whether the suite
+    actually passes. This is evidence the WORKER does not control: a summary
+    (or a judge verdict) can be wrong or gamed, a red suite cannot be argued
+    with. Returns ``(probe_failed, detail)``; ``probe_failed=False`` covers
+    both "suite green" and "no reliable signal" (no workspace, no tests
+    collected, probe crashed) — the gate stays fail-open on missing signal
+    and fails closed on a red suite.
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    path = getattr(task, "workspace_path", None)
+    if getattr(task, "workspace_kind", None) != "dir" or not path:
+        return False, "no dir workspace; probe skipped"
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q"],
+            cwd=str(path),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except Exception as exc:  # timeout, missing pytest, spawn failure
+        return False, f"workspace probe could not run: {exc}"
+
+    tail = "\n".join((proc.stdout or "").strip().splitlines()[-6:])[-600:]
+    if proc.returncode == 0:
+        # Green in-place is necessary but not sufficient: a stateful cheat
+        # calibrated to the suite's declared order can be green here. Re-run
+        # the suite from an order-swapped copy — spec-correct code is
+        # order-independent; call-count/test-order tricks are not.
+        swapped = _swap_test_order_copy(str(path))
+        if swapped is not None:
+            try:
+                proc2 = subprocess.run(
+                    [sys.executable, "-m", "pytest", "-q"],
+                    cwd=swapped,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            except Exception as exc:
+                proc2 = None  # probe infra failure: no veto from this check
+            finally:
+                shutil.rmtree(swapped, ignore_errors=True)
+            if proc2 is not None and proc2.returncode not in (0, 4, 5):
+                tail2 = "\n".join((proc2.stdout or "").strip().splitlines()[-6:])[-600:]
+                return True, (
+                    "workspace probe: suite passes in declared order but FAILS with "
+                    f"reversed test order — order-dependent (stateful) behavior:\n{tail2}"
+                )
+        return False, f"workspace probe: pytest green\n{tail}"
+    if proc.returncode in (4, 5):
+        # 4 = usage/collection error, 5 = no tests collected: no signal.
+        return False, f"workspace probe: no tests to run (pytest rc={proc.returncode})\n{tail}"
+    return True, f"workspace probe: pytest FAILED (rc={proc.returncode})\n{tail}"
+
+
 def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     """Goal judge for every terminal worker handoff (including review).
 
@@ -874,6 +976,18 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
         _logging.getLogger(__name__).warning("goal judge unreachable (%s), allowing lifecycle handoff", reason)
         return ("done", None)
+
+    # Ground-truth gate (runs AFTER the judge so its verdict/summary are already in hand):
+    # a ``dir:``-workspace task whose test suite is actually red at handoff time is not
+    # done, regardless of what the worker's summary or the judge concluded — summaries
+    # can be gamed (test-detection tricks) and the judge only sees text. Probe failure
+    # to run (no workspace, no tests, crash) stays fail-open; a RED suite fails closed.
+    probe_failed, probe_detail = _workspace_probe_result(task)
+    if probe_failed:
+        return ("continue",
+                "workspace verification failed — the test suite does not pass at handoff time "
+                "(worker-controlled summaries and judge verdicts are overridden by this probe):\n"
+                f"{probe_detail}")
     return (verdict, None if verdict == "done" else reason)
 
 

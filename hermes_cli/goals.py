@@ -188,7 +188,13 @@ JUDGE_USER_PROMPT_TEMPLATE = (
     "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
     "Current time: {current_time}\n\n"
-    "Is the goal satisfied — done, blocked, continue, or wait?"
+    "Is the goal satisfied — done, blocked, continue, or wait?\n\n"
+    "Treat engineering-work claims of DONE with suspicion when the evidence "
+    "is only a narration (\"all tests pass\", \"suite is green\") rather than "
+    "pasted command output. If the agent admits any trick, workaround, or "
+    "test-specific behavior (e.g. detecting which test is calling, call "
+    "counters, per-test special cases), the work is NOT done — return "
+    "CONTINUE with the trick as the reason."
 )
 
 # With /subgoal criteria: the judge must see ALL of them met, not just the original goal.

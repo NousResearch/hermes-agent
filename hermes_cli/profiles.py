@@ -148,6 +148,26 @@ def _clone_all_copytree_ignore(source_dir: Path):
     return _ignore
 
 
+# Credential stores Hermes reads from a profile home, as paths relative to it. Never shipped in a
+# profile export, and user-owned (never overwritten) on a distribution install. Add a store here
+# when a loader starts reading one.
+PROFILE_CREDENTIAL_PATHS = frozenset({
+    "auth.json", ".env", "auth/google_oauth.json",
+    ".op.env",                      # 1Password service-account token (env_loader)
+    "npmrc",                        # npm registry auth (source_build)
+    ".anthropic_oauth.json",        # Anthropic OAuth tokens (credential_sources)
+    "google_token.json", "google_oauth_pending.json", "google_client_secret.json",
+    "google_chat_user_tokens", "google_chat_user_client_secret.json", "google_chat_user_oauth_pending.json",
+    "slack_tokens.json",
+    "webhook_subscriptions.json",   # per-route HMAC secrets
+    "mcp-tokens",                   # MCP OAuth tokens
+    "vault",                        # vault.key + vault.json.enc
+    "browser-profile", "browser_auth", "bot-desktop",  # browser cookies / logins
+    "pairing", "platforms/pairing",
+    "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
+    "cache/bws_cache.json", "cache/bws_cache.enc.json",
+})
+
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
 # The default profile contains infrastructure (repo checkout, worktrees, DBs,
 # caches, binaries) that named profiles don't have.  We exclude those so the
@@ -181,7 +201,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "browser_screenshots", "checkpoints",
     "sandboxes",
     "logs",                 # gateway logs
-}) | PM_RUNTIME_ROOT_DIRS
+}) | PM_RUNTIME_ROOT_DIRS | frozenset(p for p in PROFILE_CREDENTIAL_PATHS if "/" not in p)
 
 # Allow-list for ``export_profile("default")``: when HERMES_HOME equals the
 # cwd (Docker/custom deployments), the default profile home is the working
@@ -2124,7 +2144,8 @@ def _default_export_ignore(root_dir: Path):
     return _ignore
 
 
-# Credential files dropped from named-profile exports. ``bot-desktop`` is the screen's runtime state:
+# Credential names dropped at ANY depth of a named-profile export, on top of the root-relative
+# PROFILE_CREDENTIAL_PATHS. ``bot-desktop`` is the screen's runtime state:
 # its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
 _EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop"})
 
@@ -2186,6 +2207,8 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     def _ignore_credentials(directory: str, contents: list) -> set:
         ignored = _non_exportable_entries(directory, contents)
         ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        rel = Path(directory).relative_to(profile_dir)
+        ignored.update(e for e in contents if (rel / e).as_posix() in PROFILE_CREDENTIAL_PATHS)
         if Path(directory) == profile_dir:
             ignored |= PM_RUNTIME_ROOT_DIRS & set(contents)
         return ignored

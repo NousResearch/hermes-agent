@@ -87,7 +87,7 @@ Not a fit:
 
 - **You want to hand someone your setup once, right now.** A distribution needs a repo, a manifest, and a `.gitignore`. `/export` needs none of that — see [Export and import a profile file](#export-and-import-a-profile-file). Same for backing up or moving a profile to a new machine.
 - **You want to share your desktop theme and layout.** A distribution carries the agent — SOUL, config, skills, cron, MCP, plugins. An export made from the desktop app also carries the look: skin, light/dark mode, custom themes, rail color, and window layout.
-- **You want to share API keys alongside the agent.** `auth.json` and `.env` are deliberately excluded from distributions. Each installer brings their own credentials. (Export files strip them too.)
+- **You want to share API keys alongside the agent.** `auth.json`, `.env` and the other credential stores Hermes reads from a profile (`.op.env`, `npmrc`, OAuth token files, `mcp-tokens/`, `vault/`, browser profiles, platform sessions) are deliberately excluded from distributions. Each installer brings their own credentials. (Export files strip them too.)
 - **You want to share memories / sessions / conversation history.** Those are user data, not distribution content. Never shipped. (Export files are different here — read [what an export contains](#what-an-export-file-contains) before sending one.)
 
 :::caution
@@ -274,7 +274,7 @@ When an installer updates to a new version, some things get replaced (author's d
 |---|---|---|
 | **Distribution-owned** | `SOUL.md`, `config.yaml`, `mcp.json`, `skills/`, `cron/jobs.json`, `distribution.yaml` | Files are replaced from the new clone. Skill directories are merged per entry. `cron/jobs.json` is merged by job id: shipped definitions update in place, your local jobs and each job's paused/enabled state survive, and newly shipped jobs arrive paused. Other `cron/` files and root-level hidden `skills/` metadata are runtime state and stay local. |
 | **Config override** | `config.yaml` | Actually preserved by default — the installer may have tuned model or provider. Pass `--force-config` on update to reset. |
-| **User-owned** | `memories/`, `sessions/`, `state.db*`, `auth.json`, `.env`, `logs/`, `workspace/`, `plans/`, `home/`, `*_cache/`, `local/` | Never touched |
+| **User-owned** | `memories/`, `sessions/`, `state.db*`, `auth.json`, `.env` and the other credential stores, `logs/`, `workspace/`, `plans/`, `home/`, `*_cache/`, `local/` | Never touched |
 
 You can override the distribution-owned list in the manifest:
 

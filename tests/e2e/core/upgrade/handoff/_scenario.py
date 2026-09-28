@@ -42,20 +42,12 @@ _IMPORT_ERR = re.compile(r"ModuleNotFoundError|ImportError|No module named|canno
 # verdict text its bug produces; any other failure of the same property propagates.
 # A dashboard started from a shell that runs under a systemd service (every GitHub-hosted job runs in
 # hosted-compute-agent.service) sits in that unit's cgroup; the update restarts the unit instead of
-# respawning the dashboard. The N-1 column keeps this gate until a release carrying the fix is N-1.
+# respawning the dashboard. Fixed at HEAD by #124940; the N-1 column keeps this gate until a release
+# carrying the fix is N-1.
 _FOREIGN_UNIT_GATE = (r"the update restarted the systemd unit \S+ the dashboard was started under",
                       "gated on #124938: the update restarts the systemd unit whose cgroup a manual dashboard "
                       "was started in instead of respawning the dashboard")
-DASHBOARD_GATES = {
-    "head": [_FOREIGN_UNIT_GATE],
-    "n1": [(r"the respawned dashboard died parsing its launcher",
-            "gated on #124778: the update respawns a manual dashboard on a launcher the PM takeover made a shell "
-            "shim"), _FOREIGN_UNIT_GATE],
-}
-# The respawned dashboard can die after the updater already booked it "restarted": the receipt says
-# success and the update exits 0 with the dashboard dark (racy: an earlier death is "unaccounted", exit 1).
-FALSE_SUCCESS_GATE = (r"the update exited 0 though the dashboard did not come back",
-                      "gated on #109290: a respawned dashboard that dies is booked as restarted and the update exits 0")
+DASHBOARD_GATES = {"n1": [_FOREIGN_UNIT_GATE]}
 CRON_GATES = {
     "n1": (r"fired into the update swap window and failed importing",
            "gated on #113293: a cron job due during an update fires into the swap window, fails, and loses its slot"),
@@ -429,8 +421,7 @@ class HandoffProperties:
         assert X.TRACEBACK not in out, f"the update crashed\n{o.diag}"
         down = [name for name, ok in (("the gateway", o.ident), ("the dashboard", o.dash_new)) if not ok]
         if o.up.returncode == 0:
-            with known_failure(*FALSE_SUCCESS_GATE):
-                assert not down, f"the update exited 0 though {' and '.join(down)} did not come back\n{o.diag}"
+            assert not down, f"the update exited 0 though {' and '.join(down)} did not come back\n{o.diag}"
         else:
             assert down, (f"the update exited {o.up.returncode} though the gateway and the dashboard came back"
                           f"\n{o.diag}")
@@ -438,8 +429,7 @@ class HandoffProperties:
     def test_gateway_pid_file_and_status_find_the_relaunched_gateway(self, fleet):
         o = fleet
         self._relaunched(o)
-        with known_failure(*X.PID_FILE_GATE):
-            assert not o.pid_file, f"{o.pid_file}\n{o.diag}"
+        assert not o.pid_file, f"{o.pid_file}\n{o.diag}"
         assert f"Gateway is running (PID: {o.ident['pid']})" in o.status.stdout, (
             f"`hermes gateway status` cannot find the relaunched gateway:\n{H.describe(o.status)}\n{o.diag}")
 

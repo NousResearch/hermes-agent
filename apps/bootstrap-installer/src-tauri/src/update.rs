@@ -250,6 +250,26 @@ fn pid_is_alive(pid: u32) -> bool {
             }
         }
     }
+    // macOS has no /proc; `ps -o stat=` reports the same state field ('Z' for
+    // a zombie). Only consulted after the marker's pid answered signal 0, so
+    // the spawn cost is paid exactly when a stale-marker zombie is the
+    // question. A failed or empty probe falls through to the signal-0
+    // verdict (fail-open, matching the EPERM rule below).
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("ps")
+            .arg("-o")
+            .arg("stat=")
+            .arg("-p")
+            .arg(pid.to_string())
+            .output()
+        {
+            let state = String::from_utf8_lossy(&output.stdout);
+            if state.trim_start().starts_with('Z') {
+                return false;
+            }
+        }
+    }
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if rc == 0 {
         return true;
@@ -1757,8 +1777,9 @@ mod tests {
     #[test]
     fn live_marker_owner_keeps_own_live_marker() {
         // #74761: the desktop pre-writes the marker with OUR pid. That claim
-        // must be adoptable, never deleted as stale — deleting it would break
-        // the desktop handoff that pre-claims the lock for us.
+        // must be reported (so `acquire` can adopt it without refreshing its
+        // age), never deleted as stale — deleting it would break the desktop
+        // handoff that pre-claims the lock for us.
         let dir = unique_tmp_dir("marker-read-own-live");
         let marker = dir.join(".hermes-update-in-progress");
         let started_at = std::time::SystemTime::now()
@@ -1767,7 +1788,9 @@ mod tests {
             .unwrap_or(0);
         std::fs::write(&marker, format!("{}\n{started_at}", std::process::id())).unwrap();
 
-        assert!(live_marker_owner(&marker).is_none());
+        let owner = live_marker_owner(&marker)
+            .expect("our own live pid must be reported for acquire to adopt");
+        assert_eq!(owner.pid, std::process::id());
         assert!(
             marker.exists(),
             "our own live marker must be kept for adoption"
@@ -1822,6 +1845,47 @@ mod tests {
                             became_zombie = true;
                             break;
                         }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            assert!(became_zombie, "child never reached zombie state");
+
+            assert!(
+                !pid_is_alive(pid as u32),
+                "a zombie must not count as a live marker owner"
+            );
+            // Reap the zombie so the test process doesn't leak children.
+            let mut status: libc::c_int = 0;
+            libc::waitpid(pid, &mut status, 0);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pid_is_alive_false_for_zombie() {
+        // Same false positive as the Linux branch, probed the macOS way: the
+        // child exits, the parent does not reap it, and `ps -o stat=` must
+        // report state 'Z' (or 'Z+'), which counts as dead.
+        unsafe {
+            let pid = libc::fork();
+            assert!(pid >= 0, "fork failed");
+            if pid == 0 {
+                libc::_exit(0);
+            }
+            let mut became_zombie = false;
+            for _ in 0..20 {
+                if let Ok(output) = std::process::Command::new("ps")
+                    .arg("-o")
+                    .arg("stat=")
+                    .arg("-p")
+                    .arg(pid.to_string())
+                    .output()
+                {
+                    let state = String::from_utf8_lossy(&output.stdout);
+                    if state.trim_start().starts_with('Z') {
+                        became_zombie = true;
+                        break;
                     }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));

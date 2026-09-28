@@ -104,6 +104,40 @@ def test_refused_lock_does_not_delete_the_live_owners_marker(marker, other_pid):
     assert marker.exists(), "a refused claimant must never clear the live owner's lock"
 
 
+@pytest.mark.platforms("posix")
+def test_marker_owned_by_a_zombie_self_heals(marker):
+    """A crashed updater lingering unreaped must not pin the lock for 20 minutes.
+
+    ``os.kill(pid, 0)`` still succeeds for a zombie, so a marker owned by a
+    dead-but-unreaped stage used to read as a live update until the age ceiling
+    expired (#77259, #120635, #125932).
+    """
+    pid = os.fork()
+    assert pid >= 0
+    if pid == 0:
+        os._exit(0)  # noqa: P111 — child exits without running pytest teardown
+
+    # Keep the child unreaped (a zombie) and wait until the state probe
+    # actually reports 'Z' so the assertion can't race the exit.
+    from hermes_cli._early_recovery import _process_state
+
+    became_zombie = False
+    for _ in range(40):
+        state = _process_state(pid)
+        if state is not None and state.upper().startswith("Z"):
+            became_zombie = True
+            break
+        time.sleep(0.05)
+    assert became_zombie, "child never reached zombie state on this platform"
+
+    try:
+        _claim(marker, pid)
+        assert read_live_update(path=marker) is None, "a zombie is not a live update"
+        assert not marker.exists(), "the stale marker must self-heal (unlink)"
+    finally:
+        os.waitpid(pid, 0)  # reap so the test leaks no children
+
+
 def test_marker_naming_our_own_pid_is_adopted(marker, monkeypatch):
     """A killed update's marker names the pid its retry gets (containers restart pid numbering).
 

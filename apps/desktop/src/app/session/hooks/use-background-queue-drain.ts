@@ -8,12 +8,21 @@ import {
   $queuedPromptsBySession,
   getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
+  noteQueuedPromptDrainFailure,
   type QueuedPromptEntry,
   removeQueuedPrompt,
   shouldAutoDrain
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
-import { $sessions, $sessionsLoading, idsShareLineage } from '@/store/session'
+import {
+  $sessionProfilesTruncated,
+  $sessions,
+  $sessionsLoadError,
+  $sessionsLoading,
+  getSessionOwnerHints,
+  idsShareLineage,
+  sessionMatchesStoredId
+} from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
@@ -92,13 +101,59 @@ export function useBackgroundQueueDrain({
       drainingSessionIdsRef.current.add(sessionKey)
 
       const onFail = () => {
-        const failures = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
+        const failures = (drainFailuresRef.current.get(entry.id) ?? entry.drainFailures ?? 0) + 1
         drainFailuresRef.current.set(entry.id, failures)
+        // Persist the budget with the queue: a restart must not replay four
+        // more rejections (and the exhaustion notice) against a session that
+        // is exactly as dead as it was when the process exited (#98015).
+        noteQueuedPromptDrainFailure(sessionKey, entry.id)
 
         if (failures >= MAX_AUTO_DRAIN_ATTEMPTS) {
+          // The session rejected every drain attempt. Discovery has settled
+          // (the effect gates on it), so the loaded list plus owner hints are
+          // authoritative — but only when they can actually PROVE absence.
+          // "Maybe" must never mean delete:
+          // - getSessionOwnerHint is undefined both for "no route" AND for
+          //   "two or more routes" (a cloud gateway plus a local backend);
+          //   the plural accessor keeps those apart, and ≥1 route is alive.
+          // - $sessions is one PAGE of the sidebar list. A session that fell
+          //   off the loaded window ($sessionProfilesTruncated) is unknown
+          //   by row and hint, not gone.
+          // Only a session no row, no hint AND a complete, untruncated list
+          // answer to — by id or lineage — is gone from this backend (deleted
+          // from another surface, or its stored resume refuses permanently).
+          // Owner hints count: a hidden bot chat never occupies the recents
+          // list, yet its queue is exactly the one worth preserving. A truly
+          // gone session's queued prompt can never send; drop it and say so
+          // quietly. An unprovable one keeps its entry for a manual send.
+          const sessionKnown =
+            $sessions.get().some(session => sessionMatchesStoredId(session, sessionKey)) ||
+            getSessionOwnerHints(sessionKey).length > 0
+
+          const listIncomplete =
+            $sessionsLoadError.get() || Object.values($sessionProfilesTruncated.get()).some(Boolean)
+
+          if (!sessionKnown && !listIncomplete) {
+            removeQueuedPrompt(sessionKey, entry.id)
+            notify({
+              id: `composer-background-queue-stuck-${sessionKey}`,
+              kind: 'info',
+              title: t.composer.queueDroppedTitle,
+              message: t.composer.queueDroppedBody
+            })
+
+            return
+          }
+
+          // The conversation still exists — the runtime just would not come
+          // back (backend restarting, resume refusing). Keep the entry: it
+          // is real data the user can still send from the queue panel, and a
+          // manual send clears the retry budget. Downgrade the notice from
+          // the old error banner: "not sent, still queued, try again" is
+          // accurate, "message not sent" as an ERROR read as data loss.
           notify({
             id: `composer-background-queue-stuck-${sessionKey}`,
-            kind: 'error',
+            kind: 'info',
             title: t.composer.queueStuckTitle,
             message: t.composer.queueStuckBody
           })
@@ -186,7 +241,7 @@ export function useBackgroundQueueDrain({
 
       const entry = entries[0]
 
-      if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
+      if (!entry || (drainFailuresRef.current.get(entry.id) ?? entry.drainFailures ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
         continue
       }
 

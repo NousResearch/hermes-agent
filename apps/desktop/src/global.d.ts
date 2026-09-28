@@ -116,14 +116,6 @@ declare global {
         grow: (request: GrowRequest) => void
         soloBoot: () => void
       }
-      introReveal?: {
-        open: (payload?: { hideMain?: boolean }) => Promise<{ ok: boolean }>
-        close: (payload?: { showMain?: boolean }) => Promise<{ ok: boolean }>
-        skip: () => void
-        ready: () => void
-        onSkip: (callback: () => void) => () => void
-        onClosed: (callback: () => void) => () => void
-      }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -243,7 +235,10 @@ declare global {
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
-      oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
+      oauthLoginConnectionConfig: (
+        remoteUrl: string,
+        options?: DesktopOauthLoginOptions
+      ) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
@@ -362,9 +357,6 @@ declare global {
       guestOnboardingEnabled?: boolean
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
-      /** Launch flag: skip the first-run film (HERMES_SKIP_INTRO=1 or
-       *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
-      skipIntro?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       minimizeToTray?: {
@@ -1237,6 +1229,29 @@ export interface DesktopConnectionProbeResult {
 export interface ExternalOpenFailedPayload {
   url: string
   message?: string
+  /** Machine-readable failure class; the dialog picks localized copy per code. */
+  code?: 'missing-file'
+}
+
+export interface DesktopOauthLoginOptions {
+  /**
+   * Registry-draft identity for a sign-in that runs before the draft is
+   * saved. The main process derives the login window's cookie partition from
+   * the settled connection id; without it an unsaved draft's session lands in
+   * the legacy shared jar the saved connection never reads.
+   */
+  connectionId?: null | string
+  /** Draft label — used to mint the id when `connectionId` is absent. */
+  label?: string
+  /**
+   * Draft entry kind — the kind the save will persist. Together with
+   * `authMode` it gates the pre-save cookie jar: only a cookie-auth remote
+   * draft gets its own jar; cloud and token drafts sign in on the legacy
+   * shared jar, which is what they read after the save.
+   */
+  kind?: DesktopConnectionKind
+  /** Draft auth mode ('oauth' | 'token') the save will persist. */
+  authMode?: 'oauth' | 'token'
 }
 
 export interface DesktopOauthLoginResult {
@@ -1244,6 +1259,11 @@ export interface DesktopOauthLoginResult {
   baseUrl: string
   connected: boolean
   error?: string
+  /**
+   * The connection id the session was written for. A pre-save sign-in should
+   * pin this into the draft so the later save reuses the same id (and jar).
+   */
+  connectionId?: string
 }
 
 export interface DesktopOauthLogoutResult {

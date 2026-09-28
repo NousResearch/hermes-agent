@@ -76,6 +76,7 @@ def transition(tmp_path):
     (package / "venv_sync.py").write_text(
         "from hermes_cli.probe import event\n"
         "publish_launchers = lambda root: event('launchers')\n"
+        "collect_superseded_generations = lambda root: event('collect')\n"
         "refuse_foreign_owned_venv = lambda root: None\n"
         "from pathlib import Path\n"
         "import os\n"

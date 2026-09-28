@@ -10,7 +10,7 @@ import logging
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from tools.mcp_tool_common import _core, _parse_boolish, mcp_server_enabled
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
@@ -629,6 +629,14 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
         _lifecycle.shutdown_mcp_servers(scope=scope, names=set(stale))
     for key in lazy:
         _forget_lazy_server(key)
+    added = _awaiting_connect(wanted, scope)
+    if added:
+        discover_mcp_tools()
+    return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
+            "pending": sorted(connecting - wanted)}
+
+
+def _awaiting_connect(wanted: Set[str], scope) -> List[str]:
     with _core._lock:
         # Same resolution ``_select_new_servers`` applies: this scope's own connection OR a shared
         # one it adopted from another profile counts as live. Owner==scope alone misses the adopted
@@ -637,15 +645,22 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
         known = {name for name in wanted
                  if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
                  or key in _core._server_connecting or key in _core._lazy_server_configs}
-    # A configured server that is not live is retried here — this is the only reviver for one whose
-    # FIRST connect failed (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
+    # A configured server that is not live is retried — the only way one whose FIRST connect
+    # failed comes back (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
     # would skip it anyway, and entering it takes the cross-process discovery lock (up to 120 s of
-    # waiting when another process holds it) and logs a failed pass, every tick, for nothing.
-    added = sorted(name for name in wanted - known if not _connect_cooldown_active(name))
-    if added:
-        discover_mcp_tools()
-    return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
-            "pending": sorted(connecting - wanted)}
+    # waiting when another process holds it) and logs a failed pass, every call, for nothing.
+    return sorted(name for name in wanted - known if not _connect_cooldown_active(name))
+
+
+def mcp_servers_awaiting_connect() -> List[str]:
+    """Enabled ``mcp_servers`` entries the current registry scope has no live, connecting or lazy
+    registration for, whose connect cooldown has lapsed: added to config since the last discovery
+    run, or one whose earlier connect failed. Read-only — what the next :func:`discover_mcp_tools`
+    would connect."""
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
+    wanted = {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
+    return _awaiting_connect(wanted, _core._mcp_registry_scope())
 
 
 def _forget_lazy_server(key) -> None:

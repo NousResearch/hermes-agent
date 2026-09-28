@@ -29,7 +29,11 @@ import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
-import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
+import {
+  $workspaceOwnerLabels,
+  workspaceOwnerTitle,
+  workspaceSessionRenameable
+} from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
@@ -49,12 +53,14 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
 import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
+  $botChatScopes,
   $sessionStates,
   $sessionTileDelegateRevision,
   $sessionTiles,
@@ -588,16 +594,23 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
 // Tile -> pane contribution sync (call once from the app root).
 // ---------------------------------------------------------------------------
 
-/** Resolve a tile's stored row: the recents list first, then the project
- *  tree. A session opened as a tab from a project group is often older than
- *  the paginated recents page, so it has no `$sessions` row at all until new
- *  activity lands it there — resolving through the tree keeps its tab titled
- *  and tinted instead of a grey "Session" placeholder. */
+/** Resolve a tile's stored row: every loaded sidebar slice first, then the
+ *  project tree. A session opened as a tab from a project group is often older
+ *  than the paginated recents page, so it has no `$sessions` row at all until
+ *  new activity lands it there — resolving through the tree keeps its tab
+ *  titled and tinted instead of a grey "Session" placeholder.
+ *
+ *  The slice scan is `ownerLookupSessionRows`, not `$sessions`: the sidebar
+ *  fetch splits its rows three ways, and a telegram/discord/cron conversation
+ *  is listed ONLY in `$messagingSessions` / `$cronSessions` — recents excludes
+ *  those sources outright. Searching recents alone made every such tab read
+ *  "New session" forever, since the row it needed was one atom over and no
+ *  amount of activity would ever move it into recents. */
 export function tileStoredRow(storedSessionId: string): SessionInfo | undefined {
   const match = (s: SessionInfo) => sessionMatchesStoredId(s, storedSessionId)
 
   return (
-    $sessions.get().find(match) ??
+    ownerLookupSessionRows().find(match) ??
     $projectTree
       .get()
       .flatMap(p => [...p.repos.flatMap(r => r.groups.flatMap(g => g.sessions)), ...(p.previewSessions ?? [])])
@@ -662,6 +675,16 @@ function tileTitle(storedSessionId: string): string {
   const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
 
   return stored ? sessionTitle(stored) : explicit || NEW_SESSION_TITLE
+}
+
+/** The tile's workspace scope — the same fields `workspaceOwnerTitle` reads,
+ *  so the rename gate agrees with the caption's notion of a bot tab. */
+function tileWorkspaceScope(storedSessionId: string): Parameters<typeof workspaceSessionRenameable>[0] {
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+  return tile
+    ? { workspaceMode: tile.workspaceMode, workspaceTabTitle: tile.workspaceTabTitle }
+    : ($botChatScopes.get()[storedSessionId] ?? {})
 }
 
 /** The tab's CAPTION: a bot chat's owner name over the canonical stored title
@@ -755,16 +778,26 @@ export function stackSessionTilesIntoMain(): void {
  *  updates in other sessions) — for a context menu that's almost never open.
  *  Same class as the TreeGroup fix (#72245): derive narrowly, bail out unless
  *  the derived values change. */
-function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: string; title: string } {
-  const cache = useRef<{ key: string; value: { pinId: string; profile?: string; title: string } } | null>(null)
+function useTileMenuRow(storedSessionId: string): {
+  pinId: string
+  profile?: string
+  renameable: boolean
+  title: string
+} {
+  const cache = useRef<{
+    key: string
+    value: { pinId: string; profile?: string; renameable: boolean; title: string }
+  } | null>(null)
 
   const subscribe = useCallback((onChange: () => void) => {
     const offSessions = $sessions.listen(onChange)
     const offTree = $projectTree.listen(onChange)
+    const offTiles = $sessionTiles.listen(onChange)
 
     return () => {
       offSessions()
       offTree()
+      offTiles()
     }
   }, [])
 
@@ -773,10 +806,11 @@ function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: str
     const pinId = stored ? sessionPinId(stored) : storedSessionId
     const title = tileTitle(storedSessionId)
     const profile = stored?.profile
-    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}`
+    const renameable = workspaceSessionRenameable(tileWorkspaceScope(storedSessionId))
+    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}\u0000${renameable}`
 
     if (cache.current?.key !== key) {
-      cache.current = { key, value: { pinId, profile, title } }
+      cache.current = { key, value: { pinId, profile, renameable, title } }
     }
 
     return cache.current.value
@@ -804,7 +838,7 @@ export function SessionTabMenu({
   /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
 }) {
-  const { pinId, profile, title } = useTileMenuRow(storedSessionId)
+  const { pinId, profile, renameable, title } = useTileMenuRow(storedSessionId)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinned = pinnedSessionIds.includes(pinId)
 
@@ -819,6 +853,7 @@ export function SessionTabMenu({
         onPin={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
         pinned={pinned}
         profile={profile}
+        renameable={renameable}
         sessionId={storedSessionId}
         surface="tab"
         tabPaneId={tabPaneId}
@@ -868,9 +903,14 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
 export const watchSessionTiles = paneMirror<SessionTile>({
   source: $sessionTiles,
   // $projectTree: a tile whose session is older than the recents page resolves
-  // its title through the tree, which loads after the tiles register. (The tab's
-  // status dot subscribes to color/state itself, so it needs no `also` entry.)
-  also: [$sessions, $projectTree, $workspaceOwnerLabels],
+  // its title through the tree, which loads after the tiles register.
+  // $cronSessions/$messagingSessions: `tileStoredRow` reads every sidebar
+  // slice, so the strip must re-sync when the slice that owns a gateway
+  // conversation lands — it arrives on its own fetch, after the tiles register,
+  // and without it the tab stays stuck on its "New session" placeholder.
+  // (The tab's status dot subscribes to color/state itself, so it needs no
+  // `also` entry.)
+  also: [$sessions, $cronSessions, $messagingSessions, $projectTree, $workspaceOwnerLabels],
   key: t => t.storedSessionId,
   prefix: 'session-tile',
   dir: t => t.dir,

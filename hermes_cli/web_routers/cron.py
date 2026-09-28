@@ -7,7 +7,10 @@ late-binding seam so ``monkeypatch.setattr(web_server_cron, ...)`` keeps working
 
 import asyncio
 import functools
+import re
 import time
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +24,12 @@ from hermes_cli.web_server_cron import (
 )
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_cli.web_routers._common import log as _log
+from hermes_time import get_timezone as _get_timezone
+from hermes_constants import (
+    get_hermes_home as _get_hermes_home,
+    reset_hermes_home_override as _reset_hermes_home_override,
+    set_hermes_home_override as _set_hermes_home_override,
+)
 
 router = APIRouter()
 
@@ -149,18 +158,315 @@ def _get_cron_job_sync(job_id: str, profile: Optional[str] = None):
     return _found(_call_cron_for_profile(_job_profile(job_id, profile), "get_job", job_id))
 
 
-def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
-    """Run sessions produced by a cron job, newest first.
+_CRON_OUTPUT_FILENAME_FORMAT = "%Y-%m-%d_%H-%M-%S"
 
-    Runs are ordinary sessions with id ``cron_{job_id}_{timestamp}`` (see
+
+def _cron_output_runs_dir(profile: Optional[str], job_id: str) -> Path:
+    """Output docs live under the job's home — resolve it even without a hint."""
+    if profile:
+        try:
+            _, profile_home = _cron_profile_home(profile)
+        except Exception:
+            profile_home = _get_hermes_home()
+    else:
+        profile_home = _get_hermes_home()
+    return Path(profile_home) / "cron" / "output" / job_id
+
+
+@contextmanager
+def _owner_home_scope(profile: Optional[str]):
+    """Keep reads in the owner's profile context for the whole run-history build.
+
+    Filename stems, the execution ledger and ``hermes_time``'s configured zone all
+    resolve through the *current* ``get_hermes_home()``; without this scope a
+    cross-profile listing decodes another profile's docs with the dashboard's
+    zone (an hours-off timestamp) and reads the dashboard's executions.db. The
+    dashboard's own profile needs no override (its home is already current).
+    """
+    if not profile:
+        yield None
+        return
+    try:
+        _, profile_home = _cron_profile_home(profile)
+    except Exception:
+        yield None
+        return
+    if Path(profile_home).resolve() == _get_hermes_home().resolve():
+        yield None
+        return
+    token = _set_hermes_home_override(str(profile_home))
+    try:
+        yield profile_home
+    finally:
+        _reset_hermes_home_override(token)
+
+
+def _cron_output_run_timestamp(path: Path) -> Optional[float]:
+    """Epoch seconds for an output filename's wall time.
+
+    save_job_output writes the stem with hermes_time.now() — the configured
+    IANA timezone (HERMES_TIMEZONE / config), falling back to server-local.
+    Read it back with that same ZONE, not a fixed offset snapshot of today's
+    local offset: a snapshot is wrong when the configured zone differs from
+    the server's, and off by an hour for a historical file across a DST
+    transition. With no configured zone, astimezone() on the naive datetime
+    resolves the offset in effect on the filename's own date.
+    """
+    try:
+        naive = datetime.strptime(path.stem, _CRON_OUTPUT_FILENAME_FORMAT)
+    except ValueError:
+        return None
+    tz = _get_timezone()
+    if tz is not None:
+        return naive.replace(tzinfo=tz).timestamp()
+    return naive.astimezone().timestamp()
+
+
+def _cron_output_run_preview(path: Path, max_chars: int = 180) -> str:
+    try:
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return ""
+    preview = re.sub(r"\s+", " ", raw).strip()
+    if len(preview) <= max_chars:
+        return preview
+    return preview[: max_chars - 1].rstrip() + "…"
+
+
+def _cron_job_last_run_timestamp(job: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not isinstance(job, dict):
+        return None
+    raw = job.get("last_run_at")
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _cron_output_status_label(job: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(job, dict):
+        return ""
+    status = str(job.get("last_status") or "").strip()
+    if not status:
+        return ""
+    return status.replace("_", " ").upper()
+
+
+def _cron_output_run_row(started_at: float, title: str, preview: Optional[str]) -> Dict[str, Any]:
+    return {
+        "title": title,
+        "preview": preview or None,
+        "source": "cron_output",
+        "started_at": started_at,
+        "last_active": started_at,
+        "ended_at": started_at,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "message_count": 0,
+        "tool_call_count": 0,
+        "model": None,
+        "cwd": None,
+        "archived": False,
+        "is_active": False,
+    }
+
+
+def _iso_to_epoch(text: Any) -> Optional[float]:
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        return datetime.fromisoformat(text.strip().replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _owner_profile_executions(canonical_job_id: str) -> List[Dict[str, Any]]:
+    """Terminal execution-ledger rows for the job, newest first.
+
+    Each script-only fire creates exactly one ledger row (claimed → completed /
+    failed), so the ledger — not filename proximity to ``last_run_at`` — is the
+    per-attempt record that pairs an output doc with its real status. Read inside
+    the owner-home scope so it opens the OWNER's cron/executions.db.
+    """
+    try:
+        from cron.executions import list_executions
+
+        rows = list_executions(job_id=canonical_job_id, limit=100)
+    except Exception:
+        return []
+    terminal: List[Dict[str, Any]] = []
+    for row in rows:
+        if str(row.get("status") or "") not in ("completed", "failed", "unknown"):
+            continue
+        terminal.append({
+            "claimed_at": _iso_to_epoch(row.get("claimed_at")) or 0.0,
+            "finished_at": _iso_to_epoch(row.get("finished_at")),
+            "status": str(row.get("status") or ""),
+            "error": str(row.get("error") or "").strip(),
+        })
+    terminal.sort(key=lambda r: r["claimed_at"], reverse=True)
+    return terminal
+
+
+def _execution_contains(
+    attempt: Dict[str, Any], started_at: float, grace_seconds: float = 300.0,
+) -> bool:
+    """Whether an output doc's timestamp falls inside a ledger attempt's window.
+
+    ``save_job_output`` runs after the script finishes but before
+    ``finish_execution`` closes the attempt, and both clocks are
+    ``hermes_time.now()`` in the owner's zone, so a doc written by an attempt
+    lands within ``[claimed_at, finished_at + grace]`` of THAT attempt (a still-
+    open attempt has no ``finished_at``). Older attempts closed before this doc
+    was written, which is what keeps a fast-firing job's status from bleeding
+    onto an earlier run's row.
+    """
+    if started_at + 0.001 < attempt["claimed_at"]:
+        return False
+    finish = attempt["finished_at"]
+    return finish is None or started_at <= finish + grace_seconds
+
+
+def _execution_status_title(status: str, error: str, fallback: str) -> str:
+    label = (status or "").replace("_", " ").upper()
+    if label == "UNKNOWN":
+        return fallback
+    if not label:
+        return fallback
+    return f"{label} · {error}" if (label == "FAILED" and error) else f"{label} · {fallback}"
+
+
+def _list_cron_output_runs(
+    job: Optional[Dict[str, Any]],
+    canonical_job_id: str,
+    profile: Optional[str],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """SessionDB-less run history for jobs that never create agent sessions.
+
+    Script-only (no_agent) jobs deliberately skip SessionDB (cron/scheduler.run_job),
+    so their completed runs are invisible to the run-history endpoint. Their
+    output docs — one .md per fire under cron/output/<job_id>/ — are the only
+    per-run record. Rows mirror /api/sessions shape with source='cron_output'
+    so the frontend reuses SessionInfo; ids use a cron_output: prefix that can
+    never collide with SessionDB cron_{job_id}_* session ids.
+
+    Status comes from the execution ledger (one row per fire), matched to a doc
+    by claim window — never from ``last_run_at`` proximity, which mislabels an
+    older doc when the newest run's doc is missing. Terminal attempts with no
+    surviving doc get their own metadata rows.
+    """
+    output_dir = _cron_output_runs_dir(profile, canonical_job_id)
+    try:
+        files = sorted(
+            (path for path in output_dir.glob("*.md") if path.is_file()),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+    except OSError:
+        files = []
+
+    executions = _owner_profile_executions(canonical_job_id)
+    represented: set = set()
+    runs: List[Dict[str, Any]] = []
+
+    for path in files[:limit]:
+        started_at = _cron_output_run_timestamp(path)
+        if started_at is None:
+            try:
+                started_at = path.stat().st_mtime
+            except OSError:
+                started_at = 0.0
+        preview = _cron_output_run_preview(path)
+        title = preview or "Script-only run"
+        for index, attempt in enumerate(executions):
+            if attempt["status"] not in ("completed", "failed"):
+                continue
+            if _execution_contains(attempt, started_at):
+                represented.add(index)
+                title = _execution_status_title(attempt["status"], attempt["error"], title)
+                break
+        runs.append({
+            "id": f"cron_output:{canonical_job_id}:{path.stem}",
+            **_cron_output_run_row(started_at, title, preview),
+        })
+
+    # Terminal attempts whose output doc is gone (pruned, or the run never
+    # wrote one — e.g. a failed fire) are still real executions: give each its
+    # own metadata row from the ledger instead of letting the latest attempt's
+    # status bleed onto an older surviving document.
+    for index, attempt in enumerate(executions):
+        if index in represented or attempt["status"] not in ("completed", "failed"):
+            continue
+        if len(runs) >= limit:
+            break
+        when = attempt["finished_at"] or attempt["claimed_at"]
+        error = attempt["error"]
+        runs.append({
+            "id": f"cron_output:{canonical_job_id}:exec:{index}",
+            **_cron_output_run_row(
+                when,
+                _execution_status_title(attempt["status"], error, "Script-only run"),
+                error or None,
+            ),
+            # Internal: the attempt's claim window, so the caller can drop this
+            # row when a session already represents the same execution.
+            "_claim_window": (attempt["claimed_at"], attempt["finished_at"]),
+        })
+    runs.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
+
+    if runs:
+        return runs
+
+    # No output docs survived (pruned or never written) but the job HAS run:
+    # surface one metadata-only row from last_run_at/last_status instead of the
+    # bare "No runs" the issue reports.
+    latest_ts = _cron_job_last_run_timestamp(job)
+    if latest_ts is None:
+        return []
+
+    preview = ""
+    if isinstance(job, dict):
+        preview = str(job.get("last_error") or "").strip()
+    title = _cron_output_status_label(job) or "Script-only run"
+    if preview:
+        title = f"{title} · {preview}"
+    return [{
+        "id": f"cron_output:{canonical_job_id}:latest",
+        **_cron_output_run_row(latest_ts, title, preview),
+    }]
+
+
+def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
+    """Run history for a cron job, newest first: agent sessions PLUS script-only fires.
+
+    Agent runs are ordinary sessions with id ``cron_{job_id}_{timestamp}`` (see
     cron/scheduler.run_job); ``source='cron'`` plus the id prefix binds them to
-    this job. Same row shape as ``/api/sessions`` so the frontend reuses
-    SessionInfo. Backed by ``SessionDB.list_cron_job_runs`` — a bounded id-range
+    this job. Backed by ``SessionDB.list_cron_job_runs`` — a bounded id-range
     scan, so cost scales with the requested window, not total cron history.
+    Script-only (no_agent) jobs never write sessions; their per-fire output docs
+    (``_list_cron_output_runs``) fill the gaps. The two representations are
+    reconciled PER EXECUTION, not by branch: a job can switch modes without
+    changing its id (update_job supports no_agent on an existing record), so a
+    surviving historical agent session must not hide newer script-only fires
+    and a recent session must not hide older script output. Rows carrying the
+    same wall-clock execution (an agent fire writes BOTH a session and an
+    output doc) are de-duplicated by timestamp window; script-only rows that
+    match no session are added in. All owner-scoped reads (SessionDB, output
+    docs, execution ledger, filename timezone) run inside the owner's profile
+    scope so the dashboard's own zone/store is never borrowed cross-profile.
     """
     selected = _job_owner_profile(job_id, profile)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
     canonical = job_id
+    job = None
     if selected:
         job = _call_cron_for_profile(selected, "get_job", job_id)
         if job and job.get("id"):
@@ -171,18 +477,64 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     except (TypeError, ValueError):
         limit_n = 20
 
-    db = _open_session_db_for_profile(selected, read_only=True)
-    try:
-        runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
+    with _owner_home_scope(selected):
+        db = _open_session_db_for_profile(selected, read_only=True)
+        try:
+            session_runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
+        finally:
+            db.close()
+
         now = time.time()
-        for s in runs:
+        for s in session_runs:
             s["is_active"] = s.get("ended_at") is None and (now - s.get("last_active", s.get("started_at", 0))) < 300
             s["archived"] = bool(s.get("archived"))
             if selected:
                 s["profile"] = selected
-        return {"runs": runs, "limit": limit_n}
-    finally:
-        db.close()
+
+        doc_runs = _list_cron_output_runs(job, canonical, selected, limit_n)
+
+    return {"runs": _reconcile_cron_runs(session_runs, doc_runs, limit_n), "limit": limit_n}
+
+
+def _reconcile_cron_runs(
+    session_runs: List[Dict[str, Any]],
+    doc_runs: List[Dict[str, Any]],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Merge session rows and output-doc rows per execution, newest first.
+
+    An agent fire writes BOTH a session and an output doc for the same
+    execution; keeping both would double-render the run. Sessions carry the
+    richer record (tokens, message counts, chat navigation), so a doc row
+    within ``_SESSION_DOC_MATCH_SECONDS`` of a session row is the same
+    execution and the session wins. Doc rows matching no session are distinct
+    executions — script-only fires — and are kept. A session row must never be
+    dropped in favor of a doc: the doc is the fallback representation.
+    """
+    _SESSION_DOC_MATCH_SECONDS = 300.0
+
+    merged = list(session_runs)
+    for doc in doc_runs:
+        doc = {k: v for k, v in doc.items() if not k.startswith("_")}
+        doc_ts = float(doc.get("started_at") or 0)
+        if any(_doc_matches_session(doc_ts, s, _SESSION_DOC_MATCH_SECONDS) for s in session_runs):
+            continue
+        merged.append(doc)
+    merged.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
+    return merged[:limit]
+
+
+def _doc_matches_session(doc_ts: float, session: Dict[str, Any], grace_seconds: float) -> bool:
+    """Whether an output doc belongs to a session's run.
+
+    The doc is written when the run FINISHES, so its filename timestamp sits
+    at the run's end — compare against the session's full span, not its start:
+    ``[started_at - grace, last_active + grace]`` (``last_active`` covers the
+    still-open case where ``ended_at`` is None).
+    """
+    start = float(session.get("started_at") or 0)
+    end = float(session.get("ended_at") or session.get("last_active") or start)
+    return start - grace_seconds <= doc_ts <= end + grace_seconds
 
 
 _EXECUTION_FIELDS = {"prompt", "skill", "skills", "script", "no_agent"}

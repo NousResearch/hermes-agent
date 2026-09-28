@@ -235,7 +235,9 @@ In the Desktop app the board switcher sits in the header row at the top of
 the Kanban page, beside the page title: a **Board** control showing the current board's
 name and task count, with a chevron — hover it for "Switch board". Click
 it to pick another board, or to rename, configure, export, import,
-create, or archive boards. Like the dashboard, the desktop keeps its own
+create, or archive boards. When Kanban is open in a split tile, the same
+**Board** control sits in the board's own header row, after the task count.
+Like the dashboard, the desktop keeps its own
 selection (persisted locally) and does not move the CLI's `current`
 pointer.
 
@@ -1415,6 +1417,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | Kind | Payload | When |
 |---|---|---|
 | `spawned` | `{pid}` | Dispatcher successfully started a worker process. |
+| `worker_registered` | `{pid, started_at}` | The dispatcher died after starting the worker but before recording its pid, so the worker recorded it itself before its first model call. Liveness checks then see it and an expired claim is extended instead of spawning a second worker. A worker whose run was reclaimed before it got that far exits without working the card. |
 | `heartbeat` | `{note?}` | Worker called `hermes kanban heartbeat $TASK` to signal liveness during long operations. |
 | `reclaimed` | `{stale_lock}` | Claim TTL expired without a completion; task goes back to `ready`. An automatic reclaim counts as one non-successful attempt toward the `gave_up` breaker (a claim that never spawned a worker would otherwise loop claim → reclaim → claim forever); an operator `reclaim` resets the counter instead. |
 | `crashed` | `{pid, claimer, exit_kind?, exit_code?, worker_output?}` | Worker PID no longer alive but TTL hadn't expired yet. `worker_output` is the tail of the worker's own log (its final response or the rendered provider error, chrome stripped, ≤ 400 chars) and is also appended to the task's `last_failure_error`, so the board shows *why* instead of only the exit code. |

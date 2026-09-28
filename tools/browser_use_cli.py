@@ -6,15 +6,17 @@ instead of default browser tools
 
 import contextlib
 import importlib
+import importlib.util
 import json
 import logging
 import os
 import re
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
@@ -141,15 +143,16 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
 def _base_subprocess_env() -> dict:
     from tools.browser_tool import _build_browser_env
     env = _build_browser_env()
-    # The CLI runs under its own PM-managed Python; an inherited PYTHONPATH/PYTHONHOME
-    # (Hermes's venv) wins over its site-packages → wrong-ABI C-extensions and a crash.
-    # PYTHONPATH/PYTHONHOME inherited from the agent process point at Hermes's venv site-packages, and a
-    # child interpreter honors them ahead of its own site-packages — so the CLI imports compiled
-    # C-extensions (e.g. pydantic_core) built for the wrong interpreter and crashes on ABI mismatch (#83427,
-    # #84841, #86006, #86104). Strip both — the CLI manages its own environment and never needs Hermes's
-    # import path.
-    env.pop("PYTHONPATH", None)
+    # The harness runs on Hermes's own interpreter, but a bundled Desktop install boots that
+    # interpreter with its site dir on PYTHONPATH (no venv to activate), and the harness's daemon
+    # re-runs sys.executable. Point PYTHONPATH at the harness's site dir, replacing whatever the
+    # agent process inherited, so both the CLI and its daemon import the same packages.
     env.pop("PYTHONHOME", None)
+    site_dir = _harness_site_dir()
+    if site_dir:
+        env["PYTHONPATH"] = site_dir
+    else:
+        env.pop("PYTHONPATH", None)
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
     return env
@@ -218,7 +221,7 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
 
 def is_browser_use_cli_mode() -> bool:
     """True when the Browser Use CLI replaces the built-in browser stack. Browser Use mode is the DEFAULT:
-    unset ``browser.backend`` ("") enables it whenever the PM-managed CLI is installed;
+    unset ``browser.backend`` ("") enables it whenever browser-harness is importable (a core dependency);
     ``browser.backend: off`` keeps the built-in browser_* tools. Camofox always falls back to the built-in
     tools (Firefox, custom HTTP API, no CDP surface for the harness)."""
     if _camofox_active():
@@ -242,35 +245,27 @@ def default_downgrade_notice() -> Optional[str]:
             stamp.parent.mkdir(parents=True, exist_ok=True)
             stamp.touch()
             os.utime(stamp, (now, now))
-        return ("Browser Use CLI not found — using the built-in browser tools. Run `hermes tools` "
-                "(Browser Automation → Browser Use) to install it, or `browser.backend: off` in config.yaml to silence this.")
+        return ("browser-harness is missing from Hermes's Python environment — using the built-in browser tools. "
+                "Run `hermes update` to re-sync it, or set `browser.backend: off` in config.yaml to silence this.")
     except Exception as e:  # pragma: no cover — a notice must never break startup
         logger.debug("browser-use downgrade notice failed: %s", e)
         return None
 
 
-_CLI_REQUIREMENTS = ("browser-use==0.13.10",)
+def _harness_site_dir() -> Optional[str]:
+    """The site dir Hermes's interpreter imports ``browser_harness`` from, or None."""
+    spec = importlib.util.find_spec("browser_harness")
+    if spec is None or not spec.origin:
+        return None
+    return str(Path(spec.origin).resolve().parent.parent)
 
 
 def _find_cli() -> Optional[List[str]]:
-    """Read PM's selected CLI without installing anything during discovery."""
-    import pm
-
-    binary = pm.python_tool("browser-use", "browser-use")
-    return [str(binary)] if binary is not None else None
-
-
-def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
-    """Provision the pinned CLI in PM's isolated environment; never raises."""
-    try:
-        import pm
-
-        binary = pm.ensure_python_tool(
-            "browser-use", _CLI_REQUIREMENTS, "browser-use", explicit=True, timeout=timeout_s,
-        )
-    except Exception as exc:
-        return False, f"Could not install browser-use CLI: {exc}"
-    return True, f"browser-use CLI installed ({binary})"
+    """The Browser Use CLI's engine (browser-harness) is a core dependency of Hermes's own venv,
+    so every install, the Desktop bundle included, runs it on the current interpreter."""
+    if _harness_site_dir() is None:
+        return None
+    return [sys.executable, "-m", "browser_harness.run"]
 
 
 def _workspace_dir(task_id: Optional[str]) -> Optional[str]:
@@ -583,8 +578,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     cmd = _find_cli()
     if not cmd:
-        return tool_error("The PM-managed browser-use CLI is not installed. "
-                          "Run `hermes tools` (Browser Automation → Browser Use) to install it.")
+        return tool_error("browser-harness is missing from Hermes's Python environment. "
+                          "Run `hermes update` to re-sync it.")
 
     env = _base_subprocess_env()
     if session:

@@ -17,6 +17,11 @@ export interface TimelinePartMetadata {
   /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
    * so the next delta re-renders from the source instead of the render. */
   mediaSource?: string
+  /** Stored tool result without a matching assistant call in the loaded page.
+   *  Render for history, but never treat it as authoritative Todo state. */
+  unpairedStoredToolResult?: boolean
+  /** Actual completed tool name when the assistant called a wrapper such as tool_call. */
+  storedResultToolName?: string
   /** Durable source occurrence, even when several backend rows share a bubble. */
   sourceRowId?: number
 }
@@ -66,6 +71,13 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
+  /** Backend-authored transcript notice rather than a message any view sent: a
+   *  model switch, an auto-continue, a background-process completion. It renders
+   *  on the timeline like any other system row but belongs to no view, so the
+   *  stale-transcript compare must not count it (see
+   *  `messagesIfTranscriptBehind`) — counting it made one model switch report a
+   *  second window ahead and refuse every send. */
+  systemNotice?: boolean
 }
 
 export type GatewayEventPayload = {

@@ -736,7 +736,11 @@ export const ja = defineLocale({
       toursDesc:
         '各ステップを強調しながら、Hermes がアプリを案内します。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
       composerPopoutTitle: 'フローティング入力欄',
-      composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
+      composerPopoutDesc:
+        '入力欄をドックからドラッグして外せるようにします。オフの間は画面下部にドッキングされたままです。',
+      fileBrowserTitle: 'ファイルブラウザ',
+      fileBrowserDesc:
+        'ワークスペースを開いているとき、チャットの横にファイルブラウザを表示します。タイトルバーのボタンでも切り替わります。',
       vibeHeartsTitle: 'バイブハート',
       vibeHeartsDesc:
         'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',
@@ -2178,6 +2182,8 @@ export const ja = defineLocale({
     skillsLabel: 'スキル',
     notSet: '未設定',
     soulDesc: 'このプロファイルに組み込まれたシステムプロンプトとペルソナの指示。',
+    soulMissing:
+      'このプロファイルにはまだ SOUL.md がありません。下に指示を入力して保存すると作成できます。config.yaml のペルソナ設定は別途管理されます。',
     soulOptional: '省略可能',
     soulPlaceholder: mode =>
       `このプロファイルのシステムプロンプト / ペルソナ。\n空欄のままにすると ${mode} のデフォルトを使用します。`,
@@ -2332,6 +2338,8 @@ export const ja = defineLocale({
     nameLabel: '名前',
     namePlaceholder: '例: 日次サマリー',
     promptLabel: 'プロンプト',
+    scriptLabel: 'スクリプト',
+    scriptBadge: 'スクリプト',
     promptPlaceholder: '実行ごとにエージェントが行う内容は？',
     frequencyLabel: '頻度',
     deliverLabel: '配信先',
@@ -2795,6 +2803,9 @@ export const ja = defineLocale({
     queueStuckTitle: 'キュー内のメッセージを送信できません',
     queueStuckBody:
       'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
+    queueDroppedTitle: 'キューのエントリを破棄しました',
+    queueDroppedBody:
+      'このバックグラウンドのエントリは、セッションを繰り返し再開できなかったため破棄されました。キューの他のエントリには影響しません。',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -2851,6 +2862,7 @@ export const ja = defineLocale({
     goalWaiting: '目標待機中',
     subagents: count => `サブエージェント ${count} 件`,
     todos: (done, total) => `タスク ${done}/${total}`,
+    previousTodos: (done, total) => `以前のタスク ${done}/${total}`,
     running: '実行中',
     stop: '停止',
     dismiss: '閉じる',
@@ -3780,8 +3792,9 @@ export const ja = defineLocale({
             `${provider} がサーバーエラーを返しました。しばらくしてから再試行するか、プロバイダーを切り替えてください。`
         },
         timeout: {
-          title: '応答がタイムアウトしました',
-          body: provider => `${provider} から時間内に応答がありませんでした。再試行してもう一度送信してください。`
+          title: 'AI サービスに接続できません',
+          body: provider =>
+            `${provider} に接続できないか、時間内に応答がありませんでした。インターネット接続を確認してから再試行してください。`
         },
         ssl_cert_verification: {
           title: '安全な接続に失敗しました',
@@ -3821,6 +3834,8 @@ export const ja = defineLocale({
       preparingAudio: '音声を準備中...',
       stopReading: '読み上げを停止',
       readAloud: '読み上げ',
+      copyFullResponse: '回答全体をコピー',
+      readAloudFullResponseHint: 'Shiftを押しながらクリック: 回答全体を読み上げ',
       editMessage: 'メッセージを編集',
       stop: '停止',
       restorePrevious: '前のチェックポイントに戻す',
@@ -3864,7 +3879,10 @@ export const ja = defineLocale({
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
       lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
-      lateAnswerHint: 'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。'
+      lateAnswerHint:
+        'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。',
+      notDelivered:
+        'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
     },
     tool: {
       copyCode: 'コードをコピー',

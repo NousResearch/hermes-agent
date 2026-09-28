@@ -952,8 +952,7 @@ class AIAgent(
         """Release LLM clients and child agents WITHOUT tearing down session tool state (gateway cache
         eviction: the session may resume on the same task_id, so processes, sandbox, browser and
         computer-use are kept). The memory manager is drained + shut down WITHOUT ``on_session_end()``
-        so evicted provider writer threads don't leak (extraction is the gateway's pre-evict commit's
-        job). Idempotent; distinct from ``close()``."""
+        so evicted provider writer threads don't leak. Idempotent; distinct from ``close()``."""
         self._close_active_children(soft=True)
         # Retire (don't hard-close) the shared client: eviction runs on the gateway memory-manager thread,
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
@@ -974,12 +973,18 @@ class AIAgent(
         #
         # shutdown_memory_provider() calls on_session_end() first — too heavy for
         # soft eviction: it triggers end-of-session extraction, which a resumed
-        # session would duplicate (the gateway's _commit_then_release_soft()
-        # already commits extraction via commit_memory_session() BEFORE calling
-        # this, so the manager's queue holds exactly that work). Instead call
-        # shutdown_all() directly: it bounded-drains the sync executor (giving the
-        # pre-evict commit its ~5s) and calls provider shutdown(), which sends
-        # each writer its sentinel and joins the thread — no extraction side-effect.
+        # session would duplicate. Instead call shutdown_all() directly: it
+        # bounded-drains the sync executor (giving any queued extraction its ~5s)
+        # and calls provider shutdown(), which sends each writer its sentinel and
+        # joins the thread — no extraction side-effect.
+        #
+        # Extraction-commit coverage varies by eviction path: the sweep paths
+        # (LRU cap, idle TTL, RSS pressure) commit via _commit_then_release_soft()
+        # before soft release; direct eviction paths (/new, /model, /login,
+        # cross-process) release without a pre-commit, so on those the manager's
+        # queue still drains but the final turn's extraction is not committed —
+        # pre-existing behavior, unchanged by this fix (before this PR those
+        # paths ALSO leaked the writer threads).
         #
         # Safe for resume: an evicted agent is popped from the cache and never
         # re-added, and the resumed session's freshly-built AIAgent creates a new

@@ -66,6 +66,12 @@ class TurnContextUpdate:
 
 
 @dataclass
+class _ProcessingState:
+    deferred: bool = False
+    completed: bool = False
+
+
+@dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""
     text: str
@@ -127,6 +133,8 @@ class MessageEvent:
     reply_expected: Optional[bool] = None
     # Latest native input covered by this turn; independent of its reply anchor and ledger id.
     read_receipt_message_id: Optional[str] = None
+    # Dispatch rewrites copy the event, but acknowledgement still belongs to the same input.
+    _processing_state: _ProcessingState = field(default_factory=_ProcessingState, repr=False, compare=False)
     # Deliver this external event as a new turn when its session is busy.
     defer_until_idle: bool = False
     # Snapshot from ``BasePlatformAdapter.prepare_turn_context``. The user transcript row saves it,

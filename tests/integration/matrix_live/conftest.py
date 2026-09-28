@@ -464,6 +464,11 @@ def matrix_feedback() -> MatrixFeedbackSettings:
 
 
 @pytest.fixture
+def gateway_busy_input_mode() -> str:
+    return "interrupt"
+
+
+@pytest.fixture
 def gateway(
     request: pytest.FixtureRequest,
     tmp_path: Path,
@@ -476,6 +481,7 @@ def gateway(
     gateway_script: list[Response] | None,
     model_responder: Responder | None,
     matrix_feedback: MatrixFeedbackSettings,
+    gateway_busy_input_mode: str,
 ) -> Iterator[LiveGateway]:
     param = getattr(request, "param", GatewaySettings())
     settings = GatewaySettings(mode=param) if isinstance(param, str) else param
@@ -523,6 +529,7 @@ def gateway(
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"
                    if context_pause else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-resolution\n" if resolution_pause else "")
+                + f"display:\n  busy_input_mode: {gateway_busy_input_mode}\n  busy_text_mode: interrupt\n"
                 + gateway_extra_config
             ),
         )

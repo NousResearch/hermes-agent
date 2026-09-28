@@ -81,9 +81,14 @@ class GatewayQueuedFollowupMixin:
                     adapter.queue_message(session_key, pending)
                 return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
 
-            # Interrupted: discard the response ("Operation interrupted." is noise).
+            from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
+            completed_event = turn_ctx.processing_event
+            completed_adapter = self._intake_adapter_for(completed_event.source) if completed_event is not None else None
+            outcome = ProcessingOutcome.CANCELLED
             if not result.get("interrupted"):
-                await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+                delivered = await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+                outcome = ProcessingOutcome.SUCCESS if delivered and not result.get("failed") else ProcessingOutcome.FAILURE
+            await _run_followup_processing_hook(completed_adapter, completed_event, "on_processing_complete", outcome)
 
             if pending_event is not None and not await self._strict_session_current(
                 pending_event, session_key, session_id=session_id,
@@ -176,7 +181,6 @@ class GatewayQueuedFollowupMixin:
             # place a queued/interrupting message ever runs, so base.py's hook site is never entered for it.
             # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
             # different profile's adapter, and only that instance holds the per-message reaction state.
-            from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
             _hook_adapter = self._intake_adapter_for(next_source) if pending_event is not None else None
             await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
             # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
@@ -238,6 +242,7 @@ class GatewayQueuedFollowupMixin:
                         source=next_source, session_id=session_id, session_key=next_session_key,
                         run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                         event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                        processing_event=pending_event,
                         channel_prompt=next_channel_prompt, message_type=next_message_type,
                         persist_user_message=next_persist_message,
                         persist_user_display_kind=next_display_kind,

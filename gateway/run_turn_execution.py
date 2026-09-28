@@ -1016,11 +1016,12 @@ class GatewayTurnExecutionMixin:
 
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
-    ) -> None:
+    ) -> bool:
         """Deliver the first response before a queued follow-up runs, unless streaming already did."""
         from gateway.run_turn import _unexpected_silence_reply
         if turn_ctx.mute_notification_reply:
-            return
+            return True
+        delivered = True
         session_key = turn_ctx.session_key
         _sc = turn_ctx.stream_consumer_holder[0]
         if _sc and stream_task:
@@ -1070,7 +1071,9 @@ class GatewayTurnExecutionMixin:
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
+                delivered = False
             else:
+                delivered = bool(_text_delivered)
                 # One source of truth for "this turn's final already reached the chat": the normal
                 # completion path (`_hmwa_deliver_turn_response`) consults ``already_sent`` on the
                 # result the queued lane hands back. Every early `return result` after this point
@@ -1092,6 +1095,7 @@ class GatewayTurnExecutionMixin:
                 _bg_result = _bg_cb()
                 if inspect.isawaitable(_bg_result):
                     await _bg_result
+        return delivered
 
 
     async def _run_agent_cleanup_turn_tasks(
@@ -1409,6 +1413,7 @@ class GatewayTurnExecutionMixin:
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
+        processing_event: Optional[MessageEvent] = None,
         input_snapshot: Optional[PreparedInboundMessage] = None,
         title_user_message: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -1447,6 +1452,7 @@ class GatewayTurnExecutionMixin:
         turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(
             disp, AIAgent, message=message, source=source, session_key=session_key,
             run_generation=run_generation, context_prompt=context_prompt, history=history,
+            processing_event=processing_event,
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
             channel_prompt=channel_prompt, moa_config=moa_config,

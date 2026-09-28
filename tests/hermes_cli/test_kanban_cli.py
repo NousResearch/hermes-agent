@@ -24,6 +24,27 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def test_cli_create_stamps_only_verified_profile_session(kanban_home, monkeypatch, capsys):
+    from hermes_state import SessionDB
+
+    state = SessionDB(db_path=kanban_home / "state.db")
+    try:
+        state.create_session(session_id="origin-chat", source="desktop")
+    finally:
+        state.close()
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers())
+    monkeypatch.setenv("HERMES_SESSION_ID", "origin-chat")
+    assert kc.kanban_command(parser.parse_args(["kanban", "create", "with-origin", "--json"])) == 0
+    first = json.loads(capsys.readouterr().out)
+    monkeypatch.setenv("HERMES_SESSION_ID", "foreign-or-missing")
+    assert kc.kanban_command(parser.parse_args(["kanban", "create", "without-origin", "--json"])) == 0
+    second = json.loads(capsys.readouterr().out)
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, first["id"]).session_id == "origin-chat"
+        assert kb.get_task(conn, second["id"]).session_id is None
+
+
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------
@@ -239,5 +260,4 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
 

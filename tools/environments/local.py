@@ -213,6 +213,11 @@ def _apply_profile_home(env: dict) -> None:
     try:
         if value := get_hermes_home_override():
             env["HERMES_HOME"] = value
+            # The override names the served profile. A launcher or cached terminal
+            # environment may still carry a different profile pin; the child CLI
+            # checks that pin before deriving identity from HERMES_HOME.
+            env.pop("HERMES_PROFILE", None)
+            env.pop("HERMES_PROFILE_NAME", None)
     except Exception:
         pass
     apply_subprocess_home_env(env)

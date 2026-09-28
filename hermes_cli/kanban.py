@@ -204,6 +204,25 @@ def _profile_author() -> str:
     return current_profile_name("user") or "user"
 
 
+def _verified_origin_session_id() -> Optional[str]:
+    """Stamp a CLI-created card only when its session belongs to this profile."""
+    from gateway.session_context import get_session_env
+    session_id = get_session_env("HERMES_SESSION_ID", "")
+    if not session_id:
+        return None
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        state = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+        try:
+            return session_id if state.get_session(session_id) else None
+        finally:
+            state.close()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
@@ -363,6 +382,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
             created_by=args.created_by or _profile_author(),
+            session_id=_verified_origin_session_id(),
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
             parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),

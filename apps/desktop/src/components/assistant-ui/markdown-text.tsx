@@ -23,6 +23,7 @@ import { defaultRemarkPlugins } from 'streamdown'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { InlineFileLink } from '@/components/chat/inline-file-link'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
@@ -48,7 +49,7 @@ import {
   mediaPathFromMarkdownHref,
   validImageDimensions
 } from '@/lib/media'
-import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { fileLinkPathFromMarkdownHref, previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { remarkSoftBreaks } from '@/lib/remark-soft-breaks'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { TOOL_MEDIA_RENDERER_AREA } from '@/lib/tool-media-renderers'
@@ -288,6 +289,17 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return <ToolMediaSlot path={mediaPath}>{builtIn}</ToolMediaSlot>
   }
 
+  // A document the agent named mid-sentence: inline link text, not a card.
+  const inlineFilePath = fileLinkPathFromMarkdownHref(href)
+
+  if (inlineFilePath) {
+    return (
+      <InlineFileLink className={className} path={inlineFilePath}>
+        {children}
+      </InlineFileLink>
+    )
+  }
+
   const previewTarget = previewTargetFromMarkdownHref(href)
 
   if (previewTarget) {
@@ -318,7 +330,9 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
       return (
         <ToolMediaSlot path={fileHref}>
           {mediaKind(fileHref) === 'file' ? (
-            <PreviewAttachment target={fileHref} />
+            <InlineFileLink className={className} path={fileHref}>
+              {children}
+            </InlineFileLink>
           ) : (
             <MediaAttachment path={fileHref} />
           )}

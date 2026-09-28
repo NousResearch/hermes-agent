@@ -103,10 +103,12 @@ def _connect() -> sqlite3.Connection:
     # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
     # hardening so this writer doesn't create/leave the file (and its WAL
     # sidecars) at the process umask. See hermes_state._secure_state_db_files.
+    from hermes_constants import mkdir_under_hermes_home
     from hermes_state import _secure_state_db_files
 
     path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # A late replay or writer must not resurrect a removed named profile (#123265).
+    mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
     conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
@@ -319,6 +321,8 @@ def restore_undelivered_completions(target_queue) -> int:
     ownership, otherwise a brand-new session adopts a dead session's delegation results seconds after boot
     (#64484).
     """
+    if not _db_path().exists():
+        return 0  # nothing to replay; a replay must not create (or migrate) the ledger (#123265)
     recover_abandoned_delegations()
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
@@ -1205,23 +1209,3 @@ def _reset_for_tests() -> None:
     with _orphan_lock:
         _offered.clear()
         _last_orphan_sweep.clear()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def active_for_session(origin_ui_session_id: str) -> int:
-    """Number of live async delegations owned by one UI session."""
-    if not origin_ui_session_id:
-        return 0
-    with _records_lock:
-        return sum(
-            1
-            for r in _records.values()
-            if r.get("status") in {"running", "stalling", "finalizing"}
-            and str(r.get("origin_ui_session_id") or "")
-            == origin_ui_session_id
-        )
-# ---- END PLUGIN-COMPAT ----

@@ -105,7 +105,9 @@ def _gateway_status() -> str:
         snapshot = get_gateway_runtime_snapshot()
         if snapshot.running:
             mode = "manual" if snapshot.has_process_service_mismatch else snapshot.manager
-            return f"running ({mode}, pid {snapshot.gateway_pids[0]})"
+            # A supervised gateway may have no scannable PID (s6 `python -c` launcher, #125390).
+            pid = f", pid {snapshot.gateway_pids[0]}" if snapshot.gateway_pids else ""
+            return f"running ({mode}{pid})"
         return f"stopped ({snapshot.manager})"
     except Exception:
         return "unknown" if sys.platform.startswith(("linux", "darwin")) else "N/A"

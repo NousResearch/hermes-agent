@@ -185,3 +185,56 @@ def test_guard_refusal_is_recorded_in_runtime_status_and_cleared_on_default(tmp_
     assert "coder" in gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"]
     record_multiplex_decision(MultiplexDecision(True, "default", "unset; default applies"))
     assert gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"] is None
+
+
+def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(tmp_path, monkeypatch):
+    """Dead or stale gateway_state.json must not emit standalone warnings (#120991)."""
+    import gateway.status as gw_status
+    from datetime import datetime, timezone
+
+    state_file = tmp_path / "gateway_state.json"
+    monkeypatch.setattr(gw_status, "_get_runtime_status_path", lambda: state_file)
+
+    # 1. Stopped gateway
+    state_file.write_text(json.dumps({
+        "gateway_state": "stopped",
+        "pid": os.getpid(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "multiplex_standalone_reason": "orphan reason",
+    }), encoding="utf-8")
+    assert mode.recorded_standalone_warning_lines() == []
+
+    # 2. Dead PID
+    state_file.write_text(json.dumps({
+        "gateway_state": "running",
+        "pid": 999999999,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "multiplex_standalone_reason": "orphan reason",
+    }), encoding="utf-8")
+    monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: False)
+    assert mode.recorded_standalone_warning_lines() == []
+
+    # 3. Stale heartbeat
+    state_file.write_text(json.dumps({
+        "gateway_state": "running",
+        "pid": os.getpid(),
+        "updated_at": "2020-01-01T00:00:00Z",
+        "multiplex_standalone_reason": "orphan reason",
+    }), encoding="utf-8")
+    monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: True)
+    assert mode.recorded_standalone_warning_lines() == []
+
+    # 4. Live and fresh record emits warning
+    state_file.write_text(json.dumps({
+        "gateway_state": "running",
+        "pid": os.getpid(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "multiplex_standalone_reason": "real standalone reason",
+    }), encoding="utf-8")
+    monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: True)
+    monkeypatch.setattr(gw_status, "runtime_status_is_stale", lambda r: False)
+    monkeypatch.setattr(mode, "unserved_profiles", lambda: ["other_profile"])
+    lines = mode.recorded_standalone_warning_lines()
+    assert any("STANDALONE" in line for line in lines)
+    assert any("real standalone reason" in line for line in lines)
+

@@ -169,6 +169,54 @@ def no_other_keys(recorder: dict, key: str) -> bool:
     return all(k == key for k in recorder)
 
 
+def test_rotate_session_fires_on_session_reset_plugin_hook(home: Path, tmp_path: Path, monkeypatch):
+    """/new parity: after the new session exists, plugins learn of the rotation through the
+    same ``on_session_reset`` lifecycle hook /new fires (old id -> new id). A miss (nothing
+    routed) fires nothing — there is no rotation to report."""
+    import hermes_cli.lifecycle as lifecycle
+
+    store = _make_store(tmp_path)
+    source = _source("-100400")
+    entry = store.get_or_create_session(source, force_new=True, touch_activity=False)
+    old_sid = entry.session_id
+
+    hook_calls: list[dict] = []
+    real_invoke = lifecycle.invoke_hook
+
+    def spy_invoke(name, **kwargs):
+        if name == "on_session_reset":
+            hook_calls.append(kwargs)
+        return real_invoke(name, **kwargs)
+
+    monkeypatch.setattr(lifecycle, "invoke_hook", spy_invoke)
+
+    async def scenario(params: dict):
+        runner = _FunnelRecorder(store)
+        server = GatewayControlServer(
+            home, verb_handlers={"rotate-session": rotate_session_verb(runner)})
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, lambda: query_gateway_control(home, "rotate-session", params=params))
+        finally:
+            await server.stop()
+
+    result = asyncio.run(scenario({"platform": "telegram", "chat_id": "-100400"}))
+    assert result and result["rotated"] is True
+    assert len(hook_calls) == 1
+    call = hook_calls[0]
+    assert call["old_session_id"] == old_sid
+    assert call["new_session_id"] == result["new_session_id"] != old_sid
+    assert call["session_id"] == result["new_session_id"]
+    assert call["platform"] == "telegram"
+
+    # Unknown chat: rotated False, no session created, so no hook event either.
+    miss = asyncio.run(scenario({"platform": "telegram", "chat_id": "-100401"}))
+    assert miss is not None and miss["rotated"] is False
+    assert len(hook_calls) == 1
+
+
 def test_rotate_session_leaves_second_channel_untouched(home: Path, tmp_path: Path):
     store = _make_store(tmp_path)
     other = _source("-100999")

@@ -8,10 +8,19 @@ conversation to start clean) had exactly one supported entry point: a human typi
 
 This verb reuses the same rotation funnel ``/new`` runs — generation bump, running-agent slot
 release, agent teardown + cache eviction, conversation-scope clear, in-flight delegation interrupt,
-``SessionStore.reset_session``, session-boundary hooks, Telegram topic-lane rebind — so an external
-rotation cannot leave a stale cached agent or a zombie topic binding pointing at the ended session.
-Unknown chat/thread returns ``rotated: false`` (not an error): a caller polling before the first
-message must not special-case a miss.
+``SessionStore.reset_session``, the ``on_session_reset`` plugin hook, Telegram topic-lane rebind —
+so an external rotation cannot leave a stale cached agent or a zombie topic binding pointing at the
+ended session.
+One deliberate divergence, not an omission: ``/new`` falls back to
+``get_or_create_session(force_new=True)`` when nothing was routed, while this verb answers
+``rotated: false`` — a caller polling before the channel's first message must not special-case a
+miss, and must not fabricate a session either.
+``/new`` additionally calls ``_reset_process_scoped_tool_state()`` (env-passthrough allowlist +
+credential-file registry). Both stores are ContextVar-backed; a control-socket verb executes in the
+socket thread's fresh context (``run_coroutine_threadsafe`` does not carry the loop lineage's
+context), where the clear would auto-vivify a fresh empty store — a no-op cosplaying as parity.
+Until the clear has a context-correct mechanism (or the stores are shown to hold nothing across
+turns), the verb deliberately does NOT mirror that call; see the PR discussion on #125605.
 """
 
 from __future__ import annotations
@@ -65,6 +74,14 @@ def rotate_session_verb(runner):
         new_entry = await runner.async_session_store.reset_session(session_key)
         await runner._fire_session_reset_hooks(
             source, session_key, old_sid, new_entry.session_id if new_entry is not None else None)
+        # Plugin on_session_reset hook after the new session exists (mirrors /new); best-effort.
+        if new_entry is not None:
+            with contextlib.suppress(Exception):
+                from hermes_cli.lifecycle import invoke_hook
+                invoke_hook("on_session_reset", session_id=new_entry.session_id,
+                            reason="session_rotate",
+                            platform=source.platform.value if source.platform else "",
+                            old_session_id=old_sid, new_session_id=new_entry.session_id)
         # Telegram private-chat topic lanes bind (chat_id, thread_id) -> session_id durably;
         # without the rebind the binding-heal walk switches the next message back onto the
         # ended session (same invariant the /new path enforces after compression resets).

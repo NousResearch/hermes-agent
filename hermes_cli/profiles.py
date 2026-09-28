@@ -243,6 +243,43 @@ def _wrapper_path(alias: str) -> Path:
     return _get_wrapper_dir() / (f"{alias}.bat" if sys.platform == "win32" else alias)
 
 
+def _wrapper_candidates(name: str) -> List[Path]:
+    """Every path a Hermes wrapper for *name* could occupy, most specific first.
+
+    Windows writes ``<name>.bat`` but a wrapper created before the suffix was adopted (or
+    hand-copied from a POSIX host) may still be the bare name, so both are probed.
+    """
+    candidates = [_get_wrapper_dir() / name]
+    if sys.platform == "win32":
+        candidates.insert(0, _get_wrapper_dir() / f"{name}.bat")
+    return candidates
+
+
+def find_wrappers_for_profile(profile_name: str) -> List[Path]:
+    """Paths of every Hermes wrapper that launches *profile_name*, or ``[]``.
+
+    A profile's wrapper is named after its ALIAS, not the profile: ``hermes profile alias demo
+    --name bot`` writes ``bot``. Callers that need the real file must resolve it here rather
+    than deriving a path from the profile name — deriving it is what left ``profile delete``
+    unable to remove its own wrapper on Windows (``.bat``) or under a custom alias, so the
+    wrapper outlived the profile and re-created its home on the next run (#126210).
+
+    Returns the profile-named wrapper too when a custom alias also exists, so a delete
+    reporting "these files will be removed" is never a partial list.
+    """
+    canon = normalize_profile_name(profile_name)
+    paths = []
+    for alias in filter(None, (build_alias_map().get(canon), canon)):
+        paths.extend(p for p in _wrapper_candidates(alias) if p.is_file() and _is_our_wrapper(p))
+    # Deduplicate: on Windows a custom alias equal to the profile name yields one path twice.
+    seen, unique = set(), []
+    for p in paths:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+    return unique
+
+
 def _is_our_wrapper(path: Path) -> bool:
     """True when *path* reads as a Hermes-generated wrapper (contains ``hermes -p``)."""
     try:
@@ -482,6 +519,24 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
         return None
 
 
+def remove_wrapper_path(path: Path) -> bool:
+    """Unlink *path* if it is a Hermes-generated wrapper. Returns True if removed.
+
+    Split out of :func:`remove_wrapper_script` so a caller holding a RESOLVED path (one that
+    already accounts for a custom alias and the Windows ``.bat`` suffix) does not have to
+    re-derive it from a name and lose the wrapper it was handed. Re-checks ownership: the
+    resolved path is still only removed when it really is ours.
+    """
+    if not path.is_file() or not _is_our_wrapper(path):
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        logger.warning("Could not remove wrapper %s", path)
+        return False
+
+
 def remove_wrapper_script(name: str) -> bool:
     """Remove the wrapper script for a profile. Returns True if removed."""
     canon = normalize_profile_name(name)
@@ -491,15 +546,9 @@ def remove_wrapper_script(name: str) -> bool:
     except ValueError:
         return False
 
-    # Both the extensionless path (POSIX) and .bat (Windows)
-    candidates = [_get_wrapper_dir() / canon]
-    if sys.platform == "win32":
-        candidates.insert(0, _get_wrapper_dir() / f"{canon}.bat")
-    for wrapper_path in candidates:
-        if wrapper_path.exists() and _is_our_wrapper(wrapper_path):
-            with contextlib.suppress(Exception):
-                wrapper_path.unlink()
-                return True
+    for wrapper_path in _wrapper_candidates(canon):
+        if remove_wrapper_path(wrapper_path):
+            return True
     return False
 
 
@@ -1683,7 +1732,7 @@ def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
         raise last_exc
 
 
-def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapper_path: Optional[Path]) -> None:
+def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapper_paths: List[Path]) -> None:
     """Show what ``delete_profile`` is about to remove."""
     model, provider = _read_config_model(profile_dir)
     skill_count = _count_skills(profile_dir)
@@ -1700,7 +1749,7 @@ def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapp
             print(f"Installed from: {dist_source}")
     print("\nThis will permanently delete:")
     print("  • All config, API keys, memories, sessions, skills, cron jobs")
-    if wrapper_path is not None:
+    for wrapper_path in wrapper_paths:
         print(f"  • Command alias ({wrapper_path})")
     if gw_running:
         print("  ⚠ Gateway is running — it will be stopped.")
@@ -1733,9 +1782,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
     canon, profile_dir = _existing_profile_dir(canon)
     gw_running = _check_gateway_running(profile_dir)
-    wrapper_path = _get_wrapper_dir() / canon
-    has_wrapper = wrapper_path.exists()
-    _print_delete_summary(canon, profile_dir, gw_running, wrapper_path if has_wrapper else None)
+    wrapper_paths = find_wrappers_for_profile(canon)
+    _print_delete_summary(canon, profile_dir, gw_running, wrapper_paths)
     if not yes:
         print()
         try:
@@ -1799,9 +1847,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         if _released_logs:
             print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
 
-    # 3. Remove wrapper script
-    if has_wrapper and remove_wrapper_script(canon):
-        print(f"✓ Removed {wrapper_path}")
+    # 3. Remove wrapper script(s). Resolved by alias, not by profile name: a custom alias
+    # names the file, and Windows adds .bat (#126210).
+    for wrapper_path in wrapper_paths:
+        if remove_wrapper_path(wrapper_path):
+            print(f"✓ Removed {wrapper_path}")
 
     # 4. Remove profile directory
     remove_error: Exception | None = None

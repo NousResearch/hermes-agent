@@ -408,16 +408,7 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
 
 
 def _partial_clone_filter(repo_root: Path, **run_kwargs) -> "str | None":
-    """The checkout's existing fetch filter, or None for a non-partial clone.
-
-    ``git fetch --filter=...`` *writes* ``remote.origin.promisor`` and
-    ``remote.origin.partialclonefilter`` even when the repo was deliberately
-    de-partialised, so a filter may only be passed when the repo already is a
-    partial clone — and then it must repeat the clone's own filter rather
-    than override it, or the tag fetch would silently tighten (or loosen)
-    the transfer semantics the installer established. Read-only config probe;
-    failures read as "not partial".
-    """
+    """The checkout's own ``remote.origin.partialclonefilter``, or None for a non-partial clone."""
     result = subprocess.run(
         ["git", "config", "--get", "remote.origin.promisor"],
         cwd=str(repo_root), capture_output=True, text=True,
@@ -434,79 +425,52 @@ def _partial_clone_filter(repo_root: Path, **run_kwargs) -> "str | None":
 
 
 def heal_shallow_history(repo_root: Path, branch: str, **run_kwargs) -> bool:
-    """Unshallow a stale installer checkout before the updater's bounded fetch.
+    """Unshallow a stale installer checkout before the updater's bounded fetch (#123254).
 
-    A depth-1 install that has fallen far behind ``branch`` cannot complete the
-    plain ``git fetch origin <branch>`` inside the updater's 300s network cap:
-    the server must send the full ancestry of every side branch merged past the
-    shallow boundary, each attempt is killed mid-transfer, and the unshallow
-    step that would make later fetches incremental only ran *after* a
-    successful update — so a stale shallow install could never update at all
-    (#123254). This heals the checkout first, with the same commit-graph-only
-    shape and 900s budget the post-update tag fetch uses, pulling ``branch``
-    along so the bounded fetch that follows is small again.
-
-    Returns whether the checkout was shallow. Raises on fetch failure; the
-    checkout is left exactly as it was, so callers can downgrade the failure
-    to a warning and keep the previous fetch behaviour.
+    From a depth-1 clone far behind ``branch``, a plain ``git fetch origin <branch>`` makes the
+    server send the full ancestry of every side branch merged past the shallow boundary, which
+    cannot finish inside the 300s network cap; the post-update unshallow never got to run. Fetch
+    the commit graph first (900s budget), pulling ``branch`` along so the bounded fetch that
+    follows is small. Returns whether the checkout was shallow; raises on fetch failure.
     """
-    shallow = _shallow_file_path(repo_root) is not None
-    if not shallow:
-        return False
-    subprocess.run(
-        ["git", "fetch", "--quiet", "--unshallow", "--filter=tree:0", "--no-tags",
-         "origin", "refs/tags/v*:refs/tags/v*", branch],
-        cwd=str(repo_root), check=True, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
-    )
-    return True
+    return _shallow_file_path(repo_root) is not None and fetch_full_commit_graph(repo_root, branch, **run_kwargs)
 
 
-def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
+def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs) -> bool:
     """Refresh release tags and fill shallow history before publishing identity.
 
     A full commit graph does not imply current tags, especially after a --no-tags
     clone. Fetch version tags explicitly without fetching every remote branch or
-    replacing existing tags. On partial clones trees stay on demand. A full clone
-    must be fetched unfiltered: passing ``--filter`` would (re)write the promisor
-    config on a checkout the user deliberately de-partialised, re-arming the
-    ``should_include_obj`` fetch failure (#122353). Returns whether the checkout
-    was unshallowed; fetch failures raise subprocess errors.
+    replacing existing tags. The fetch never changes the clone's mode: ``--filter`` makes git
+    write ``remote.origin.promisor``/``partialclonefilter``, so a full clone fetches unfiltered
+    (#122353) and a partial clone repeats its own filter. The one conversion is deliberate: a
+    depth-limited full clone whose history is really missing unshallows as ``tree:0``, because an
+    unfiltered ``--unshallow`` downloads the whole project history; a full clone grafted by a
+    ``--depth`` fetch already has its history and stays full. Returns whether the checkout was unshallowed; fetch failures raise
+    subprocess errors.
     """
-    shallow = _shallow_file_path(repo_root) is not None
-    partial_filter = _partial_clone_filter(repo_root, **run_kwargs)
+    shallow_path = _shallow_file_path(repo_root)
+    shallow = shallow_path is not None
+    fetch_filter = _partial_clone_filter(repo_root, **run_kwargs)
+    if fetch_filter is None and shallow and _batch_missing_parents(
+            repo_root, shallow_path.read_text(encoding="utf-8-sig").split()):
+        fetch_filter = "tree:0"
     subprocess.run(
-        ["git", "fetch", "--quiet", *([ "--unshallow" ] if shallow else []),
-         *( [ f"--filter={partial_filter}" ] if partial_filter else [] ),
-         "--no-tags", "origin", "refs/tags/v*:refs/tags/v*"],
+        ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
+         *([f"--filter={fetch_filter}"] if fetch_filter else []),
+         "--no-tags", "origin", "refs/tags/v*:refs/tags/v*", *extra_refspecs],
         cwd=str(repo_root), check=True, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
     )
     return shallow
 
-# ---- Partial-clone fetch crash (git pack-objects BUG) ---------------------------
-#
-# On a partial clone (``clone --filter=tree:0``), git's promisor fetch runs index-pack
-# with ``--promisor``, whose repack_local_links() feeds pack-objects
-# ``--exclude-promisor-objects-best-effort``; pack-objects then BUG()s (SIGABRT, "should
-# only be called on existing objects") when the link traversal hits a legitimately
-# missing promisor object. Observed with git 2.53.0 / 2.54.0 (#124272): EVERY
-# ``git fetch`` dies, taking the ``update``/``check`` flows of this CLI with it. The
-# crash is deterministic per attempt and one fetch with the promisor machinery
-# disabled clears the state (the reporter's verified workaround), so the fetch paths
-# here retry once with that override instead of leaving the install stuck.
 
-_PACK_OBJECTS_CRASH_MARKERS = (
-    "BUG: builtin/pack-objects.c",
-    "index-pack failed",
-)
-
-# The BUG() assertion is the crash's fingerprint; how git then reports the abort
-# differs per platform and git build. POSIX builds emit "pack-objects died of
-# signal 6"; Windows builds (Git for Windows 2.54, #124293 field evidence)
-# instead print a second fatal line from the repack ("could not finish
-# pack-objects to repack local links") and no signal wording at all. Either
-# terminator of the same BUG() counts — match the fingerprint plus one of them.
+# git 2.53+ promisor fetches run index-pack --promisor, whose repack_local_links() BUG()s in
+# pack-objects (should_include_obj) when a local non-promisor object leads to a promisor-missing
+# one (#124272). The state is left behind by the repo, so every fetch dies the same way; one fetch
+# with the promisor machinery disabled gets past it. POSIX builds end with "died of signal 6",
+# Windows builds with "could not finish pack-objects to repack local links".
+_PACK_OBJECTS_CRASH_MARKERS = ("BUG: builtin/pack-objects.c", "index-pack failed")
 _PACK_OBJECTS_CRASH_TERMINATORS = (
     "pack-objects died of signal 6",
     "could not finish pack-objects to repack local links",

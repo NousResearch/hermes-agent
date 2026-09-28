@@ -2,7 +2,7 @@
 title: Existing-session maintenance (gateway)
 ---
 
-The gateway exposes a local `session-maintenance` control-socket verb. It is not a chat command, automatic policy, remote API, or scheduled task. On POSIX the socket uses owner-only filesystem permissions. On Windows the proactor named pipe uses its default security descriptor; this implementation does **not** install or verify an owner-only DACL. Do not assume the pipe name or knowledge of a session key/ID authenticates the caller; avoid exposing the verb on an untrusted multi-user Windows host until pipe access is independently restricted and verified. The verb does not create, switch, or deliver a message to a session.
+The gateway exposes a local `session-maintenance` control-socket verb **on POSIX only**. The Windows proactor pipe currently has no verified owner-only DACL, so this new write-capable verb is not registered there; Windows support requires a separately tested authorization boundary. It is not a chat command, automatic policy, remote API, or scheduled task. On POSIX the socket uses owner-only filesystem permissions. The verb does not create, switch, or deliver a message to a session.
 
 Send a `query_gateway_control(home, "session-maintenance", params={...}, timeout=125)` request from a trusted local process. The `home` must identify the gateway's control socket, not an arbitrary profile directory. Parameters (all required):
 

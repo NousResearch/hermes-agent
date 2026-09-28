@@ -5707,7 +5707,10 @@ async def _start_gateway_start_control_socket(runner):
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop),
-                           "session-maintenance": session_maintenance_verb(runner, _main_loop)})
+                           # The Windows proactor pipe currently has no verified owner-only
+                           # DACL. Never expose a write-capable session verb on that transport.
+                           **({"session-maintenance": session_maintenance_verb(runner, _main_loop)}
+                              if os.name == "posix" else {})})
         if not await _control_server.start():
             _control_server = None
         else:

@@ -19,7 +19,14 @@ const TAB =
 
 // Full height: with the strip's rule removed there is no last-pixel row to
 // leave uncovered, so tabs fill the bar and no sliver of gutter shows through.
-const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
+//
+// `--pane-tab-h` is that height, and it exists for ONE reason: `height: 100%`
+// resolves against the flex CONTAINER, not the wrap line, so on a wrapped strip
+// every tab would stretch to the full multi-row bar. The wrapped strip pins the
+// var to one row; unset (every other strip) it falls back to 100% and nothing
+// about the single-row geometry changes.
+const TAB_HORIZONTAL =
+  'h-[var(--pane-tab-h,100%)] min-w-0 max-w-48 not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
 
 // A closeable tab's floor keeps short labels left of the close button.
 // A floor, not padding — a tab already wider than it pays nothing.
@@ -28,7 +35,11 @@ const TAB_CLOSEABLE = 'min-w-13'
 const TAB_VERTICAL =
   'w-full max-h-48 justify-center not-first:border-t not-first:border-t-(--ui-stroke-quaternary) [writing-mode:vertical-rl]'
 
-const TAB_ACTIVE = 'h-full text-foreground [--tab-bg:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
+// `--pane-tab-h` (ours) rides on upstream's `--tab-bg` rename: upstream dropped
+// `--tab-surface` when the glass rework moved the tint to the body, so the old
+// token name here would be dead. Height and surface are independent questions.
+const TAB_ACTIVE =
+  'h-[var(--pane-tab-h,100%)] text-foreground [--tab-bg:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
 
 // Horizontal only: the active tab is the sole seam on the strip — a
 // theme-primary underline drawn as an inset shadow in its own last pixel row,
@@ -242,6 +253,11 @@ interface PaneTabStripProps extends React.ComponentProps<'div'> {
   trailing?: React.ReactNode
   /** Top-edge panel header shares the native window-control band. */
   titlebar?: boolean
+  /** Overflow onto more rows instead of scrolling one. The bar stops being a
+   *  fixed 28px and grows with its content, so every consumer that positions
+   *  against the header must MEASURE it rather than assume a row. Ignored on a
+   *  `titlebar` strip, whose band is a fixed height. */
+  wrap?: boolean
 }
 
 /**
@@ -254,7 +270,7 @@ interface PaneTabStripProps extends React.ComponentProps<'div'> {
  * `data-zone-tabstrip`, drop carets) ride on the usual div props.
  */
 export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(function PaneTabStrip(
-  { children, className, listRef, trailing, titlebar = false, ...props },
+  { children, className, listRef, trailing, titlebar = false, wrap = false, ...props },
   ref
 ) {
   return (
@@ -262,22 +278,51 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
       // Strip and active tab both sit on the sidebar surface, so the bar reads
       // as one piece of chrome with the titlebar above it. No bottom rule — the
       // active tab's primary underline is the only seam.
+      //
+      // Wrapped: `min-h-7` instead of `h-7`. The bar keeps a single row's height
+      // as its FLOOR (an empty or one-row strip is pixel-identical to the
+      // scrolling form) and grows a row at a time from there. `items-start`
+      // stops a short row from stretching its tabs to the full bar height.
       className={cn(
         'group/pane-header relative flex min-w-0 shrink-0 select-none bg-(--ui-sidebar-surface-background) [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]',
-        titlebar ? 'h-full flex-1 [-webkit-app-region:drag]' : 'h-7 [-webkit-app-region:no-drag]',
+        // Four cases. `titlebar` and `wrap` are INDEPENDENT questions — which
+        // band the strip lives in, and what a full strip does — so they
+        // combine rather than one outranking the other:
+        //   titlebar + wrap : drag region and flex-1 of the titlebar, but
+        //                     min-h-full instead of h-full so the rows the
+        //                     list creates actually grow the band.
+        //   titlebar        : exactly upstream's fixed single-row band.
+        //   wrap            : one row's height as a FLOOR, grows from there.
+        //   neither         : an exact h-7 that can never grow a row.
+        // `items-start` keeps a short row from stretching its tabs to the
+        // full bar height once the bar is taller than one row.
+        titlebar
+          ? wrap
+            ? 'min-h-full flex-1 items-start [--pane-tab-h:1.75rem] [-webkit-app-region:drag]'
+            : 'h-full flex-1 [-webkit-app-region:drag]'
+          : wrap
+            ? 'min-h-7 items-start [--pane-tab-h:1.75rem] [-webkit-app-region:no-drag]'
+            : 'h-7 [-webkit-app-region:no-drag]',
         className
       )}
       ref={ref}
       {...props}
     >
       <div
-        className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className={cn(
+          'flex min-w-0 flex-1',
+          wrap
+            ? 'flex-wrap'
+            : 'overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+        )}
         ref={listRef}
         role="tablist"
       >
         {children}
       </div>
-      {trailing}
+      {/* Trailing chrome keeps a full row's height so the chevron stays centred
+          on the FIRST row rather than drifting to the middle of a tall bar. */}
+      <div className={cn('flex shrink-0', wrap && 'h-7')}>{trailing}</div>
     </div>
   )
 })

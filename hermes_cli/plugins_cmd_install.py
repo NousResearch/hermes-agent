@@ -250,7 +250,10 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
 
 
 def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
-    if not (tree / "plugin.json").is_file():
+    # Only an Agent Plugins v1 package is this gate's business; a native manifest wins
+    # everywhere else in the plugin system, so a foreign-harness plugin.json beside a
+    # valid plugin.yaml must not fail the install (#125927).
+    if not _pc()._is_portable_plugin_dir(tree):
         return
     from hermes_cli.agent_plugins import load_agent_plugin
     from hermes_platform.resolver.availability import availability

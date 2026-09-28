@@ -102,6 +102,7 @@ describe('unread acknowledgement follows a successful foreground transition', ()
       ...bot,
       canonical_session: { id: 'reg-1', resolved_id: 'tip-9', last_active: 100 }
     } as RosterRow
+
     openBotCanonicalChat.mockImplementation(async () => {
       expect($pendingBotOpen.get()?.key).toBe('local::ops')
       expect(ackStoredSessionId).not.toHaveBeenCalled()

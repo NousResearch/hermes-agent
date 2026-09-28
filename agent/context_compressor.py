@@ -856,16 +856,20 @@ _SUMMARY_INPUT_MAX_CHARS = 160_000
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 # A dispatcher-owned worker's OWN kanban_show card survives compression under this
-# prefix (#126702); ``_is_summary_stub`` recognizes it so no demotion pass re-stubs it.
+# prefix (#126702); the soft demotion readers spare it via ``_is_kept_own_card``.
 _KANBAN_OWN_CARD_PREFIX = "[kanban_show own-card:"
 _KANBAN_OWN_CARD_MAX_CHARS = 4000
 
 
+def _is_kept_own_card(content: str) -> bool:
+    """True for a kept dispatcher-owned own-card summary (#126702). Distinct from
+    ``_is_summary_stub`` so readers can spare the card without conflating the two shapes."""
+    return content.startswith(_KANBAN_OWN_CARD_PREFIX)
+
+
 def _is_summary_stub(content: str) -> bool:
     """True for a tool result already replaced by a 1-line ``[tool] ... (N chars)`` summary."""
-    return content.startswith(_KANBAN_OWN_CARD_PREFIX) or (
-        content.startswith("[") and " chars)" in content and len(content) < 400
-    )
+    return content.startswith("[") and " chars)" in content and len(content) < 400
 
 
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
@@ -3110,9 +3114,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _demote_tool_result_at(
         result: List[Dict[str, Any]], idx: int, call_id_to_tool: Dict[str, tuple[str, str]],
         min_prune_chars: int, protected_skills: Optional[set[str]] = None,
+        keep_own_card: bool = True,
     ) -> bool:
         """Replace the tool result at ``idx`` with a 1-line summary; True if modified.
-        ``protected_skills`` (lower-cased) spares matching skill_view bodies; None (pressure pass) overrides the guard."""
+        ``protected_skills`` (lower-cased) spares matching skill_view bodies; None (pressure pass)
+        overrides the guard. ``keep_own_card=False`` (pressure pass) overrides the own-card keep
+        (#126702) — same shape as the skill guard: a soft keep must stay overridable by the hard
+        budget-backstop channel (the #32106 dead-end rule)."""
         msg = result[idx]
         if msg.get("role") != "tool":
             return False
@@ -3126,7 +3134,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if (
             not isinstance(content, str) or not content or content == _PRUNED_TOOL_PLACEHOLDER
             or content.startswith(("[Duplicate tool output", "[screenshot removed"))
-            or _is_summary_stub(content) or len(content) <= min_prune_chars
+            or _is_summary_stub(content) or (keep_own_card and _is_kept_own_card(content))
+            or len(content) <= min_prune_chars
         ):
             return False
         tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
@@ -3604,7 +3613,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             content = msg.get("content")
             if msg.get("role") != "tool" or i in protected or not isinstance(content, str):
                 continue
-            if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
+            if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content) or _is_kept_own_card(content):
                 continue
             result[i] = _rewritten(msg, _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id))
             demoted += 1

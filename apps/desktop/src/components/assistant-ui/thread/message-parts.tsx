@@ -34,6 +34,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
 import { useForcedTextDirection } from '@/store/text-direction'
+import { $showToolActivity } from '@/store/tool-activity'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -88,7 +89,7 @@ const failedCallNeedsUser = (part: TimelineToolCallProps): boolean => {
 }
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
-  const showReasoning = useStore($showReasoning)
+  const showToolActivity = useStore($showToolActivity)
 
   // todo parts are hoisted to a dedicated panel above the message content.
   if (isTodoToolName(props.toolName)) {
@@ -154,10 +155,11 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ConnectorExecution {...props} />
   }
 
-  // Answer-only: process chrome (reads, searches, commands) stays off the
-  // transcript. Cards, approvals, and failed calls the user must act on remain.
+  // The tool feed (reads, searches, commands) follows display.tool_progress;
+  // answer-only hides it only until the user states a feed preference. Cards,
+  // approvals, and failed calls the user must act on remain regardless, and
   // reasoning_effort is not a display switch.
-  if (!showReasoning && !failedCallNeedsUser(props) && !isCardTool(props.toolName)) {
+  if (!showToolActivity && !failedCallNeedsUser(props) && !isCardTool(props.toolName)) {
     return null
   }
 

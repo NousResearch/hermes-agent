@@ -6,6 +6,7 @@ import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/righ
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
 import { $showReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
+import { $showToolActivity, setShowToolActivityFromConfig } from '@/store/tool-activity'
 import {
   $currentCwd,
   $currentFastMode,
@@ -37,6 +38,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
   beforeEach(() => {
     // Reset atoms and localStorage between tests
     setShowReasoningFromConfig(undefined)
+    setShowToolActivityFromConfig(undefined)
     setCurrentCwd('')
     setCurrentFastMode(false)
     setCurrentModelSource('')
@@ -63,6 +65,25 @@ describe('useHermesConfig refreshHermesConfig', () => {
       await result.current.refreshHermesConfig()
     })
     expect($showReasoning.get()).toBe(true)
+  })
+
+  // The tool feed's own switch (display.tool_progress) mirrors the same way: an
+  // explicit value is a stated feed preference, a missing key is not — and with
+  // reasoning hidden, only the stated one keeps the execution flow visible.
+  it('mirrors display.tool_progress as a stated feed preference', async () => {
+    mockConfig({ display: { show_reasoning: false, tool_progress: 'all' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showToolActivity.get()).toBe(true)
+
+    mockConfig({ display: { show_reasoning: false } })
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showToolActivity.get()).toBe(false)
   })
 
   // Regression: the composer keeps a manual model pick sticky, which skips the

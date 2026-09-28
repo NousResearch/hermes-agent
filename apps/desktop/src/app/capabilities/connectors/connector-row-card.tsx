@@ -156,7 +156,7 @@ function CardLane({
   return (
     <div className="relative z-10 flex w-[7.75rem] shrink-0 flex-col items-end gap-1">
       <span className="flex items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)">
-        {withDot ? <StatusDot tone={STATE_TONE[card.state]} /> : null}
+        {withDot ? <StatusDot className="size-[5px]" tone={STATE_TONE[card.state]} /> : null}
         <span className="truncate">{stateLabel}</span>
       </span>
 

@@ -1173,7 +1173,8 @@ export const esOverrides = {
       introSplashTitle: 'Pantalla de bienvenida',
       introSplashDesc: 'El logotipo y la indicación que se muestran en un chat vacío.',
       modelPricingTitle: 'Precios de modelos',
-      modelPricingDesc: 'Muestra los precios de entrada, salida y lectura de caché por millón de tokens en el selector de modelos.',
+      modelPricingDesc:
+        'Muestra los precios de entrada, salida y lectura de caché por millón de tokens en el selector de modelos.',
       reactionsTitle: 'Reacciones a mensajes',
       reactionsDesc:
         'Reacciones emoji estilo iMessage — reacciona a los mensajes, y Hermes puede reaccionar a los tuyos.',
@@ -4980,7 +4981,8 @@ export const esOverrides = {
     removeCustomModel: 'Quitar modelo personalizado',
     resetToDefaults: 'Restablecer valores predeterminados',
     resetConfirm: '¿Restablecer la visibilidad de los modelos?',
-    resetDescription: 'Se borran tus elecciones de modelos visibles y ocultos, y cada proveedor vuelve a su lista predeterminada. Los modelos personalizados que añadiste se conservan y se muestran.',
+    resetDescription:
+      'Se borran tus elecciones de modelos visibles y ocultos, y cada proveedor vuelve a su lista predeterminada. Los modelos personalizados que añadiste se conservan y se muestran.',
     resetAction: 'Restablecer'
   },
   shell: {

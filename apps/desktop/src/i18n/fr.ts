@@ -1177,7 +1177,8 @@ export const frOverrides = {
       introSplashTitle: "Écran d'accueil",
       introSplashDesc: "Le logo et l'invite affichés dans une conversation vide.",
       modelPricingTitle: 'Tarifs des modèles',
-      modelPricingDesc: "Affiche les prix d'entrée, de sortie et de lecture du cache par million de jetons dans le sélecteur de modèle.",
+      modelPricingDesc:
+        "Affiche les prix d'entrée, de sortie et de lecture du cache par million de jetons dans le sélecteur de modèle.",
       reactionsTitle: 'Réactions aux messages',
       reactionsDesc: 'Réactions emoji façon iMessage — réagissez aux messages, et Hermes peut réagir aux vôtres.',
       tipsTitle: "Astuces dans l'application",
@@ -5002,7 +5003,8 @@ export const frOverrides = {
     removeCustomModel: 'Retirer le modèle personnalisé',
     resetToDefaults: 'Rétablir les valeurs par défaut',
     resetConfirm: 'Rétablir la visibilité des modèles par défaut ?',
-    resetDescription: 'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
+    resetDescription:
+      'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
     resetAction: 'Rétablir'
   },
   shell: {

@@ -56,6 +56,72 @@ def test_startup_validation_checks_real_ruamel_dependency(tmp_path, failure):
 
 
 @pytest.fixture
+def offline_graph(tmp_path, monkeypatch, recovery_graph):
+    """A recorded offline uv graph the engine can rebuild against (repo root swapped)."""
+    import pm.paths as paths
+
+    engine = importlib.import_module("pm.install")
+    uv = shutil.which("uv")
+    assert uv, "recovery integration requires real uv"
+    core, _plugin = recovery_graph
+    monkeypatch.setattr(paths, "repo_root", lambda: core)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
+    env = {**runtime_environment(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
+    env.pop("UV_NO_CONFIG", None)
+    subprocess.run([uv, "lock"], cwd=core, env=env, capture_output=True, check=True, timeout=60)
+    return engine, core
+
+
+def test_explicit_rebuild_validates_startup_imports_before_committing(offline_graph, monkeypatch):
+    """Every rebuild — not only a repair — must prove the candidate can start the
+    application before PM commits the selection. A sync that skipped it published
+    "ok" while the fleet's bootstrapped children died on the first missing import."""
+    import pm.paths as paths
+    import pm.recovery as recovery
+    from pm.environments import selected_venv
+
+    engine, core = offline_graph
+    calls = []
+    real = recovery.validate_environment
+
+    def recording(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(recovery, "validate_environment", recording)
+
+    engine.sync_venv([], explicit=True)
+    assert calls, "explicit rebuild must run the startup-import validation"
+    assert selected_venv(core).is_dir()
+
+
+def test_explicit_rebuild_fails_loud_without_committing_a_broken_candidate(offline_graph, monkeypatch):
+    """A candidate that cannot start the application fails the sync, and the
+    failed candidate is discarded: no facts, no selection, no restart-worthy
+    "new code + broken dependencies" state left behind."""
+    import pm.paths as paths
+    import pm.recovery as recovery
+    from pm.lock import Facts
+    from pm.package import InstallError
+
+    engine, _core = offline_graph
+
+    def fail(*args, **kwargs):
+        raise InstallError("venv", "startup validation failed (injected)")
+
+    monkeypatch.setattr(recovery, "validate_environment", fail)
+    with pytest.raises(InstallError):
+        engine.sync_venv([], explicit=True)
+    try:
+        fact = Facts(paths.runtime_facts_path()).get("venv")
+    except FileNotFoundError:
+        fact = None
+    assert not fact
+
+
+@pytest.fixture
 def recovery_graph(tmp_path):
     core = tmp_path / "core"
     core.mkdir()

@@ -438,9 +438,13 @@ class Venv(StatePackage):
                           source=project, environment=environment)
             resolved_lock = generation / "workspace" / "uv.lock"
             environment.check()
-            if repair:
-                from pm.recovery import validate_environment
-                validate_environment(environment.executable, env=dict(environment.env), cwd=resolved_lock.parent)
+            # Startup-import validation is not a repair-only courtesy: a committed
+            # generation the application cannot boot from must never be selected. A
+            # sync that skipped it published "ok" while every child booting without
+            # the bootstrap contract died on the first missing import (28.09.2026:
+            # cron workers down ~9h on a store interpreter without python-dotenv).
+            from pm.recovery import validate_environment
+            validate_environment(environment.executable, env=dict(environment.env), cwd=resolved_lock.parent)
         except BaseException:
             shutil.rmtree(generation, ignore_errors=True)
             raise

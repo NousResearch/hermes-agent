@@ -583,13 +583,16 @@ def test_launch_external_worker_degrades_by_default_with_real_helper(
     assert not (tmp_path / "cron/external-workers/exec-1.json").exists()
 
 
-def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
+def test_launch_external_worker_boots_through_the_shared_bootstrap(
     tmp_path, monkeypatch,
 ):
-    """#112729: the worker starts in ``cron.scheduler`` (no ``hermes_cli.main`` bootstrap),
-    so its import path must be explicit — a rotted editable mapping or PYTHONSAFEPATH
-    otherwise kills it with "No module named 'cron'" before the ack. The spawn env carries
-    the gateway's own checkout first and keeps the gateway's other PYTHONPATH entries."""
+    """The worker starts in ``cron.scheduler``, which has no ``hermes_cli.main``
+    bootstrap of its own — a bare ``-m`` child imports the application's
+    dependencies from the store interpreter's own site-packages, a tree nothing
+    synchronizes (28.09.2026: every cron worker died on a missing ``dotenv`` for
+    ~9h until it was hand-installed there). The spawn command must carry the
+    shared launcher bootstrap, which selects and leases the committed dependency
+    generation before ``cron.scheduler``'s module-level imports run."""
     import cron.scheduler as scheduler
     from tools.process_registry import GatewayChildDispatch
 
@@ -599,49 +602,59 @@ def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
         "tools.process_registry.restart_safe_gateway_child_argv",
         lambda command, **_: GatewayChildDispatch("degraded", command),
     )
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "user-libs"))
     spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+    repo_root = Path(scheduler.__file__).resolve().parent.parent
 
     assert scheduler._launch_external_cron_worker(job) is True
-    repo_root = Path(scheduler.__file__).resolve().parent.parent
-    entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
-    assert entries[0] == str(repo_root)
-    assert str(tmp_path / "user-libs") in entries
+    command = spawned[0][0]
+    assert command[1:3] == ["-I", "-c"]
+    assert "import hermes_bootstrap" in command[3]
+    assert "runpy.run_module('cron.scheduler'" in command[3]
+    assert command[4:] == [
+        "--external-worker-file", str(tmp_path / "cron/external-workers/exec-1.json"),
+        "--ack-file", str(tmp_path / "cron/external-workers/exec-1.ready"),
+    ]
     assert spawned[0][1]["cwd"] == str(repo_root)
 
 
-def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
+def test_external_worker_command_ignores_the_spawners_environment(
     tmp_path, monkeypatch,
 ):
-    """The pin prepends the checkout to the PYTHONPATH the shared sanitizer *kept*; it
-    must not rebuild from raw ``os.environ`` (which would resurrect entries
-    ``build_subprocess_env`` stripped). Under a wheel/pipx install the checkout IS
-    purelib, already importable -- pinning it would hoist site-packages above the stdlib,
-    so the pin is skipped there."""
-    import cron.scheduler as scheduler
+    """The command builder reads no ``PYTHON*`` state from the spawning process:
+    the sanitized child env decides what the worker carries, and ``-I`` ignores
+    its ``PYTHON*`` residue anyway. Handoff files land in ``sys.argv[1:]`` —
+    exactly what ``cron.scheduler``'s argparse reads after the ``-c`` payload."""
     import cron.scheduler_worker_env as worker_env_mod
-    from tools.process_registry import GatewayChildDispatch
 
-    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
-    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "poison"))
     monkeypatch.setattr(
-        "tools.process_registry.restart_safe_gateway_child_argv",
-        lambda command, **_: GatewayChildDispatch("degraded", command),
+        "hermes_cli._launchers.resolve_store_python", lambda _root: None)
+    command = worker_env_mod.external_worker_command(
+        tmp_path / "repo",
+        payload_path=tmp_path / "payload.json",
+        ack_path=tmp_path / "ack.ready",
     )
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "raw-environ-only"))
-    monkeypatch.setattr(
-        "tools.environments.local.build_subprocess_env",
-        lambda **_: {"PATH": os.environ.get("PATH", ""),
-                     "PYTHONPATH": str(tmp_path / "kept-by-sanitizer")},
-    )
-    spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
-    repo_root = Path(scheduler.__file__).resolve().parent.parent
+    assert command[0] == sys.executable
+    assert command[1:3] == ["-I", "-c"]
+    assert "import hermes_bootstrap" in command[3]
+    assert "runpy.run_module('cron.scheduler'" in command[3]
+    assert command[4:] == [
+        "--external-worker-file", str(tmp_path / "payload.json"),
+        "--ack-file", str(tmp_path / "ack.ready"),
+    ]
 
-    assert scheduler._launch_external_cron_worker(job) is True
-    entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
-    assert entries == [str(repo_root), str(tmp_path / "kept-by-sanitizer")]
 
-    # Wheel / pipx layout: repo_root == purelib -> untouched.
+def test_tree_pin_for_bootstrap_owning_children_skips_a_purelib_root(
+    tmp_path, monkeypatch,
+):
+    """``pin_hermes_tree_on_pythonpath`` remains the contract for children whose
+    entry module bootstraps dependency activation itself (``hermes_cli.main``:
+    kanban dispatcher workers, bot-chat delivery). Under a wheel/pipx install the
+    checkout IS purelib, already importable — pinning it would hoist site-packages
+    above the stdlib, so the pin is skipped there."""
+    import cron.scheduler_worker_env as worker_env_mod
+
+    repo_root = tmp_path / "repo"
     monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: repo_root)
     untouched = {"PYTHONPATH": str(tmp_path / "kept-by-sanitizer")}
     assert worker_env_mod.pin_hermes_tree_on_pythonpath(dict(untouched), repo_root) == untouched

@@ -178,6 +178,22 @@ def _flood_cap_result(wait: float) -> "SendResult":
     return SendResult(success=False, error=f"flood_control:{wait}", retry_after=float(wait))
 
 
+def _flood_wait_secs(error: Exception) -> Optional[float]:
+    """Flood penalty (seconds) Telegram asked a send to wait, or None for non-flood errors.
+
+    Reads ``RetryAfter.retry_after`` when present; otherwise parses the wording both PTB and the
+    Bot API use ("Retry in N seconds" / "retry after N"), like the rich text lane does.
+    """
+    retry_after = getattr(error, "retry_after", None)
+    if retry_after is not None:
+        try:
+            return float(retry_after)
+        except (TypeError, ValueError):
+            return None
+    m = re.search(r"retry\s+(?:in\s+|after\s+)?(\d+)", str(error).lower())
+    return float(m.group(1)) if m else None
+
+
 _TELEGRAM_IMAGE_MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 _TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
 
@@ -5347,19 +5363,51 @@ class TelegramAdapter(BasePlatformAdapter):
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,
     ) -> SendResult:
         """Shared shell for native local-file sends: existence check, open, send with routing, then
-        ``await on_error(exc)`` on any failure. ``build_kwargs(f)`` supplies the media kwargs."""
+        ``await on_error(exc)`` on any failure. ``build_kwargs(f)`` supplies the media kwargs.
+
+        A flood refusal is NOT handed to ``on_error`` — that degrades the file to bare path text
+        (#125857) while Telegram keeps the penalty running. Short waits sleep inline and resend
+        once; longer ones fail closed with ``flood_control:<s>`` (same contract as ``send()`` and
+        the edit lane) so the delivery ledger owns the wait and redelivers the native upload.
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        try:
-            if not os.path.exists(path):
-                return SendResult(success=False, error=self._missing_media_path_error(label, path))
-            with open(path, "rb") as f:
-                msg = await self._send_media(
+        if not os.path.exists(path):
+            return SendResult(success=False, error=self._missing_media_path_error(label, path))
+        with open(path, "rb") as f:
+            async def _attempt() -> Any:
+                return await self._send_media(
                     getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
                     reset_media=lambda: f.seek(0), **build_kwargs(f))
-            return SendResult(success=True, message_id=str(msg.message_id))
-        except Exception as e:
-            return await on_error(e)
+            try:
+                msg = await _attempt()
+                return SendResult(success=True, message_id=str(msg.message_id))
+            except Exception as e:
+                flood_wait = _flood_wait_secs(e)
+                if flood_wait is None:
+                    return await on_error(e)
+                if flood_wait > _FLOOD_INLINE_WAIT_CAP_SECS:
+                    logger.warning(
+                        "[%s] Telegram flood control on %s send (retry_after=%.1fs > %.0fs); failing "
+                        "closed instead of degrading the file to text: %s",
+                        self.name, media_key, flood_wait, _FLOOD_INLINE_WAIT_CAP_SECS, _redact_telegram_error_text(e))
+                    return self._record_send_flood_cooldown(chat_id, flood_wait)
+                logger.warning(
+                    "[%s] Telegram flood control on %s send, waiting %.1fs before one retry: %s",
+                    self.name, media_key, flood_wait, _redact_telegram_error_text(e))
+                await asyncio.sleep(flood_wait)
+                f.seek(0)
+                try:
+                    msg = await _attempt()
+                    return SendResult(success=True, message_id=str(msg.message_id))
+                except Exception as retry_err:
+                    if _flood_wait_secs(retry_err) is not None:
+                        # Still flooded after the inline wait: fail closed like an over-cap penalty.
+                        logger.warning(
+                            "[%s] Telegram flood control on %s send persisted after inline wait; failing "
+                            "closed: %s", self.name, media_key, _redact_telegram_error_text(retry_err))
+                        return self._record_send_flood_cooldown(chat_id, max(_flood_wait_secs(retry_err), flood_wait))
+                    return await on_error(retry_err)
 
     async def _warn_then(self, media_key: str, e: Exception, fallback) -> SendResult:
         logger.warning("[%s] Failed to send %s: %s", self.name, media_key, _redact_telegram_error_text(e))

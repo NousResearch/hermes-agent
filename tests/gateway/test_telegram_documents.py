@@ -34,6 +34,14 @@ from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 # Helpers to build mock Telegram objects
 # ---------------------------------------------------------------------------
 
+class FakeRetryAfter(Exception):
+    """RetryAfter shape without importing telegram.error: retry_after attr + PTB wording."""
+
+    def __init__(self, seconds):
+        super().__init__(f"Flood control exceeded. Retry in {seconds} seconds")
+        self.retry_after = seconds
+
+
 def _make_file_obj(data: bytes = b"hello"):
     """Create a mock Telegram File with download_as_bytearray."""
     f = AsyncMock()
@@ -446,6 +454,69 @@ class TestSendDocument:
         # Should have fallen back to base class
         assert result.success is True
         assert result.message_id == "fallback"
+
+    @pytest.mark.asyncio
+    async def test_send_document_over_cap_flood_fails_closed(self, connected_adapter, tmp_path):
+        """A RetryAfter past the inline cap must fail closed so the delivery ledger owns the wait —
+        not degrade the file to bare path text (#125857)."""
+        test_file = tmp_path / "restart-command.txt"
+        test_file.write_bytes(b"systemctl restart hermes")
+
+        connected_adapter._bot.send_document = AsyncMock(side_effect=FakeRetryAfter(26))
+        connected_adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="fallback"))
+
+        result = await connected_adapter.send_document(chat_id="12345", file_path=str(test_file))
+
+        assert result.success is False
+        assert result.error == "flood_control:26.0"
+        assert result.retry_after == 26.0
+        connected_adapter._bot.send_document.assert_awaited_once()  # never fire into the penalty again
+        connected_adapter.send.assert_not_awaited()  # no text degradation
+        assert connected_adapter._send_flood_cooldown_remaining("12345") is not None
+
+    @pytest.mark.asyncio
+    async def test_send_document_short_flood_retries_inline(self, connected_adapter, tmp_path, monkeypatch):
+        """A short RetryAfter waits inline once and resends the same file natively."""
+        test_file = tmp_path / "report.txt"
+        test_file.write_bytes(b"data")
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 77
+        connected_adapter._bot.send_document = AsyncMock(side_effect=[FakeRetryAfter(2), mock_msg])
+        sleeps: list = []
+
+        async def _fake_sleep(secs):
+            sleeps.append(secs)
+
+        monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+        result = await connected_adapter.send_document(chat_id="12345", file_path=str(test_file))
+
+        assert result.success is True
+        assert result.message_id == "77"
+        assert connected_adapter._bot.send_document.await_count == 2
+        assert sleeps == [2.0]
+
+    @pytest.mark.asyncio
+    async def test_send_document_flood_persists_after_inline_retry(self, connected_adapter, tmp_path, monkeypatch):
+        """Still flooded after the one inline wait → fail closed, never degrade to text."""
+        test_file = tmp_path / "report.txt"
+        test_file.write_bytes(b"data")
+
+        connected_adapter._bot.send_document = AsyncMock(side_effect=FakeRetryAfter(3))
+        connected_adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="fallback"))
+
+        async def _fake_sleep(secs):
+            pass
+
+        monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+        result = await connected_adapter.send_document(chat_id="12345", file_path=str(test_file))
+
+        assert result.success is False
+        assert result.error.startswith("flood_control:")
+        assert connected_adapter._bot.send_document.await_count == 2
+        connected_adapter.send.assert_not_awaited()
 
 
 class TestTelegramPhotoBatching:

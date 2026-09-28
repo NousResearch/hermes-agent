@@ -141,6 +141,30 @@ describe('MessagingView profile scope', () => {
   })
 })
 
+describe('MessagingView status filter', () => {
+  const rowNames = (container: HTMLElement) =>
+    [...container.querySelectorAll('ul > li > button')].map(row => row.querySelector('.truncate')?.textContent)
+
+  it('offers a tab only for tones some platform is in, and narrows the list to that tone', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({ enabled: true, id: 'discord', name: 'Discord', state: 'connected' }),
+        platform({ enabled: true, id: 'slack', name: 'Slack', state: 'retrying' }),
+        platform({ id: 'teams', name: 'Microsoft Teams' })
+      ]
+    })
+
+    const { container } = await renderMessaging()
+
+    await waitFor(() => expect(rowNames(container)).toHaveLength(3))
+    expect(screen.queryByRole('button', { name: 'Errors' })).toBeNull()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Needs attention' })[0])
+
+    expect(rowNames(container)).toEqual(['Slack'])
+  })
+})
+
 describe('MessagingView enable switch', () => {
   it('labels the enable switch with the platform state', async () => {
     getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ enabled: true })] })

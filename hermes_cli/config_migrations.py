@@ -661,6 +661,28 @@ def _migrate_to_48(results: Dict[str, Any], quiet: bool) -> None:
 #: floor gate in run_migrations()'s caller. Versions absent here (15, 18-20, 22, 24, 26-28, 30)
 #: only added a schema default that runtime merging supplies without a write. When adding a step,
 #: decide whether it belongs in LEGACY_KEY_STEPS below (the only steps an unversioned file gets).
+
+def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
+    # 48 → 49: Vercel deprecated sandbox runtimes in favour of images; the default moves from the
+    # `node24` runtime to `vercel/sandbox/universal:latest`. A saved runtime still equal to the old
+    # seeded default (config.yaml AND the .env mirror the setup wizard wrote) is the template copied,
+    # not a choice, so both are dropped and fresh sandboxes follow terminal.vercel_image. A runtime
+    # the user chose (node22, python3.13) stays and keeps overriding the image, as before. Persisted
+    # sandboxes are unaffected either way: a snapshot restore never sends a runtime or an image.
+    from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE, LEGACY_VERCEL_RUNTIME
+    _rewrite_stale_default(
+        section="terminal", key="vercel_runtime", old=LEGACY_VERCEL_RUNTIME, new=None,
+        added=f"terminal.vercel_runtime unset (fresh sandboxes use terminal.vercel_image, {DEFAULT_VERCEL_IMAGE})",
+        message=f"  ✓ terminal.vercel_runtime: was the old default; fresh sandboxes now use the managed image "
+                f"({DEFAULT_VERCEL_IMAGE})",
+    )(results, quiet)
+    _c = _cfg()
+    if (_c.get_env_value_prefer_dotenv("TERMINAL_VERCEL_RUNTIME") or "").strip() == LEGACY_VERCEL_RUNTIME:
+        _c.remove_env_value("TERMINAL_VERCEL_RUNTIME")
+        if not quiet:
+            print("  ✓ Cleared TERMINAL_VERCEL_RUNTIME from .env (was the old default; the image is used instead)")
+
+
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -790,6 +812,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "to a token count to cap it on purpose."))),
     # 47 → 48: a saved old-default sandbox image is dropped so the file follows the new default (see _migrate_to_48).
     (48, _migrate_to_48),
+    # 48 → 49: the seeded Vercel runtime pin is dropped so fresh sandboxes use the managed image (see _migrate_to_49).
+    (49, _migrate_to_49),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

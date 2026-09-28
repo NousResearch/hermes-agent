@@ -1,4 +1,4 @@
-import { type ReactNode, type RefObject, useState } from 'react'
+import { type KeyboardEventHandler, type ReactNode, type RefObject, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -21,6 +21,7 @@ interface SearchFieldProps {
   inputClassName?: string
   loading?: boolean
   onClear?: () => void
+  onKeyDown?: KeyboardEventHandler<HTMLInputElement>
   inputRef?: RefObject<HTMLInputElement | null>
   trailingAction?: ReactNode
   /**
@@ -48,6 +49,7 @@ export function SearchField({
   inputClassName,
   loading = false,
   onClear,
+  onKeyDown,
   inputRef,
   trailingAction,
   variant = 'underline',
@@ -98,6 +100,7 @@ export function SearchField({
           inputClassName
         )}
         onChange={event => onChange(event.target.value)}
+        onKeyDown={onKeyDown}
         placeholder={effectivePlaceholder}
         ref={inputRef}
         type="text"

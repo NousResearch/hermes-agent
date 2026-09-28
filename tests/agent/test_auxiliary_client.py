@@ -4816,6 +4816,33 @@ class TestCustomEndpointApiKeyInheritance:
         assert model == "aux-model"
         assert (client.api_key == "sk-main-config-key") is inherits
 
+    @pytest.mark.parametrize("live_key", ["", lambda: "sk-live-cmd-key"], ids=["keyless", "key_cmd"])
+    def test_inherited_key_belongs_to_the_anchor_endpoint(self, tmp_path, monkeypatch, live_key):
+        """The live main runtime (a /model switch, a keyless local server, a key_cmd) is the
+        anchor; config.yaml's key belongs to config.yaml's base_url and must not ride along to
+        the live endpoint."""
+        import hermes_yaml as yaml
+        from agent.auxiliary_client import reset_runtime_main, set_runtime_main
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(yaml.safe_dump({
+            "model": {"provider": "custom", "base_url": "https://gw.example.com/v1",
+                      "api_key": "sk-main-config-key", "default": "main-model"},
+            "auxiliary": {"compression": {"provider": "custom", "base_url": "http://127.0.0.1:8080/v1",
+                                          "model": "aux-model"}},
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        token = set_runtime_main("custom", "local-model", base_url="http://127.0.0.1:8080/v1", api_key=live_key)
+        try:
+            client, _ = get_text_auxiliary_client("compression")
+        finally:
+            reset_runtime_main(token)
+
+        assert client.api_key != "sk-main-config-key"
+
 
 class TestNoProgressTimeoutTaskConfigGating:
     """#108104: ``auxiliary.<task>.no_progress_timeout`` must only reach the request kwargs

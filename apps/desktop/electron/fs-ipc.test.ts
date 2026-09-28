@@ -95,4 +95,16 @@ describe('hermes:fs:logsRoot', () => {
   it('falls back to the active Desktop profile when no owner is named', async () => {
     await expect(logsRoot()).resolves.toBe(path.join(scratch, 'profiles', 'launch-profile', 'logs'))
   })
+
+  // The owner is renderer data (from a remote backend in remote mode): a
+  // traversal or absolute value must never leave hermesHome, let alone be
+  // created and revealed. Bad names route like an unnamed owner.
+  it('never leaves hermesHome for an owner that is not a profile name', async () => {
+    for (const bad of ['../../x', '/etc', 'a/b', 'Upper', '.hidden']) {
+      const root = (await logsRoot(bad)) as string
+
+      expect(path.relative(scratch, root).startsWith('..')).toBe(false)
+      expect(root).toBe(path.join(scratch, 'profiles', 'launch-profile', 'logs'))
+    }
+  })
 })

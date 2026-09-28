@@ -15,6 +15,7 @@ import {
   migrateProfileScopedDesktopPlugins,
   reconcileUnifiedDesktopHalves
 } from './desktop-plugins-root'
+import { DESKTOP_PROFILE_NAME_RE } from './desktop-profile'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
 
@@ -98,9 +99,15 @@ export function registerFsIpc({
   // so it stays valid in every connection mode. Created on demand, like openDir.
   // Profile-scoped roots (agent plugins, logs) live under profiles/<name>/ for a
   // named Desktop profile — they belong to THAT agent. 'default'/unset pins the
-  // global root.
+  // global root. The owner is renderer-supplied (in remote mode it comes from
+  // the remote backend's session record), so only a profile NAME may reach the
+  // join: anything else would escape profiles/ and be created + revealed.
   async function localPluginsRoot(dirName: string, owner?: unknown): Promise<string> {
-    const profile = (typeof owner === 'string' && owner.trim()) || readActiveDesktopProfile()
+    const named = typeof owner === 'string' ? owner.trim() : ''
+
+    const profile =
+      named && (named === 'default' || DESKTOP_PROFILE_NAME_RE.test(named)) ? named : readActiveDesktopProfile()
+
     const base = profile && profile !== 'default' ? path.join(hermesHome, 'profiles', profile) : hermesHome
 
     return ensureDir(path.join(base, dirName))

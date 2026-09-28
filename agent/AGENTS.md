@@ -98,8 +98,25 @@ cache break — keep it the only one. Full detail:
 - **Auxiliary (side-LLM) work** — curator, vision, embedding, title generation, session_search,
   compression — resolves through `agent/auxiliary_client.py::_resolve_auto_route`; each task can pin
   its own `provider/model/base_url/reasoning_effort` under `auxiliary:` in config.yaml.
+  Every physical attempt funnels through `_relay_sync_completion` / `_relay_async_completion` /
+  `_relay_sync_stream`, where `agent/auxiliary_hooks.py` emits `pre_auxiliary_call` /
+  `post_auxiliary_call` (observer-only, fail-open, `aux_task` set); the main-loop
+  `pre/post_api_request` events must NOT fire for aux calls (#79733).
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
   against a temp `HERMES_HOME`, not mocks (root rubric).
+
+## i18n (`agent/i18n.py` + `i18n_layers.py` + `i18n_languages.py`)
+
+`t(key)` resolves plugin packs (last registered wins) → user overlay `<home>/locales/<lang>.yaml`
+(profile-scoped) → bundled `locales/<lang>.yaml` → the same for `en` → bare key; every layer is flat
+dotted keys and may be partial. One merged dict per `(home, lang)` is cached; `reset_language_cache()`
+(called by every pack registration and by `config set display.language`) drops everything.
+`supported_languages()` is the live set (bundled ∪ overlay ∪ packs) and is what `display.language`
+validation and `_normalize_lang` accept; `SUPPORTED_LANGUAGES` stays the bundled tuple. `.tui.yaml` /
+`.desktop.yaml` pack files are opaque here beyond parse/flatten/serve (`surface_catalog`, RPC
+`i18n.catalog`); for the `tui` surface the bundled `locales/<lang>.tui.yaml` is the bottom layer of what
+`surface_catalog` serves (the TUI ships English only in TS). Endonyms for bundled ids live in `i18n_languages.py` and must agree with
+`apps/shared/src/i18n.ts`.
 
 ## Memory, context engines, curator
 

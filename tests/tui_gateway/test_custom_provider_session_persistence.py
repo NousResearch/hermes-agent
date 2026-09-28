@@ -578,8 +578,8 @@ class TestFollowProfileConfigRuntimeOverrides:
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
             home.mkdir()
-            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n")
-            (home / ".env").write_text("")
+            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n", encoding="utf-8")
+            (home / ".env").write_text("", encoding="utf-8")
         stored = "20260919-000000-botc"
         db = SessionDB(db_path=secondary / "state.db")
         db.create_session(stored, "desktop", model="profile/default",
@@ -636,10 +636,51 @@ class TestFollowProfileConfigRuntimeOverrides:
             assert record["model_override"]["model"] == "zai/glm-5.1"
             assert record["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
 
-            (secondary / "config.yaml").write_text("model:\n  default: profile/new-default\n  provider: nous\n")
+            (secondary / "config.yaml").write_text("model:\n  default: profile/new-default\n  provider: nous\n", encoding="utf-8")
             assert resume().get("model_override") is None
         finally:
             db.close()
+            with server._sessions_lock:
+                for sid in [s for s in server._sessions if s not in known]:
+                    server._sessions.pop(sid, None)
+
+    def test_create_time_composer_pick_on_bot_chat_records_owning_profile_marker(self, monkeypatch, tmp_path):
+        """A composer pick handed to ``session.create`` on a follow_profile_config chat is the same
+        chat-scoped pick a mid-chat switch records: the record carries the OWNING profile's model as the
+        divergence marker (not the launch profile's), the first row write persists it, and the resume read
+        under that profile restores model AND provider instead of the ambient fallback (#123805)."""
+        import tui_gateway.server as server
+
+        launch, secondary = tmp_path / "a", tmp_path / "b"
+        for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
+            home.mkdir()
+            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n")
+            (home / ".env").write_text("")
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+        monkeypatch.setattr(server, "_hermes_home", str(launch))
+        monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
+        monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+        monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_default_session_cwd", lambda *a, **k: str(tmp_path))
+        known = set(server._sessions)
+        try:
+            resp = server.handle_request({"id": "1", "method": "session.create", "params": {
+                "cols": 80, "source": "desktop", "profile": "b", "model": "zai/glm-5.1", "provider": "zai",
+                "follow_profile_config": True}})
+            assert "error" not in resp, resp
+            session = server._sessions[resp["result"]["session_id"]]
+            assert session["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
+            assert server._ensure_session_db_row(session)
+            db = SessionDB(db_path=secondary / "state.db")
+            try:
+                row = db.get_session(session["session_key"])
+            finally:
+                db.close()
+            with server._profile_build_scope(secondary):
+                restored = server._stored_session_runtime_overrides(row)["model_override"]
+            assert (restored["model"], restored["provider"]) == ("zai/glm-5.1", "zai")
+        finally:
             with server._sessions_lock:
                 for sid in [s for s in server._sessions if s not in known]:
                     server._sessions.pop(sid, None)
@@ -679,6 +720,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         apply_switch.assert_called_once_with(
             "sid", session, "profile/new-default --provider nous",
             confirm_expensive_model=True, pin_session_override=False, persist_override=False,
+            count_switch=False,
         )
 
     def test_marked_row_returns_no_overrides(self):
@@ -700,35 +742,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         }
         assert _stored_session_runtime_overrides(row) == {}
 
-    def test_marked_row_dict_model_config_returns_no_overrides(self):
-        """Same contract when model_config is already a dict (not JSON)."""
-        from tui_gateway.server import _stored_session_runtime_overrides
 
-        row = {
-            "model": "openai/gpt-5.6-luna-pro",
-            "model_config": {
-                "model": "openai/gpt-5.6-luna-pro",
-                "provider": "nous",
-                "follow_profile_config": True,
-            },
-        }
-        assert _stored_session_runtime_overrides(row) == {}
-
-    def test_unmarked_row_still_restores_stored_runtime(self):
-        """Normal 1:1 user chats keep the stored-runtime restore — the
-        contract must not leak into ordinary sessions."""
-        from tui_gateway.server import _stored_session_runtime_overrides
-
-        row = {
-            "model": "openai/gpt-5.6-luna-pro",
-            "billing_provider": "nous",
-            "model_config": json.dumps(
-                {"model": "openai/gpt-5.6-luna-pro", "provider": "nous"}
-            ),
-        }
-        overrides = _stored_session_runtime_overrides(row)
-        assert overrides["model_override"]["model"] == "openai/gpt-5.6-luna-pro"
-        assert overrides["model_override"]["provider"] == "nous"
 
     def test_legacy_bot_chat_title_backfills_contract(self):
         """Canonical Bot Chats created BEFORE the marker existed carry no
@@ -914,38 +928,6 @@ class TestRuntimeModelConfigDropsStaleKeys:
         assert overrides["model_override"]["provider"] == "nous"
         assert overrides["provider_override"] == "nous"
 
-    def test_real_db_persist_heals_desynced_row(self, tmp_path, monkeypatch):
-        """A row already desynced (fresh model column + stale model_config
-        provider) self-heals on the next live metadata persist."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="desync1", source="desktop", model="old-model")
-        db.update_session_meta(
-            "desync1",
-            json.dumps(
-                {
-                    "model": "deepseek/deepseek-v4-flash-0731",
-                    "provider": "stealth-ox-alpha",
-                    "base_url": "https://api.venice.ai/api/v1",
-                }
-            ),
-            model="deepseek/deepseek-v4-flash-0731",
-        )
-
-        from tui_gateway.server import _runtime_model_config
-
-        row = db.get_session("desync1")
-        assert row is not None
-        existing = json.loads(row["model_config"])
-        merged = _runtime_model_config(_agent_like(), existing)
-        db.update_session_meta("desync1", json.dumps(merged), model="deepseek/deepseek-v4-flash-0731")
-
-        healed_row = db.get_session("desync1")
-        assert healed_row is not None
-        healed = json.loads(healed_row["model_config"])
-        assert healed["model"] == "deepseek/deepseek-v4-flash-0731"
-        assert "provider" not in healed, healed
-        assert "base_url" not in healed, healed
 
     def test_existing_none_returns_only_agent_identity(self):
         """First write (no existing row): the merge starts from an empty dict

@@ -313,7 +313,7 @@ def _config_profile_scope(profile: Optional[str]):
         # and an unscoped launch request would then raise ``UnscopedSecretError`` on its next read.
         secrets = launch_secret_scope(process_home)
     with (_hermes_home_scope(profile_dir) if profile_dir is not None else nullcontext()):
-        token = set_secret_scope(secrets)
+        token = set_secret_scope(secrets, profile_home=str(profile_dir or process_home))
         try:
             yield scoped
         finally:
@@ -436,11 +436,14 @@ def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _profile_cli_args(profile: Optional[str]) -> List[str]:
-    """``["-p", <name>]`` for a validated non-default profile, else ``[]``. Hub actions run in
+    """``["-p", <name>]`` for a validated named profile, else ``[]``. Hub actions run in
     a fresh ``hermes`` subprocess whose ``_apply_profile_override()`` reads ``-p`` from argv —
-    the only mechanism that reaches import-time-bound globals like ``skills_hub.SKILLS_DIR``."""
+    the only mechanism that reaches import-time-bound globals like ``skills_hub.SKILLS_DIR``.
+    ``default`` is a real named target, not an alias for the dashboard's own profile:
+    selector-less argv would make the child resolve the ambient ``HERMES_HOME`` (the launch
+    profile under a pooled ``-p X serve``), not the default home."""
     requested = (profile or "").strip()
-    if not requested or requested.lower() in {"current", "default"}:
+    if not requested or requested.lower() == "current":
         return []
     from hermes_cli import profiles as profiles_mod
     _resolve_profile_dir(requested)
@@ -472,5 +475,7 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
         keys = ("name", "trust_level", "scan_verdict")
         return {entry["identifier"]: {k: entry.get(k) for k in keys}
                 for entry in lock.list_installed() if entry.get("identifier")}
+    except HTTPException:
+        raise  # an unknown profile is the scope's 404, not an unreadable lock file
     except Exception:
         return {}

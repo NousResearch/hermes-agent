@@ -65,6 +65,21 @@ def top_level_value_flag_sets() -> tuple[frozenset[str], frozenset[str]]:
         return _VALUE_FLAGS_FALLBACK, _OPTIONAL_VALUE_FLAGS_FALLBACK
 
 
+def command_argv(argv: list[str]) -> list[str]:
+    """Subcommand and its arguments, excluding top-level flags and their values."""
+    required, optional = top_level_value_flag_sets()
+    value_flags = required | optional | {flag for flag, takes_value in PRE_ARGPARSE_INHERITED_FLAGS if takes_value}
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            return argv[i + 1:]
+        if not token.startswith("-"):
+            return argv[i:]
+        i += 2 if "=" not in token and token in value_flags and i + 1 < len(argv) else 1
+    return []
+
+
 def _inherited_flag(parser, *args, **kwargs):
     """``parser.add_argument`` + tag the Action ``inherit_on_relaunch`` for ``hermes_cli.relaunch``."""
     action = parser.add_argument(*args, **kwargs)
@@ -190,6 +205,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules)")
     inherited(parser, "--tui", action="store_true", default=False,
               help="Launch the modern TUI instead of the classic REPL")
+    inherited(parser, "--native", "--tui-native", dest="tui_native", action="store_true", default=False,
+              help="With --tui: use native terminal scrollback and disable mouse tracking")
     inherited(parser, "--cli", action="store_true", default=False,
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(parser, "--dev", dest="tui_dev", action="store_true", default=False,
@@ -293,6 +310,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.")
     inherited(chat_parser, "--tui", action="store_true", default=SUPPRESS,
               help="Launch the modern TUI instead of the classic REPL")
+    inherited(chat_parser, "--native", "--tui-native", dest="tui_native", action="store_true", default=SUPPRESS,
+              help="Use native terminal scrollback and disable mouse tracking")
     inherited(chat_parser, "--cli", action="store_true", default=SUPPRESS,
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(chat_parser, "--dev", dest="tui_dev", action="store_true", default=SUPPRESS,

@@ -15,7 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv  # noqa: F401
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_replace, load_yaml_file_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -402,12 +402,19 @@ def load_hermes_dotenv(
     home_path = Path(hermes_home) if hermes_home else get_process_hermes_home()
 
     # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
-    # into os.environ would expose its credentials to sibling turns and every spawned child. Unscoped
-    # startup loads keep the normal path; external sources still refresh against the profile mapping.
+    # into os.environ would expose its credentials to sibling turns and every spawned child. The launch
+    # home's own .env is process configuration and still loads: the launch profile's scoped bodies bind
+    # an override naming the launch home too, and skipping it hid launch-only credentials such as a
+    # fallback_providers key from the process env (#125530). Both the load's target AND the active
+    # home must be the launch home: a launch-targeted load inside a FOREIGN turn re-bridges terminal.*
+    # from the config the override resolves to, i.e. the routed profile's cwd into the shared env.
+    # External sources still refresh against the profile mapping.
     from agent.secret_scope import is_multiplex_active
-    from hermes_constants import get_hermes_home_override
+    from hermes_constants import get_hermes_home, get_hermes_home_override
 
-    if is_multiplex_active() and get_hermes_home_override() is not None:
+    launch_home = _process_hermes_home().resolve()
+    if (is_multiplex_active() and get_hermes_home_override() is not None
+            and (home_path.resolve() != launch_home or get_hermes_home().resolve() != launch_home)):
         home_key = str(home_path.resolve())
         if home_key not in _SCOPED_SKIP_LOGGED:
             _SCOPED_SKIP_LOGGED.add(home_key)
@@ -529,7 +536,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
     # Neither early return marks the home applied: a malformed config.yaml would otherwise permanently
     # disable secret loading for this process, and an unmarked home picks up a config change on the next
-    # load (the re-parse is a cheap fast_safe_load).
+    # load (the signature-cached read is cheap).
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
@@ -632,9 +639,9 @@ def _load_secrets_config(home_path: Path) -> dict:
             return data.get("secrets") or {}
         except Exception:
             pass
+    # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = fast_safe_load(f) or {}
+        data = load_yaml_file_readonly(config_path) or {}
     except Exception:  # noqa: BLE001
         return {}
     return data.get("secrets") or {}
@@ -660,12 +667,15 @@ def _process_hermes_home() -> Path:
       (mtime,size)-keyed config cache is safe to reuse; under an override it
       must fall through to an isolated parse of the scoped profile.
 
-    ``hermes_constants.get_process_hermes_home()`` is the override-immune
-    resolver built for exactly this; delegate to it.
+    ``hermes_constants.get_routing_process_hermes_home()`` is the override-immune
+    resolver built for exactly this; delegate to it. It is also immune to a host
+    that mirrors the served profile into the live ``HERMES_HOME`` env var
+    (``pin_process_hermes_home``): without that, the mirrored profile satisfied
+    the guard above and bridged ITS ``terminal.*`` into the shared env.
     """
     try:
-        from hermes_constants import get_process_hermes_home
+        from hermes_constants import get_routing_process_hermes_home
 
-        return get_process_hermes_home()
+        return get_routing_process_hermes_home()
     except Exception:
         return Path.home() / ".hermes"

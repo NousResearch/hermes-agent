@@ -59,14 +59,6 @@ describe('detectBundleSkew', () => {
     expect(result).toEqual({ desktopCommitsBehind: 3, outOfSync: true })
   })
 
-  it('counts only commits that touch runtime desktop paths', async () => {
-    const { calls, git } = gitAnswering({ 'merge-base': { code: 0 }, 'rev-list': { stdout: '0' } })
-
-    await detectBundleSkew(STAMP, git, REPO)
-
-    expect(calls[1]).toEqual(['rev-list', '--count', `${STAMP.commit}..HEAD`, '--', ...RUNTIME_PATHS])
-  })
-
   it('is quiet when no desktop commits follow the stamp', async () => {
     const result = await detectBundleSkew(STAMP, gitCounting('0\n'), REPO)
 
@@ -129,30 +121,6 @@ describe('detectBundleSkew', () => {
       desktopCommitsBehind: null,
       outOfSync: false
     })
-  })
-
-  it('does not consult the commit count once ancestry is refused', async () => {
-    const { calls, git } = gitAnswering({
-      'merge-base': { code: 1 },
-      'rev-list': { stdout: '9999\n' }
-    })
-
-    await detectBundleSkew(STAMP, git, REPO)
-
-    expect(calls.map(args => args[0])).toEqual(['merge-base'])
-  })
-
-  it('asks about ancestry before counting, against the same stamp', async () => {
-    const { calls, git } = gitAnswering({
-      'merge-base': { code: 0 },
-      'rev-list': { stdout: '2\n' }
-    })
-
-    const result = await detectBundleSkew(STAMP, git, REPO)
-
-    expect(calls[0]).toEqual(['merge-base', '--is-ancestor', STAMP.commit, 'HEAD'])
-    expect(calls[1]?.[0]).toBe('rev-list')
-    expect(result).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
   })
 
   it('is quiet when git cannot answer the ancestry question at all', async () => {
@@ -291,6 +259,24 @@ describe('detectBundleSkew against a real git repo', () => {
     const result = await detectBundleSkew({ commit: base, source: 'local' }, realGitRun(repoRoot), repoRoot)
 
     expect(result).toEqual({ desktopCommitsBehind: 1, outOfSync: true })
+  })
+
+  // apps/shared/src is compiled into both bundles, so a fix confined to it (a shared gateway client, the
+  // JSON-RPC layer) leaves the installed app just as stale as a renderer change does.
+  it.each([
+    ['apps/shared/src/json-rpc-gateway.ts', { desktopCommitsBehind: 1, outOfSync: true }],
+    ['apps/shared/README.md', { desktopCommitsBehind: 0, outOfSync: false }]
+  ])('counts a commit that only touched %s as it reaches the bundle', async (file, expected) => {
+    const { base, repoRoot } = makeScratchRepo()
+    const git = scratchGit(repoRoot)
+
+    writeFiles(repoRoot, [file])
+    git('add', '.')
+    git('commit', '-q', '-m', 'shared-only change')
+
+    const result = await detectBundleSkew({ commit: base, source: 'local' }, realGitRun(repoRoot), repoRoot)
+
+    expect(result).toEqual(expected)
   })
 
   // The #92233 install, reproduced: the update rewrote the tree onto a fresh

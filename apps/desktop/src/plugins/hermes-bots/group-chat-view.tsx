@@ -29,8 +29,8 @@ import {
   queryClient,
   relativeTime,
   RowButton,
-  Switch,
   Tip,
+  ToggleRow,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
@@ -496,13 +496,12 @@ function GroupChatSettingsDialog({
             value={name}
           />
         </form>
-        <label className="flex items-center justify-between gap-3 text-sm">
-          <span>
-            <span className="block">{b.group.holdDetection}</span>
-            <span className="block text-xs text-(--ui-text-tertiary)">{b.group.holdDetectionHint}</span>
-          </span>
-          <Switch checked={holdDetection} onCheckedChange={setHoldDetection} />
-        </label>
+        <ToggleRow
+          checked={holdDetection}
+          description={b.group.holdDetectionHint}
+          label={b.group.holdDetection}
+          onChange={setHoldDetection}
+        />
         {(members || []).length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid="group-settings-members">
             {(members || []).map(member => {
@@ -881,7 +880,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           aria-expanded={activityOpen}
           className="flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1 text-left text-[0.7rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground"
           onClick={() => setActivityOpen(prev => !prev)}
-          title={activityOpen ? b.group.hideActivity : b.group.showActivity}
         >
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>

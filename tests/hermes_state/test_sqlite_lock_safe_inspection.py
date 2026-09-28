@@ -67,7 +67,10 @@ def _make_db(path, journal_mode: str) -> None:
     conn = sqlite3.connect(str(path), isolation_level=None)
     conn.execute(f"PRAGMA journal_mode={journal_mode}")
     conn.execute("CREATE TABLE t(v TEXT)")
+    # One transaction: autocommit would fsync 200 times (~10 s on a loaded disk).
+    conn.execute("BEGIN")
     conn.executemany("INSERT INTO t(v) VALUES (?)", [(f"row{i}",) for i in range(200)])
+    conn.execute("COMMIT")
     conn.close()
 
 
@@ -226,8 +229,10 @@ def test_probe_and_connect_do_not_race(tmp_path, clean_registry, monkeypatch):
     def slow_open(*args, **kwargs):
         handle = real_open(*args, **kwargs)
         inside_read.set()
-        # Hold the descriptor open while the writer tries to get in.
-        may_close.wait(10)
+        # Hold the descriptor open while the writer tries to get in. With a
+        # correct guard the writer is blocked and this always times out, so
+        # keep it short; a broken guard lets the writer set it immediately.
+        may_close.wait(2)
         return handle
 
     def writer():

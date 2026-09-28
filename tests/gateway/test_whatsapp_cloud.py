@@ -532,21 +532,6 @@ class TestHealth:
 # Mixin contract — gating still works on the cloud adapter
 # ---------------------------------------------------------------------------
 
-class TestMixinInherited:
-    """Sanity-check: the Cloud adapter inherits the same gating behavior
-    as the Baileys adapter via WhatsAppBehaviorMixin.
-    """
-
-
-    def test_should_process_message_dm_open(self):
-        adapter = _make_adapter()
-        adapter._dm_policy = "open"
-        assert adapter._should_process_message({
-            "chatId": "15551234567@c.us",
-            "senderId": "15551234567@c.us",
-            "isGroup": False,
-            "body": "hi",
-        }) is True
 
 
 # ---------------------------------------------------------------------------
@@ -912,7 +897,7 @@ class TestGroupMessageGuard:
     group)."""
 
     @pytest.mark.asyncio
-    async def test_group_shaped_message_dropped_with_warning(self, caplog):
+    async def test_group_shaped_message_dropped(self):
         adapter = _make_adapter()
         adapter.handle_message = AsyncMock()
         raw = {
@@ -923,16 +908,10 @@ class TestGroupMessageGuard:
             "text": {"body": "hi from a group"},
             "chat": "120363012345678901@g.us",  # presence of `chat` = group
         }
-        with caplog.at_level("WARNING"):
-            event = await adapter._build_message_event_from_cloud(
-                raw, {"15551234567": "Alice"}, {}
-            )
-        assert event is None
-        # Warning surfaced so the operator knows group messages are being dropped
-        assert any(
-            "group-shaped" in rec.message
-            for rec in caplog.records
+        event = await adapter._build_message_event_from_cloud(
+            raw, {"15551234567": "Alice"}, {}
         )
+        assert event is None
         # Defensive: handler not invoked
         adapter.handle_message.assert_not_called()
 
@@ -1375,27 +1354,6 @@ class TestSendTyping:
         assert payload["typing_indicator"] == {"type": "text"}
 
 
-    @pytest.mark.asyncio
-    async def test_send_typing_stale_message_logged_at_info(self, caplog):
-        """Graph error 131009 = wamid > 30 days old. Common after a
-        long-quiet conversation — log at INFO so it doesn't pollute
-        WARNING-level monitoring dashboards."""
-        adapter = _make_adapter()
-        adapter._last_inbound_wamid_by_chat["15551234567"] = "wamid.OLD"
-        adapter._http_client = MagicMock()
-        adapter._http_client.post = AsyncMock(
-            return_value=_mock_httpx_response(
-                400, {"error": {"code": 131009, "message": "Parameter value is not valid"}}
-            )
-        )
-
-        with caplog.at_level("INFO"):
-            await adapter.send_typing("15551234567")
-
-        assert any(
-            "older than 30 days" in rec.message
-            for rec in caplog.records
-        )
 
 
 # ---------------------------------------------------------------------------

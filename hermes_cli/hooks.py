@@ -145,11 +145,29 @@ _DEFAULT_PAYLOADS = {
         "api_call_count": 1, "api_duration": 1.234,
         "started_at": 1756000000.0, "ended_at": 1756000001.234, "first_chunk_at": 1756000000.512,
         "finish_reason": "stop", "message_count": 4, "response_model": "claude-sonnet-4-6",
-        "usage": {"input_tokens": 2048, "output_tokens": 512},
+        "usage": {"input_tokens": 2048, "output_tokens": 512}, "context_length": 200000,
         "assistant_content_chars": 1200, "assistant_tool_call_count": 0,
         # Per-advisor metrics on a MoA turn, None otherwise: MoA returns only the aggregator's
         # response, so without this an observer cannot see or price the fan-out.
         "moa_references": None,
+    },
+    "pre_auxiliary_call": {
+        "aux_task": "title_generation", "session_id": "test-session", "task_id": "test-task",
+        "turn_id": "test-turn", "api_request_id": "aux-0123abcd", "platform": "cli",
+        "model": "claude-haiku-4-5", "provider": "anthropic",
+        "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages",
+        "api_call_count": 1, "retry_count": 0, "streaming": False, "message_count": 2,
+        "tool_count": 0, "approx_input_tokens": 256, "request_char_count": 1024, "max_tokens": 64,
+    },
+    "post_auxiliary_call": {
+        "aux_task": "title_generation", "session_id": "test-session", "task_id": "test-task",
+        "turn_id": "test-turn", "api_request_id": "aux-0123abcd", "platform": "cli",
+        "model": "claude-haiku-4-5", "provider": "anthropic",
+        "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages",
+        "api_call_count": 1, "retry_count": 0, "streaming": False, "api_duration": 0.42,
+        "started_at": 1756000000.0, "ended_at": 1756000000.42, "finish_reason": "stop",
+        "response_model": "claude-haiku-4-5", "usage": {"input_tokens": 256, "output_tokens": 12},
+        "assistant_content_chars": 40, "assistant_tool_call_count": 0, "error": None, "error_type": None,
     },
     "subagent_stop": {
         "parent_session_id": "parent-sess", "child_role": None,
@@ -182,7 +200,7 @@ def _cmd_test(args) -> None:
         payload["tool_name"] = for_tool
     if getattr(args, "payload_file", None):
         try:
-            custom = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))
+            custom = json.loads(Path(args.payload_file).read_text(encoding="utf-8-sig"))
             if isinstance(custom, dict):
                 payload.update(custom)
             else:

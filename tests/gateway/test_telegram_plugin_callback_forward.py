@@ -109,7 +109,7 @@ class TestForward:
 
         async def handler(event, source):
             seen.append((event, source))
-            return [True]
+            return [{"_callback_query_claim": True}]
 
         a.set_platform_event_handler(handler)
         q = _query()
@@ -140,7 +140,7 @@ class TestForward:
 
     def test_no_subscriber_answers_without_dispatch(self):
         a = _adapter()
-        handler = AsyncMock(return_value=[True])
+        handler = AsyncMock(return_value=[{"_callback_query_claim": True}])
         a.set_platform_event_handler(handler)
         q = _query()
         with patch("hermes_cli.lifecycle.has_hook", return_value=False):
@@ -154,7 +154,7 @@ class TestForward:
 
         async def slow(event, source):
             await asyncio.sleep(1)
-            return [True]
+            return [{"_callback_query_claim": True}]
 
         a.set_platform_event_handler(slow)
         q = _query()
@@ -170,7 +170,7 @@ class TestForward:
 
     def test_other_prefixes_keep_existing_routing(self):
         a = _adapter()
-        handler = AsyncMock(return_value=[True])
+        handler = AsyncMock(return_value=[{"_callback_query_claim": True}])
         a.set_platform_event_handler(handler)
         a._handle_exec_approval_callback = AsyncMock()
         q = _query("ea:once:abc")
@@ -181,7 +181,7 @@ class TestForward:
 
     def test_unknown_prefix_still_ignored(self):
         a = _adapter()
-        handler = AsyncMock(return_value=[True])
+        handler = AsyncMock(return_value=[{"_callback_query_claim": True}])
         a.set_platform_event_handler(handler)
         q = _query("zz:1")
         asyncio.run(_tap(a, q))
@@ -198,7 +198,7 @@ class TestRunnerBoundary:
 
         def invoke(name, **event):
             hook_thread["id"] = threading.get_ident()
-            return ["claimed"]
+            return [{"_callback_query_claim": True, "value": "claimed"}]
 
         async def run():
             loop_thread["id"] = threading.get_ident()
@@ -207,7 +207,7 @@ class TestRunnerBoundary:
             return await runner._handle_gateway_platform_event(event, source)
 
         with patch("hermes_cli.lifecycle.invoke_hook", invoke):
-            assert asyncio.run(run()) == ["claimed"]
+            assert asyncio.run(run()) == [{"_callback_query_claim": True, "value": "claimed"}]
         assert hook_thread["id"] != loop_thread["id"]
 
     def test_unauthorized_tapper_never_reaches_hooks(self):
@@ -229,7 +229,7 @@ class TestRunnerBoundary:
 
         def on_event(platform, event_type, payload):
             seen.append((platform, event_type, payload))
-            return True
+            return {"_callback_query_claim": True}
 
         context.register_hook("gateway_platform_event", on_event)
         runner = object.__new__(GatewayRunner)

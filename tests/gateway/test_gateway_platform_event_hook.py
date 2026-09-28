@@ -149,6 +149,32 @@ class TestRunnerDispatch:
 
         invoke.assert_not_called()
 
+    def test_callback_query_returns_observer_results_without_claiming_them(self):
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = lambda source: True
+        source = _adapter()._source_from_reaction_for_auth(
+            _auth_reaction_update(user_id=777)
+        )
+        event = {"platform": "telegram", "event_type": "callback_query", "payload": {}}
+        observed = [{"observed": True}]
+        with patch("hermes_cli.lifecycle.invoke_hook", return_value=observed):
+            result = asyncio.run(runner._handle_gateway_platform_event(event, source))
+        assert result == []
+
+    def test_callback_query_uses_thread_and_preserves_falsy_claim(self):
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = lambda source: True
+        source = _adapter()._source_from_reaction_for_auth(
+            _auth_reaction_update(user_id=777)
+        )
+        event = {"platform": "telegram", "event_type": "callback_query", "payload": {}}
+        claimed = [{"_callback_query_claim": True, "value": False}]
+        off_loop = AsyncMock(return_value=claimed)
+        with patch("gateway.run_adapters.asyncio.to_thread", off_loop):
+            result = asyncio.run(runner._handle_gateway_platform_event(event, source))
+        assert result == claimed
+        off_loop.assert_awaited_once()
+
 
     def test_plugin_layer_error_is_isolated(self):
         runner = object.__new__(GatewayRunner)

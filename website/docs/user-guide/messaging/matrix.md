@@ -25,6 +25,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for private bot chats. This is distinct from `MATRIX_DM_MENTION_THREADS`, which starts a thread when the bot is `@mentioned` in a private bot chat. These two-person chats follow `MATRIX_DM_AUTO_THREAD`. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
+| **Emotes and stickers** | Native `/me` actions include the sender's Matrix ID. Their text is conversational, even when it begins with a command. Stickers include their description and image, subject to the same room, sender and mention rules as other messages. |
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
@@ -55,6 +56,22 @@ are disabled, opportunistic, or required.
 | video | yes |
 | E2EE | off / optional / required |
 | diagnostics | yes |
+
+### Native Actions and Stickers
+
+Hermes receives native Matrix emotes (`m.emote`) and stickers (`m.sticker`) in
+plain and encrypted rooms. Emotes appear as `[emote by @user:server] action`.
+Stickers appear as `[sticker: description]`, with cached image pixels when the
+attachment can be downloaded within the configured media limit. If the image
+is too large or unavailable, Hermes receives the description and an attachment
+status instead.
+
+Replies, thread history and explicit Matrix context reads use the same action
+and sticker descriptions. When an emote or sticker is edited or redacted before
+model dispatch, Hermes rechecks that event's contribution to the new input. A
+withdrawn sticker loses its cached pixels; other stickers in a queued burst
+remain available. This recheck affects the new input. Earlier model requests
+and the conversation's existing transcript remain unchanged.
 
 ### Session Model in Matrix
 

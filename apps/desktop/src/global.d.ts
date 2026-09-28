@@ -20,6 +20,7 @@ import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } f
 
 export {}
 
+/** Native machine facts, including the short hostname used by connection chrome. */
 export type DesktopMachineProfile = MachineProfile
 
 declare global {

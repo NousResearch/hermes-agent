@@ -1735,6 +1735,7 @@ export const deOverrides = {
       clear: 'Leeren'
     },
     connections: {
+      thisDeviceSuffix: '(dieses Gerät)',
       title: 'Registrierte Gateways',
       intro:
         'Verwalten Sie dieses Gerät und jedes Hermes Gateway, das es über Remote-, SSH- oder Cloud-Verbindungen erreichen kann.',

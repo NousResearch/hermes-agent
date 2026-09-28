@@ -380,6 +380,7 @@ export const ja = defineLocale({
   },
 
   settings: {
+    connections: { thisDeviceSuffix: '（このデバイス）' },
     uninstallSection: {
       dangerZone: '危険ゾーン',
       checkingInstalled: 'インストール内容を確認中…',

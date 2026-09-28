@@ -14,10 +14,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { SidebarMenuButton } from '@/components/ui/sidebar'
+import { OverflowTip, Tip } from '@/components/ui/tooltip'
 import type { DesktopRegistryConnection } from '@/global'
 import { useI18n } from '@/i18n'
 import {
   CONNECTION_SEARCH_THRESHOLD,
+  connectionDisplayName,
+  connectionEndpoint,
   connectionMatchesQuery,
   connectionTooltip,
   sortConnectionsForDisplay
@@ -27,6 +31,7 @@ import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $activeConnectionId, $connectionsRegistry, $pendingConnectionId, selectConnection } from '@/store/connections'
 import { closeFindBar } from '@/store/find-in-page'
+import { $machine, loadMachineProfile } from '@/store/machine'
 import { notifyError } from '@/store/notifications'
 
 import { ConnectionGlyph } from './connection-glyph'
@@ -35,6 +40,11 @@ import { useLocalDeviceSwitch } from './local-device-switch'
 export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: boolean; onConnect: () => void }) {
   const { t } = useI18n()
   const registry = useStore($connectionsRegistry)
+  const machine = useStore($machine)
+
+  useEffect(() => {
+    void loadMachineProfile()
+  }, [])
   const activeConnectionId = useStore($activeConnectionId)
   const pendingConnectionId = useStore($pendingConnectionId)
   const [searchQuery, setSearchQuery] = useState('')
@@ -115,11 +125,16 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
     })()
   }
 
+  // The compact trigger may shrink, but never below its glyph, "(this device)" suffix and chevron (any locale).
+  const activeHasSuffix =
+    activeConnection !== undefined &&
+    connectionDisplayName(activeConnection, machine?.hostname, t.settings.connections.thisDeviceSuffix).suffix !== ''
+
   return (
     <div
       aria-busy={pendingConnectionId !== null}
       aria-label={t.settings.connections.title}
-      className={cn('min-w-20 shrink overflow-hidden', compact ? 'h-full max-w-40' : 'max-w-72')}
+      className={cn('min-w-20 shrink', compact ? cn('h-full max-w-52', activeHasSuffix && 'min-w-min') : 'w-full')}
       data-slot="connection-switcher"
       role="group"
     >
@@ -137,6 +152,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
           <ConnectionSwitcherTrigger
             activeConnection={activeConnection}
             compact={compact}
+            hostname={machine?.hostname}
             pending={pendingConnectionId !== null}
             title={t.settings.connections.title}
           />
@@ -157,7 +173,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
               searchInputRef.current?.select()
             }
           }}
-          side="top"
+          side={compact ? 'top' : 'bottom'}
         >
           {searchable && (
             <>
@@ -213,7 +229,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
                   key={connection.id}
                   value={connection.id}
                 >
-                  <ConnectionLabel connection={connection} />
+                  <ConnectionLabel connection={connection} hostname={machine?.hostname} />
                 </DropdownMenuRadioItem>
               ))
             )}
@@ -232,6 +248,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
 interface ConnectionMenuProps {
   activeConnection?: DesktopRegistryConnection
   compact: boolean
+  hostname?: string
   pending: boolean
   title: string
 }
@@ -239,33 +256,67 @@ interface ConnectionMenuProps {
 function ConnectionSwitcherTrigger({
   activeConnection,
   compact,
+  hostname,
   pending,
   title,
   ...triggerProps
 }: ConnectionMenuProps & React.ComponentProps<'button'>) {
-  return (
+  const { t } = useI18n()
+
+  const display = activeConnection
+    ? connectionDisplayName(activeConnection, hostname, t.settings.connections.thisDeviceSuffix)
+    : { name: title, suffix: '' }
+
+  const fullName = [display.name, display.suffix].filter(Boolean).join(' ')
+
+  const sharedProps = {
+    ...triggerProps,
+    'aria-label': activeConnection ? `${title}: ${fullName}` : title,
+    className: cn(
+      'min-w-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground',
+      triggerProps.className
+    )
+  }
+
+  const content = (
+    <>
+      {!compact && activeConnection && (
+        <ConnectionGlyph className="size-4 [&>svg]:size-4" connection={activeConnection} />
+      )}
+      <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+        {pending && <Loader2 aria-hidden="true" className="size-3 shrink-0 animate-spin" />}
+        {activeConnection ? (
+          <ConnectionLabel
+            connection={activeConnection}
+            containName={compact}
+            hostname={hostname}
+            showGlyph={compact}
+          />
+        ) : (
+          <span className="min-w-0 truncate">{title}</span>
+        )}
+      </span>
+      <Codicon aria-hidden="true" className="shrink-0 opacity-60" name="chevron-down" size="0.875rem" />
+    </>
+  )
+
+  return compact ? (
     <Button
-      {...triggerProps}
-      aria-label={activeConnection ? `${title}: ${activeConnection.label}` : title}
+      {...sharedProps}
       className={cn(
-        'w-full min-w-0 justify-between overflow-hidden px-1 text-(--ui-text-secondary) data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground',
-        compact && 'h-full min-h-0 rounded-none px-1.5 text-[0.6875rem] font-normal',
-        triggerProps.className
+        'h-full min-h-0 w-full min-w-0 justify-between rounded-none px-1.5 text-[0.6875rem] font-normal text-(--ui-text-secondary)',
+        sharedProps.className
       )}
       size="xs"
       type="button"
       variant="ghost"
     >
-      <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-        {pending && <Loader2 aria-hidden="true" className="size-3 shrink-0 animate-spin" />}
-        {activeConnection ? (
-          <ConnectionLabel connection={activeConnection} />
-        ) : (
-          <span className="truncate">{title}</span>
-        )}
-      </span>
-      <Codicon aria-hidden="true" className="shrink-0 opacity-60" name="chevron-down" size="0.875rem" />
+      {content}
     </Button>
+  ) : (
+    <SidebarMenuButton {...sharedProps} size="nav" type="button" variant="nav">
+      {content}
+    </SidebarMenuButton>
   )
 }
 
@@ -278,11 +329,53 @@ function ManageGatewaysLabel({ label }: { label: string }) {
   )
 }
 
-function ConnectionLabel({ connection }: { connection: DesktopRegistryConnection }) {
+function ConnectionLabel({
+  connection,
+  containName = false,
+  hostname,
+  showGlyph = true
+}: {
+  connection: DesktopRegistryConnection
+  /**
+   * Status-bar sizing: a minmax(0, max-content) name track adds nothing to min-content (a min-w-min parent floors at
+   * glyph + suffix + chevron) but its full width to max-content, so the name still fills the room up to the cap.
+   */
+  containName?: boolean
+  hostname?: string
+  showGlyph?: boolean
+}) {
+  const { t } = useI18n()
+  const { name, suffix } = connectionDisplayName(connection, hostname, t.settings.connections.thisDeviceSuffix)
+  const fullName = [name, suffix].filter(Boolean).join(' ')
+  // Endpoint details teach even when the name fits; local names need a tip only on overflow.
+  const NameTip = connectionEndpoint(connection) ? Tip : OverflowTip
+
   return (
-    <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" title={connectionTooltip(connection)}>
-      <ConnectionGlyph connection={connection} />
-      <span className="truncate">{connection.label}</span>
+    <span
+      className={cn(
+        'min-w-0 items-center gap-1 overflow-hidden',
+        containName
+          ? cn(
+              'grid grid-flow-col',
+              suffix ? 'grid-cols-[auto_minmax(0,max-content)_auto]' : 'grid-cols-[auto_minmax(0,max-content)]'
+            )
+          : 'flex flex-1'
+      )}
+    >
+      {showGlyph && <ConnectionGlyph connection={connection} />}
+      <NameTip label={connectionTooltip(connection, fullName)} placement="row">
+        <span className="min-w-0 truncate" data-connection-name="">
+          {name}
+        </span>
+      </NameTip>
+      {suffix && (
+        <>
+          {' '}
+          <span className="shrink-0 whitespace-nowrap text-(--ui-text-tertiary)" data-connection-suffix="">
+            {suffix}
+          </span>
+        </>
+      )}
     </span>
   )
 }

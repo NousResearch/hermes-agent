@@ -1423,6 +1423,7 @@ export const zh = defineLocale({
     },
     // v2 多连接注册表：设置 → 网关。
     connections: {
+      thisDeviceSuffix: '（本设备）',
       title: '已注册网关',
       intro: '管理本机以及通过远程、SSH 或 Hermes Cloud 连接可访问的每个 Hermes 网关。',
       stagedNote:

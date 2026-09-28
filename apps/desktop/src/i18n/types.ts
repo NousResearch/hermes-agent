@@ -1233,6 +1233,7 @@ export interface Translations {
     }
     // v2 multi-connection registry: Settings → Connections.
     connections: {
+      thisDeviceSuffix: string
       title: string
       intro: string
       stagedNote: string

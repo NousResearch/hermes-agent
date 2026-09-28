@@ -1192,6 +1192,7 @@ export function connectionDialFieldsChanged(before: RegistryConnection, after: R
 
 // ── Registry-level operations (all pure: return a new registry) ────────────
 
+// Keep the default label in sync with src/lib/connection-display.ts (separate TS projects).
 function localEntry(label = 'This device'): RegistryConnection {
   return { id: LOCAL_CONNECTION_ID, kind: 'local', label }
 }

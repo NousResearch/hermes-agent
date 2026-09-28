@@ -12,6 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
+import { ConnectionHeader } from '@/app/chat/sidebar/connection-header'
 import { TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -31,6 +32,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
+import { $hasMultipleConnections } from '@/store/connections'
 import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
 
 import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
@@ -252,6 +254,7 @@ export function TreeGroup({
   // workspace).
   const [menuPane, setMenuPane] = useState<string | undefined>(undefined)
   const panes = useContributions('panes')
+  const hasMultipleConnections = useStore($hasMultipleConnections)
   const stableHosts = useStablePaneHosts()
   // Coarse drag flag only (set once at drag start/end). The per-frame drop
   // HINT lives in ZoneDropOverlay so a moving pointer re-renders the tiny
@@ -294,8 +297,6 @@ export function TreeGroup({
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
   const sidebarGroup = !node.panes.some(id => id === 'workspace' || paneChrome(paneFor(id)).placement === 'main')
-  const tabsBelowControls = topEdge && (sidebarGroup || measuredBelowControls)
-  const tabsInTitlebar = topEdge && !tabsBelowControls
   const pageHeader = paneChrome(active).headerContent
 
   // What the strip's "+" makes. The pane you are LOOKING AT answers first (a
@@ -379,6 +380,17 @@ export function TreeGroup({
     paneFor,
     shown
   })
+
+  const zoneHeader =
+    sidebarGroup &&
+    !node.minimized &&
+    shown.length > 0 &&
+    hasMultipleConnections &&
+    shown.some(id => paneChrome(paneFor(id)).connectionScoped)
+
+  const headerTopEdge = topEdge && !zoneHeader
+  const tabsBelowControls = headerTopEdge && (sidebarGroup || measuredBelowControls)
+  const tabsInTitlebar = headerTopEdge && !tabsBelowControls
 
   // A group collapses ALONG its parent split's axis. In a row that means the
   // WIDTH collapses — a full-width horizontal header would strand a tall
@@ -546,13 +558,28 @@ export function TreeGroup({
 
       {/* Keep the header INSIDE its zone: titlebar drops use the same panel
           bounds, strip refs, focus ownership and split geometry as the body. */}
-      {(headerVisible || (topEdge && !verticalCollapse)) && (
+      {zoneHeader && (
+        <>
+          {topEdge && (
+            <div
+              aria-hidden="true"
+              className="shrink-0 bg-(--ui-sidebar-surface-background) [-webkit-app-region:drag]"
+              data-window-drag-handle=""
+              style={{ height: TITLEBAR_HEIGHT }}
+            />
+          )}
+          <ConnectionHeader />
+        </>
+      )}
+      {(headerVisible || (headerTopEdge && !verticalCollapse)) && (
         <div
           className="relative flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
           data-panel-header=""
-          style={topEdge ? { height: TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 : 0) } : undefined}
+          style={
+            headerTopEdge ? { height: TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 : 0) } : undefined
+          }
         >
-          {topEdge && (
+          {headerTopEdge && (
             <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-left, 100%)' }} />
           )}
           {pageHeader && headerVisible ? (
@@ -749,7 +776,7 @@ export function TreeGroup({
               (#112964). Keep one fixed handle OUTSIDE the list. When the tabs
               drop below the controls the band above them is free — the handle
               stays flexible and the whole row moves the window. */}
-          {topEdge && (
+          {headerTopEdge && (
             <div
               aria-hidden="true"
               className={cn(
@@ -763,7 +790,7 @@ export function TreeGroup({
               }}
             />
           )}
-          {topEdge && (
+          {headerTopEdge && (
             <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-right, 0px)' }} />
           )}
         </div>
@@ -834,36 +861,35 @@ export function TreeGroup({
               )
             })
           )}
+          {/* The body is positioned by the rendered header's full height, including
+              zone chrome. Contain the edit veil here so resizing either header
+              never covers interactive tabs or changes their drag geometry. */}
+          {editMode && !dragging && !isEmpty && !node.minimized && (
+            <ZoneMenu {...zoneMenu}>
+              <div
+                // z-50: pane CONTENT may carry its own stacked chrome (the
+                // terminal rail is z-40) — the edit veil must cover all of it.
+                // The scrim mixes the accent over the CHROME BG (not transparent)
+                // so it properly dims content in dark themes instead of leaving a
+                // barely-tinted wash; the light blur reads as "edit mode" the same
+                // way the zone editor's backdrop does.
+                className="absolute inset-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
+                data-zone-edit-overlay=""
+                onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, tabText(activeId))}
+                style={{
+                  background:
+                    'color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-bg-chrome) 55%, transparent))',
+                  outlineColor: 'color-mix(in srgb, var(--ui-accent) 55%, transparent)'
+                }}
+              >
+                <span className="flex max-w-[calc(100%-1rem)] items-center gap-1.5 rounded-md border border-(--ui-stroke-secondary) bg-popover px-2 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-(--ui-text-secondary)">
+                  <Codicon className="shrink-0" name="gripper" size="0.8125rem" />
+                  <span className="min-w-0 truncate">{tabText(activeId)}</span>
+                </span>
+              </div>
+            </ZoneMenu>
+          )}
         </PaneBody>
-      )}
-
-      {/* Edit-mode veil: the BODY is a drag handle for the active pane. It
-          starts below the header so tabs/headers stay directly interactive
-          (drag any tab, right-click for the zone menu). */}
-      {editMode && !dragging && !isEmpty && !node.minimized && (
-        <ZoneMenu {...zoneMenu}>
-          <div
-            // z-50: pane CONTENT may carry its own stacked chrome (the
-            // terminal rail is z-40) — the edit veil must cover all of it.
-            // The scrim mixes the accent over the CHROME BG (not transparent)
-            // so it properly dims content in dark themes instead of leaving a
-            // barely-tinted wash; the light blur reads as "edit mode" the same
-            // way the zone editor's backdrop does.
-            className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
-            onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, tabText(activeId))}
-            style={{
-              top: topEdge ? TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 : 0) : headerVisible ? 28 : 0,
-              background:
-                'color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-bg-chrome) 55%, transparent))',
-              outlineColor: 'color-mix(in srgb, var(--ui-accent) 55%, transparent)'
-            }}
-          >
-            <span className="flex max-w-[calc(100%-1rem)] items-center gap-1.5 rounded-md border border-(--ui-stroke-secondary) bg-popover px-2 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-(--ui-text-secondary)">
-              <Codicon className="shrink-0" name="gripper" size="0.8125rem" />
-              <span className="min-w-0 truncate">{tabText(activeId)}</span>
-            </span>
-          </div>
-        </ZoneMenu>
       )}
 
       {/* FancyZones drop overlay — its own component so the per-frame drop

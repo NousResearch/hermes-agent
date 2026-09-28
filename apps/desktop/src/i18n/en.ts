@@ -1482,6 +1482,7 @@ export const en: Translations = {
     },
     // v2 multi-connection registry: Settings → Gateways.
     connections: {
+      thisDeviceSuffix: '(this device)',
       title: 'Registered gateways',
       intro: 'Manage this device and every Hermes gateway it can reach through remote, SSH, or Cloud connections.',
       stagedNote:

@@ -313,6 +313,7 @@ which may sit past the dialog's edges.
   counts under breadcrumb-owned chrome; embedded callers keep their headings.
   Narrow windows keep every destination available in the shared navigation dropdown.
   Search and saved field links resolve to the owning child before highlighting.
+- **Sidebar navigation:** pair `SidebarMenuButton`'s `nav` variant and size.
 - **Rows:** `ListRow` (settings `primitives.tsx`) for label/description/action
   rows. Flat, flush-left; no per-row indentation that fights flush headers.
 - **No dividers between rows** unless the list genuinely needs them; prefer
@@ -326,6 +327,7 @@ geometry. Panels without room beside the measured window controls place their
 tabs on a full-width row below the controls. Minimized row groups use vertical
 restore rails, including groups with multiple tabs. Sidebar buttons and shortcuts
 restore minimized or fully hidden side groups without changing the selected tab.
+A zone header, when present, sits between the band and the tab strip.
 Lower panels keep local headers. Empty header space moves the window;
 tabs and actions remain no-drag, with native-control space reserved from the
 existing traffic-light and Window Controls Overlay measurements.

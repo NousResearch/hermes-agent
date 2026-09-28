@@ -48,6 +48,19 @@ def pull(plan, **kwargs):
     )
 
 
+def complete(plan, movement_baseline, monkeypatch):
+    """Finish a pulled update and return the completion request it handed off."""
+    completed = []
+    monkeypatch.setattr(update_cmd, "_complete_source_update", completed.append)
+    request = {}
+    update_cmd._apply_pulled_update(
+        ["git"], "main", movement_baseline, plan,
+        _windows_gateway_resume=None, completion_request=request,
+    )
+    assert completed == [request]
+    return request
+
+
 def test_existing_main_counts_from_running_detached_code(checkout):
     root, old, tip = checkout
     plan = prepare(root)
@@ -88,7 +101,6 @@ def test_syntax_failure_returns_to_original_checkout_without_rewriting_main(chec
     assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == ("feature" if parked else "HEAD")
     assert git(root, "rev-parse", "main") == bad
     assert (root / "cli.py").read_text(encoding="utf8") == "value = 1\n"
-
 
 
 def test_rollback_restores_the_commit_when_the_parked_branch_is_taken(checkout, tmp_path):
@@ -176,24 +188,12 @@ def test_fork_sync_after_stale_branch_repair(checkout, monkeypatch, upstream_res
         return True
 
     monkeypatch.setattr(update_cmd._m(), "_sync_with_upstream_if_needed", sync)
-    kwargs = dict(prompt_for_restore=False, gw_input_fn=None,
-                  discard_local_changes=False, keep_stash=False,
-                  pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch,
-                  sync_upstream=True)
     if upstream_result in {"wrong-branch", "reverted"}:
         with pytest.raises(SystemExit) as exc:
-            update_cmd._pull_updates(["git"], "main", plan.auto_stash_ref, **kwargs)
+            pull(plan, sync_upstream=True)
         assert exc.value.code == 1
     else:
-        before_pull = update_cmd._pull_updates(["git"], "main", plan.auto_stash_ref, **kwargs)
-        completed = []
-        monkeypatch.setattr(update_cmd, "_complete_source_update", completed.append)
-        request = {}
-        update_cmd._apply_pulled_update(
-            ["git"], "main", before_pull, plan,
-            _windows_gateway_resume=None, completion_request=request,
-        )
-        assert completed == [request]
+        request = complete(plan, pull(plan, sync_upstream=True), monkeypatch)
         assert request["expected_sha"] == (upstream_tip if upstream_result == "original" else tip)
         assert git(root, "rev-parse", "main") == (upstream_tip if upstream_result == "original" else tip)
         assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == "main"
@@ -217,15 +217,7 @@ def test_early_fork_sync_without_push_still_completes(checkout, monkeypatch):
     assert plan.upstream_checked
     assert git(root, "rev-parse", "HEAD") == upstream_tip
     assert git(root, "rev-parse", "origin/main") == tip
-    before_pull = pull(plan, sync_upstream=True)
-    completed = []
-    monkeypatch.setattr(update_cmd, "_complete_source_update", completed.append)
-    request = {}
-    update_cmd._apply_pulled_update(
-        ["git"], "main", before_pull, plan,
-        _windows_gateway_resume=None, completion_request=request,
-    )
-    assert completed == [request]
+    request = complete(plan, pull(plan, sync_upstream=True), monkeypatch)
     assert request["expected_sha"] == upstream_tip
 
 

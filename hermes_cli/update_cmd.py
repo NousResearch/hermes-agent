@@ -781,16 +781,16 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha, *, rollback_branch=N
     if pre_pull_sha:
         # Restore the checkout the update left, never reset the update branch onto commits from
         # a parked feature branch or a detached checkout.
+        parked = rollback_branch not in (None, "HEAD")
         if rollback_branch == "HEAD":
             rollback_args = ["checkout", "--detach", pre_pull_sha]
-        elif rollback_branch is not None:
+        elif rollback_branch:
             rollback_args = ["checkout", rollback_branch]
         else:
             rollback_args = ["reset", "--hard", pre_pull_sha]
-        target = rollback_branch if rollback_branch not in (None, "HEAD") else pre_pull_sha[:10]
-        print(f"→ Rolling back to {target}...")
+        print(f"→ Rolling back to {rollback_branch if parked else pre_pull_sha[:10]}...")
         rollback_result = _git_run(git_cmd, rollback_args)
-        if rollback_result.returncode != 0 and rollback_branch not in (None, "HEAD"):
+        if rollback_result.returncode != 0 and parked:
             # The parked branch can be unavailable (e.g. checked out in another worktree): restore
             # its commit detached so the install still boots the code it ran before.
             print(f"  ✗ Could not check out {rollback_branch}; restoring its commit detached.")
@@ -813,14 +813,11 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha, *, rollback_branch=N
 def _update_movement_baseline(git_cmd, pre_pull_sha, pre_sync_sha, rollback_branch, target_sha):
     """Distinguish a branch awaiting repair from an already-applied early sync."""
     if rollback_branch is not None and pre_pull_sha and target_sha:
-        # A target already contained in the branch cannot advance it. In that
-        # case checkout/early sync supplied the movement, even if pushing the
-        # sync back to origin failed. Otherwise verify the pending repair from
-        # the stale/diverged branch tip, not the original detached checkout.
+        # Target already in the branch => checkout/early sync did the moving (even if its push
+        # failed), so count from pre_sync. Anything else (rc 1, or 128 for an unresolvable SHA)
+        # verifies from the branch tip, so a no-op merge fails loudly instead of passing.
         contains_target = _git_run(
             git_cmd, ["merge-base", "--is-ancestor", target_sha, pre_pull_sha])
-        # Anything but "contained" (rc 1, or rc 128 for a SHA git cannot resolve) keeps the strict
-        # baseline: the worst case is a loud "did not move" refusal, never a silent success.
         if contains_target.returncode != 0:
             return pre_pull_sha
     return pre_sync_sha or pre_pull_sha

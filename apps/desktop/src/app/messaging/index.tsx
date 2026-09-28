@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
@@ -179,6 +179,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setRestartNeeded(true)
   }, [])
 
+  // The scope each in-flight fetch was issued for. A→B: A's request can resolve
+  // AFTER the switch and repaint A's platforms/env snapshot (its redacted
+  // Telegram token included) under B until B's own response lands (#96542).
+  // A response whose scope is no longer the rendered one is dropped.
+  const scopeRef = useRef(scopeProfile)
+
+  scopeRef.current = scopeProfile
+
   const refreshPlatforms = useCallback(
     async (silent = false) => {
       if (!silent) {
@@ -187,7 +195,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
       try {
         const result = await getMessagingPlatforms(scopeProfile)
-        setPlatforms(result.platforms)
+
+        if (scopeRef.current === scopeProfile) {
+          setPlatforms(result.platforms)
+        }
       } catch (err) {
         if (!silent) {
           notifyError(err, m.loadFailed)
@@ -215,7 +226,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const refreshPairing = useCallback(async () => {
     try {
       const result = await getPairing(scopeProfile)
-      setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
+
+      if (scopeRef.current === scopeProfile) {
+        setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
+      }
     } catch {
       // Leave the last known rows in place rather than blanking them.
     }

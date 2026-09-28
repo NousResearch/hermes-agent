@@ -216,6 +216,59 @@ describe('MessagingView enable switch', () => {
       $settingsScopeOverride.set(null)
     })
   })
+
+  it("drops profile A's late response after the scope switched to B", async () => {
+    // #96542 (second mechanism): A's in-flight getMessagingPlatforms resolves
+    // AFTER the switch to B and must not repaint A's redacted token under B.
+    const tokenA = '123456:AAE-profile-a-token'
+    let resolveA: (value: unknown) => void = () => {}
+
+    getMessagingPlatforms.mockImplementation((profile?: null | string) =>
+      profile === 'profile-b'
+        ? new Promise(() => {})
+        : new Promise(resolve => {
+            resolveA = resolve
+          })
+    )
+
+    $settingsScopeOverride.set(null)
+    await renderMessaging()
+
+    await act(async () => {
+      $settingsScopeOverride.set('profile-b')
+    })
+
+    await act(async () => {
+      resolveA({
+        platforms: [
+          platform({
+            env_vars: [
+              {
+                advanced: false,
+                description: 'Telegram bot token from @BotFather.',
+                is_password: true,
+                is_set: true,
+                key: 'TELEGRAM_TOKEN',
+                prompt: 'Token',
+                redacted_value: tokenA,
+                required: true,
+                url: null
+              }
+            ],
+            id: 'telegram',
+            name: 'Telegram'
+          })
+        ]
+      })
+    })
+
+    expect(screen.queryByPlaceholderText(tokenA)).toBeNull()
+
+    getMessagingPlatforms.mockReset()
+    await act(async () => {
+      $settingsScopeOverride.set(null)
+    })
+  })
 })
 
 describe('MessagingView setup-guide link', () => {

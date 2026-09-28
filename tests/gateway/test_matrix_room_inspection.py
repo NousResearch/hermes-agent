@@ -485,7 +485,7 @@ async def test_inspection_rechecks_owning_client_and_policy_after_await(
             _user_id=client.mxid, _closing=False, _allowed=True, _dm=False,
             _is_allowed_matrix_room_event=AsyncMock(return_value=True),
         )
-        adapter._is_dm_room = AsyncMock(side_effect=lambda _room: adapter._dm)
+        adapter._is_dm_room = AsyncMock(side_effect=lambda _room, **_kwargs: adapter._dm)
         adapter._is_sender_authorized = lambda actor, **_kw: actor == user and adapter._allowed
         adapter.inspect_matrix_room = lambda *args, **kwargs: inspect_matrix_room(adapter, *args, **kwargs)
         return adapter
@@ -597,7 +597,7 @@ async def test_final_admission_uses_current_matrix_policy_after_identity_await(
     paused = False
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def identity(_room):
+    async def identity(_room, **_kwargs):
         nonlocal paused
         if network_complete and not paused:
             paused = True

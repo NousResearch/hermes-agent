@@ -288,9 +288,9 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
         resolve_identity = adapter._resolve_room_identity
         delays = [0.1] if same_sync_batch == "two_voices" else []
 
-        async def slow_identity(room_id):  # stale 60s cache -> homeserver round-trip
+        async def slow_identity(room_id, **kwargs):  # a stale 60s cache forces a homeserver round trip
             await asyncio.sleep(delays.pop(0) if delays else 0.01)
-            return await resolve_identity(room_id)
+            return await resolve_identity(room_id, **kwargs)
         adapter._resolve_room_identity = slow_identity
         batch = [voice, mention]
         if same_sync_batch == "two_voices":

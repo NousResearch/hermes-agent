@@ -76,8 +76,10 @@ async def test_matrix_room_inspection_uses_session_owner():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("args", "error"), [
-    ({}, "kind must be room, thread, event, state, members, permissions, or pins"),
-    ({"kind": "search"}, "kind must be room, thread, event, state, members, permissions, or pins"),
+    ({}, "kind must be room, thread, event, state, members, permissions, pins, "
+     "joined_rooms, joined_spaces, or users"),
+    ({"kind": "search"}, "kind must be room, thread, event, state, members, permissions, pins, "
+     "joined_rooms, joined_spaces, or users"),
     ({"kind": "thread"}, "event_id is required for thread and event reads"),
     ({"kind": "event"}, "event_id is required for thread and event reads"),
     ({"kind": "event", "event_id": "not-an-event"}, "event_id is required for thread and event reads"),

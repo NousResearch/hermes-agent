@@ -88,6 +88,9 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
+from plugins.platforms.matrix.room_access import (
+    LiveRoomClient, RoomClassificationUnavailable, RoomClientChanged, RoomClientOwner, RoomClientScope,
+)
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.context_mixin import MatrixContextMixin
 from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
@@ -97,6 +100,7 @@ from plugins.platforms.matrix.reply_context import (
 )
 from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
 from plugins.platforms.matrix.read_context import read_matrix_context
+from plugins.platforms.matrix.discovery import discover_matrix
 from plugins.platforms.matrix.room_inspection import inspect_matrix_room
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
@@ -350,6 +354,7 @@ class MatrixRoomIdentity:
     has_explicit_name: bool
     chat_type: str
     conflict: bool = False
+    joined_members: frozenset[str] | None = None
 
 
 @dataclass
@@ -2030,13 +2035,17 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             or chat_type == "dm"
         )
 
-    async def _is_allowed_matrix_room_event(self, room_id: str) -> bool:
+    async def _is_allowed_matrix_room_event(
+        self, room_id: str, *, owner: RoomClientOwner | None = None, require_classification: bool = False,
+    ) -> bool:
         """MATRIX_ALLOWED_ROOMS gate; DMs are exempt so personal chats survive a project allowlist."""
         if self._is_allowed_matrix_room(room_id):
             return True
         try:
-            chat_type = "dm" if await self._is_dm_room(room_id) else "group"
-            return self._is_allowed_matrix_room(room_id, chat_type)
+            is_dm = await self._is_dm_room(room_id, owner=owner, require_classification=require_classification)
+            return self._is_allowed_matrix_room(room_id, "dm" if is_dm else "group")
+        except (RoomClientChanged, RoomClassificationUnavailable):
+            raise
         except Exception as exc:
             logger.debug("Matrix: could not resolve room identity for allowlist check in %s: %s", room_id, exc)
             return False
@@ -3007,46 +3016,64 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 return str(value)
         return None
 
-    async def _get_room_members(self, room_id: str) -> Optional[set[str]]:
+    async def _get_room_members(
+        self, room_id: str, *, owner: RoomClientScope | None = None,
+    ) -> Optional[set[str]]:
         """Read the complete joined member list from the store or homeserver."""
-        client = getattr(self, "_client", None)
+        owner = owner or LiveRoomClient(self)
+        owner.check()
+        client = owner.client
         if client is None:
             return None
 
         state_store = getattr(client, "state_store", None)
         if state_store is not None:
             with suppress(Exception):
-                if await state_store.has_full_member_list(RoomID(room_id)):
+                full_list = await state_store.has_full_member_list(RoomID(room_id))
+                owner.check()
+                if full_list:
                     members = await state_store.get_members(
                         RoomID(room_id), memberships=(Membership.JOIN,)
                     )
+                    owner.check()
                     if members is not None:
                         return {str(member) for member in members}
 
+        owner.check()
         with suppress(Exception):
             members = await asyncio.wait_for(client.get_joined_members(RoomID(room_id)), timeout=10)
+            owner.check()
             if isinstance(members, dict):
                 return {str(member) for member in members}
+        owner.check()
         return None
 
-    async def _get_room_member_profiles(self, room_id: str) -> Optional[Dict[Any, Any]]:
-        state_store = getattr(self._client, "state_store", None) if self._client else None
+    async def _get_room_member_profiles(
+        self, room_id: str, *, owner: RoomClientScope | None = None,
+    ) -> Optional[Dict[Any, Any]]:
+        owner = owner or LiveRoomClient(self)
+        owner.check()
+        client = owner.client
+        state_store = getattr(client, "state_store", None) if client else None
         if state_store:
             with suppress(Exception):
                 profiles = await state_store.get_member_profiles(
                     RoomID(room_id), memberships=(Membership.JOIN,)
                 )
+                owner.check()
                 if profiles:
                     return dict(profiles)
 
-        client = getattr(self, "_client", None)
+        owner.check()
         if client is not None and hasattr(client, "get_joined_members"):
             with suppress(Exception):
                 profiles = await asyncio.wait_for(
                     client.get_joined_members(RoomID(room_id)), _ROOM_STATE_READ_TIMEOUT_SECONDS,
                 )
+                owner.check()
                 if profiles:
                     return dict(profiles)
+        owner.check()
         return None
 
     def _compute_room_display_name(self, profiles: Optional[Dict[Any, Any]]) -> Optional[str]:
@@ -3078,23 +3105,33 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         noun = "other" if remaining == 1 else "others"
         return f"{', '.join(names[:3])} and {remaining} {noun}"
 
-    async def _read_room_state_event(self, room_id: str, event_type: str) -> Any:
+    async def _read_room_state_event(
+        self, room_id: str, event_type: str, *, owner: RoomClientScope | None = None,
+    ) -> Any:
         """The content of a room state event, or None when the room has no such event (``M_NOT_FOUND``).
         Any other failure, including the read deadline, raises."""
-        if not self._client or not hasattr(self._client, "get_state_event"):
+        owner = owner or LiveRoomClient(self)
+        owner.check()
+        client = owner.client
+        if not client or not hasattr(client, "get_state_event"):
             return None
         try:
-            return await asyncio.wait_for(
-                self._client.get_state_event(RoomID(room_id), event_type), _ROOM_STATE_READ_TIMEOUT_SECONDS,
+            event = await asyncio.wait_for(
+                client.get_state_event(RoomID(room_id), event_type), _ROOM_STATE_READ_TIMEOUT_SECONDS,
             )
         except Exception as exc:
+            owner.check()
             if isinstance(exc, MNotFound) or getattr(exc, "errcode", None) == "M_NOT_FOUND":
                 return None
             raise
+        owner.check()
+        return event
 
-    async def _read_room_member_profiles(self, room_id: str) -> tuple[Optional[set[str]], Optional[Dict[Any, Any]]]:
-        members = await self._get_room_members(room_id)
-        profiles = await self._get_room_member_profiles(room_id) if members is not None else None
+    async def _read_room_member_profiles(
+        self, room_id: str, *, owner: RoomClientScope | None = None,
+    ) -> tuple[Optional[set[str]], Optional[Dict[Any, Any]]]:
+        members = await self._get_room_members(room_id, owner=owner)
+        profiles = await self._get_room_member_profiles(room_id, owner=owner) if members is not None else None
         return members, profiles
 
     def _remember_room_names(
@@ -3129,8 +3166,12 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             self._room_identities.pop(room_id, None)
             self._room_identity_cached_at.pop(room_id, None)
 
-    async def _resolve_room_identity(self, room_id: str, *, force_refresh: bool = False) -> MatrixRoomIdentity:
+    async def _resolve_room_identity(
+        self, room_id: str, *, force_refresh: bool = False, owner: RoomClientScope | None = None,
+    ) -> MatrixRoomIdentity:
         """Resolve room identity from joined membership and room metadata."""
+        owner = owner or LiveRoomClient(self)
+        owner.check()
         cached = self._room_identities.get(room_id)
         ttl = self._room_identity_ttl_seconds
         cache_fresh = ttl <= 0 or time.monotonic() - self._room_identity_cached_at.get(room_id, 0.0) <= ttl
@@ -3141,14 +3182,15 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             tombstone_event, member_read,
         ) = reads = await asyncio.gather(
             *(
-                self._read_room_state_event(room_id, event_type) for event_type in (
+                self._read_room_state_event(room_id, event_type, owner=owner) for event_type in (
                     "m.room.name", "m.room.topic", "m.room.canonical_alias", "m.room.join_rules",
                     "m.room.history_visibility", "m.room.encryption", "m.room.tombstone",
                 )
             ),
-            self._read_room_member_profiles(room_id),
+            self._read_room_member_profiles(room_id, owner=owner),
             return_exceptions=True,
         )
+        owner.check()
         failed_reads = [result for result in reads if isinstance(result, Exception)]
         members, profiles = (None, None) if isinstance(member_read, Exception) else member_read
         if failed_reads:
@@ -3192,7 +3234,9 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             joined_member_count=member_count, room_state=room_state,
             is_direct_account_data=is_direct, display_name=display_name,
             has_explicit_name=has_explicit_name, chat_type="dm" if is_likely_dm else "room",
-            conflict=bool(is_direct and not is_likely_dm))
+            conflict=bool(is_direct and not is_likely_dm),
+            joined_members=frozenset(members) if members is not None else None)
+        owner.check()
         if len(self._room_identities) >= self._room_identity_cache_max:
             oldest = min(self._room_identity_cached_at, key=self._room_identity_cached_at.get, default=None)
             if oldest:
@@ -3201,8 +3245,13 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         self._room_identity_cached_at[room_id] = time.monotonic()
         return identity
 
-    async def _is_dm_room(self, room_id: str) -> bool:
-        return (await self._resolve_room_identity(room_id)).chat_type == "dm"
+    async def _is_dm_room(
+        self, room_id: str, *, owner: RoomClientOwner | None = None, require_classification: bool = False,
+    ) -> bool:
+        identity = await self._resolve_room_identity(room_id, owner=owner)
+        if require_classification and identity.joined_member_count is None:
+            raise RoomClassificationUnavailable
+        return identity.chat_type == "dm"
 
     async def read_matrix_context(
         self, kind: str, room_id: str, event_id: str | None, limit: int,
@@ -3217,6 +3266,12 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         self, kind: str, room_id: str, limit: int, *, requester: str,
     ) -> dict:
         return await inspect_matrix_room(self, kind, room_id, limit, requester=requester)
+
+    async def discover_matrix(
+        self, kind: str, room_id: str, limit: int, *, requester: str,
+        search_term: str | None = None,
+    ) -> dict:
+        return await discover_matrix(self, kind, room_id, limit, requester=requester, search_term=search_term)
 
     async def _fetch_m_direct(self, *, log_failure: bool = False, require_dict: bool = False):
         """Return the m.direct account-data mapping, or None when absent/unreadable."""

@@ -224,7 +224,9 @@ async def test_read_policy_is_current_after_identity_resolution(
     adapter._allowed_room_ids = {room}
     adapter._authorization_check = lambda *_args, **_kwargs: True
 
-    async def resolve_identity(_room: str) -> bool:
+    async def resolve_identity(
+        _room: str, *, owner: object, require_classification: bool,
+    ) -> bool:
         if policy == "membership":
             adapter._joined_rooms.clear()
         elif policy == "room":

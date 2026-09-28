@@ -1559,6 +1559,61 @@ class TestSafeCopyDb:
             verify.close()
         assert count == 3000
 
+    def test_waits_out_a_transient_lock_on_the_pinning_statements(
+        self, tmp_path, monkeypatch
+    ):
+        """The snapshot-pinning statements run on a connection opened with
+        `timeout=0.0`, so a bare `execute()` surfaces `OperationalError`
+        straight from the first lock collision instead of waiting out
+        `busy_deadline` like the backup() progress callback does. That
+        regresses rollback-journal (`journal_mode: "delete"`) databases,
+        where a real writer lock now aborts the copy immediately instead of
+        clearing within the existing deadline.
+        """
+        from hermes_cli import backup_sqlite as backup_mod
+
+        src = tmp_path / "delete_mode.db"
+        dst = tmp_path / "copy.db"
+
+        setup = sqlite3.connect(str(src))
+        setup.execute("CREATE TABLE t (x INTEGER)")
+        setup.execute("INSERT INTO t VALUES (42)")
+        setup.commit()
+        setup.close()
+
+        writer = sqlite3.connect(str(src))
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.execute("INSERT INTO t VALUES (7)")
+
+        real_sleep = backup_mod.time.sleep
+        released = []
+
+        def fake_sleep(seconds):
+            if not released:
+                released.append(True)
+                writer.commit()
+            real_sleep(0)
+
+        monkeypatch.setattr(backup_mod.time, "sleep", fake_sleep)
+
+        try:
+            result = backup_mod._safe_copy_db(src, dst, timeout_seconds=5.0)
+        finally:
+            writer.close()
+
+        assert result is True, (
+            "safe copy aborted on the first lock collision instead of "
+            "waiting out busy_deadline"
+        )
+        verify = sqlite3.connect(str(dst))
+        try:
+            assert verify.execute("SELECT x FROM t ORDER BY x").fetchall() == [
+                (7,),
+                (42,),
+            ]
+        finally:
+            verify.close()
+
     def test_is_zeroed_sqlite_file_detects_nul_header(self, tmp_path):
         from hermes_cli.backup import is_zeroed_sqlite_file
         p = tmp_path / "state.db"

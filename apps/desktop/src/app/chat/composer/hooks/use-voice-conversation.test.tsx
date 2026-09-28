@@ -455,3 +455,94 @@ describe('useVoiceConversation honors the read-aloud toggle (#44263)', () => {
     await waitFor(() => expect(playSpeechTextMock).toHaveBeenCalled())
   })
 })
+
+// #123357 Part 1 — when a barge capture genuinely cannot submit (live busy
+// never clears within the settle window), the transcript must still reach the
+// composer instead of vanishing: it is parked in the input so the user sees
+// and can send it, and the loop goes back to listening.
+describe('useVoiceConversation parks an undeliverable barge transcript (#123357)', () => {
+  const parkText = vi.fn()
+  const focusInput = vi.fn()
+
+  beforeEach(() => {
+    monitorCalls.length = 0
+    vi.clearAllMocks()
+    micHandle.start.mockResolvedValue(undefined)
+    micHandle.stop.mockResolvedValue(null)
+  })
+
+  afterEach(cleanup)
+
+  it('parks the transcript in the composer when live busy never clears', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    parkText.mockClear()
+    focusInput.mockClear()
+
+    const submitted: string[] = []
+    const transcriptions: string[] = ['kick off the task', 'what about the other approach']
+
+    const hook = renderHook(
+      ({ busy }: HookProps) =>
+        useVoiceConversation({
+          busy,
+          consumePendingResponse: vi.fn(),
+          enabled: true,
+          focusInput,
+          onSubmit: async text => {
+            submitted.push(text)
+            // Mirrors the real wiring: a submitted turn makes the agent busy
+            // (renderConversation's onBusyChange), so the drive effect arms
+            // the full-duplex monitor for the generation phase.
+            hook.rerender({ busy: true })
+          },
+          onTranscribeAudio: async () => transcriptions.shift() ?? '',
+          parkText,
+          pendingResponse: () => null
+        }),
+      { initialProps: { busy: false } }
+    )
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+
+    micHandle.stop.mockResolvedValueOnce({
+      audio: new Blob(['q'], { type: 'audio/webm' }),
+      durationMs: 900,
+      heardSpeech: true
+    })
+    await act(async () => {
+      hook.result.current.stopTurn()
+    })
+    expect(submitted).toEqual(['kick off the task'])
+
+    // The turn stays busy the whole time; the monitor is armed mid-generation
+    // by the drive effect above (busy=true while status is 'thinking').
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+
+    const monitor = monitorCalls.at(-1)
+
+    act(() => {
+      monitor?.onSpeech()
+    })
+
+    // The interrupt never settles: busy stays true through the whole window.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000)
+    })
+    await act(async () => {
+      await monitor?.onUtterance?.(new Blob(['barge'], { type: 'audio/webm' }))
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000)
+    })
+
+    expect(parkText).toHaveBeenCalledTimes(1)
+    expect(parkText).toHaveBeenCalledWith('what about the other approach')
+    expect(focusInput).toHaveBeenCalled()
+    expect(submitted).toEqual(['kick off the task'])
+
+    vi.useRealTimers()
+  })
+})

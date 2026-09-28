@@ -12,8 +12,14 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@nanostores/react', () => ({
-  useStore: (store: { get: () => unknown }) => store.get()
+  useStore: (store: unknown) => store
 }))
+
+vi.mock('nanostores', async () => {
+  const actual = await vi.importActual<typeof import('nanostores')>('nanostores')
+
+  return { ...actual, computed: (deps: unknown, fn: unknown) => fn }
+})
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -75,11 +81,13 @@ vi.mock('@/store/wake-word', () => ({
 }))
 
 vi.mock('../focus', () => ({
+  onComposerDictationRequest: vi.fn(() => () => undefined),
   onComposerVoiceToggleRequest: vi.fn(() => () => undefined)
 }))
 
 vi.mock('../scope', () => ({
-  useComposerScope: () => ({ $messages: { get: () => [] } })
+  useComposerScope: () => ({ $messages: { get: () => [] } }),
+  useComposerSurfaceId: () => null
 }))
 
 vi.mock('./use-auto-speak-replies', () => ({

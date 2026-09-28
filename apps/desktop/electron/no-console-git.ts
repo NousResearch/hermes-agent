@@ -8,7 +8,7 @@
 // unchanged. simple-git cannot take a creation flag, so its binary tuple is
 // [python, this host script].
 
-import { spawn, type SpawnOptions } from 'node:child_process'
+import { execFile, spawn, type SpawnOptions } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -252,6 +252,9 @@ export function execGit(
   const spec = hiddenGitSpawnSpec(gitBin, args, {
     cwd: options.cwd,
     env: options.env,
+    // Timed commands own a POSIX group so a promisor fetch cannot outlive
+    // the git process. On Windows taskkill follows the Python host's tree.
+    detached: Boolean(options.timeoutMs) && process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -260,6 +263,7 @@ export function execGit(
     let stdout = ''
     let stderr = ''
     let settled = false
+    let timeoutError: (NodeJS.ErrnoException & { stderr?: string }) | undefined
 
     const finish = (error?: Error, code: number | null = child.exitCode) => {
       if (settled) {
@@ -267,6 +271,10 @@ export function execGit(
       }
 
       settled = true
+
+      if (timer) {
+        clearTimeout(timer)
+      }
 
       if (error) {
         reject(error)
@@ -279,11 +287,40 @@ export function execGit(
 
     const timer = options.timeoutMs
       ? setTimeout(() => {
-          child.kill()
-          const error = new Error('git timed out') as NodeJS.ErrnoException & { stderr?: string }
+          timeoutError = Object.assign(new Error('git timed out'), { code: 'ETIMEDOUT', stderr })
 
-          error.stderr = stderr
-          finish(error)
+          const done = () => {
+            // Pipes held by descendants must not keep Electron alive after a
+            // failed tree kill. The timeout remains a failure, never exit 0.
+            child.stdout?.destroy()
+            child.stderr?.destroy()
+            finish(timeoutError)
+          }
+
+          if (process.platform === 'win32' && child.pid) {
+            execFile(
+              'taskkill',
+              ['/PID', String(child.pid), '/T', '/F'],
+              { windowsHide: true, timeout: 5000 },
+              error => {
+                if (error) {
+                  child.kill('SIGKILL')
+                }
+
+                done()
+              }
+            )
+          } else {
+            try {
+              if (child.pid) {
+                process.kill(-child.pid, 'SIGKILL')
+              }
+            } catch {
+              child.kill('SIGKILL')
+            }
+
+            done()
+          }
         }, options.timeoutMs)
       : null
 
@@ -305,7 +342,10 @@ export function execGit(
         clearTimeout(timer)
       }
 
-      finish(undefined, code)
+      // On Windows wait for taskkill's completion, not just the root's exit.
+      if (!timeoutError) {
+        finish(undefined, code)
+      }
     })
   })
 }

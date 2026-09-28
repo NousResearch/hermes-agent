@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import { connect } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 
 import {
   CREATE_NO_WINDOW,
+  execGit,
   NO_CONSOLE_GIT_SCRIPT,
   planNoConsoleGitSpawn,
   resolveNoConsolePython,
@@ -16,6 +18,67 @@ import {
 
 const gitArgs = ['-c', 'windows.appendAtomically=false', 'merge-base', '--is-ancestor', 'origin/main', 'HEAD']
 const gitBin = 'C:\\Program Files\\Git\\cmd\\git.exe'
+
+test('a timed-out git command reaps descendants, including the Windows Python host', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-timeout-'))
+  const pids = path.join(dir, 'pids.json')
+  const fixture = path.join(dir, 'hang.cjs')
+
+  const listening = (port: number): Promise<boolean> =>
+    new Promise(resolve => {
+      const socket = connect(port, '127.0.0.1')
+
+      const done = (alive: boolean) => {
+        socket.destroy()
+        resolve(alive)
+      }
+
+      socket.once('connect', () => done(true))
+      socket.once('error', () => done(false))
+      socket.setTimeout(2000, () => done(true))
+    })
+
+  fs.writeFileSync(
+    fixture,
+    `
+    const { spawn } = require('node:child_process');
+    const worker = String.raw\`const fs = require('node:fs');
+      const server = require('node:net').createServer(socket => socket.end());
+      server.listen(0, '127.0.0.1', () => fs.writeFileSync(process.argv[1],
+        JSON.stringify({ pids: [Number(process.argv[2]), process.pid], port: server.address().port })));\`;
+    spawn(process.execPath, ['-e', worker, process.argv[2], String(process.pid)], { stdio: 'inherit' });
+    setInterval(() => {}, 1000);
+  `
+  )
+
+  try {
+    if (process.platform === 'win32') {
+      const python = execFileSync('python3', ['-c', 'import sys; print(sys.executable)'], { encoding: 'utf8' }).trim()
+      vi.stubEnv('HERMES_DESKTOP_PYTHON', python)
+    }
+
+    const success = await execGit(process.execPath, ['-e', 'process.stdout.write("ok")'], { timeoutMs: 5000 })
+    expect(success).toMatchObject({ code: 0, stdout: 'ok' })
+
+    const error = await execGit(process.execPath, [fixture, pids], { timeoutMs: 5000 }).catch(error => error)
+    const { port } = JSON.parse(fs.readFileSync(pids, 'utf8'))
+    await vi.waitFor(async () => expect(await listening(port)).toBe(false), { timeout: 3000 })
+    expect(error).toMatchObject({ code: 'ETIMEDOUT' })
+  } finally {
+    if (fs.existsSync(pids)) {
+      for (const pid of JSON.parse(fs.readFileSync(pids, 'utf8')).pids) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          /* already reaped */
+        }
+      }
+    }
+
+    vi.unstubAllEnvs()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}, 20_000)
 
 test('windows git spawn uses a CREATE_NO_WINDOW host and does not rewrite git argv', () => {
   const plan = planNoConsoleGitSpawn({

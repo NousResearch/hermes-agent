@@ -568,7 +568,8 @@ describe('ClarifyTool recommended option', () => {
     const recommended = screen.getByRole('button', { name: /staging/ })
 
     fireEvent.click(recommended)
-    fireEvent.keyDown(window, { key: 'Enter' })
+    recommended.focus()
+    fireEvent.keyDown(recommended, { key: 'Enter' })
 
     // The decorated string goes back verbatim; the tool strips the label before
     // the agent ever sees the answer.

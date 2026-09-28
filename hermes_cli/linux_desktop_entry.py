@@ -130,7 +130,7 @@ def resolve_exec_command(project_root: Optional[Path] = None) -> str:
         # lineage, commit 4150501f641) — cached here per-process so a desktop launch pays the subprocess
         # cost at most once.
         interpreter = _running_interpreter_fallback()
-    argv = [interpreter, "-m", "hermes_cli.main", "desktop"]
+    argv = [interpreter, "-m", "hermes_cli.main", *_desktop_argv_tail(project_root)]
     if bin_path:
         resolved = Path(bin_path).resolve()
         # A Python launcher whose shebang points OUTSIDE the venv (e.g. the repo's `hermes` script
@@ -138,8 +138,30 @@ def resolve_exec_command(project_root: Optional[Path] = None) -> str:
         # Terminal=false — run it under the venv interpreter explicitly.
         prefix = [interpreter] if _needs_interpreter(resolved) else []
         # See #90292.
-        argv = [*prefix, str(resolved), "desktop"]
+        argv = [*prefix, str(resolved), *_desktop_argv_tail(project_root)]
     return " ".join(_quote_exec_arg(a) for a in argv)
+
+
+def _desktop_argv_tail(project_root: Optional[Path]) -> list[str]:
+    """The ``desktop`` subcommand arguments a persisted launcher should carry.
+
+    A menu/taskbar click is a launch, not a build request: when a packaged
+    Electron app already exists under the checkout it must start directly
+    (``--skip-build``) instead of re-running the build-then-launch path, whose
+    source-hash freshness check reports "stale" on any locally modified tree
+    and makes every click pay a 60s+ rebuild that can fail outright (#126009).
+    With no packaged app yet (first install), keep the build-then-launch
+    default so the click still produces an app.
+    """
+    if project_root is None:
+        return ["desktop"]
+    release = project_root / "apps" / "desktop" / "release"
+    packaged = any(
+        (release / dist / name).exists()
+        for dist in ("linux-unpacked", "linux-arm64-unpacked")
+        for name in ("hermes", "Hermes")
+    )
+    return ["desktop", "--skip-build"] if packaged else ["desktop"]
 
 
 def _is_interpreter(candidate: Path) -> bool:

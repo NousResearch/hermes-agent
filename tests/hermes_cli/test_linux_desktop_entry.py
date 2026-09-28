@@ -1292,3 +1292,36 @@ def test_deferred_install_skips_heal_after_exit_without_reveal():
     deferred.finish()
     assert calls == []
     assert not deferred._thread.is_alive()
+
+
+# #126009: the persisted launcher is a menu/taskbar click — a launch, not a
+# build request. With a packaged Electron app already present, the Exec line
+# must carry --skip-build (start the packaged app in seconds) instead of the
+# build-then-launch default, whose source-hash freshness check reports
+# "stale" on any locally modified tree and pays a 60s+ rebuild per click.
+def test_exec_appends_skip_build_when_packaged_app_exists(tmp_path, xdg_home, monkeypatch):
+    root = _make_project(tmp_path)
+    unpacked = root / "apps" / "desktop" / "release" / "linux-unpacked"
+    unpacked.mkdir(parents=True)
+    (unpacked / "hermes").write_text("", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line.endswith("desktop --skip-build")
+
+
+def test_exec_keeps_build_then_launch_when_no_packaged_app(tmp_path, xdg_home, monkeypatch):
+    # First install (nothing packaged yet): the click must still build and
+    # launch — --skip-build would exit with "no packaged desktop app found".
+    root = _make_project(tmp_path)
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line.endswith("desktop")
+    assert "--skip-build" not in exec_line

@@ -109,6 +109,12 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
     if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION):
         saved = _save_blocked_payload(command) if command else None
         if saved:
+            # The recovery hint tells the agent to `bash <path>` via the terminal tool —
+            # which runs INSIDE the active backend — so hand it the path the backend sees
+            # (#72389 class): /root/.hermes under docker/modal, ~/.hermes on synced remotes.
+            from tools.credential_files import to_agent_visible_cache_path
+
+            saved = to_agent_visible_cache_path(saved)
             message += _RECOVERY_PREFIX + (
                 f"Your command was saved to {saved} — review it, then run: terminal(command=\"bash {saved}\"). "
                 "Do not retry inline."

@@ -1042,27 +1042,50 @@ class SessionMessagesMixin:
         Failing to name it means the watermark path, which archives the rows the compressor
         saw, including ones whose ids were stripped. A marker-less miss is an unpersisted
         turn: it names nothing, and it is not a reason to abandon the ids we do have.
-        Several active rows with the same content are ambiguous, so that also abandons.
+        Several active rows with the same content are ambiguous, so that also abandons,
+        and so does a merged dict whose run cannot be named.
         The second set holds only merges the caller could not count: a dict that lists its
         own ``_absorbed_row_ids`` is already counted in ``tail_count``.
         """
         if covered_ids is None:
             return None
         from agent.context_compressor import _DB_PERSISTED_MARKER
+        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
 
         proved = [int(row_id) for row_id in covered_ids if isinstance(row_id, int) and row_id > 0]
         merged_away: Set[int] = set()
         for message in unresolved_held or ():
             if not isinstance(message, dict):
                 continue
-            matches = self._matching_active_ids(conn, session_id, message)
-            run = [] if matches else self._merged_user_run(conn, session_id, message)
-            if run is None or len(matches) > 1 or (
+            # The stamp is provenance and text is not: a surface may have re-rendered the dict since the
+            # repair (gateway timestamps), and a later row can equal the merged text. So the run is
+            # resolved first, and a stamped dict that names none is still durable, never an unpersisted turn.
+            run = self._merged_user_run(conn, session_id, message)
+            if message.get(MERGED_DURABLE_ROWS) and not run:
+                return None
+            matches = [] if run else self._matching_active_ids(conn, session_id, message)
+            if len(matches) > 1 or (
                     message.get(_DB_PERSISTED_MARKER) and len(matches) != 1 and not run):
                 return None
             proved.extend(matches or run)
             merged_away.update(set(run[1:]) - set(message.get("_absorbed_row_ids") or ()))
         return list(dict.fromkeys(proved)), merged_away
+
+    @staticmethod
+    def _uncounted_merged_rows(tail: List[Dict[str, Any]]) -> int:
+        """Durable rows behind the carried *tail* beyond one per dict, for the positional rewind.
+
+        The watermark path cannot name a merged dict's run, so it widens by the stamp. A dict that
+        lists ``_absorbed_row_ids`` is already counted in ``tail_count``, and one that holds a
+        ``_row_id`` was written back as a single row by an earlier compaction.
+        """
+        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
+
+        return sum(
+            message[MERGED_DURABLE_ROWS] - 1 for message in tail
+            if isinstance(message, dict) and type(message.get(MERGED_DURABLE_ROWS)) is int
+            and message[MERGED_DURABLE_ROWS] > 1 and not message.get("_absorbed_row_ids")
+            and not isinstance(message.get("_row_id"), int))
 
     @staticmethod
     def _tail_originals(covered_active: List[int], tail_count: int, merged_away: Set[int]) -> List[int]:
@@ -1186,7 +1209,8 @@ class SessionMessagesMixin:
                 rewind_ids += [int(row["id"]) for row in conn.execute(
                     f"SELECT id FROM messages WHERE session_id = ? AND active = 1{' AND id <= ?' if bound else ''} "
                     "ORDER BY id DESC LIMIT ?",
-                    (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
+                    (session_id, *((int(watermark),) if bound else ()),
+                     int(tail_count) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
             rewind_ids += tail_ids
             rewind_ids = list(dict.fromkeys(rewind_ids))
             if rewind_ids:

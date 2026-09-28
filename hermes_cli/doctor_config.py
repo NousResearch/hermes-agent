@@ -516,6 +516,20 @@ def _check_xai_retirement(should_fix: bool, f: Finding) -> None:
     f.manual_issues.append(f"Update {len(retired_refs)} retired xAI model reference(s) in config.yaml — see {MIGRATION_GUIDE_URL}")
 
 
+@doctor_check("Session reset check skipped", "({e})")
+def _check_retired_session_reset(should_fix: bool, f: Finding) -> None:
+    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
+    found = retired_reset_policy(load_user_config_effective())
+    if found is None:
+        check_ok("No idle/daily session_reset policy configured")
+    elif reset_plugin_enabled():
+        check_ok(f"{found[0]}.mode: {found[1]} is applied by the session reset plugin")
+    else:
+        check_warn(format_notice(*found))
+        f.manual_issues.append(format_notice(*found))
+
+
 @doctor_check("Plugin compat check skipped", "({e})")
 def _check_plugin_compat(should_fix: bool, f: Finding) -> None:
     from hermes_cli.plugin_compat import ALLOW_KEY, COMPAT_REMOVAL, compat_report, removal_in_effect

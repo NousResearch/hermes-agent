@@ -35,8 +35,11 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '}',
     `$explicit=${explicit}`,
     'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
+    // HERMES_HOME is only trusted when it names a directory on the REMOTE: a stale User-scope
+    // value (older install.ps1 persisted one) or a client path leaked over SSH otherwise fails
+    // assertSafeRemoteHome as "Unsafe remote Hermes home" (#118988).
     '$hermesHome=$env:HERMES_HOME',
-    'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
+    'if(-not $hermesHome -or -not (Test-Path -LiteralPath $hermesHome -PathType Container)){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
     'Assert-NoReparse $hermesHome $true',
     '$candidate=[IO.Path]::Combine($hermesHome, "hermes-agent\\venv\\Scripts\\hermes.exe")',
     '$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe")',

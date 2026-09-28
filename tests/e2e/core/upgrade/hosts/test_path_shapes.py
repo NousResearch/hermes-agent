@@ -4,18 +4,21 @@ Failure class: PATH shapes. Two things users report once the install "works":
 
 * the installer's PATH wiring duplicates ``~/.local/bin`` when the distro's own startup files
   already put it on PATH with a bare ``PATH=...`` assignment (Fedora ``.bashrc``, Debian
-  ``.profile``), so a login shell carries it more than once (gated on #123424); a re-run of the
+  ``.profile``), so a login shell carries it more than once (#123424); a re-run of the
   installer must not edit the startup files again;
-* a node/npm the user already has, earlier on PATH, either shadows the managed toolchain where
-  Hermes needs the managed one (the TUI/web builds), or the managed node is forced onto an MCP
-  server the user configured with their own ``node`` (gated on #124264).
+* a node/npm the user already has, earlier on PATH, must never stand in for the managed toolchain:
+  not for the TUI/web builds and not for an MCP server configured with a bare ``command: node``.
+  Hermes only ever runs its own packaged node/npm; when such a server's native addon was built by
+  the user's Node it fails under Hermes's, and that failure must reach the user with the remedy
+  (rebuild it under Hermes's Node) instead of a silent park (#124264).
 
 One real install through HEAD's ``scripts/install.sh`` into a HOME carrying Fedora's stock
 ``.bashrc`` / ``.bash_profile``, with a user-owned ``node``/``npm`` first on PATH. That node
 is a stand-in (the external edge): it answers version probes as v22 and logs every call; anything
-else it refuses loudly, except the user's own MCP server script, which it serves as a minimal
+else it refuses loudly, except the user's own MCP server script, which it would serve as a minimal
 stdio MCP server. The managed node running the same script instead exits the way a native addon
-built for the user's node does (``NODE_MODULE_VERSION`` mismatch) and records which node ran it.
+built for the user's node does (``NODE_MODULE_VERSION`` mismatch on an addon in an ``~/.npm/_npx``
+entry) and records which node ran it.
 """
 
 from __future__ import annotations
@@ -27,7 +30,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.hosts import _hosts as X
@@ -61,6 +63,8 @@ FEDORA_SKEL = {
     ),
 }
 USER_NODE_VERSION = "v22.11.0"
+NPX_ENTRY = ".npm/_npx/0e2eab1c"
+ADDON_IN_NPX_CACHE = f"{NPX_ENTRY}/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
 MINIMAL_MCP_SERVER = r'''
 import json, sys
 for line in sys.stdin:
@@ -97,8 +101,10 @@ def _user_toolchain(root: Path) -> dict[str, Path]:
     server_js = mcp_dir / "server.js"
     server_js.write_text(
         "require('fs').writeFileSync(" + repr(str(marker)) + ", process.execPath + ' ' + process.version);\n"
-        "console.error(\"Error: The module 'better_sqlite3.node' was compiled against a different Node.js version "
-        "using NODE_MODULE_VERSION 127. This version of Node.js requires NODE_MODULE_VERSION \" + process.versions.modules);\n"
+        "const addon = require('path').join(require('os').homedir(), " + repr(ADDON_IN_NPX_CACHE) + ");\n"
+        "console.error(\"Error: The module '\" + addon + \"'\\nwas compiled against a different Node.js version using\\n"
+        "NODE_MODULE_VERSION 127. This version of Node.js requires\\nNODE_MODULE_VERSION \" + process.versions.modules"
+        " + \"\\n  code: 'ERR_DLOPEN_FAILED'\");\n"
         "process.exit(1);\n", encoding="utf-8")
     python = shutil.which("python3") or sys.executable
     versions = {"node": USER_NODE_VERSION, "npm": "10.9.0", "npx": "10.9.0"}
@@ -179,15 +185,13 @@ def test_login_shell_has_local_bin_once_with_stock_fedora_startup_files(world):
     assert rc_after_rerun == world["rc_after_install"], (
         "re-running the installer edited the startup files again: "
         f"{[n for n in FEDORA_SKEL if rc_after_rerun[n] != world['rc_after_install'][n]]}")
-    with known_failure(r"~/\.local/bin appears [2-9]\d* times",
-                       "gated on #123424: wire_shell_path's existing-setup regex misses bare PATH= assignments"):
-        changed = [n for n, text in FEDORA_SKEL.items() if world["rc_after_install"][n] != text]
-        assert count == 1 and count_rerun == 1, (
-            f"~/.local/bin appears {count} times on a login shell's PATH after install ({count_rerun} after a re-run):\n"
-            f"{line_rerun}\n(startup files the installer changed: {changed})")
+    changed = [n for n, text in FEDORA_SKEL.items() if world["rc_after_install"][n] != text]
+    assert count == 1 and count_rerun == 1, (
+        f"~/.local/bin appears {count} times on a login shell's PATH after install ({count_rerun} after a re-run):\n"
+        f"{line_rerun}\n(startup files the installer changed: {changed})")
 
 
-def test_mcp_server_configured_with_the_users_node_runs_on_the_users_node(world, provider):
+def test_mcp_server_runs_on_the_managed_node_and_an_abi_mismatch_names_the_rebuild(world, provider):
     sb, user = world["sb"], world["user"]
     assert world["install"].returncode == 0, I.describe(world["install"])
     X.configure(sb, provider)
@@ -197,13 +201,17 @@ def test_mcp_server_configured_with_the_users_node_runs_on_the_users_node(world,
                    encoding="utf-8")
     before = len(_calls(world))
     probe = sb.cli("mcp", "test", "usernode", timeout=180)
+    out = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", probe.stdout + probe.stderr).split())
     ran_js = [c for c in _calls(world)[before:] if c.startswith("node ") and c.endswith("server.js")]
-    managed = user["marker"].read_text(encoding="utf-8") if user["marker"].exists() else ""
-    assert I.TRACEBACK not in probe.stdout + probe.stderr, I.describe(probe)
-    assert ran_js or managed, "harness: neither the user's node nor any other node ran the MCP server\n" + I.describe(probe)
-    with known_failure(r"MCP server configured with `command: node` ran on .*not the user's node",
-                       "gated on #124264: the managed node is prepended to MCP stdio children's PATH"):
-        assert not managed and ran_js, (
-            f"MCP server configured with `command: node` ran on {managed!r}, not the user's node "
-            f"({user['bin'] / 'node'}, {USER_NODE_VERSION}):\n" + I.describe(probe))
-    assert probe.returncode == 0, "`hermes mcp test` failed although the user's node served the MCP server:\n" + I.describe(probe)
+    managed = user["marker"].read_text(encoding="utf-8").split()[0] if user["marker"].exists() else ""
+    assert I.TRACEBACK not in out, I.describe(probe)
+    assert not ran_js, f"the user's node ({USER_NODE_VERSION}) ran the MCP server instead of Hermes's: {ran_js}"
+    assert managed.startswith(str(sb.home / ".hermes")), (
+        f"the MCP server did not run on Hermes's managed node (ran on {managed!r}):\n" + I.describe(probe))
+    assert probe.returncode == 1, "`hermes mcp test` passed for a server that died at startup:\n" + I.describe(probe)
+    # The failure reaches the user with the remedy: drop the npx entry, or rebuild with Hermes's own npm
+    # under Hermes's own node (never "point the server at your node").
+    assert "NODE_MODULE_VERSION 127" in out and f"rm -rf {sb.home / NPX_ENTRY}" in out, (
+        "the ABI mismatch was not surfaced with the npx-cache remedy:\n" + I.describe(probe))
+    assert f"PATH={Path(managed).parent}:" in out and " rebuild better-sqlite3 --prefix " in out, (
+        "the rebuild command does not run Hermes's npm under Hermes's node:\n" + I.describe(probe))

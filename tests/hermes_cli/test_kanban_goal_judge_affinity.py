@@ -44,35 +44,48 @@ def _recording_judge(seen):
     return fake_judge
 
 
+def _plain_goal_text(conn, task):
+    """Title+body only — these tests pin affinity binding, not comment enrichment."""
+    return f"{task.title}\n\n{task.body or ''}".strip()
+
+
+def _goal_text_patch():
+    return patch("hermes_cli.kanban_db.goal_text_with_operator_notes", _plain_goal_text)
+
+
 def test_cli_gate_transport_failure_fails_open_but_genuine_verdict_rejects():
-    with _aux_client(), patch("hermes_cli.goals.judge_goal", return_value=_TRANSPORT_FAILED):
-        assert kanban_cli._goal_mode_handoff_rejection(_task(), "evidence") == ("done", None)
-    with _aux_client(), patch("hermes_cli.goals.judge_goal", return_value=_GENUINE_CONTINUE):
-        assert kanban_cli._goal_mode_handoff_rejection(_task(), "evidence") == (
+    with _aux_client(), _goal_text_patch(), patch(
+            "hermes_cli.goals.judge_goal", return_value=_TRANSPORT_FAILED):
+        assert kanban_cli._goal_mode_handoff_rejection(None, _task(), "evidence") == ("done", None)
+    with _aux_client(), _goal_text_patch(), patch(
+            "hermes_cli.goals.judge_goal", return_value=_GENUINE_CONTINUE):
+        assert kanban_cli._goal_mode_handoff_rejection(None, _task(), "evidence") == (
             "continue", "goal not met yet")
 
 
 def test_tool_gate_transport_failure_fails_open_but_genuine_verdict_rejects():
-    with patch.object(kanban_tools, "_goal_judge_available", return_value=True):
+    with patch.object(kanban_tools, "_goal_judge_available", return_value=True), _goal_text_patch():
         with patch.object(kanban_tools, "judge_goal", return_value=_TRANSPORT_FAILED):
-            kanban_tools._goal_gate("kanban_complete", _task(), "task-1", "ev")  # no raise
+            kanban_tools._goal_gate("kanban_complete", None, _task(), "task-1", "ev")  # no raise
         with patch.object(kanban_tools, "judge_goal", return_value=_GENUINE_CONTINUE):
             with pytest.raises(kanban_tools._Reject):
-                kanban_tools._goal_gate("kanban_complete", _task(), "task-1", "ev")
+                kanban_tools._goal_gate("kanban_complete", None, _task(), "task-1", "ev")
 
 
 def test_cli_gate_binds_per_task_affinity_scope():
     """Headless judge call runs under kanban:<task_id>; a bound scope is kept."""
     seen = []
-    with _aux_client(), patch("hermes_cli.goals.judge_goal", side_effect=_recording_judge(seen)):
-        assert kanban_cli._goal_mode_handoff_rejection(_task("task-9"), "ev") == ("done", None)
+    with _aux_client(), _goal_text_patch(), patch(
+            "hermes_cli.goals.judge_goal", side_effect=_recording_judge(seen)):
+        assert kanban_cli._goal_mode_handoff_rejection(None, _task("task-9"), "ev") == ("done", None)
     assert seen == ["kanban:task-9"]
     assert get_affinity_scope() is None
 
     token = set_affinity_scope("outer-conversation")
     try:
-        with _aux_client(), patch("hermes_cli.goals.judge_goal", side_effect=_recording_judge(seen)):
-            kanban_cli._goal_mode_handoff_rejection(_task("task-9"), "ev")
+        with _aux_client(), _goal_text_patch(), patch(
+                "hermes_cli.goals.judge_goal", side_effect=_recording_judge(seen)):
+            kanban_cli._goal_mode_handoff_rejection(None, _task("task-9"), "ev")
     finally:
         reset_affinity_scope(token)
     assert seen[-1] == "outer-conversation"
@@ -80,9 +93,9 @@ def test_cli_gate_binds_per_task_affinity_scope():
 
 def test_tool_gate_binds_per_task_affinity_scope():
     seen = []
-    with patch.object(kanban_tools, "_goal_judge_available", return_value=True), patch.object(
+    with patch.object(kanban_tools, "_goal_judge_available", return_value=True), _goal_text_patch(), patch.object(
             kanban_tools, "judge_goal", side_effect=_recording_judge(seen)):
-        kanban_tools._goal_gate("kanban_complete", _task("task-9"), "task-9", "ev")
+        kanban_tools._goal_gate("kanban_complete", None, _task("task-9"), "task-9", "ev")
     assert seen == ["kanban:task-9"]
     assert get_affinity_scope() is None
 

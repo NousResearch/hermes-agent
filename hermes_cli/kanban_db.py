@@ -3986,6 +3986,33 @@ def schedule_task(
         return True
 
 
+# --- Goal-judge text (what the goal-mode judge reads) ---
+
+_GOAL_NOTES_MAX_COMMENTS = 10
+_GOAL_NOTES_MAX_CHARS = 2000
+
+
+def goal_text_with_operator_notes(conn: sqlite3.Connection, task: Task) -> str:
+    """Goal text handed to the goal-mode judge at every terminal handoff: the card's
+    title + body, plus its most recent human-authored comments under an "Operator
+    notes" heading — a waiver or steer left on the card is as much the goal as the
+    body, and a judge that never sees it re-rejects a handoff the operator already
+    approved. Comments authored by the worker's own profile are its own output,
+    not operator intent, and are excluded (same filter as the live comment bridge
+    in tools/kanban_tools). Capped at the last 10 comments / 2000 chars so a
+    chatty card cannot blow up the judge prompt."""
+    base = f"{task.title}\n\n{task.body or ''}".strip()
+    from hermes_cli.profiles import current_profile_name
+    own = current_profile_name("worker") or "worker"
+    human = [c for c in list_comments(conn, task.id)
+             if (c.author or "").strip() != own and (c.body or "").strip()]
+    if not human:
+        return base
+    lines = [f"- {c.author or 'operator'}: {c.body.strip()}"
+             for c in human[-_GOAL_NOTES_MAX_COMMENTS:]]
+    return f"{base}\n\nOperator notes (from card comments):\n" + "\n".join(lines)[:_GOAL_NOTES_MAX_CHARS]
+
+
 # --- Worker context builder (what a spawned worker sees) ---
 
 def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:

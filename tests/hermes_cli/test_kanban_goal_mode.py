@@ -188,6 +188,12 @@ class TestCLIJudgeGate:
             "hermes_cli.goals.judge_goal",
             lambda **kw: (verdict, reason, False, None, False),
         )
+        # The judged goal is built from the board (title+body+operator comments);
+        # these tests exercise the verdict plumbing, not comment enrichment.
+        monkeypatch.setattr(
+            "hermes_cli.kanban.kb.goal_text_with_operator_notes",
+            lambda conn, task: f"{task.title}\n\n{task.body or ''}".strip(),
+        )
 
         args = argparse.Namespace(task_ids=["t1"], summary=summary, result=None, metadata=None)
         return _cmd_complete(args), complete_calls

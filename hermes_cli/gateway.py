@@ -4131,7 +4131,16 @@ def host_multiplexer_serving(profile_name: str | None = None):
     try:
         from gateway.host_attach import host_gateway_serving
         name = profile_name if profile_name is not None else _current_profile_name()
-        return host_gateway_serving(name or "default")
+        gateway = host_gateway_serving(name or "default")
+        if gateway is None:
+            return None
+        # Same predicate as decide() / _claim_host_gateway_role: another tenant's multiplexer
+        # "serving default" is a name collision, and the CLI guards refused on it with exit 78 (#121352).
+        from gateway.host_attach import launched_by_other_tenant
+        if launched_by_other_tenant(gateway.home, get_hermes_home()):
+            logger.debug("Host gateway %s belongs to another Hermes home; not ours", gateway.describe())
+            return None
+        return gateway
     except Exception:
         logger.debug("Host multiplexer probe failed", exc_info=True)
         return None
@@ -4170,9 +4179,15 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         return False
 
     # The host record answers first: it names the live host process whatever home launched it, so a
-    # multiplexer started by a named profile is visible here too.
-    if host_multiplexer_serving(suffix) is not None:
-        return True
+    # multiplexer started by a named profile is visible here too. A record launched by THIS profile's
+    # own home is its own gateway (a standalone fleet member, or a multiplexer it hosts), never a
+    # multiplexer serving a satellite: counting it refused the owner's own restart with exit 78 and
+    # pointed it at `-p default`, whose gateway was not running (#120871).
+    gateway = host_multiplexer_serving(suffix)
+    if gateway is not None:
+        from hermes_cli.profiles import normalize_profile_name
+        if normalize_profile_name(gateway.profile_label) != normalize_profile_name(suffix):
+            return True
 
     try:
         from hermes_constants import get_default_hermes_root
@@ -5596,12 +5611,14 @@ def _status_host_kind() -> str:
 
 def _cmd_status(args):
     from hermes_cli.gateway_profile_lifecycle import print_parked_status
-    if print_parked_status():
-        return
     deep = getattr(args, "deep", False)
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
     snapshot = get_gateway_runtime_snapshot(system=system)
+    # The marker records intent, not runtime: a `--force` gateway bypasses parking and stays live
+    # beside it, so only a parked profile with nothing running stops here.
+    if print_parked_status() and not snapshot.running:
+        return
     from hermes_cli.profiles import get_active_profile_name, profile_is_standalone
 
     active_standalone = ((get_active_profile_name() or "default") != "default"
@@ -5637,6 +5654,13 @@ def _cmd_status(args):
             _print_served_ingress_urls()
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])
+        elif snapshot.service_running:
+            # s6 container: the service is up but the scan finds no PID (the `python -c` launcher
+            # argv is deliberately unmatched, #123881, and there is no gateway.pid) — #125390.
+            print(f"✓ Gateway is running (supervised by {snapshot.manager})")
+            _print_runtime_health()
+            _print_multiplex_standalone_reason()
+            _print_served_ingress_urls()
         else:
             print("✗ Gateway is not running")
             _print_runtime_health()

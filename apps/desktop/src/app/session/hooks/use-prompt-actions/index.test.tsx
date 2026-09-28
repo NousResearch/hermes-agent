@@ -694,6 +694,7 @@ describe('usePromptActions /compress', () => {
     const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => {
       if (method === 'session.compress') {
         return {
+          info: { usage: { compressions: 1 } },
           removed: 8,
           summary: {
             headline: 'Compressed: 234 → 226 messages',
@@ -728,6 +729,7 @@ describe('usePromptActions /compress', () => {
     )
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+    expect($currentUsage.get().compressions).toBe(1)
   })
 
   it('replaces the transcript from the response messages', async () => {

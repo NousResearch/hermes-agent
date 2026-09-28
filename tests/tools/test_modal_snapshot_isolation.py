@@ -64,9 +64,6 @@ def _install_modal_test_modules(
     sys.modules["hermes_cli"] = hermes_cli
     hermes_home = tmp_path / "hermes-home"
     os.environ["HERMES_HOME"] = str(hermes_home)
-    sys.modules["hermes_cli.config"] = types.SimpleNamespace(
-        get_hermes_home=lambda: hermes_home,
-    )
 
     tools_package = types.ModuleType("tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]

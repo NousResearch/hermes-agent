@@ -29,7 +29,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Literal, Optional, List, Tuple, Set
 
 import hermes_yaml as yaml
 
@@ -3999,63 +3999,184 @@ def _inject_profile_env_vars() -> None:
 _inject_profile_env_vars()
 
 
-def _platform_plugin_manifests():
-    """Yield ``(dir_name, manifest_dict)`` for every platform plugin manifest: bundled
-    ``plugins/platforms/*``, the user's ``<HERMES_HOME>/plugins/platforms/*`` category dir, and flat
-    user installs ``<HERMES_HOME>/plugins/*`` that declare ``kind: platform`` (#46600)."""
-    user_plugins = get_hermes_home() / "plugins"
-    roots = (
-        (get_project_root() / "plugins" / "platforms", False),
-        (user_plugins / "platforms", False),
-        (user_plugins, True),  # flat layout: only manifests that say they are platforms
-    )
+PlatformManifestSource = Literal["all", "bundled", "user"]
+
+
+def _is_plugin_dir_name(name: str) -> bool:
+    # Same rule as plugins_discovery.scan_directory: __pycache__-style dunders aren't plugins; a dot
+    # dir can be, so its secrets are declared too.
+    return not (name.startswith("__") and name.endswith("__"))
+
+
+def _platform_manifest_paths(home: Optional[Path] = None, source: PlatformManifestSource = "all"):
+    """Yield ``(dir_name, manifest_path, require_kind, stat)`` for every platform plugin manifest.
+    ``source`` is ``"bundled"`` (shipped ``plugins/platforms/*``), ``"user"`` (``<home>/plugins/
+    platforms/*`` plus flat ``<home>/plugins/*`` installs, which must declare ``kind: platform``,
+    #46600) or ``"all"``. ``home`` defaults to the bound Hermes home. A directory that cannot be
+    listed or searched yields ``(name, None, require_kind, error)``: a plugin there can't load
+    either, so callers skip it. One ``scandir`` per root and one ``stat`` per candidate, because
+    the child-env scrub stamps these on every spawn."""
+    roots = []
+    if source in ("all", "bundled"):
+        roots.append((get_project_root() / "plugins" / "platforms", False))
+    if source in ("all", "user"):
+        user_plugins = (home if home is not None else get_hermes_home()) / "plugins"
+        roots += [(user_plugins / "platforms", False), (user_plugins, True)]
     for root, require_kind in roots:
-        if not root.is_dir():
+        try:
+            with os.scandir(root) as it:
+                entries = [e for e in it if _is_plugin_dir_name(e.name)]
+        except (FileNotFoundError, NotADirectoryError):
             continue
-        for child in root.iterdir():
-            manifest_path = next(
-                (p for p in (child / "plugin.yaml", child / "plugin.yml") if child.is_dir() and p.exists()), None)
-            if manifest_path is None:
-                continue
+        except OSError as exc:
+            yield str(root), None, require_kind, exc
+            continue
+        for entry in entries:
             try:
-                with open(manifest_path, "r", encoding="utf-8-sig") as f:
-                    manifest = fast_safe_load(f) or {}
-            except Exception:
+                if not entry.is_dir():
+                    continue
+            except OSError:
                 continue
-            if not isinstance(manifest, dict) or (require_kind and manifest.get("kind") != "platform"):
-                continue
-            yield child.name, manifest
+            for file_name in ("plugin.yaml", "plugin.yml"):
+                path = Path(entry.path) / file_name
+                try:
+                    st = os.stat(path)
+                except PermissionError as exc:  # the dir itself is not searchable
+                    yield entry.name, None, require_kind, exc
+                    break
+                except OSError:  # missing, a symlink loop: discovery's exists() is False too
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                yield entry.name, path, require_kind, st
+                break
 
 
-def _inject_platform_plugin_env_vars() -> None:
+def platform_manifest_stamp(home: Optional[Path] = None) -> tuple:
+    """Change-detection key over every user platform plugin manifest of ``home`` (path plus
+    :func:`utils.file_signature`): it changes when one is added, removed, replaced or edited in
+    place, so a cache keyed on it never serves a stale declaration."""
+    return tuple((name, str(path), file_signature(st) if path is not None else type(st).__name__)
+                 for name, path, _kind, st in _platform_manifest_paths(home, "user"))
+
+
+def _platform_plugin_manifests(home: Optional[Path] = None, source: PlatformManifestSource = "all", *,
+                               strict: bool = False, skipped: "list | None" = None):
+    """Yield ``(dir_name, manifest_dict)`` for every platform plugin manifest (see
+    :func:`_platform_manifest_paths`). ``strict`` raises when a manifest cannot be read instead of
+    skipping it: the child-env scrub must not lose a declared secret to an I/O error. Only a
+    manifest known to be a platform's counts (the bundled and ``plugins/platforms/`` dirs); a
+    flat ``plugins/*`` manifest proves it is one only by its content, so an unreadable one is
+    skipped with a warning, as is an unsearchable plugin directory. A manifest that does not
+    parse declares nothing (its adapter cannot load either) and is skipped. Every skip is appended
+    to ``skipped``, so a caller can tell a complete scan from a partial one."""
+    for dir_name, manifest_path, require_kind, st in _platform_manifest_paths(home, source):
+        if manifest_path is None:
+            logger.warning("Skipping unreadable plugin directory %s: %s", dir_name, st)
+            if skipped is not None:
+                skipped.append(dir_name)
+            continue
+        try:
+            with open(manifest_path, "r", encoding="utf-8-sig") as f:
+                manifest = fast_safe_load(f) or {}
+        except OSError as exc:
+            if strict and not require_kind:
+                raise
+            logger.warning("Skipping unreadable plugin manifest %s: %s", manifest_path, exc)
+            if skipped is not None:
+                skipped.append(str(manifest_path))
+            continue
+        except Exception:
+            if skipped is not None:
+                skipped.append(str(manifest_path))
+            continue
+        if not isinstance(manifest, dict) or (require_kind and manifest.get("kind") != "platform"):
+            continue
+        yield dir_name, manifest
+
+
+# Env-name suffixes that make a platform variable a secret unless its declaration says otherwise.
+PLATFORM_SECRET_ENV_SUFFIXES = ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
+
+
+def _platform_manifest_env_entries(manifest: dict):
+    """Yield ``(name, is_secret, meta)`` for a manifest's ``requires_env`` / ``optional_env``
+    entries (a bare name or a dict with ``name`` plus optional ``description``/``url``/
+    ``password``/``prompt``/``category``). A name ending in PLATFORM_SECRET_ENV_SUFFIXES is a
+    password field unless the entry says ``password: false``."""
+    for entry in [*(manifest.get("requires_env") or []), *(manifest.get("optional_env") or [])]:
+        meta = {"name": entry} if isinstance(entry, str) else entry if isinstance(entry, dict) else {}
+        name = meta.get("name")
+        if not name or not isinstance(name, str):
+            continue
+        is_secret = bool(meta.get("password") or meta.get("secret"))
+        if not is_secret and not meta.get("password") is False:
+            is_secret = name.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES)
+        yield name, is_secret, meta
+
+
+def _manifest_secret_envs(manifests) -> frozenset[str]:
+    """Upper-cased secret messaging env names the given manifests declare, minus core-declared
+    names: a manifest never reclassifies a core variable such as OPENAI_API_KEY."""
+    names = {name.upper() for _dir, manifest in manifests
+             for name, is_secret, meta in _platform_manifest_env_entries(manifest)
+             if is_secret and (meta.get("category") or "messaging") == "messaging"}
+    return frozenset(names - {n.upper() for n in CORE_DECLARED_ENV_NAMES})
+
+
+def platform_manifest_secret_envs(home: Optional[Path] = None, source: PlatformManifestSource = "user", *,
+                                  strict: bool = False) -> frozenset[str]:
+    """Secret env names declared by one source's platform plugin manifests: ``"user"`` reads only
+    ``home``'s user-installed plugins, which belong to that profile alone; ``"bundled"`` returns
+    the set read once at import (re-read strictly if that read hit an I/O error)."""
+    if source == "bundled" and BUNDLED_PLATFORM_SECRET_ENVS is not None:
+        return BUNDLED_PLATFORM_SECRET_ENVS
+    return _manifest_secret_envs(_platform_plugin_manifests(home, source, strict=strict))
+
+
+def platform_manifest_secret_scan(home: Optional[Path] = None) -> "tuple[frozenset[str], bool]":
+    """``home``'s user-installed platform plugin secrets, strictly read, and whether the scan was
+    complete: False when a plugin dir or flat manifest could not be read or parsed, so the caller
+    keeps the denials it already knew instead of releasing them on a failed discovery."""
+    skipped: list = []
+    names = _manifest_secret_envs(_platform_plugin_manifests(home, "user", strict=True, skipped=skipped))
+    return names, not skipped
+
+
+def _inject_platform_plugin_env_vars() -> "frozenset[str] | None":
     """Populate OPTIONAL_ENV_VARS from platform plugin manifests (bundled AND user-installed) so
     Teams / IRC / Google Chat and third-party platforms are configurable in the ``hermes config`` /
-    Desktop Gateway form without the core knowing they exist.
-
-    ``requires_env`` / ``optional_env`` entries are a bare name or a dict with ``name`` plus
-    optional ``description``/``url``/``password``/``prompt``/``category``. Failures are swallowed
-    so a malformed plugin.yaml can't break CLI import.
+    Desktop Gateway form without the core knowing they exist. Failures are swallowed so a
+    malformed plugin.yaml can't break CLI import. Returns the bundled manifests' secret names, or
+    None when a bundled manifest could not be read (the policy then re-reads strictly).
     """
+    bundled: "list | None" = []
     try:
-        for dir_name, manifest in _platform_plugin_manifests():
-            label = manifest.get("label") or manifest.get("name") or dir_name
-            for entry in [*(manifest.get("requires_env") or []), *(manifest.get("optional_env") or [])]:
-                meta = {"name": entry} if isinstance(entry, str) else entry if isinstance(entry, dict) else {}
-                name = meta.get("name")
-                if not name or name in OPTIONAL_ENV_VARS:
-                    continue  # hardcoded entry wins (back-compat)
-                # *TOKEN / *SECRET / *KEY / *PASSWORD / *JSON are password fields unless overridden.
-                is_secret = bool(meta.get("password") or meta.get("secret"))
-                if not is_secret and not meta.get("password") is False:
-                    is_secret = name.upper().endswith(("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON"))
-                OPTIONAL_ENV_VARS[name] = {
-                    "description": meta.get("description") or f"{label} configuration",
-                    "prompt": meta.get("prompt") or name,
-                    "url": meta.get("url") or None,
-                    "password": is_secret,
-                    "category": meta.get("category") or "messaging"}
-    except Exception:
-        pass
+        bundled = list(_platform_plugin_manifests(source="bundled", strict=True))
+    except OSError:
+        bundled = None
+    manifests = list(bundled or [])
+    for source in ("bundled", "user") if bundled is None else ("user",):
+        try:
+            manifests += list(_platform_plugin_manifests(source=source))
+        except Exception:
+            pass
+    for dir_name, manifest in manifests:
+        label = manifest.get("label") or manifest.get("name") or dir_name
+        for name, is_secret, meta in _platform_manifest_env_entries(manifest):
+            if name in OPTIONAL_ENV_VARS:
+                continue  # hardcoded entry wins (back-compat)
+            OPTIONAL_ENV_VARS[name] = {
+                "description": meta.get("description") or f"{label} configuration",
+                "prompt": meta.get("prompt") or name,
+                "url": meta.get("url") or None,
+                "password": is_secret,
+                "category": meta.get("category") or "messaging"}
+    return _manifest_secret_envs(bundled) if bundled is not None else None
 
 
-_inject_platform_plugin_env_vars()
+# Names declared in core, before any platform manifest is read. A manifest never reclassifies
+# one: the config form keeps the core entry, and the child-env scrub keeps a plugin that lists
+# OPENAI_API_KEY from turning a provider key into an adapter secret.
+CORE_DECLARED_ENV_NAMES: frozenset[str] = frozenset(OPTIONAL_ENV_VARS)
+BUNDLED_PLATFORM_SECRET_ENVS: "frozenset[str] | None" = _inject_platform_plugin_env_vars()

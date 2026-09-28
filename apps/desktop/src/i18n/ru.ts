@@ -3721,6 +3721,7 @@ export const ru = defineLocale({
       openStarmap: 'Открыть граф памяти',
       turnRunning: 'Выполняется',
       contextUsage: 'Использование контекста',
+      compressions: count => `Сжатий: ${count}`,
       contextUsagePanel: {
         categories: {
           conversation: 'Диалог',

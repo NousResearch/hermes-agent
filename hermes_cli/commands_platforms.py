@@ -423,6 +423,38 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     return entries
 
 
+def _slack_registrable_names() -> list[str]:
+    """Every slash name a Hermes app may ever have had declared, uncapped: canonicals,
+    plugins, then aliases; Slack built-ins skipped, nothing else. The manifest generator
+    clamps this universe to the per-app cap and demotes the rest behind ``/hermes``, but an
+    app created under an older, higher cap keeps its extra commands declared and Slack keeps
+    delivering them — so the runtime matcher must answer the whole universe, not the capped
+    manifest list (#124762)."""
+    available = _gateway_available_commands()
+    wanted = [cmd.name for cmd in available]
+    wanted += [name for name, _desc, _hint in _iter_plugin_command_entries()]
+    wanted += [alias for cmd in available for alias in cmd.aliases]
+    names = ["hermes"]
+    seen = {"hermes"}
+    for name in wanted:
+        slack_name = _sanitize_slack_name(name)
+        if not slack_name or slack_name in seen or slack_name in _SLACK_RESERVED_COMMANDS:
+            continue
+        names.append(slack_name)
+        seen.add(slack_name)
+    return names
+
+
+def slack_slash_command_pattern() -> re.Pattern[str]:
+    """One alternation regex matching any registrable slash name. The Slack adapter builds
+    its single native-slash listener from this uncapped universe (see
+    ``_slack_registrable_names``) instead of the capped manifest list, so a command a
+    grandfathered app still declares keeps being answered."""
+    return re.compile(
+        r"^/(?:" + "|".join(re.escape(n) for n in _slack_registrable_names()) + r")$"
+    )
+
+
 def slack_app_manifest(
     request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
     """``features.slash_commands`` manifest portion only (decoupled from the rest of the manifest

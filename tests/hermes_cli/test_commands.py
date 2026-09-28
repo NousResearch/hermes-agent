@@ -5,7 +5,7 @@ from prompt_toolkit.document import Document
 
 from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
-from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_MAX_SLASH_COMMANDS, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
+from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_MAX_SLASH_COMMANDS, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, _slack_registrable_names, slack_app_manifest, slack_native_slashes, slack_slash_command_pattern, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -275,6 +275,29 @@ class TestSlackNativeSlashes:
             f"plugins did not win the freed slots ahead of aliases: {native[-4:]}"
         )
         assert "reset" not in native and "fork" not in native
+
+
+    def test_matcher_universe_stays_uncapped_for_grandfathered_apps(self):
+        """The adapter's slash matcher is built from the uncapped registrable
+        universe, not the capped manifest list: an app created under Slack's
+        older 50-command cap keeps its extra commands declared and delivered,
+        and capping the matcher alongside the manifest would leave those
+        arriving with nobody answering (#124762)."""
+        universe = set(_slack_registrable_names())
+        manifest = {n for n, _d, _h in slack_native_slashes()}
+        assert manifest <= universe, "manifest names outside the matcher universe"
+        demoted = universe & _SLACK_VIA_HERMES_ONLY
+        assert demoted, "grandfathered demoted names left the matcher universe"
+        assert demoted <= set(slack_subcommand_map()), (
+            "matcher-answered names with no /hermes route: "
+            f"{sorted(demoted - set(slack_subcommand_map()))}"
+        )
+        assert len(universe) > _SLACK_MAX_SLASH_COMMANDS
+        pattern = slack_slash_command_pattern()
+        assert pattern.match("/hermes")
+        assert pattern.match("/version")  # demoted for the manifest, still answerable at runtime
+        assert not pattern.match("/topic")  # Slack built-in, never ours
+        assert not pattern.match("/hermes-evil")  # alternation must anchor at the name boundary
 
 
 class TestSlackAppManifest:

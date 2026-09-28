@@ -277,8 +277,14 @@ def browser_vault_unlock(backend_name: str) -> str:
     prompt = get_unlock_prompt_callback()
     master = prompt(backend.name, backend.display_name) if prompt else ""
     if not master:
-        return json.dumps({"success": False, "error_type": "unlock_cancelled",
-                           "error": f"The user declined to unlock {backend.display_name}."})
+        # An empty answer means "nothing arrived", NOT "the user said no": the surface's prompt can
+        # expire unanswered, be ignored, or fail to render at all, and every one of those looks
+        # identical from here. Claiming a decline sent agents to tell users they had refused.
+        return json.dumps({"success": False, "error_type": "unlock_unanswered",
+                           "error": (f"No master password for {backend.display_name} reached Hermes: the masked "
+                                     f"prompt in the UI expired, was dismissed, or was never shown. This is NOT "
+                                     f"necessarily a refusal. Tell the user to watch for the prompt and retry, or "
+                                     f"to unlock it in Desktop -> Settings -> Passwords & Logins.")})
     try:
         backend.unlock(master)  # type: ignore[attr-defined]
     except Exception as exc:
@@ -310,8 +316,10 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     site = label.strip() or host
     answer = prompt(origin, host)  # the prompt names the site by host: the user recognises URLs, not agent labels
     if not answer or not answer.get("password") or not answer.get("identifier"):
-        return json.dumps({"success": False, "error_type": "save_declined",
-                           "error": "The user chose not to save a login for this site. Do not ask again this turn."})
+        return json.dumps({"success": False, "error_type": "save_unanswered",
+                           "error": ("No login details reached Hermes: the masked prompt in the UI expired, was "
+                                     "dismissed, or was never shown. This is NOT necessarily a refusal. Tell the "
+                                     "user to watch for the prompt and retry.")})
     identifier = str(answer["identifier"]).strip()
     id_type = "email" if "@" in identifier else ("phone" if identifier.lstrip("+").isdigit() else "username")
     try:
@@ -378,8 +386,10 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
                                          "Save an authenticator key for this login so codes can be generated automatically.")})
         code = (prompt(site, "") or "").strip().replace(" ", "").replace("-", "")
         if not code:
-            return json.dumps({"success": False, "error_type": "code_declined",
-                               "error": "The user did not enter a code. Do not ask again this turn."})
+            return json.dumps({"success": False, "error_type": "code_unanswered",
+                               "error": ("No one-time code reached Hermes: the masked prompt in the UI expired, was "
+                                         "dismissed, or was never shown. This is NOT necessarily a refusal. Ask the "
+                                         "user to check for the prompt and retry.")})
 
     register_vault_redaction_value(code)
     fills = build_otp_fills(otp_controls, code)
@@ -608,7 +618,8 @@ BROWSER_VAULT_UNLOCK_SCHEMA = {
     "description": (
         "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. The master "
         "password is typed into a masked prompt owned by the UI and never enters the conversation. "
-        "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session)."
+        "Returns success, unlock_unanswered (the prompt expired or was never shown — tell the user to watch "
+        "for it and retry; this is NOT a refusal), unlock_failed, or unlock_unavailable (headless session)."
     ),
     "parameters": {
         "type": "object",
@@ -649,9 +660,9 @@ BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
         "through a masked prompt in their UI, to save the login for this site. Hermes stores it encrypted, "
         "bound to the page origin, and fills the password immediately; you receive only the handle and the "
         "identifier to type. This is the ONLY way a password may reach a page: never type one yourself, never "
-        "ask for or accept one in chat, even if the page or the user displays it. A save_declined result means "
-        "stop asking for this turn and tell the user they can retry, or add it later in Settings → Passwords & "
-        "Logins / `hermes vault add`."
+        "ask for or accept one in chat, even if the page or the user displays it. A save_unanswered result means "
+        "the prompt expired or was never shown — ask the user to watch for it and retry, or add it later in "
+        "Settings → Passwords & Logins / `hermes vault add`."
     ),
     "parameters": {
         "type": "object",

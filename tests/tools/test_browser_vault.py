@@ -695,9 +695,50 @@ class TestSaveLoginPrompt:
             with patch("agent.vault_backends.unlock.can_prompt_here", return_value=False):
                 headless = json.loads(browser_vault_tool.browser_vault_save_login())
             unlock_mod.set_save_login_prompt_callback(None)
-        assert declined["error_type"] == "save_declined"
+        assert declined["error_type"] == "save_unanswered"
+        assert "declined" not in declined["error"].lower()
         assert headless["error_type"] == "prompt_unavailable"
         assert store.list_items() == []
+
+
+class TestUnansweredIsNotRefused:
+    """A prompt that comes back empty is "no answer", never "the user said no".
+
+    Regression: an expiring/unrendered masked card was reported as `unlock_cancelled` /
+    "The user declined to unlock ...", so agents told users they had refused when they had
+    never seen a prompt at all."""
+
+    @staticmethod
+    def _stub_backend():
+        class _Backend:
+            name = "bitwarden"
+            display_name = "Bitwarden"
+            needs_unlock = True
+
+            def is_unlocked(self):
+                return False
+
+            def unlock(self, master):
+                raise AssertionError("must not unlock with an empty answer")
+
+        return _Backend()
+
+    def test_unlock_prompt_that_returns_nothing_is_not_reported_as_a_decline(self):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        unlock_mod.set_unlock_prompt_callback(lambda backend, display_name: "")
+        try:
+            with patch("agent.vault_backends.enabled_backends", return_value=[self._stub_backend()]), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_unlock("bitwarden"))
+        finally:
+            unlock_mod.set_unlock_prompt_callback(None)
+
+        assert out["success"] is False
+        assert out["error_type"] == "unlock_unanswered"
+        assert "declined" not in out["error"].lower()
+        assert "not necessarily" in out["error"].lower()
 
 
 class TestManagerAutoDetection:
@@ -798,7 +839,7 @@ class TestTwoFactor:
         unlock_mod.set_code_prompt_callback(None)
         assert out["success"] and out["source"] == "user" and out["filled_fields"] == 6
         assert re.findall(r'"value": "(\d)"', seen["expr"]) == list("246810")
-        assert declined["error_type"] == "code_declined"
+        assert declined["error_type"] == "code_unanswered"
 
     def test_several_code_like_inputs_that_are_not_a_digit_widget_get_one_field(self):
         """Reviewer case: a page with 4+ code-ish inputs (promo code, zip code, a real OTP box...) must never

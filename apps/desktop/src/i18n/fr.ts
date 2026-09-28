@@ -14,6 +14,8 @@ export const frOverrides = {
     collectedModels: 'Routes de modèles et totaux de tokens',
     collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
     collectedMilestones: 'Comptes de configuration regroupés',
+    collectedReliability: 'Résultats et durée des mises à jour, plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
+    collectedMachine: 'Données générales de la machine : plage de RAM, type de GPU, âge de la version de Hermes',
     installId:
       'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
     consentWindow:

@@ -20,6 +20,8 @@ export const zhHant = defineLocale({
     collectedModels: '模型路由和 token 總量',
     collectedNames: '內建工具、指令和目錄項名稱',
     collectedMilestones: '分組的設定計數',
+    collectedReliability: '更新結果與耗時、當機、啟動與回覆速度、訊息平台狀態',
+    collectedMachine: '概略的機器資訊：記憶體範圍、GPU 類型、Hermes 版本新舊',
     installId:
       '傳送會把每日資料包上傳到 Nous 遙測服務。資料包帶有此設定檔的安裝 ID：一個不含個人資訊的固定隨機 UUID，刪除共享指標目錄即可重設。',
     consentWindow:

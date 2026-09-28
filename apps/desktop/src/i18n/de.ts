@@ -14,6 +14,8 @@ export const deOverrides = {
     collectedModels: 'Modellrouten und Token-Summen',
     collectedNames: 'Namen integrierter Tools, Befehle und Katalogeinträge',
     collectedMilestones: 'Gruppierte Einrichtungszahlen',
+    collectedReliability: 'Update-Ergebnisse und -Dauer, Abstürze, Start- und Antwortzeiten, Zustand der Messaging-Plattformen',
+    collectedMachine: 'Grobe Gerätedaten: RAM-Bereich, GPU-Typ, Alter der Hermes-Version',
     installId:
       'Beim Senden wird jedes Tagespaket an den Nous-Telemetriedienst hochgeladen. Pakete tragen die Installations-ID dieses Profils: eine feste zufällige UUID ohne persönliche Daten, zurückgesetzt durch Löschen des Shared-Metrics-Ordners.',
     consentWindow:

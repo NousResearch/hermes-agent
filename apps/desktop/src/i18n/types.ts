@@ -69,6 +69,8 @@ export interface Translations {
     collectedModels: string
     collectedNames: string
     collectedMilestones: string
+    collectedReliability: string
+    collectedMachine: string
     installId: string
     consentWindow: string
     readDocs: string

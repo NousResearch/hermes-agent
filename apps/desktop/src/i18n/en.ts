@@ -23,6 +23,8 @@ export const en: Translations = {
     collectedModels: 'Model routes and token totals',
     collectedNames: 'Built-in tool, command and catalog names',
     collectedMilestones: 'Bucketed setup counts',
+    collectedReliability: 'Update results and timing, crashes, startup and reply speed, messaging-platform health',
+    collectedMachine: 'Coarse machine facts: RAM range, GPU type, Hermes version age',
     installId:
       'Sending uploads each daily package to the Nous telemetry service. Packages carry this profile’s install ID: a stable random UUID with no personal information, reset by deleting the shared-metrics directory.',
     consentWindow:

@@ -510,16 +510,3 @@ _GLOBAL_BROKER = BrowserControlBroker()
 def get_browser_control_broker() -> BrowserControlBroker:
     """Process-local broker shared by API and dashboard Gateway transports."""
     return _GLOBAL_BROKER
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-BROWSER_CONTROL_ALL_CAPABILITIES = frozenset(
-    BROWSER_CONTROL_CAPABILITIES
-    | BROWSER_CONTROL_ARTIFACT_CAPABILITIES
-    | BROWSER_CONTROL_DEVELOPER_CAPABILITIES
-)
-# ---- END PLUGIN-COMPAT ----

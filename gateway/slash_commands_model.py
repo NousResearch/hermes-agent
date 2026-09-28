@@ -74,6 +74,9 @@ class _ModelSwitchContext:
     restore_snapshot: Optional[dict] = None
     current_model: str = ""
     current_provider: str = "openrouter"
+    # The provider actually configured/overridden (None = unset): ``current_provider`` defaults to
+    # openrouter for switch_model, which must not label the configured model in metrics.
+    route_provider: Optional[str] = None
     current_base_url: str = ""
     current_api_key: str = ""
     user_provs: Any = None
@@ -91,6 +94,7 @@ class _ModelSwitchContext:
             if isinstance(model_cfg, dict):
                 self.current_model = model_cfg.get("default", "")
                 self.current_provider = model_cfg.get("provider", self.current_provider)
+                self.route_provider = model_cfg.get("provider")
                 self.current_base_url = model_cfg.get("base_url", "")
             self.user_provs = cfg.get("providers")
             try:
@@ -109,6 +113,7 @@ class _ModelSwitchContext:
         if override:
             self.current_model = override.get("model", self.current_model)
             self.current_provider = override.get("provider", self.current_provider)
+            self.route_provider = override.get("provider", self.route_provider)
             self.current_base_url = override.get("base_url", self.current_base_url)
             self.current_api_key = override.get("api_key", self.current_api_key)
 
@@ -215,6 +220,7 @@ class GatewayModelCommandsMixin:
                     _sess_entry.was_auto_reset = False
                 await _sess_db.update_session_model(
                     _sess_entry.session_id, result.new_model, provider=result.target_provider,
+                    base_url=result.base_url, api_mode=result.api_mode,
                 )
             except Exception as exc:
                 logger.debug("Failed to persist model switch to DB: %s", exc)
@@ -372,11 +378,34 @@ class GatewayModelCommandsMixin:
             lock = self.__dict__["_model_switch_lock_obj"] = asyncio.Lock()
         return lock
 
+    def _record_switch_metrics(self, result, ctx: _ModelSwitchContext, source) -> None:
+        """Slash dispatch does not install the routed profile's scope, so a multiplexed runner binds
+        the owning home for the switch row and its switch_away friction."""
+        from hermes_cli.observability.shared_metrics_events import record_model_switch
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            with contextlib.suppress(Exception):
+                home = self._resolve_profile_home_for_source(source)
+        session_id = None
+        with contextlib.suppress(Exception):
+            session_id = getattr(self._cached_agent_for(ctx.session_key), "session_id", None)
+        token = set_hermes_home_override(str(home)) if home else None
+        try:
+            record_model_switch(
+                from_provider=ctx.route_provider, to_provider=result.target_provider, surface="gateway",
+                from_model=ctx.current_model, session_id=session_id)
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+
     async def _commit_model_switch_locked(self, result, ctx: _ModelSwitchContext, *, source, picker: bool) -> str:
         one_turn = False if picker else ctx.one_turn
         error = self._switch_cached_agent_model(result, ctx, picker)
         if error is not None:
             return error
+        self._record_switch_metrics(result, ctx, source)
         global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,

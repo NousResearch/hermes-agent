@@ -4,8 +4,9 @@
 # Must be the very first import (UTF-8 stdio on Windows). Missing only mid-``hermes update``.
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass
+except ModuleNotFoundError as exc:
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import logging
 import os
@@ -91,6 +92,7 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _TRUE_RE,
     _WINDOWS_PATH_WITH_DOT_SEGMENT_RE,
     _accent_hex,
+    _add_suspect_rows,
     _append_blank_panel_line,
     _append_panel_line,
     _assistant_content_as_text,
@@ -106,9 +108,15 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _heal_cooked_mode_drift,
     _hex_to_ansi,
     _install_skin_light_mode_hook,
+    _line_rows,
     _luminance_from_hex,
     _maybe_remap_for_light_mode,
+    _output_history_lines,
     _output_history_recording,
+    _output_history_rows,
+    _output_tail_fitting,
+    _painted_columns,
+    _PaintedLine,
     _panel_box_width,
     _post_stream_transform_output,
     _prepend_note_to_message,
@@ -118,11 +126,14 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _query_osc11_background,
     _record_output_history,
     _record_output_history_entry,
+    _release_paints,
     _render_final_assistant_content,
     _rich_text_from_ansi,
+    _set_chrome_floor,
     _strip_markdown_syntax,
     _strip_reasoning_tags,
     _terminal_columns,
+    _terminal_reflows,
     _terminal_width_for_streaming,
     _tty_wrap,
     _wrap_panel_text,
@@ -646,27 +657,44 @@ def _suspend_output_history():
         _OUTPUT_HISTORY_SUPPRESSED = old_value
 
 
-def _replay_output_history() -> None:
-    """Repaint recent output above the prompt after a full screen clear."""
+def _replay_output_history(fit=None, output=None) -> None:
+    """Repaint recent output above the prompt after a full screen clear.
+
+    ``fit=(rows, columns, painted, top)`` replays only the newest lines whose wrapped height
+    fits ``rows`` (see ``_output_tail_fitting``) — the older ones are still in scrollback
+    (#95375) — from screen row ``top`` when known (``_set_chrome_floor``). ``output``: paint
+    now, straight to this prompt_toolkit output, where the caller just erased the viewport and
+    reset the renderer — ``run_in_terminal`` would first erase below the top row, which
+    scroll-on-clear terminals (tmux) take as a clear and copy the blank screen into scrollback.
+    """
     global _OUTPUT_HISTORY_REPLAYING
     if not _OUTPUT_HISTORY_ENABLED or not _OUTPUT_HISTORY:
         return
     _OUTPUT_HISTORY_REPLAYING = True
     try:
-        rendered_lines = []
-        for entry in tuple(_OUTPUT_HISTORY):
-            lines = [entry]
-            if callable(entry):
-                try:
-                    lines = entry()
-                except Exception:
-                    continue
-                if isinstance(lines, str):
-                    lines = lines.splitlines()
-            rendered_lines.extend(str(line) for line in lines)
+        rendered_lines = _output_history_lines()
+        top = None
+        if fit is not None:
+            rows, columns, painted, top = fit
+            rendered_lines = _output_tail_fitting(rendered_lines, rows, columns, painted)
         if rendered_lines:
             # One payload: per-line pt prints each force a sync redraw (a waterfall of old output).
-            _pt_print(_PT_ANSI("\n".join(rendered_lines)))
+            if output is None:
+                _pt_print(_PT_ANSI("\n".join(rendered_lines)))
+            else:
+                from prompt_toolkit.renderer import print_formatted_text as _paint_formatted_text
+                from prompt_toolkit.styles import Style
+                _paint_formatted_text(output, _PT_ANSI("\n".join(rendered_lines) + "\n"), Style([]))
+                size = output.get_size()
+                if top is not None:  # the chrome's top is now this many rows down
+                    top += sum(_line_rows(line, columns) for line in rendered_lines)
+                    _set_chrome_floor(max(0, size.rows - top))
+                    if size.columns != columns:
+                        _add_suspect_rows(top + 1 - size.rows)
+            width = _painted_columns() if fit is None else columns
+            for line in rendered_lines:  # repainted: they wrap at today's width from now on
+                if isinstance(line, _PaintedLine):
+                    line.width = width
     except Exception:
         pass
     finally:
@@ -944,18 +972,23 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             return
         self._tirith_security_checked = True
         try:
-            from tools.tirith_security import ensure_installed, is_platform_supported
+            from tools.tirith_security import ensure_installed, is_platform_supported, missing_is_expected
 
             if (
                 ensure_installed(log_failures=False) is None and is_platform_supported()
                 and (self.config.get("security", {}) or {}).get("tirith_enabled", True)
             ):
-                _cprint(
-                    f"  {_DIM}⚠ tirith security scanner enabled but not available "
-                    f"— command scanning will use pattern matching only{_RST}"
-                )
-        except Exception:
-            pass
+                # First launch after install downloads tirith in the background;
+                # warning then would report a fault that resolves itself.
+                if missing_is_expected():
+                    logger.info("tirith not ready (downloading or lazy installs off); pattern matching only")
+                else:
+                    _cprint(
+                        f"  {_DIM}⚠ tirith security scanner enabled but not available "
+                        f"— command scanning will use pattern matching only{_RST}"
+                    )
+        except Exception as exc:
+            logger.debug("tirith availability check failed: %s", exc)
 
     def _show_security_advisories(self):
         """Startup banner for unacked security advisories, on stderr (piped stdout stays clean); 24h rate-limited."""
@@ -1146,8 +1179,13 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                 entry = (name, True)
         return entry
 
-    def process_command(self, command: str) -> bool:
-        """Dispatch a slash command; returns False to exit the REPL."""
+    # Shared-metrics surface for user-typed commands; None where another process owns the count
+    # (the TUI slash worker: tui_gateway records the command it forwards).
+    _slash_metrics_surface: str | None = "cli"
+
+    def process_command(self, command: str, *, redispatch: bool = False) -> bool:
+        """Dispatch a slash command; returns False to exit the REPL. ``redispatch`` marks an internal
+        re-entry (quick-command alias, prefix expansion) so the user's command is counted once."""
         cmd_lower = command.lower().strip()  # lowercase only for matching; args keep their case
         cmd_original = command.strip()
 
@@ -1156,6 +1194,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         _base_word = cmd_lower.split()[0].lstrip("/")
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
+        if not redispatch and self._slash_metrics_surface:
+            from hermes_cli.observability.shared_metrics_events import record_slash_command
+            record_slash_command(command=canonical, surface=self._slash_metrics_surface)
 
         # Observer-only pre_command plugin hook (return values ignored; never raises).
         if _cmd_def is not None:
@@ -1210,7 +1251,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             target = qcmd.get("target", "").strip()
             if target:
                 target = target if target.startswith("/") else f"/{target}"
-                return self.process_command(f"{target} {user_args}".strip())
+                return self.process_command(f"{target} {user_args}".strip(), redispatch=True)
             self._console_print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
             return True
         if qtype != "exec":
@@ -1316,7 +1357,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                     matches = shortest
         if len(matches) == 1 and matches[0] != typed_base:
             # Expand to the full name, preserving arguments.
-            return self.process_command(matches[0] + cmd_original.strip()[len(typed_base):])
+            return self.process_command(matches[0] + cmd_original.strip()[len(typed_base):], redispatch=True)
         if len(matches) > 1:
             _cprint(f"{_ACCENT}Ambiguous command: {cmd_lower}{_RST}")
             _cprint(f"{_DIM}Did you mean: {', '.join(sorted(matches))}?{_RST}")
@@ -1375,6 +1416,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         app = self._tui_build_application(layout, kb, style)
         _disable_prompt_toolkit_cpr_warning(app)
         app.after_render += self._pet_flush_kitty_frame
+        from hermes_cli.observability.shared_metrics_startup import cli_prompt_ready_handler
+        app.after_render += cli_prompt_ready_handler()
         self._app = app
 
         # Ghost status-bar lines on resize: pt's renderer scrolls the terminal after each
@@ -1464,6 +1507,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             else:
                 raise
         finally:
+            # A resize right before exit leaves its recovery (and the paints it held) unrun.
+            _release_paints()
             self._tui_shutdown()
 
         # /update relaunch happens here, after prompt_toolkit restored terminal modes, on the
@@ -1688,14 +1733,19 @@ def main(
         configure_windows_stdio()
 
     os.environ["HERMES_INTERACTIVE"] = "1"  # terminal_tool: interactive sudo prompts with timeout
-    # The banner names affected plugins; the raw per-name compat warnings would only duplicate it on stderr.
-    with suppress(Exception):
-        from hermes_cli.plugin_compat import quiet_for_interactive
-        quiet_for_interactive()
 
     if gateway:
         _run_legacy_gateway()
         return
+
+    if not (list_tools or list_toolsets):
+        from hermes_cli.process_identity import register_self
+        from hermes_cli.shared_profile_warning import shared_profile_warning
+
+        register_self("cli")
+        warning = shared_profile_warning()
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
 
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q
@@ -1742,79 +1792,3 @@ if __name__ == "__main__":
     import fire
 
     fire.Fire(main)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from prompt_toolkit.layout.menus import CompletionsMenu  # noqa: F401,E402
-from prompt_toolkit.filters import Condition  # noqa: F401,E402
-from prompt_toolkit.layout import ConditionalContainer  # noqa: F401,E402
-from prompt_toolkit.layout.processors import ConditionalProcessor  # noqa: F401,E402
-from prompt_toolkit.layout.dimension import Dimension  # noqa: F401,E402
-from prompt_toolkit.history import FileHistory  # noqa: F401,E402
-from prompt_toolkit.layout import FormattedTextControl  # noqa: F401,E402
-from prompt_toolkit.layout import HSplit  # noqa: F401,E402
-from prompt_toolkit.key_binding import KeyBindings  # noqa: F401,E402
-from prompt_toolkit.layout import Layout  # noqa: F401,E402
-from prompt_toolkit.styles import Style as PTStyle  # noqa: F401,E402
-from rich.panel import Panel  # noqa: F401,E402
-from prompt_toolkit.layout.processors import PasswordProcessor  # noqa: F401,E402
-from prompt_toolkit.layout.processors import Processor  # noqa: F401,E402
-from prompt_toolkit.widgets import TextArea  # noqa: F401,E402
-from prompt_toolkit.layout.processors import Transformation  # noqa: F401,E402
-from prompt_toolkit.layout import Window  # noqa: F401,E402
-from prompt_toolkit.layout import WindowAlign  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import concurrent.futures  # noqa: F401,E402
-import copy  # noqa: F401,E402
-from rich import box as rich_box  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-
-def AIAgent(*args, **kwargs):
-    from run_agent import AIAgent as _AIAgent
-
-    return _AIAgent(*args, **kwargs)
-
-def CanonicalUsage(*args, **kwargs):
-    from agent.usage_pricing import CanonicalUsage as _CanonicalUsage
-
-    return _CanonicalUsage(*args, **kwargs)
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_BROWSER_CDP_URL': ('hermes_cli.browser_connect', 'DEFAULT_BROWSER_CDP_URL'),
-    'HERMES_AGENT_LOGO': ('hermes_cli.banner', 'HERMES_AGENT_LOGO'),
-    'HERMES_CADUCEUS': ('hermes_cli.banner', 'HERMES_CADUCEUS'),
-    'SlashCommandAutoSuggest': ('hermes_cli.commands_completion', 'SlashCommandAutoSuggest'),
-    'SlashCommandCompleter': ('hermes_cli.commands_completion', 'SlashCommandCompleter'),
-    'build_welcome_banner': ('hermes_cli.banner', 'build_welcome_banner'),
-    'display_hermes_home': ('hermes_constants', 'display_hermes_home'),
-    'estimate_usage_cost': ('agent.usage_pricing', 'estimate_usage_cost'),
-    'get_all_toolsets': ('toolsets', 'get_all_toolsets'),
-    'get_job': ('cron.jobs', 'get_job'),
-    'get_toolset_for_tool': ('model_tools', 'get_toolset_for_tool'),
-    'get_toolset_info': ('toolsets', 'get_toolset_info'),
-    'init_skin_from_config': ('hermes_cli.skin_engine', 'init_skin_from_config'),
-    'is_browser_debug_ready': ('hermes_cli.browser_connect', 'is_browser_debug_ready'),
-    'is_table_divider': ('agent.markdown_tables', 'is_table_divider'),
-    'looks_like_table_row': ('agent.markdown_tables', 'looks_like_table_row'),
-    'manual_chrome_debug_command': ('hermes_cli.browser_connect', 'manual_chrome_debug_command'),
-    'print_config_warnings': ('hermes_cli.config', 'print_config_warnings'),
-    'prompt_for_secret': ('hermes_cli.callbacks', 'prompt_for_secret'),
-    'set_friendly_tool_labels': ('agent.display', 'set_friendly_tool_labels'),
-    'set_tool_preview_max_len': ('agent.display', 'set_tool_preview_max_len'),
-    'setup_logging': ('hermes_logging', 'setup_logging'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

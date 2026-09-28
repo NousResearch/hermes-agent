@@ -20,6 +20,8 @@ import { notify } from '@/store/notifications'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
+import { notificationKindSettingId, SETTING_IDS, settingElementId } from './settings-manifest'
+import { useSettingDeepLink } from './use-setting-deep-link'
 
 const CAPTION = 'text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)'
 
@@ -39,6 +41,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const showAlerts = subpage === undefined || subpage === 'alerts'
   const showSounds = subpage === undefined || subpage === 'sounds'
 
+  useSettingDeepLink('notifications', page => subpage === undefined || page === subpage)
+
   const runTest = async () => {
     triggerHaptic('open')
     const ok = await sendTestNativeNotification(copy.testTitle, copy.testBody)
@@ -55,6 +59,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
           <ToggleRow
             checked={prefs.enabled}
             description={copy.enableAllDesc}
+            id={settingElementId(SETTING_IDS.notifications.enableAll)}
             label={copy.enableAll}
             onChange={setNativeNotifyEnabled}
           />
@@ -64,6 +69,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
               checked={prefs.enabled && prefs.kinds[kind]}
               description={copy.kinds[kind].description}
               disabled={!prefs.enabled}
+              id={settingElementId(notificationKindSettingId(kind))}
               key={kind}
               label={copy.kinds[kind].label}
               onChange={on => setNativeNotifyKind(kind, on)}
@@ -75,7 +81,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
       {showSounds && (
         <ListRow
           action={
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <>
               <Select
                 onValueChange={value => {
                   const variantId = Number.parseInt(value, 10)
@@ -112,9 +118,10 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
                 <Play className="size-3.5" />
                 {copy.completionSoundPreview}
               </Button>
-            </div>
+            </>
           }
           description={copy.completionSoundDesc}
+          id={settingElementId(SETTING_IDS.notifications.completionSound)}
           title={copy.completionSoundTitle}
         />
       )}

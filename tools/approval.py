@@ -402,7 +402,7 @@ def _read_permanent_allowlist() -> set:
     legacy = isinstance(raw, str)
     if legacy:
         # Old config-set versions serialized list values as scalar strings.
-        import yaml
+        import hermes_yaml as yaml
         try:
             raw = yaml.safe_load(raw)
         except yaml.YAMLError:
@@ -1053,11 +1053,20 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     """Unconditional floors, BEFORE yolo / mode=off / cron approve-mode so no
     session-level setting can bypass them: hardline catastrophic commands,
     password-piping to ``sudo -S`` with no SUDO_PASSWORD configured (full guard
-    only), and the user's own approvals.deny rules ("never, even under yolo")."""
+    only), the user's own approvals.deny rules ("never, even under yolo"), and
+    deletion of the Python interpreter/venv this very runtime boots from (a
+    delete the agent cannot walk back — the next start fails before any tool
+    can run, #58748)."""
+    from agent.runtime_self_protection import command_deletes_runtime
+
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc, command)
+    runtime_target = command_deletes_runtime(command)
+    if runtime_target:
+        logger.warning("Runtime self-delete block: %s (command: %s)", runtime_target, command[:200])
+        return _hardline_block_result(f"recursive/any delete of {runtime_target}", command)
     if sudo_guard:
         is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
         if is_sudo_guess:
@@ -1302,53 +1311,3 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
 
 # Load permanent allowlist from config on module import
 load_permanent_allowlist()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import contextlib  # noqa: F401,E402
-import contextvars  # noqa: F401,E402
-import fnmatch  # noqa: F401,E402
-import functools  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import sys  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-import time  # noqa: F401,E402
-import unicodedata  # noqa: F401,E402
-import uuid  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DANGEROUS_PATTERNS': ('tools.approval_detection', 'DANGEROUS_PATTERNS'),
-    'DANGEROUS_PATTERNS_COMPILED': ('tools.approval_detection', 'DANGEROUS_PATTERNS_COMPILED'),
-    'HARDLINE_PATTERNS': ('tools.approval_detection', 'HARDLINE_PATTERNS'),
-    'HARDLINE_PATTERNS_COMPILED': ('tools.approval_detection', 'HARDLINE_PATTERNS_COMPILED'),
-    'HUMAN_WAIT_MARGIN_S': ('tools.approval_human_wait', 'HUMAN_WAIT_MARGIN_S'),
-    'cfg_get': ('hermes_cli.config', 'cfg_get'),
-    'get_plugin_manager': ('tools.approval_prompt', 'get_plugin_manager'),
-    'human_wait_ceiling': ('tools.approval_human_wait', 'human_wait_ceiling'),
-    'human_wait_seconds': ('tools.approval_human_wait', 'human_wait_seconds'),
-    'human_wait_window': ('tools.approval_human_wait', 'human_wait_window'),
-    'is_interrupted': ('tools.interrupt', 'is_interrupted'),
-    'request_elicitation_consent': ('tools.approval_prompt', 'request_elicitation_consent'),
-    'reset_current_observability_context': ('tools.approval_context', 'reset_current_observability_context'),
-    'reset_current_session_key': ('tools.approval_context', 'reset_current_session_key'),
-    'reset_hermes_interactive_context': ('tools.approval_context', 'reset_hermes_interactive_context'),
-    'set_current_observability_context': ('tools.approval_context', 'set_current_observability_context'),
-    'set_current_session_key': ('tools.approval_context', 'set_current_session_key'),
-    'set_hermes_interactive_context': ('tools.approval_context', 'set_hermes_interactive_context'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

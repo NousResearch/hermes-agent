@@ -121,7 +121,7 @@ def _prepare_audio_for_transcription(file_path: str) -> tuple[Optional[str], Opt
         return file_path, None, None
     if not _HAS_PILK:
         # pilk is a tiny silk-v3 codec binding — lazy-installed on first .silk voice note.
-        _lazy_ensure_quietly("stt.silk")
+        _lazy_ensure_quietly("silk")
         if not _safe_find_spec("pilk"):
             return None, None, _error_result(
                 "Unsupported format: .silk. Install the optional 'pilk' dependency to enable WeChat voice transcription."
@@ -161,30 +161,23 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
         return None, f"Failed to convert audio for local STT: {details}"
 
 
-def _convert_caf_to_wav(file_path: str) -> Optional[str]:
-    """Convert CAF to WAV using ffmpeg or afconvert (macOS)."""
+def _convert_caf_to_wav(file_path: str, work_dir: str) -> Optional[str]:
+    """Convert CAF to WAV in a caller-owned directory using ffmpeg or afconvert."""
     audio_path = Path(file_path)
-    work_dir = tempfile.mkdtemp(prefix="hermes-caf-")
     wav_path = os.path.join(work_dir, f"{audio_path.stem}.wav")
-    keep_result = False
     ffmpeg = _find_ffmpeg_binary()
     afconvert = shutil.which("afconvert")
     candidates = (
         ("ffmpeg", [ffmpeg, "-y", "-i", file_path, wav_path] if ffmpeg else None),
         ("afconvert", [afconvert, file_path, wav_path, "-d", "LEI16", "-f", "WAVE"] if afconvert else None),
     )
-    try:
-        for label, command in ((label, cmd) for label, cmd in candidates if cmd):
-            try:
-                _run_quiet(command, timeout=300)
-                keep_result = True
-                return wav_path
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-                logger.warning("%s CAF to WAV failed for %s: %s", label, file_path, e)
-        return None
-    finally:
-        if not keep_result:
-            shutil.rmtree(work_dir, ignore_errors=True)
+    for label, command in ((label, cmd) for label, cmd in candidates if cmd):
+        try:
+            _run_quiet(command, timeout=300)
+            return wav_path
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            logger.warning("%s CAF to WAV failed for %s: %s", label, file_path, e)
+    return None
 
 
 # ---- Cloud pre-upload silence trim --------------------------------------

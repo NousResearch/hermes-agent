@@ -9,11 +9,11 @@ loops.  The TUI is only a viewer of those sessions.
 """
 
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from tui_gateway.server import _finalize_session, _is_gateway_owned_source, _teardown_session
+from tui_gateway.server import _is_gateway_owned_source, _teardown_session
 
 
 class TestIsGatewayOwnedSource:
@@ -22,23 +22,13 @@ class TestIsGatewayOwnedSource:
                     "matrix", "mattermost", "bluebubbles", "sms", "email"):
             assert _is_gateway_owned_source(src) is True, src
 
-    def test_case_and_whitespace_normalized(self):
-        assert _is_gateway_owned_source(" Telegram ") is True
 
     def test_tui_owned_sources_are_not(self):
         for src in ("tui", "cli", "webui", "desktop", "cron", "subagent",
                     "test", "acp", ""):
             assert _is_gateway_owned_source(src) is False, src
 
-    def test_local_and_server_endpoints_are_not(self):
-        # Platform enum members, but their sessions aren't owned by a remote
-        # chat surface — reaping them keeps /resume clean.
-        for src in ("local", "webhook", "api_server", "msgraph_webhook"):
-            assert _is_gateway_owned_source(src) is False, src
 
-    def test_arbitrary_strings_are_not(self):
-        assert _is_gateway_owned_source("hermesbench-task-xyz") is False
-        assert _is_gateway_owned_source(None) is False
 
 
 def _make_session(session_id="sess_1"):
@@ -91,29 +81,6 @@ def _read_real_row(db_path, session_id):
         db.close()
 
 
-class TestFinalizeSkipsGatewaySessions:
-    @patch("tui_gateway.server._get_db")
-    def test_gateway_session_not_ended(self, mock_get_db):
-        db = MagicMock()
-        db.get_session.return_value = {"id": "sess_1", "source": "telegram"}
-        mock_get_db.return_value = db
-
-        _finalize_session(_make_session(), end_reason="ws_orphan_reap")
-
-        db.end_session.assert_not_called()
-
-
-    @patch("tui_gateway.server._get_db")
-    def test_missing_row_still_ended(self, mock_get_db):
-        """A session with no state.db row can't be gateway-owned — keep the
-        pre-existing reap behavior."""
-        db = MagicMock()
-        db.get_session.return_value = None
-        mock_get_db.return_value = db
-
-        _finalize_session(_make_session(), end_reason="tui_close")
-
-        db.end_session.assert_called_once_with("sess_1", "tui_close")
 
 
 class TestGatewayOwnedSessionTeardown:

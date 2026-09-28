@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 # choices (#52492). If OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them
 # up automatically.
 DEFAULT_CODEX_MODELS: List[str] = [
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -38,6 +40,8 @@ DEFAULT_CODEX_MODELS: List[str] = [
 # unsupported — that was wrong; restored here. Keep it in the curated fallback so Pro users still see Spark
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
+    ("gpt-6-sol", ("gpt-5.6-sol", "gpt-5.5")),
+    ("gpt-6-luna", ("gpt-5.6-luna", "gpt-5.5")),
     ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
@@ -98,6 +102,31 @@ def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
     return [model for model in model_ids if not is_astra_model(model)]
 
 
+def codex_catalog_credential_identity() -> str:
+    """Identity of the credential live discovery would use right now, for the catalog cache key.
+
+    Access/refresh tokens rotate in place while the account-scoped catalog stays authoritative for
+    the same ChatGPT principal, so the key is ``(chatgpt_account_id, sub)``, not the token. An
+    expired token is its own state: ``_codex_catalog`` serves the static fallback for it, and that
+    fallback must not outlive the refresh under the healthy principal's key. Opaque non-JWT tokens
+    fall back to the token itself (the caller hashes every part before anything is persisted).
+    """
+    from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+
+    try:
+        token = str(resolve_codex_runtime_credentials(read_only=True).get("api_key") or "")
+    except Exception:  # AuthError (no/exhausted creds) or the pytest seat belt: no live catalog either way
+        token = ""
+    if not token:
+        return "missing"
+    if _codex_access_token_is_expiring(token, 0):
+        return "expired"
+    from agent.credential_pool import _codex_principal_identity
+
+    principal = _codex_principal_identity(token)
+    return "/".join(principal) if principal else token
+
+
 def _ranked_slugs(entries: object) -> List[str]:
     """Visible slugs from a Codex catalog ``models`` list, sorted by (priority, slug), deduped.
 
@@ -122,20 +151,26 @@ def _ranked_slugs(entries: object) -> List[str]:
     return _dedupe(slug for _, slug in sortable)
 
 
-def _fetch_models_from_api(access_token: str) -> List[str]:
-    """Fetch available models from the Codex API. Returns visible models sorted by priority."""
+def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) -> List[str]:
+    """Fetch available models from the Codex API. Returns visible models sorted by priority.
+
+    ``base_url`` is the host the credential is routed to (resolved together with it); the
+    catalog is fetched there, never from a host the credential does not belong to (#121486).
+    """
     try:
+        from agent.model_metadata import _codex_catalog_probe_allowed
+        from hermes_cli.auth_codex import _codex_base_url
+        catalog_base = (base_url or "").strip().rstrip("/") or _codex_base_url()
+        if not _codex_catalog_probe_allowed(access_token, catalog_base):
+            return []
         import httpx
         # The per-account catalog needs ChatGPT-Account-ID (else ``{"models":[]}`` with HTTP 200
         # masquerades as "no models") and, for residency-enforced workspaces, the residency header.
         from agent.codex_headers import codex_account_headers
         headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
-        from agent.model_metadata import CODEX_MODELS_CATALOG_URL
-        resp = httpx.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-        entries = data.get("models", []) if isinstance(data, dict) else []
+        from agent.model_metadata import fetch_codex_catalog_entries
+        entries, _status = fetch_codex_catalog_entries(
+            lambda url: httpx.get(url, headers=headers, timeout=10), base_url=catalog_base)
     except Exception as exc:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
@@ -149,7 +184,8 @@ def _read_default_model(codex_home: Path) -> Optional[str]:
         return None
     try:
         import tomllib
-        payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        import tomllib
+        payload = tomllib.loads(config_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     model = payload.get("model") if isinstance(payload, dict) else None
@@ -161,7 +197,7 @@ def _read_cache_models(codex_home: Path) -> List[str]:
     if not cache_path.exists():
         return []
     try:
-        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        raw = json.loads(cache_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return []
 
@@ -169,11 +205,14 @@ def _read_cache_models(codex_home: Path) -> List[str]:
     return _ranked_slugs(entries if isinstance(entries, list) else [])
 
 
-def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
-    """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults."""
+def get_codex_model_ids(access_token: Optional[str] = None, base_url: Optional[str] = None) -> List[str]:
+    """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults.
+
+    Pass the ``base_url`` resolved together with ``access_token`` (runtime/pool route) so live
+    discovery asks the credential's own host."""
     codex_home = Path(os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
     if access_token:
-        api_models = _fetch_models_from_api(access_token)
+        api_models = _fetch_models_from_api(access_token, base_url=base_url)
         if api_models:
             return _finalize_codex_models(api_models)
     default_model = _read_default_model(codex_home)

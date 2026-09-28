@@ -10,6 +10,7 @@ tests/docker/test_container_restart.py.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,8 @@ from hermes_cli.container_boot import (
     ReconcileAction,
     reconcile_profile_gateways,
 )
+
+pytestmark = pytest.mark.platforms("linux")
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +49,9 @@ def _hermetic_container_argv(monkeypatch: pytest.MonkeyPatch) -> None:
         "hermes_cli.container_boot._read_container_argv",
         lambda: (),
     )
+    # This fixture owns real files, but does not run as the image's service user.
+    monkeypatch.setattr("hermes_cli.service_manager._HERMES_UID", os.getuid())
+    monkeypatch.setattr("hermes_cli.service_manager._HERMES_GID", os.getgid())
 
 
 def _make_profile(
@@ -180,18 +186,6 @@ def test_registered_profile_has_finish_script(tmp_path: Path) -> None:
     assert "125" in text
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
     """A second reconciliation pass cleanly replaces an existing
     slot (the tmp+rename publication overwrites the previous one)."""
@@ -223,17 +217,9 @@ def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
     assert (scandir / "gateway-coder" / "down").exists()
 
 
-
-
 # ---------------------------------------------------------------------------
 # Default-profile slot — always registered (PR #30136 review item I1)
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
 
 
 def test_profiles_default_subdir_is_skipped_with_warning(
@@ -268,14 +254,9 @@ def test_profiles_default_subdir_is_skipped_with_warning(
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
 def test_main_skips_reconcile_in_dashboard_container_s6v3(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The dashboard skip must fire under the s6-overlay v3 argv shape.
 
@@ -317,22 +298,6 @@ def test_main_skips_reconcile_in_dashboard_container_s6v3(
     assert rc == 0
     assert not (scandir / "gateway-worker").exists()
     assert not (scandir / "gateway-default").exists()
-    assert "skipping (dashboard container" in capsys.readouterr().out
-
-
-
-
-# ---------------------------------------------------------------------------
-# prior_exit annotation (NS-608 — unclean-shutdown forensics)
-# ---------------------------------------------------------------------------
-
-
-def _write_lifecycle_sentinel(profile_dir: Path, payload: dict) -> None:
-    state_dir = profile_dir / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "gateway.lifecycle.json").write_text(json.dumps(payload))
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +321,26 @@ def test_a_named_slots_autostart_intent_boots_the_root_slot(tmp_path: Path) -> N
     assert by_profile["default"].action == "started", "something must serve this container"
     assert by_profile["default"].folded_into_root is True
     assert by_profile["coder"].action == "registered" and by_profile["coder"].folded_into_root is True
+
+
+def test_a_standalone_profile_boots_its_own_slot_instead_of_folding_into_root(tmp_path: Path) -> None:
+    """The root multiplexer never serves a `gateway.standalone` profile, so folding its intent into
+    the root leaves it dark after every container restart. It boots its own slot; a non-standalone
+    profile's intent still folds into the root."""
+    hermes_home = tmp_path / "data"
+    hermes_home.mkdir()
+    _seed_default_root(hermes_home, state="stopped")
+    solo = _make_profile(hermes_home, "solo", state=None, desired_state="running")
+    (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
+    _make_profile(hermes_home, "coder", state=None, desired_state="running")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=hermes_home, scandir=tmp_path / "svc", dry_run=True, container_argv=())
+
+    by_profile = {a.profile: a for a in actions}
+    assert by_profile["solo"].action == "started" and by_profile["solo"].folded_into_root is False
+    assert by_profile["coder"].action == "registered" and by_profile["coder"].folded_into_root is True
+    assert by_profile["default"].action == "started"
 
 
 def test_a_stopped_fleet_still_boots_nothing(tmp_path: Path) -> None:

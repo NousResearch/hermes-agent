@@ -43,6 +43,19 @@ PARTIAL_FAILED_TURN_NOTICE = (
     "This turn did not complete. Some actions may already have run; verify their effects "
     "before resending."
 )
+# ``messages.display_kind`` of that row: display-only (stripped before every provider request),
+# so renderers show a Hermes notice and room pollers never read it as the model's reply.
+FAILED_TURN_DISPLAY_KIND = "failed_turn"
+
+
+def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
+    """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
+    (exact notice text, so a real reply quoting it stays a reply); read-side only."""
+    if role == "assistant" and isinstance(content, str) and content.strip() in (
+        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE,
+    ):
+        return FAILED_TURN_DISPLAY_KIND
+    return None
 
 
 def failed_turn_notice(turn_messages: Any) -> str:
@@ -81,6 +94,9 @@ _EXIT_REASON_FAILURES: Tuple[Tuple[str, str, bool, bool], ...] = (
     # Advisory: the reasoning-only text may literally be the answer, and cron stays silent.
     ("empty_response_exhausted", "empty_response", True, False),
     ("all_retries_exhausted_no_response", FailoverReason.server_error.value, True, True),
+    # #55316/#54756: the loop stopped on a tool tail with no follow-up text; the
+    # finalizer synthesizes the visible close and fails the turn.
+    ("pending_tool_result", "loop_error", True, True),
     ("interpreter_shutdown", "interpreter_shutdown", False, True),
     # Advisory: a deterministic local bug is not a task failure for the kanban breaker.
     ("local_processing_error", "loop_error", False, False),
@@ -183,8 +199,10 @@ _NONRETRYABLE_COPY: Dict[str, str] = {
         "with /model."
     ),
     FailoverReason.provider_policy_blocked.value: (
-        "{label}'s account settings don't allow this model for your request, so it didn't "
-        "answer. Check the provider's data/privacy settings, or switch models with /model."
+        "{label} refused this request because of a policy on your account (its data/privacy "
+        "settings, or a block the model's upstream provider placed on the account), so the model "
+        "didn't answer and retrying won't help. Check the account with the provider, or switch "
+        "models with /model."
     ),
     FailoverReason.upstream_blocked.value: (
         "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
@@ -228,6 +246,9 @@ FAILURE_CAUSE_GLOSS: Dict[str, str] = {
     FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
+    FailoverReason.provider_policy_blocked.value: (
+        "the AI model service refused the request because of a policy on the account"
+    ),
     "context_overflow": "{possessive} request grew too large for the model",
     "payload_too_large": "{possessive} request grew too large for the model",
 }
@@ -292,10 +313,24 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "capacity, or the server runs {model} with a smaller window than Hermes assumes. Wait a "
         "moment and send /retry; if it keeps happening, check the server's context setting."
     ),
+    # Rides failure_reason="truncated": args were cut mid-JSON but the model never reported
+    # an output-length stop, so don't claim it hit one (#91717).
+    "truncated_unreported": (
+        "The model's action arrived cut off partway through, so Hermes didn't run it. Nothing was changed. The model didn't report hitting its output "
+        "limit, so this was most likely a dropped connection or a provider/router cutting the "
+        "reply short. Send /retry; if it keeps happening, ask for the work in smaller steps."
+    ),
     "stream_dropped_tool_call": (
         "The connection to {label} kept dropping while the model was writing a large action, "
         "so nothing was run. Check your network and send /retry; asking for the file in smaller "
         "pieces also helps."
+    ),
+    # Rides failure_reason="truncated": clean EOF (no transport error, no finish_reason)
+    # mid tool-call, retries exhausted — not a network problem on the user's side (#102766).
+    "stream_closed_tool_call": (
+        "{label} kept closing the stream before the model finished writing its action, without "
+        "reporting an error, so nothing was run. This is usually the provider or a proxy in front "
+        "of it cutting long replies short. Send /retry; asking for the work in smaller steps also helps."
     ),
     # Rides failure_reason="loop_error" (advisory; the turn is incomplete, not failed).
     "local_processing_error": (

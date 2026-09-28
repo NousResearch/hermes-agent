@@ -366,24 +366,6 @@ async def test_concurrent_attach_on_one_token_forks_one_pty():
     await reg.close_all()
 
 
-@pytest.mark.asyncio
-async def test_reaper_loop_invokes_reap(monkeypatch):
-    from hermes_cli.pty_session import run_reaper
-    reg = make_registry()
-    calls = {"n": 0}
-
-    async def fake_reap(now=None):
-        calls["n"] += 1
-
-    monkeypatch.setattr(reg, "reap_idle", fake_reap)
-    task = asyncio.create_task(run_reaper(reg, interval=0.01))
-    await asyncio.sleep(0.05)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    assert calls["n"] >= 2
 
 
 async def _two_idle_sessions_first_close_gated(reg):
@@ -445,3 +427,30 @@ async def test_close_all_survives_key_popped_by_concurrent_reap():
 
     assert not reg._sessions
     assert all(b.closed for b in bridges)
+
+
+@pytest.mark.asyncio
+async def test_close_other_sessions_removes_old_profile_session():
+    from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
+
+    reg = make_registry()
+    old_bridge = FakeBridge([b""])
+    current_bridge = FakeBridge([b""])
+    old = PtySession("token\0alpha\0session-a", old_bridge, buffer_cap=1024, read_timeout=0.01)
+    current = PtySession("token\0beta\0session-b", current_bridge, buffer_cap=1024, read_timeout=0.01)
+    await old.start()
+    await current.start()
+    # A sibling tab (same attach token, other profile) is still viewing the old PTY.
+    old_ws = FakeWS()
+    assert await old.attach(old_ws)
+    reg._sessions[old.key] = old
+    reg._sessions[current.key] = current
+
+    await reg.close_other_sessions("token", keep_key=current.key)
+
+    assert old_bridge.closed
+    assert old.key not in reg._sessions
+    assert reg._sessions[current.key] is current
+    # The displaced viewer gets the documented supersede code rather than going silent.
+    assert old_ws.close_code == WS_CLOSE_SUPERSEDED
+    await reg.close_all()

@@ -61,6 +61,10 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     if stored_model == current_model and not provider_changed:
         return None
     api_mode = runtime.get("api_mode") or None
+    from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+    if is_foreign_provider_endpoint(provider, base_url):
+        # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
+        base_url = api_mode = None
     # A row's api_mode/base_url were written for whichever model the session last ran. Providers that
     # pick the wire per model (OpenCode Zen/Go, Copilot, Nous) re-derive both from the stored model, or a
     # resumed opencode-go session keeps a MiniMax-era anthropic_messages route for a chat_completions
@@ -235,10 +239,16 @@ def _commit_model_switch(
     typed path additionally records the one-turn restore snapshot. ``reasoning_effort`` (from
     ``--reasoning`` or the picker's effort step) is applied after the swap."""
     from cli import HermesCLI, _cprint
-    old_model = cli.model
+    old_model, old_provider = cli.model, getattr(cli, "provider", None)
     snapshot = cli._snapshot_model_runtime() if one_turn else None
     if not cli._stage_and_swap_model(result, old_model):
         return
+    # A TUI slash worker replays /model on its shadow CLI; the tui_gateway mirror counts the real switch.
+    if not getattr(cli, "is_slash_worker", False):
+        from hermes_cli.observability.shared_metrics_events import record_model_switch
+        record_model_switch(
+            from_provider=old_provider, to_provider=result.target_provider, surface="cli", from_model=old_model,
+            session_id=getattr(getattr(cli, "agent", None), "session_id", None) or getattr(cli, "session_id", None))
     if not picker:
         cli._pending_one_turn_model_restore = snapshot
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
@@ -373,7 +383,9 @@ class CLIModelSwitchMixin:
 
             fallback_model = DEFAULT_CODEX_MODELS[0]
             try:
-                available = get_codex_model_ids(access_token=self.api_key if self.api_key else None)
+                # self.base_url is the route resolved with self.api_key (#121486).
+                available = get_codex_model_ids(
+                    access_token=self.api_key if self.api_key else None, base_url=self.base_url or None)
                 if available:
                     fallback_model = available[0]
             except Exception:
@@ -719,6 +731,9 @@ class CLIModelSwitchMixin:
                     model_list = cached_provider_model_ids(provider_data["slug"]) or model_list
                 except Exception:
                     pass
+            from hermes_cli.models_validate import offered_model_ids
+            model_list = offered_model_ids(
+                model_list, provider_data.get("slug"), provider_data.get("api_url"))
             state.update(
                 stage="model", provider_data=provider_data, model_list=model_list,
                 selected=0, filter="", _filtered_pairs=None)

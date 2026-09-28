@@ -80,6 +80,8 @@ export interface BotMeta {
   /** Legacy single-group scalar, projected alongside `groups`. */
   group?: null | string
   pinned?: boolean
+  /** Raise this bot's Screen tab when it starts driving its desktop (`screen-autoraise.ts`). Opt-in per bot. */
+  screenAutoOpen?: boolean
   shape?: string
   title?: string
   /** Creation timestamp in ms. Deliberately not copied when duplicating a bot. */

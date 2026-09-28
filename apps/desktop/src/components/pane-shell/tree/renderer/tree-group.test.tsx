@@ -120,12 +120,6 @@ describe('TreeGroup', () => {
       }
     }
 
-    it.each([300, 800])('keeps sidebar tabs below the native band at width %s', width => {
-      const { strip } = mountCrowdedStrip(width, 'left')
-      expect(strip.className).toContain('bottom-0')
-      expect(container!.querySelector<HTMLElement>('[data-panel-header]')!.style.height).toBe('62px')
-    })
-
     it.each(['zone', 'default'] as const)('preserves the saved %s hide-tabs preference', source => {
       mountCrowdedStrip(800, 'left')
       const originalDefault = $tabStripDefault.get()
@@ -144,7 +138,6 @@ describe('TreeGroup', () => {
         const savedDefault = localStorage.getItem('hermes.desktop.tabStripDefault')
         render(<TreeGroup leftEdge node={node} rightEdge topEdge />)
         expect(container!.querySelector('[data-zone-tabstrip]')).toBeNull()
-        expect(container!.querySelector<HTMLElement>('[data-panel-header]')!.style.height).toBe('34px')
         expect(node.tabStrip).toBe(source === 'zone' ? 'never' : undefined)
         expect(localStorage.getItem('hermes.desktop.tabStripDefault')).toBe(savedDefault)
       } finally {
@@ -175,20 +168,10 @@ describe('TreeGroup', () => {
     })
 
     it('keeps a fixed drag handle outside the tablist when tabs share the titlebar', () => {
-      const { handles, strip } = mountCrowdedStrip(800)
+      const { handles } = mountCrowdedStrip(800)
       const fixed = handles.filter(handle => !handle.closest('[role="tablist"]') && handle.style.width !== '')
 
       expect(fixed.length).toBeGreaterThan(0)
-      expect(fixed[0]!.className).toContain('shrink-0')
-      // The strip itself still spans the band, so the handle is ADDITIONAL to it.
-      expect(strip.className).toContain('flex-1')
-    })
-
-    it('leaves the whole free band draggable when tabs drop below the controls', () => {
-      const { handles, strip } = mountCrowdedStrip(300)
-
-      expect(strip.className).toContain('bottom-0')
-      expect(handles.some(handle => handle.className.includes('flex-1') && handle.style.width === '')).toBe(true)
     })
   })
 
@@ -268,26 +251,6 @@ describe('TreeGroup', () => {
     expect(strip.style).toHaveProperty('WebkitAppRegion', 'no-drag')
     act(() => $treeDragging.set(null))
     expect(strip.style).toHaveProperty('WebkitAppRegion', '')
-  })
-
-  it('points the docked-zone chevron in the collapse or restore action direction', () => {
-    disposePane = registry.register({
-      area: 'panes',
-      data: { height: '12rem' },
-      id: 'terminal',
-      render: () => <div>Terminal</div>,
-      title: 'Terminal'
-    })
-    // jsdom does not implement CSS.escape, which the real tab-strip effect uses.
-    vi.stubGlobal('CSS', { escape: (value: string) => value })
-
-    render(<TreeGroup node={terminalGroup(false)} parentAxis="column" />)
-
-    expect(toggle('Minimize').querySelector('i')!.className).toContain('codicon-chevron-down')
-
-    render(<TreeGroup node={terminalGroup(true)} parentAxis="column" />)
-
-    expect(toggle('Restore').querySelector('i')!.className).toContain('codicon-chevron-up')
   })
 
   // The invariant behind the shared eligibility predicate

@@ -8,11 +8,12 @@ import {
   useStdout,
   useTerminalTitle
 } from '@hermes/ink'
+import type { SessionControlSnapshot } from '@hermes/shared/gateway-events'
 import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { DASHBOARD_TUI_MODE, STARTUP_RESUME_ID } from '../config/env.js'
+import { DASHBOARD_TUI_MODE, NATIVE_MODE, STARTUP_RESUME_ID } from '../config/env.js'
 import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
@@ -53,6 +54,7 @@ import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createServerRequestHandler } from './createServerRequestHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
+import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
@@ -241,7 +243,7 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const slashFlightRef = useRef(0)
-  const slashRef = useRef<(cmd: string) => boolean>(() => false)
+  const slashRef = useRef<(cmd: string, typed?: boolean) => boolean>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
   const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
@@ -460,6 +462,7 @@ export function useMainApp(gw: GatewayClient) {
     generation: historyGeneration,
     initialHeights: activeHeightCache,
     liveTailActive: turnLiveTailActive,
+    nativeMode: NATIVE_MODE,
     onHeightsChange: syncHeightCache
   })
 
@@ -610,6 +613,18 @@ export function useMainApp(gw: GatewayClient) {
     let stopped = false
     applyAgentSnapshot(ui.sid)
     applyProcessSnapshot(ui.sid)
+    applyGoalSnapshot(ui.sid)
+    // Goal state changes only on /goal and after a judged turn, both of which push
+    // `session.control.update`; read it once per session instead of polling state.db.
+    gw.request<{ control: SessionControlSnapshot }>('session.control.read', { session_id: ui.sid })
+      .then(raw => {
+        const result = asRpcResult<{ control: SessionControlSnapshot }>(raw)
+
+        if (!stopped && result && getUiState().sid === ui.sid) {
+          applyGoalSnapshot(ui.sid, result.control?.goal ?? null)
+        }
+      })
+      .catch(() => {})
 
     const refresh = () => {
       const sid = ui.sid
@@ -1189,7 +1204,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
-    slashRef.current(`/model ${value}`)
+    slashRef.current(`/model ${value}`, false) // the typed /model that opened the picker already counted
   }, [])
 
   const closeLiveSession = useCallback(

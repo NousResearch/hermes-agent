@@ -6,7 +6,7 @@ import wave
 from types import SimpleNamespace
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -44,7 +44,9 @@ async def test_audio_profile_hops_keep_config_and_credentials_isolated(tmp_path,
     backend.router.add_post("/v1/audio/transcriptions", transcribe)
     async with TestServer(backend) as backend_server:
         for name, home in homes.items():
-            (home / ".env").write_text(f"API_SERVER_KEY=api-{name}-key-1234567890123456\n")
+            (home / ".env").write_text(
+                f"API_SERVER_KEY=api-{name}-key-1234567890123456\n", encoding="utf-8"
+            )
             (home / "config.yaml").write_text(yaml.safe_dump({
                 "stt": {
                     "provider": "openai",
@@ -53,7 +55,7 @@ async def test_audio_profile_hops_keep_config_and_credentials_isolated(tmp_path,
                         "base_url": str(backend_server.make_url("/v1")),
                     },
                 },
-            }))
+            }), encoding="utf-8")
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         adapter.gateway_runner = SimpleNamespace(config=GatewayConfig(multiplex_profiles=True))
         app = web.Application(middlewares=[

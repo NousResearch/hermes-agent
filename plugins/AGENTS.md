@@ -17,7 +17,9 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 ## What may live in this tree (policy)
 
 - **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (honcho, mem0,
-  supermemory, byterover, hindsight, holographic, openviking, retaindb stay; bug fixes welcome). New
+  supermemory, byterover, holographic, openviking, retaindb stay; bug fixes welcome; hindsight moved
+  to the plugin catalog in Sep 2026 — `plugin-catalog/hindsight.yaml`, auto-installed by
+  `hermes_cli/memory_provider_migration.py` for homes still configured for it). New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS
@@ -35,7 +37,13 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 The ONLY discovery system for out-of-tree plugins. One YAML per entry, 40-hex SHA pin mandatory,
 human-merged via PR (`plugin-catalog/README.md` = admission policy; `plugin-catalog-ci.yml` clones
 each changed entry at its pin and runs `hermes plugins validate`). `removed.yaml` is the kill list —
-every install path (CLI, dashboard, TUI) refuses matches; only the CLI has a loud `--allow-removed`.
+every install path (CLI, dashboard, TUI) refuses matches (repo URLs compared by canonical
+`host/owner/repo`, so `git@`/`ssh://`/`www.` spellings match); only the CLI has a loud
+`--allow-removed`, which is recorded on the install record and is the only thing that exempts an
+installed plugin from the same check at `update`, `enable` and load (`gate_manifest`). Catalog
+provenance lives on the installer-owned `.install-metadata.json` record (`catalog` block, sha =
+checked-out commit), NEVER in the tree: the in-tree `.hermes-catalog.json` is a convenience copy the
+Desktop reads for "Install here"; Python never trusts it (a repo can ship a forged one).
 Code: `hermes_cli/plugin_catalog.py` (loader, live refresh from
 `/docs/api/plugin-catalog.json` published by the docs build, in-tree fallback),
 `hermes_cli/plugins_cmd_catalog.py` (resolution, `.hermes-catalog.json` provenance sidecar,
@@ -55,7 +63,13 @@ bare names resolve through the catalog or error.
 **Discovery timing pitfall:** `discover_plugins()` runs only as a side effect of importing
 `model_tools.py`. Code that reads plugin state without importing `model_tools.py` first must call
 `discover_plugins()` explicitly (idempotent). Hooks are invoked from `model_tools.py` (pre/post
-tool) and `run_agent.py` (lifecycle). When a plugin changes a default, add a migration guard keyed
+tool) and `run_agent.py` (lifecycle). A non-forced `discover_plugins()` short-circuits on `_discovered`: every
+mid-run load path (install/enable/update on any surface, `reload-plugins` verb) runs
+`discover_plugins(force=True)`, and `PluginManager.on_plugin_loaded` fires from inside that sweep for the
+newly loaded plugins with an activation summary (`hermes_cli/plugins_activation.py`: handlers live now;
+tools/prompt next session; `deferred.mcp_servers` until `mcp.reload`). Never emit that event from an RPC. Auxiliary LLM calls (titling, compression, MoA, vision, ...)
+fire `pre_auxiliary_call`/`post_auxiliary_call` from `agent/auxiliary_hooks.py` (payload = the
+`*_api_request` shape + `aux_task`); they never fire the turn-scoped `pre/post_api_request` (#79733). When a plugin changes a default, add a migration guard keyed
 on an "existing config" signal (`_explicitly_configured`) so existing users keep the old default.
 
 **Lifecycle hooks fire under the owning profile's scope, and the caller binds it.**
@@ -89,22 +103,16 @@ native `api:` match, or version literals on unrelated payloads. Documented surfa
 - Compat tests load **frozen plugins through the real discovery path** and assert outcomes — never
   exact registry/catalog counts, source-reading tests, or "a global version literal changed".
 
-## Sep 2026 decomposition compat window (ends 2026-09-14)
+## Internal import paths are not API
 
-PR #102117 moved internals into `<stem>_<topic>` siblings. Old import paths resolve through
-`PLUGIN-COMPAT` `__getattr__` blocks (listed in `COMPAT_MANIFEST.md` / `compat_manifest.json`)
-until `hermes_cli.plugin_compat.COMPAT_REMOVAL_DATE`, when the commit that added them is reverted.
-`hermes_cli/plugin_compat.py` is the single source: `scan_plugin` (AST scan), `compat_report`
-(hits across enabled external plugins, cached to `HERMES_HOME/.plugin-compat-report.json`,
-refreshed by discovery), `removal_in_effect`, `warn_once`. Surfaces: CLI banner notice,
-`hermes plugins compat` (shows affected user plugins), `hermes doctor`, post-update notices, the
-TUI/Desktop `plugins.compat_report` RPC. After the date `PluginManager` skips a hitting plugin
-unless `plugins.allow_deprecated_imports: true`. **In-tree code and tests never use compat paths**
-(`scripts/check_compat_pointers.py` in CI; `-W error::hermes_cli.plugin_compat.HermesPluginCompatWarning`).
-External-plugin compat is handled ONCE here — never add per-PR re-export shims.
+PR #102117 moved internals into `<stem>_<topic>` siblings. The temporary compat layer that kept the
+old import paths alive for external plugins was removed after its 2026-09-14 window; an old path now
+raises `ImportError`, surfaced as the plugin's load error in `hermes plugins list`. Plugins build on
+`ctx` and the documented ABCs. Never add re-export shims for an internal move. `hermes_cli/plugin_compat.py`
+survives only as three inert stubs that already-running pre-removal updaters import.
 
 ## Tests
 
 `tests/plugins/`. Load through real discovery with a temp `HERMES_HOME`; assert behaviour (tool
 registered, hook fired with expected kwargs), not counts. Opt-in telemetry rule applies to plugins
-too: no attribution tag ships by default (`tests/plugins/memory/test_hindsight_provider.py`).
+too: no attribution tag ships by default.

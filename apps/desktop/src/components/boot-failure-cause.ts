@@ -21,7 +21,7 @@ const CAUSE_PATTERNS: readonly [LocalBootCause, RegExp][] = [
   ['portInUse', /address already in use|\bEADDRINUSE\b|port .* (?:is )?(?:already )?in use/i],
   [
     'installMissing',
-    /installation is missing|is missing or incomplete|venv missing|no module named|modulenotfounderror/i
+    /installation is missing|is missing or incomplete|missing or damaged|venv missing|no module named|modulenotfounderror/i
   ],
   ['timedOut', /timed out|timeout/i],
   ['exitedEarly', /exited before|exited \(|process exited|exited with|traceback \(most recent call last\)/i]

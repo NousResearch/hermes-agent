@@ -305,8 +305,8 @@ class GatewaySessionCommandsMixin:
         Stricter than ``SlashAccessPolicy.is_admin()``, which is True for every caller when slash
         gating is DISABLED — the default config would make everyone cross-origin-capable (IDOR)."""
         try:
-            from gateway.slash_access import policy_for_source
-            policy = policy_for_source(self.config, source)
+            from gateway.slash_access import policy_for_runner_source
+            policy = policy_for_runner_source(self, source)
             uid = getattr(source, "user_id", None)
             return bool(policy.enabled and uid and policy.is_admin(uid))
         except Exception:
@@ -424,9 +424,20 @@ class GatewaySessionCommandsMixin:
             session_entry.session_id, truncated, active_only=True, reject_active_turn_lease=True):
             return "Retry failed; transcript was not changed."
         session_entry.last_prompt_tokens = 0  # transcript was truncated
+        self._record_model_friction("retry", source, session_entry.session_id)
         return await self._handle_message(MessageEvent(
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
             raw_message=event.raw_message, channel_prompt=event.channel_prompt))
+
+    def _record_model_friction(self, signal: str, source, session_id: str, turns: int = 1) -> None:
+        """Slash dispatch does not install the routed profile's scope, so a multiplexed runner
+        names the owning home explicitly."""
+        from hermes_cli.observability.shared_metrics_model import record_model_friction
+        home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            with contextlib.suppress(Exception):
+                home = self._resolve_profile_home_for_source(source)
+        record_model_friction(signal, session_id=session_id, hermes_home=home, turns=turns)
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo [N] — back up N user turns (default 1), soft-deleting the truncated rows and
@@ -445,6 +456,7 @@ class GatewaySessionCommandsMixin:
         if result is None:
             return t("gateway.undo.nothing")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
+        self._record_model_friction("undo", source, session_entry.session_id, result.get("turns_undone") or 1)
         try:
             # The cache is keyed by the profile-namespaced key; a bare build_session_key(source)
             # yields ``agent:main:…`` and misses for every secondary profile.
@@ -604,8 +616,10 @@ class GatewaySessionCommandsMixin:
                             session_id=session_id,
                             session_db=getattr(self._session_db, "_db", self._session_db))
         _seed_hygiene_system_prompt(tmp_agent, session_row)
-        # Real platform during construction (context engines bind correctly); afterwards a prompt
-        # rebuilt by compression is stamped as the provider-less fallback, stale for the next turn.
+        # Real platform during construction (context engines bind correctly); the stamp afterwards
+        # only marks this agent as no real surface. Since #104414 Platform is not a restore-identity
+        # field, so it no longer forces the next live turn to rebuild; the seed's retain flag is what
+        # keeps the reduced-toolset build out of the session row (#122822).
         tmp_agent.platform = _GATEWAY_HYGIENE_PLATFORM
         tmp_agent._print_fn = lambda *a, **kw: None
         # close() must not end the rotated session the gateway entry now points at.
@@ -708,7 +722,8 @@ class GatewaySessionCommandsMixin:
         """Handle /save — export the current session and send it as a document."""
         import tempfile
         from hermes_cli.session_export import (
-            SAVE_USAGE, default_save_filename, normalize_save_format, render_session_for_save)
+            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, default_save_filename, normalize_save_format,
+            render_session_for_save)
 
         parts = event.get_command_args().split()
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -729,7 +744,7 @@ class GatewaySessionCommandsMixin:
         # Never trust path separators from chat input; the filename is only echoed to the platform.
         filename = parts[1] if len(parts) > 1 else default_save_filename(session_id, fmt)
         filename = os.path.basename(filename) or default_save_filename(session_id, fmt)
-        export_data = await self._session_db.export_session(session_id)
+        export_data = await self._session_db.export_session(session_id, include_compacted=fmt in SAVE_TRANSCRIPT_FORMATS)
         if not export_data:
             return f"No stored messages found for this session ({session_id})."
         if redact:
@@ -890,7 +905,9 @@ class GatewaySessionCommandsMixin:
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
         self._release_running_agent_state(session_key)
-        new_entry = await self.async_session_store.switch_session(session_key, target_id)
+        new_entry = await self.async_session_store.switch_session(
+            session_key, target_id, preserve_prompt_pin=False,
+        )
         if not new_entry:
             return t("gateway.resume.switch_failed")
         # Conversation boundary: all conversation-scoped state + security state in one funnel call.
@@ -898,6 +915,10 @@ class GatewaySessionCommandsMixin:
         # #10702, one-turn restores, model notes, last-resolved cache #58403, /queue overflow) + security
         # state in one funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
         self._clear_conversation_scope(session_key, reason="resume")
+        # switch_session keeps the route's persisted /model pin (a re-pin is not a boundary,
+        # #119864); /resume IS one, and the funnel above clears only in-memory state — without this
+        # the next turn's _rehydrate_session_model_override resurrects the pin it just cleared.
+        await self.async_session_store.set_model_override(session_key, None)
         # Evict so the next turn rebuilds with the right session_id — the cached AIAgent's memory
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)
@@ -1034,7 +1055,11 @@ class GatewaySessionCommandsMixin:
         # ``_branched_from`` keeps the branch visible in /resume and /sessions after the parent is
         # reopened and re-ended. ALL routing columns go in at CREATE time: a crash before
         # switch_session() records the peer would otherwise leave the branch unroutable.
+        # The child sends the parent's exact system prompt: a row without one makes the branch's
+        # first turn rebuild (re-probing the workspace) and forfeits the warm cache the copied
+        # transcript buys.
         try:
+            parent = await self._session_db.get_session(parent_session_id)
             await self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
@@ -1043,7 +1068,7 @@ class GatewaySessionCommandsMixin:
                 parent_session_id=parent_session_id, user_id=dest_source.user_id,
                 session_key=dest_key, chat_id=dest_source.chat_id, chat_type=dest_source.chat_type,
                 thread_id=dest_source.thread_id, origin_json=_branch_origin_json,
-                display_name=current_entry.display_name)
+                display_name=current_entry.display_name, system_prompt=(parent or {}).get("system_prompt") or None)
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)
             return t("gateway.branch.create_failed", error=e)
@@ -1095,5 +1120,5 @@ class GatewaySessionCommandsMixin:
         # Discord only answers un-mentioned follow-ups in threads it has participated in.
         threads = getattr(adapter, "_threads", None)
         if threads is not None:
-            threads.mark(str(thread_id))
+            await threads.mark_async(str(thread_id))
         return branch_dest_source(source, parent_id=parent_id, thread_id=str(thread_id), title=title)

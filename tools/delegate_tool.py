@@ -237,6 +237,7 @@ def _build_child_agent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
+                side_agent=True,
                 skip_context_files=True, skip_memory=True, clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
@@ -748,41 +749,3 @@ registry.register(
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from concurrent.futures import TimeoutError as FuturesTimeoutError  # noqa: F401,E402
-import contextvars  # noqa: F401,E402
-import enum  # noqa: F401,E402
-import json  # noqa: F401,E402
-import os  # noqa: F401,E402
-import re  # noqa: F401,E402
-import threading  # noqa: F401,E402
-from urllib.parse import urlsplit  # noqa: F401,E402
-from urllib.parse import urlunsplit  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_CHILD_TIMEOUT': ('tools.delegate_tool_config', 'DEFAULT_CHILD_TIMEOUT'),
-    'DEFAULT_MAX_SUMMARY_CHARS': ('tools.delegate_tool_results', 'DEFAULT_MAX_SUMMARY_CHARS'),
-    'DEFAULT_TOOLSETS': ('tools.delegate_tool_toolsets', 'DEFAULT_TOOLSETS'),
-    'MAX_DEPTH': ('tools.delegate_tool_config', 'MAX_DEPTH'),
-    'TOOLSETS': ('toolsets', 'TOOLSETS'),
-    'base_url_hostname': ('utils', 'base_url_hostname'),
-    'file_state': ('tools', 'file_state'),
-    'request_hard_interrupt': ('agent.interrupt_compat', 'request_hard_interrupt'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

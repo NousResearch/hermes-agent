@@ -90,18 +90,25 @@ export interface I18nProviderProps {
   children: ReactNode
   configClient?: I18nConfigClient | null
   initialLocale?: unknown
+  /** Reconcile when the window's config owner changes, without remounting its children. */
+  scopeKey?: string
 }
 
-export function I18nProvider({ children, configClient = defaultConfigClient, initialLocale }: I18nProviderProps) {
+export function I18nProvider({
+  children,
+  configClient = defaultConfigClient,
+  initialLocale,
+  scopeKey
+}: I18nProviderProps) {
   const [locale, setLocaleState] = useState<Locale>(() => normalizeLocale(initialLocale))
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
   const [saveError, setSaveError] = useState<Error | null>(null)
   const localeRef = useRef(locale)
-  // Set once the user picks a language through setLocale: a startup read that
-  // resolves (or fails) after that must never overwrite an explicit choice.
+  // An explicit pick beats a late read in its own scope, not in other profiles.
   const userLocaleRef = useRef(false)
+  const scopeGenerationRef = useRef(0)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -110,7 +117,13 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     applyDocumentLocale(locale)
   }, [locale])
 
+  // eslint-disable-next-line no-restricted-syntax -- scope-local request generation and user intent, not an atom mirror
   useEffect(() => {
+    scopeGenerationRef.current += 1
+    userLocaleRef.current = false
+    setSaveError(null)
+    setIsSavingLocale(false)
+
     if (!configClient) {
       return
     }
@@ -182,16 +195,18 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
 
     return () => {
       cancelled = true
+      scopeGenerationRef.current += 1
 
       if (retryTimer) {
         clearTimeout(retryTimer)
       }
     }
-  }, [configClient, initialLocale])
+  }, [configClient, initialLocale, scopeKey])
 
   const setLocale = useCallback(
     async (next: Locale) => {
       const previousLocale = localeRef.current
+      const generation = scopeGenerationRef.current
 
       userLocaleRef.current = true
       setSaveError(null)
@@ -213,12 +228,18 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       } catch (error) {
         const nextError = toError(error)
 
-        setLocaleState(previousLocale)
-        setSaveError(nextError)
+        // The write still belongs to the GET's captured origin, but its late
+        // outcome must not roll another profile's chrome back to this one.
+        if (generation === scopeGenerationRef.current) {
+          setLocaleState(previousLocale)
+          setSaveError(nextError)
+        }
 
         throw nextError
       } finally {
-        setIsSavingLocale(false)
+        if (generation === scopeGenerationRef.current) {
+          setIsSavingLocale(false)
+        }
       }
     },
     [configClient]

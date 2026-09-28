@@ -18,10 +18,10 @@ def test_reasoning_menu_orders_minimal_before_low(monkeypatch):
     )
 
     assert selected == "medium"
-    assert captured["items"][:4] == [
+    assert [item.split()[0] for item in captured["items"][:4]] == [
         "minimal",
         "low",
-        "medium  ← currently in use",
+        "medium",
         "high",
     ]
 

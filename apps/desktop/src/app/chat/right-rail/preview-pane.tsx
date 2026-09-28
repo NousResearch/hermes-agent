@@ -14,7 +14,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
-import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
+import { isLoopbackPreviewUrl, openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
 import {
   addAnnotatePin,
@@ -38,7 +38,9 @@ import {
   failPreviewServerRestart,
   noteBrowserPage,
   popOutBrowserTab,
-  type PreviewTarget
+  type PreviewRenderMode,
+  type PreviewTarget,
+  setPreviewRenderMode
 } from '@/store/preview'
 import { $selectedStoredSessionId } from '@/store/session'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
@@ -66,7 +68,7 @@ import {
 } from './preview-console'
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
-import { LocalFilePreview, PreviewEmptyState } from './preview-file'
+import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
@@ -133,6 +135,9 @@ interface GuestContextMenuParams {
 
 interface PreviewPaneProps {
   embedded?: boolean
+  /** Closes this preview's tab. Offered by body states that are a dead end
+   *  (a file that no longer exists) so the way out is not only the strip. */
+  onClose?: () => void
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
   /** The preview tab this pane renders. Keys the per-tab console store the
@@ -164,10 +169,6 @@ function loadErrorTitle(error: PreviewLoadErrorState, copy: Translations['previe
   return copy.failedToLoad
 }
 
-/** Loopback hosts — the address family that means "this machine", and so the
- *  one family whose meaning changes with WHICH machine is running the page. */
-const LOOPBACK_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[?::1\]?)$/i
-
 /**
  * True when this address can't mean what the agent meant.
  *
@@ -177,15 +178,7 @@ const LOOPBACK_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[?::1\]?)$
  * URL isn't wrong, it's just addressed to a different computer.
  */
 function isRemoteLoopbackUrl(url: string): boolean {
-  if (!isRemoteGateway()) {
-    return false
-  }
-
-  try {
-    return LOOPBACK_HOST_RE.test(new URL(url).hostname)
-  } catch {
-    return false
-  }
+  return isRemoteGateway() && isLoopbackPreviewUrl(url)
 }
 
 function isModuleMimeError(message: string): boolean {
@@ -193,6 +186,20 @@ function isModuleMimeError(message: string): boolean {
 
   return lower.includes('failed to load module script') && lower.includes('mime type')
 }
+
+/**
+ * #101880: a guest page's `window.print()` (e.g. a Google Doc's Print
+ * button) reaches the macOS native print panel, whose construction
+ * segfaults inside PrintCore — the whole app dies before any dialog
+ * appears. Stub `print` in the guest so the native panel is never built;
+ * the warn surfaces in the preview console via the existing pipe. The
+ * `__hermesPrintGuard` flag keeps re-arms idempotent. Full print-to-PDF
+ * routing is the follow-up; this stops the crash.
+ */
+const PREVIEW_PRINT_GUARD_SCRIPT =
+  '(function(){if(window.__hermesPrintGuard)return;window.__hermesPrintGuard=true;' +
+  'window.print=function(){console.warn("[Hermes] Printing is disabled in the in-app preview. ' +
+  'Open the page in your browser to print.");};})()'
 
 function PreviewLoadError({
   consoleHeight = 0,
@@ -247,7 +254,14 @@ function PreviewLoadError({
   )
 }
 
-export function PreviewPane({ embedded = false, onRestartServer, reloadRequest = 0, tabId, target }: PreviewPaneProps) {
+export function PreviewPane({
+  embedded = false,
+  onClose,
+  onRestartServer,
+  reloadRequest = 0,
+  tabId,
+  target
+}: PreviewPaneProps) {
   const { t } = useI18n()
   const copy = t.preview.web
   // The console store belongs to the TAB, not this render: the toggles live on
@@ -279,14 +293,30 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const annotateConversationRef = useRef(selectedStoredSessionId)
   annotateRef.current = annotate
 
+  const renderMode = target.renderMode
+
   // Artifacts have no URL to load — they render from the registry, never in a
   // webview.
   const isWebPreview =
-    target.kind !== 'artifact' &&
-    (target.kind === 'url' || (target.previewKind === 'html' && target.renderMode !== 'source'))
+    target.kind !== 'artifact' && (target.kind === 'url' || (target.previewKind === 'html' && renderMode !== 'source'))
 
   const isRemoteHtmlTarget =
     target.kind === 'file' && target.previewKind === 'html' && Boolean(target.dataUrl || target.transient)
+
+  // The mode lives on the store tab, so only a tab-backed pane can flip it. A
+  // remote HTML file whose data URL failed validation arrives as a source-only
+  // transient target; it has no rendered path to offer.
+  const canRenderHtmlFile =
+    Boolean(tabId) &&
+    target.kind === 'file' &&
+    target.previewKind === 'html' &&
+    (!target.transient || Boolean(target.dataUrl))
+
+  const selectRenderMode = (next: PreviewRenderMode) => {
+    if (tabId) {
+      setPreviewRenderMode(tabId, next)
+    }
+  }
 
   // Hand the live address to storage when this guest is about to go away
   // (pop-out, dock-back, tab close). The other renderer builds from
@@ -309,7 +339,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
   }, [tabId, target.kind])
 
-  const isRemoteHtml = isRemoteHtmlTarget && target.renderMode !== 'source' && Boolean(target.dataUrl)
+  const isRemoteHtml = isRemoteHtmlTarget && renderMode !== 'source' && Boolean(target.dataUrl)
 
   const remoteHtmlDocument = useMemo(
     () => (isRemoteHtml ? remoteHtmlPreviewDocument(target.dataUrl!) : null),
@@ -911,7 +941,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     lastReloadRequestRef.current = reloadRequest
 
-    if (target.kind !== 'url') {
+    // An agent's file edit can only change a page a local dev server serves.
+    // Reloading any other site just throws away the user's page state.
+    if (target.kind !== 'url' || !isLoopbackPreviewUrl(currentUrl)) {
       return
     }
 
@@ -920,7 +952,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       message: copy.workspaceReloading
     })
     reloadPreview()
-  }, [appendConsoleEntry, copy.workspaceReloading, reloadPreview, reloadRequest, target.kind])
+  }, [appendConsoleEntry, copy.workspaceReloading, currentUrl, reloadPreview, reloadRequest, target.kind])
 
   useEffect(() => {
     if (
@@ -1157,6 +1189,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       notePage()
     }
 
+    // #101880: arm the print guard for every new guest document — a fresh
+    // load gets a fresh window object, so the stub must be re-injected.
+    const armPrintGuard = () => {
+      void webview.executeJavaScript?.(PREVIEW_PRINT_GUARD_SCRIPT)?.catch(() => {
+        // Guest tore down mid-arm (a navigation raced the injection) — the
+        // next dom-ready arms it again.
+      })
+    }
+
     // The WEBVIEW is the source of truth for DevTools, not our click handler:
     // closing the DevTools window itself fires devtools-closed with no click,
     // and the glyph was left stuck "on" when we tracked it locally.
@@ -1250,6 +1291,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     // SPAs title themselves long after the load settles, and a route change
     // renames the page without navigating at all.
     webview.addEventListener('page-title-updated', notePage)
+    // #101880: never let a guest reach the native print panel.
+    webview.addEventListener('dom-ready', armPrintGuard)
     host.appendChild(webview)
     webviewRef.current = webview
 
@@ -1266,6 +1309,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.removeEventListener('did-start-loading', onStart)
       webview.removeEventListener('did-stop-loading', onStop)
       webview.removeEventListener('page-title-updated', notePage)
+      webview.removeEventListener('dom-ready', armPrintGuard)
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
@@ -1315,6 +1359,14 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
               </Tip>
             </div>
           </div>
+        )}
+
+        {canRenderHtmlFile && renderMode !== 'source' && (
+          <PreviewModeSwitcher
+            active="rendered"
+            modes={['rendered', 'source']}
+            onSelect={mode => selectRenderMode(mode === 'source' ? 'source' : 'preview')}
+          />
         )}
 
         {isWebPreview && !isRemoteHtml && (
@@ -1375,16 +1427,21 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           )}
           {!isWebPreview &&
             (target.kind === 'artifact' ? (
-              <ArtifactPreview target={target} />
+              <ArtifactPreview onClose={onClose} target={target} />
             ) : (
-              <LocalFilePreview reloadKey={localReloadKey} target={target} />
+              <LocalFilePreview
+                onClose={onClose}
+                onSelectRendered={canRenderHtmlFile ? () => selectRenderMode('preview') : undefined}
+                reloadKey={localReloadKey}
+                target={target}
+              />
             ))}
           {isBlankPage && (
             <div className="absolute inset-0 grid bg-background">
               <PanelEmpty description={copy.blankPageBody} icon="globe" />
             </div>
           )}
-          {loadError && (
+          {isWebPreview && loadError && (
             <PreviewLoadError
               consoleHeight={consoleOpen ? consoleHeight : 0}
               error={loadError}
@@ -1394,7 +1451,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             />
           )}
 
-          {annotate.draft ? (
+          {isWebPreview && annotate.draft ? (
             <PreviewAnnotateCard
               {...placeAnnotateCard({
                 paneHeight: previewContentRef.current?.clientHeight || 360,

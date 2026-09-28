@@ -15,8 +15,11 @@ import dataclasses
 import json
 import os
 import re
+import shutil
 import time
 from contextlib import suppress
+from pathlib import Path
+
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -26,7 +29,8 @@ from gateway.run_inbound_unauthorized import (
     unauthorized_owner_hint,
 )
 from gateway.session import (
-    SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
+    SessionSource, build_session_context, is_shared_multi_user_session,
+    neutralize_untrusted_inline_text,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,6 +41,45 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def rehome_inbound_media(event: MessageEvent) -> None:
+    """Move adapter-cached attachments into the ACTIVE profile's ``cache/`` and repoint the event.
+
+    Adapters download and cache an attachment BEFORE the gateway routes the event to a profile, so
+    on a multiplexed gateway the file lands under the launch home while the routed turn's sandbox
+    mounts (``get_cache_directory_mounts``) and vision's ``_media_cache_roots`` resolve the routed
+    profile's ``cache/`` — the agent is handed a mounted, empty directory (#101134). Runs inside the
+    routed scope at the shared preprocessing choke point (every adapter, every media kind); a no-op
+    when the active home is the launch home, and idempotent (a moved entry is no longer under it).
+    """
+    if not event.media_urls:
+        return
+    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
+    active, launch = Path(get_hermes_home()), Path(get_routing_process_hermes_home())
+    if hermes_home_key(active) == hermes_home_key(launch):
+        return
+    from tools.credential_files import to_agent_visible_cache_path
+    rewritten = list(event.media_urls)
+    for i, raw in enumerate(event.media_urls):
+        src = Path(raw)
+        try:
+            rel = src.relative_to(launch / "cache")
+        except ValueError:
+            continue
+        dest = active / "cache" / rel
+        try:
+            if not src.is_file():
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+        except OSError:
+            logger.warning("Could not move inbound attachment %s into the routed profile's cache", raw, exc_info=True)
+            continue
+        rewritten[i] = str(dest)
+        if event.text and raw in event.text:  # note an adapter already baked in (observed/replied media)
+            event.text = event.text.replace(raw, to_agent_visible_cache_path(str(dest)))
+    event.media_urls = rewritten
 
 
 def discord_triggering_note(message_id: Any) -> str:
@@ -63,15 +106,15 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
-    def _hm_pre_gateway_dispatch_hook(
+    async def _hm_pre_gateway_dispatch_hook(
         self, event: "MessageEvent", source: SessionSource
     ) -> Optional["MessageEvent"]:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
         ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
         try:
-            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-            _hook_results = _invoke_hook(
+            from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
+            _hook_results = await _ainvoke_hook(
                 "pre_gateway_dispatch", event=event, gateway=self,
                 # getattr: bare-runner tests build GatewayRunner via object.__new__ without __init__.
                 session_store=getattr(self, "session_store", None),
@@ -222,7 +265,7 @@ class GatewayInboundMixin:
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
         self._scale_to_zero_note_real_inbound()
-        event = self._hm_pre_gateway_dispatch_hook(event, source)
+        event = await self._hm_pre_gateway_dispatch_hook(event, source)
         if event is None:
             return None
         source = event.source
@@ -641,6 +684,7 @@ class GatewayInboundMixin:
             except Exception as exc:
                 logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
         if steered:
+            self._fold_into_running_turn(running_agent, _quick_key, event)
             logger.debug("PRIORITY steer for session %s", _quick_key)
             return
         logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
@@ -994,7 +1038,8 @@ class GatewayInboundMixin:
             or self._gateway_idle_command_handlers().get(canonical)
         )
         if plain_handler is not None:
-            return True, await plain_handler(event)
+            async with self._async_profile_scope_for_source(source):
+                return True, await plain_handler(event)
         if canonical in self._HM_CANONICAL_COMMANDS:
             return await getattr(self, f"_hm_cmd_{canonical}")(event, source, _quick_key)
         return False, None
@@ -1058,9 +1103,22 @@ class GatewayInboundMixin:
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
-                        result = await result
+                    # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
+                    # sits before it, so a handler reading get_session_env() would see an empty or a
+                    # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
+                    # so session_key is derived from source. Sync handlers run on the gateway pool
+                    # (contextvars carried), never the loop thread: blocking I/O there starves the
+                    # liveness watchdog and the process exits 75 mid-handler (#105279).
+                    _plugin_context = build_session_context(source, self.config)
+                    _plugin_context.session_key = self._session_key_for_source(source)
+                    user_args = event.get_command_args().strip()
+                    with self._session_env_scope(_plugin_context):
+                        if asyncio.iscoroutinefunction(plugin_handler):
+                            result = await plugin_handler(user_args)
+                        else:
+                            result = await self._run_in_executor_with_context(plugin_handler, user_args)
+                            if asyncio.iscoroutine(result):
+                                result = await result
                     return True, str(result) if result else None, command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
@@ -1264,6 +1322,9 @@ class GatewayInboundMixin:
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
+        if not is_internal:
+            from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
+            record_gateway_slash_command(event)
         # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
         # not on the adapter's raw inbound: profile routing, the ignored-channel
         # guard, plugin hooks and user authorization all reject events above,
@@ -1328,6 +1389,8 @@ class GatewayInboundMixin:
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
         _claim_state.turn.event = event
         _claim_state.turn.started_ts = time.time()
+        from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
+        start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
@@ -1360,8 +1423,11 @@ class GatewayInboundMixin:
             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
             self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
             # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
-            # recovery pass.
-            await self._clear_durable_active_turn(event)
+            # recovery pass. A turn the adapter delivers hands its marker to that lifecycle, which
+            # clears it only once the reply is in the delivery ledger (else a kill in between
+            # left neither marker nor ledger row and the persisted reply was never sent).
+            if not getattr(event, "_turn_marker_handoff", False):
+                await self._clear_durable_active_turn(event)
             # Release only this turn's generation. Eviction may immediately admit a replacement
             # through the cold path; an unconditional release here would then clear the replacement
             # sentinel/agent and lease. Reset/stop release their stale slot before installing a
@@ -1683,6 +1749,7 @@ class GatewayInboundMixin:
         follow-up paths so attribution, image enrichment, STT, document notes, reply context and
         @ references behave the same. Side effect: buffers per-session native image paths when the
         model supports native vision; the caller consumes that buffer at ``run_conversation``."""
+        rehome_inbound_media(event)  # before any consumer (vision, STT, document notes) reads media_urls
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
         message_text = (event._gateway_pending_stt_text if _pending_stt_prepared else event.text) or ""
         # Prefer the caller's resolved session key so this write key matches the consume key at the
@@ -1777,18 +1844,16 @@ class GatewayInboundMixin:
                     delattr(event, attr)
 
     def _install_plugin_message_injector(self) -> None:
-        """Publish this live gateway's plugin message scheduler."""
-        from hermes_cli.plugins import get_plugin_manager
+        """Publish this live gateway's plugin message scheduler process-wide."""
+        from hermes_cli.plugins import publish_gateway_message_host
 
-        get_plugin_manager().set_gateway_message_injector(
-            self, self._schedule_plugin_message_injection
-        )
+        publish_gateway_message_host(self, self._schedule_plugin_message_injection)
 
     def _clear_plugin_message_injector(self) -> None:
         """Remove this runner's scheduler without clobbering a newer owner."""
-        from hermes_cli.plugins import get_plugin_manager
+        from hermes_cli.plugins import clear_published_gateway_message_host
 
-        get_plugin_manager().clear_gateway_message_injector(self)
+        clear_published_gateway_message_host(self)
 
     def _schedule_plugin_message_injection(
         self, *, session_key: str, content: str, plugin_id: str

@@ -210,6 +210,13 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
   from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
   wrote a secondary profile's memories into the default profile's store, silently.
+- **`api_server` rebuilds the agent per request but not the memory provider.** The adapter bypasses
+  `TurnRunner` and the agent cache (per-request callbacks, model route, ephemeral prompt), so
+  `platforms/api_server_memory_sessions.py` parks each session's initialised `MemoryManager` between
+  requests (exclusive check-out in `_create_agent`, check-in in the turn's `finally`, keyed by profile
+  home + `agent.session_id`; idle/LRU eviction shuts down under the owning home) and
+  `AIAgent(memory_manager=...)` adopts it without a second provider init. Without it the previous
+  turn's queued recall never reaches the next request (#120116).
 - **`multiplex_profiles: false` is not "no scope ever".** A native hosted room serving a second
   profile flips the process-wide guard (`tui_gateway/launch_profile_policy.py::
   activate_multi_profile_hosting`) inside the gateway process, after the adapters were wired; every
@@ -231,6 +238,14 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   the default profile only; a secondary enabling one is logged once with the remedy and stamped
   into runtime status (`run_adapters.py::_note_unserved_secondary_platform`). `needs_attention` is
   set and cleared at the single writer (`_update_platform_runtime_status`) on the connect path.
+- **One launch-home identity.** "Does this task serve a routed profile?" compares the override
+  with `hermes_constants.get_routing_process_hermes_home()` (`agent/secret_scope.py::
+  serves_routed_profile` and `_is_process_home`, `tools/environments/local.py::_is_routed_home`,
+  `hermes_cli/env_loader.py::_process_hermes_home`), never with `os.environ["HERMES_HOME"]` read
+  live: an embedding host that mirrors the served profile into the env var per turn (Hermes
+  WebUI) pins its own home with `pin_process_hermes_home()`, and without a pin the resolver is
+  `get_process_hermes_home()` unchanged. Do not add another routing decision that compares
+  against `get_process_hermes_home()` directly; that resolver is for process-level assets.
 
 ## Tests
 

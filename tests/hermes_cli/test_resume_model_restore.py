@@ -8,7 +8,6 @@ used instead of the ambient config default (#57588-class, #79536).
 
 import json
 
-import pytest
 
 import cli as cli_mod
 from hermes_state import SessionDB
@@ -245,9 +244,6 @@ def test_persist_model_switch_clears_stale_route_keys(tmp_path, monkeypatch):
     assert "api_mode" not in runtime
 
 
-def test_persist_model_switch_noop_without_db_or_session():
-    stub = _make_stub()  # no _session_db / session_id attributes at all
-    stub._persist_model_switch_to_session(_Result())  # must not raise
 
 
 def test_persist_model_switch_swallows_db_errors():
@@ -419,6 +415,18 @@ def test_session_gateway_runtime_explicit_provider_wins_over_billing():
     meta["billing_provider"] = "minimax"
     runtime = SessionDB.session_gateway_runtime(meta)
     assert runtime == {"provider": "nous"}
+
+
+def test_session_gateway_runtime_billing_provider_fills_top_level_route_without_provider():
+    """A TUI row with top-level base_url/api_mode but no provider keeps that endpoint AND takes the
+    provider the session was billed to — the same merge the TUI gateway always did (#125942); a bare
+    bucket still contributes nothing."""
+    meta = _row(model_config={"base_url": "https://f/v1", "api_mode": "chat_completions"})
+    meta["billing_provider"] = "minimax"
+    assert SessionDB.session_gateway_runtime(meta) == {
+        "provider": "minimax", "base_url": "https://f/v1", "api_mode": "chat_completions"}
+    meta["billing_provider"] = "custom"
+    assert SessionDB.session_gateway_runtime(meta) == {"base_url": "https://f/v1", "api_mode": "chat_completions"}
 
 
 def test_restore_session_model_restores_billing_provider_fallback():

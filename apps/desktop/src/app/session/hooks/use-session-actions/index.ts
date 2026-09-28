@@ -32,7 +32,7 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
-import { $clarifyRequests } from '@/store/clarify'
+import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests } from '@/store/connection-request'
@@ -58,11 +58,12 @@ import {
   ensureGatewayProfile,
   isLegacyNewChatProfile,
   normalizeProfileKey,
+  resolveActiveSourceOwnerRoute,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
 import { $projectScope } from '@/store/project-scope'
-import { resolveNewSessionCwd } from '@/store/projects'
-import { receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
+import { projectProfile, resolveNewSessionCwd } from '@/store/projects'
+import { clearAllPrompts, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
@@ -878,6 +879,19 @@ export function useSessionActions({
       const listed = options?.listed ?? true
 
       try {
+        // A tile anchored at a project path belongs to the profile the project
+        // tree is rendered under — the same owner the fresh-draft "+" pins
+        // (#79005). The occupied-chat "+" and project-row drags reach this
+        // path instead, where a stale $newChatProfile pin would otherwise win
+        // and land the session in the wrong profile (#124265). All-profiles
+        // view has no owner and keeps the ordinary fallback.
+        const projectOwnerProfile =
+          options?.profile === undefined && typeof options?.cwd === 'string'
+            ? (projectProfile() ?? undefined)
+            : undefined
+
+        const optionProfile = options?.profile ?? projectOwnerProfile
+
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), explicit null means Home/detached,
         // else the resolved new-session cwd (project scope → configured default).
@@ -885,26 +899,29 @@ export function useSessionActions({
         // to fall through into the last project folder while main chat was
         // occupied (openTab path for "New session in Home").
         const explicitTarget =
-          options?.profile !== undefined ||
-          options?.cwd !== undefined ||
-          options?.workspaceScope?.ownerRoute !== undefined
+          optionProfile !== undefined || options?.cwd !== undefined || options?.workspaceScope?.ownerRoute !== undefined
 
         const defaultTarget = options?.route === undefined && !explicitTarget ? defaultNewSessionTarget() : null
 
+        // The project tree is rendered by the ACTIVE source: its profile pairs
+        // with that source, never with the source a stale new-chat pin captured
+        // on another connection (right profile, wrong host).
         const capturedRoute =
           options?.route !== undefined
             ? options.route
             : (options?.workspaceScope?.ownerRoute ??
-              (defaultTarget ? defaultTarget.route : resolveNewChatOwnerRoute(options?.profile)))
+              (defaultTarget
+                ? defaultTarget.route
+                : projectOwnerProfile
+                  ? resolveActiveSourceOwnerRoute(projectOwnerProfile)
+                  : resolveNewChatOwnerRoute(optionProfile)))
 
         // A named local profile uses the legacy profile-only transport (no
         // connectionId). Tab-strip "+" omits `options.profile`; the draft or
         // active profile is still the owner. Unique non-default local roster
         // names stay authoritative; default/remote/duplicate stay unresolved.
         const requestedProfile = normalizeProfileKey(
-          typeof options?.profile === 'string' && options.profile
-            ? options.profile
-            : defaultTarget?.profile || $newChatProfile.get() || $activeGatewayProfile.get()
+          optionProfile || defaultTarget?.profile || $newChatProfile.get() || $activeGatewayProfile.get()
         )
 
         const legacyOwnerProfile =
@@ -2870,7 +2887,17 @@ export function useSessionActions({
       // delete lands in the same tick, which used to leave the doomed route in
       // place and let the generic 4001 recovery rebind it.
       const wasSelected = selectedStoredSessionIdRef.current === storedSessionId
-      const closingRuntimeId = wasSelected ? activeSessionIdRef.current : null
+
+      // Resolve the doomed session's live runtime from the SELECTION or the
+      // stored→runtime map. Deleting a NON-selected (sidebar/background) session
+      // used to skip this entirely, so its in-flight turn kept running and could
+      // surface an approval/clarify prompt for a conversation that no longer
+      // exists (#75587).
+      const closingRuntimeId =
+        (wasSelected ? activeSessionIdRef.current : null) ??
+        runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
+        null
+
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
 
@@ -2905,6 +2932,43 @@ export function useSessionActions({
 
       try {
         if (closingRuntimeId) {
+          // Deleting a session must END its turn, not just drop the row.
+          // `session.close` tears down the runtime but does not walk the
+          // interrupt path that releases approval / clarify / sudo / secret
+          // waits, so a blocked run could outlive its sidebar row and surface a
+          // blocking prompt (and native notification) for a conversation that is
+          // gone (#75587). Mark the runtime interrupted first so a
+          // blocking-input request already queued on the transport is dropped
+          // instead of parking its overlay, then interrupt, then close.
+          let previousInterruptState: Pick<ClientSessionState, 'interrupted' | 'needsInput'> | null = null
+
+          updateSessionState(closingRuntimeId, state => {
+            previousInterruptState = { interrupted: state.interrupted, needsInput: state.needsInput }
+
+            return { ...state, interrupted: true, needsInput: false }
+          })
+
+          try {
+            await requestForSessionProfile(removedOwner, requestGateway, 'session.interrupt', {
+              session_id: closingRuntimeId
+            })
+          } catch (error) {
+            // A missing runtime has no turn left to stop. Any other failure means
+            // deletion cannot safely continue: restore the live state and let the
+            // outer rollback put the conversation back in the sidebar.
+            if (!isSessionGoneError(error)) {
+              updateSessionState(closingRuntimeId, state =>
+                previousInterruptState ? { ...state, ...previousInterruptState } : state
+              )
+              throw error
+            }
+          }
+
+          // Catch a blocking-input request already queued before the interrupted
+          // flag became visible to this renderer.
+          clearAllPrompts(closingRuntimeId)
+          clearClarifyRequest(undefined, closingRuntimeId)
+
           await requestForSessionProfile(removedOwner, requestGateway, 'session.close', {
             session_id: closingRuntimeId
           }).catch(() => undefined)
@@ -2980,7 +3044,8 @@ export function useSessionActions({
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,
       sessionStateByRuntimeIdRef,
-      startFreshSessionDraft
+      startFreshSessionDraft,
+      updateSessionState
     ]
   )
 

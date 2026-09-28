@@ -398,7 +398,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:
-        return mirror(sid, session, agent, arg) or ""
+        # Mirrors run OFF-turn (slash.exec RPC pool / compute-host control reader): bind the session's
+        # profile scope or /model's credential read raises UnscopedSecretError under multiplex (#122655).
+        with _session_profile_runtime_scope(session):
+            return mirror(sid, session, agent, arg) or ""
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import finalize_context_engine_compression_notification

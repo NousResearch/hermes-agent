@@ -67,7 +67,7 @@ interface CommandCenterViewProps {
   onDeleteSession: (sessionId: string) => Promise<void>
   // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
   onNavigateRoute?: (path: string) => void
-  onOpenSession: (sessionId: string) => void
+  onOpenSession: (sessionId: string, session?: SessionInfo) => void
   /** Grows the shared session window (bumpSessionsLimit + refetch), same
    *  mechanism as the sidebar's recents "load more". Renders the Sessions
    *  list's bottom-right button when the backend page is capped. */
@@ -425,7 +425,7 @@ export function CommandCenterView({
                         <li className="group flex items-center gap-2 py-2" key={session.id}>
                           <button
                             className="min-w-0 flex-1 text-left"
-                            onClick={() => onOpenSession(session.id)}
+                            onClick={() => onOpenSession(session.id, session)}
                             type="button"
                           >
                             <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">

@@ -7,8 +7,15 @@ the dashboard/orphan scans) then receives a corrupted inline bootstrap source �
 bootstrap regexes anchor on real whitespace — and goes blind on POSIX-launcher processes.
 
 These tests build ps lines in the exact shape of the live launcher-started gateway and assert
-each of the four ps read boundaries hands the matchers unescaped text. No source-shape or
+the ps read boundaries this PR touches hand the matchers unescaped text. No source-shape or
 source-text assertions: every assertion goes through the real reader + matcher pipeline.
+
+The gateway sweep's ps reads (``_parse_ps_line``, the ``_read_process_cmdline`` ps arm) are
+deliberately NOT unescaped here: #126887 asks for ``_get_service_pids()`` to cover a launchd
+job's descendants first, otherwise a decoded gateway command line makes ``hermes update``'s
+manual-sweep mistake a launchd-managed gateway (the macOS job PID is the osascript wrapper,
+not the gateway child) for drain/SIGTERM. The dashboard respawn path is unaffected: it reads
+exact argv via ``/proc``/psutil, and its ps arm only feeds the runtime matcher.
 """
 
 import shlex
@@ -65,19 +72,6 @@ def test_helper_unescapes_only_on_darwin(monkeypatch):
     assert unescape_ps_command("a\\012b") == "a\\012b"
 
 
-def test_status_ps_fallback_feeds_matchers_unescaped(monkeypatch):
-    escaped = _ps_escaped(_gateway_command())
-    fake = subprocess.CompletedProcess(args=["ps"], returncode=0, stdout=escaped + "\n", stderr="")
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: fake)
-
-    # A pid with no /proc entry and no psutil process, so the ps fallback is exercised.
-    command = gateway_status._read_process_cmdline(987654321)
-
-    assert command is not None
-    assert "\\012" not in command
-    assert "\n" in command
-    assert gateway_status._gateway_command_subcommand(command) == "run"
-
 
 def test_process_table_reader_feeds_holder_matcher_unescaped(monkeypatch):
     from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
@@ -107,14 +101,50 @@ def test_dashboard_cmdline_roundtrip_parses_runtime(monkeypatch):
     assert main_dashboard._parse_dashboard_runtime(shlex.join(argv)) == ("dashboard", "127.0.0.1", 9119)
 
 
-def test_gateway_ps_line_parser_feeds_matcher_unescaped():
-    escaped = _ps_escaped(_gateway_command())
+def test_dashboard_cmdline_respawn_argv_replayable(monkeypatch):
+    """The respawn path must get exact argv elements, not a shlex split of ps text.
 
-    parsed = gateway_cli._parse_ps_line(f"  93780 {escaped}")
+    ps text is space-joined and cannot express argv element boundaries, so shlex.split of even
+    fully unescaped text still shreds the inline bootstrap source into dozens of tokens
+    (#126887). psutil returns real argv elements; the ps arm remains only as the fallback for
+    processes psutil cannot read (another user's process on macOS), where the runtime matcher
+    still works but respawn replay is best-effort.
+    """
+    import psutil
 
-    assert parsed is not None
-    pid, command = parsed
-    assert pid == 93780
-    assert "\\012" not in command
-    assert "\n" in command
-    assert gateway_status._gateway_command_subcommand(command) == "run"
+    argv_elements = [_INTERPRETER, "-I", "-c", _LAUNCHER_SOURCE, "dashboard", "--host", "127.0.0.1", "--port", "9119"]
+
+    class _FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def cmdline(self):
+            return list(argv_elements)
+
+    monkeypatch.setattr(psutil, "Process", _FakeProcess)
+    escaped = _ps_escaped(_dashboard_command())
+    fake = subprocess.CompletedProcess(args=["ps"], returncode=0, stdout=escaped + "\n", stderr="")
+    monkeypatch.setattr(main_dashboard, "_run_probe", lambda *a, **k: fake)
+
+    argv = main_dashboard._dashboard_cmdline_for_pid(987654321)
+
+    assert argv is not None
+    assert argv[argv.index(_LAUNCHER_SOURCE)] == _LAUNCHER_SOURCE
+    assert "dashboard" in argv
+    assert "9119" in argv
+
+
+def test_unescape_is_lossy_for_literal_octal_text():
+    """Documented lossiness, pinned so a future change re-decides it deliberately.
+
+    BSD ps does not escape backslashes, so a literal ``\\012`` typed into an argv element is
+    byte-identical to an escaped newline and the helper cannot tell them apart — it always
+    restores the newline. Only matcher/respawn readers consume this text, and they anchor on
+    real whitespace, so the trade favors restoring.
+    """
+    from hermes_cli._subprocess_compat import unescape_ps_command
+
+    assert unescape_ps_command("sed \\012 pattern") == "sed \n pattern"
+    assert unescape_ps_command("cut \\011 field") == "cut \t field"
+
+

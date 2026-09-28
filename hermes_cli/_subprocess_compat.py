@@ -539,12 +539,20 @@ def unescape_ps_command(command: str) -> str:
 
     BSD ``ps`` renders a newline embedded in argv as the four literal characters ``\\012``
     (a tab as ``\\011``) so each process stays on one output line. Every matcher downstream
-    of a ``ps`` text read (``_hermes_holder_subcommand``, ``_gateway_command_subcommand``,
-    ``_parse_dashboard_runtime``, the dashboard/orphan scans) then receives a corrupted inline
-    bootstrap source — the bootstrap regexes anchor on real whitespace — and goes blind on
-    POSIX-launcher processes. Undo that escaping at the read boundary so matchers see the real
-    characters. Off macOS the text passes through unchanged: procps ``ps`` does not
-    octal-escape, and Linux readers prefer ``/proc`` anyway.
+    of a ``ps`` text read (``_hermes_holder_subcommand``, ``_parse_dashboard_runtime``,
+    the dashboard/orphan scans) then receives a corrupted inline bootstrap source — the
+    bootstrap regexes anchor on real whitespace — and goes blind on POSIX-launcher processes.
+    Undo that escaping at the read boundary so matchers see the real characters.
+
+    The restoration is knowingly lossy: BSD ``ps`` does not escape backslashes, so a literal
+    ``\\012`` typed into an argv element is byte-identical to an escaped newline and this
+    helper cannot tell them apart — it always restores. Only matcher/respawn readers consume
+    this text and they anchor on real whitespace, so the trade favors restoring.
+
+    Off macOS the text passes through unchanged, and that is measured, not assumed: procps-ng
+    replaces an embedded newline with a space (tab with a dot) instead of escaping, so the
+    corruption is unrecoverable at the text layer there — Linux readers prefer ``/proc``/psutil
+    anyway, which is why this helper is darwin-only.
     """
     if sys.platform != "darwin":
         return command

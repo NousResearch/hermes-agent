@@ -669,16 +669,13 @@ def _parse_ps_line(line: str) -> tuple[int, str] | None:
     stripped = line.strip()
     if not stripped or "grep" in stripped:
         return None
-    # macOS ps prints argv-embedded newlines as literal ``\012``; restore them so the process
-    # matchers downstream see the real bootstrap source (#126887).
-    from hermes_cli._subprocess_compat import unescape_ps_command
     parts = stripped.split(None, 1)
     if len(parts) == 2:
         with contextlib.suppress(ValueError):
-            return int(parts[0]), unescape_ps_command(parts[1])
+            return int(parts[0]), parts[1]
     aux_parts = stripped.split()
     if len(aux_parts) > 10 and aux_parts[1].isdigit():
-        return int(aux_parts[1]), unescape_ps_command(" ".join(aux_parts[10:]))
+        return int(aux_parts[1]), " ".join(aux_parts[10:])
     return None
 
 

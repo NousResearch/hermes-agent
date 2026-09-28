@@ -351,8 +351,16 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
 
 
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
-    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
-    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
+    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), psutil, ``ps -o command=``
+    + shlex (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend).
+
+    psutil is preferred over ps on macOS because ps text cannot express argv element boundaries:
+    even with the reader-boundary unescape, shlex.split shreds an inline bootstrap source into
+    dozens of unusable tokens, while psutil returns the real argv elements the respawn path
+    replays verbatim (#126887). The ps arm stays as the fallback for processes psutil cannot read
+    (another user's process on macOS): there the runtime matcher still works, respawn replay is
+    best-effort.
+    """
     if sys.platform == "win32":
         return None
     try:
@@ -362,6 +370,12 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
                 raw = f.read()
             argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
             return argv or None
+        with contextlib.suppress(Exception):
+            import psutil
+
+            argv = psutil.Process(pid).cmdline()
+            if argv:
+                return list(argv)
         result = _run_probe(["ps", "-p", str(pid), "-o", "command="], timeout=10)
         if result.returncode != 0:
             return None

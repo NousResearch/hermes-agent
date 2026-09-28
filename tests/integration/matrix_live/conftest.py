@@ -270,7 +270,7 @@ async def _register(url: str, localpart: str) -> MatrixAccount:
 
 
 @pytest.fixture
-def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
+def live_room(synapse: tuple[DockerContainer, str, Network], request: pytest.FixtureRequest) -> LiveRoom:
     _, url, _ = synapse
 
     async def create() -> LiveRoom:
@@ -280,6 +280,16 @@ def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
         try:
             response = await client.room_create(name="Matrix live test", invite=[bot.user_id])
             assert isinstance(response, RoomCreateResponse), response
+            if getattr(request, "param", None) == "group":
+                spectator = await _register(url, "spectator")
+                await client.room_invite(response.room_id, spectator.user_id)
+                spectator_client = spectator.client(url)
+                try:
+                    from nio import JoinResponse
+                    joined = await spectator_client.join(response.room_id)
+                    assert isinstance(joined, JoinResponse), joined
+                finally:
+                    await spectator_client.close()
             return LiveRoom(url, response.room_id, bot, alice)
         finally:
             await client.close()
@@ -382,7 +392,10 @@ def gateway(
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
-            extra_config="platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n",
+            extra_config=(
+                "platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n"
+                "display:\n  platforms:\n    matrix:\n      tool_progress: \"off\"\n"
+            ),
         )
         with (home / ".env").open("a", encoding="utf-8") as stream:
             stream.write(

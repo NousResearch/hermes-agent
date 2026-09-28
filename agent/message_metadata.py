@@ -168,7 +168,8 @@ def tool_call_uid_from_history(messages: Any, tool_index: int) -> Optional[str]:
     from agent.message_sanitization import tool_result_id_variants
 
     result_variants = set(tool_result_id_variants(tool_call_id))
-    for prior in reversed(messages[:tool_index]):
+    for prior_index in range(tool_index - 1, -1, -1):  # no messages[:i] copy: this runs per flushed result
+        prior = messages[prior_index]
         if not isinstance(prior, dict):
             continue
         if prior.get("role") == "user":

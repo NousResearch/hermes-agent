@@ -299,7 +299,7 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 
 | `write_approval` | Behaviour |
 |------------------|-----------|
-| `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
+| `false` (default) | Foreground writes and background additions save automatically. Unattended background `replace`/`remove` normally stage for approval; a separate, default-off opt-in below permits only literal-preserving edits to auto-save. |
 | `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
 
 > To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
@@ -317,9 +317,28 @@ This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
 
-A staged `replace` or `remove` (the background review stages these even with the
-gate off) records the full entry it targets, and `/memory pending` shows it.
-Approval applies to exactly that entry: if it changed after the write was staged,
+With the default `memory.auto_apply_literal_preserving_reviews: false`, unattended
+background reviews still stage all `replace`/`remove` requests, even when the
+general approval gate is off. To opt in to automatic edits that retain **every**
+original entry verbatim, run:
+
+```text
+hermes config set memory.auto_apply_literal_preserving_reviews true
+```
+
+The check happens against the complete final memory state under the write lock:
+each old entry must remain unchanged or appear at the start of a resulting entry,
+followed by a space or newline. This also applies to mixed batches as one unit.
+Paraphrases, translations, and any loss of original text still stage for approval.
+This option does not override `memory.write_approval: true`, does not grant a
+skill-only review access to memory, and does not reload memory into an existing
+session's frozen prompt snapshot. Turn the opt-in off with the same command and
+`false`.
+
+A staged `replace` or `remove` records the full entry it targets, and
+`/memory pending` shows it. Literal preservation is a textual guarantee, not a
+claim of semantic equivalence. Approval applies to exactly that entry: if it
+changed after the write was staged,
 the write is refused and stays pending for you to reject. A `replace`/`remove`
 staged before this pinning existed has no verifiable target and is refused too:
 reject it and recreate the change. `/memory approve` lists the full text of

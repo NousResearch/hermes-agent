@@ -1163,7 +1163,10 @@ def _run_review_fork(
     prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
     # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
     # tell the model that memory is available, or it will burn iterations on denied calls.
-    memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
+    memory_phrase_deny = (
+        " and memory for notes (edits that retain old text can auto-save only with explicit "
+        "opt-in and approval off; other changes stage)" if "memory" in review_whitelist else ""
+    )
     memory_phrase_prompt = "memory and skill " if "memory" in review_whitelist else "skill "
     set_thread_tool_whitelist(
         review_whitelist,

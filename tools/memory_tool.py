@@ -165,12 +165,11 @@ def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
                             old_text=None) -> Optional[str]:
-    """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
-    single or inside a batch — are never applied unattended. The op is staged in the pending
-    store instead of merely denied: the fork's own review summary is never published back, so
-    a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
+    """Unattended review auto-applies only literal-preserving changes when approval is off.
+    Other replace/remove operations — including mixed batches — are staged whole,
+    since a background paraphrase cannot establish that no unique fact was lost.
+    The review fork's reply is never published back, so merely denying the write
+    would silently lose the proposal. A staging failure fails closed."""
     from tools.skill_provenance import is_unattended_review
 
     if not is_unattended_review():
@@ -183,19 +182,38 @@ def _background_delete_gate(store, action, operations, target="memory", content=
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
               else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
     try:
+        from tools import write_approval as wa
+        approval_required = wa.write_approval_enabled(wa.MEMORY)
+        literal_auto_enabled = wa.unattended_literal_preservation_enabled() if not approval_required else False
+        # Explicit opt-in only: the default unattended gate remains unchanged.
+        # Even opted in, semantic rewrites/removals still need approval.
+        if literal_auto_enabled:
+            ops = operations if operations is not None else [payload]
+            result = store.apply_batch(target, ops, preserve_existing=True)
+            if result.get("success"):
+                if operations is None:
+                    plural = "replaced_entries" if action == "replace" else "removed_entries"
+                    singular = "replaced_entry" if action == "replace" else "removed_entry"
+                    result[singular] = result.pop(plural)[1]
+                return json.dumps(result, ensure_ascii=False)
+            if not result.get("requires_approval"):
+                return json.dumps(result, ensure_ascii=False)
         if (unmatched := _pin_matched_entries(store, payload)) is not None:
             return unmatched
-        from tools import write_approval as wa
         record = wa.stage_write(
             wa.MEMORY, payload,
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
                      f"on {target}): {detail}")[:200],
             origin=wa.current_origin())
+        reason = ("Memory write approval is on. " if approval_required else
+                  "Background review could not retain all existing memory text verbatim. "
+                  if literal_auto_enabled else
+                  "Automatic literal-preserving review is not enabled. ")
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
+            "message": (reason + f"The proposed {'batch' if operations is not None else action} "
+                        "was staged for your approval — review it with /memory pending "
+                        "(approve to apply, discard to drop)."),
         }, ensure_ascii=False)
     except Exception:
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)

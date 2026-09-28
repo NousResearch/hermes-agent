@@ -1,7 +1,6 @@
 """Regression tests for empty-response recovery transcript persistence."""
 
 import json
-from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -90,48 +89,39 @@ def test_persist_session_strips_trailing_empty_recovery_scaffolding():
     assert all(not msg.get("_empty_recovery_synthetic") for msg in messages)
 
 
-def test_off_session_recovery_persists_only_real_turns_to_sqlite_and_json(tmp_path):
+def test_undelivered_interim_marker_persists_only_in_the_api_sidecar(tmp_path):
+    from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER
+
     agent = _agent_with_capturing_db()
-    agent._session_json_enabled = True
-    agent.logs_dir = tmp_path
-    agent.model = "test-model"
-    agent.base_url = "https://example.invalid/v1"
-    agent.platform = "gateway"
-    agent.session_start = datetime.now()
-    agent._cached_system_prompt = "Test instructions"
-    agent.tools = []
-    agent.verbose_logging = False
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(agent.session_id, source="gateway")
+    agent._session_db = db
+    marked = f"Total = $519\n\n{UNDELIVERED_INTERIM_MARKER}"
     messages = [
         {"role": "user", "content": "confirm the total"},
         {
             "role": "assistant",
             "content": "Total = $519",
+            "api_content": marked,
             "tool_calls": [{"id": "call_1", "type": "function",
                             "function": {"name": "x", "arguments": "{}"}}],
         },
         {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
-        {
-            "role": "assistant",
-            "content": "The total is $519. When do you need the items by?",
-        },
+        {"role": "assistant", "content": "When do you need the items by?"},
     ]
 
-    agent._flush_messages_to_session_db(messages, conversation_history=[])
-    agent._save_session_log(messages)
+    try:
+        agent._flush_messages_to_session_db(messages, conversation_history=[])
+        stored = db.get_messages_as_conversation(agent.session_id)
+    finally:
+        db.close()
 
-    assert [row["role"] for row in agent._session_db.rows] == [
-        "user", "assistant", "tool", "assistant",
-    ]
-    assert agent._session_db.rows[-1]["content"] == messages[-1]["content"]
-    snapshot = json.loads(
-        (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+    assert [msg["role"] for msg in stored] == ["user", "assistant", "tool", "assistant"]
+    assert stored[1]["content"] == "Total = $519"
+    assert stored[1]["api_content"] == marked
+    assert all(
+        UNDELIVERED_INTERIM_MARKER not in (msg.get("content") or "") for msg in stored
     )
-    assert [msg["role"] for msg in snapshot["messages"]] == [
-        "user", "assistant", "tool", "assistant",
-    ]
-    serialized = json.dumps(snapshot)
-    assert "Undelivered assistant text:" not in serialized
-    assert "Draft final response:" not in serialized
 
 
 def test_persist_session_keeps_unmarked_terminal_empty_response():

@@ -421,15 +421,6 @@ def _looks_like_material_interim_content(text: str) -> bool:
     )
 
 
-def _final_response_covers_interim_content(
-    final_response: str,
-    interim_content: str,
-) -> bool:
-    final_norm = re.sub(r"\s+", " ", final_response or "").strip().lower()
-    interim_norm = re.sub(r"\s+", " ", interim_content or "").strip().lower()
-    return bool(final_norm and interim_norm and interim_norm in final_norm)
-
-
 def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
     """Floor the ROUGH pre-API pressure estimate at the last REAL prompt size.
 

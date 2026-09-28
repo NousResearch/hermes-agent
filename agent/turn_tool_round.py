@@ -22,6 +22,13 @@ logger = logging.getLogger("agent.conversation_loop")
 # Post-response housekeeping tools: a round made only of these mutes tool progress.
 _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session_search"})
 
+# Appended to the API view of a tool-call row whose material text never reached the user
+# (interim messages disabled, nothing streamed), so the model's next reply can carry it.
+UNDELIVERED_INTERIM_MARKER = (
+    "[The text above was not shown to the user. Any fact they need from it must go in "
+    "your reply.]"
+)
+
 
 @dataclass
 class ToolRoundVerdict:
@@ -104,6 +111,9 @@ def run_tool_round(
     assistant_msg, duplicate_previous_interim = stage_tool_call_message(
         agent, assistant_message=assistant_message, finish_reason=finish_reason, messages=messages
     )
+    if not duplicate_previous_interim:
+        # Before the append and flush below, so the durable row carries the marked sidecar.
+        mark_undelivered_interim(agent, assistant_message=assistant_message, assistant_msg=assistant_msg)
     append_message(messages, assistant_msg)
 
     # Mixed batch: error-result invalid calls and drop them from execution.
@@ -149,16 +159,7 @@ def run_tool_round(
     # A UI must never observe an assistant/tool-call row that is only an in-memory
     # projection: emit interim commentary after the DB append.
     if not duplicate_previous_interim:
-        from agent.conversation_loop import _looks_like_material_interim_content
-
-        interim_delivered = agent._emit_interim_assistant_message(assistant_msg)
-        clean_turn_content = agent._strip_think_blocks(assistant_message.content or "").strip()
-        if (
-            clean_turn_content
-            and not interim_delivered
-            and _looks_like_material_interim_content(clean_turn_content)
-        ):
-            agent._undelivered_tool_call_content = clean_turn_content
+        agent._emit_interim_assistant_message(assistant_msg)
 
     # Flush open streaming boxes before tools so early content doesn't wrap tool feed
     # lines. Display callback only — TTS (_stream_callback) must NOT receive None (EOS).
@@ -312,3 +313,36 @@ def stage_tool_call_message(
         and agent._interim_assistant_visible_text(previous_msg) == current_interim_visible
     )
     return assistant_msg, duplicate_previous_interim
+
+
+def mark_undelivered_interim(agent: Any, *, assistant_message: Any, assistant_msg: Dict[str, Any]) -> bool:
+    """Stamp the marker onto the ``api_content`` sidecar of a tool-call row whose material
+    text will not reach the user; returns whether it did.
+
+    With interim messages disabled (no ``interim_assistant_callback``) and the text not
+    already streamed, the user never sees it, and a later reply that assumes they did
+    leaves them without it. The marker tells the next call so, with full context. Only
+    the sidecar changes: ``content`` stays what the user-facing transcript shows, and the
+    sidecar is persisted with the row and replayed verbatim, so this row's wire bytes are
+    identical on every later call. Decided before the row is flushed, which is why it
+    mirrors the delivery decision of ``_emit_interim_assistant_message`` instead of
+    reading its result."""
+    from agent.conversation_loop import _looks_like_material_interim_content
+
+    if getattr(agent, "interim_assistant_callback", None) is not None:
+        return False
+    content = assistant_msg.get("content")
+    if not isinstance(content, str) or not content or "api_content" in assistant_msg:
+        return False
+    visible = agent._interim_assistant_visible_text(assistant_msg)
+    if not visible or agent._interim_content_was_streamed(visible):
+        return False
+    clean_turn_content = agent._strip_think_blocks(assistant_message.content or "").strip()
+    if not clean_turn_content or not _looks_like_material_interim_content(clean_turn_content):
+        return False
+    assistant_msg["api_content"] = f"{content}\n\n{UNDELIVERED_INTERIM_MARKER}"
+    logger.info(
+        "Tool-call content was not delivered to the user; marked it for the model (%d chars)",
+        len(clean_turn_content),
+    )
+    return True

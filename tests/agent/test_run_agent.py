@@ -3456,7 +3456,16 @@ class TestRunConversation:
         assert result["final_response"] == "Done searching"
         mock_print.assert_not_called()
 
-    def test_material_tool_call_content_is_recovered_when_interim_disabled(self, agent):
+    @staticmethod
+    def _tool_call_rows(api_messages):
+        return [
+            msg for msg in api_messages
+            if msg.get("role") == "assistant" and msg.get("tool_calls")
+        ]
+
+    def test_material_tool_call_content_is_recovered_when_interim_disabled(
+        self, agent, caplog
+    ):
         self._setup_agent(agent)
         agent.platform = "gateway"
         agent.interim_assistant_callback = None
@@ -3467,24 +3476,162 @@ class TestRunConversation:
             "Delivery = $7\n"
             "Total = $519"
         )
-        resp1 = _mock_response(
-            content=hidden_quote,
-            finish_reason="tool_calls",
-            tool_calls=[tc],
+        reply = "When do you need them by?"
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=hidden_quote, finish_reason="tool_calls", tool_calls=[tc]),
+            _mock_response(content=reply, finish_reason="stop"),
+        ]
+
+        with (
+            patch("model_tools.handle_function_call", return_value="delivery checked"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            caplog.at_level(logging.INFO, logger="agent.conversation_loop"),
+        ):
+            result = agent.run_conversation("how much for 4 items?")
+
+        # The model's own reply is final: no extra reconciliation call.
+        assert agent.client.chat.completions.create.call_count == 2
+        assert result["api_calls"] == 2
+        assert result["final_response"] == reply
+        assert result["messages"][-1]["content"] == reply
+
+        # The second request tells the model the quote never reached the user.
+        from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER
+
+        second_request = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        (quote_row,) = self._tool_call_rows(second_request)
+        assert quote_row["content"] == f"{hidden_quote}\n\n{UNDELIVERED_INTERIM_MARKER}"
+        # The stored, user-visible row stays clean.
+        (stored_row,) = self._tool_call_rows(result["messages"])
+        assert stored_row["content"] == hidden_quote
+        assert [
+            msg["content"] for msg in result["messages"] if msg.get("role") == "user"
+        ] == ["how much for 4 items?"]
+        # Logged with its length, never its text.
+        marked_logs = [r for r in caplog.records if "marked it for the model" in r.getMessage()]
+        assert [(r.levelno, r.getMessage()) for r in marked_logs] == [(
+            logging.INFO,
+            "Tool-call content was not delivered to the user; marked it for the model "
+            f"({len(hidden_quote)} chars)",
+        )]
+        assert not any("Total = $519" in r.getMessage() for r in caplog.records)
+
+    def test_undelivered_interim_marker_replays_byte_identical_across_turns(
+        self, agent, tmp_path
+    ):
+        from hermes_state import SessionDB
+        from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER
+
+        self._setup_agent(agent)
+        agent.platform = "gateway"
+        agent.interim_assistant_callback = None
+        db = SessionDB(db_path=tmp_path / "state.db")
+        agent._session_db = db
+        hidden_quote = "Unit price = $128\nTotal for 4 items = $519"
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(
+                content=hidden_quote,
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+            ),
+            _mock_response(content="When do you need them by?", finish_reason="stop"),
+            _mock_response(content="Noted, delivery by Friday.", finish_reason="stop"),
+        ]
+
+        try:
+            with (
+                patch("model_tools.handle_function_call", return_value="delivery checked"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                agent.run_conversation("how much for 4 items?")
+                stored = db.get_messages_as_conversation(agent.session_id)
+                agent.run_conversation("by Friday", conversation_history=stored)
+
+            (stored_row,) = self._tool_call_rows(stored)
+            assert stored_row["content"] == hidden_quote
+            assert UNDELIVERED_INTERIM_MARKER not in json.dumps(
+                [msg.get("content") for msg in stored]
+            )
+
+            calls = agent.client.chat.completions.create.call_args_list
+            same_turn = self._tool_call_rows(calls[1].kwargs["messages"])
+            next_turn = self._tool_call_rows(calls[2].kwargs["messages"])
+            assert len(same_turn) == len(next_turn) == 1
+            assert same_turn[0]["content"] == f"{hidden_quote}\n\n{UNDELIVERED_INTERIM_MARKER}"
+            assert json.dumps(next_turn[0], sort_keys=True) == json.dumps(
+                same_turn[0], sort_keys=True
+            )
+        finally:
+            db.close()
+
+    def test_every_undelivered_tool_round_carries_the_marker(self, agent):
+        from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER
+
+        self._setup_agent(agent)
+        agent.platform = "gateway"
+        agent.interim_assistant_callback = None
+        first_quote = "Unit price = $128\n4 x $128 = $512"
+        second_quote = "Delivery = $7\nTotal = $519"
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(
+                content=first_quote,
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+            ),
+            _mock_response(
+                content=second_quote,
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c2")],
+            ),
+            _mock_response(content="When do you need them by?", finish_reason="stop"),
+        ]
+
+        with (
+            patch("model_tools.handle_function_call", return_value="checked"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("how much for 4 items?")
+
+        assert agent.client.chat.completions.create.call_count == 3
+        assert result["final_response"] == "When do you need them by?"
+        calls = agent.client.chat.completions.create.call_args_list
+        second_request = self._tool_call_rows(calls[1].kwargs["messages"])
+        third_request = self._tool_call_rows(calls[2].kwargs["messages"])
+        assert [row["content"] for row in third_request] == [
+            f"{first_quote}\n\n{UNDELIVERED_INTERIM_MARKER}",
+            f"{second_quote}\n\n{UNDELIVERED_INTERIM_MARKER}",
+        ]
+        # The first round's row is byte-identical on every later call in the turn.
+        assert json.dumps(second_request[0], sort_keys=True) == json.dumps(
+            third_request[0], sort_keys=True
         )
-        resp2 = _mock_response(
-            content="When do you need them by?",
-            finish_reason="stop",
+        assert [row["content"] for row in self._tool_call_rows(result["messages"])] == [
+            first_quote, second_quote,
+        ]
+
+    def test_delivered_interim_gets_no_marker(self, agent):
+        from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER
+
+        self._setup_agent(agent)
+        agent.platform = "gateway"
+        delivered = []
+        agent.interim_assistant_callback = (
+            lambda text, already_streamed=False: delivered.append(text)
         )
-        recovered = (
-            "For 4 items:\n"
-            "4 x $128 = $512\n"
-            "Delivery = $7\n"
-            "Total = $519\n\n"
-            "When do you need them by?"
-        )
-        resp3 = _mock_response(content=recovered, finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [resp1, resp2, resp3]
+        hidden_quote = "Unit price = $128\nTotal for 4 items = $519"
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(
+                content=hidden_quote,
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+            ),
+            _mock_response(content="When do you need them by?", finish_reason="stop"),
+        ]
 
         with (
             patch("model_tools.handle_function_call", return_value="delivery checked"),
@@ -3494,99 +3641,13 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("how much for 4 items?")
 
-        assert result["final_response"] == recovered
-        assert result["final_response"] != hidden_quote
-        assert result["api_calls"] == 2
-        assert agent.client.chat.completions.create.call_count == 3
-        side_call = agent.client.chat.completions.create.call_args_list[2]
-        side_call_messages = (
-            agent.client.chat.completions.create.call_args_list[2]
-            .kwargs["messages"]
-        )
-        assert len(side_call_messages) == 1
-        assert side_call_messages[0]["role"] == "user"
-        assert hidden_quote in side_call_messages[0]["content"]
-        assert "When do you need them by?" in side_call_messages[0]["content"]
-        assert not side_call.kwargs.get("tools")
-        assert [
-            msg["content"] for msg in result["messages"] if msg.get("role") == "user"
-        ] == ["how much for 4 items?"]
-        assert [
-            msg["content"] for msg in agent._session_messages
-            if msg.get("role") == "user"
-        ] == ["how much for 4 items?"]
-        assert result["messages"][-1]["content"] == recovered
-        assert not any(
-            "Undelivered assistant text:" in (msg.get("content") or "")
-            for msg in result["messages"]
-        )
-        assert agent._undelivered_tool_call_content is None
-
-    @pytest.mark.parametrize(
-        "recovery_outcome",
-        ["covered", "failure", "empty", "tool_calls"],
-    )
-    def test_off_session_rewrite_skips_or_keeps_original_closer(
-        self, agent, recovery_outcome
-    ):
-        self._setup_agent(agent)
-        agent.platform = "gateway"
-        agent.interim_assistant_callback = None
-        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
-        hidden_fact = "The confirmed total is $519, including $7 delivery."
-        original_closer = (
-            f"{hidden_fact} When do you need the items by?"
-            if recovery_outcome == "covered"
-            else "When do you need the items by?"
-        )
-        recovery_response = None
-        if recovery_outcome == "failure":
-            recovery_response = RuntimeError("side call failed")
-        elif recovery_outcome == "empty":
-            recovery_response = _mock_response(content="", finish_reason="stop")
-        elif recovery_outcome == "tool_calls":
-            recovery_response = _mock_response(
-                content="I will check again.",
-                finish_reason="tool_calls",
-                tool_calls=[_mock_tool_call(
-                    name="web_search", arguments="{}", call_id="c2"
-                )],
-            )
-        responses = [
-            _mock_response(
-                content=hidden_fact,
-                finish_reason="tool_calls",
-                tool_calls=[tc],
-            ),
-            _mock_response(content=original_closer, finish_reason="stop"),
-        ]
-        if recovery_response is not None:
-            responses.append(recovery_response)
-        agent.client.chat.completions.create.side_effect = responses
-
-        with (
-            patch(
-                "model_tools.handle_function_call",
-                return_value="delivery checked",
-            ) as handle_tool_call,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("what is the confirmed total?")
-
-        assert result["final_response"] == original_closer
-        assert result["final_response"] != hidden_fact
-        assert result["api_calls"] == 2
-        assert agent.client.chat.completions.create.call_count == (
-            2 if recovery_outcome == "covered" else 3
-        )
-        assert handle_tool_call.call_count == 1
-        assert result["messages"][-1]["content"] == original_closer
-        assert [
-            msg["content"] for msg in result["messages"] if msg.get("role") == "user"
-        ] == ["what is the confirmed total?"]
-        assert agent._undelivered_tool_call_content is None
+        assert delivered == [hidden_quote]
+        assert agent.client.chat.completions.create.call_count == 2
+        assert result["final_response"] == "When do you need them by?"
+        second_request = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        (quote_row,) = self._tool_call_rows(second_request)
+        assert quote_row["content"] == hidden_quote
+        assert UNDELIVERED_INTERIM_MARKER not in json.dumps(second_request)
 
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)

@@ -10,8 +10,8 @@ import re
 import shutil
 import sys
 import threading
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
+from hermes_cli.stderr_timestamp import stamp_line, timestamp
 from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -61,9 +61,9 @@ def _close_mcp_stderr_logs(*, scope: Optional[str] = None) -> None:
 
 
 class _StderrTee:
-    """A stdio child's stderr, copied into the shared log as it arrives while the last few KB stay
-    readable, so a server that dies at startup can say why on the MCP status surfaces instead of only in
-    the log (#124264). ``sink`` is handed to the child; ``close()`` returns the captured tail."""
+    """A stdio child's stderr, copied into the shared log one stamped line at a time while the last few KB
+    stay readable (raw), so a server that dies at startup can say why on the MCP status surfaces instead of
+    only in the log (#124264). ``sink`` is handed to the child; ``close()`` returns the captured tail."""
 
     _TAIL_BYTES = 16384
 
@@ -76,14 +76,24 @@ class _StderrTee:
 
     def _pump(self, read_fd: int) -> None:
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending = ""
         with os.fdopen(read_fd, "rb", buffering=0) as source:
             while chunk := source.read(65536):
                 self._tail = (self._tail + chunk)[-self._TAIL_BYTES:]
-                try:
-                    self._log.write(decoder.decode(chunk))
-                    self._log.flush()
-                except (OSError, ValueError):  # log closed at shutdown: keep draining the child
-                    pass
+                # Stamp whole lines only; a partial line waits for its newline (or EOF).
+                *lines, pending = (pending + decoder.decode(chunk)).split("\n")
+                self._write_lines(lines)
+        if rest := pending + decoder.decode(b"", final=True):
+            self._write_lines([rest])
+
+    def _write_lines(self, lines: List[str]) -> None:
+        if not lines:
+            return
+        try:
+            self._log.write("".join(stamp_line(line) for line in lines))
+            self._log.flush()
+        except (OSError, ValueError):  # log closed at shutdown: keep draining the child
+            pass
 
     def close(self, timeout: float = 2.0) -> str:
         """Close our write end and give the reader *timeout* to drain (a surviving grandchild can keep
@@ -94,11 +104,11 @@ class _StderrTee:
 
 
 def _write_stderr_log_header(server_name: str) -> None:
-    """Session marker so operators can find each server's output in the shared log
-    (per-line prefixes would need a pipe + reader thread)."""
+    """Session marker so operators can find each server's output in the shared log; it leads with the
+    same stamp as every server line (``_StderrTee``) so ``hermes logs mcp --since`` can filter it."""
     fh = _get_mcp_stderr_log()
     try:
-        fh.write(f"\n===== [{datetime.now():%Y-%m-%d %H:%M:%S}] starting MCP server '{server_name}' =====\n")
+        fh.write(f"\n{timestamp()} ===== starting MCP server '{server_name}' =====\n")
         fh.flush()
     except Exception:
         pass

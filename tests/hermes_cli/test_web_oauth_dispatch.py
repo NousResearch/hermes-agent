@@ -704,5 +704,27 @@ def test_status_falls_through_to_generic_dispatcher_for_catalog_only_provider():
     assert out["has_refresh_token"] is True
 
 
+def test_qwen_status_card_carries_the_getter_expiry_token_and_auth_file():
+    """The Qwen card reads the keys get_qwen_auth_status actually returns."""
+    from datetime import datetime
+
+    expires_at_ms = 1_790_541_000_123
+    qwen_status = {
+        "logged_in": True, "auth_file": "/home/u/.qwen/oauth_creds.json", "source": "qwen-cli",
+        "api_key": "qwen-access-token-secret-xyz", "expires_at_ms": expires_at_ms,
+    }
+    with patch("hermes_cli.auth.get_qwen_auth_status", return_value=qwen_status):
+        out = _rt_oauth._resolve_provider_status("qwen-oauth", None)
+
+    assert out["logged_in"] is True
+    # Same wire shape as the other cards: an ISO string with an offset, same instant.
+    assert isinstance(out["expires_at"], str)
+    expires_at = datetime.fromisoformat(out["expires_at"])
+    assert expires_at.tzinfo is not None
+    assert round(expires_at.timestamp() * 1000) == expires_at_ms
+    assert out["source_label"] == "/home/u/.qwen/oauth_creds.json"
+    assert out["token_preview"] and "qwen-access-token-secret-xyz" not in out["token_preview"]
+
+
 
 

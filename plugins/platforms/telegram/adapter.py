@@ -4378,16 +4378,16 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle choice picker button taps (cp:<index>)."""
         state = self._choice_picker_state.get(chat_id)
         if not state:
-            await query.answer(text="Picker expired — run the command again.")
+            await self._answer_callback(query, text="Picker expired — run the command again.")
             return
         try:
             choice = state["choices"][int(data[3:])]
         except (ValueError, IndexError):
-            await query.answer(text="Invalid selection.")
+            await self._answer_callback(query, text="Invalid selection.")
             return
         callback = state.get("on_choice_selected")
         if not callback:
-            await query.answer(text="Picker expired.")
+            await self._answer_callback(query, text="Picker expired.")
             return
         try:
             result_text = await callback(chat_id, str(choice.get("value") or ""))
@@ -4506,15 +4506,15 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             idx = int(raw_idx)
         except ValueError:
-            await query.answer(text="Invalid selection.")
+            await self._answer_callback(query, text="Invalid selection.")
             return None
         model_list = state.get("model_list", [])
         if idx < 0 or idx >= len(model_list):
-            await query.answer(text="Invalid model index.")
+            await self._answer_callback(query, text="Invalid model index.")
             return None
         callback = state.get("on_model_selected")
         if not callback:
-            await query.answer(text="Picker expired.")
+            await self._answer_callback(query, text="Picker expired.")
             return None
         return idx, model_list[idx], state.get("selected_provider", ""), callback
 
@@ -4528,7 +4528,7 @@ class TelegramAdapter(BasePlatformAdapter):
             result_text = f"Error switching model: {exc}"
             switch_failed = True
         await self._edit_result_text(query, result_text)
-        await query.answer(text="Switch failed." if switch_failed else "Model switched!")
+        await self._answer_callback(query, text="Switch failed." if switch_failed else "Model switched!")
         self._model_picker_state.pop(chat_id, None)
 
     @staticmethod
@@ -4543,14 +4543,14 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle model picker callbacks (mp:/mpg:/mpv:/mm:/mc:/mb/mx/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
-            await query.answer(text="Picker expired — use /model again.")
+            await self._answer_callback(query, text="Picker expired — use /model again.")
             return
         get_label = self._provider_get_label()
         if data.startswith("mp:"):  # provider selected: show model buttons (page 0)
             provider_slug = data[3:]
             provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
             if not provider:
-                await query.answer(text="Provider not found.")
+                await self._answer_callback(query, text="Provider not found.")
                 return
             state["selected_provider"] = provider_slug
             state["selected_provider_name"] = provider.get("name", provider_slug)
@@ -4587,7 +4587,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.edit_message_text(
                     text=self.format_message(f"⚠ *{warning.title}*\n\n{warning.message}"),
                     parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
-                await query.answer(text="Confirm model selection")
+                await self._answer_callback(query, text="Confirm model selection")
                 return
             await self._picker_switch(query, chat_id, model_id, provider_slug, callback)
         elif data.startswith("mpg:"):  # provider group selected: show member providers
@@ -4600,7 +4600,7 @@ class TelegramAdapter(BasePlatformAdapter):
             by_slug = {p["slug"]: p for p in state["providers"]}
             members = [by_slug[m] for m in member_slugs if m in by_slug]
             if not members:
-                await query.answer(text="Group not found.")
+                await self._answer_callback(query, text="Group not found.")
                 return
             rows = self._rows_of_two([self._provider_button(p) for p in members])
             rows.append(self._picker_back_cancel_row())
@@ -4620,7 +4620,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Tell the user a clarify tap arrived too late (entry evicted or gateway restarted) — otherwise
         the tap leaves a misleading ✓ the agent never sees."""
         with contextlib.suppress(Exception):
-            await query.answer(text="⚠️ This prompt expired — please /retry.")
+            await self._answer_callback(query, text="⚠️ This prompt expired — please /retry.")
         await self._edit_html_quiet(
             query, f"❓ {_html.escape(query.message.text or '')}\n\n<i>⚠️ This question expired or the session reset — please /retry.</i>")
 
@@ -4691,40 +4691,107 @@ class TelegramAdapter(BasePlatformAdapter):
             "thread_id": getattr(query_message, "message_thread_id", None), "user_name": getattr(query.from_user, "first_name", None)}
 
     async def _callback_authorized(self, query, cb: Dict[str, Any], denial_text: str) -> bool:
-        """Gate a button tap on the callback allowlist; answers ``denial_text`` when refused."""
+        """Gate a button tap on the callback allowlist; show ``denial_text`` on the message when refused."""
         if self._is_callback_user_authorized(
             str(getattr(query.from_user, "id", "")), chat_id=cb["chat_id"],
             chat_type=str(cb["chat_type"]) if cb["chat_type"] is not None else None,
             thread_id=str(cb["thread_id"]) if cb["thread_id"] is not None else None, user_name=cb["user_name"]):
             return True
-        await query.answer(text=denial_text)
+        await self._show_callback_notice(query, denial_text)
         return False
 
+    async def _show_callback_notice(self, query, text: str) -> None:
+        """Show button feedback on the message, not as a second callback answer.
+
+        ``answerCallbackQuery`` is one-shot. The spinner is cleared immediately, so a later
+        ``answer(text=...)`` never reaches the user. A later edit of the same message
+        replaces this notice.
+        """
+        if not text:
+            return
+        existing = getattr(getattr(query, "message", None), "text", None) or ""
+        body = f"{existing}\n\n{text}" if existing else text
+        with contextlib.suppress(Exception):
+            await query.edit_message_text(text=body, reply_markup=None)
+
+    def _start_callback_ack(self, query) -> asyncio.Task:
+        """Clear the spinner before authorisation, unless a visible answer already won."""
+        async def _ack() -> None:
+            if getattr(query, "__dict__", {}).get("_hermes_callback_answered"):
+                return
+            try:
+                await query.answer()
+            except Exception:
+                logger.debug("[Telegram] Early callback acknowledgement failed", exc_info=True)
+            else:
+                query._hermes_callback_answered = True
+
+        return asyncio.create_task(_ack())
+
+    async def _answer_callback(self, query, **kwargs) -> None:
+        """Send the one callback answer Telegram will keep, then keep text on the message.
+
+        The spinner ack starts first and finishes before the handler returns. Telegram
+        ignores a later answer, so visible text is written onto the message instead.
+        """
+        text = kwargs.get("text")
+        pending = getattr(query, "_hermes_pending_ack", None)
+        if pending is not None and not pending.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
+        if not getattr(query, "__dict__", {}).get("_hermes_callback_answered"):
+            try:
+                await query.answer()
+            except Exception:
+                logger.debug("[Telegram] Callback acknowledgement failed", exc_info=True)
+            else:
+                query._hermes_callback_answered = True
+        if text:
+            await self._show_callback_notice(query, text)
+
+    async def _finish_callback_ack(self, query, task: Optional[asyncio.Task]) -> None:
+        """Wait until the spinner ack has actually completed."""
+        if task is None:
+            return
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
     async def _handle_callback_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
-        """Dispatch inline keyboard button clicks on the callback_data prefix."""
+        """Dispatch inline keyboard button clicks on the callback_data prefix.
+
+        Telegram drops a callback after about ten seconds ("query is too old") and keeps
+        only the first answer. The spinner is cleared first. Visible feedback is written
+        onto the message, because a second answer cannot replace the empty one.
+        """
         query = update.callback_query
         if not query or not query.data:
             return
-        self._accept_update()
-        data = query.data
-        cb = self._callback_ctx(query)
-        # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
-        for prefixes, handler in (
-            (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
-            (("cp:",), self._handle_choice_picker_callback)):
-            if data.startswith(prefixes):
-                chat_id = str(query.message.chat_id) if query.message else None
-                # One auth gate for every chat-id picker: strangers in a shared group must not drive the owner's picker.
-                if chat_id and await self._callback_authorized(query, cb, _UNAUTHORIZED):
-                    await handler(query, data, chat_id)
-                return
-        for prefix, handler in (
-            ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
-            ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
-            ("update_prompt:", self._handle_update_prompt_callback)):
-            if data.startswith(prefix):
-                await handler(query, data, cb)
-                return
+        ack = self._start_callback_ack(query)
+        query._hermes_pending_ack = ack
+        await asyncio.sleep(0)
+        try:
+            self._accept_update()
+            data = query.data
+            cb = self._callback_ctx(query)
+            # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
+            for prefixes, handler in (
+                (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
+                (("cp:",), self._handle_choice_picker_callback)):
+                if data.startswith(prefixes):
+                    chat_id = str(query.message.chat_id) if query.message else None
+                    # One auth gate for every chat-id picker: strangers in a shared group must not drive the owner's picker.
+                    if chat_id and await self._callback_authorized(query, cb, _UNAUTHORIZED):
+                        await handler(query, data, chat_id)
+                    return
+            for prefix, handler in (
+                ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
+                ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
+                ("update_prompt:", self._handle_update_prompt_callback)):
+                if data.startswith(prefix):
+                    await handler(query, data, cb)
+                    return
+        finally:
+            await self._finish_callback_ack(query, ack)
 
     async def _claim_callback_state(self, query, cb: Dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
         """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""
@@ -4732,7 +4799,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         session_key = state.pop(key, None) if pop else state.get(key)
         if not session_key:
-            await query.answer(text=resolved)
+            await self._answer_callback(query, text=resolved)
         return session_key
 
     async def _handle_exec_approval_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
@@ -4744,7 +4811,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             approval_id = int(parts[2])
         except (ValueError, IndexError):
-            await query.answer(text="Invalid approval data.")
+            await self._answer_callback(query, text="Invalid approval data.")
             return
         session_key = await self._claim_callback_state(
             query, cb, self._approval_state, approval_id, _UNAUTHORIZED,
@@ -4774,7 +4841,7 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             label = "⌛ Approval expired"
             edit_text = f"{label} — no command was waiting. It already timed out (and was denied) or was resolved elsewhere."
-        await query.answer(text=label)
+        await self._answer_callback(query, text=label)
         await self._edit_md_quiet(query, edit_text)
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
@@ -4795,7 +4862,7 @@ class TelegramAdapter(BasePlatformAdapter):
         label_map = {"once": "✅ Approved once", "always": "🔒 Always approve", "cancel": "❌ Cancelled"}
         user_display = getattr(query.from_user, "first_name", "User")
         label = label_map.get(choice, "Resolved")
-        await query.answer(text=label)
+        await self._answer_callback(query, text=label)
         await self._edit_md_quiet(query, f"{label} by {user_display}")
         # The runner stored a handler keyed by session_key; run it and send any returned text as a follow-up.
         try:
@@ -4853,7 +4920,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._clarify_state.pop(clarify_id, None)
                 await self._notify_clarify_expired(query, user_display)
                 return
-            await query.answer(text="✏️ Type your answer in the chat.")
+            await self._answer_callback(query, text="✏️ Type your answer in the chat.")
             await self._edit_html_quiet(
                 query, f"❓ {query.message.text or ''}\n\n<i>Awaiting typed response from {_html.escape(user_display)}…</i>")
             return
@@ -4861,7 +4928,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             idx = int(choice_token)
         except (ValueError, TypeError):
-            await query.answer(text="Invalid choice.")
+            await self._answer_callback(query, text="Invalid choice.")
             return
         resolved_text: Optional[str] = None
         try:
@@ -4882,7 +4949,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
             resolved = False
         if resolved:
-            await query.answer(text=f"✓ {resolved_text[:60]}")
+            await self._answer_callback(query, text=f"✓ {resolved_text[:60]}")
             await self._edit_html_quiet(
                 query, f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}")
             logger.info("Telegram clarify button resolved (id=%s, choice=%r, user=%s)", clarify_id, resolved_text, user_display)
@@ -4896,7 +4963,7 @@ class TelegramAdapter(BasePlatformAdapter):
         answer = data.split(":", 1)[1]  # "y" or "n"
         if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
             return
-        await query.answer(text=f"Sent '{answer}' to the update process.")
+        await self._answer_callback(query, text=f"Sent '{answer}' to the update process.")
         await self._edit_md_quiet(query, f"☤ Update prompt answered: *{'Yes' if answer == 'y' else 'No'}*")
         try:
             from hermes_constants import get_hermes_home
@@ -4927,20 +4994,20 @@ class TelegramAdapter(BasePlatformAdapter):
         """Dispatch a gmail-triage inline-button callback (gt:verb:arg)."""
         parts = data.split(":", 2)
         if len(parts) != 3:
-            await query.answer(text="Invalid gmail-triage data.")
+            await self._answer_callback(query, text="Invalid gmail-triage data.")
             return
         verb, arg = parts[1], parts[2]
         if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
             return
         entry = self._GT_VERB_DISPATCH.get(verb)
         if not entry:
-            await query.answer(text=f"Unknown verb: {verb}")
+            await self._answer_callback(query, text=f"Unknown verb: {verb}")
             return
         script_name, extra_args, success_label, is_state_verb = entry
         from hermes_constants import get_hermes_home
         script_path = get_hermes_home() / "scripts" / "gmail-triage" / script_name
         if not script_path.exists():
-            await query.answer(text=f"❌ {script_name} missing")
+            await self._answer_callback(query, text=f"❌ {script_name} missing")
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
             return
         success = False
@@ -4964,7 +5031,7 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as exc:
             label = f"❌ {verb} error: {exc}"
             logger.error("[%s] gmail-triage callback exception: verb=%s arg=%s err=%s", self.name, verb, arg, exc, exc_info=True)
-        await query.answer(text=label)
+        await self._answer_callback(query, text=label)
         if not success:
             return
         original_text = (query.message.text or "") if query.message else ""

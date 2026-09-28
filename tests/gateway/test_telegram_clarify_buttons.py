@@ -162,8 +162,11 @@ class TestTelegramClarifyCallback:
         assert entry is not None
         assert entry.response == "green"
         assert entry.event.is_set()
-        query.answer.assert_called_once()
-        query.edit_message_text.assert_called_once()
+        query.answer.assert_called()
+        texts = [call.kwargs.get("text") for call in query.answer.await_args_list]
+        edited = " ".join(str(call.kwargs.get("text", "")) for call in query.edit_message_text.await_args_list)
+        assert any(text and "green" in text for text in texts) or "green" in edited
+        assert query.edit_message_text.await_count >= 1
 
 
     @pytest.mark.asyncio
@@ -206,8 +209,11 @@ class TestTelegramClarifyCallback:
             entry = cm._entries.get("cidC")
         assert entry is not None
         assert not entry.event.is_set()
-        query.answer.assert_called_once()
-        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
+        query.answer.assert_called()
+        notice = unauthorized_action_notice("telegram")
+        answer_texts = [call.kwargs.get("text") for call in query.answer.await_args_list]
+        edited = query.edit_message_text.await_args.kwargs.get("text", "") if query.edit_message_text.await_args else ""
+        assert notice in answer_texts or notice in edited
         # State preserved
         assert adapter._clarify_state["cidC"] == "sk-auth"
 

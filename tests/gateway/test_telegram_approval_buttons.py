@@ -317,9 +317,11 @@ class TestTelegramApprovalCallback:
             with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
                 await adapter._handle_callback_query(update, context)
 
-        query.answer.assert_called_once()
-        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
-        query.edit_message_text.assert_not_called()
+        query.answer.assert_called()
+        texts = [call.kwargs.get("text") for call in query.answer.await_args_list]
+        notice = unauthorized_action_notice("telegram")
+        edited = query.edit_message_text.await_args.kwargs.get("text", "") if query.edit_message_text.await_args else ""
+        assert notice in texts or notice in edited
         assert not (tmp_path / ".update_response").exists()
 
     @pytest.mark.asyncio
@@ -347,9 +349,11 @@ class TestTelegramApprovalCallback:
             with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
                 await adapter._handle_callback_query(update, context)
 
-        query.answer.assert_called_once()
-        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
-        query.edit_message_text.assert_not_called()
+        query.answer.assert_called()
+        texts = [call.kwargs.get("text") for call in query.answer.await_args_list]
+        notice = unauthorized_action_notice("telegram")
+        edited = query.edit_message_text.await_args.kwargs.get("text", "") if query.edit_message_text.await_args else ""
+        assert notice in texts or notice in edited
         assert not (tmp_path / ".update_response").exists()
         assert runner.last_source is not None
         assert runner.last_source.platform == Platform.TELEGRAM

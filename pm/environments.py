@@ -35,6 +35,31 @@ def install_state_dir(project_root: Path) -> Path:
     return installs_root() / install_key(project_root)
 
 
+def owning_install_root(project_root: Path) -> Path:
+    """The checkout whose install state *project_root* must be keyed under.
+
+    ``install_key`` hashes the path it is given, so state derived from the
+    executing tree is silently redirected when the CLI runs from inside one of
+    the very generations it should prune (a dependency generation's
+    ``installs/<key>/environments/<gen>/workspace``): that path hashes to a
+    second key nobody writes under, and collection reports a successful zero.
+    The owning checkout is stamped verbatim in ``inputs/.project-root`` when
+    the generation's inputs are recorded, so follow it back; any other tree is
+    taken literally (a missing or unreadable stamp never invents a root).
+    """
+    root = Path(project_root).resolve()
+    generation = root.parent
+    install = generation.parent.parent if generation.parent.name == "environments" else None
+    if (root.name != "workspace" or install is None
+            or install.parent.resolve() != installs_root().resolve()):
+        return project_root
+    try:
+        stamped = (install / "inputs" / ".project-root").read_text(encoding="utf-8").strip()
+    except OSError:
+        return project_root
+    return Path(stamped) if stamped else project_root
+
+
 def runtime_facts_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "facts.json"
 

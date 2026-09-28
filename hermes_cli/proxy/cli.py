@@ -9,7 +9,8 @@ from typing import Any
 
 from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
 from hermes_cli.proxy.server import (
-    AIOHTTP_AVAILABLE, DEFAULT_HOST, DEFAULT_PORT, run_server
+    AIOHTTP_AVAILABLE, DEFAULT_HOST, DEFAULT_PORT, PROXY_TOKEN_ENV,
+    _is_loopback_host, run_server
 )
 
 logger = logging.getLogger(__name__)
@@ -36,16 +37,36 @@ def cmd_proxy_start(args: Any) -> int:
         return 2
     host = getattr(args, "host", None) or DEFAULT_HOST
     port = getattr(args, "port", None) or DEFAULT_PORT
+    import os
+    proxy_token = getattr(args, "token", None) or os.environ.get(PROXY_TOKEN_ENV, "")
+    if not proxy_token and host and not _is_loopback_host(host):
+        _err(
+            f"Error: binding {host} without an auth token would expose an open proxy that "
+            f"attaches your real {adapter.display_name} credential to anyone who can reach "
+            f"that address.\n"
+            f"Pass --token <secret> or set {PROXY_TOKEN_ENV} to expose the proxy beyond loopback."
+        )
+        return 2
+    if proxy_token:
+        token_note = (
+            "  Auth required:  Bearer <the --token / "
+            f"{PROXY_TOKEN_ENV} value you set>\n"
+        )
+    else:
+        token_note = (
+            "  Use any bearer token in the client — the proxy attaches your real credential.\n"
+            "  (Loopback only; set --token to also allow remote clients.)\n"
+        )
     _err(
         f"Starting Hermes proxy for {adapter.display_name}\n"
         f"  Listening on:  http://{host}:{port}/v1\n"
         f"  Forwarding to: (resolved per-request from your subscription)\n"
-        f"  Use any bearer token in the client — the proxy attaches your real credential.\n"
+        f"{token_note}"
         f"\n"
         f"Press Ctrl+C to stop."
     )
     try:
-        asyncio.run(run_server(adapter, host=host, port=port))
+        asyncio.run(run_server(adapter, host=host, port=port, proxy_token=proxy_token))
     except KeyboardInterrupt:
         _err("\nproxy: stopped")
     except OSError as exc:

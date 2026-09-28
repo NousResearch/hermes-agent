@@ -162,7 +162,7 @@ class TestTelegramClarifyCallback:
         assert entry is not None
         assert entry.response == "green"
         assert entry.event.is_set()
-        query.answer.assert_called_once()
+        query.answer.assert_called()
         query.edit_message_text.assert_called_once()
 
 
@@ -206,7 +206,7 @@ class TestTelegramClarifyCallback:
             entry = cm._entries.get("cidC")
         assert entry is not None
         assert not entry.event.is_set()
-        query.answer.assert_called_once()
+        query.answer.assert_called()
         assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         # State preserved
         assert adapter._clarify_state["cidC"] == "sk-auth"

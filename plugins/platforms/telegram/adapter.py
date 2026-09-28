@@ -2941,7 +2941,11 @@ class TelegramAdapter(BasePlatformAdapter):
         app.add_handler(TelegramMessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
-        app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        # ``block=False``: a button tap is dispatched as its own task instead of queueing behind a
+        # running text turn. Every callback handler answers Telegram within its first awaits; behind
+        # a long turn that ack came seconds late and the button kept spinning (measured 2026-09-27).
+        # Per-tap state (approval/clarify/slash-confirm) is claimed atomically, so concurrency is safe.
+        app.add_handler(CallbackQueryHandler(self._handle_callback_query, block=False))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
         # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
@@ -3226,6 +3230,8 @@ class TelegramAdapter(BasePlatformAdapter):
             from plugins.platforms.telegram.update_admission import TelegramApplication
             builder = Application.builder().token(self.config.token)
             builder.application_class(TelegramApplication, {"adapter": self})
+            # PTB defaults to serial updates; a long text turn must not block a button tap.
+            builder = builder.concurrent_updates(8)
             custom_base_url = self.config.extra.get("base_url")
             if custom_base_url:
                 builder = builder.base_url(custom_base_url)
@@ -4701,10 +4707,20 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     async def _handle_callback_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
-        """Dispatch inline keyboard button clicks on the callback_data prefix."""
+        """Dispatch inline keyboard button clicks on the callback_data prefix.
+
+        Telegram gives a callback query a hard deadline of about ten seconds and then
+        shows "query is too old". The spinner is cleared FIRST, before authorisation or
+        any state lookup, so a slow gate can never let the tap expire. A second answer
+        from a handler (with its own text) replaces this empty one.
+        """
         query = update.callback_query
         if not query or not query.data:
             return
+        try:
+            await query.answer()
+        except Exception:
+            logger.debug("[Telegram] Early callback acknowledgement failed", exc_info=True)
         self._accept_update()
         data = query.data
         cb = self._callback_ctx(query)

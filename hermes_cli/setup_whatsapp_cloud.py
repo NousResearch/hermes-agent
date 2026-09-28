@@ -293,7 +293,7 @@ def _step_allowlist() -> None:
 def run_whatsapp_cloud_setup() -> int:
     """Interactive wizard for the WhatsApp Cloud API adapter. Returns 0 on success, 1 on abort."""
     _lines(
-        "", "⚕ WhatsApp Business Cloud API Setup", "=" * 50, "",
+        "", "☤ WhatsApp Business Cloud API Setup", "=" * 50, "",
         "This wizard configures Hermes to talk to WhatsApp via Meta's",
         "official Cloud API. It's the production-grade path:", "",
         "  • No QR codes, no Node.js bridge subprocess",

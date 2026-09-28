@@ -28,6 +28,21 @@ def _git_ok(git_cmd, args, cwd, **kw) -> bool:
     return _git_stdout(git_cmd, args, cwd, **kw) is not None
 
 
+def _git_run(git_cmd, args, cwd=None, *, check=False):
+    """Run ``git_cmd + args`` and return the CompletedProcess.
+
+    The updater's git runner: capture all output and decode as UTF-8 regardless of the
+    Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit.
+    """
+    return subprocess.run(
+        git_cmd + list(args),
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+        check=check,
+    )
+
+
 def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
     """Stripped stdout of a successful ``_git_run``; ``None`` on non-zero exit or any exception."""
     from hermes_cli.update_cmd import _git_run
@@ -41,7 +56,12 @@ def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
 def _prune_orphan_rescue_refs(
     git_cmd, cwd, branch, keep=_ORPHAN_RESCUE_REFS_TO_KEEP, max_age_days=_ORPHAN_RESCUE_REF_MAX_AGE_DAYS
 ) -> None:
-    """Expire old orphan rescue refs (``refs/hermes-update-backups/orphan-<branch>-<ts>-<sha>``).
+    """Expire old rescue refs (``refs/hermes-update-backups/<kind>-<branch>-<ts>-<sha>``).
+
+    ``<kind>`` is ``orphan`` (no common ancestor), ``diverged`` (local commits on the target
+    branch) or ``detached`` (commits made on a detached HEAD the update moved off). All are written
+    before the update moves HEAD and all pin objects, so they expire on the same terms; each kind
+    keeps its own ``keep`` newest.
 
     Each ref pins a possibly multi-GB snapshot against ``git gc``, so a repeatedly corrupted install would
     grow ``.git`` unbounded. Keep the ``keep`` newest AND drop any older than ``max_age_days`` by the
@@ -52,22 +72,63 @@ def _prune_orphan_rescue_refs(
     those objects include a full working-tree snapshot (the autostash orphan commit), which can be multi-GB
     when the tree holds large stray files. See #87694.
     """
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     with suppress(OSError):
-        prefix = f"refs/hermes-update-backups/orphan-{branch}-"
-        list_result = _git_run(git_cmd, ["for-each-ref", "--format=%(refname)", "--sort=refname", f"{prefix}*"], cwd)
-        if list_result.returncode != 0:
-            return
-        refs = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
-        stale = set(refs[:-keep] if keep > 0 else refs)
-        if max_age_days > 0:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-            for ref in refs:
-                with suppress(ValueError):
-                    if datetime.strptime(ref[len(prefix):][:15], "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc) < cutoff:
-                        stale.add(ref)
+        stale: set[str] = set()
+        for kind in ("orphan", "diverged", "detached"):
+            prefix = f"refs/hermes-update-backups/{kind}-{branch}-"
+            list_result = _git_run(
+                git_cmd, ["for-each-ref", "--format=%(refname)", "--sort=refname", f"{prefix}*"], cwd)
+            if list_result.returncode != 0:
+                continue
+            refs = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
+            stale |= set(refs[:-keep] if keep > 0 else refs)
+            if max_age_days > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+                for ref in refs:
+                    with suppress(ValueError):
+                        stamp = datetime.strptime(ref[len(prefix):][:15], "%Y%m%d-%H%M%S")
+                        if stamp.replace(tzinfo=timezone.utc) < cutoff:
+                            stale.add(ref)
         for ref in sorted(stale):
             _git_run(git_cmd, ["update-ref", "-d", ref], cwd)
+
+
+def _park_detached_head(git_cmd, cwd, branch) -> None:
+    """Keep commits made on a detached HEAD reachable before the update moves HEAD off it.
+
+    Such commits belong to no branch: once HEAD moves, only the expiring reflog still reaches them,
+    and nothing in the output would name them. When HEAD is detached at a commit no ref contains
+    (the autostash's ``refs/stash`` does not count: it is dropped after the update), write
+    ``refs/hermes-update-backups/detached-<branch>-<ts>-<sha12>`` (the divergence rescue refs'
+    scheme and expiry) and name it. When that write fails, refuse (``sys.exit(1)``) rather than
+    orphan the work. Attached HEADs and already-reachable commits are left alone.
+    """
+    from hermes_cli.update_cmd import _git_run
+    if _git_run(git_cmd, ["symbolic-ref", "-q", "HEAD"], cwd).returncode == 0:
+        return  # on a branch
+    head = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], cwd)
+    sha = (head.stdout or "").strip()
+    if head.returncode != 0 or not sha:
+        return
+    contains = _git_run(git_cmd, ["for-each-ref", "--contains", sha, "--format=%(refname)"], cwd)
+    holders = [r for r in (contains.stdout or "").split() if r != "refs/stash"]
+    if contains.returncode == 0 and holders:
+        return  # already reachable from a branch, tag, remote or backup ref
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    rescue_ref = f"refs/hermes-update-backups/detached-{branch}-{stamp}-{sha[:12]}"
+    if _git_run(git_cmd, ["update-ref", rescue_ref, sha], cwd).returncode != 0:
+        print(f"✗ HEAD is detached at {sha[:12]}, which no branch or tag contains, and backing it up "
+              f"to {rescue_ref} failed.")
+        print(f"  Update stopped so those commits are not orphaned. Keep them with: "
+              f"git -C {cwd} branch <name> {sha[:12]}")
+        sys.exit(1)
+    count = (_git_run(git_cmd, ["rev-list", "--count", sha, "--not", "--branches", "--tags", "--remotes"],
+                      cwd).stdout or "").strip()
+    print(f"  ⚠ {count or 'Some'} commit(s) made on the detached HEAD are on no branch — backed up to "
+          f"{rescue_ref} before moving HEAD. This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
+    print(f"    List them with: git log {rescue_ref} --not --branches --tags --remotes")
+    _prune_orphan_rescue_refs(git_cmd, cwd, branch)
 
 
 def _branch_head_label(git_cmd=None, cwd=None) -> str | None:
@@ -107,7 +168,7 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
     - (False, "disabled"|"dirty"|"unverifiable") — caller must NOT touch the branch. Dirty is the
       genuinely unsafe case: uncommitted work riding an autostash across branches.
     A config read failure must not disable the safety checks: fall through with the default."""
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     try:
         from hermes_cli.config import load_config
         _update_cfg = (load_config() or {}).get("updates", {})
@@ -274,13 +335,14 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     See #97052.
     """
     from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
+    from hermes_cli.update_cmd_check import tracking_refspec
     if not _has_upstream_remote(git_cmd, cwd) and (
         _should_skip_upstream_prompt() or not _offer_upstream_remote(git_cmd, cwd, assume_yes=assume_yes, input_fn=input_fn)
     ):
         return False
     print("\n→ Fetching upstream...")
     try:
-        subprocess.run(git_cmd + ["fetch", "upstream", "main", "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
+        subprocess.run(git_cmd + ["fetch", "upstream", tracking_refspec("upstream", "main"), "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return False
@@ -337,6 +399,14 @@ _FETCH_FAILURE_RULES = (
      " `git remote -v` points at a public repo."),
     (lambda s: "Authentication failed" in s,
      "✗ Authentication failed — check your git credentials or SSH key."),
+    # SSH auth failures never say "Authentication failed" — OpenSSH prints its own
+    # "Permission denied (publickey)"/"Host key verification failed" and git wraps
+    # it as "Could not read from remote repository", which otherwise fell through
+    # to the generic message below and left an SSH-remote user with no idea their
+    # key (or lack of one) was the cause (#82169).
+    (lambda s: "Permission denied (publickey)" in s or "Host key verification failed" in s,
+     "✗ SSH authentication failed — check your SSH key is added to GitHub, or switch"
+     " `origin` to HTTPS: `git remote set-url origin https://github.com/NousResearch/hermes-agent.git`."),
 )
 
 
@@ -383,7 +453,7 @@ def _portable_git_candidates() -> list:
     profile-scoped HERMES_HOME (``<root>/profiles/<name>``), so a profile-scoped ``hermes update`` must look
     there (monerostar review, #87876).
     """
-    from hermes_cli.update_cmd import get_default_hermes_root, get_hermes_home
+    from hermes_constants import get_default_hermes_root, get_hermes_home
     candidates = []
     with suppress(Exception):
         candidates += [root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe" for root in (get_default_hermes_root(), Path(get_hermes_home()))]
@@ -400,8 +470,9 @@ def _locate_real_git() -> Optional[Path]:
     invoked directly (#87876).
     """
     candidates = [
-        Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe"),
-        Path(r"C:\Program Files (x86)\Git\mingw64\libexec\git-core\git.exe"),
+        Path(base) / "Git" / arch / "libexec" / "git-core" / "git.exe"
+        for base in (r"C:\Program Files", r"C:\Program Files (x86)")
+        for arch in ("clangarm64", "mingw64", "mingw32")
     ] + _portable_git_candidates()
     return next((c for c in candidates if c.exists() and _probe_fork_bomb([str(c)]) is False), None)
 
@@ -421,17 +492,55 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
     return [str(real_git)] + list(git_cmd[1:])
 
 
+def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
+    """Manifest directories whose specs the single root ``package-lock.json`` records: the root plus every
+    workspace from the root ``workspaces`` globs (same model as ``update_cmd_deps._npm_manifest_paths``).
+    A manifest outside that graph (``website/``, ``scripts/whatsapp-bridge/``) has its own lockfile."""
+    owners = {Path(".")}
+    try:
+        import json
+        package = json.loads((repo_root / "package.json").read_text(encoding="utf-8-sig"))
+        workspaces = package.get("workspaces", [])
+        if isinstance(workspaces, dict):
+            workspaces = workspaces.get("packages", [])
+        if not isinstance(workspaces, list):
+            return owners
+        for pattern in workspaces:
+            # One bad glob (absolute pattern -> NotImplementedError) degrades to "not an owner"
+            # instead of aborting the whole churn cleanup through the caller's suppress(Exception).
+            with suppress(Exception):
+                for directory in repo_root.glob(str(pattern)):
+                    if (directory / "package.json").is_file():
+                        owners.add(directory.relative_to(repo_root))
+    except (OSError, ValueError, TypeError):
+        pass
+    return owners
+
+
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
-    instead of autostashing every run. Only touches lockfiles whose package.json is NOT also dirty. Best-effort."""
-    from hermes_cli.update_cmd import _git_run
+    instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
+    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
+    manifest desyncs spec and lock and every later ``npm ci`` fails, #112378); a nested lock is kept only
+    with its sibling manifest. Best-effort."""
+    from hermes_cli.update_cmd_git import _git_run
     with suppress(Exception):
         diff = _git_run(git_cmd, ["diff", "--name-only"], repo_root)
         if diff.returncode != 0:
             return
         changed = [line.strip() for line in diff.stdout.splitlines()]
-        dirty_package_dirs = {Path(p).parent for p in changed if p.endswith("package.json")}
-        dirty = [p for p in changed if p.endswith("package-lock.json") and Path(p).parent not in dirty_package_dirs]
+        dirty_manifests = {Path(p).parent for p in changed if p.endswith("package.json")}
+        root_owners = _npm_lockfile_owners(Path(repo_root))
+        dirty = []
+        for path in changed:
+            if not path.endswith("package-lock.json"):
+                continue
+            lock_dir = Path(path).parent
+            protected = (lock_dir == Path(".") and bool(dirty_manifests & root_owners)) or (
+                lock_dir != Path(".") and lock_dir in dirty_manifests
+            )
+            if not protected:
+                dirty.append(path)
         if not dirty:
             return
         _git_run(git_cmd, ["checkout", "--", *dirty], repo_root)
@@ -452,7 +561,7 @@ def _normalize_managed_eol(git_cmd, repo_root):
     reuses its build-pinned ``install.ps1`` forever — so ``hermes update``, which ships with the checkout
     itself, is the only path left that can fix them. See #67730.
     """
-    from hermes_cli.update_cmd import _git_run
+    from hermes_cli.update_cmd_git import _git_run
     # -c, not config: evaluate the tree as it WOULD look pinned, persisting nothing.
     probe = git_cmd + ["-c", "core.autocrlf=false"]
 

@@ -3,6 +3,7 @@ service (no BotFather copy-paste); the raw Telegram token is saved locally after
 
 from __future__ import annotations
 
+from pm import install_hint
 import os
 import re
 import sys
@@ -76,7 +77,10 @@ def render_qr_terminal(url: str) -> str:
 
 def print_qr_code(url: str, *, include_link: bool = True) -> None:
     """Print a QR code to stdout, with URL fallback if qrcode is missing."""
-    print(render_qr_terminal(url) or "  (Install 'qrcode' for a scannable QR code: pip install qrcode)")
+    print(render_qr_terminal(url) or (
+        "  (QR code unavailable. From the Hermes environment, run: "
+        f"{install_hint('messaging')}. "
+        "Then restart Hermes.)"))
     if include_link:
         print(f"  Link: {url}")
 

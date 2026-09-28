@@ -1,8 +1,8 @@
 import type { BillingBlock } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
+import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
 import { translateNow } from '@/i18n'
-import { toChatMessages } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -77,6 +77,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     completeAssistantMessage,
     finalizeInterimAssistantMessage,
     flushQueuedDeltas,
+    dropQueuedDeltas,
     nativeSubagentSessionsRef,
     sessionStateByRuntimeIdRef,
     updateSessionState
@@ -87,7 +88,18 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       return true
     }
 
-    flushQueuedDeltas(sessionId)
+    // Turn-boundary orphan drop (#119543): when no turn is live, anything
+    // still queued belongs to a turn that already ended (a delta reordered
+    // behind its own complete or heartbeat). Flushing it would seed a bubble
+    // the new turn inherits, painting a stale duplicate of the previous
+    // reply. A still-live previous turn (steer) keeps the flush: those bytes
+    // are real output of the bubble on screen.
+    if (sessionStateByRuntimeIdRef.current.get(sessionId)?.turnLive) {
+      flushQueuedDeltas(sessionId)
+    } else {
+      dropQueuedDeltas(sessionId)
+    }
+
     pruneFinishedSessionSubagents(sessionId)
     setSessionCompacting(sessionId, false)
     compactedTurnRef.current.delete(sessionId)
@@ -124,25 +136,6 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
       return {
         ...state,
-        ...(payload?.display_kind === 'async_delegation_complete'
-          ? {
-              messages: [
-                ...state.messages,
-                ...toChatMessages([
-                  {
-                    role: 'user',
-                    content: coerceGatewayText(payload.text),
-                    display_kind: payload.display_kind,
-                    display_metadata: payload.display_metadata,
-                    timestamp: occurredAt
-                  }
-                ]).map(message => ({
-                  ...message,
-                  id: `background-${sessionId}-${occurredAt}-${state.messages.length}`
-                }))
-              ]
-            }
-          : {}),
         busy: true,
         awaitingResponse: true,
         sawAssistantPayload: false,
@@ -151,6 +144,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         // Backend accepted the turn — the no-payload settle gate below may
         // now treat a running=false heartbeat as a real turn end.
         turnLive: true,
+        // A new turn is a new occurrence: the previous turn's late terminal
+        // frame (#119569) can no longer claim its heartbeat-settled bubble.
+        heartbeatSettledStreamId: null,
         // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
         // here would hide the submit→accept round trip from the timer.
         // Backend-originated turns (queue drain elsewhere, goal follow-up)
@@ -369,12 +365,30 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
           }
         : undefined
 
-    completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
+    completeAssistantMessage(
+      sessionId,
+      finalText,
+      payload?.response_previewed,
+      failure,
+      occurredAt,
+      payload?.persisted_turn,
+      Boolean(payload?.response_transformed),
+      typeof payload?.status === 'string' ? payload.status : undefined
+    )
+
+    // Onboarding's first build: between turns is the only moment Setup may
+    // put a check-in into that session (no-op everywhere else).
+    reportFirstBuildTurnComplete(sessionId, finalText)
 
     // Structured billing wall forwarded by the gateway (out of credits /
     // payment required) — cache it + raise a billing-specific toast.
     if (payload?.billing) {
       surfaceBillingBlock(sessionId, payload.billing)
+    }
+
+    // History-commit note (e.g. a mid-turn desync) the gateway chose to surface.
+    if (typeof payload?.warning === 'string' && payload.warning.trim()) {
+      notify({ kind: 'warning', message: payload.warning })
     }
 
     if (isActiveEvent) {

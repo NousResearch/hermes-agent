@@ -73,9 +73,30 @@ def is_dispatcher_owned_worker_context() -> bool:
     return not (is_delegated_child_process_context() or _NON_DISPATCHER_OWNED_CONTEXT.get())
 
 
+def owned_kanban_task() -> str:
+    """The board task this execution OWNS: ``HERMES_KANBAN_TASK`` for the dispatcher-owned
+    worker, ``""`` otherwise. Tool access is not worker identity — a profile can expose the
+    kanban toolset interactively, and children/cron runs inherit the env var — so every
+    reader that turns the task id into worker behaviour (guidance, stop nudge, terminal
+    outcomes) goes through this one helper."""
+    if not is_dispatcher_owned_worker_context():
+        return ""
+    return (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+
+
 def is_delegated_child_process_context() -> bool:
     """Return True in this process or a subprocess spawned by a child."""
     return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(os.environ.get(DELEGATED_CHILD_ENV_MARKER))
+
+
+def _fenced_kanban_root() -> str:
+    """The board root this process's Kanban lineage lives under (``kanban_home()``); ``"1"`` when it
+    cannot be resolved, which readers treat as "fence every board" (the pre-path marker)."""
+    try:
+        from hermes_cli.kanban_db import kanban_home
+        return str(kanban_home())
+    except Exception:
+        return "1"
 
 
 def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:
@@ -84,10 +105,41 @@ def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[
     TASK absence alone would promote a descendant to an orchestrator. The marker
     survives later execs, including scripts that remove TASK themselves. This is
     cooperative runtime scoping, not confinement of code with direct SQLite access.
+
+    The marker's value is the fenced board ROOT, so the fence applies to the lineage's
+    board and not to every Kanban DB the descendant touches: a child running a repro
+    against a temp ``HERMES_HOME`` got a silently read-only board there. An inherited
+    path-valued marker is kept (a grandchild that moved HERMES_HOME must not re-fence
+    onto its scratch root and unfence the real one).
     """
     cleaned = {k: v for k, v in env.items() if k not in KANBAN_ENV_KEYS}
-    cleaned[DELEGATED_CHILD_ENV_MARKER] = "1"
+    inherited = str(env.get(DELEGATED_CHILD_ENV_MARKER) or "")
+    cleaned[DELEGATED_CHILD_ENV_MARKER] = inherited if inherited and inherited != "1" else _fenced_kanban_root()
     return cleaned
+
+
+def kanban_path_is_fenced(path: "os.PathLike[str] | str") -> bool:
+    """Whether Kanban mutations at *path* (a board DB or board-metadata root) are denied for this
+    process: always for an in-process delegate child (the parent's own board); for a spawned
+    descendant only when *path* is the dispatcher-pinned ``HERMES_KANBAN_DB`` or lies under the
+    fenced root the marker carries. A legacy ``"1"`` marker fences everything."""
+    if _DELEGATED_CHILD_CONTEXT.get():
+        return True
+    marker = os.environ.get(DELEGATED_CHILD_ENV_MARKER, "")
+    if not marker:
+        return False
+    if marker == "1":
+        return True
+    from pathlib import Path
+    target = Path(path).expanduser().resolve()
+    pinned = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    if pinned and target == Path(pinned).expanduser().resolve():
+        return True
+    try:
+        target.relative_to(Path(marker).expanduser().resolve())
+    except ValueError:
+        return False
+    return True
 
 
 @overload

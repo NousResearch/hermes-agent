@@ -32,7 +32,6 @@ _registry: ProviderRegistry[WebSearchProvider] = ProviderRegistry(
 )
 _registry.export(globals())
 
-
 def _read_config_key(*path: str) -> Optional[str]:
     """Resolve a dotted config key from ``config.yaml``. Returns None on miss."""
     try:

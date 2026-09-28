@@ -52,6 +52,10 @@ class SlashAccessPolicy:
 _DISABLED_POLICY = SlashAccessPolicy(
     enabled=False, admin_user_ids=frozenset(), user_allowed_commands=frozenset()
 )
+# Gated with nobody on the admin list: only the ``_ALWAYS_ALLOWED_FOR_USERS`` floor runs.
+_FAIL_CLOSED_POLICY = SlashAccessPolicy(
+    enabled=True, admin_user_ids=frozenset(), user_allowed_commands=frozenset()
+)
 
 
 def _coerce_list(raw: Any, normalize: Callable[[str], str] = str) -> FrozenSet[str]:
@@ -127,3 +131,28 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
 
 
 __all__ = ["SlashAccessPolicy", "policy_from_extra", "policy_for_source"]
+
+
+
+def policy_for_runner_source(runner: Any, source: Any) -> SlashAccessPolicy:
+    """Slash-gating policy from the profile whose bot received ``source``.
+
+    Under ``multiplex_profiles`` the runner's ``config`` is the launch profile's alone, so a platform
+    configured only in a secondary profile had no PlatformConfig there and every caller came back
+    unrestricted (#121705). Authorization follows the transport (bot-owning) profile, the owner
+    ``RoutingIdentity.authorization_home`` already names; a served profile whose config is not cached
+    fails closed instead of inheriting the launch profile's open policy.
+    """
+    config = getattr(runner, "config", None)
+    if not getattr(config, "multiplex_profiles", False) or source is None:
+        return policy_for_source(config, source)
+    from gateway.session_identity import identity_of
+
+    identity = identity_of(source)
+    owner = identity.transport_profile if identity is not None else getattr(source, "profile", None)
+    primary = getattr(runner, "_primary_profile_name", None) or "default"
+    if owner and owner != primary:
+        config = (getattr(runner, "_profile_configs", None) or {}).get(owner)
+        if config is None:
+            return _FAIL_CLOSED_POLICY
+    return policy_for_source(config, source)

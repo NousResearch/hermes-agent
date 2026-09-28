@@ -760,6 +760,8 @@ export const ru = defineLocale({
       textDirection: { auto: 'Авто', rtl: 'Справа налево', ltr: 'Слева направо' },
       introSplashTitle: 'Экран приветствия',
       introSplashDesc: 'Логотип и подсказка, показываемые на пустом чате.',
+      modelPricingTitle: 'Цены моделей',
+      modelPricingDesc: 'Показывать в выборе модели цены за миллион токенов: ввод, вывод и чтение из кэша.',
       reactionsTitle: 'Реакции на сообщения',
       reactionsDesc: 'Эмодзи-тапбеки в стиле iMessage — реагируйте на сообщения, и Hermes сможет реагировать на ваши.',
       composerPopoutTitle: 'Плавающий композер',
@@ -3292,6 +3294,7 @@ export const ru = defineLocale({
     updateNow: 'Обновить сейчас',
     maybeLater: 'Возможно позже',
     moreChanges: count => `+ ещё ${count} ${RU_NOUN(count, 'изменение', 'изменения', 'изменений')} включено.`,
+    copyFullLog: 'Скопировать полный список изменений',
     manualTitle: 'Обновление из терминала',
     manualUnavailableTitle: 'Обновление здесь недоступно',
     manualBody:
@@ -3572,7 +3575,11 @@ export const ru = defineLocale({
       editModels: 'Изменить модели…',
       followDefault: 'Использовать модель по умолчанию из настроек',
       refreshModels: 'Обновить модели',
-      fast: 'Быстрая'
+      fast: 'Быстрая',
+      free: 'бесплатно',
+      cacheRead: 'чтение из кэша',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'Для этой модели нет опций',

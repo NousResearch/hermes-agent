@@ -1203,6 +1203,8 @@ export const en: Translations = {
       textDirection: { auto: 'Auto', rtl: 'Right-to-left', ltr: 'Left-to-right' },
       introSplashTitle: 'Intro Splash',
       introSplashDesc: 'The wordmark and prompt shown on an empty chat.',
+      modelPricingTitle: 'Model Pricing',
+      modelPricingDesc: 'Show input, output, and cache-read prices per million tokens in the model picker.',
       reactionsTitle: 'Message Reactions',
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
@@ -4198,6 +4200,7 @@ export const en: Translations = {
     updateNow: 'Update now',
     maybeLater: 'Maybe later',
     moreChanges: count => `+ ${count} more change${count === 1 ? '' : 's'} included.`,
+    copyFullLog: 'Copy full changelog',
     manualTitle: 'Update from your terminal',
     manualUnavailableTitle: "Can't update from here",
     manualBody: 'You installed Hermes from the command line, so updates run there too. Paste this into your terminal:',
@@ -4604,7 +4607,11 @@ export const en: Translations = {
       editModels: 'Edit models…',
       followDefault: 'Use Settings default',
       refreshModels: 'Refresh models',
-      fast: 'Fast'
+      fast: 'Fast',
+      free: 'free',
+      cacheRead: 'cached read',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'No options for this model',

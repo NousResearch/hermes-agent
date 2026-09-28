@@ -725,6 +725,8 @@ export const ja = defineLocale({
       textDirection: { auto: '自動', rtl: '右から左', ltr: '左から右' },
       introSplashTitle: 'イントロ表示',
       introSplashDesc: '空のチャットに表示されるワードマークとプロンプト。',
+      modelPricingTitle: 'モデル料金',
+      modelPricingDesc: 'モデル選択で、100万トークンあたりの入力・出力・キャッシュ読み取り料金を表示します。',
       reactionsTitle: 'メッセージリアクション',
       reactionsDesc:
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
@@ -3054,6 +3056,7 @@ export const ja = defineLocale({
     updateNow: '今すぐ更新',
     maybeLater: '後で',
     moreChanges: count => `さらに ${count} 件の変更が含まれています。`,
+    copyFullLog: '完全な変更ログをコピー',
     manualTitle: 'ターミナルから更新',
     manualUnavailableTitle: 'ここからは更新できません',
     manualBody:
@@ -3345,7 +3348,11 @@ export const ja = defineLocale({
       editModels: 'モデルを編集…',
       followDefault: '設定のデフォルトを使用',
       refreshModels: 'モデルを更新',
-      fast: '高速'
+      fast: '高速',
+      free: '無料',
+      cacheRead: 'キャッシュ読み取り',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',

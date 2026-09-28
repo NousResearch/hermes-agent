@@ -915,9 +915,10 @@ def test_ensure_local_runtime_serializes_racing_callers(tmp_path, monkeypatch):
         def start(self, timeout_s=120):
             spawns.append(1)
             _time.sleep(0.3)  # widen the window the other caller races into
-            # Legacy (pid-only) records are no longer adopted (65ff3ad353); publish the modern
-            # shape the real supervisor writes so the loser can adopt this caller's server.
-            _write_current_process_state(sup_mod.state_path(), base_url=self.base_url, api_key=self.api_key)
+            # A bare legacy ``{pid}`` record is no longer adoptable (a live PID is not evidence);
+            # publish what a real router publishes so the second caller can adopt it.
+            _write_current_process_state(
+                sup_mod.state_path(), base_url=self.base_url, api_key=self.api_key)
 
     monkeypatch.setattr(sup_mod, "LlamaServerSupervisor", _FakeSupervisor)
 

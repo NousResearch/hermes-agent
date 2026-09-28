@@ -27,6 +27,7 @@ import {
 } from '@/store/interface-mode'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $fileBrowserOpen, setFileBrowserOpen } from '@/store/layout'
+import { $showModelPricing, setShowModelPricing } from '@/store/model-pricing'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
@@ -444,6 +445,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
+  const showModelPricing = useStore($showModelPricing)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
@@ -924,6 +926,16 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={settingElementId(ids.introSplash)}
               label={a.introSplashTitle}
               onChange={setIntroSplash}
+            />
+          )}
+
+          {show('general') && (
+            <ToggleRow
+              checked={showModelPricing}
+              description={a.modelPricingDesc}
+              id={settingElementId(ids.modelPricing)}
+              label={a.modelPricingTitle}
+              onChange={setShowModelPricing}
             />
           )}
 

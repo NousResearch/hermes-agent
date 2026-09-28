@@ -12,6 +12,9 @@ docs of config.yaml.
 DEFAULT_SANDBOX_IMAGE = "nousresearch/hermes-sandbox:desktop"
 LEGACY_SANDBOX_IMAGES = ("nikolaik/python-nodejs:python3.11-nodejs20", "nikolaik/python-nodejs:python3.14-nodejs22")
 LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
+# Vercel Sandbox managed image (Vercel deprecated its `runtime` presets in Aug 2026).
+DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
+LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
 
 
 def _aux(timeout, *, reasoning_effort=True, **extra):
@@ -356,7 +359,8 @@ DEFAULT_CONFIG = {
         "singularity_image": f"docker://{DEFAULT_SANDBOX_IMAGE}",
         "modal_image": DEFAULT_SANDBOX_IMAGE,
         "daytona_image": DEFAULT_SANDBOX_IMAGE,
-        "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
+        "vercel_image": DEFAULT_VERCEL_IMAGE,  # vercel_sandbox backend only: a Vercel-managed or VCR image
+        "vercel_runtime": "",  # deprecated by Vercel; a legacy runtime pin (node24 | node22 | python3.13) overrides vercel_image
         # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
@@ -2698,7 +2702,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 48,  # Config schema version - bump this when adding new required fields
+    "_config_version": 49,  # Config schema version - bump this when adding new required fields
 }
 
 

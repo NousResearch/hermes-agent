@@ -834,11 +834,13 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
         if profile_flag_value(command_lc) == profile_name.lower():
             return True
         return command_line_names_hermes_home(command_lc, home_lc)
-    # Default profile: accept unless argv names another profile (any spelling the CLI pre-parser
+    # Default profile: accept unless argv names ANOTHER profile (any spelling the CLI pre-parser
     # accepts, ``--profile=ops`` included -- a substring test let that gateway pass as the default's)
     # or a conflicting explicit HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually
-    # arrives via the env).
-    if profile_flag_value(command_lc) is not None:
+    # arrives via the env). ``--profile default`` names this profile: a hand-written launchd plist
+    # mirrors the named-profile service shape, and rejecting it reported a live default gateway
+    # as stopped (#100817).
+    if profile_flag_value(command_lc) not in (None, "default"):
         return False
     return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
 

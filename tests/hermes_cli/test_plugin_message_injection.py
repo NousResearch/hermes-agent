@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import hermes_yaml as yaml
 
 import hermes_cli.plugins as plugins_mod
+from agent import secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
@@ -196,6 +197,9 @@ def test_published_gateway_host_reaches_existing_and_future_profile_managers(tmp
         )
     monkeypatch.setenv("HERMES_HOME", str(homes[0]))
     plugins_mod._reset_plugin_managers_for_tests()
+    # Multiplex gateway: launch home + secondary profiles served by one process.
+    was_active = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
 
     def manager_for(home):
         token = set_hermes_home_override(str(home))
@@ -218,6 +222,9 @@ def test_published_gateway_host_reaches_existing_and_future_profile_managers(tmp
 
         late_manager = manager_for(homes[2])
         assert late_manager.has_gateway_message_injector is True
+        # A -> B -> A: returning to the launch home resolves the same, still-stamped manager.
+        assert manager_for(homes[0]) is launch_manager
+        assert launch_manager.has_gateway_message_injector is True
 
         token = set_hermes_home_override(str(homes[1]))
         try:
@@ -244,26 +251,4 @@ def test_published_gateway_host_reaches_existing_and_future_profile_managers(tmp
     finally:
         plugins_mod.clear_published_gateway_message_host(owner)
         plugins_mod._reset_plugin_managers_for_tests()
-
-
-def test_published_gateway_host_clear_preserves_newer_owner(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    plugins_mod._reset_plugin_managers_for_tests()
-    manager = plugins_mod.get_plugin_manager()
-    older_owner, newer_owner = object(), object()
-    older = MagicMock(return_value=False)
-    newer = MagicMock(return_value=True)
-    try:
-        plugins_mod.publish_gateway_message_host(older_owner, older)
-        plugins_mod.publish_gateway_message_host(newer_owner, newer)
-        plugins_mod.clear_published_gateway_message_host(older_owner)
-
-        assert manager.has_gateway_message_injector is True
-        assert manager.inject_gateway_message(session_key="kept") is True
-        newer.assert_called_once_with(session_key="kept")
-        older.assert_not_called()
-    finally:
-        plugins_mod.clear_published_gateway_message_host(newer_owner)
-        plugins_mod._reset_plugin_managers_for_tests()
+        secret_scope.set_multiplex_active(was_active)

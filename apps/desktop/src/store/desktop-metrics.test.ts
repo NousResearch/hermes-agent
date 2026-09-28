@@ -503,8 +503,8 @@ describe('per profile, per window', () => {
 
     bindDesktopMetrics(request)
     setDesktopMetricsGate('off', false) // first-run offer not answered yet
-    recordOnboarding('intro', 'reached')
-    recordOnboarding('intro', 'completed')
+    recordOnboarding('guide', 'reached')
+    recordOnboarding('guide', 'completed')
     recordOnboarding('provider_oauth', 'reached')
     closeOnboardingStep('provider_oauth')
     await flush()
@@ -513,7 +513,7 @@ describe('per profile, per window', () => {
 
     setDesktopMetricsGate('on')
     await flush()
-    expect(calls.map(([, p]) => `${p.step}:${p.event}`)).toEqual(['intro:reached', 'intro:completed', 'provider_oauth:reached'])
+    expect(calls.map(([, p]) => `${p.step}:${p.event}`)).toEqual(['guide:reached', 'guide:completed', 'provider_oauth:reached'])
     expect(JSON.parse(stored()!).onboarding.open).toEqual({})
 
     setDesktopMetricsGate('off')

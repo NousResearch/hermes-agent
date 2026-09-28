@@ -14,7 +14,6 @@ import {
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $introReveal } from '@/store/intro-reveal'
 import { notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $onboardingSurfaces } from '@/store/onboarding-presence'
@@ -54,7 +53,6 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const { t } = useI18n()
   const copy = t.sharedMetrics
   const onboarding = useStore($desktopOnboarding)
-  const intro = useStore($introReveal)
   const surfaces = useStore($onboardingSurfaces)
   const detailsId = useId()
   const consent = useStore($sharedMetricsConsent)
@@ -62,13 +60,12 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
 
-  // Never over the provider picker, the free-tier welcome, the intro film or
-  // the guided chat: the question belongs to the moment after setup.
+  // Never over the provider picker, the free-tier welcome or the guided chat:
+  // the question belongs to the moment after setup.
   const onboardingSettled =
     (onboarding.configured === true || onboarding.firstRunSkipped) &&
     !onboarding.manual &&
     !onboarding.freeTierReady &&
-    intro.phase === 'hidden' &&
     surfaces.size === 0
 
   const ready = enabled && onboardingSettled

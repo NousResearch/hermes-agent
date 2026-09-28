@@ -515,7 +515,7 @@ DESKTOP_FRICTION_DETAIL_VALUES = frozenset().union(*DESKTOP_FRICTION_DETAILS.val
 # answer and the first message.
 DESKTOP_ONBOARDING_STEPS = frozenset({
     "choose_later", "consent", "first_message", "free_tier_ready", "guide", "guide_connectors",
-    "guide_first_build", "guide_layout", "guide_look", "guide_skip", "intro", "model_pick", "provider_api_key",
+    "guide_first_build", "guide_layout", "guide_look", "guide_skip", "model_pick", "provider_api_key",
     "provider_local", "provider_oauth", "provider_setup", "sign_in",
 })
 DESKTOP_ONBOARDING_EVENTS = frozenset({"abandoned", "completed", "reached"})

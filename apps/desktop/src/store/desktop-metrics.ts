@@ -255,7 +255,6 @@ export type DesktopOnboardingStep =
   | 'guide_layout'
   | 'guide_look'
   | 'guide_skip'
-  | 'intro'
   | 'model_pick'
   | 'provider_api_key'
   | 'provider_local'

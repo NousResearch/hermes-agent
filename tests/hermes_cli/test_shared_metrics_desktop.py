@@ -96,9 +96,9 @@ def test_onboarding_is_once_per_step_event_across_processes(marks, monkeypatch):
 
 
 def test_turning_collection_off_drops_the_onboarding_latches(marks):
-    _rpc("shared_metrics.desktop_onboarding", step="intro", event="reached")
+    _rpc("shared_metrics.desktop_onboarding", step="guide", event="reached")
     latches = marks.home / "telemetry" / "shared_metrics" / desktop.ONBOARDING_LATCH_DIRNAME
-    assert (latches / "intro.reached").exists()
+    assert (latches / "guide.reached").exists()
 
     assert _rpc("shared_metrics.set", enabled=False)["result"]["enabled"] is False
     assert not latches.exists()

@@ -84,12 +84,6 @@ export function guidePhaseTransition(prev: OnboardingPhase, next: OnboardingPhas
     return
   }
 
-  if (next === 'cinematic') {
-    recordOnboarding('intro', 'reached')
-  } else if (prev === 'cinematic') {
-    recordOnboarding('intro', 'completed')
-  }
-
   if (next === 'guided') {
     recordOnboarding('guide', 'reached')
   } else if (next === 'skipped') {

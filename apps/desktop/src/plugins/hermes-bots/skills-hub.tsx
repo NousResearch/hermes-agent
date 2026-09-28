@@ -6,7 +6,7 @@
  * it reaches back into neither.
  */
 
-import { Button, host, Input, useI18n } from '@hermes/plugin-sdk'
+import { Button, Codicon, host, Input, useI18n } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
@@ -244,7 +244,10 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
                   ) : null}
                 </div>
                 {installed[r.name] ? (
-                  <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">✓ {h.installed}</span>
+                  <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
+                    <Codicon name="check" size="0.65rem" />
+                    {h.installed}
+                  </span>
                 ) : (
                   <Button
                     aria-label={b.tools.installHint(r.name)}

@@ -230,7 +230,8 @@ class CLIInitMixin:
             invalid = [t for t in toolsets
                        if not validate_toolset(t) and t not in mcp_names and t not in plugin_ts_names]
             if invalid:
-                self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
+                from agent.i18n import t as _t
+                self._console_print(f"[bold red]{_t('cli.startup.unknown_toolsets', names=', '.join(invalid))}[/]")
 
     def _init_checkpoints_and_rules(self, checkpoints, pass_session_id, ignore_rules):
         from cli import CLI_CONFIG
@@ -340,22 +341,15 @@ class CLIInitMixin:
             self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
             from hermes_state_user_copy import describe_storage_failure, storage_failure_details
+            from agent.i18n import t
             failure = describe_storage_failure(e)
             def _present_store_warning():
                 try:
-                    Console(stderr=True).print(
-                        "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
-                        "this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. "
-                        "Searching past sessions is also disabled.\n"
-                        f"  Reason: {failure.gloss}.\n"
-                        f"  {failure.action}\n"
-                        f"  [dim]Details: {storage_failure_details(e)}[/dim]"
-                    )
+                    Console(stderr=True).print(t(
+                        "cli.session_store.unavailable_rich",
+                        reason=failure.gloss, action=failure.action, details=storage_failure_details(e)))
                 except Exception:
-                    print(
-                        "WARNING: Session store unavailable — this conversation will NOT be "
-                        f"saved and cannot be resumed later. Reason: {failure.gloss}. {failure.action}"
-                    )
+                    print(t("cli.session_store.unavailable_plain", reason=failure.gloss, action=failure.action))
             # Same automatic diagnostic the gateway gates for its home channel (run_notifications).
             from gateway.warning_notifications import render_notification
             render_notification(_present_store_warning, platform="cli")

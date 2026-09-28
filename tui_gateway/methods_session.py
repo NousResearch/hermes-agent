@@ -381,6 +381,13 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         explicit_cwd = bool(raw_cwd) and (remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
     _enable_gateway_prompts()
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+    composer_override_profile = None
+    if session_model_override and _flag(params, "follow_profile_config"):
+        # Same provenance a mid-chat switch records (_apply_model_switch): without the OWNING profile's
+        # model beside the pick, resume reads the row as an unmarked Bot Chat and drops the pick (#123805).
+        with _profile_build_scope(profile_home):
+            profile_model, profile_provider = _config_model_target()
+        composer_override_profile = {"model": profile_model, "provider": profile_provider}
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
@@ -393,6 +400,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
             "cwd": _completion_cwd(params), "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
+            "composer_override_profile": composer_override_profile,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id, "pending_title": _str_param(params, "title") or None,
@@ -581,6 +589,8 @@ class _Resume:
     """Per-call ``session.resume`` state. ``owns_db``: the DEDICATED profile handle is ours
     to close (handler ``finally``) until handed to the hydration worker or the agent."""
 
+    inline_images = True  # class default so a ``__new__``-built ctx (tests) projects the full form
+
     def __init__(self, rid, params: dict, target: str) -> None:
         self.rid, self.params, self.target = rid, params, target
         self.db, self.owns_db, self.found, self.profile_resume_cwd = None, False, None, ""
@@ -591,6 +601,8 @@ class _Resume:
         self.lazy, self.defer_history = _flag(params, "lazy"), _flag(params, "defer_history")
         # Desktop hydrates over REST; suppress the duplicate WS copy only when asked.
         self.omit_messages, self.eager_build = _flag(params, "omit_messages"), _flag(params, "eager_build")
+        # inline_images=False renders image parts as "[image]" (#116511); default keeps data URIs.
+        self.inline_images = "inline_images" not in params or _flag(params, "inline_images")
 
     def mint(self, prompts: bool = True) -> tuple:
         """``(runtime sid, source, cwd)`` for the live record this resume registers (+ gateway prompts on)."""
@@ -639,7 +651,8 @@ class _Resume:
         return self.db.get_messages_as_conversation(self.target, repair_alternation=repair, include_row_ids=True)
 
     def messages(self, display: list) -> list:
-        return [] if self.omit_messages else _history_to_messages(display, profile_home=self.profile_home)
+        return [] if self.omit_messages else _history_to_messages(
+            display, profile_home=self.profile_home, image_urls=self.inline_images)
 
     def read_history(self) -> tuple:
         """One lineage SELECT, two projections: model-fed copy alternation-repaired (healed once
@@ -728,7 +741,7 @@ def _resume_locate(ctx: _Resume) -> dict | None:
     if ctx.found:
         ctx.target = ctx.found["id"]
         return None
-    if ctx.lazy and _child_run_active(ctx.target):
+    if ctx.lazy and _child_run_active(ctx.target, ctx.profile_home):
         # Fresh subagent watch window: `subagent.start` relays BEFORE the child's first DB flush. Proceed lazily
         # with empty history — the live mirror streams the turn and the row exists by upgrade time.
         ctx.found = {}
@@ -791,13 +804,14 @@ def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
         return refusal
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                    transport=current_transport() or _stdio_transport)
+                                    transport=current_transport() or _stdio_transport,
+                                    inline_images=ctx.inline_images)
     payload["resumed"] = ctx.target
     if ctx.defer_history:
         payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
                        message_count=int(session.get("resume_message_count") or payload["message_count"]))
     # A lazy watch session never owns a run loop — overlay the child-run registry.
-    if session.get("agent") is None and _child_run_active(ctx.target):
+    if session.get("agent") is None and _child_run_active(ctx.target, ctx.profile_home):
         payload.update(running=True, status="streaming")
     return _ok(ctx.rid, payload)
 
@@ -835,7 +849,7 @@ def _resume_lazy(ctx: _Resume) -> dict:
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
     # A child mid-run emits no session events — liveness comes from the relay registry.
-    running = _child_run_active(ctx.target)
+    running = _child_run_active(ctx.target, ctx.profile_home)
     # Display uses the VERBATIM child-only projection so model-invisible rows survive; repaired ``history``
     # still feeds live replay.
     display = history
@@ -1149,11 +1163,44 @@ def _(rid, params: dict, session: dict, db) -> dict:
     return _ok(rid, result)
 
 
+@method("session.archive")
+def _(rid, params: dict) -> dict:
+    """Set/clear ``archived`` (out of the default list, messages kept — the Desktop PATCH parity flag)
+    on a session + lineage: LIVE runtime id first (unpersisted drafts via ``pending_archived``),
+    then a stored id/key in the profile db, like ``session.set_hidden``."""
+    archived = is_truthy_value(params.get("archived", True))
+    target = str(params.get("session_id") or params.get("session_key") or "")
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    # Quiet live lookup, the set_hidden reasoning: a stored id that is not in memory is this method's
+    # expected second tier, not a rejection (session.list rows archive without a live runtime here).
+    session = _sessions.get(target)
+    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        try:
+            if session is not None:
+                key = session["session_key"]
+                if not db.set_session_archived(key, archived):
+                    session["pending_archived"] = archived  # no row yet: _ensure_session_db_row applies it
+            else:
+                # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
+                if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
+                    return _err(rid, 4001, "session not found")
+                db.set_session_archived(key, archived)
+            return _ok(rid, {"archived": archived, "session_key": key})
+        except Exception as e:
+            return _err(rid, 5007, str(e))
+
+
 @method("session.set_hidden")
 def _(rid, params: dict) -> dict:
     """Set/clear ``hidden`` (leaves the default list, stays resumable by its owner) on a session + lineage:
-    LIVE runtime id first (unpersisted drafts via ``pending_hidden``), then a stored id/key in the profile db."""
-    hidden = is_truthy_value(params.get("hidden", True))
+    LIVE runtime id first (unpersisted drafts via ``pending_hidden``), then a stored id/key in the profile db.
+    ``hidden`` is required: a default of True hid the whole lineage for any caller that dropped the flag (#122190)."""
+    if "hidden" not in params:
+        return _err(rid, 4021, "hidden required")
+    hidden = is_truthy_value(params["hidden"])
     # Quiet live lookup: a stored id that is not in memory is this method's expected second tier, not a
     # rejection — _sess_nowait would log "session-scoped RPC rejected … not in memory" for a request that is
     # then fulfilled from the profile db, burying the real stale-runtime-id signal under sweep noise.
@@ -1892,6 +1939,8 @@ def _(rid, params: dict, session: dict) -> dict:
                 removed = _rewind_active_session_history(session, user_turns - 1)[2]
             except Exception as exc:
                 return _err(rid, 5008, f"undo: {exc}")
+    if removed:  # Ink /retry is undo + resend and says so via ``intent`` (helper: methods_tools).
+        _tui_model_friction("retry" if params.get("intent") == "retry" else "undo", session)
     return _ok(rid, {"removed": removed})
 
 
@@ -2028,8 +2077,10 @@ def _(rid, params: dict, session: dict) -> dict:
     if _session_uses_compute_host(session):
         return _save_via_compute_host(rid, params)
     agent = session["agent"]
-    # Classic CLI /save: under the profile home, with the system prompt (dashboard parity).
-    saved_dir = get_hermes_home() / "sessions" / "saved"
+    # Classic CLI /save: under the profile home, with the system prompt (dashboard parity). The SESSION's
+    # profile: this handler runs unscoped, so get_hermes_home() alone names the launch profile.
+    home = session.get("profile_home")
+    saved_dir = (Path(home) if home else get_hermes_home()) / "sessions" / "saved"
     try:
         saved_dir.mkdir(parents=True, exist_ok=True)
     except Exception as e:
@@ -2332,7 +2383,7 @@ def _(rid, params: dict) -> dict:
     started_at, label = params.get("started_at"), str(params.get("label") or "")
     finished_at = float(params.get("finished_at") or time.time())
     d = _spawn_tree_session_dir(session_id or "default")
-    path = d / f"{datetime.utcfromtimestamp(finished_at).strftime('%Y%m%dT%H%M%S')}.json"
+    path = d / f"{datetime.fromtimestamp(finished_at, timezone.utc).strftime('%Y%m%dT%H%M%S')}.json"
     meta = {"session_id": session_id, "started_at": float(started_at) if started_at else None,
             "finished_at": finished_at, "label": label}
     try:

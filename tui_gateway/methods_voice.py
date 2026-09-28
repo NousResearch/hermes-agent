@@ -734,6 +734,11 @@ def _(rid, params: dict) -> dict:
             stop_continuous(force_transcribe=True)
             _resume_voice_wake()
             return _ok(rid, {"status": "stopped"})
+        # PTT barge-in (#40010): arming the mic cuts in-flight TTS so a stale
+        # reply can't talk over the user — mirrors the CLI record-key handler.
+        # user_barge=True also marks the speech interrupted for the next turn's
+        # model note, and stop_playback() releases the file player.
+        _tts_stream_stop(user_barge=True)
         from hermes_cli.voice import start_continuous
         # Busy probe holds the no-speech counter during long agent turns; safe to re-register every
         # start (older wrappers lack the setter).

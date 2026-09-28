@@ -11,6 +11,7 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
+from agent.i18n import t
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
@@ -309,7 +310,7 @@ def format_approval_window(seconds: int) -> str:
         count, unit = seconds // 60, "minute"
     else:
         count, unit = seconds, "second"
-    return f"{count} {unit}" if count == 1 else f"{count} {unit}s"
+    return t(f"approval.window.{unit}_one" if count == 1 else f"approval.window.{unit}_other", count=count)
 
 
 def approval_timeout_notice_kwargs() -> dict:

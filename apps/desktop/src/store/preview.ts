@@ -1,10 +1,12 @@
 import { atom, computed } from 'nanostores'
 
+import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
 import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
+import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
-import { clearExplicitPreviewOpen, noteExplicitPreviewOpen } from './preview-explicit'
+import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
@@ -618,13 +620,33 @@ export function openBrowserTab() {
   const tabs = $previewTabs.get()
   const current = tabs.find(tab => tab.id === browserTabId(tabs))
 
+  recordFeatureUse('browser_pane')
   openPreview(current?.target ?? blankPage())
+}
+
+/** ⌘⇧L is a TOGGLE: show the Browser when it's away, fold it away when it's
+ *  the thing on screen. "Away" includes dismissed (Close/⌘W), hidden, or
+ *  parked behind a sibling tab — each re-opens through openBrowserTab's reveal
+ *  path with the page it was last showing. "On screen" means the mirrored
+ *  preview-tile pane the layout tree keeps is actually visible, i.e. not
+ *  dismissed/hidden/minimized AND holding its zone's active slot. */
+export function toggleBrowserTab() {
+  const id = browserTabId($previewTabs.get())
+
+  if (isPaneVisible(`${PREVIEW_TILE_PREFIX}:${id}`)) {
+    dismissTreePane(`${PREVIEW_TILE_PREFIX}:${id}`)
+
+    return
+  }
+
+  openBrowserTab()
 }
 
 /** Another Browser, always — the strip's "+". */
 export function newBrowserTab() {
   const id = mintBrowserTabId()
 
+  recordFeatureUse('browser_pane')
   $previewTabs.set([...$previewTabs.get(), { id, target: blankPage() }])
   noteExplicitPreviewOpen(id)
   selectRightRailTab(id)

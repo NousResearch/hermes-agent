@@ -237,6 +237,14 @@
       {
         "from": "../../scripts/install.sh",
         "to": "bootstrap/install.sh"
+      },
+      {
+        "from": "build/vault-seed",
+        "to": "vault-seed"
+      },
+      {
+        "from": "../../scripts/install-obsidian.ps1",
+        "to": "bootstrap/install-obsidian.ps1"
       }
     ],
     "asar": true,

@@ -83,8 +83,13 @@ environments/benchmarks/evals/
 hermes_cli/web_dist/
 # Cross-process web UI build lock (flock target, always empty)
 .web_ui_build.lock
-apps/desktop/build/
 apps/desktop/dist/
+# apps/desktop/build/ is generated (runtime staging, install-stamp, brand icons)…
+apps/desktop/build/*
+# …except the default-memory vault template, which is hand-written SOURCE: it
+# ships to the installed app as resources/vault-seed (electron-builder
+# extraResources) and is the starting content of %USERPROFILE%\Documents\Czesiek Vault.
+!apps/desktop/build/vault-seed/
 
 # tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
 # resolves the stale .js OVER the .tsx — never track these)

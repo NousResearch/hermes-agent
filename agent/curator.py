@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import re
-import threading
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -983,7 +982,13 @@ def run_curator_review(
     if synchronous:
         _llm_pass()
     else:
-        threading.Thread(target=_llm_pass, daemon=True, name="curator-review").start()
+        # _llm_pass resolves home (state, logs, and with consolidate on, config + the
+        # skills tree under review) at call time; a raw thread starts with an EMPTY
+        # contextvars context, so under a multiplexed gateway the async pass silently
+        # lands on the LAUNCH profile's home. Inherit the caller's context.
+        from agent.memory_provider import spawn_context_thread
+
+        spawn_context_thread(_llm_pass, name="curator-review").start()
     return {"started_at": start.isoformat(), "auto_transitions": counts, "summary_so_far": auto_summary}
 
 

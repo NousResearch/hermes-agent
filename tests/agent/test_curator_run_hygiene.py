@@ -35,6 +35,72 @@ def _snapshots(home: Path):
     return sorted(p.name for p in d.iterdir() if p.is_dir()) if d.exists() else []
 
 
+def _read_state(home: Path) -> dict:
+    import json
+    p = home / "skills" / ".curator_state"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def test_async_llm_pass_writes_the_owning_profile_not_the_launch_one(env, monkeypatch):
+    """The curator-review daemon thread starts with an EMPTY contextvars context, so home
+    resolution falls back to the process env — the LAUNCH profile. In a multiplexed
+    gateway the Curator tick runs under the served profile's scope and returns long before
+    the async pass finishes; the pass then wrote .curator_state / logs/curator into the
+    launch profile's home (and, with consolidate on, would review/patch the launch
+    profile's skills tree). The gate reproduces that ordering: the scope is gone before
+    the thread's first home resolution."""
+    import time as _time
+
+    import pytest as _pytest
+
+    curator = env["curator"]
+    launch_home = env["home"]
+    served_home = launch_home.parent / ".hermes-b"
+    (served_home / "skills").mkdir(parents=True)
+
+    gate = threading.Event()
+    real_report = curator._safe_curated_report
+
+    def _gated_report():
+        gate.wait(10.0)  # hold until the owning scope has exited, as in production
+        return real_report()
+
+    monkeypatch.setattr(curator, "_safe_curated_report", _gated_report)
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(served_home)
+    try:
+        curator.run_curator_review(synchronous=False, consolidate=False)
+    finally:
+        reset_hermes_home_override(token)
+        gate.set()  # the thread now runs with the owning scope already gone
+
+    # load_state()'s base dict always carries last_run_duration_seconds=None, and the
+    # synchronous pre-pass save (run_curator_review persists BEFORE forking the thread)
+    # already wrote it — only the async pass can turn it non-None.
+    deadline = _time.monotonic() + 10.0
+    while _time.monotonic() < deadline:
+        if _read_state(served_home).get("last_run_duration_seconds") is not None:
+            break
+        _time.sleep(0.02)
+    else:
+        _pytest.fail(
+            "async pass never recorded the served profile's state; "
+            f"launch={_read_state(launch_home)!r}")
+
+    for t in threading.enumerate():
+        if t.name == "curator-review" and t.is_alive():
+            t.join(timeout=10.0)
+
+    leaked = _read_state(launch_home)
+    assert leaked.get("last_run_duration_seconds") is None, (
+        "async LLM pass leaked the launch profile's .curator_state: "
+        f"{leaked!r}")
+
+
 def test_prune_only_pass_takes_no_snapshot_but_still_ages_old_ones_out(env, monkeypatch):
     cb, curator, home = env["cb"], env["curator"], env["home"]
     (home / "skills" / "alpha").mkdir()

@@ -58,7 +58,7 @@ def _enable(hermes_home: Path, name: str) -> None:
 class TestRegisterTTSProvider:
     """End-to-end: a fake plugin registers via the hook, ends up in the registry."""
 
-    def test_accepts_valid_provider(self):
+    def test_accepts_valid_provider(self, caplog):
         from hermes_cli.plugins import PluginManager
 
         from agent import tts_registry
@@ -81,12 +81,22 @@ class TestRegisterTTSProvider:
         _enable(hermes_home, "my-tts-plugin")
 
         mgr = PluginManager()
-        mgr.discover_and_load()
+        with caplog.at_level("DEBUG", logger="hermes_cli.plugins"):
+            mgr.discover_and_load()
 
         assert mgr._plugins["my-tts-plugin"].enabled is True, (
             f"Plugin failed to load: {mgr._plugins['my-tts-plugin'].error}"
         )
         assert tts_registry.get_provider("fake-tts") is not None
+        registrations = [record for record in caplog.records
+                         if record.name == "hermes_cli.plugins"
+                         and "fake-tts" in record.getMessage()
+                         and "registered" in record.getMessage()]
+        assert registrations
+        assert all(record.levelname == "DEBUG" for record in registrations)
+        assert any(record.name == "hermes_cli.plugins" and record.levelname == "INFO"
+                   and "Plugin discovery complete" in record.getMessage()
+                   for record in caplog.records)
 
         tts_registry._reset_for_tests()
 

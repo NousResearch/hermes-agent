@@ -376,7 +376,7 @@ class PluginContext:
         handle = self._manager._track_scoped_registration(
             self.manifest, kind, registry_name, registry, provider, previous
         )
-        logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
+        logger.debug("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
         return handle
 
     @property

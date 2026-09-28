@@ -20,6 +20,35 @@ from hermes_cli.config import atomic_config_write
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
 
+def _cooperatively_interrupted_result() -> dict:
+    from run_agent import AIAgent
+
+    agent = AIAgent(
+        provider="custom",
+        base_url="http://127.0.0.1:1/v1",
+        api_key="test-key",
+        model="fake-model",
+        enabled_toolsets=["terminal"],
+        quiet_mode=True,
+        skip_memory=True,
+        skip_context_files=True,
+        skip_background_review=True,
+    )
+
+    def stop_during_request(_request, **_kwargs):
+        agent.interrupt("explicit stop requested")
+        raise InterruptedError("Provider request interrupted")
+
+    agent._interruptible_api_call = stop_during_request
+    agent._interruptible_streaming_api_call = stop_during_request
+    try:
+        result = agent.run_conversation("Stop this turn during the provider request")
+        assert (result.get("interrupted"), result.get("completed")) == (True, False)
+        return result
+    finally:
+        agent.close()
+
+
 def _intake_adapter(
     monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> tuple[MatrixAdapter, MagicMock, AsyncMock]:
@@ -235,9 +264,15 @@ async def test_deferred_admission_receives_no_completion_until_replayed(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("turn_count", [2, 3])
+@pytest.mark.parametrize("stop_kind", ["task-cancel", "cooperative"])
 async def test_completed_turns_are_acknowledged_before_a_cancellable_followup(
-    monkeypatch, turn_count
+    monkeypatch, turn_count, stop_kind
 ):
+    interrupted_result = (
+        await asyncio.to_thread(_cooperatively_interrupted_result)
+        if stop_kind == "cooperative"
+        else None
+    )
     adapter, receipts, sender = _intake_adapter(monkeypatch, "after_processing")
     adapter._reactions_enabled = True
     adapter._send_reaction = AsyncMock(return_value="$eyes")
@@ -285,10 +320,15 @@ async def test_completed_turns_are_acknowledged_before_a_cancellable_followup(
         ))
         started.set()
         await release.wait()
-        return {"final_response": "last reply", "messages": []}
+        return interrupted_result
 
     monkeypatch.setattr(runner, "_run_agent", next_turn)
-    adapter.set_message_handler(lambda event: run_turn(event, events[1]))
+
+    async def respond(event):
+        result = await run_turn(event, events[1])
+        return result.get("final_response")
+
+    adapter.set_message_handler(respond)
     try:
         await adapter.handle_message(events[0])
         await asyncio.wait_for(started.wait(), 2)
@@ -310,7 +350,11 @@ async def test_completed_turns_are_acknowledged_before_a_cancellable_followup(
                 ],
             )
         ]
-        await adapter.cancel_session_processing(key)
+        if stop_kind == "task-cancel":
+            await adapter.cancel_session_processing(key)
+        else:
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 2)
         assert receipts.call_args_list == expected_receipts
         assert adapter._send_reaction.await_args_list == [
             invocation
@@ -331,7 +375,63 @@ async def test_completed_turns_are_acknowledged_before_a_cancellable_followup(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["immediate", "after_processing", "disabled"])
-@pytest.mark.parametrize("command_reply", ["active", None])
+@pytest.mark.parametrize("result_kind", ["interrupted", "failed", "handler-error"])
+async def test_ordinary_turn_completion_preserves_the_returned_agent_outcome(
+    monkeypatch, tmp_path, mode, result_kind
+):
+    result = (
+        await asyncio.to_thread(_cooperatively_interrupted_result)
+        if result_kind == "interrupted"
+        else {
+            "final_response": "Provider unavailable",
+            "messages": [],
+            "failed": True,
+            "completed": False,
+        }
+    )
+    adapter, receipts, _sender = _intake_adapter(monkeypatch, mode)
+    adapter._reactions_enabled = True
+    adapter._send_reaction = AsyncMock(return_value="$eyes")
+    adapter._schedule_reaction_redaction = MagicMock()
+    adapter._text_batch_delay_seconds = 0
+    runner = _busy_runner(monkeypatch, adapter, "queue")
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs", lambda: {"api_key": "test-key"}
+    )
+    runner._run_agent = (
+        AsyncMock(side_effect=RuntimeError("Provider failed"))
+        if result_kind == "handler-error"
+        else AsyncMock(return_value=result)
+    )
+    adapter.set_message_handler(runner._handle_message)
+    room = "!room:example.org"
+    try:
+        await _text_input(adapter, "$opening", "opening")
+        await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 2)
+        runner._run_agent.assert_awaited_once()
+        expected_receipts = (
+            [call(room, "$opening")]
+            if mode == "immediate"
+            or (mode == "after_processing" and result_kind != "interrupted")
+            else []
+        )
+        expected_reactions = [call(room, "$opening", "👀")]
+        if result_kind != "interrupted":
+            expected_reactions.append(call(room, "$opening", "❌"))
+        assert (receipts.call_args_list, adapter._send_reaction.await_args_list) == (
+            expected_receipts,
+            expected_reactions,
+        )
+    finally:
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["immediate", "after_processing", "disabled"])
+@pytest.mark.parametrize(
+    "command_reply", ["active", None, RuntimeError("status failed")]
+)
 async def test_inline_command_receipt_is_independent_of_the_active_turn(
     monkeypatch, mode, command_reply
 ):
@@ -345,6 +445,8 @@ async def test_inline_command_receipt_is_independent_of_the_active_turn(
 
     async def respond(event):
         if event.get_command() == "status":
+            if isinstance(command_reply, Exception):
+                raise command_reply
             return command_reply
         started.set()
         await release.wait()

@@ -1,6 +1,8 @@
 """Keep process helpers reachable and patchable through the gateway facade."""
 
-from types import FunctionType
+from types import FunctionType, SimpleNamespace
+
+import pytest
 
 from hermes_cli import gateway, gateway_process
 
@@ -34,6 +36,33 @@ def test_moved_pid_finder_reads_facade_patches(monkeypatch):
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
 
     assert gateway.find_gateway_pids() == [123, 456]
+
+
+@pytest.mark.linux_only
+def test_moved_process_scan_honors_facade_pid_admission(monkeypatch):
+    admitted = []
+
+    def unavailable_proc(_excluded):
+        raise OSError("exercise the ps fallback")
+
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_iter_proc_cmdlines", unavailable_proc)
+    monkeypatch.setattr(
+        gateway.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(
+            returncode=0, stdout="999999 python -m hermes_cli.main gateway run\n"
+        ),
+    )
+    monkeypatch.setattr(
+        gateway, "_append_unique_pid", lambda *args: admitted.append(args)
+    )
+
+    # The facade's admission seam rejects the candidate; moving the scanner
+    # must not bypass that decision by reading the sibling's original helper.
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == []
+    assert len(admitted) == 1
+    assert admitted[0][1:] == (999999, set())
 
 
 def test_moved_loop_probe_reads_facade_witness(monkeypatch):

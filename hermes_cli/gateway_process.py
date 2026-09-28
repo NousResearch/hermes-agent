@@ -536,6 +536,7 @@ def _scan_gateway_pids(
     """Best-effort process-table scan for gateway PIDs (backs up a stale/missing PID file; ``--all`` sweeps)."""
     from hermes_cli.gateway import (
         _CAPTURE_TEXT,
+        _append_unique_pid,
         _filter_venv_launcher_stubs,
         _get_ancestor_pids,
         _iter_proc_cmdlines,

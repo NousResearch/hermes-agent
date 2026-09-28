@@ -198,6 +198,40 @@ def test_interrupted_turn_with_diagnostic_text_is_not_completed():
     assert result["failed"] is False
 
 
+def test_budget_summary_interrupt_wall_names_system_producer():
+    """#126748: the finalizer's budget-summary interrupt wall names the recorded producer
+    (lease loss, liveness watchdog, …) instead of a bare timer; the stable prefix stays
+    byte-identical for the ACP/TUI/gateway sentinel suppression."""
+    import logging
+    from types import SimpleNamespace
+
+    from agent.turn_finalizer import _resolve_budget_fallback
+
+    def _raise_interrupted(*_a, **_k):
+        raise InterruptedError()
+
+    agent = SimpleNamespace(
+        max_iterations=1,
+        iteration_budget=SimpleNamespace(remaining=0),
+        quiet_mode=True,
+        _tool_interrupt_reason="turn liveness watchdog",
+        _emit_diagnostic_status=lambda *a, **k: None,
+        _safe_print=lambda *a, **k: None,
+        _handle_max_iterations=_raise_interrupted,
+    )
+    final_response, exit_reason, _preserved, interrupted = _resolve_budget_fallback(
+        agent, final_response=None, api_call_count=1, interrupted=False, failed=False,
+        messages=[{"role": "user", "content": "hi"}], _turn_exit_reason="unknown",
+        _pending_verification_response=None, _pending_verification_response_previewed=False,
+        logger=logging.getLogger("test"),
+    )
+
+    assert interrupted is True
+    assert exit_reason == "interrupted_during_api_call(turn_liveness_watchdog)"
+    assert final_response.startswith("Operation interrupted: waiting for model response (")
+    assert final_response.endswith("elapsed, cause: turn liveness watchdog).")
+
+
 def _pending_tool_result_tail():
     """A non-interrupted turn that fell out of the loop after a tool result, with no
     follow-up assistant text — the #55316/#54756 "silent stop" shape."""

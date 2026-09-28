@@ -73,3 +73,37 @@ def test_ordinary_partial_is_kept_as_the_interrupted_row():
 
     assert (messages[-1]["role"], messages[-1]["content"]) == ("assistant", "Visible draft.")
     assert verdict.final_response == "Visible draft."
+
+
+def _interrupt_with_reason(streamed: str, reason):
+    agent = _bare_agent(streamed)
+    agent._tool_interrupt_reason = reason
+    messages = [{"role": "user", "content": "start"}]
+    verdict = handle_api_interrupt(
+        agent, _retry=TurnRetryState(), thinking_spinner=None, messages=messages,
+        conversation_history=[], api_start_time=time.time(), interrupted=False, final_response=None,
+    )
+    return verdict
+
+
+def test_system_interrupt_case_names_its_producer_in_the_wall():
+    """#126748: a lease-loss/watchdog/gateway-shutdown stop must not render as a bare timer —
+    the wall names the recorded producer so the three hard-interrupt paths are distinguishable."""
+    from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+    verdict = _interrupt_with_reason("", "session turn lease lost")
+
+    assert verdict.final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+    assert verdict.final_response.endswith("elapsed, cause: session turn lease lost).")
+    # The stable prefix is byte-identical: ACP/TUI/gateway sentinel suppression relies on it.
+    assert verdict.final_response.startswith("Operation interrupted: waiting for model response (")
+
+
+def test_human_stop_keeps_the_bare_timer_wall():
+    """A human stop carries no producer cause; the wall stays in its historical bare form."""
+    from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+    verdict = _interrupt_with_reason("", "user interrupt")
+
+    assert verdict.final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+    assert "cause:" not in verdict.final_response

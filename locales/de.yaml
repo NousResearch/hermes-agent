@@ -88,6 +88,8 @@ gateway:
     branched_many:         "⑂ Verzweigt zu **{title}** ({count} Nachrichten kopiert)\nOriginal: `{parent}`\nZweig: `{new}`\nVerwenden Sie `/resume`, um zum Original zurückzukehren."
     branched_thread_one:   "⑂ Verzweigt zu **{title}** in einem neuen Thread ({count} Nachricht kopiert)\nThread: {thread}\nOriginal: `{parent}` — dieser Chat bleibt darauf\nZweig: `{new}`\nMit `/branch --here` stattdessen in diesem Chat verzweigen."
     branched_thread_many:  "⑂ Verzweigt zu **{title}** in einem neuen Thread ({count} Nachrichten kopiert)\nThread: {thread}\nOriginal: `{parent}` — dieser Chat bleibt darauf\nZweig: `{new}`\nMit `/branch --here` stattdessen in diesem Chat verzweigen."
+    thread_seed_one:       "Verzweigt von **{origin}** — {count} Nachricht(en) Kontext wurden mitgebracht. Schreibe hier, um an diesem Punkt fortzufahren; die ursprüngliche Unterhaltung bleibt unverändert."
+    thread_seed_many:      "Verzweigt von **{origin}** — {count} Nachricht(en) Kontext wurden mitgebracht. Schreibe hier, um an diesem Punkt fortzufahren; die ursprüngliche Unterhaltung bleibt unverändert."
     thread_fallback:       "Hier konnte kein Thread erstellt werden, daher hat der Zweig die Sitzung dieses Chats ersetzt."
 
   commands:

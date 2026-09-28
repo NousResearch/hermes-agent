@@ -92,6 +92,8 @@ gateway:
     branched_many:         "⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)\nBunaidh: `{parent}`\nBrainse: `{new}`\nÚsáid `/resume` chun filleadh ar an mbunaidh."
     branched_thread_one:   "⑂ Brainseáilte go **{title}** i snáithe nua ({count} teachtaireacht cóipeáilte)\nSnáithe: {thread}\nBunleagan: `{parent}` — fanann an comhrá seo air\nBrainse: `{new}`\nÚsáid `/branch --here` le brainseáil sa chomhrá seo."
     branched_thread_many:  "⑂ Brainseáilte go **{title}** i snáithe nua ({count} teachtaireacht cóipeáilte)\nSnáithe: {thread}\nBunleagan: `{parent}` — fanann an comhrá seo air\nBrainse: `{new}`\nÚsáid `/branch --here` le brainseáil sa chomhrá seo."
+    thread_seed_one:       "Brainseáilte ó **{origin}** — {count} teachtaireacht comhthéacs cóipeáilte. Scríobh anseo chun leanúint ón bpointe seo."
+    thread_seed_many:      "Brainseáilte ó **{origin}** — {count} teachtaireacht comhthéacs cóipeáilte. Scríobh anseo chun leanúint ón bpointe seo."
     thread_fallback:       "Níorbh fhéidir snáithe a chruthú anseo, mar sin ghlac an brainse ionad sheisiún an chomhrá seo."
 
   commands:

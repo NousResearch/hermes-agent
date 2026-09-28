@@ -88,6 +88,8 @@ gateway:
     branched_many:         "⑂ **{title}** に分岐しました ({count} メッセージをコピー)\n元: `{parent}`\nブランチ: `{new}`\n元のセッションに戻るには `/resume` を使用してください。"
     branched_thread_one:   "⑂ 新しいスレッドで **{title}** に分岐しました（{count} 件のメッセージをコピー）\nスレッド: {thread}\n元: `{parent}` — このチャットは元のまま\n分岐: `{new}`\nこのチャット内で分岐するには `/branch --here` を使用してください。"
     branched_thread_many:  "⑂ 新しいスレッドで **{title}** に分岐しました（{count} 件のメッセージをコピー）\nスレッド: {thread}\n元: `{parent}` — このチャットは元のまま\n分岐: `{new}`\nこのチャット内で分岐するには `/branch --here` を使用してください。"
+    thread_seed_one:       "**{origin}** から分岐しました — コンテキストとして {count} 件のメッセージを引き継いでいます。このスレッドで入力すると、この時点から続けられます。元の会話はそのままです。"
+    thread_seed_many:      "**{origin}** から分岐しました — コンテキストとして {count} 件のメッセージを引き継いでいます。このスレッドで入力すると、この時点から続けられます。元の会話はそのままです。"
     thread_fallback:       "ここではスレッドを作成できなかったため、分岐がこのチャットのセッションを置き換えました。"
 
   commands:

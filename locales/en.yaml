@@ -103,6 +103,8 @@ gateway:
     branched_many:         "⑂ Branched to **{title}** ({count} messages copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
     branched_thread_one:   "⑂ Branched to **{title}** in a new thread ({count} message copied)\nThread: {thread}\nOriginal: `{parent}` — this chat stays on it\nBranch: `{new}`\nUse `/branch --here` to branch in this chat instead."
     branched_thread_many:  "⑂ Branched to **{title}** in a new thread ({count} messages copied)\nThread: {thread}\nOriginal: `{parent}` — this chat stays on it\nBranch: `{new}`\nUse `/branch --here` to branch in this chat instead."
+    thread_seed_one:       "Branched from **{origin}** — {count} message(s) of context carried over. Type here to continue from this point; the original conversation is untouched."
+    thread_seed_many:      "Branched from **{origin}** — {count} message(s) of context carried over. Type here to continue from this point; the original conversation is untouched."
     thread_fallback:       "No thread could be created here, so the branch replaced this chat's session."
 
   commands:

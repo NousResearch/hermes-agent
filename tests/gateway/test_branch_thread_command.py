@@ -19,10 +19,15 @@ class _ThreadAdapter:
 
     def __init__(self, thread_id="777000", fail=False):
         self.thread_id, self.fail, self.calls = thread_id, fail, []
+        self.sends = []  # (chat_id, content, metadata) — the sibling-thread seed rides send()
 
     async def create_handoff_thread(self, parent_chat_id, name):
         self.calls.append((parent_chat_id, name))
         return None if self.fail else self.thread_id
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.sends.append((str(chat_id), content, metadata))
+        return None
 
 
 @pytest.fixture()
@@ -88,6 +93,15 @@ async def test_plain_branch_binds_new_thread_and_keeps_origin(store):
         parent.session_id, "777000", "777000", "thread")
     assert [m["content"] for m in store._db.get_messages(branch.session_id)] == ["hello", "world"]
     assert "<#777000>" in reply and parent.session_id in reply
+    # The empty sibling thread is seeded with a branch-point marker (#126689) — fire-and-forget:
+    # drain it and check it landed IN the thread (thread metadata), never in the origin chat.
+    for task in list(runner._background_tasks):
+        await task
+    assert len(adapter.sends) == 1
+    chat_id, content, metadata = adapter.sends[0]
+    assert chat_id == "777000" and metadata == {"thread_id": "777000"}
+    # The marker names the ORIGIN chat and the copied count — never a history replay.
+    assert "123" in content and "hello" not in content and "world" not in content
 
 
 @pytest.mark.asyncio
@@ -112,3 +126,6 @@ async def test_here_or_no_thread_branches_in_place(store, text, adapter):
         # ``--here`` never even asks the platform for a thread.
         assert adapter.calls == ([] if "--here" in text else [("123", "side quest")])
     assert "side quest" in reply
+    # In-place branches (failed thread creation included) have no sibling thread to seed.
+    if adapter is not None:
+        assert adapter.sends == []

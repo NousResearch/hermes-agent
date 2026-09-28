@@ -88,6 +88,8 @@ gateway:
     branched_many:         "⑂ Ramificado para **{title}** ({count} mensagens copiadas)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
     branched_thread_one:   "⑂ Ramificado para **{title}** em um novo tópico ({count} mensagem copiada)\nTópico: {thread}\nOriginal: `{parent}` — este chat permanece nele\nRamo: `{new}`\nUse `/branch --here` para ramificar neste chat."
     branched_thread_many:  "⑂ Ramificado para **{title}** em um novo tópico ({count} mensagens copiadas)\nTópico: {thread}\nOriginal: `{parent}` — este chat permanece nele\nRamo: `{new}`\nUse `/branch --here` para ramificar neste chat."
+    thread_seed_one:       "Ramificado a partir de **{origin}** — {count} mensagem(s) de contexto copiada(s). Escreva aqui para continuar deste ponto; a conversa original permanece intacta."
+    thread_seed_many:      "Ramificado a partir de **{origin}** — {count} mensagem(s) de contexto copiada(s). Escreva aqui para continuar deste ponto; a conversa original permanece intacta."
     thread_fallback:       "Não foi possível criar um tópico aqui, então o ramo substituiu a sessão deste chat."
 
   commands:

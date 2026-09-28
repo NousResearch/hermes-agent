@@ -1086,9 +1086,36 @@ class GatewaySessionCommandsMixin:
             if not stay_here and source.platform in BRANCH_THREAD_PLATFORMS:
                 reply += "\n" + t("gateway.branch.thread_fallback")
             return reply
+        # Seed the empty sibling thread so the branch is visible on the platform (#126689) —
+        # the copied history is server-side only and the thread otherwise looks dead.
+        self._track_background_task(self._branch_seed_sibling_thread(
+            dest_source, source, branch_title, msg_count))
         key = "gateway.branch.branched_thread_one" if msg_count == 1 else "gateway.branch.branched_thread_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id,
                  thread=format_thread_ref(source.platform, dest_source.thread_id))
+
+    async def _branch_seed_sibling_thread(self, dest_source: SessionSource, source: SessionSource,
+                                          branch_title: str, msg_count: int) -> None:
+        """Post the branch-point marker into the new sibling thread (#126689).
+
+        Without it the thread is visually empty and the branch looks broken even though the
+        cloned history is fully loaded server-side — /handoff never has this problem because it
+        seeds its thread with a synthetic turn. Best-effort by design: a failed seed must not
+        fail the branch (the thread is already bound and usable).
+        """
+        adapter = self._delivery_adapter_for(source)
+        if adapter is None:
+            return
+        key = "gateway.branch.thread_seed_one" if msg_count == 1 else "gateway.branch.thread_seed_many"
+        marker = t(key, count=msg_count, origin=source.chat_name or source.chat_id)
+        metadata = self._thread_metadata_for_target(
+            getattr(source, "platform", None), str(dest_source.chat_id), str(dest_source.thread_id),
+            chat_type=dest_source.chat_type)
+        try:
+            await adapter.send(str(dest_source.chat_id), marker, metadata=metadata)
+        except Exception:
+            logger.warning("Branch: seeding the sibling thread failed on %s",
+                           source.platform.value, exc_info=True)
 
     async def _branch_open_thread(self, source: SessionSource, title: str) -> Optional[SessionSource]:
         """Open the sibling thread a plain ``/branch`` clones into; the destination source, or

@@ -56,6 +56,12 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
                                   or any(not isinstance(name, str) for name in names)):
             raise ValueError(f"plugins.{key} must be a list of names: {config_path}")
     provider = (config.get("memory") or {}).get("provider")
+    if provider is False:
+        # Legacy "unset" written by older config writers. The runtime reader treats falsy as
+        # no-provider, so rejecting it here bricks `hermes pm repair` — the only tool that
+        # could heal such a config. The parsed config is returned untouched; every consumer
+        # already coerces falsy to no-provider.
+        provider = None
     if provider is not None and not isinstance(provider, str):
         raise ValueError(f"memory.provider must be a name: {config_path}")
     return config

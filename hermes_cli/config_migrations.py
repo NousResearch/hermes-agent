@@ -754,6 +754,16 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (45, _migrate_to_45),
     # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).
     (46, _migrate_to_46),
+    # 46 → 47: `memory.provider: false` (legacy "unset" from older config writers) → ''. The
+    # runtime reader treats falsy as no-provider but the PM validator rejects the literal, so an
+    # upgrade leaves `hermes pm repair` unable to run — the one tool that could heal the config.
+    (47, functools.partial(
+        _rewrite_key, section="memory", key="provider", new="",
+        match=lambda cur: cur is False,
+        added="memory.provider='' (was legacy false)",
+        message=(
+            "  ✓ Cleared a legacy `memory.provider: false` — older config writers used it to mean "
+            "\"unset\", and it blocked `hermes pm repair` and profile migrations."))),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -765,7 +775,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 47})
 
 
 def run_migrations(

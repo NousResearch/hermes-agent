@@ -88,6 +88,66 @@ import { ChatView } from '.'
 
 const NO_MESSAGES: ChatMessage[] = []
 
+/**
+ * Total resume budget for one tile (#93892). Every dial/RPC/hydration in the
+ * resume chain has its own timeout, but the chain as a whole had none: a
+ * runtime that genuinely resumes and is then reclaimed (`session.reclaimed`
+ * unbinds the tile, which re-arms the resume effect) looped forever behind
+ * the loader. More than TILE_RESUME_STORM_LIMIT successful resumes inside
+ * TILE_RESUME_STORM_WINDOW_MS is not recovery any more — latch the error
+ * card so the user gets a terminal state and a Retry (which re-opens the
+ * budget). A normal sleep/wake or backend restart re-resumes once or twice;
+ * the reclaim loop cycles roughly every orphan-reap grace (~20s).
+ */
+export const TILE_RESUME_STORM_WINDOW_MS = 120_000
+export const TILE_RESUME_STORM_LIMIT = 4
+export const TILE_RESUME_STORM_MESSAGE =
+  'Session keeps losing its backend runtime right after resuming — retry to resume it again.'
+
+/** The resume timestamps still inside the storm window at `now`. */
+export function recentTileResumes(resumedAt: readonly number[], now: number): number[] {
+  return resumedAt.filter(at => now - at < TILE_RESUME_STORM_WINDOW_MS)
+}
+
+/** True once the resume budget is exhausted: the next resume must latch the
+ *  error card instead of dialing again. */
+export function tileResumeStormed(resumedAt: readonly number[], now: number): boolean {
+  return recentTileResumes(resumedAt, now).length >= TILE_RESUME_STORM_LIMIT
+}
+
+export interface TileResumeBudget {
+  /** Ask before dialing. False = the budget is spent: latch the error card
+   *  instead. The budget resets on that answer so a Retry gets a clean cycle. */
+  take: () => boolean
+  /** A resume SUCCEEDED (bound a runtime) — only successes spend budget;
+   *  failures already latch their own error. */
+  spend: () => void
+}
+
+/** One tile's resume budget — the pane keeps one for its lifetime. */
+export function createTileResumeBudget(now: () => number = Date.now): TileResumeBudget {
+  let resumedAt: number[] = []
+
+  return {
+    take: () => {
+      const at = now()
+
+      if (tileResumeStormed(resumedAt, at)) {
+        resumedAt = []
+
+        return false
+      }
+
+      resumedAt = recentTileResumes(resumedAt, at)
+
+      return true
+    },
+    spend: () => {
+      resumedAt = [...resumedAt, now()]
+    }
+  }
+}
+
 export const WRONG_BACKEND_TILE_ERROR =
   'Wrong backend — this session lives on another connection. Reconnect to that backend to open it.'
 
@@ -438,6 +498,8 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   const gatewayOpen = useStore($gatewayState) === 'open'
   const delegateRevision = useStore($sessionTileDelegateRevision)
   const resumingRef = useRef(false)
+  // This tile's overall resume budget (#93892).
+  const resumeBudget = useRef(createTileResumeBudget()).current
   const view = useMemo(() => buildTileView(storedSessionId), [storedSessionId])
 
   const storedSessionStillExists = useCallback(
@@ -513,11 +575,23 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
       return
     }
 
+    // Bounded overall budget (#93892): a runtime that keeps resuming and
+    // getting reclaimed is a loop, not recovery. Latch the error card (and
+    // reset the budget so Retry gets a clean cycle) instead of dialing again.
+    if (!resumeBudget.take()) {
+      patchSessionTile(storedSessionId, { error: TILE_RESUME_STORM_MESSAGE })
+
+      return
+    }
+
     resumingRef.current = true
 
     delegate
       .resumeTile(storedSessionId)
-      .then(id => patchSessionTile(storedSessionId, { error: undefined, runtimeId: id }))
+      .then(id => {
+        resumeBudget.spend()
+        patchSessionTile(storedSessionId, { error: undefined, runtimeId: id })
+      })
       .catch(async (err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
 
@@ -550,7 +624,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
       .finally(() => {
         resumingRef.current = false
       })
-  }, [delegateRevision, gatewayOpen, ownerRoute, runtimeId, storedSessionId, tile?.error])
+  }, [delegateRevision, gatewayOpen, ownerRoute, resumeBudget, runtimeId, storedSessionId, tile?.error])
 
   // The gateway (re)opening invalidates any latched error — it likely came
   // from a not-yet-open gateway or the previous connection. Clearing it

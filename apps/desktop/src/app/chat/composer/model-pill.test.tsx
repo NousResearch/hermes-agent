@@ -12,7 +12,7 @@ import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource
 
 import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from './contrib'
 import { requestModelMenuToggle } from './focus'
-import { ModelPill } from './model-pill'
+import { MODEL_RESOLVE_GRACE_MS, ModelPill } from './model-pill'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
 const modelState = (over: Partial<ChatBarState['model']> = {}): ChatBarState['model'] => ({
@@ -165,6 +165,94 @@ describe('ModelPill per-surface model label', () => {
 
     expect(screen.getByText('Sonnet')).toBeTruthy()
     expect(screen.queryByText(/primary/i)).toBeNull()
+  })
+})
+
+// #93892: the pill's loader used to spin for as long as the surface had no
+// model — with no timer, error or retry cap. It is now a bounded grace per
+// surface identity, after which the pill admits "no model" and stays usable.
+describe('ModelPill bounded loader', () => {
+  const tileView = (runtimeId: string, model = ''): SessionView => ({
+    kind: 'tile',
+    $awaitingResponse: atom(false),
+    $busy: atom(false),
+    $cwd: atom(''),
+    $fast: atom(false),
+    $lastVisibleIsUser: atom(false),
+    $messages: atom([]),
+    $messagesEmpty: atom(true),
+    $model: atom(model),
+    $provider: atom(''),
+    $reasoningEffort: atom(''),
+    $reasoningEffortPending: atom(false),
+    $reasoningEffortWire: atom(''),
+    $runtimeId: atom(runtimeId),
+    $storedId: atom('stored-tile'),
+    $turnStartedAt: atom<number | null>(null)
+  })
+
+  const renderEmptyPill = (view: SessionView) =>
+    render(
+      <SessionViewProvider value={view}>
+        <ModelPill disabled={false} model={modelState({ model: '', provider: '', modelMenuContent: <div /> })} />
+      </SessionViewProvider>
+    )
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('spins only for the grace window, then shows the empty label', () => {
+    vi.useFakeTimers()
+    renderEmptyPill(tileView('rt-1'))
+
+    expect(screen.queryByTestId('model-pill-no-model')).toBeNull()
+
+    act(() => {
+      vi.advanceTimersByTime(MODEL_RESOLVE_GRACE_MS - 1)
+    })
+    expect(screen.queryByTestId('model-pill-no-model')).toBeNull()
+
+    act(() => {
+      vi.advanceTimersByTime(1)
+    })
+    expect(screen.getByTestId('model-pill-no-model').textContent).toBe('no model')
+  })
+
+  it('does not re-arm the loader when the runtime is rebound (reclaim → resume)', () => {
+    vi.useFakeTimers()
+    const view = tileView('rt-1')
+    renderEmptyPill(view)
+
+    act(() => {
+      vi.advanceTimersByTime(MODEL_RESOLVE_GRACE_MS)
+    })
+    expect(screen.getByTestId('model-pill-no-model')).toBeTruthy()
+
+    // The loop's signature: same stored session, a fresh runtime every cycle.
+    act(() => {
+      ;(view.$runtimeId as ReturnType<typeof atom<null | string>>).set('rt-2')
+    })
+
+    expect(screen.getByTestId('model-pill-no-model')).toBeTruthy()
+  })
+
+  it('paints the model as soon as one lands, before or after the grace', () => {
+    vi.useFakeTimers()
+    const view = tileView('rt-1')
+    renderEmptyPill(view)
+
+    act(() => {
+      vi.advanceTimersByTime(MODEL_RESOLVE_GRACE_MS)
+    })
+    expect(screen.getByTestId('model-pill-no-model')).toBeTruthy()
+
+    act(() => {
+      ;(view.$model as ReturnType<typeof atom<string>>).set('tile/claude-sonnet')
+    })
+
+    expect(screen.queryByTestId('model-pill-no-model')).toBeNull()
+    expect(screen.getByText(/^Sonnet/)).toBeTruthy()
   })
 })
 

@@ -31,6 +31,16 @@ const PILL = cn(
 )
 
 /**
+ * How long the pill shows its loader for a surface with no model before it
+ * admits "no model" (#93892). The loader exists to hide the beat between a
+ * gateway/session coming up and its `session.info` landing — not to spin
+ * for as long as a session's owner socket churns. Past the grace the pill
+ * paints the (translated) empty label and stays a working control: the menu
+ * still opens and a pick still lands.
+ */
+export const MODEL_RESOLVE_GRACE_MS = 8_000
+
+/**
  * Composer model selector — the relocated status-bar pill. Reuses the live
  * `model.options` dropdown (`modelMenuContent`) verbatim; falls back to the
  * full picker when the gateway is closed and no live menu exists.
@@ -61,10 +71,31 @@ export function ModelPill({
   const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
   const runtimeId = useStore(view.$runtimeId)
+  const storedId = useStore(view.$storedId)
   const [open, setOpen] = useState(false)
   const restoreSelection = useRef<(() => void) | null>(null)
   const scope = useComposerScope()
   const hasLiveMenu = Boolean(model.modelMenuContent)
+  const hasModel = Boolean(currentModel.trim())
+
+  // Bounded loader: one grace window per surface identity (the durable stored
+  // id, not the runtime — a reclaimed/re-resumed runtime must not re-arm it).
+  // Once the grace has lapsed for this surface it stays lapsed until a model
+  // lands, so a model that comes and goes never brings the loader back.
+  const graceKey = storedId ?? runtimeId ?? 'draft'
+  const [graceLapsedFor, setGraceLapsedFor] = useState<null | string>(null)
+
+  useEffect(() => {
+    if (hasModel) {
+      return
+    }
+
+    const timer = window.setTimeout(() => setGraceLapsedFor(graceKey), MODEL_RESOLVE_GRACE_MS)
+
+    return () => window.clearTimeout(timer)
+  }, [graceKey, hasModel])
+
+  const showNoModel = !hasModel && graceLapsedFor === graceKey
 
   // The `composer.modelPicker` hotkey, routed to exactly one surface (the pane
   // under the pointer, else the active composer — see requestModelMenuToggle).
@@ -136,8 +167,12 @@ export function ModelPill({
     <ChevronDown className="size-3.5 shrink-0 opacity-70" />
   ) : (
     <>
-      {currentModel.trim() ? (
+      {hasModel ? (
         <span className="truncate">{pillLabel ?? formatModelPillLabel(currentModel, { fastMode })}</span>
+      ) : showNoModel ? (
+        <span className="truncate" data-testid="model-pill-no-model">
+          {copy.noModel}
+        </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

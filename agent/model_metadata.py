@@ -340,7 +340,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 2000000,
     "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
-    # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
+    # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K. kimi-for-coding
+    # (Kimi Code plan, api.kimi.com/coding) serves 1 Mi per the live /models probe and models.dev
+    # kimi-code-plan-*; its -highspeed sibling is genuinely 256K and must outrank the shared
+    # prefix — _longest_key_match orders by key length (#126224).
+    "kimi-for-coding-highspeed": 262144, "kimi-for-coding": 1_048_576,
     "kimi-k3": 1_048_576, "kimi": 262144,
     # Upstage Solar — /v1/models returns no context_length. Later generations and new lineups
     # default to 512K (Upstage /v1/solar/models max_model_len, 2026-09).
@@ -589,7 +593,7 @@ def _ollama_show_context(data: Dict[str, Any], *, gguf_first: bool, minimum: Opt
 
 # (host, canonical paths, model ids, context) — see _endpoint_scoped_context_length.
 _ENDPOINT_SCOPED_CONTEXT = (
-    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot"}, 1_048_576),
+    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot", "kimi-for-coding"}, 1_048_576),
     ("integrate.api.nvidia.com", {"/v1"}, {"deepseek-ai/deepseek-v4-pro"}, 262_144),
 )
 

@@ -110,9 +110,12 @@ class ModelCapabilities:
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter", "novita": "novita-ai", "anthropic": "anthropic",
     "openai": "openai", "openai-api": "openai", "openai-codex": "openai", "zai": "zai",
-    "kimi": "kimi-for-coding", "kimi-coding": "kimi-for-coding",
-    "moonshot": "kimi-for-coding", "stepfun": "stepfun",
-    "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
+    # models.dev renamed the Kimi Coding Plan provider to kimi-code-plan-global/-cn (the old
+    # "kimi-for-coding" slug survives only as a MODEL id there); legacy Moonshot API keys map
+    # to the moonshotai catalog, not the coding-plan one (#126224).
+    "kimi": "kimi-code-plan-global", "kimi-coding": "kimi-code-plan-global",
+    "moonshot": "moonshotai", "stepfun": "stepfun",
+    "kimi-coding-cn": "kimi-code-plan-cn", "minimax": "minimax",
     "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
     "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
     "ai-gateway": "vercel", "opencode-zen": "opencode",

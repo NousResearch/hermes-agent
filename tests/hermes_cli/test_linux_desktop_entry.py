@@ -476,6 +476,47 @@ def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, mo
     assert entry2.read_text(encoding="utf-8") == entry.read_text(encoding="utf-8")
 
 
+def test_exec_never_persists_a_pm_environment_path_hit(tmp_path, xdg_home, monkeypatch):
+    """A PATH hit inside pm.environments.installs_root() is an ephemeral artifact.
+
+    When dependencies are activated via PM, an ephemeral venv bin directory
+    under installs_root() is placed at the front of PATH. This candidate must
+    be treated as non-durable so the desktop entry generator falls through to
+    the durable wrapper probe rather than pinning the ephemeral generation venv.
+    """
+    root = _make_project(tmp_path)
+    installs = tmp_path / "hermes-installs"
+    pm_venv_script = installs / "gen123" / "venv" / "bin" / "hermes"
+    pm_venv_script.parent.mkdir(parents=True)
+    pm_venv_script.write_text("#!/usr/bin/env bash\nexec true\n", encoding="utf-8")
+    pm_venv_script.chmod(0o755)
+
+    known_wrapper = tmp_path / "path-home" / ".local" / "bin" / "hermes"
+    known_wrapper.parent.mkdir(parents=True)
+    known_wrapper.write_text(
+        f'#!/usr/bin/env bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        encoding="utf-8",
+    )
+    known_wrapper.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path / "path-home"))
+
+    monkeypatch.setattr("pm.environments.installs_root", lambda: installs)
+
+    def fake_resolve():
+        return sys.argv[0] or str(pm_venv_script)
+
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", fake_resolve)
+    _argv0_context(monkeypatch, str(pm_venv_script))
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry is not None
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line == f"{known_wrapper} desktop"
+    assert str(pm_venv_script) not in exec_line
+
+
 def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
     tmp_path, xdg_home, monkeypatch
 ):
@@ -653,16 +694,8 @@ def test_installed_entry_carries_the_window_app_id(tmp_path, xdg_home, monkeypat
     assert values["Name"] == "Hermes"  # the menu label is not part of the identity
 
 
-def test_install_keeps_the_legacy_entry_as_a_hidden_alias(tmp_path, xdg_home, monkeypatch):
-    """A pin resolves by the entry file name it was pinned against (#124492).
-
-    Deleting ``hermes.desktop`` silently kills existing taskbar pins (GNOME drops
-    the favourite, Plasma leaves an inert item) and the shell has no mechanism to
-    re-point the association for the user. The pre-rename entry must survive as a
-    ``NoDisplay=true`` alias of the app-id entry: out of the app grid, still
-    launchable, and window-matched through the same ``StartupWMClass`` and
-    ``Exec`` as the app-id entry.
-    """
+def test_install_retires_the_legacy_entry_name(tmp_path, xdg_home, monkeypatch):
+    """A leftover hermes.desktop would surface as a second Hermes in the app grid."""
     _stub_install(tmp_path, monkeypatch)
     root = _make_project(tmp_path)
     legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
@@ -675,30 +708,11 @@ def test_install_keeps_the_legacy_entry_as_a_hidden_alias(tmp_path, xdg_home, mo
     entry = lde.install_desktop_entry(root)
 
     assert entry is not None and entry.is_file()
-    assert legacy.is_file(), "an existing pin resolves through this file — it must survive"
-    alias = _parse(legacy.read_text(encoding="utf-8"))
-    assert alias["NoDisplay"] == "true"  # no second Hermes in the app grid
-    assert alias["StartupWMClass"] == lde.APP_ID  # still groups with the window
-    entry_values = _parse(entry.read_text(encoding="utf-8"))
-    assert alias["Exec"] == entry_values["Exec"]  # launches the same command
-    assert alias["Icon"] == entry_values["Icon"]
-
-
-def test_unchanged_entry_still_aliases_a_legacy_entry(tmp_path, xdg_home, monkeypatch):
-    """An up-to-date app-id entry must not skip converting a legacy file found beside it."""
-    _stub_install(tmp_path, monkeypatch)
-    root = _make_project(tmp_path)
-    assert lde.install_desktop_entry(root) is not None
-    legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
-    legacy.write_text("[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n", encoding="utf-8")
-
-    lde.install_desktop_entry(root)
-
-    assert _parse(legacy.read_text(encoding="utf-8"))["NoDisplay"] == "true"
+    assert not legacy.exists()
 
 
 def test_install_keeps_foreign_files_at_the_legacy_path(tmp_path, xdg_home, monkeypatch):
-    """Only our own entry is converted to an alias; another app's file is not ours to rewrite."""
+    """Only our own entry retires; another app's file at that name is not ours to delete."""
     _stub_install(tmp_path, monkeypatch)
     root = _make_project(tmp_path)
     foreign = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
@@ -715,9 +729,9 @@ def test_install_keeps_foreign_files_at_the_legacy_path(tmp_path, xdg_home, monk
 
 
 def test_install_opt_out_preserves_the_legacy_entry(tmp_path, xdg_home, monkeypatch):
-    """The opt-out protects user edits, so it also stops the legacy alias conversion.
+    """The opt-out protects user edits, so it also stops the legacy retirement.
 
-    The missing-entry path still creates the app-id entry; the rewrite is
+    The missing-entry path still creates the app-id entry; the deletion is
     management too and must not run when the user asked to be left alone.
     """
     hermes_home = tmp_path / "hermes-home"
@@ -738,9 +752,7 @@ def test_install_opt_out_preserves_the_legacy_entry(tmp_path, xdg_home, monkeypa
     entry = lde.install_desktop_entry(root)
 
     assert entry == xdg_home / "applications" / lde.DESKTOP_ENTRY_NAME
-    assert legacy.read_text(encoding="utf-8") == (
-        "[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n"
-    ), "the opt-out must leave the legacy entry byte-for-byte untouched"
+    assert legacy.is_file(), "the opt-out must keep the legacy entry in place"
 
 
 def test_app_id_matches_the_desktop_build_identity():

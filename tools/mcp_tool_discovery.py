@@ -67,16 +67,19 @@ def _connect_cooldown_active(server_name: str) -> bool:
 
 
 def _owner_scope_home() -> Optional[Path]:
-    """The profile home whose secret scope MCP credential reads must resolve under, or None when
-    the caller is already scoped or this is a single-profile process (scope key ``None``).
+    """The profile home whose secret scope MCP credential reads must resolve under, or None for a
+    single-profile process (scope key ``None``).
 
     The owner is the profile the connection is keyed under (``_mcp_registry_scope()``), never the
-    ambient one, so a served profile is never handed another profile's token (#111151)."""
-    from agent.secret_scope import current_secret_scope
-    if current_secret_scope() is not None:
-        return None
+    ambient one, so a served profile is never handed another profile's token (#111151). A scope the
+    caller already bound is rebuilt rather than trusted: a bound mapping is a snapshot, and the
+    gateway's boot-time one is taken before the profile's external secret source may have answered
+    (#119092) — the rebuild retries that hydration (cached once it succeeds)."""
     scope_key = _core._mcp_registry_scope()
-    return None if scope_key is None else Path(scope_key)
+    if scope_key is None:
+        return None
+    from agent.secret_scope import current_secret_scope_home
+    return Path(current_secret_scope_home() or scope_key)
 
 
 async def _install_owner_secret_scope():
@@ -132,12 +135,10 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
     scope_token = None
     try:
         scope_token = await _install_owner_secret_scope()
-        # Config loading may have happened before an external secret source was
-        # hydrated for this owner (multiplex startup). Unresolved placeholders
-        # deliberately survive interpolation, so render them again now that the
-        # owning profile's scope is installed instead of retrying a frozen
-        # ${VAR} header forever.
-        config = _config._interpolate_env_vars(config)
+        # The config was rendered at load time (a lazy server's at boot): re-render under the
+        # owner's fresh scope so a ref left literal before its secret source answered resolves
+        # now, and refuse to send one that still does not.
+        config = _config._require_rendered_remote(name, _config._interpolate_env_vars(config))
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel

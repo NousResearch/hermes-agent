@@ -5638,10 +5638,8 @@ def _cmd_status(args):
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])
         elif snapshot.service_running:
-            # Supervised-but-unscannable gateway (s6 container): the service is up, yet the
-            # process-table scan finds no PID — the `python -c` launcher argv is deliberately
-            # unmatched (#123881) and containers carry no gateway.pid file. Trust the service
-            # state instead of reporting a false outage (#125390).
+            # s6 container: the service is up but the scan finds no PID (the `python -c` launcher
+            # argv is deliberately unmatched, #123881, and there is no gateway.pid) — #125390.
             print(f"✓ Gateway is running (supervised by {snapshot.manager})")
             _print_runtime_health()
             _print_multiplex_standalone_reason()

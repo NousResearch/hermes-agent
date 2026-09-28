@@ -1111,7 +1111,7 @@ test('auto-after-canary promotes the next wave without another operator command 
   }
   dependencies.managedSshUpdateService = {
     ...dependencies.managedSshUpdateService,
-    issueLaunchCapability: () => ({ internal: 'not-for-ipc' }),
+    issueLaunchCapability: () => ({ __managedSshLaunchCapability: true as const }),
     requestCoordinator: (connectionId, input) => ({
       admitted: true as const,
       operation: Promise.resolve({

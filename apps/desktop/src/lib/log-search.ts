@@ -7,6 +7,38 @@ function normalizedNeedle(query: string): string {
   return query.trim().toLocaleLowerCase()
 }
 
+interface NormalizedText {
+  value: string
+  sourceEnd: number[]
+  sourceStart: number[]
+}
+
+/**
+ * Lowercase text while retaining the source offsets for each resulting UTF-16
+ * code unit. Some Unicode characters expand when lowercased (for example İ),
+ * so offsets in the lowered string cannot safely slice the original text.
+ */
+function normalizeText(text: string): NormalizedText {
+  let value = ''
+  const sourceStart: number[] = []
+  const sourceEnd: number[] = []
+  let offset = 0
+
+  for (const character of text) {
+    const normalized = character.toLocaleLowerCase()
+
+    for (let index = 0; index < normalized.length; index += 1) {
+      sourceStart.push(offset)
+      sourceEnd.push(offset + character.length)
+    }
+
+    value += normalized
+    offset += character.length
+  }
+
+  return { value, sourceEnd, sourceStart }
+}
+
 export function splitLogSearchMatches(text: string, query: string): LogSearchSegment[] {
   const needle = normalizedNeedle(query)
 
@@ -14,24 +46,31 @@ export function splitLogSearchMatches(text: string, query: string): LogSearchSeg
     return [{ match: false, text }]
   }
 
-  const lowerText = text.toLocaleLowerCase()
+  const normalizedText = normalizeText(text)
   const segments: LogSearchSegment[] = []
   let cursor = 0
 
-  while (cursor < text.length) {
-    const index = lowerText.indexOf(needle, cursor)
+  while (cursor < normalizedText.value.length) {
+    const index = normalizedText.value.indexOf(needle, cursor)
 
     if (index < 0) {
-      segments.push({ match: false, text: text.slice(cursor) })
+      segments.push({ match: false, text: text.slice(normalizedText.sourceStart[cursor] ?? text.length) })
       break
     }
 
-    if (index > cursor) {
-      segments.push({ match: false, text: text.slice(cursor, index) })
+    const start = normalizedText.sourceStart[index]
+    const end = normalizedText.sourceEnd[index + needle.length - 1]
+
+    if (start > (normalizedText.sourceStart[cursor] ?? 0)) {
+      segments.push({ match: false, text: text.slice(normalizedText.sourceStart[cursor] ?? 0, start) })
     }
 
-    segments.push({ match: true, text: text.slice(index, index + needle.length) })
+    segments.push({ match: true, text: text.slice(start, end) })
     cursor = index + needle.length
+
+    while (cursor < normalizedText.value.length && normalizedText.sourceStart[cursor] < end) {
+      cursor += 1
+    }
   }
 
   return segments.length ? segments : [{ match: false, text }]

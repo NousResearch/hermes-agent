@@ -452,7 +452,7 @@ def _hub_action_name(verb: str, key: str) -> str:
     tracks one process/log per name, so a shared "skills-install" would make concurrent
     row-level actions overwrite each other. Slug (readable) + hash (collision-proof)."""
     slug = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:48] or "skill"
-    digest = hashlib.sha1(key.encode()).hexdigest()[:8]
+    digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:8]
     name = f"skills-{verb}-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(name, f"action-{name}.log")
     return name

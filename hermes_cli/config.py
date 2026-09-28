@@ -2167,6 +2167,14 @@ def apply_terminal_config_to_env(
     if not (config is not None or "backend" in raw_terminal_cfg):
         backend_sources = backend_sources[::-1]  # env wins when the file did not set backend
     terminal_backend = str(backend_sources[0] or backend_sources[1] or "")
+    # Whether docker_image is the user's choice (config.yaml key, or TERMINAL_DOCKER_IMAGE set before
+    # any bridge ran) or the shipped default. DockerEnvironment recreates a persisted container on
+    # image mismatch only for a pinned image; a default flip keeps the user's sandbox and asks.
+    # Children inherit both vars, so a launcher's verdict is kept unless the file pins it.
+    if should_override and "docker_image" in explicit_keys:
+        target["TERMINAL_DOCKER_IMAGE_PINNED"] = "1"
+    elif "TERMINAL_DOCKER_IMAGE_PINNED" not in target:
+        target["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if "TERMINAL_DOCKER_IMAGE" in target else "0"
 
     for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
         if cfg_key not in terminal_cfg:
@@ -2663,20 +2671,34 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
             target[key] = value
 
 
-def _env_write_blocked(key: str, action: str) -> bool:
-    """Shared write-lock check for ``.env`` writers; prints the refusal and returns True when blocked.
+def env_write_refusal(key: str, action: str) -> Optional[str]:
+    """The ``.env`` write-lock refusal for ``key``, or None when the write is allowed.
     Two distinct locks: ``is_managed()`` (package-manager install) and the managed *scope*
     (administrator-pinned env key — the managed .env wins at load anyway)."""
     if is_managed():
-        managed_error(f"{action} {key}")
-        return True
-
+        return format_managed_message(f"{action} {key}")
     if managed_scope.is_env_managed(key):
-        print(
+        return (
             f"Cannot {action} {key}: it is managed by your administrator ({_managed_source('.env')}) "
-            f"and cannot be changed.", file=sys.stderr)
-        return True
-    return False
+            "and cannot be changed.")
+    return None
+
+
+def _env_write_blocked(key: str, action: str) -> bool:
+    """Shared write-lock check for ``.env`` writers; prints the refusal and returns True when blocked."""
+    refusal = env_write_refusal(key, action)
+    if refusal:
+        print(refusal, file=sys.stderr)
+    return refusal is not None
+
+
+def require_env_writable(key: str, action: str) -> None:
+    """Raise ``ValueError`` with the refusal when the ``.env`` write lock forbids ``key``.
+    ``save_env_value`` / ``remove_env_value`` refuse by returning, which their caller cannot tell
+    from success, so a writer that also touches config.yaml or the credential pool must ask first."""
+    refusal = env_write_refusal(key, action)
+    if refusal:
+        raise ValueError(refusal)
 
 
 def _managed_source(filename: str):
@@ -2956,7 +2978,7 @@ def _show_terminal_section(config: Dict[str, Any]) -> None:
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
 
     configured = lambda *names: 'configured' if all(get_env_value(n) for n in names) else '(not set)'  # noqa: E731
-    default_img = 'nikolaik/python-nodejs:python3.14-nodejs22'
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_img
     backend_lines = {
         'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
         'singularity': lambda: [f"  Image:        {terminal.get('singularity_image', 'docker://' + default_img)}"],
@@ -3546,7 +3568,10 @@ def set_config_value(key: str, value: str, force: bool = False):
 
         # Unified lifecycle: also rotates any config.yaml mirror of the old value so a stale
         # higher-precedence copy can't win (#62269).
-        save_provider_env_credential(key.upper(), value)
+        try:
+            save_provider_env_credential(key.upper(), value)
+        except ValueError as exc:
+            _exit_invalid(f"✗ {exc}")
         print(f"✓ Set {key} in {get_env_path()}")
         return
     from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
@@ -3713,7 +3738,11 @@ def unset_config_value(key: str):
         # See #51071.
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
-        if not remove_provider_env_credential(key.upper()).get("found"):
+        try:
+            found = remove_provider_env_credential(key.upper()).get("found")
+        except ValueError as exc:
+            _exit_invalid(f"✗ {exc}")
+        if not found:
             _exit_invalid(f"Config key not set: {key}")
         print(f"✓ Unset {key} from {get_env_path()}")
         return
@@ -3721,7 +3750,11 @@ def unset_config_value(key: str):
 
     if is_env_setting_key(key):
         # Also drops a stale top-level config.yaml copy left by older `config set` runs (#111848).
-        if not remove_env_setting(key):
+        try:
+            found = remove_env_setting(key)
+        except ValueError as exc:
+            _exit_invalid(f"✗ {exc}")
+        if not found:
             _exit_invalid(f"Config key not set: {key}")
         print(f"✓ Unset {key} from {get_env_path()}")
         return
@@ -4012,58 +4045,3 @@ def _inject_platform_plugin_env_vars() -> None:
 
 
 _inject_platform_plugin_env_vars()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
-    """Resolve the directory that holds the *running code* (the install tree).
-
-    This is the parent of ``hermes_cli/`` — i.e. the git checkout for source
-    installs, ``/opt/hermes`` inside the published image. It is a property of
-    the running interpreter, NOT of ``$HERMES_HOME``, which is why a
-    code-scoped stamp here is immune to two installs sharing one data
-    directory.
-    """
-    if project_root is not None:
-        return project_root
-    return Path(__file__).parent.parent.resolve()
-
-def stamp_install_method(method: str, project_root: Optional[Path] = None) -> None:
-    """Write the install method next to the running code (code-scoped stamp).
-
-    The stamp lives in the install tree (``<install tree>/.install_method``),
-    not in ``$HERMES_HOME``, so that two installs sharing one data directory
-    do not overwrite each other's marker. See ``detect_install_method`` for
-    the full rationale.
-
-    Best-effort: if the install tree is read-only (e.g. the immutable
-    ``/opt/hermes`` in the published image, which instead bakes the stamp at
-    build time) the write silently no-ops and detection falls back to its
-    other signals.
-    """
-    root = _install_method_project_root(project_root)
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        (root / ".install_method").write_text(method + "\n", encoding="utf-8")
-    except OSError:
-        pass
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'normalize_route_base_url': ('hermes_cli.route_identity', 'normalize_route_base_url'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

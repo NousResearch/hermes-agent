@@ -509,6 +509,34 @@ def test_turn_lease_revives_expired_row_still_owned_by_writer(tmp_path):
     )
 
 
+def test_turn_lease_acquisition_sweeps_long_expired_rows_of_other_conversations(tmp_path):
+    """A holder that died without releasing leaves its row behind; the next acquisition anywhere
+    removes rows expired past the grace, and keeps recent expiries their live owner may renew."""
+    db = SessionDB(tmp_path / "state.db")
+    for sid in ("abandoned", "recent", "within-grace", "fresh"):
+        db.create_session(sid, source="test")
+    raw = sqlite3.connect(tmp_path / "state.db")
+    with raw:
+        raw.executemany(
+            "INSERT INTO session_turn_leases (conversation_id, holder, acquired_at, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            [("abandoned", "pid=1:turn=crashed", time.time() - 86400 - 120, time.time() - 86400 - 60),
+             ("recent", f"pid={os.getpid()}:turn=starved", time.time() - 60, time.time() - 10),
+             ("within-grace", "pid=1:turn=suspended", time.time() - 86400, time.time() - 86400 + 60)])
+
+    assert db.try_acquire_session_turn_lease("fresh", f"pid={os.getpid()}:turn=next", ttl_seconds=5)
+
+    rows = dict(raw.execute("SELECT conversation_id, holder FROM session_turn_leases").fetchall())
+    raw.close()
+    assert rows == {"recent": f"pid={os.getpid()}:turn=starved",
+                    "within-grace": "pid=1:turn=suspended",
+                    "fresh": f"pid={os.getpid()}:turn=next"}
+    assert db.append_messages_batch(
+        "recent", [{"role": "assistant", "content": "after a starved refresher"}],
+        turn_lease_holder=f"pid={os.getpid()}:turn=starved", turn_lease_ttl_seconds=5,
+    ) == 1
+
+
 def test_turn_lease_fences_flush_when_row_is_absent(tmp_path):
     db = SessionDB(tmp_path / "state.db")
     db.create_session("shared", source="test")

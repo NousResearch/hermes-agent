@@ -441,6 +441,20 @@ export function resolveNewChatBackendOwner(): NewChatBackendOwner {
   }
 }
 
+/**
+ * The owner route for a surface anchored to a profile the ACTIVE source is
+ * rendering (a project tree's "+", #124265). Unlike resolveNewChatOwnerRoute
+ * this never consults the new-chat pin's captured source, which a stale pick
+ * on another connection would otherwise pair with this profile (right profile,
+ * wrong host). null keeps the legacy profile-only path.
+ */
+export function resolveActiveSourceOwnerRoute(profile: string): AgentProfileRoute | null {
+  const key = normalizeProfileKey(profile)
+  const connectionId = (profilePickConnectionId(key) ?? '').trim()
+
+  return connectionId ? { connectionId, profile: key } : null
+}
+
 // Bumped whenever the open session should be dropped for a fresh new-session
 // draft: a profile switch/create (below), or deleting the project that owns the
 // currently-open session (store/projects). The chat controller subscribes and

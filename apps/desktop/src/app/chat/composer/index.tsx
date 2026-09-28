@@ -122,6 +122,7 @@ export function ChatBar({
   focusKey,
   gateway,
   maxRecordingSeconds = 120,
+  profile,
   queueSessionKey,
   sessionId,
   state,
@@ -285,6 +286,7 @@ export function ChatBar({
   const slash = useSlashCompletions({
     activeSkin: themeName,
     gateway: gateway ?? null,
+    profile: profile ?? null,
     sessionId: sessionId ?? null,
     skinThemes: availableThemes
   })
@@ -1077,7 +1079,7 @@ export function ChatBar({
     handleDrop,
     handleInputDragOver,
     handleInputDrop
-  } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, recordUndoPoint, requestMainFocus })
+  } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, recordUndoPoint, requestMainFocus, sessionId })
 
   // A bot chat is a companion conversation, not a working session, so it has no
   // repo to speak of — see the blank repoPath handed to CodingStatusRow below.

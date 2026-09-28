@@ -718,6 +718,29 @@ def _restore_pinned_tools(agent, session_row) -> list:
     return built_for_this_surface
 
 
+def _refresh_bot_chat_tools(agent) -> None:
+    """Rebuild ``agent.tools`` for a Bot Chat capability refresh through the builder that
+    created the session, so the refreshed set is what a fresh desktop/TUI session gets
+    (#124211). A canonical Bot Chat never forks, so its tools[] is otherwise a fossil of
+    session creation: ``hermes tools enable/disable`` writes ``platform_toolsets`` and the
+    automatic between-turns refresh reuses the build-time selection. Only the desktop/TUI
+    gateway keeps agents alive across turns; every other surface builds a fresh agent whose
+    tools[] already reflects config. No prefix preservation: a disabled toolset must drop,
+    and the prompt rebuild this rides on already breaks the cache."""
+    platform = getattr(agent, "platform", None)
+    if platform not in ("desktop", "tui"):
+        return
+    try:
+        from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        from tui_gateway.server import _load_disabled_toolsets, _load_enabled_toolsets
+        refresh_agent_mcp_tools(
+            agent, enabled_override=_load_enabled_toolsets(platform),
+            disabled_override=_load_disabled_toolsets(), quiet_mode=True, content_aware=True)
+    except Exception as exc:
+        logger.warning("Bot Chat capability refresh kept the previous tools for session %s: %s",
+                       agent.session_id, exc)
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -757,14 +780,18 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
                 pass
+            _refresh_bot_chat_tools(agent)
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
             stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is
-            # once per capability change). on_session_start not re-fired: continuation.
+            # once per capability change). Tools re-pin too: without it the next
+            # turn's pin-restore would resurrect the pre-refresh toolset (#124211).
+            # on_session_start not re-fired: continuation.
             _persist_system_prompt(
                 agent,
                 "Session DB update_system_prompt failed after Bot Chat capability refresh "
                 "(session=%s): %s. The refresh will re-fire next turn.",
+                persist_tools=True,
             )
             return
         # Continuing session — reuse the exact system prompt from the
@@ -1744,65 +1771,3 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
 
 
 __all__ = ["run_conversation"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-import random  # noqa: F401,E402
-import ssl  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE'),
-    'COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE'),
-    'COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE'),
-    'COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE'),
-    'FailoverReason': ('agent.error_classifier', 'FailoverReason'),
-    'KawaiiSpinner': ('agent.display', 'KawaiiSpinner'),
-    'PARTIAL_STREAM_STUB_ID': ('hermes_constants', 'PARTIAL_STREAM_STUB_ID'),
-    'PRE_API_COMPRESSION_STATUS_TEMPLATE': ('agent.conversation_compression', 'PRE_API_COMPRESSION_STATUS_TEMPLATE'),
-    'adaptive_rate_limit_backoff': ('agent.retry_utils', 'adaptive_rate_limit_backoff'),
-    'anchored_context_tokens': ('agent.usage_anchor', 'anchored_context_tokens'),
-    'automatic_compaction_status_message': ('agent.context_engine', 'automatic_compaction_status_message'),
-    'capture_usage_anchor': ('agent.usage_anchor', 'capture_usage_anchor'),
-    'classify_api_error': ('agent.error_classifier', 'classify_api_error'),
-    'close_interrupted_tool_sequence': ('agent.message_sanitization', 'close_interrupted_tool_sequence'),
-    'coalesce_tool_call_id': ('agent.message_sanitization', 'coalesce_tool_call_id'),
-    'compose_user_api_content': ('agent.turn_context', 'compose_user_api_content'),
-    'compression_blocked_transiently': ('agent.conversation_compression', 'compression_blocked_transiently'),
-    'compression_skipped_due_to_lock': ('agent.conversation_compression', 'compression_skipped_due_to_lock'),
-    'context_compression_timed_out': ('agent.conversation_compression', 'context_compression_timed_out'),
-    'conversation_history_after_compression': ('agent.conversation_compression', 'conversation_history_after_compression'),
-    'env_var_enabled': ('utils', 'env_var_enabled'),
-    'estimate_messages_tokens_rough': ('agent.model_metadata', 'estimate_messages_tokens_rough'),
-    'estimate_request_tokens_rough': ('agent.model_metadata', 'estimate_request_tokens_rough'),
-    'estimate_usage_cost': ('agent.usage_pricing', 'estimate_usage_cost'),
-    'get_context_length_from_provider_error': ('agent.model_metadata', 'get_context_length_from_provider_error'),
-    'has_incomplete_scratchpad': ('agent.trajectory', 'has_incomplete_scratchpad'),
-    'is_output_cap_error': ('agent.model_metadata', 'is_output_cap_error'),
-    'is_repetition_dominated': ('agent.repetition_guard', 'is_repetition_dominated'),
-    'is_zai_coding_overload_error': ('agent.retry_utils', 'is_zai_coding_overload_error'),
-    'jittered_backoff': ('agent.retry_utils', 'jittered_backoff'),
-    'normalize_usage': ('agent.usage_pricing', 'normalize_usage'),
-    'parse_available_output_tokens_from_error': ('agent.model_metadata', 'parse_available_output_tokens_from_error'),
-    'reanchor_current_turn_user_idx': ('agent.turn_context', 'reanchor_current_turn_user_idx'),
-    'save_context_length': ('agent.model_metadata', 'save_context_length'),
-    'serialized_messages_bytes': ('agent.message_sanitization', 'serialized_messages_bytes'),
-    'splice_provider_projection': ('agent.provider_projection', 'splice_provider_projection'),
-    'zai_coding_overload_retry_ceiling': ('agent.retry_utils', 'zai_coding_overload_retry_ceiling'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

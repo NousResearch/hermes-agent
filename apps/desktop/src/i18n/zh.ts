@@ -496,6 +496,8 @@ export const zh = defineLocale({
       'composer.modelPicker': '打开模型选择器',
       'composer.voice': '开始 / 停止语音对话',
       'composer.dictate': '开始 / 停止听写',
+      'composer.reasoningUp': '提高推理等级',
+      'composer.reasoningDown': '降低推理等级',
       'view.toggleSidebar': '切换会话侧边栏',
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.toggleReview': '切换审查面板',
@@ -1771,6 +1773,7 @@ export const zh = defineLocale({
       restartFailed: '无法重启后端',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',
+      staleAuxDismiss: '不再显示',
       auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
       setToMain: '设为主模型',
       change: '更改',
@@ -2621,12 +2624,6 @@ export const zh = defineLocale({
     mcpServers: 'MCP 服务器',
     archivedChats: '已归档对话',
     sections: { maintenance: '维护', sessions: '会话', system: '系统', usage: '用量' },
-    sectionDescriptions: {
-      maintenance: '诊断、备份、维护器与记忆数据',
-      sessions: '搜索与管理会话',
-      system: '状态、日志与系统操作',
-      usage: '一段时间内的词元、成本与技能活动'
-    },
     nav: {
       newChat: { title: '新建会话', detail: '开始一个新会话' },
       settings: { title: '设置', detail: '配置 Hermes 桌面端' },
@@ -2688,7 +2685,7 @@ export const zh = defineLocale({
     actions: count => `${count} 次操作`,
     logFile: '日志文件',
     logLevel: '级别',
-    logSearchPlaceholder: '筛选日志行…',
+    logSearchPlaceholder: '搜索日志行…',
     maintenance: {
       runOps: '诊断',
       doctor: '运行体检',
@@ -2737,6 +2734,13 @@ export const zh = defineLocale({
 
   messaging: {
     search: '搜索消息平台…',
+    statusFilter: {
+      all: '全部',
+      bad: '错误',
+      good: '已连接',
+      muted: '未启用',
+      warn: '需要关注'
+    },
     loading: '正在加载消息平台…',
     loadFailed: '消息平台加载失败',
     states: {
@@ -3709,6 +3713,8 @@ export const zh = defineLocale({
     restoredDraftNotice: '已恢复你未发送的消息',
     restoredDraftUndo: '撤销',
     queueEdit: '编辑',
+    queueExpand: '展开',
+    queueCollapse: '收起',
     queueSendNext: '下一个',
     queueSteer: '引导 — 立即修正当前回合',
     queueSend: '发送',
@@ -3993,6 +3999,7 @@ export const zh = defineLocale({
     updateNow: '立即更新',
     maybeLater: '稍后再说',
     moreChanges: count => `另有 ${count} 项更改。`,
+    copyFullLog: '复制完整更新日志',
     manualTitle: '从终端更新',
     manualUnavailableTitle: '无法从这里更新',
     manualBody: '你是从命令行安装的 Hermes，因此更新也需要在那里运行。请将此命令粘贴到终端：',
@@ -4324,7 +4331,11 @@ export const zh = defineLocale({
     noAuthenticatedProviders: '没有已认证的提供方。',
     addProvider: '添加提供方…',
     addCustomModel: '添加自定义模型',
-    removeCustomModel: '移除自定义模型'
+    removeCustomModel: '移除自定义模型',
+    resetToDefaults: '恢复默认',
+    resetConfirm: '将模型可见性恢复为默认？',
+    resetDescription: '你对模型显示与隐藏的选择将被清除，每个提供方都会恢复默认列表。你添加的自定义模型会保留并显示。',
+    resetAction: '恢复'
   },
 
   shell: {
@@ -5205,6 +5216,11 @@ export const zh = defineLocale({
   ui: {
     search: {
       clear: '清除搜索'
+    },
+    logs: {
+      bottom: '日志底部',
+      search: '搜索日志…',
+      top: '日志顶部'
     },
     pagination: {
       label: '分页',

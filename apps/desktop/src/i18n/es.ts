@@ -685,6 +685,8 @@ export const esOverrides = {
       'composer.focus': 'Enfocar compositor',
       'composer.modelPicker': 'Abrir selector de modelo',
       'composer.voice': 'Iniciar / detener conversación por voz',
+      'composer.reasoningUp': 'Subir nivel de razonamiento',
+      'composer.reasoningDown': 'Bajar nivel de razonamiento',
       'view.toggleSidebar': 'Alternar barra lateral de sesiones',
       'view.cycleSidebarGrouping': 'Cambiar la agrupación de sesiones',
       'view.toggleRightSidebar': 'Alternar explorador de archivos',
@@ -2059,6 +2061,7 @@ export const esOverrides = {
       restartFailed: 'No se pudo reiniciar el backend',
       auxiliaryTitle: 'Modelos auxiliares',
       resetAllToMain: 'Restablecer todos al principal',
+      staleAuxDismiss: 'No volver a mostrar',
       auxiliaryDesc:
         'Las tareas auxiliares usan el modelo principal de forma predeterminada. Asigna un modelo dedicado a cualquier tarea para anularlo.',
       setToMain: 'Usar principal',
@@ -3075,12 +3078,6 @@ export const esOverrides = {
       system: 'Sistema',
       usage: 'Uso'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnóstico, copias de seguridad, curador y datos de memoria',
-      sessions: 'Buscar y gestionar sesiones',
-      system: 'Estado, registros y acciones del sistema',
-      usage: 'Actividad de tokens, coste y skills a lo largo del tiempo'
-    },
     nav: {
       newChat: {
         title: 'Nueva sesión',
@@ -3167,7 +3164,7 @@ export const esOverrides = {
     actions: count => `${count} acciones`,
     logFile: 'Archivo de registro',
     logLevel: 'Nivel',
-    logSearchPlaceholder: 'Filtrar líneas de registro…',
+    logSearchPlaceholder: 'Buscar en los registros…',
     maintenance: {
       runOps: 'Diagnóstico',
       doctor: 'Ejecutar diagnóstico',
@@ -3216,6 +3213,13 @@ export const esOverrides = {
   },
   messaging: {
     search: 'Buscar mensajería...',
+    statusFilter: {
+      all: 'Todos',
+      bad: 'Errores',
+      good: 'Conectados',
+      muted: 'Inactivos',
+      warn: 'Requiere atención'
+    },
     loading: 'Cargando plataformas de mensajería...',
     loadFailed: 'No se pudieron cargar las plataformas de mensajería',
     states: {
@@ -4273,6 +4277,8 @@ export const esOverrides = {
     restoredDraftNotice: 'Se restauró tu mensaje sin enviar',
     restoredDraftUndo: 'Deshacer',
     queueEdit: 'Editar',
+    queueExpand: 'Expandir',
+    queueCollapse: 'Contraer',
     queueSendNext: 'Próximo',
     queueSteer: 'Redirigir — encauzar el turno en vivo ahora',
     queueSend: 'Enviar',
@@ -4622,6 +4628,7 @@ export const esOverrides = {
     updateNow: 'Actualizar ahora',
     maybeLater: 'Quizá más tarde',
     moreChanges: count => `+ ${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}.`,
+    copyFullLog: 'Copiar el registro de cambios completo',
     manualTitle: 'Actualizar desde la terminal',
     manualUnavailableTitle: 'No se puede actualizar desde aquí',
     manualBody:
@@ -4968,7 +4975,11 @@ export const esOverrides = {
     noAuthenticatedProviders: 'No hay proveedores autenticados.',
     addProvider: 'Añadir proveedor…',
     addCustomModel: 'Añadir modelo personalizado',
-    removeCustomModel: 'Quitar modelo personalizado'
+    removeCustomModel: 'Quitar modelo personalizado',
+    resetToDefaults: 'Restablecer valores predeterminados',
+    resetConfirm: '¿Restablecer la visibilidad de los modelos?',
+    resetDescription: 'Se borran tus elecciones de modelos visibles y ocultos, y cada proveedor vuelve a su lista predeterminada. Los modelos personalizados que añadiste se conservan y se muestran.',
+    resetAction: 'Restablecer'
   },
   shell: {
     windowControls: 'Controles de ventana',
@@ -6089,6 +6100,11 @@ export const esOverrides = {
   ui: {
     search: {
       clear: 'Limpiar búsqueda'
+    },
+    logs: {
+      bottom: 'Ir al final',
+      search: 'Buscar en los registros…',
+      top: 'Ir al inicio'
     },
     pagination: {
       label: 'paginación',

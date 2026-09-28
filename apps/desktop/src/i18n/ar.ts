@@ -427,6 +427,8 @@ export const ar = defineLocale({
       'composer.modelPicker': 'فتح منتقي النموذج',
       'composer.voice': 'بدء / إيقاف المحادثة الصوتية',
       'composer.dictate': 'بدء / إيقاف الإملاء',
+      'composer.reasoningUp': 'رفع مستوى التفكير',
+      'composer.reasoningDown': 'خفض مستوى التفكير',
       'view.toggleSidebar': 'تبديل الشريط الجانبي للجلسات',
       'view.toggleRightSidebar': 'تبديل متصفح الملفات',
       'view.toggleReview': 'تبديل لوحة المراجعة',
@@ -1201,6 +1203,7 @@ export const ar = defineLocale({
       restartFailed: 'تعذر إعادة تشغيل الخلفية',
       auxiliaryTitle: 'النماذج المساعدة',
       resetAllToMain: 'إعادة تعيين الكل إلى النموذج الرئيسي',
+      staleAuxDismiss: 'عدم الإظهار مجددًا',
       auxiliaryDesc: 'تعمل المهام المساعدة على النموذج الرئيسي افتراضيا. عيّن نموذجا مخصصا لأي مهمة لتجاوز ذلك.',
       setToMain: 'ضبط على الرئيسي',
       change: 'تغيير',
@@ -1491,11 +1494,6 @@ export const ar = defineLocale({
       system: 'النظام',
       usage: 'الاستخدام'
     },
-    sectionDescriptions: {
-      sessions: 'البحث في الجلسات وإدارتها',
-      system: 'الحالة والسجلات وإجراءات النظام',
-      usage: 'نشاط الرموز والتكلفة والمهارات عبر الزمن'
-    },
     nav: {
       newChat: {
         title: 'جلسة جديدة',
@@ -1560,6 +1558,7 @@ export const ar = defineLocale({
     actionStartedWaiting: 'بدأ الإجراء، جار الانتظار...',
     loadingStatus: 'جار تحميل الحالة',
     recentLogs: 'السجلات الأخيرة',
+    logSearchPlaceholder: 'البحث في سطور السجل...',
     noLogs: 'لا توجد سجلات',
     days: count => `${count} يوم`,
     statSessions: 'الجلسات',
@@ -1582,6 +1581,13 @@ export const ar = defineLocale({
   },
   messaging: {
     search: 'بحث',
+    statusFilter: {
+      all: 'الكل',
+      bad: 'أخطاء',
+      good: 'متصل',
+      muted: 'غير نشط',
+      warn: 'يحتاج انتباهًا'
+    },
     loading: 'جار التحميل...',
     loadFailed: 'فشل التحميل',
     states: {
@@ -2422,6 +2428,8 @@ export const ar = defineLocale({
     restoredDraftNotice: 'تمت استعادة رسالتك غير المُرسلة',
     restoredDraftUndo: 'تراجع',
     queueEdit: 'تحرير الرسالة المجدولة',
+    queueExpand: 'توسيع',
+    queueCollapse: 'طي',
     queueSendNext: 'إرسالها تاليا',
     queueSteer: 'توجيه — تصحيح الدور الجاري فورا',
     queueSend: 'إرسالها الآن',
@@ -2709,6 +2717,7 @@ export const ar = defineLocale({
     updateNow: 'التحديث الآن',
     maybeLater: 'ربما لاحقا',
     moreChanges: count => `+ ${count} تغيير${count === 1 ? '' : 'ات'} إضافي مُضمَّن.`,
+    copyFullLog: 'نسخ سجل التغييرات الكامل',
     manualTitle: 'التحديث من الطرفية',
     manualUnavailableTitle: 'لا يمكن التحديث من هنا',
     manualBody: 'لقد ثبّتت Hermes من سطر الأوامر، لذا تُجرى التحديثات من هناك أيضا. الصق هذا في طرفيتك:',
@@ -2915,7 +2924,11 @@ export const ar = defineLocale({
     noAuthenticatedProviders: 'لا يوجد مزوّدون مصادق عليهم.',
     addProvider: 'إضافة مزوّد…',
     addCustomModel: 'إضافة نموذج مخصص',
-    removeCustomModel: 'إزالة النموذج المخصص'
+    removeCustomModel: 'إزالة النموذج المخصص',
+    resetToDefaults: 'إعادة التعيين إلى الافتراضي',
+    resetConfirm: 'إعادة إعدادات ظهور النماذج إلى الافتراضي؟',
+    resetDescription: 'ستُمسح اختياراتك للنماذج الظاهرة والمخفية وتعود قائمة كل مزوّد الافتراضية. تُحفظ النماذج المخصصة التي أضفتها وتظهر.',
+    resetAction: 'إعادة التعيين'
   },
   shell: {
     windowControls: 'تحكم النافذة',
@@ -3723,6 +3736,11 @@ export const ar = defineLocale({
   ui: {
     search: {
       clear: 'مسح البحث'
+    },
+    logs: {
+      bottom: 'أسفل السجل',
+      search: 'البحث في السجلات…',
+      top: 'أعلى السجل'
     },
     pagination: {
       label: 'ترقيم الصفحات',

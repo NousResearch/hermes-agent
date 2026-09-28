@@ -39,6 +39,22 @@ def served_root(tmp_path, monkeypatch):
     return root
 
 
+def test_messaging_card_shows_mirrored_api_server_enabled_without_local_config(served_root):
+    """#121125: a served secondary never configures api_server itself (enabling it there
+    409s: the shared listener already serves ``/p/<profile>/v1``), so the REAL enablement
+    reads (False, False) from its own empty config and the card printed Disabled over a
+    live mirror. No ``_platform_enablement`` monkeypatch here: that mask hid the bug."""
+    from hermes_cli.web_routers import messaging
+    entry = {"id": "api_server", "name": "API server", "description": "", "docs_url": "", "env_vars": [],
+             "required_env": []}
+    alpha = served_root / "profiles" / "alpha"
+    [payload] = messaging._platform_payloads(alpha, [entry])
+    assert payload["gateway_running"] is True
+    assert payload["enabled"] is True, payload
+    assert payload["state"] == "connected", payload
+    assert payload["ingress_url"] == "http://127.0.0.1:45719/p/alpha/v1", payload
+
+
 def test_served_profile_projects_the_default_listener_mirrors_with_their_url(served_root):
     from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
     alpha = served_root / "profiles" / "alpha"

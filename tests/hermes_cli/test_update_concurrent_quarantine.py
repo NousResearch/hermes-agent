@@ -116,7 +116,7 @@ def test_pause_stops_launcher_after_worker_drain(
     # The PID file records the WORKER (even-numbered parent 400 is its launcher).
     worker_pid, launcher_pid = 500, 400
     profile_proc = SimpleNamespace(
-        profile="default", path=profile_home, pid=worker_pid
+        profile="default", path=profile_home, pid=worker_pid, create_time=float(worker_pid)
     )
 
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [worker_pid])
@@ -133,6 +133,11 @@ def test_pause_stops_launcher_after_worker_drain(
     # so the pause must snapshot launcher ancestors before draining. This is
     # precisely the case that used to leave the launcher alive and abort.
     drained_dead: set[int] = set()
+    # Invented PIDs must carry a real-shaped incarnation, not probe the CI host.
+    monkeypatch.setattr(
+        status_mod, "get_process_start_time",
+        lambda pid: None if int(pid) in drained_dead else float(pid),
+    )
 
     def _drain_marks_workers_dead(pids, *, timeout):
         drained_dead.update(int(p) for p in pids)
@@ -153,12 +158,13 @@ def test_pause_stops_launcher_after_worker_drain(
     monkeypatch.setattr(
         status_mod,
         "terminate_pid",
-        lambda pid, force=False, **kwargs: terminated.append(int(pid)),
+        lambda pid, force=False, **kwargs: terminated.append(
+            (int(pid), kwargs.get("expected_start_time"))),
     )
 
     cli_main._pause_windows_gateways_for_update()
 
-    assert terminated == [launcher_pid]
+    assert terminated == [(launcher_pid, float(launcher_pid))]
 
 
 def test_stop_service_refuses_pid_reuse_before_sc_stop(monkeypatch):

@@ -66,7 +66,8 @@ def _wait_for_windows_update_gateway_exit(pids: list[int], *, timeout: float) ->
         try:
             return bool(_pid_exists(pid))
         except Exception:
-            return False
+            # Inspection failure is not proof of death.
+            return True
 
     remaining = set(pids)
 
@@ -720,6 +721,10 @@ def _verify_service_identities(psutil, name: str, service, expected_service_iden
             raise RuntimeError(f"Windows gateway is no longer owned by service {name}")
 
 
+class _WindowsGatewayServiceStopNotAttempted(RuntimeError):
+    """SCM discovery/identity validation failed before sending any stop request."""
+
+
 def _stop_windows_gateway_service(
     name: str, *, expected_processes: tuple[tuple[int, float], ...] = (), expected_service_identity: tuple[int, float] | None = None,
     expected_gateway_identity: tuple[int, float] | None = None, timeout: float = 30.0,
@@ -727,8 +732,12 @@ def _stop_windows_gateway_service(
     """Stop one verified Windows service and wait until SCM reports it down.
 
     Lingering matching-identity processes after SCM says stopped make venv mutation unsafe — fail closed."""
-    psutil, service = _win_service(name)
-    _verify_service_identities(psutil, name, service, expected_service_identity, expected_gateway_identity)
+    try:
+        psutil, service = _win_service(name)
+        _verify_service_identities(psutil, name, service, expected_service_identity, expected_gateway_identity)
+    except Exception as exc:
+        # No stop was sent: do not start a concurrently stopped/replaced service.
+        raise _WindowsGatewayServiceStopNotAttempted(str(exc)) from exc
     _sc_exe("stop", name, service, "stopped")
 
     def _alive() -> list[int]:
@@ -807,11 +816,16 @@ def _pause_windows_gateway_services(service_gateways, token: dict, profiles: dic
     current_service_name = None
     try:
         for service in service_gateways:
-            current_service_name = str(service.name)
+            # Preparing arguments is not a stop attempt.
+            name = str(service.name)
+            expected_processes = tuple(getattr(service, "descendant_identities", ()))
+            expected_service_identity = (int(service.service_pid), float(service.service_create_time))
+            expected_gateway_identity = (int(service.gateway_pid), float(service.gateway_create_time))
+            current_service_name = name
             _stop_windows_gateway_service(
-                current_service_name, expected_processes=tuple(getattr(service, "descendant_identities", ())),
-                expected_service_identity=(int(service.service_pid), float(service.service_create_time)),
-                expected_gateway_identity=(int(service.gateway_pid), float(service.gateway_create_time)),
+                current_service_name, expected_processes=expected_processes,
+                expected_service_identity=expected_service_identity,
+                expected_gateway_identity=expected_gateway_identity,
             )
             paused_services.append(current_service_name)
             current_service_name = None
@@ -821,7 +835,8 @@ def _pause_windows_gateway_services(service_gateways, token: dict, profiles: dic
             print("  ✓ Paused Windows gateway service(s): " + ", ".join(paused_services))
         return token
     except Exception as exc:
-        restore_names = ([current_service_name] if current_service_name else []) + list(reversed(paused_services))
+        restore_current = current_service_name and not isinstance(exc, _WindowsGatewayServiceStopNotAttempted)
+        restore_names = ([current_service_name] if restore_current else []) + list(reversed(paused_services))
         rollback: list[tuple[str, object]] = [(n, lambda n=n: _restore_windows_gateway_service(n)) for n in dict.fromkeys(restore_names)]
         if profiles or unmapped:
             rollback.append(("ordinary gateways", lambda: _resume_windows_gateways_after_update(token)))
@@ -863,12 +878,43 @@ def _discover_windows_gateways():
     return profile_processes, service_gateways, service_gateway_pids, running_pids
 
 
-def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids):
+class _WindowsGatewayPauseRecoveryError(RuntimeError):
+    """Both failures plus the existing owner's still-pending recovery token."""
+
+    def __init__(self, pause_error, recovery_error, token):
+        super().__init__(
+            f"Windows gateway pause failed: {pause_error}; recovery also failed: {recovery_error}")
+        self.pause_error = pause_error
+        self.recovery_error = recovery_error
+        self.windows_gateway_resume = token
+
+
+@contextmanager
+def _windows_gateway_pause_recovery(token):
+    """Compensate only this pause attempt, through the existing restart owner."""
+    try:
+        yield
+    except BaseException as pause_error:
+        # Passive dead-attestation plans are not effects of this failed pause.
+        # Never turn abort recovery into an unrelated profile's cold-start.
+        token.pop("cold_start_profiles", None)
+        token.pop("cold_start_if_installed", None)
+        if token.get("profiles") or token.get("unmapped") or token.get("services"):
+            from hermes_cli.update_cmd import _m
+            try:
+                _m()._resume_windows_gateways_after_update(token)
+            except BaseException as recovery_error:
+                raise _WindowsGatewayPauseRecoveryError(
+                    pause_error, recovery_error, token) from pause_error
+        raise
+
+
+def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids, token=None):
     """Marker + socket-first pause for every profile-mapped gateway; ``(profiles, mapped_pids, socket_acks)``.
 
     Socket ACK = the gateway drains and exits by its own graceful path. No answer (older
     gateway) -> the marker poll / force-kill ladder in the caller."""
-    profiles: dict[str, int] = {}
+    profiles: dict[str, int] = token["profiles"] if token is not None else {}
     mapped_pids = []
     socket_acks: list[dict] = []
     for pid in running_pids:
@@ -877,6 +923,8 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             continue
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
+        if token is not None:
+            token["pause_attempts"][str(proc.profile)] = {"pid": int(pid), "state": "unknown"}
         _write_update_planned_stop_marker(Path(proc.path), int(pid))
         try:
             # Socket-first pause (#92091 step 2): ask the gateway to drain and exit itself instead of
@@ -888,6 +936,8 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             ack = pause_gateway_for_update(Path(proc.path))
             if ack and (ack.get("pausing") or ack.get("already_stopping")):
                 socket_acks.append(ack)
+                if token is not None:
+                    token["pause_attempts"][str(proc.profile)]["state"] = "acknowledged"
         except Exception as exc:
             logger.debug("Socket pause unavailable for gateway %s: %s", pid, exc)
     return profiles, mapped_pids, socket_acks
@@ -910,10 +960,7 @@ def _gateway_drain_timeout(socket_acks: list[dict]) -> float:
 
 
 def _pause_windows_gateways_for_update() -> dict | None:
-    """Stop running Windows gateways before mutating the checkout or venv.
-
-    Scheduled/startup gateways run via pythonw.exe, invisible to the hermes.exe instance guard, yet keep files
-    locked during ``git``/``uv``. Stop only PIDs the gateway discovery code identifies."""
+    """Stop discovered Windows gateways; own recovery from the first pause effect."""
     from hermes_cli.update_cmd import _m
     if not _m()._is_windows():
         return None
@@ -923,47 +970,71 @@ def _pause_windows_gateways_for_update() -> dict | None:
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
     if not running_pids:
         token = _windows_cold_start_plan()
-        # Other profiles may hold a dead attestation even when the active profile owes nothing
-        # (clean exit, autostart not installed): give them a token to ride on.
         probe = token if token is not None else {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": []}
         _record_attested_cold_start_profiles(probe, set())
         return probe if probe.get("cold_start_profiles") else token
-    profiles, mapped_pids, socket_acks = _request_socket_pauses(running_pids, profile_processes, service_gateway_pids)
-    # Resolve venv-side launchers BEFORE draining: a dead worker's parent cannot be recovered (NoSuchProcess).
-    # The launcher keeps ``.pyd`` mapped and would trip the venv-holder guard; it is killed with the survivors.
+
+    # Finish discovery and replay preparation BEFORE the first marker/socket write.
+    mapped_pids = [pid for pid in running_pids if pid in profile_processes and pid not in service_gateway_pids]
+    for pid in mapped_pids:
+        str(profile_processes[pid].profile), Path(profile_processes[pid].path), int(pid)
     launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
-    print("→ Stopping Windows gateway process(es) before updating Hermes...")
-    drain_timeout = _gateway_drain_timeout(socket_acks)
-    survivors = _m()._wait_for_windows_update_gateway_exit(mapped_pids, timeout=drain_timeout)
+    service_owned_pids = set(service_gateway_pids)
+    for service in service_gateways:
+        service_owned_pids.add(int(service.service_pid))
+        service_owned_pids.update(int(pid) for pid, _ in getattr(service, "descendant_identities", ()))
+    if set(launcher_pids) & service_owned_pids:
+        raise RuntimeError("Windows launcher/service ownership overlaps; no gateways were paused")
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
-    # Snapshot unmapped gateways' argv *before* force-killing so resume can replay it.
-    # Unmapped = no profile->PID-file mapping (e.g. Scheduled Task ``pythonw.exe -m ...``).
-    unmapped = [
-        {"pid": int(pid), "argv": _try_call(lambda p=int(pid): _capture_gateway_argv(p),
-                                            "Could not capture argv for unmapped gateway %s: %s", int(pid))}
+    prepared_unmapped = {
+        int(pid): {"pid": int(pid), "argv": _try_call(lambda p=int(pid): _capture_gateway_argv(p),
+                  "Could not capture argv for unmapped gateway %s: %s", int(pid))}
         for pid in unmapped_pids
-    ]
-    # Tree-kill survivors, unmapped gateways, and pre-drain launchers; a launcher
-    # already gone with its worker raises ProcessLookupError and is skipped.
-    force_killed = []
-    for pid in sorted(set(survivors).union(unmapped_pids).union(launcher_pids)):
-        with suppress(ProcessLookupError, PermissionError, OSError):
-            terminate_pid(int(pid), force=True, expected_start_time=get_process_start_time(int(pid)))
-            force_killed.append(int(pid))
-    if profiles:
-        print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
-    if force_killed:
-        print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
-    if unmapped_pids:
-        print(f"  → Stopped {len(unmapped_pids)} gateway process(es) without profile mapping")
-        if any(not u.get("argv") for u in unmapped):  # no recoverable cmdline (psutil missing, denied, gone)
-            print("    Restart manually after update: hermes gateway run")
-    token = {"resume_needed": True, "profiles": profiles, "unmapped_pids": unmapped_pids, "unmapped": unmapped}
-    # Every profile with ANY live gateway at discovery counts as running: service-supervised ones skip the
-    # socket pause (absent from ``profiles``) but the SCM restart brings them back, not a cold-start.
-    running_profiles = set(profiles) | {str(p.profile) for p in profile_processes.values()} | {str(s.profile) for s in service_gateways}
-    _record_attested_cold_start_profiles(token, running_profiles)
-    return _pause_windows_gateway_services(service_gateways, token, profiles, unmapped)
+    }
+    running_profiles = {str(p.profile) for p in profile_processes.values()} | {str(s.profile) for s in service_gateways}
+    # Do not discover a DIFFERENT incarnation after pause and authorize its termination.
+    start_times = {int(pid): get_process_start_time(int(pid))
+                   for pid in set(mapped_pids) | set(unmapped_pids) | set(launcher_pids)}
+    if any(value is None for value in start_times.values()):
+        raise RuntimeError("Windows gateway process identity is unavailable before pause")
+    for pid in mapped_pids:
+        discovered_time = float(getattr(profile_processes[pid], "create_time", 0.0) or 0.0)
+        if discovered_time > 0.0 and abs(float(start_times[int(pid)]) - discovered_time) > 0.001:
+            raise RuntimeError("Windows gateway process identity changed since discovery; no gateways were paused")
+
+    token = {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": [], "pause_attempts": {}}
+    with _windows_gateway_pause_recovery(token):
+        profiles, mapped_pids, socket_acks = _request_socket_pauses(
+            running_pids, profile_processes, service_gateway_pids, token)
+        token["profiles"] = profiles
+        print("→ Stopping Windows gateway process(es) before updating Hermes...")
+        drain_timeout = _gateway_drain_timeout(socket_acks)
+        survivors = _m()._wait_for_windows_update_gateway_exit(mapped_pids, timeout=drain_timeout)
+        force_killed = []
+        for pid in sorted(set(survivors).union(unmapped_pids).union(launcher_pids)):
+            if pid in prepared_unmapped:
+                # A later kill failure must not restart an as-yet-unattempted target.
+                token["unmapped_pids"].append(int(pid))
+                token["unmapped"].append(prepared_unmapped[pid])
+            with suppress(ProcessLookupError):
+                terminate_pid(int(pid), force=True, expected_start_time=start_times[int(pid)])
+                force_killed.append(int(pid))
+        if profiles:
+            print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
+        if force_killed:
+            print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
+        if unmapped_pids:
+            print(f"  → Stopped {len(unmapped_pids)} gateway process(es) without profile mapping")
+            if any(not u.get("argv") for u in token["unmapped"]):
+                print("    Restart manually after update: hermes gateway run")
+
+    # This helper already owns rollback for a failed SCM stop. Do not wrap it in
+    # another rollback or replay its failed recovery. No passive cold-start plan
+    # is present while it restores ordinary gateways after an SCM failure.
+    token = _pause_windows_gateway_services(service_gateways, token, profiles, token["unmapped"])
+    with _windows_gateway_pause_recovery(token):
+        _record_attested_cold_start_profiles(token, running_profiles)
+    return token
 
 
 def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> None:

@@ -102,7 +102,13 @@ def _running_beta_pause_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
-    beta = SimpleNamespace(pid=777, profile="beta")
+    beta = SimpleNamespace(pid=777, profile="beta", path=homes["beta"], create_time=7.77)
+    import gateway.status as status_mod
+    original_start_time = status_mod.get_process_start_time
+    monkeypatch.setattr(
+        status_mod, "get_process_start_time",
+        lambda pid: 7.77 if int(pid) == 777 else original_start_time(pid),
+    )
     monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", lambda: ({777: beta}, [], set(), [777]))
     monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a: ({"beta": 777}, [777], []))
     monkeypatch.setattr(cli_main, "_venv_launcher_ancestors", lambda pids: [])

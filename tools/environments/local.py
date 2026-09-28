@@ -207,15 +207,35 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
 
 # --- Child-process environment construction ---
-def _apply_profile_home(env: dict) -> None:
-    """Bridge the context-local HERMES_HOME override, then the subprocess HOME contract."""
-    from hermes_constants import apply_subprocess_home_env, get_hermes_home_override
+def _apply_profile_home(
+    env: dict, profile_home: str | os.PathLike | None = None,
+    source_profile_home: str | os.PathLike | None = None,
+) -> None:
+    """Resolve source HOME before changing identity, then apply the target policy."""
+    from hermes_constants import (
+        apply_subprocess_home_env, get_hermes_home_override, get_real_home,
+        reset_hermes_home_override, set_hermes_home_override,
+    )
+    if source_profile_home is not None:
+        token = set_hermes_home_override(Path(source_profile_home))
+        try:
+            # Otherwise the source's profile HOME can be mistaken for the real
+            # OS home once HERMES_HOME (or the context override) names the target.
+            env["HOME"] = env["HERMES_REAL_HOME"] = get_real_home(env)
+        finally:
+            reset_hermes_home_override(token)
+    target = profile_home if profile_home is not None else get_hermes_home_override()
+    if target is None:
+        apply_subprocess_home_env(env)
+        return
+    env["HERMES_HOME"] = str(target)
+    token = set_hermes_home_override(Path(target))
     try:
-        if value := get_hermes_home_override():
-            env["HERMES_HOME"] = value
-    except Exception:
-        pass
-    apply_subprocess_home_env(env)
+        # The canonical HOME resolver consults context first. An explicit worker
+        # target must win for this call without changing the dispatcher's context.
+        apply_subprocess_home_env(env)
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _inject_session_context_env(env: dict) -> None:
@@ -239,7 +259,7 @@ def _inject_session_context_env(env: dict) -> None:
 
 def _filter_secret_env(
     items: Mapping[str, str], out: dict, *, unwrap_force: bool,
-    plugin_strip: frozenset = frozenset()) -> None:
+    plugin_strip: frozenset = frozenset(), profile_values: Mapping[str, str] | None = None) -> None:
     """Copy *items* into *out*, dropping Hermes-managed secrets. ``_HERMES_FORCE_<NAME>``
     unwraps to ``NAME`` when ``unwrap_force`` (caller extras / terminal env), else is
     dropped. Blocklisted names survive only via env_passthrough registration or as
@@ -249,32 +269,42 @@ def _filter_secret_env(
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
     except Exception:
         is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
+    from agent.secret_scope import _is_global_env, profile_env_name
     plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
     for key, value in items.items():
+        policy_key = profile_env_name(key) if profile_values is not None else key
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
-            if not unwrap_force:
+            if not unwrap_force or (profile_values is not None and key in profile_values):
                 continue
             key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-            if not _is_hermes_internal_secret(key):
+            policy_key = profile_env_name(key) if profile_values is not None else key
+            if (not _is_hermes_internal_secret(policy_key)
+                    and policy_key.upper() not in plugin_strip_folded):
                 out[key] = value
             continue
-        if _is_hermes_internal_secret(key) or key.upper() in plugin_strip_folded:
+        if (_is_hermes_internal_secret(policy_key)
+                or policy_key.upper() in plugin_strip_folded):
             continue
-        first_party = _is_terminal_first_party_env(key)
+        first_party = _is_terminal_first_party_env(policy_key)
         passthrough = is_env_passthrough(key)
-        if _is_provider_env_blocklisted(key) and not (passthrough or first_party):
+        if _is_provider_env_blocklisted(policy_key) and not (passthrough or first_party):
             continue
         if passthrough and not first_party:
-            value = resolve_passthrough_value(key, value)
+            value = (profile_values.get(key)
+                     if profile_values is not None and not _is_global_env(key)
+                     else resolve_passthrough_value(key, value))
         if value is not None:
             out[key] = value
 
 
-def _finalize_child_env(env: dict) -> dict:
+def _finalize_child_env(
+    env: dict, profile_home: str | os.PathLike | None = None,
+    source_profile_home: str | os.PathLike | None = None,
+) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
     Kanban scrub. Returns the (possibly new) dict."""
-    _apply_profile_home(env)
+    _apply_profile_home(env, profile_home, source_profile_home)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
@@ -282,33 +312,75 @@ def _finalize_child_env(env: dict) -> dict:
     return delegated_child_subprocess_env(env)
 
 
-def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
+def _scrubbed_env(
+    parts, plugin_strip: frozenset, fix_path, *, profile_home=None,
+    source_profile_home=None, enforce_profile_boundary: bool = False,
+) -> dict:
     """Filter each ``(items, unwrap_force)`` in *parts* into one env, rewrite PATH via
     *fix_path* (always prepending the hermes install dir so bare ``hermes`` resolves
     for children of a systemd/cron-launched gateway), then apply the shared guards."""
+    from agent.secret_scope import build_profile_env_boundary, serves_routed_profile
+
+    boundary = None
+    if enforce_profile_boundary or serves_routed_profile():
+        try:
+            boundary = build_profile_env_boundary(source_profile_home, profile_home)
+        except Exception as exc:
+            raise RuntimeError("profile environment boundary could not be constructed; refusing to spawn") from exc
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.env_passthrough import is_env_passthrough
+
+    cross_profile = boundary is not None and boundary.source_home != boundary.target_home
+    profile_values = boundary.target_values if boundary is not None and cross_profile else None
+    # Config-based grants belong to the explicit target, even when the dispatcher
+    # is still scoped to its source. Never replace the caller's secret scope.
+    token = set_hermes_home_override(boundary.target_home) if boundary is not None else None
     out: dict[str, str] = {}
-    for items, unwrap_force in parts:
-        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
-    # Declared names the bound profile scope holds but the process env never did (a routed
-    # profile's own .env / sources) — the filter above can only see names already present.
-    # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
-    # declared secret again (#114209); _scrub_child_env calls it the same way.
-    from tools.env_passthrough import scoped_passthrough_additions
-    out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k not in plugin_strip)
+    try:
+        for items, unwrap_force in parts:
+            if boundary is not None:
+                items = boundary.sanitize(items)
+            _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip,
+                               profile_values=profile_values)
+        if profile_values is not None:
+            forwarded = {key: value for key, value in profile_values.items() if is_env_passthrough(key)}
+            # Profile declarations are not per-call force grants. The same deny
+            # policy applies after materialization, including wrapped credentials.
+            _filter_secret_env(forwarded, out, unwrap_force=False, plugin_strip=plugin_strip,
+                               profile_values=profile_values)
+        else:
+            # Preserve main's single-profile and routed-scope behavior: a declared passthrough
+            # value may exist only in the bound profile scope, not in the process environment.
+            from tools.env_passthrough import scoped_passthrough_additions
+            plugin_names = {name.upper() for name in plugin_strip}
+            out.update((k, v) for k, v in scoped_passthrough_additions(out).items()
+                       if k.upper() not in plugin_names)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
     path_key = _path_env_key(out)
     # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
     # service manager or cron without the console script's directory on PATH. The terminal environment
     # already applies this invariant; Cron scripts use this sanitizer directly (#92998).
     if path_key is not None:
         out[path_key] = _prepend_hermes_bin_dir(fix_path(out.get(path_key, "")))
-    return _finalize_child_env(out)
+    return _finalize_child_env(
+        out, boundary.target_home if boundary is not None else profile_home,
+        boundary.source_home if boundary is not None else None)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
+def _sanitize_subprocess_env(
+    base_env: dict | None, extra_env: dict | None = None, *,
+    profile_home: str | os.PathLike | None = None,
+    source_profile_home: str | os.PathLike | None = None,
+    enforce_profile_boundary: bool = False,
+) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment (background/PTY
     spawn path, search workers, computer-use driver, user-script runners)."""
     return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
-                         _plugin_terminal_env_strip_keys(), lambda p: p)
+                         _plugin_terminal_env_strip_keys(), lambda p: p,
+                         profile_home=profile_home, source_profile_home=source_profile_home,
+                         enforce_profile_boundary=enforce_profile_boundary)
 
 
 def hermes_subprocess_env(
@@ -345,7 +417,11 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
 def build_subprocess_env(
     base: "Mapping[str, str] | None" = None, *, inherit_profile_home: bool = True,
     scrub_secrets: bool = True, extra: "Mapping[str, str] | None" = None,
-    strip_launch_profile: bool = False) -> dict[str, str]:
+    profile_home: str | os.PathLike | None = None,
+    source_profile_home: str | os.PathLike | None = None,
+    enforce_profile_boundary: bool = False,
+    strip_launch_profile: bool = False,
+) -> dict[str, str]:
     """Single factory for child-process envs. ``base=None`` snapshots ``os.environ``.
     ``scrub_secrets=True`` -> :func:`_sanitize_subprocess_env` (profile home inherent,
     ``inherit_profile_home`` ignored). ``scrub_secrets=False`` keeps the base
@@ -358,7 +434,9 @@ def build_subprocess_env(
     if strip_launch_profile:
         strip_launch_profile_env(env)
     if scrub_secrets:
-        return _sanitize_subprocess_env(env, dict(extra) if extra else None)
+        return _sanitize_subprocess_env(
+            env, dict(extra) if extra else None, profile_home=profile_home,
+            source_profile_home=source_profile_home, enforce_profile_boundary=enforce_profile_boundary)
     if inherit_profile_home:
         _apply_profile_home(env)
     if extra:
@@ -450,11 +528,11 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
     installing a HERMES_HOME override without that flag."""
     from agent.secret_scope import _is_global_env, load_env_file
-    from hermes_constants import get_hermes_home_override, get_process_hermes_home
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     target = target_home or get_hermes_home_override()
     if not target or not _is_routed_home(target):
         return env
-    launch_home = get_process_hermes_home()
+    launch_home = get_routing_process_hermes_home()
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
     # Folded strip: on Windows the env block is case-insensitive, so residue
     # stored under a variant casing is the same variable and must go too. The
@@ -679,7 +757,9 @@ def _make_run_env(env: dict) -> dict:
     the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
     (``strip_launch_profile_env``, a no-op for the launch profile) so the backend's own ``env``
     and the served profile's declared passthrough names are what the child sees."""
-    return _scrubbed_env([(dict(strip_launch_profile_env(os.environ.copy()) | env), True)], frozenset(),
+    return _scrubbed_env(
+        [(strip_launch_profile_env(os.environ.copy()), False), (env, True)],
+        _plugin_terminal_env_strip_keys(),
                          lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)))
 
 

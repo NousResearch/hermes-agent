@@ -173,6 +173,8 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
     _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    from agent.secret_scope import record_profile_owned_secret_names
+    record_profile_owned_secret_names(home, values)
     return dict(values)
 
 
@@ -432,6 +434,8 @@ def load_hermes_dotenv(
 
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True, load_pass=load_pass)
+        from agent.secret_scope import record_profile_owned_secret_names
+        record_profile_owned_secret_names(home_path, _env_keys_defined_in_dotenv(user_env))
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
 
@@ -441,6 +445,8 @@ def load_hermes_dotenv(
     op_env = home_path / ".op.env"
     if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
         _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
+        from agent.secret_scope import record_profile_owned_secret_names
+        record_profile_owned_secret_names(home_path, _env_keys_defined_in_dotenv(op_env))
 
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded, load_pass=load_pass)
@@ -586,6 +592,9 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
     _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
         n: values[n] for n, a in report.provenance.items() if a.authoritative and n in values}
+
+    from agent.secret_scope import record_profile_owned_secret_names
+    record_profile_owned_secret_names(home_path, values)
 
     for src in report.sources:
         if src.applied:

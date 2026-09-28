@@ -17,7 +17,10 @@ import re
 import threading
 from collections import OrderedDict
 from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
+from types import MappingProxyType
 from typing import Dict, Mapping, NamedTuple, Optional, Tuple
 
 from utils import file_signature
@@ -329,7 +332,7 @@ def _parse_env_text(text: str) -> Dict[str, str]:
     return secrets
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
+def load_env_file(env_path: Path, *, fail_closed: bool = False) -> Dict[str, str]:
     """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
     scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
     disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
@@ -354,9 +357,14 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
             # Same descriptor: a rewrite that landed between the fstat and the read is parsed but not
             # stored under the pre-write fingerprint.
             settled = file_signature(os.fstat(handle.fileno())) == fingerprint
-    except OSError:
+    except FileNotFoundError:
+        invalidate_env_file_cache(env_path)
+        return {}
+    except OSError as exc:
         # Gone or unreadable: drop any entry so a stale map cannot outlive the file.
         invalidate_env_file_cache(env_path)
+        if fail_closed:
+            raise RuntimeError(f"profile dotenv unavailable: {env_path.name}") from exc
         return {}
 
     secrets = _parse_env_text(_decode_env_bytes(raw))
@@ -369,33 +377,128 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     return secrets
 
 
-def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
-    """Build a profile's secret mapping from ``<home>/.env`` plus its external
-    secret sources. Global vars are NOT copied in — ``get_secret`` reads those
-    from ``os.environ`` — so the scope holds only profile secrets."""
-    secrets = load_env_file(Path(hermes_home) / ".env")
+def _profile_external_secret_values(home: Path, *, fail_closed: bool) -> Dict[str, str]:
+    """Read the existing per-home external-source cache, without ambient fallback."""
     try:
         from hermes_cli.env_loader import get_secret_source_values
-        external_secrets = get_secret_source_values(Path(hermes_home))
+        return get_secret_source_values(home)
     except Exception:
-        external_secrets = {}
-    secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
-    # The DEFAULT profile's config.yaml allow_all_users grant lives only in os.environ (bridged by
-    # gateway.config_loader); scoped gate readers under multiplex never fall to os.environ, so seed it
-    # into that profile's own mapping. A secondary never inherits it (#80099 class).
-    from gateway.config_loader import bridged_allow_all_users
-    bridged = bridged_allow_all_users()
-    if bridged is not None and _is_process_home(hermes_home):
-        secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
-    return secrets
+        if fail_closed:
+            raise
+        return {}
 
 
 def _is_process_home(hermes_home: Path) -> bool:
-    """Is *hermes_home* the profile this process serves as its own? Same launch-home identity as
-    ``serves_routed_profile()``: a host that mirrors a served profile into ``HERMES_HOME`` would
-    otherwise seed the launch profile's bridged allow-all grant into that profile's scope."""
+    """True when *hermes_home* is the launch home, not a mirrored routed home."""
     from hermes_constants import get_routing_process_hermes_home
     try:
         return Path(hermes_home).resolve() == get_routing_process_hermes_home().resolve()
     except OSError:
         return False
+
+
+def build_profile_secret_scope(
+    hermes_home: Path, *, fail_closed_external: bool = False,
+) -> Dict[str, str]:
+    """Build the profile overlay; subprocess boundaries opt into fail-closed resolution.
+
+    Dotenv wins over the optional .op.env bootstrap; cached external sources win
+    over both, matching env_loader. Ordinary scope callers retain fail-open behavior.
+    """
+    home = Path(hermes_home)
+    secrets = load_env_file(home / ".op.env", fail_closed=fail_closed_external)
+    secrets.update(load_env_file(home / ".env", fail_closed=fail_closed_external))
+    external = _profile_external_secret_values(home, fail_closed=fail_closed_external)
+    secrets.update((k, v) for k, v in external.items() if not _is_global_env(k))
+    # The DEFAULT profile's config.yaml allow_all_users grant lives only in os.environ (bridged by
+    # gateway.config_loader); scoped gate readers under multiplex never fall to os.environ, so seed it
+    # into that profile's own mapping. A secondary never inherits it (#80099 class).
+    from gateway.config_loader import bridged_allow_all_users
+    bridged = bridged_allow_all_users()
+    if bridged is not None and _is_process_home(home):
+        secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
+    record_profile_owned_secret_names(home, secrets)
+    return secrets
+
+
+_PROFILE_OWNED_NAMES: dict[Path, set[str]] = {}
+_PROFILE_OWNED_NAMES_LOCK = Lock()
+
+
+def record_profile_owned_secret_names(home: str | os.PathLike, names) -> frozenset[str]:
+    """Retain observed source names while their values may outlive a dotenv/cache reload.
+
+    Only source ingestion and boundary capture add evidence. Never infer ownership
+    from arbitrary ambient exports, and never clear it merely because a source resets.
+    """
+    key = Path(home).resolve()
+    with _PROFILE_OWNED_NAMES_LOCK:
+        owned = _PROFILE_OWNED_NAMES.setdefault(key, set())
+        owned.update(name for name in names if not _is_global_env(name))
+        return frozenset(owned)
+
+
+def get_profile_owned_secret_names(
+    hermes_home: str | os.PathLike, *, fail_closed_external: bool = False,
+) -> frozenset[str]:
+    """Exact dotenv/bootstrap/cached-external ownership, not credential-name heuristics."""
+    return record_profile_owned_secret_names(hermes_home, build_profile_secret_scope(
+        Path(hermes_home), fail_closed_external=fail_closed_external))
+
+
+def profile_env_name(name: str) -> str:
+    """Unwrap nested child-environment carriers before checking profile ownership."""
+    prefixes = ("_HERMES_FORCE_", "APPTAINERENV_", "SINGULARITYENV_")
+    while prefix := next((p for p in prefixes if name.startswith(p)), None):
+        name = name[len(prefix):]
+    return name
+
+
+@dataclass(frozen=True)
+class ProfileEnvBoundary:
+    """Immutable source/target provenance; this is not an OS isolation boundary."""
+
+    source_home: Path
+    target_home: Path
+    source_owned_names: frozenset[str]
+    target_values: Mapping[str, str]
+
+    @property
+    def identity(self) -> str:
+        return str(self.target_home)
+
+    def sanitize(self, env: Mapping[str, str]) -> dict[str, str]:
+        """Remove source/target ambient collisions; only replace shared source names.
+
+        Target-only declarations need the child policy's explicit forwarding grant.
+        """
+        result = dict(env)
+        if self.source_home == self.target_home:
+            return result
+        owned = {profile_env_name(name) for name in self.source_owned_names | self.target_values.keys()}
+        for name in tuple(result):
+            effective = profile_env_name(name)
+            if effective in owned and (name != effective or not _is_global_env(effective)):
+                result.pop(name)
+        for name in self.source_owned_names:
+            if name in self.target_values:
+                result[name] = self.target_values[name]
+            else:
+                result.pop(name, None)
+        return result
+
+
+def build_profile_env_boundary(
+    source_home: str | os.PathLike | None = None,
+    target_home: str | os.PathLike | None = None,
+) -> ProfileEnvBoundary:
+    """Capture launch ownership and the context-local (or explicit worker) target."""
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
+
+    source = Path(source_home if source_home is not None else get_routing_process_hermes_home()).resolve()
+    target = Path(target_home if target_home is not None else get_hermes_home_override() or source).resolve()
+    return ProfileEnvBoundary(
+        source_home=source, target_home=target,
+        source_owned_names=get_profile_owned_secret_names(source, fail_closed_external=True),
+        target_values=MappingProxyType(build_profile_secret_scope(target, fail_closed_external=True)),
+    )

@@ -1,6 +1,6 @@
 import './catalog.css'
 
-import { type ReactNode, useState } from 'react'
+import { memo, type ReactNode, useState } from 'react'
 
 import { RowButton } from '@/components/ui/row-button'
 import { cn } from '@/lib/utils'
@@ -70,7 +70,7 @@ interface CatalogCardProps {
   onSearch: (value: string) => void
 }
 
-export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, onTag, onSearch }: CatalogCardProps) {
+export const CatalogCard = memo(function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, onTag, onSearch }: CatalogCardProps) {
   return (
     <article
       className={cn(
@@ -124,4 +124,4 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
       </div>
     </article>
   )
-}
+})

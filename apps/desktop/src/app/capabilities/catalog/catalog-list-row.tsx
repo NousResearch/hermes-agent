@@ -1,3 +1,5 @@
+import { memo } from 'react'
+
 import { Codicon } from '@/components/ui/codicon'
 import { RowButton } from '@/components/ui/row-button'
 import { cn } from '@/lib/utils'
@@ -16,7 +18,7 @@ interface CatalogListRowProps {
   onSearch: (value: string) => void
 }
 
-export function CatalogListRow({
+export const CatalogListRow = memo(function CatalogListRow({
   entry,
   kind,
   selected,
@@ -63,4 +65,4 @@ export function CatalogListRow({
       </span>
     </div>
   )
-}
+})

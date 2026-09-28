@@ -1,6 +1,6 @@
 import { groupCatalogPlugins, PLUGIN_CATEGORIES } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -132,11 +132,11 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const [detailOpen, setDetailOpen] = useState(false)
   const [limit, setLimit] = useState(PAGE_SIZE)
 
-  const resetSelection = () => {
+  const resetSelection = useCallback(() => {
     setLimit(PAGE_SIZE)
     setSelectedId(null)
     setDetailOpen(false)
-  }
+  }, [])
 
   const filters = useCatalogFilters(kind, resetSelection)
   const { facets, sort } = filters
@@ -163,113 +163,195 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => (CATALOG_POINTER_ENABLED && root.current ? trackCatalogPointer(root.current) : undefined), [])
 
-  const entries = mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled)
-  const filtered = sortCatalog(filterCatalog(entries, facets, deferredQuery, isInstalled), sort, kind)
-
-  const discover =
-    kind === 'plugins' && !facets.categories.length && !facets.tags.length && !deferredQuery && !facets.installedOnly
-
-  const sections =
-    discover && cardView
-      ? groupCatalogPlugins(filtered).map(([key, items]) => ({ key, ...PLUGIN_CATEGORIES[key], entries: items }))
-      : []
-
-  const pageOrder = sections.length ? sections.flatMap(section => section.entries) : filtered
-
-  const selected = entries.find(entry => entry.id === selectedId) ?? filtered[0]
-  const related = selected && (!cardView || detailOpen) ? relatedEntries(filtered, selected, 3) : []
-
-  const searchFor = (value: string) => {
-    onQueryChange?.(value)
-    resetSelection()
-  }
-
-  const clearFilters = () => {
-    onQueryChange?.('')
-    filters.clear()
-  }
-
-  const openEntry = (entry: CatalogEntry) => {
-    setSelectedId(entry.id)
-    setDetailOpen(true)
-  }
-
-  // Installed entries get the owner's on/off switch; the rest install one-way.
-  const entryAction = (entry: CatalogEntry) => {
-    const custom = renderInstalledAction?.(entry)
-
-    if (custom) {
-      return custom
-    }
-
-    const installed = isInstalled(entry)
-
-    return (
-      <CatalogInstallSwitch
-        disabled={Boolean(installedPending) || installed || (kind === 'skills' && !entry.installIdentifier)}
-        installed={installed}
-        installing={isInstalling?.(entry) ?? false}
-        name={entry.name}
-        onInstall={() => {
-          if (kind === 'plugins') {
-            setDetailOpen(false)
-          }
-
-          onInstall(entry)
-        }}
-      />
-    )
-  }
-
-  const card = (entry: CatalogEntry, accentIndex: number) => (
-    <CatalogCard
-      accentIndex={accentIndex}
-      action={entryAction(entry)}
-      entry={entry}
-      key={entry.id}
-      onCategory={filters.chooseCategory}
-      onOpen={openEntry}
-      onSearch={searchFor}
-      onTag={filters.toggleTag}
-    />
+  // Whole-feed derivations run once per input change, not once per render:
+  // catalogTags sorts ~10k distinct tags and filterCatalog scans every row.
+  // ponytail: keyed on the true inputs; an unstable isInstalled from the owner
+  // re-runs filter/sort only (facets stay cached).
+  const entries = useMemo(
+    () => mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled),
+    [data, installedEntries, matchInstalled]
+  )
+  const filtered = useMemo(
+    () => sortCatalog(filterCatalog(entries, facets, deferredQuery, isInstalled), sort, kind),
+    [entries, facets, deferredQuery, isInstalled, sort, kind]
   )
 
-  const details = selected ? (
-    <CatalogDetail
-      action={entryAction(selected)}
-      dialog={cardView}
-      entry={selected}
-      kind={kind}
-      management={renderInstalledDetail?.(selected)}
-      onCategory={filters.chooseCategory}
-      onRelated={entry => setSelectedId(entry.id)}
-      onSearch={searchFor}
-      onTag={filters.toggleTag}
-      related={related}
-    />
-  ) : null
+  const discover = useMemo(
+    () =>
+      kind === 'plugins' &&
+      !facets.categories.length &&
+      !facets.tags.length &&
+      !deferredQuery &&
+      !facets.installedOnly &&
+      cardView,
+    [kind, facets, deferredQuery, cardView]
+  )
 
-  const sortLabels: Record<CatalogSort, string> = {
-    discover: c.featured,
-    stars: c.mostStarred,
-    newest: c.newest,
-    updated: c.recentlyUpdated,
-    name: c.alphabetical
-  }
+  const sections = useMemo(
+    () =>
+      discover
+        ? groupCatalogPlugins(filtered).map(([key, items]) => ({ key, ...PLUGIN_CATEGORIES[key], entries: items }))
+        : [],
+    [discover, filtered]
+  )
 
-  const sortControl = (
-    <Select onValueChange={value => filters.setSort(value as CatalogSort)} value={sort}>
-      <SelectTrigger aria-label={c.sortBy} className="w-full" size="sm">
-        <SelectValue placeholder={c.sortBy} />
-      </SelectTrigger>
-      <SelectContent>
-        {catalogSortOptions(entries, kind, sortLabels).map(({ value, label }) => (
-          <SelectItem key={value} value={value}>
-            {label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+  const pageOrder = useMemo(
+    () => (sections.length ? sections.flatMap(section => section.entries) : filtered),
+    [sections, filtered]
+  )
+
+  const selected = useMemo(
+    () => entries.find(entry => entry.id === selectedId) ?? filtered[0],
+    [entries, selectedId, filtered]
+  )
+  const related = useMemo(
+    () => (selected && (!cardView || detailOpen) ? relatedEntries(filtered, selected, 3) : []),
+    [selected, cardView, detailOpen, filtered]
+  )
+
+  const searchFor = useCallback(
+    (value: string) => {
+      onQueryChange?.(value)
+      resetSelection()
+    },
+    [onQueryChange, resetSelection]
+  )
+
+  const clearFilters = useCallback(() => {
+    onQueryChange?.('')
+    filters.clear()
+  }, [onQueryChange, filters])
+
+  const openEntry = useCallback((entry: CatalogEntry) => {
+    setSelectedId(entry.id)
+    setDetailOpen(true)
+  }, [])
+
+  // Installed entries get the owner's on/off switch; the rest install one-way.
+  const entryAction = useCallback(
+    (entry: CatalogEntry) => {
+      const custom = renderInstalledAction?.(entry)
+
+      if (custom) {
+        return custom
+      }
+
+      const installed = isInstalled(entry)
+
+      return (
+        <CatalogInstallSwitch
+          disabled={Boolean(installedPending) || installed || (kind === 'skills' && !entry.installIdentifier)}
+          installed={installed}
+          installing={isInstalling?.(entry) ?? false}
+          name={entry.name}
+          onInstall={() => {
+            if (kind === 'plugins') {
+              setDetailOpen(false)
+            }
+
+            onInstall(entry)
+          }}
+        />
+      )
+    },
+    [renderInstalledAction, isInstalled, installedPending, kind, isInstalling, onInstall]
+  )
+
+  const card = useCallback(
+    (entry: CatalogEntry, accentIndex: number) => (
+      <CatalogCard
+        accentIndex={accentIndex}
+        action={entryAction(entry)}
+        entry={entry}
+        key={entry.id}
+        onCategory={filters.chooseCategory}
+        onOpen={openEntry}
+        onSearch={searchFor}
+        onTag={filters.toggleTag}
+      />
+    ),
+    [entryAction, filters, openEntry, searchFor]
+  )
+
+  const details = useMemo(
+    () =>
+      selected ? (
+        <CatalogDetail
+          action={entryAction(selected)}
+          dialog={cardView}
+          entry={selected}
+          kind={kind}
+          management={renderInstalledDetail?.(selected)}
+          onCategory={filters.chooseCategory}
+          onRelated={entry => setSelectedId(entry.id)}
+          onSearch={searchFor}
+          onTag={filters.toggleTag}
+          related={related}
+        />
+      ) : null,
+    [selected, entryAction, cardView, kind, renderInstalledDetail, filters, searchFor, related]
+  )
+
+  const sortLabels: Record<CatalogSort, string> = useMemo(
+    () => ({
+      discover: c.featured,
+      stars: c.mostStarred,
+      newest: c.newest,
+      updated: c.recentlyUpdated,
+      name: c.alphabetical
+    }),
+    [c.featured, c.mostStarred, c.newest, c.recentlyUpdated, c.alphabetical]
+  )
+
+  const sortOptions = useMemo(() => catalogSortOptions(entries, kind, sortLabels), [entries, kind, sortLabels])
+  const categories = useMemo(() => catalogCategories(entries, kind), [entries, kind])
+  const sources = useMemo(() => catalogSources(entries), [entries])
+  const tags = useMemo(() => catalogTags(entries, facets.tags, TAG_LIMIT), [entries, facets.tags])
+
+  const sortControl = useMemo(
+    () => (
+      <Select onValueChange={value => filters.setSort(value as CatalogSort)} value={sort}>
+        <SelectTrigger aria-label={c.sortBy} className="w-full" size="sm">
+          <SelectValue placeholder={c.sortBy} />
+        </SelectTrigger>
+        <SelectContent>
+          {sortOptions.map(({ value, label }) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    ),
+    [filters, sort, c.sortBy, sortOptions]
+  )
+
+  // An unchanged page reuses identical elements so React skips the card subtree.
+  const visibleCards = useMemo(() => filtered.slice(0, limit).map(card), [filtered, limit, card])
+  const visibleRows = useMemo(
+    () =>
+      filtered.slice(0, limit).map(entry => (
+        <CatalogListRow
+          entry={entry}
+          installed={isInstalled(entry)}
+          key={entry.id}
+          kind={kind}
+          onCategory={filters.chooseCategory}
+          onOpen={openEntry}
+          onSearch={searchFor}
+          onTag={filters.toggleTag}
+          selected={entry.id === selected?.id}
+        />
+      )),
+    [filtered, limit, isInstalled, kind, filters, openEntry, searchFor, selected]
+  )
+  const shelfSections = useMemo(
+    () =>
+      sections.map((section, sectionIndex) => ({
+        ...section,
+        cards: section.entries.slice(0, SHELF_SIZE).map((entry, index) => card(entry, sectionIndex * SHELF_SIZE + index))
+      })),
+    [sections, card]
   )
 
   const viewToggleLabel = cardView ? c.listView : c.cardView
@@ -279,7 +361,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     <div className="@container/catalog flex h-full min-h-0 min-w-0" data-catalog={kind} ref={root}>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col @[48rem]/catalog:flex-row">
         <CatalogFilters
-          categories={catalogCategories(entries, kind)}
+          categories={categories}
           className="max-h-52 shrink-0 gap-0 pt-3 @[48rem]/catalog:max-h-none @[48rem]/catalog:w-48"
           facets={facets}
           onCategory={filters.toggleCategory}
@@ -290,8 +372,8 @@ export const CatalogBrowser = memo(function CatalogBrowser({
           resultCount={filtered.length}
           sidebarActions={actions && <div className="flex flex-wrap items-center gap-1.5">{actions}</div>}
           sortControl={sortControl}
-          sources={catalogSources(entries)}
-          tags={catalogTags(entries, facets.tags, TAG_LIMIT)}
+          sources={sources}
+          tags={tags}
         />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-catalog-results>
           {/* Search owns the header; kind-specific setup actions and the view toggle share the end slot. */}
@@ -364,7 +446,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                   >
                     {discover ? (
                       <div className="space-y-7 py-3">
-                        {sections.map((section, sectionIndex) => (
+                        {shelfSections.map(section => (
                           <section className="space-y-3" data-catalog-section={section.key} key={section.key}>
                             <header className="flex items-center justify-between gap-3">
                               <h3 className="flex items-baseline gap-2 text-sm font-semibold">
@@ -387,9 +469,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                             </header>
                             <p className="text-xs text-(--ui-text-tertiary)">{section.blurb}</p>
                             <Reel className="*:w-68" data-catalog-hover-group>
-                              {section.entries
-                                .slice(0, SHELF_SIZE)
-                                .map((entry, index) => card(entry, sectionIndex * SHELF_SIZE + index))}
+                              {section.cards}
                             </Reel>
                           </section>
                         ))}
@@ -397,10 +477,10 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                     ) : (
                       <div className="py-2">
                         {CATALOG_MASONRY ? (
-                          <Masonry data-catalog-hover-group>{filtered.slice(0, limit).map(card)}</Masonry>
+                          <Masonry data-catalog-hover-group>{visibleCards}</Masonry>
                         ) : (
                           <div className="catalog-grid" data-catalog-hover-group>
-                            {filtered.slice(0, limit).map(card)}
+                            {visibleCards}
                           </div>
                         )}
                         {filtered.length > limit && (
@@ -429,19 +509,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
               >
                 <MasterDetail resizeId="capabilities-split" split="wide">
                   <ListColumn key={`${filterKey}:${deferredQuery}`}>
-                    {filtered.slice(0, limit).map(entry => (
-                      <CatalogListRow
-                        entry={entry}
-                        installed={isInstalled(entry)}
-                        key={entry.id}
-                        kind={kind}
-                        onCategory={filters.chooseCategory}
-                        onOpen={openEntry}
-                        onSearch={searchFor}
-                        onTag={filters.toggleTag}
-                        selected={entry.id === selected.id}
-                      />
-                    ))}
+                    {visibleRows}
                     {filtered.length > limit && (
                       <Button onClick={() => setLimit(value => value + PAGE_SIZE)} size="sm" variant="text">
                         {c.more}

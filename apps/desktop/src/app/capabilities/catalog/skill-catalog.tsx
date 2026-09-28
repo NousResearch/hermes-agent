@@ -220,21 +220,25 @@ function ScopedSkillCatalog({
     [catalog]
   )
 
-  const installIdentifier = (entry: CatalogEntry) => catalog.officialFor(entry)?.identifier ?? entry.installIdentifier
+  const installIdentifier = useCallback(
+    (entry: CatalogEntry) => catalog.officialFor(entry)?.identifier ?? entry.installIdentifier,
+    [catalog]
+  )
 
   const identityPending = hasHubSkills && (hubPending || Boolean(hubError))
 
-  const install = (entry: CatalogEntry) => {
-    const identifier = installIdentifier(entry)
+  const install = useCallback(
+    (entry: CatalogEntry) => {
+      const identifier = installIdentifier(entry)
 
-    if (installedPending || identityPending || !identifier || isInstalled(entry) || pending.current.has(identifier)) {
-      return
-    }
+      if (installedPending || identityPending || !identifier || isInstalled(entry) || pending.current.has(identifier)) {
+        return
+      }
 
-    pending.current.add(identifier)
-    setInstalling(new Set(pending.current))
-    notify({ kind: 'success', title: h.installStarted(entry.name), message: h.actionLog })
-    void installHubSkill(identifier, profile)
+      pending.current.add(identifier)
+      setInstalling(new Set(pending.current))
+      notify({ kind: 'success', title: h.installStarted(entry.name), message: h.actionLog })
+      void installHubSkill(identifier, profile)
       .catch(err => {
         if (mounted.current) {
           notifyHubActionFailed(err, h.actionFailed, entry.name, profile)
@@ -247,7 +251,62 @@ function ScopedSkillCatalog({
           setInstalling(new Set(pending.current))
         }
       })
-  }
+    },
+    [installIdentifier, installedPending, identityPending, isInstalled, h, profile]
+  )
+
+  const isInstalling = useCallback(
+    (entry: CatalogEntry) => installing.has(installIdentifier(entry) ?? ''),
+    [installing, installIdentifier]
+  )
+
+  const renderInstalledActionFor = useCallback(
+    (entry: CatalogEntry) => {
+      const skill = catalog.skillsById.get(entry.id)
+
+      return skill && renderInstalledAction ? renderInstalledAction(skill) : null
+    },
+    [catalog, renderInstalledAction]
+  )
+  const renderInstalledDetailFor = useCallback(
+    (entry: CatalogEntry) => {
+      const skill = catalog.skillsById.get(entry.id)
+
+      return skill ? renderInstalledDetail(skill) : null
+    },
+    [catalog, renderInstalledDetail]
+  )
+
+  const browserNotice = useMemo(
+    () => (
+      <>
+        {notice}
+        {(officialError || hubError) && (
+          <CatalogAlert
+            onRetry={() => {
+              if (officialError) {
+                void refreshOfficial()
+              }
+
+              if (hubError) {
+                void refreshHub()
+              }
+            }}
+            retryLabel={t.skills.refresh}
+            title={t.skills.skillsLoadFailed}
+          >
+            {(hubError ?? officialError)?.message}
+          </CatalogAlert>
+        )}
+        {hasHubSkills && hubPending && !installedPending && !notice && (
+          <p className="px-3 py-2 text-xs text-(--ui-text-tertiary)" role="status">
+            {t.skills.loading}
+          </p>
+        )}
+      </>
+    ),
+    [notice, officialError, hubError, refreshOfficial, refreshHub, t, hasHubSkills, hubPending, installedPending]
+  )
 
   return (
     <CatalogBrowser
@@ -255,49 +314,15 @@ function ScopedSkillCatalog({
       installedEntries={catalog.entries}
       installedPending={installedPending || identityPending}
       isInstalled={isInstalled}
-      isInstalling={entry => installing.has(installIdentifier(entry) ?? '')}
+      isInstalling={isInstalling}
       kind="skills"
       matchInstalled={catalog.matchInstalled}
-      notice={
-        <>
-          {notice}
-          {(officialError || hubError) && (
-            <CatalogAlert
-              onRetry={() => {
-                if (officialError) {
-                  void refreshOfficial()
-                }
-
-                if (hubError) {
-                  void refreshHub()
-                }
-              }}
-              retryLabel={t.skills.refresh}
-              title={t.skills.skillsLoadFailed}
-            >
-              {(hubError ?? officialError)?.message}
-            </CatalogAlert>
-          )}
-          {hasHubSkills && hubPending && !installedPending && !notice && (
-            <p className="px-3 py-2 text-xs text-(--ui-text-tertiary)" role="status">
-              {t.skills.loading}
-            </p>
-          )}
-        </>
-      }
+      notice={browserNotice}
       onInstall={install}
       onQueryChange={onQueryChange}
       query={query}
-      renderInstalledAction={entry => {
-        const skill = catalog.skillsById.get(entry.id)
-
-        return skill && renderInstalledAction ? renderInstalledAction(skill) : null
-      }}
-      renderInstalledDetail={entry => {
-        const skill = catalog.skillsById.get(entry.id)
-
-        return skill ? renderInstalledDetail(skill) : null
-      }}
+      renderInstalledAction={renderInstalledActionFor}
+      renderInstalledDetail={renderInstalledDetailFor}
     />
   )
 }

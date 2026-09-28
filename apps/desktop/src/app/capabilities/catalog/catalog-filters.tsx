@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 
 import { SidebarDateDivider, SidebarSectionMeta } from '@/app/chat/sidebar/chrome'
 import { OverlayNavItem, OverlaySidebar } from '@/app/overlays/overlay-split-layout'
@@ -82,7 +82,7 @@ function Facet({
   )
 }
 
-export function CatalogFilters({
+export const CatalogFilters = memo(function CatalogFilters({
   sources,
   categories,
   tags,
@@ -138,4 +138,4 @@ export function CatalogFilters({
       {sidebarActions}
     </OverlaySidebar>
   )
-}
+})

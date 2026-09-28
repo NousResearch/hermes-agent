@@ -654,7 +654,7 @@ export const PluginsTab = memo(function PluginsTab({
     [installedByCatalogName]
   )
 
-  const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id)
+  const isInstalled = useCallback((entry: CatalogEntry) => packageById.has(entry.id), [packageById])
 
   const handleAgentRemove = useCallback(
     (row: AgentPluginRow) => {
@@ -728,91 +728,124 @@ export const PluginsTab = memo(function PluginsTab({
     )
   }
 
-  const notice =
-    status === 'error' ? (
-      <CatalogAlert
-        onRetry={() => void loadAgentPlugins(requestGateway, scope)}
-        retryLabel={t.skills.refresh}
-        title={p.loadFailed}
-      >
-        {error}
-      </CatalogAlert>
-    ) : null
+  const notice = useMemo(
+    () =>
+      status === 'error' ? (
+        <CatalogAlert
+          onRetry={() => void loadAgentPlugins(requestGateway, scope)}
+          retryLabel={t.skills.refresh}
+          title={p.loadFailed}
+        >
+          {error}
+        </CatalogAlert>
+      ) : null,
+    [status, requestGateway, scope, t, p, error]
+  )
+
+  const headerActions = useMemo(() => <PluginActions profile={profile} />, [profile])
+
+  const handleCatalogInstall = useCallback(
+    (entry: CatalogEntry) => openCatalogPluginInstall(entry, scope),
+    [scope]
+  )
+
+  const renderInstalledActionFor = useCallback(
+    (entry: CatalogEntry) => {
+      const pkg = packageById.get(entry.id)
+
+      return pkg ? packageSwitch(pkg) : null
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [packageById, busyKey, requestGateway, scope, p]
+  )
+
+  const renderInstalledDetailFor = useCallback(
+    (entry: CatalogEntry) => {
+      const pkg = packageById.get(entry.id)
+
+      if (!pkg) {
+        return null
+      }
+
+      return (
+        <PackageRow
+          busy={pkg.agent ? agentBusy(pkg.agent) : false}
+          key={pkg.key}
+          onAgentRemove={handleAgentRemove}
+          onAgentToggle={(row, enable) => {
+            if (!row.key) {
+              return
+            }
+
+            void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+          }}
+          onAgentUpdate={row => {
+            const finish = (outcome: AgentPluginUpdateOutcome) => {
+              if (outcome.kind === 'applied') {
+                notify({ kind: 'success', message: p.updated(row.name) })
+                void rescanAll(requestGateway, scope)
+              }
+            }
+
+            void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(async outcome => {
+              if (outcome.kind !== 'consent') {
+                finish(outcome)
+
+                return
+              }
+
+              // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
+              // half); the backend changed nothing until the user confirms the delta.
+              const ok = await confirm({
+                confirmLabel: p.updateConsentConfirm,
+                description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                title: p.updateConsentTitle(row.name)
+              })
+
+              if (ok) {
+                finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+              }
+            })
+          }}
+          onDesktopRemove={handleDesktopRemove}
+          pkg={pkg}
+          profile={profile}
+          request={requestGateway}
+          scope={scope}
+          scopeLabel={label}
+          scopeSelector={scopeSelector}
+        />
+      )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      packageById,
+      busyKey,
+      handleAgentRemove,
+      handleDesktopRemove,
+      requestGateway,
+      scope,
+      p,
+      profile,
+      label,
+      scopeSelector
+    ]
+  )
 
   return (
     <CatalogBrowser
-      headerActions={<PluginActions profile={profile} />}
+      headerActions={headerActions}
       installedEntries={installedEntries}
       installedPending={status !== 'ready'}
       isInstalled={isInstalled}
       kind="plugins"
       matchInstalled={matchInstalled}
       notice={notice}
-      onInstall={entry => openCatalogPluginInstall(entry, scope)}
+      onInstall={handleCatalogInstall}
       onQueryChange={onQueryChange}
       query={query}
-      renderInstalledAction={entry => {
-        const pkg = packageById.get(entry.id)
-
-        return pkg ? packageSwitch(pkg) : null
-      }}
-      renderInstalledDetail={entry => {
-        const pkg = packageById.get(entry.id)
-
-        if (!pkg) {
-          return null
-        }
-
-        return (
-          <PackageRow
-            busy={pkg.agent ? agentBusy(pkg.agent) : false}
-            key={pkg.key}
-            onAgentRemove={handleAgentRemove}
-            onAgentToggle={(row, enable) => {
-              if (!row.key) {
-                return
-              }
-
-              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
-            }}
-            onAgentUpdate={row => {
-              const finish = (outcome: AgentPluginUpdateOutcome) => {
-                if (outcome.kind === 'applied') {
-                  notify({ kind: 'success', message: p.updated(row.name) })
-                  void rescanAll(requestGateway, scope)
-                }
-              }
-
-              void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(async outcome => {
-                if (outcome.kind !== 'consent') {
-                  finish(outcome)
-
-                  return
-                }
-
-                // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
-                // half); the backend changed nothing until the user confirms the delta.
-                const ok = await confirm({
-                  confirmLabel: p.updateConsentConfirm,
-                  description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
-                  title: p.updateConsentTitle(row.name)
-                })
-
-                if (ok) {
-                  finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
-                }
-              })
-            }}
-            onDesktopRemove={handleDesktopRemove}
-            pkg={pkg}
-            profile={profile}
-            request={requestGateway}
-            scope={scope}
-            scopeLabel={label}
-            scopeSelector={scopeSelector}
-          />
-        )
-      }}
+      renderInstalledAction={renderInstalledActionFor}
+      renderInstalledDetail={renderInstalledDetailFor}
       selectedEntryId={selectedEntryId}
     />
   )

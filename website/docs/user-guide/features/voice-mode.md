@@ -485,6 +485,10 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"    # Adam
     model_id: "eleven_multilingual_v2"   # or eleven_v3, eleven_flash_v2_5, ... (Desktop Settings → Voice accepts any model id)
+    language_code: "en"
+    voice_settings:
+      stability: 0.5
+      similarity_boost: 0.8
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"                 # alloy, echo, fable, onyx, nova, shimmer
@@ -500,6 +504,12 @@ tts:
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+For Eleven v4 quality, set `model_id: eleven_v4`. For real-time playback, additionally set
+`streaming_model_id: eleven_v4_turbo`. Both v4 models support `language_code`, `stability`, and
+`similarity_boost`, but not `style`, `speed`, or `use_speaker_boost`; Hermes rejects incompatible
+enabled/non-default settings before synthesis. This server-side option forwarding does not apply to Desktop's
+client-direct ElevenLabs wire, which currently sends only voice and model configuration.
 
 ### Environment Variables
 

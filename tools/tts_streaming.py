@@ -204,6 +204,7 @@ class ElevenLabsStreamer(StreamingTTSProvider):
         return bool(_resolve_key("ELEVENLABS_API_KEY", "elevenlabs"))
 
     def stream(self, text: str) -> Iterator[bytes]:
+        from tools.tts_elevenlabs_options import build_elevenlabs_convert_kwargs
         from tools.tts_tool import _import_elevenlabs
         from tools.tts_tool_providers import (
             DEFAULT_ELEVENLABS_STREAMING_MODEL_ID, DEFAULT_ELEVENLABS_VOICE_ID, _elevenlabs_environment_kwargs,
@@ -211,11 +212,14 @@ class ElevenLabsStreamer(StreamingTTSProvider):
         client = _import_elevenlabs()(
             api_key=_resolve_key("ELEVENLABS_API_KEY", "elevenlabs"), **_elevenlabs_environment_kwargs(self.section),
         )
-        yield from client.text_to_speech.convert(
+        model_id = self.section.get("streaming_model_id",
+                                    self.section.get("model_id", DEFAULT_ELEVENLABS_STREAMING_MODEL_ID))
+        convert_kwargs = build_elevenlabs_convert_kwargs(
             text=text, voice_id=self.section.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID),
-            model_id=self.section.get("streaming_model_id",
-                                      self.section.get("model_id", DEFAULT_ELEVENLABS_STREAMING_MODEL_ID)),
-            output_format="pcm_24000")
+            model_id=model_id, output_format="pcm_24000", el_config=self.section,
+            tts_config=self.tts_config, convert_method=client.text_to_speech.convert,
+        )
+        yield from client.text_to_speech.convert(**convert_kwargs)
 
 
 def _openai_config_api_key() -> str:

@@ -2,6 +2,11 @@
 
 No adapter delivery, session creation, or policy/scheduler lives here. Callers supply the
 exact routing key and session id as a compare-and-swap expectation, plus a threshold.
+Threaded Telegram DMs require their topic binding and route to share one SQLite file;
+cross-file topic maintenance fails closed. The checks around a provider call are not a
+transaction over the external provider: a concurrent /topic restore immediately after
+commit admission cannot be rolled back. The post-call check prevents clearing the new
+binding's usage, not an already accepted provider compaction.
 """
 from __future__ import annotations
 
@@ -12,29 +17,59 @@ from typing import Any
 
 from agent.conversation_compression import CompressionCommitFence, finalize_context_engine_compression_notification
 from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest, compress_now
+from gateway.config import Platform
 from gateway.session import build_session_key
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_lease import TurnLeaseTimeoutError
 
 
 class _BindingFence(CompressionCommitFence):
-    """Refuse the irreversible compressor commit if the routing tip changed while summarizing."""
+    """Refuse commit if the route or Telegram topic binding changed while summarizing."""
 
-    def __init__(self, store, key: str, session_id: str):
+    def __init__(self, store, key: str, session_id: str, *, profile=None, topic_db=None):
         super().__init__()
         self.store, self.key, self.session_id = store, key, session_id
+        self.profile, self.topic_db = profile, topic_db
 
     def begin_commit(self, cancel_event=None):
         # The compressor calls this on its worker thread, not on the gateway loop.
-        if not _bound(self.store, self.key, self.session_id):
+        if not _bound(self.store, self.key, self.session_id, self.profile, self.topic_db):
             self.revoke_commit_admission()
         return super().begin_commit(cancel_event)
 
 
-def _bound(store, key: str, session_id: str) -> bool:
+def _topic_bound(entry, profile, topic_db) -> bool:
+    source = entry.origin
+    if source is None:
+        return False
+    if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+        return True
+    if topic_db is None or not source.chat_id or not source.user_id:
+        return False
+    try:
+        mode = topic_db.is_telegram_topic_mode_enabled(
+            chat_id=source.chat_id, user_id=source.user_id, profile_name=profile)
+        if not source.thread_id:
+            return not mode
+        # Threaded DMs are ambiguous without their authoritative topic row: a
+        # deleted last binding also disables mode, leaving the route unchanged.
+        if not mode:
+            return False
+        binding = topic_db.get_telegram_topic_binding(
+            chat_id=source.chat_id, thread_id=source.thread_id, profile_name=profile)
+        return bool(binding and binding["profile_name"] == profile
+                    and binding["user_id"] == str(source.user_id)
+                    and binding["session_key"] == entry.session_key
+                    and binding["session_id"] == entry.session_id)
+    except Exception:
+        return False
+
+
+def _bound(store, key: str, session_id: str, profile=None, topic_db=None) -> bool:
     entry = store.lookup_by_session_key(key)
     return bool(entry and entry.session_id == session_id and not entry.active_turn_token
-                and not entry.suspended and not entry.resume_pending)
+                and not entry.suspended and not entry.resume_pending
+                and _topic_bound(entry, profile, topic_db))
 
 
 def _valid_number(value) -> bool:
@@ -75,6 +110,8 @@ async def maintain_existing_session(runner: Any, params: dict) -> dict:
 
 async def _maintain_scoped(runner, action, profile, key, sid, threshold):
     store = runner.async_session_store
+    sync_store = store._store
+    topic_db = getattr(runner._session_db, "_db", None)
 
     async def current():
         entry = await store.lookup_by_session_key(key)  # never get_or_create_session
@@ -87,7 +124,18 @@ async def _maintain_scoped(runner, action, profile, key, sid, threshold):
             source, group_sessions_per_user=runner.config.group_sessions_per_user,
             thread_sessions_per_user=runner.config.thread_sessions_per_user,
             profile=profile if runner.config.multiplex_profiles else None)
-        return entry if entry.session_key == key == expected else None
+        if entry.session_key != key or key != expected:
+            return None
+        # A satellite profile can have its topic rows in a different state.db
+        # than the process-wide routing index. No cross-file commit can fence
+        # both, so reject threaded topic maintenance rather than guessing.
+        if source.platform == Platform.TELEGRAM and source.chat_type == "dm" and source.thread_id:
+            routing_db = sync_store._routing_db
+            if (routing_db is None or topic_db is None or
+                    routing_db.db_path != topic_db.db_path):
+                return None
+        return entry if await runner._run_in_executor_with_context(
+            lambda: _topic_bound(entry, profile, topic_db)) else None
 
     entry = await current()
     if entry is None:
@@ -149,8 +197,10 @@ async def _maintain_scoped(runner, action, profile, key, sid, threshold):
             count = getattr(ctx, "compression_count", None)
             if not isinstance(count, int) or isinstance(count, bool):
                 return {"status": "unknown_usage"}
+            fence = _BindingFence(sync_store, key, sid, profile=profile, topic_db=topic_db)
             await runner._run_in_executor_with_context(
-                lambda: agent._compress_context([], "", force=True, task_id=sid))
+                lambda: agent._compress_context([], "", force=True, task_id=sid,
+                                                commit_fence=fence))
             if getattr(ctx, "compression_count", count) <= count:
                 return {"status": "not_compacted", **figures}
             ctx.last_prompt_tokens = -1
@@ -174,7 +224,7 @@ async def _maintain_scoped(runner, action, profile, key, sid, threshold):
             try:
                 tmp.compression_in_place = True
                 messages = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]
-                fence = _BindingFence(store._store, key, sid)
+                fence = _BindingFence(sync_store, key, sid, profile=profile, topic_db=topic_db)
                 result = await runner._run_in_executor_with_context(
                     lambda: compress_now(tmp, messages, CompressRequest(), system_message="",
                                          task_id=sid, skip_without_window=True, commit_fence=fence))

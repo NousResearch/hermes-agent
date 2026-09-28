@@ -3,11 +3,13 @@ import asyncio
 import json
 import threading
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.control_socket import GatewayControlServer
+from gateway.control_socket import _PipeControlProtocol
 from gateway.run import GatewayRunner
 from gateway.session import AsyncSessionStore, SessionSource, SessionStore
 from gateway.session_maintenance import _BindingFence, maintain_existing_session, session_maintenance_verb
@@ -22,6 +24,7 @@ def owner(tmp_path, monkeypatch):
     token = set_hermes_home_override(str(home))
     config = GatewayConfig()
     store = SessionStore(home / "sessions", config)
+    store._db = store._routing_db
     runner = object.__new__(GatewayRunner)
     runner.config = config
     runner.session_store = store
@@ -118,7 +121,7 @@ async def test_threshold_codex_live_thread_and_socket_wire(owner, monkeypatch):
 def test_fence_refuses_stale_tip_before_irreversible_commit(owner):
     _, store, source = owner
     entry = store.get_or_create_session(source)
-    fence = _BindingFence(store, entry.session_key, entry.session_id)
+    fence = _BindingFence(store, entry.session_key, entry.session_id, profile="default", topic_db=store._db)
     assert fence.begin_commit() is True
     fence.finish_commit()
     store.suspend_session(entry.session_key)
@@ -208,3 +211,99 @@ async def test_route_switch_during_worker_does_not_clear_successor_usage(owner, 
     assert (await maintain_existing_session(runner, request(entry, "compact")))["status"] == "not_compacted"
     assert store.lookup_by_session_key(key).session_id == "successor"
     assert store.lookup_by_session_key(key).last_prompt_tokens == 777
+
+
+@pytest.mark.asyncio
+async def test_pipe_protocol_keeps_owner_loop_alive_during_sync_verb():
+    loop = asyncio.get_running_loop()
+    server = GatewayControlServer(verb_handlers={"wait": lambda params:
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0, result={"done": True}), loop).result(timeout=3)})
+    class Transport:
+        def __init__(self):
+            self.writes = []
+            self.closed = asyncio.Event()
+        def write(self, data):
+            self.writes.append(data)
+        def close(self):
+            self.closed.set()
+    transport = Transport()
+    protocol = _PipeControlProtocol(server)
+    protocol.connection_made(transport)
+    protocol.data_received(b'{"verb":"wait","params":{},"id":1}\n')
+    await asyncio.wait_for(transport.closed.wait(), 5)
+    assert json.loads(transport.writes[0])["result"] == {"done": True}
+
+
+@pytest.mark.asyncio
+async def test_topic_row_change_without_route_change_refuses_commit(owner):
+    runner, store, _ = owner
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="user",
+                           chat_type="dm", thread_id="topic-1")
+    entry = store.get_or_create_session(source)
+    store._db.enable_telegram_topic_mode(chat_id="chat", user_id="user", profile_name="default")
+    store._db.bind_telegram_topic(chat_id="chat", thread_id="topic-1", user_id="user",
+                                  session_key=entry.session_key, session_id=entry.session_id)
+    from gateway.session_maintenance import _topic_bound
+    assert _topic_bound(entry, "default", store._db)
+    assert store._routing_db.db_path == store._db.db_path
+    assert (await maintain_existing_session(runner, request(entry)))["status"] == "unknown_usage"
+    fence = _BindingFence(store, entry.session_key, entry.session_id, profile="default", topic_db=store._db)
+    store._db.delete_telegram_topic_binding(chat_id="chat", thread_id="topic-1")
+    assert store.lookup_by_session_key(entry.session_key).session_id == entry.session_id
+    assert fence.begin_commit() is False
+    assert (await maintain_existing_session(runner, request(entry)))["status"] == "stale_binding"
+
+
+@pytest.mark.asyncio
+async def test_topic_cross_database_route_fails_closed(owner, tmp_path):
+    from hermes_state import AsyncSessionDB, SessionDB
+    runner, store, _ = owner
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", user_id="user",
+                           chat_type="dm", thread_id="topic-1")
+    entry = store.get_or_create_session(source)
+    other = SessionDB(tmp_path / "other.db")
+    try:
+        runner._session_db = AsyncSessionDB(other)
+        assert (await maintain_existing_session(runner, request(entry)))["status"] == "stale_binding"
+        assert store.lookup_by_session_key(entry.session_key).session_id == entry.session_id
+    finally:
+        other.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", ["route", "topic"])
+async def test_codex_real_compressor_fence_blocks_stale_server_compact(owner, changed):
+    from agent.conversation_compression import compress_context
+    runner, store, source = owner
+    if changed == "topic":
+        source.thread_id = "topic-1"
+    entry = store.get_or_create_session(source)
+    sid, key = entry.session_id, entry.session_key
+    if changed == "topic":
+        store._db.enable_telegram_topic_mode(chat_id="chat", user_id="user")
+        store._db.bind_telegram_topic(chat_id="chat", thread_id="topic-1", user_id="user",
+                                      session_key=key, session_id=sid)
+    store._db.update_session_model(sid, "test-model")
+    store.update_session(key, last_prompt_tokens=900, touch_activity=False)
+    compact_thread = Mock()
+    ctx = SimpleNamespace(last_prompt_tokens=900, context_length=1000, compression_count=0)
+    agent = SimpleNamespace(session_id=sid, model="test-model", api_mode="codex_app_server",
+        context_compressor=ctx, _cached_system_prompt="cached",
+        _codex_session=SimpleNamespace(compact_thread=compact_thread))
+    def compact(messages, prompt, **kw):
+        successor = "successor"
+        store._db.create_session(successor, source="telegram", model="test-model")
+        if changed == "route":
+            assert store.switch_session(key, successor, expected_session_id=sid)
+        else:
+            store._db.bind_telegram_topic(chat_id="chat", thread_id="topic-1", user_id="user",
+                                          session_key=key, session_id=successor)
+            assert store.lookup_by_session_key(key).session_id == sid
+        return compress_context(agent, messages, prompt, **kw)
+    agent._compress_context = compact
+    runner._agent_cache[key] = (agent, "signature")
+    runner._resolve_session_agent_runtime = lambda **kw: ("test-model", {"api_mode": "codex_app_server"})
+    runner._run_in_executor_with_context = lambda fn: asyncio.to_thread(fn)
+    assert (await maintain_existing_session(runner, request(entry, "compact")))["status"] == "not_compacted"
+    compact_thread.assert_not_called()
+    assert store.lookup_by_session_key(key).session_id == ("successor" if changed == "route" else sid)

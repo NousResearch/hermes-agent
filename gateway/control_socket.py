@@ -3,6 +3,8 @@ versioned JSON verbs (``identify``, ``status``). A connectable socket with a wel
 answer IS liveness — no PID-reuse heuristics. Never a TCP port: filesystem/pipe ACLs are the auth
 boundary. POSIX: ``$HERMES_HOME/gateway.sock`` (or a temp-dir socket + ``gateway.sock.path`` pointer
 file when the home path exceeds ``sun_path``); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
+The Windows proactor supplies its own default pipe security descriptor; this module does
+not establish an owner-only DACL. Do not treat the home-derived pipe name as authentication.
 Wire contract: ONE request per connection — one JSON line in, one out, then the server closes.
 Consumers PREFER the socket and fall back to the state-file/scan layer when it doesn't answer.
 """
@@ -255,19 +257,33 @@ class _PipeControlProtocol(asyncio.Protocol):
         self._server = server
         self._transport: Any = None
         self._buffer = bytearray()
+        self._dispatched = False
 
     def connection_made(self, transport) -> None:  # pragma: no cover - windows
         self._transport = transport
 
-    def data_received(self, data: bytes) -> None:  # pragma: no cover - windows
+    def data_received(self, data: bytes) -> None:
+        if self._dispatched:
+            return
         self._buffer.extend(data)
         if len(self._buffer) > _MAX_REQUEST_BYTES:
             self._transport.close()
         elif b"\n" in self._buffer:
-            try:
-                self._transport.write(self._server.handle_request_line(bytes(self._buffer).partition(b"\n")[0]))
-            finally:
-                self._transport.close()
+            self._dispatched = True
+            raw = bytes(self._buffer).partition(b"\n")[0]
+            self._buffer.clear()
+            asyncio.get_running_loop().create_task(self._respond(raw))
+
+    async def _respond(self, raw: bytes) -> None:
+        # A maintenance verb waits for this owner loop; never execute it in data_received.
+        try:
+            response = await asyncio.get_running_loop().run_in_executor(
+                None, self._server.handle_request_line, raw)
+            self._transport.write(response)
+        except Exception:
+            logger.debug("Control pipe connection handler error", exc_info=True)
+        finally:
+            self._transport.close()
 
 
 def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, Any]] = None,

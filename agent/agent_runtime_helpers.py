@@ -453,7 +453,7 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
         prev.pop(_DB_PERSISTED_MARKER, None)
 
 
-def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any]) -> None:
+def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *, folded: bool = True) -> None:
     """Record durable ids a merge folded into *survivor* and then dropped from the list.
 
     Both the physical ``_row_id`` (``_absorbed_row_ids``, consumed by the in-place archive) and the durable
@@ -474,7 +474,10 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any]) ->
         for row_id in ids:
             if row_id not in absorbed:
                 absorbed.append(row_id)
-    record_absorbed_message(survivor, dropped)
+    # The uid witness claims the dropped dict's TEXT lives on in the survivor: only a fold earns it. A
+    # superseded row (``folded=False``) is retired like any absorbed row but its content is discarded.
+    if folded:
+        record_absorbed_message(survivor, dropped)
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
@@ -490,7 +493,7 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
         ):
             # A provisional verification candidate is superseded, not unioned.
             if prev.get("finish_reason") in {"verification_required", "verify_hook_continue"}:
-                _remember_absorbed_row(msg, prev)
+                _remember_absorbed_row(msg, prev, folded=False)
                 collapsed[-1] = msg
             else:
                 _merge_assistant_into(prev, msg)

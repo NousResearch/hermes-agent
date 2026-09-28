@@ -287,6 +287,23 @@ def test_the_live_list_walk_binds_a_result_to_the_nearest_call_that_names_it():
     assert tool_call_uid_from_history([call("1" * UID_LEN), {"role": "user", "content": "q"}, result], 2) is None
 
 
+def test_a_superseded_verification_candidate_is_not_a_witness_constituent():
+    """Alternation repair DISCARDS a provisional verification candidate in favour of the final answer; its
+    row is retired like an absorbed row, but its uid is not a constituent of anything."""
+    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+
+    candidate = {"role": "assistant", "content": "provisional", "finish_reason": "verification_required",
+                 "message_uid": "p" * UID_LEN, "_row_id": 7}
+    final = {"role": "assistant", "content": "verified answer", "message_uid": "f" * UID_LEN}
+
+    merged, repairs = _merge_consecutive_assistants([candidate, final])
+
+    assert repairs == 1 and merged == [final]
+    assert final["message_uid"] == "f" * UID_LEN
+    assert "_absorbed_message_uids" not in final
+    assert final["_absorbed_row_ids"] == [7]
+
+
 def test_assistant_merge_keeps_the_absorbed_turns_tool_call_uids():
     from agent.agent_runtime_helpers import _merge_consecutive_assistants
 

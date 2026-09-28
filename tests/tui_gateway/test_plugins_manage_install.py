@@ -159,6 +159,55 @@ def test_marketplaces_rpc_is_profile_scoped_and_does_not_install(tmp_path, monke
     assert call("marketplaces", profile="worker")["result"]["marketplaces"] == []
 
 
+def test_marketplace_update_requires_sha_bound_capability_consent(tmp_path, monkeypatch):
+    from hermes_cli import plugin_marketplaces as market, plugins_cmd as pc, plugins_cmd_catalog as cat
+
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    entry = {"source_id": "source", "source_name": "Team", "name": "demo",
+             "repo": "https://example.com/repo.git", "subdir": "demo", "sha": "b" * 40,
+             "tree_sha": "c" * 40, "compatible": True}
+    monkeypatch.setattr(pc, "_plugins_dir", lambda: target.parent)
+    monkeypatch.setattr(pc, "_canonical_source", lambda repo, subdir: f"{repo}#{subdir}")
+    monkeypatch.setattr(pc, "_read_install_metadata", lambda: {"demo": {
+        "source": f"{entry['repo']}#{entry['subdir']}",
+        "revision": "a" * 40, "marketplace": {"id": "source", "plugin_name": "demo", "tree_sha": "d" * 40}}})
+    monkeypatch.setattr(cat, "catalog_install_record", lambda _: None)
+    monkeypatch.setattr(cat, "_local_changes", lambda _: ([], []))
+    monkeypatch.setattr(cat, "_carry_user_files", lambda *a: [])
+    monkeypatch.setattr(market, "get_marketplace_entry", lambda *a, **k: entry)
+    monkeypatch.setattr(pc, "_resolve_git_url", lambda _: (entry["repo"], "demo"))
+    monkeypatch.setattr(pc, "_clone_plugin_repo", lambda *a: entry["sha"])
+    monkeypatch.setattr(pc, "_resolve_subdir_within", lambda root, subdir: root / subdir)
+    monkeypatch.setattr(pc, "_read_manifest_for_install", lambda _: {"name": "demo"})
+    monkeypatch.setattr(pc, "_read_manifest", lambda _: {"name": "demo"})
+    monkeypatch.setattr(market, "_git", lambda *a: entry["tree_sha"])
+    monkeypatch.setattr(cat, "plugin_surface", lambda manifest, path: path)
+    monkeypatch.setattr(cat, "surface_delta", lambda *a: {"tools": ["new_tool"]})
+    monkeypatch.setattr(cat, "surface_delta_lines", lambda _: ["Tools: new_tool"])
+    installed = []
+    monkeypatch.setattr(pc, "_install_plugin_core", lambda *a, **k: installed.append(k))
+
+    def update(**extra):
+        return server.handle_request({"id": "u", "method": "plugins.manage",
+                                      "params": {"action": "update", "name": "demo", **extra}})
+
+    with patch.object(pc, "_canonical_source", return_value="different source"):
+        assert "error" in update()
+    assert update()["result"]["consent_required"] is True
+    second = update(accept_capabilities=True, ref="a" * 40)
+    assert second.get("result", {}).get("consent_required") is True, second
+    assert installed == []
+    monkeypatch.setattr(cat, "raise_if_removed", lambda *a: None)
+    monkeypatch.setattr(server, "_ensure_plugin_activation_listener", lambda: None, raising=False)
+    with patch("hermes_cli.plugins_activation.activate_plugin_now", return_value={}):
+        assert update(accept_capabilities=True, ref=entry["sha"])["result"]["ok"] is True
+    assert installed[0]["ref"] == entry["sha"]
+    assert installed[0]["scan_force"] is False
+    assert installed[0]["force"] is True
+    assert installed[0]["marketplace"] is entry
+
+
 def test_marketplace_install_routes_selected_profile_and_identifiers(tmp_path, monkeypatch):
     from hermes_constants import get_hermes_home
     from hermes_cli import plugins_cmd

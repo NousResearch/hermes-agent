@@ -289,6 +289,7 @@ def _install_plugin_core(
     allow_removed: bool = False,
     before_swap=None,
     marketplace: Optional[dict] = None,
+    scan_force: Optional[bool] = None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
@@ -346,8 +347,8 @@ def _install_plugin_core(
         # admits the final bytes.
         merged = before_swap(manifest, tmp_target) if before_swap is not None else None
         # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
-        _pc()._scan_merged_tree(tmp_target, identifier, merged, force=force, scan_decision_cb=scan_decision_cb,
-                                reviewed_pin=at_reviewed_pin)
+        _pc()._scan_merged_tree(tmp_target, identifier, merged, force=force if scan_force is None else scan_force,
+                                scan_decision_cb=scan_decision_cb, reviewed_pin=at_reviewed_pin)
         if not python_deps:
             from pm.workspace import enabled_plugin_dirs
 

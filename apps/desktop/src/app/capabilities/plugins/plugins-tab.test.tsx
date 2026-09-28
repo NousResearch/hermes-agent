@@ -171,8 +171,8 @@ describe('PluginsTab', () => {
         })
       )
       expect(requestGateway.mock.calls.some(([, params]) => params?.action === 'install')).toBe(false)
-      await screen.findByRole('button', { name: 'Team Plugins' })
-      fireEvent.click(screen.getByRole('button', { name: 'Team Plugins' }))
+      await screen.findByRole('button', { name: 'Team Plugins · Unreviewed' })
+      fireEvent.click(screen.getByRole('button', { name: 'Team Plugins · Unreviewed' }))
       await selectCatalogEntry('team-plugin')
       fireEvent.click(screen.getByRole('switch', { name: 'Add team-plugin' }))
       expect(screen.getByRole('dialog').textContent).toContain('Team Plugins')
@@ -193,6 +193,28 @@ describe('PluginsTab', () => {
       expect($pluginInstallRequest.get()).toBeNull()
     }
   )
+
+  it('refreshes and removes a source only after confirmation', async () => {
+    requestGateway.mockImplementation(async (_method, params) => {
+      if (params?.action === 'marketplace_remove') return { ok: true, removed: true }
+      if (params?.action === 'marketplaces' || params?.action === 'marketplace_refresh') {
+        return { marketplaces: [{ id: 'team-123', name: 'Team Plugins', available: true, stale: false, entries: [] }] }
+      }
+      return { plugins: [] }
+    })
+    renderPlugins({ profile: 'workbot' })
+    await screen.findByRole('button', { name: 'Team Plugins · Unreviewed' })
+    fireEvent.click(screen.getByRole('button', { name: 'Manage marketplaces' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh sources' }))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('plugins.manage',
+      { action: 'marketplace_refresh', profile: 'workbot' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Team Plugins' }))
+    expect($confirmRequest.get()?.title).toBe('Remove Team Plugins?')
+    expect(requestGateway.mock.calls.some(([, params]) => params?.action === 'marketplace_remove')).toBe(false)
+    await act(async () => settleConfirm(true))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('plugins.manage',
+      { action: 'marketplace_remove', source_id: 'team-123', profile: 'workbot' }))
+  })
 
   it('keeps a private installed variant separate from a public entry with the same name', async () => {
     seedCatalog([{ ...weatherEntry, name: 'team-plugin' }])
@@ -235,7 +257,7 @@ describe('PluginsTab', () => {
     )
 
     renderPlugins({ profile: 'workbot' })
-    await screen.findByRole('button', { name: 'Team Plugins' })
+    await screen.findByRole('button', { name: 'Team Plugins · Unreviewed' })
     expect(screen.getAllByRole('button', { name: 'team-plugin' })).toHaveLength(2)
     expect(screen.getByRole('switch', { name: 'Add team-plugin' })).toBeTruthy()
     fireEvent.click(screen.getByRole('switch', { name: 'Add team-plugin' }))
@@ -757,6 +779,36 @@ describe('PluginsTab catalog UX', () => {
     )
     await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>('API key').value).toBe(''))
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Save settings' }).disabled).toBe(true)
+  })
+
+  it('checks an installed marketplace update and binds consent to the proposed SHA', async () => {
+    $agentPlugins.set([{
+      name: 'team-plugin', key: 'team-plugin', description: '', source: 'git', status: 'enabled', version: '1',
+      marketplace_id: 'team-123', marketplace_plugin_name: 'team-plugin'
+    }])
+    requestGateway.mockImplementation(async (_method, params) => {
+      if (params?.action === 'marketplaces' || params?.action === 'marketplace_refresh') return {
+        marketplaces: [{ id: 'team-123', name: 'Team Plugins', available: true, stale: false, entries: [] }]
+      }
+      if (params?.action === 'update') return params.accept_capabilities
+        ? { ok: true, unchanged: false }
+        : { consent_required: true, sha: 'c'.repeat(40), delta_lines: ['Tools: private-tool'] }
+      return { plugins: $agentPlugins.get() }
+    })
+    renderPlugins({ profile: 'workbot' })
+    await screen.findByRole('button', { name: 'Team Plugins · Unreviewed' })
+    fireEvent.click(screen.getByRole('button', { name: 'Manage marketplaces' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh sources' }))
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('plugins.manage',
+      { action: 'marketplace_refresh', profile: 'workbot' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    await selectCatalogEntry('team-plugin')
+    fireEvent.click(screen.getByRole('button', { name: 'Check for update' }))
+    await waitFor(() => expect($confirmRequest.get()?.description).toContain('Tools: private-tool'))
+    await act(async () => settleConfirm(true))
+    expect(requestGateway).toHaveBeenCalledWith('plugins.manage', {
+      action: 'update', name: 'team-plugin', profile: 'workbot', accept_capabilities: true, ref: 'c'.repeat(40)
+    })
   })
 
   it('requires widening consent before retrying an update, and leaves a declined update untouched', async () => {

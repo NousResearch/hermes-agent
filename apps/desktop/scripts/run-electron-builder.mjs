@@ -14,19 +14,18 @@ const platformFlags = new Map([['--win', 'win32'], ['-w', 'win32'], ['--windows'
   ['--mac', 'darwin'], ['--macos', 'darwin'], ['-m', 'darwin'], ['-o', 'darwin'], ['--linux', 'linux'], ['-l', 'linux']])
 const architectures = ['--x64', '--arm64', '--ia32', '--armv7l', '--universal']
 
-// electron-builder's asar/blockmap pass outgrows the default V8 heap. The flag
-// is set here, on the node children this wrapper already spawns, instead of a
-// `cross-env NODE_OPTIONS=…` prefix on the `builder` npm script: that prefix
-// needed the cross-env bin (#110121), and cross-env strips bare `'` from every
-// forwarded argument, so a staging dir under C:\Users\r'y'z reached
-// electron-builder as C:\Users\ryz (#103010).
-export const HEAP_FLAG = '--max-old-space-size=16384'
+// electron-builder's asar/blockmap pass outgrows the default V8 heap. Set here,
+// not via a cross-env prefix on the `builder` script: cross-env strips `'` from
+// forwarded arguments (#103010) and needs its bin installed (#110121).
+const HEAP_FLAG = '--max-old-space-size=16384'
 
-/** @param {string | undefined} inherited @returns {string} */
-export function builderNodeOptions(inherited = process.env.NODE_OPTIONS) {
-  const parts = (inherited ?? '').split(/\s+/).filter(Boolean)
-  if (!parts.some(part => part.startsWith('--max-old-space-size'))) parts.push(HEAP_FLAG)
-  return parts.join(' ')
+/**
+ * Inherited NODE_OPTIONS stay byte-identical (quoted preload paths survive); the
+ * heap flag goes last so it wins, as cross-env's replacement did.
+ * @param {string} [inherited] @returns {string}
+ */
+export function builderNodeOptions(inherited = process.env.NODE_OPTIONS ?? '') {
+  return `${inherited} ${HEAP_FLAG}`.trim()
 }
 
 /** @param {string[]} args @param {string} name @returns {string | undefined} */
@@ -98,6 +97,7 @@ function runSourceBuilds(args, nativeDeps, spawn) {
   const requested = [...new Set(args.filter(arg => architectures.includes(arg)))]
   if (requested.includes('--universal')) throw new Error('No prepared universal native payload; use --x64 --arm64 for separate packages')
   if (nativeDeps && requested.length > 1) throw new Error('--native-deps selects one architecture, not multiple source targets')
+  const env = { ...process.env, NODE_OPTIONS: builderNodeOptions() }
   for (const flag of requested.length ? requested : [`--${process.arch}`]) {
     const arch = flag.slice(2)
     const target = `${platform}-${arch}`
@@ -115,8 +115,7 @@ function runSourceBuilds(args, nativeDeps, spawn) {
       '--prepared', path.join(out, 'prepared.json'), '--native-deps', native,
       ...args.filter(arg => !architectures.includes(arg)), flag])
     for (const command of commands) {
-      const result = spawn(process.execPath, command, { cwd: app, stdio: 'inherit',
-        env: { ...process.env, NODE_OPTIONS: builderNodeOptions() } })
+      const result = spawn(process.execPath, command, { cwd: app, stdio: 'inherit', env })
       if (result.error) throw result.error
       if (result.status !== 0) return result.status ?? 1
     }

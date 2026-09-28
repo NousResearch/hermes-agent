@@ -132,7 +132,9 @@ test('wsl: a URL with cmd.exe metacharacters is refused before any spawn (#12693
   // & is the reported vector (cmd.exe command separator — calc launches);
   // the rest of the class cmd.exe acts on is refused with it: separators,
   // redirection, the escape character, variable expansion (which survives
-  // double quotes), line breaks, and the quotes themselves.
+  // double quotes), and the quotes themselves. Raw \r\n is NOT constructible
+  // here — the WHATWG URL parser strips tabs and newlines before parsing —
+  // so the character class keeps it only as defense-in-depth.
   for (const url of [
     'https://example.com/x&calc',
     'https://example.com/?a=1&b=2',
@@ -142,8 +144,7 @@ test('wsl: a URL with cmd.exe metacharacters is refused before any spawn (#12693
     'https://example.com/a^b',
     'https://example.com/%PATH%',
     'https://example.com/a"b',
-    "https://example.com/a'b",
-    'https://example.com/a\r\nb'
+    "https://example.com/a'b"
   ]) {
     const result = await openExternalUrl(url, deps)
 

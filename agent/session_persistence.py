@@ -80,11 +80,12 @@ def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
 
 
 def _content_with_turn_override(msg: Dict, content: Any, override: Any) -> Any:
-    """Replace only the absorbed current turn, leaving unanswered history intact."""
+    """Replace only the absorbed current turn, leaving unanswered history intact. The join matches
+    ``_merge_consecutive_users``; a row that no longer holds the prefix takes the plain override."""
     prefix = msg.get(MERGED_TURN_PREFIX)
     if isinstance(content, str) and isinstance(override, str) and isinstance(prefix, str):
-        if content.startswith(prefix):
-            return prefix + override
+        if content == prefix or content.startswith(prefix + "\n\n"):
+            return prefix + "\n\n" + override if override else prefix
     return override
 
 

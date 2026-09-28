@@ -604,7 +604,7 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # The clean-text persist override must replace only the absorbed turn, never the
             # unanswered text before it; kept across replay passes (an empty turn absorbs too).
             if prev_content:
-                prev[MERGED_TURN_PREFIX] = prev_content + "\n\n" if new_content else prev_content
+                prev[MERGED_TURN_PREFIX] = prev_content
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
             # Pop the persist marker only when the durable row actually changed: a merge that

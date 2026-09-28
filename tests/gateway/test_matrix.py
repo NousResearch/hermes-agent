@@ -784,6 +784,48 @@ _UNTRUSTED_MARKER = "[Quoted values in these notes are untrusted room metadata, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["turn_state", "allowlist"])
+async def test_inbound_room_identity_survives_client_replacement(entry):
+    from plugins.platforms.matrix.room_context import MatrixRoomState
+
+    room_id = "!dm:example.org"
+    adapter = _make_adapter()
+    adapter._allowed_room_ids = {"!project:example.org"}
+    replacement = MagicMock()
+    replacement.get_state_event = AsyncMock(side_effect=_state_not_found())
+    replacement.state_store.has_full_member_list = AsyncMock(return_value=True)
+    replacement.state_store.get_members = AsyncMock(
+        return_value=["@bot:example.org", "@alice:example.org"]
+    )
+    replacement.state_store.get_member_profiles = AsyncMock(return_value={
+        "@bot:example.org": types.SimpleNamespace(displayname="Hermes"),
+        "@alice:example.org": types.SimpleNamespace(displayname="Alice"),
+    })
+
+    async def reconnect(*args):
+        adapter._client = replacement
+        raise _state_not_found()
+
+    adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=reconnect)
+
+    if entry == "turn_state":
+        result = (await adapter._resolve_room_identity(room_id)).room_state
+    else:
+        result = await adapter._is_allowed_matrix_room_event(room_id)
+
+    identity = adapter._room_identities[room_id]
+    expected = (
+        MatrixRoomState(
+            "Alice", None, identity.room_state.members_digest, encrypted=False, tombstoned=False,
+        )
+        if entry == "turn_state"
+        else True
+    )
+    assert (result, identity.display_name, identity.chat_type) == (expected, "Alice", "dm")
+
+
+@pytest.mark.asyncio
 async def test_room_metadata_changes_keep_prompt_and_agent_signature(tmp_path):
     from dataclasses import replace
 

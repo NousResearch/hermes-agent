@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -13,6 +14,7 @@ from plugins.platforms.matrix.effective_event import effective_event, event_cont
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import MatrixEventContext, _label_body, _own_text
+from plugins.platforms.matrix.room_access import RoomClientChanged, RoomClientOwner
 
 _MESSAGE_FILTER = json.dumps({"types": ["m.room.message", "m.room.encrypted", "m.sticker"]})
 
@@ -163,8 +165,10 @@ class MatrixReadEvent:
 
 def _current_read_access(
     adapter: Any, room_id: str, requester: str, chat_type: str,
+    *, joined_rooms: Collection[str] | None = None,
 ) -> tuple[Any, str | None, dict | None]:
-    if room_id not in adapter._joined_rooms or not adapter._is_allowed_matrix_room(room_id, chat_type):
+    membership = adapter._joined_rooms if joined_rooms is None else joined_rooms
+    if room_id not in membership or not adapter._is_allowed_matrix_room(room_id, chat_type):
         return None, None, {"error": "Matrix room is not allowed or joined"}
     if adapter._is_sender_authorized(requester, chat_type=chat_type, chat_id=room_id) is not True:
         return None, None, {"error": "Matrix requester is not authorized for this room"}
@@ -174,11 +178,31 @@ def _current_read_access(
     return client, chat_type, None
 
 
-async def _read_access(adapter: Any, room_id: str, requester: str) -> tuple[Any, str | None, dict | None]:
-    if room_id not in adapter._joined_rooms or not await adapter._is_allowed_matrix_room_event(room_id):
+async def _read_access(
+    adapter: Any, room_id: str, requester: str, *, joined_rooms: Collection[str] | None = None,
+    require_classification: bool = False,
+) -> tuple[Any, str | None, dict | None]:
+    owner = RoomClientOwner(adapter, adapter._client)
+    membership = adapter._joined_rooms if joined_rooms is None else joined_rooms
+    if room_id not in membership:
         return None, None, {"error": "Matrix room is not allowed or joined"}
-    chat_type = "dm" if await adapter._is_dm_room(room_id) else "group"
-    return _current_read_access(adapter, room_id, requester, chat_type)
+    try:
+        owner.check()
+        allowed = await adapter._is_allowed_matrix_room_event(
+            room_id, owner=owner, require_classification=require_classification,
+        )
+        owner.check()
+        if not allowed:
+            return None, None, {"error": "Matrix room is not allowed or joined"}
+        is_dm = await adapter._is_dm_room(
+            room_id, owner=owner, require_classification=require_classification,
+        )
+        owner.check()
+    except RoomClientChanged:
+        return None, None, {"error": "Matrix client changed"}
+    return _current_read_access(
+        adapter, room_id, requester, "dm" if is_dm else "group", joined_rooms=joined_rooms,
+    )
 
 
 async def read_matrix_context(

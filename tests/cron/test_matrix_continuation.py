@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
@@ -188,3 +189,53 @@ def test_failed_alias_delivery_creates_no_continuation(
             assert error and alias in error
         assert adapter._session_store._entries == {}
     runner.adapters[Platform.MATRIX]._client.send_message_event.assert_not_awaited()
+
+
+@pytest.mark.parametrize("destination", ["room", "alias"])
+@pytest.mark.parametrize("has_origin", [True, False])
+def test_per_user_thread_delivery_preserves_the_originating_participant(
+    destinations, destination, has_origin
+):
+    runner, owners = destinations
+    for index, profile in enumerate(("default", "secondary", "default")):
+        home, adapter, room = owners[profile]
+        store = adapter._session_store
+        store.config.thread_sessions_per_user = True
+        source = SessionSource(
+            platform=Platform.MATRIX, chat_id=room, thread_id="$existing",
+            chat_type="group", user_id="@alice:remote.test", profile=profile,
+        )
+        alice = store.get_or_create_session(source)
+        bob = store.get_or_create_session(SessionSource(
+            platform=Platform.MATRIX, chat_id=room, thread_id="$existing",
+            chat_type="group", user_id="@bob:remote.test", profile=profile,
+        ))
+        original_entries = dict(store._entries)
+        with _profile_runtime_scope(home, {}):
+            store.append_to_transcript(alice.session_id, {
+                "role": "assistant", "content": f"Alice's cached turn {index}",
+            })
+            before = deepcopy(store.load_transcript(alice.session_id))
+            target = room if destination == "room" else "#scheduled:remote.test"
+            brief = f"Alice's scheduled brief {index}"
+            error = _deliver_result(
+                {
+                    "id": f"alice-brief-{index}",
+                    "deliver": f"matrix:{target}/$existing",
+                    "attach_to_session": True,
+                    "origin": source.to_dict() if has_origin else None,
+                },
+                brief, runner.adapters, SimpleNamespace(is_running=lambda: True),
+            )
+            assert error is None, error
+            assert store._entries == original_entries
+            transcript = store.load_transcript(alice.session_id)
+            if not has_origin:
+                assert transcript == before
+                assert store.load_transcript(bob.session_id) == []
+                continue
+            assert transcript[:-1] == before
+            assert (transcript[-1]["role"], transcript[-1]["content"]) == (
+                "user", f"[Cron delivery: alice-brief-{index}]\n{brief}",
+            )
+            assert store.load_transcript(bob.session_id) == []

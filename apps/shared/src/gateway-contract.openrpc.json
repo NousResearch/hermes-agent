@@ -32072,7 +32072,7 @@
       },
       "SharedMetricsStartupLatencyParams": {
         "additionalProperties": false,
-        "description": "``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready\n(TUI gateway ready / Desktop backend attached), measured once per launch by the client. The\nclient names its surface because a Desktop may attach to a URL/cloud backend where\n``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection.",
+        "description": "``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready\n(TUI gateway ready / Desktop backend attached), measured once per launch by the client. The\nclient names its surface because a Desktop may attach to a URL/cloud backend where\n``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection.\n``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a\nreconnect re-sending the same launch counts once while a new launch counts again.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -32105,6 +32105,18 @@
             ],
             "default": null,
             "title": "Surface"
+          },
+          "launch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Launch Id"
           }
         },
         "required": [

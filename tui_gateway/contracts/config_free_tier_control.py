@@ -261,10 +261,13 @@ class SharedMetricsStartupLatencyParams(ProfileParams):
     """``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready
     (TUI gateway ready / Desktop backend attached), measured once per launch by the client. The
     client names its surface because a Desktop may attach to a URL/cloud backend where
-    ``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection."""
+    ``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection.
+    ``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a
+    reconnect re-sending the same launch counts once while a new launch counts again."""
 
     elapsed_ms: float
     surface: Literal["desktop_attach", "tui"] | None = None
+    launch_id: str | None = None
 
 
 class SharedMetricsStartupLatencyResult(Result):

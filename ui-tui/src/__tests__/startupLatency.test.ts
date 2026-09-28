@@ -52,7 +52,7 @@ describe('startup latency metric', () => {
     const calls = latencyCalls(request)
 
     expect(calls).toHaveLength(1)
-    expect(calls[0]![1]).toEqual({ elapsed_ms: expect.any(Number), surface: 'tui' })
+    expect(calls[0]![1]).toEqual({ elapsed_ms: expect.any(Number), launch_id: expect.any(String), surface: 'tui' })
     expect(calls[0]![1].elapsed_ms).toBeGreaterThanOrEqual(0)
   })
 })

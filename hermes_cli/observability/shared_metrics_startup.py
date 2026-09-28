@@ -24,9 +24,16 @@ logger = logging.getLogger(__name__)
 _THRESHOLDS_MS = (
     (500, "lt_500ms"), (1_000, "500ms_to_1s"), (2_000, "1s_to_2s"), (5_000, "2s_to_5s"), (10_000, "5s_to_10s"),
 )
-# (pid, surface): a forked child re-arms, a surface in this process counts once.
-_recorded: set[tuple[int, str]] = set()
+# (pid, surface, client launch id): a forked child re-arms, a surface in this process counts once,
+# and an RPC-reporting client counts once per launch (a Desktop reconnect re-sends the same launch).
+_recorded: set[tuple[int, str, str]] = set()
 _lock = threading.Lock()
+# A local client minting a fresh launch id per call must not grow this set without bound.
+_MAX_RECORDED = 1024
+_LAUNCH_ID_MAX_LEN = 64
+# ``os.execvp`` keeps the PID, so a relaunched process (``sessions browse`` -> resume) would count
+# the picker time as startup; relaunch() stamps its PID here right before the exec.
+RELAUNCHED_PID_ENV = "HERMES_RELAUNCHED_PID"
 
 
 def latency_bucket(elapsed_ms: Any) -> str | None:
@@ -58,13 +65,29 @@ def process_started_at() -> float | None:
         return None
 
 
-def _claim(surface: str) -> bool:
-    key = (os.getpid(), surface)
+def mark_in_place_relaunch() -> None:
+    """Called right before an in-place ``exec``: the new program inherits this PID and env."""
+    os.environ[RELAUNCHED_PID_ENV] = str(os.getpid())
+
+
+def _relaunched_in_place() -> bool:
+    # A child spawned later inherits the env but has its own PID, so it still counts.
+    return os.environ.get(RELAUNCHED_PID_ENV) == str(os.getpid())
+
+
+def _claim(surface: str, launch_id: str = "") -> bool:
+    key = (os.getpid(), surface, launch_id)
     with _lock:
-        if key in _recorded:
+        if key in _recorded or len(_recorded) >= _MAX_RECORDED:
             return False
         _recorded.add(key)
         return True
+
+
+def _collection_enabled() -> bool:
+    from .relay_shared_metrics import enabled
+
+    return enabled()
 
 
 def _record_since_process_start(surface: str, ready_at: float) -> None:
@@ -82,7 +105,8 @@ def record_process_ready(surface: str, *, background: bool = False) -> None:
     """
     ready_at = time.time()
     try:
-        if not _claim(surface):
+        # Claim before the gate so a later opt-in never records a stale "startup" mid-session.
+        if _relaunched_in_place() or not _claim(surface) or not _collection_enabled():
             return
         if not background:
             _record_since_process_start(surface, ready_at)
@@ -112,10 +136,17 @@ def record_cli_one_shot_ready() -> None:
         record_process_ready("cli")
 
 
-def record_rpc_startup_latency(*, client_surface: Any, elapsed_ms: Any) -> None:
-    """The TUI / Desktop client's own launch -> ready measurement, reported once per launch by the
-    client. ``client_surface`` is the client's declared surface or the backend's detection
-    (``desktop``/``tui``); anything else records nothing."""
+def _launch_key(launch_id: Any) -> str:
+    """The client's per-launch id, only ever a local latch key (never recorded). Older clients send
+    none and latch on their side; they count once per backend process and surface."""
+    return launch_id if isinstance(launch_id, str) and len(launch_id) <= _LAUNCH_ID_MAX_LEN else ""
+
+
+def record_rpc_startup_latency(*, client_surface: Any, elapsed_ms: Any, launch_id: Any = None) -> None:
+    """The TUI / Desktop client's own launch -> ready measurement, once per (surface, client launch)
+    in this backend process. ``client_surface`` is the client's declared surface or the backend's
+    detection (``desktop``/``tui``); anything else records nothing."""
     surface = {"desktop": "desktop_attach", "desktop_attach": "desktop_attach", "tui": "tui"}.get(client_surface)
-    if surface is not None:
+    # Only a usable measurement spends the launch's claim.
+    if surface is not None and latency_bucket(elapsed_ms) is not None and _claim(surface, _launch_key(launch_id)):
         record_startup_latency(surface=surface, elapsed_ms=elapsed_ms)

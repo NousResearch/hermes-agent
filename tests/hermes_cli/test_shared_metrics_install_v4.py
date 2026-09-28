@@ -95,17 +95,67 @@ def test_rpc_takes_the_declared_surface_else_env_detection(marks, monkeypatch):
     monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
 
     # A Desktop attached to a URL/cloud backend: no HERMES_DESKTOP here, the client says who it is.
-    assert _rpc({"elapsed_ms": 2500, "surface": "desktop_attach"})["result"] == {"ok": True}
-    assert _rpc({"elapsed_ms": 700})["result"] == {"ok": True}
+    assert _rpc({"elapsed_ms": 2500, "surface": "desktop_attach", "launch_id": "a"})["result"] == {"ok": True}
+    assert _rpc({"elapsed_ms": 700, "launch_id": "b"})["result"] == {"ok": True}
     monkeypatch.setenv("HERMES_DESKTOP", "1")
-    assert _rpc({"elapsed_ms": 12_000})["result"] == {"ok": True}
-    assert _rpc({"elapsed_ms": -5, "surface": "tui"})["result"] == {"ok": True}
+    assert _rpc({"elapsed_ms": 12_000, "launch_id": "c"})["result"] == {"ok": True}
+    assert _rpc({"elapsed_ms": -5, "surface": "tui", "launch_id": "d"})["result"] == {"ok": True}
 
     assert [data for _, data in marks] == [
         {"latency_bucket": "2s_to_5s", "surface": "desktop_attach"},
         {"latency_bucket": "500ms_to_1s", "surface": "tui"},
         {"latency_bucket": "gte_10s", "surface": "desktop_attach"},
     ]
+
+
+def test_rpc_counts_each_client_launch_once_per_backend_process(marks):
+    # A Desktop reconnecting to the same backend re-sends its launch; a later Desktop launch
+    # against the same long-lived backend is a new launch and still counts.
+    for _ in range(3):
+        _rpc({"elapsed_ms": 1200, "surface": "desktop_attach", "launch_id": "launch-1"})
+    _rpc({"elapsed_ms": 300, "surface": "desktop_attach", "launch_id": "launch-2"})
+    # Older clients send no id and latch on their side; the backend still counts them once.
+    for _ in range(2):
+        _rpc({"elapsed_ms": 1200, "surface": "tui"})
+
+    assert [data for _, data in marks] == [
+        {"latency_bucket": "1s_to_2s", "surface": "desktop_attach"},
+        {"latency_bucket": "lt_500ms", "surface": "desktop_attach"},
+        {"latency_bucket": "1s_to_2s", "surface": "tui"},
+    ]
+
+
+def test_in_place_relaunch_is_not_a_startup_but_its_children_are(marks, monkeypatch):
+    """``sessions browse`` -> resume execs in place: same PID, so process start covers the picker."""
+    from hermes_cli import relaunch as relaunch_mod
+
+    monkeypatch.setenv(startup.RELAUNCHED_PID_ENV, "")  # restored after relaunch() stamps it
+    monkeypatch.setattr(relaunch_mod.sys, "platform", "linux")
+    monkeypatch.setattr(startup, "process_started_at", lambda: time.time() - 30)
+    # The exec'd program keeps this PID and environment and reaches its first prompt.
+    monkeypatch.setattr(relaunch_mod.os, "execvp", lambda *_a: startup.record_process_ready("cli"))
+
+    relaunch_mod.relaunch(["--resume", "x"], preserve_inherited=False)
+    assert marks == []
+
+    # A child it spawns later inherits the env but not the PID: a real start of its own.
+    child_pid = os.getpid() + 1
+    monkeypatch.setattr(startup.os, "getpid", lambda: child_pid)
+    startup.record_process_ready("gateway_boot")
+    assert [data["surface"] for _, data in marks] == ["gateway_boot"]
+
+
+def test_process_ready_when_off_starts_no_thread_and_reads_no_process_time(monkeypatch):
+    monkeypatch.setattr(relay, "enabled", lambda: False)
+    monkeypatch.setattr(startup, "_recorded", set())
+    touched: list[str] = []
+    monkeypatch.setattr(startup, "process_started_at", lambda: touched.append("psutil"))
+    monkeypatch.setattr(startup.threading, "Thread", lambda *a, **k: touched.append("thread"))
+
+    startup.record_process_ready("serve_boot", background=True)
+    startup.record_process_ready("cli")
+
+    assert touched == []
 
 
 def test_cli_first_rendered_prompt_records_once(marks, monkeypatch):

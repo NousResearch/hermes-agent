@@ -101,12 +101,14 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """The Ink TUI (gateway ready) and Desktop (backend attached) each report their own launch ->
-    ready time once per launch. A Desktop on a URL/cloud backend has no ``HERMES_DESKTOP`` here, so
-    the client's declared surface wins over env detection. Always ``{ok: true}``."""
+    ready time once per launch; ``launch_id`` latches it here too, so a reconnect to this backend
+    never re-counts. A Desktop on a URL/cloud backend has no ``HERMES_DESKTOP`` here, so the
+    client's declared surface wins over env detection. Always ``{ok: true}``."""
     from hermes_cli.observability.shared_metrics_startup import record_rpc_startup_latency
 
     record_rpc_startup_latency(
         client_surface=params.get("surface") or _resolve_session_platform(), elapsed_ms=params.get("elapsed_ms"),
+        launch_id=params.get("launch_id"),
     )
     return _ok(rid, {"ok": True})
 

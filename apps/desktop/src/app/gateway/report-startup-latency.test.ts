@@ -15,7 +15,11 @@ describe('reportStartupLatency', () => {
     await reportStartupLatency({ claimStartupLatency }, request)
 
     expect(request).toHaveBeenCalledTimes(1)
-    expect(request).toHaveBeenCalledWith('shared_metrics.startup_latency', { elapsed_ms: 1234, surface: 'desktop_attach' })
+    expect(request).toHaveBeenCalledWith('shared_metrics.startup_latency', {
+      elapsed_ms: 1234,
+      launch_id: expect.any(String),
+      surface: 'desktop_attach'
+    })
   })
 
   it('skips the metric on an Electron shell without the claim bridge', async () => {

@@ -1,6 +1,6 @@
 type GatewayRequest = (
   method: 'shared_metrics.startup_latency',
-  params: { elapsed_ms: number; surface: 'desktop_attach' }
+  params: { elapsed_ms: number; launch_id: string; surface: 'desktop_attach' }
 ) => Promise<unknown>
 
 /** Fire-and-forget: the main process hands out the launch latency to exactly one renderer
@@ -16,8 +16,12 @@ export async function reportStartupLatency(
     return
   }
 
+  // The main-process claim succeeds once per app launch, so an id minted on success names the
+  // launch; the backend latches on it, so a long-lived backend still counts the next launch.
   // Declared, not env-detected: a URL/cloud backend has no HERMES_DESKTOP to tell it who attached.
-  await request('shared_metrics.startup_latency', { elapsed_ms: elapsedMs, surface: 'desktop_attach' }).catch(
-    () => undefined
-  )
+  await request('shared_metrics.startup_latency', {
+    elapsed_ms: elapsedMs,
+    launch_id: crypto.randomUUID(),
+    surface: 'desktop_attach'
+  }).catch(() => undefined)
 }

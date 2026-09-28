@@ -230,7 +230,9 @@ class CLIStatusBarMixin:
             "git_branch": "",
             "goal_active": False,
             "goal_turns_used": 0,
-            "goal_max_turns": 0}
+            "goal_max_turns": 0,
+            "memory_indicator": "",
+            "memory_health": "unknown"}
 
         try:
             from hermes_cli.focus_view import focus_statusbar_segment
@@ -290,6 +292,17 @@ class CLIStatusBarMixin:
                 snapshot["goal_active"] = True
                 snapshot["goal_turns_used"] = int(getattr(goal_state, "turns_used", 0) or 0)
                 snapshot["goal_max_turns"] = int(getattr(goal_state, "max_turns", 0) or 0)
+        except Exception:
+            pass
+
+        # Memory provider health — reads the singleton populated at agent init.
+        # The actual health probe runs in _tui_after_turn (once per turn);
+        # the status bar only reads the cached state here.
+        try:
+            from agent.memory_health import get_health_state
+            hs = get_health_state()
+            snapshot["memory_indicator"] = hs.indicator_text()
+            snapshot["memory_health"] = hs.health
         except Exception:
             pass
 
@@ -1040,6 +1053,19 @@ class CLIStatusBarMixin:
                 segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
             else:
                 segs.append([("", f"☤ {model_short}")])
+        # Memory provider health indicator: Memory: provider ● Healthy.
+        # The "Memory: " label is a presentation concern of the status bar;
+        # MemoryHealthState.indicator_text() keeps pure provider + state.
+        memory_ind = snapshot.get("memory_indicator") or ""
+        if memory_ind and _ok("memory"):
+            mem_health = snapshot.get("memory_health", "unknown")
+            if styled:
+                if mem_health == "unavailable":
+                    segs.append([("class:status-bar-bad", f" Memory: {memory_ind}")])
+                else:
+                    segs.append([(_DIM, f" Memory: {memory_ind}")])
+            else:
+                segs.append([("", f" Memory: {memory_ind}")])
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.

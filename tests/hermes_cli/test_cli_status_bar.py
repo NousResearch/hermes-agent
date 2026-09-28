@@ -522,3 +522,86 @@ class TestCacheHitBaselineReset:
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
             text = cli_obj._build_status_bar_text(width=80)
         assert "weekly-digest" not in text
+
+
+class TestMemoryHealthIndicator:
+    """Memory provider health indicator in the status bar."""
+
+    def _snapshot_with_health(self, active_provider: str, health: str):
+        from agent.memory_health import MemoryHealthState, get_health_state, reset_health_state
+        reset_health_state()
+        hs = get_health_state()
+        hs.active_provider = active_provider
+        if health == "healthy":
+            hs.mark_healthy()
+        elif health == "unavailable":
+            hs.mark_unavailable("test")
+        return hs
+
+    def test_snapshot_has_memory_fields(self):
+        cli_obj = _make_cli()
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert "memory_indicator" in snapshot
+        assert "memory_health" in snapshot
+
+    def test_no_provider_indicator_empty(self):
+        from agent.memory_health import reset_health_state
+        reset_health_state()
+        cli_obj = _make_cli()
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["memory_indicator"] == ""
+
+    def test_provider_name_in_indicator(self):
+        hs = self._snapshot_with_health("hindsight", "healthy")
+        cli_obj = _make_cli()
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert "hindsight" in snapshot["memory_indicator"]
+
+    def test_custom_provider_name_not_hardcoded(self):
+        hs = self._snapshot_with_health("my_provider", "healthy")
+        cli_obj = _make_cli()
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert "my_provider" in snapshot["memory_indicator"]
+        assert "hindsight" not in snapshot["memory_indicator"]
+
+    def test_healthy_shows_in_status_bar(self):
+        self._snapshot_with_health("hindsight", "healthy")
+        cli_obj = _make_cli()
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "hindsight" in text
+
+    def test_memory_prefix_label_shown(self):
+        """Frozen §12 UI: the segment carries the "Memory: " label (a status-bar
+        presentation concern; indicator_text() itself stays label-free)."""
+        self._snapshot_with_health("hindsight", "healthy")
+        cli_obj = _make_cli()
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "Memory: hindsight" in text
+
+    def test_memory_prefix_label_shown_when_unavailable(self):
+        self._snapshot_with_health("hindsight", "unavailable")
+        cli_obj = _make_cli()
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "Memory: hindsight" in text
+
+    def test_memory_prefix_label_shown_when_connecting(self):
+        """Frozen §20 UI: unknown renders as Connecting."""
+        self._snapshot_with_health("hindsight", "unknown")
+        cli_obj = _make_cli()
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "Memory: hindsight ○ Connecting" in text
+
+    def test_unhealthy_shows_in_status_bar(self):
+        self._snapshot_with_health("hindsight", "unavailable")
+        cli_obj = _make_cli()
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "hindsight" in text
+
+    def test_memory_field_can_be_filtered(self):
+        """When fields list excludes 'memory', the indicator is hidden."""
+        self._snapshot_with_health("hindsight", "healthy")
+        cli_obj = _make_cli()
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "hindsight" not in text
+        assert "Memory:" not in text

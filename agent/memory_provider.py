@@ -204,3 +204,23 @@ class MemoryProvider(ABC):
         """Absolute paths of provider state OUTSIDE HERMES_HOME for ``hermes backup``/``import``
         (paths outside the home dir are skipped). MUST work without ``initialize()`` or network."""
         return []
+
+    # -- Runtime health probing ------------------------------------------------
+
+    def probe_health(self) -> Optional[bool]:
+        """Lightweight runtime backend health check (may hit the network).
+
+        Returns ``True`` if the backend is reachable, ``False`` if not, or
+        ``None`` if this provider does not support runtime health probing
+        (the default).
+
+        Implementations MUST be fast (≤2 s timeout) and side-effect-free.
+        Called once per turn from the CLI after-turn hook — not from the
+        status-bar renderer.
+
+        Providers with a network backend (HTTP, gRPC, …) should override
+        this with a real probe.  Providers that are purely local / file-based
+        may leave the default (``None``) — the health indicator will show
+        ``"unknown"`` until a runtime probe reports the provider as reachable.
+        """
+        return None

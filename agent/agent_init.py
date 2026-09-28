@@ -1380,6 +1380,65 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
+    # ── Runtime memory health indicator ────────────────────────────────────
+    # Populate the singleton so the CLI status bar can render
+    # ``Memory: provider ● Healthy`` without polling the provider.  Health
+    # starts as "unknown" and is confirmed by the first probe_health() call in
+    # _tui_after_turn — we never mark healthy based on init alone.
+    #
+    # IMPORTANT: This singleton is process-wide.  Background agents (curator,
+    # cron, subagents, background review forks) may re-enter _init_memory.
+    # Only the foreground agent owns the health state; background agents must
+    # not overwrite it (frozen design §8).
+    try:
+        from agent.memory_health import get_health_state, is_background_agent
+        hs = get_health_state()
+
+        # Read the configured provider name from config (independent of the
+        # conditional blocks above which may not have executed).
+        _cfg_prov = ""
+        with suppress(Exception):
+            from tools.memory_tool import get_builtin_memory_config as _get_mem_cfg
+            _mc = _get_mem_cfg(_agent_cfg)
+            if _mc:
+                _cfg_prov = (_mc.get("provider") or "").strip()
+        # Determine the active (actually-registered) external provider.
+        _loaded_external = ""
+        if agent._memory_manager and agent._memory_manager.providers:
+            external = [p for p in agent._memory_manager.providers if p.name != "builtin"]
+            if external:
+                _loaded_external = external[0].name
+
+        _owns_health_state = not is_background_agent(agent, platform)
+        # Ownership gate for the MemoryManager's failure hooks: they write the
+        # same process-wide singleton, so only the foreground agent's manager
+        # may.  The manager itself stays provider-agnostic — no platform
+        # knowledge lives there.
+        if agent._memory_manager is not None:
+            agent._memory_manager.health_write_allowed = _owns_health_state
+
+        if _loaded_external and _owns_health_state:
+            # This agent loaded an external provider — update the singleton.
+            hs.configured_provider = _cfg_prov
+            hs.set_active_provider(_loaded_external)
+            # Health stays "unknown" — first probe will confirm.
+        elif _owns_health_state:
+            # Foreground agent: clear stale provider state when no external
+            # provider is active in this agent.
+            hs.set_active_provider("")
+            hs.configured_provider = (
+                _cfg_prov if _cfg_prov and not is_core_memory_provider(_cfg_prov) else ""
+            )
+            if hs.configured_provider:
+                hs.mark_unavailable(f"{hs.configured_provider} not loaded")
+        # else: background agent — don't overwrite foreground singleton state.
+
+        logger.info("MemoryHealthState init: configured=%s active=%s health=%s",
+                    hs.configured_provider, hs.active_provider, hs.health)
+    except Exception as _health_init_err:
+        # Never break agent init over the health indicator.
+        logger.warning("MemoryHealthState init failed: %s", _health_init_err, exc_info=True)
+
     from agent.memory_manager import inject_memory_provider_tools
     inject_memory_provider_tools(agent)
 

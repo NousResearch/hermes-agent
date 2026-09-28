@@ -189,6 +189,31 @@ class CLITuiRuntimeMixin:
                     _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
             threading.Thread(target=_restart_recording, daemon=True).start()
 
+        # Memory provider health — probe once per turn after the agent responds.
+        # Skipped during cooldown (unavailable + last probe < 30 s ago) to
+        # avoid blocking 2 s on every turn when the backend is persistently down.
+        with suppress(Exception):
+            from agent.memory_health import get_health_state
+            hs = get_health_state()
+            if hs.active_provider and not hs.probe_cooldown_active():
+                mm = getattr(getattr(self, 'agent', None), '_memory_manager', None)
+                if mm:
+                    prov = mm.get_provider(hs.active_provider)
+                    if prov is not None:
+                        probe_fn = getattr(prov, "probe_health", None)
+                        if callable(probe_fn):
+                            try:
+                                result = probe_fn()
+                                if result is True:
+                                    hs.mark_healthy()
+                                elif result is False:
+                                    hs.record_probe_failure()
+                                    hs.mark_unavailable(f"{hs.active_provider} backend unreachable")
+                                # None → provider doesn't support probing; state unchanged.
+                            except Exception:
+                                hs.record_probe_failure()
+                                hs.mark_unavailable(f"{hs.active_provider} probe failed")
+
         with suppress(Exception):
             self._drain_process_notifications("cli-post-turn")
 
@@ -329,6 +354,28 @@ class CLITuiRuntimeMixin:
                     pass  # banner fires again next session
         except Exception:
             pass
+
+        # Memory provider health — set profile name and configured provider
+        # early so the status bar shows the correct provider from startup,
+        # even before the agent is created (health stays "unknown" until
+        # first probe in _tui_after_turn).
+        with suppress(Exception):
+            from agent.memory_health import get_health_state
+            hs = get_health_state()
+            # Read provider from config if not yet populated.  Core sentinels
+            # ("", default, builtin, none …) mean the built-in store — never
+            # masquerade them as an external provider (frozen design §7).
+            if not hs.configured_provider:
+                try:
+                    from agent.memory_provider import is_core_memory_provider
+                    from hermes_cli.config import load_config
+                    _mem = load_config().get("memory")
+                    if isinstance(_mem, dict):
+                        _prov = (_mem.get("provider") or "").strip()
+                        if _prov and not is_core_memory_provider(_prov):
+                            hs.configured_provider = _prov
+                except Exception:
+                    pass
 
     def _tui_startup_background_maintenance(self):
         """Best-effort startup passes: curator skill maintenance, personal + org skill sync.

@@ -345,6 +345,12 @@ class MemoryManager:
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._external_prefetch_spill_config: Optional[Dict[str, Any]] = None
         self._has_external: bool = False
+        # Foreground-ownership gate for health-state writes: the failure hooks
+        # below mark the process-wide MemoryHealthState, which belongs to the
+        # foreground agent (frozen design §8).  agent_init._init_memory sets
+        # this per agent — False for background agents (cron, subagents,
+        # curator, review forks).  No platform knowledge lives here.
+        self.health_write_allowed: bool = True
         timeout = external_prefetch_timeout
         timeout = _EXTERNAL_PREFETCH_TIMEOUT_S if timeout is None else float(timeout)
         if timeout <= 0:
@@ -374,6 +380,19 @@ class MemoryManager:
                 results.append(call(provider))
             except Exception as e:
                 logger.log(level, "Memory provider '%s' %s: %s", provider.name, label, e, exc_info=exc_info)
+                # Mark the external provider unhealthy so the CLI status bar
+                # reflects the failure immediately.  A successful call does NOT
+                # mark healthy (providers may swallow failures internally);
+                # recovery is decided solely by probe_health().  Background
+                # agents' managers never write the foreground's health state.
+                if self.health_write_allowed and provider.name != "builtin":
+                    try:
+                        from agent.memory_health import get_health_state
+                        hs = get_health_state()
+                        if provider.name == hs.active_provider:
+                            hs.mark_unavailable(f"{provider.name} {label}: {e}")
+                    except Exception:
+                        pass
         return results
 
     def add_provider(self, provider: MemoryProvider) -> None:
@@ -483,6 +502,16 @@ class MemoryManager:
                 "Memory provider '%s' prefetch timed out after %.1fs; skipping it until "
                 "the stuck call returns", provider.name, self._external_prefetch_timeout,
             )
+            # Mark unhealthy on timeout — the provider is unresponsive.
+            # Background agents' managers never write the foreground's state.
+            if self.health_write_allowed:
+                try:
+                    from agent.memory_health import get_health_state
+                    hs = get_health_state()
+                    if provider.name == hs.active_provider:
+                        hs.mark_unavailable(f"{provider.name} prefetch timed out")
+                except Exception:
+                    pass
             return ""
 
         with self._external_prefetch_lock:

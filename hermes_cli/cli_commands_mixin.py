@@ -1962,8 +1962,13 @@ class CLICommandsMixin:
         if not self._ensure_runtime_credentials():
             return _cp("  (>_<) Cannot start background task: no valid credentials.")
         preview = _ellipsize(prompt, 60)
-        _cp(f"  🔄 Background task #{task_num} started: \"{preview}\"", f"  Task ID: {task_id}",
-            "  You can continue chatting — results will appear when done.\n")
+        _cp(
+            f'  🔄 Background task #{task_num} started: "{preview}"',
+            "  Runs in a fresh session with no conversation history.",
+            f"  (Task ID {task_id} is for the logs — it is not an addressable handle.)",
+            "  The main thread stays usable — for a side question about this conversation,",
+            "  use /btw <question>.\n",
+        )
         turn_route = self._resolve_turn_agent_config(prompt)
         runtime = turn_route["runtime"]
 

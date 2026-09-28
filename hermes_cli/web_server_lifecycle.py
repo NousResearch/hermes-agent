@@ -340,6 +340,13 @@ def _start_parent_death_watchdog() -> None:
             )
         except Exception:
             pass
+        # Reaping ourselves when the owning Desktop is gone is the designed stop, not a kill; os._exit
+        # skips the atexit stamp that would otherwise say so.
+        try:
+            from hermes_cli.observability.shared_metrics_process import stamp_exit
+            stamp_exit("clean")
+        except Exception:
+            pass
         # os._exit skips every cleanup: a foreground command in its own process group would outlive us.
         try:
             from tools.environments.base import kill_live_foreground_processes

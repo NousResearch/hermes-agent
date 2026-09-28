@@ -64,12 +64,19 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object,
     decision (*force* / *scan_decision_cb*), the same as the git-pull path. *allow_removed* is the
     install record's saved ``--allow-removed`` exemption; the core re-records it on publication.
     """
-    from hermes_cli.plugins_cmd_catalog import _carry_user_files
+    from hermes_cli.plugins_cmd_catalog import _back_up_discarded_files, _carry_user_files
+
+    previous = previous_revision if isinstance(previous_revision, str) else ""
+    # Outside the plugins dir: the discovery scanners recurse into every subdirectory there.
+    backup = _pc()._plugins_dir().parent / "plugins-backup" / f"{target.name}-{previous[:8] or 'old'}"
+    warnings: list[str] = []
 
     def _before_swap(manifest, tree):
         if surface_gate is not None:
             surface_gate(manifest, tree)
-        return _carry_user_files(target, tree, None)
+        carried = _carry_user_files(target, tree, None)
+        warnings.append(_back_up_discarded_files(target, tree, backup, source, previous))
+        return carried
 
     new_target, _manifest, _name = _pc()._install_plugin_core(
         source,
@@ -80,10 +87,9 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object,
         before_swap=_before_swap,
     )
     revision = str(_pc()._read_install_metadata().get(new_target.name, {}).get("revision") or "")
-    previous = previous_revision if isinstance(previous_revision, str) else ""
-    if revision and revision == previous:
-        return "Already up to date."
-    return f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
+    unchanged = bool(revision) and revision == previous
+    headline = "Already up to date." if unchanged else f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
+    return "\n".join([headline, *filter(None, warnings)])
 
 
 def update_one(name: str, target: Path, console, *, interactive: bool = True, force: bool = False,
@@ -147,6 +153,10 @@ def _update_one_locked(name: str, target: Path, console, *, interactive: bool = 
     out = output.strip()
     if "Already up to date" in out:
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date.")
+        # A re-install at the same revision still replaces edited files; its backup notice follows the headline.
+        notice = out.partition("\n")[2]
+        if notice:
+            console.print(f"[yellow]⚠ {notice}[/yellow]")
         return False
     console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
     console.print(f"[dim]{out}[/dim]")

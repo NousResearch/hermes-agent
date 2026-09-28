@@ -918,12 +918,18 @@ tool_output:
 
 ### Tool-Result Spillover Budget
 
-Separately from truncation, oversized tool *results* are spilled to disk rather than cut: the full output is saved under `$HERMES_HOME/cache/spillover/` and the in-context content is replaced by a preview plus the saved file's path (readable with `read_file` using `offset`/`limit`, or processable with `execute_code`). The generic per-result spillover threshold is 100,000 chars, scaled down automatically for small-context models.
+Separately from truncation, oversized tool *results* are spilled to disk rather than cut: the full output is saved under `$HERMES_HOME/cache/spillover/` and the in-context content is replaced by a preview plus the saved file's path (readable with `read_file` using `offset`/`limit`, or processable with `execute_code`). The generic per-result spillover threshold is 100,000 chars, scaled down automatically for small-context models. Lower it without losing the archived output via:
+
+```yaml
+tool_budget:
+  result_size_chars: 50000
+```
 
 MCP tool results (tools named `mcp_*`) spill at a tighter **50,000-char** default: MCP servers routinely return large un-paginated payloads (tool-discovery catalogs, batched executions) that would otherwise sit under the generic threshold and bloat context on every subsequent turn. Nothing is lost — the full result is preserved on disk. Override the threshold via:
 
 ```yaml
 tool_budget:
+  result_size_chars: 100000       # generic per-result spillover threshold
   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
 ```
 

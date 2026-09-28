@@ -45,6 +45,35 @@ export interface CronEditorSaveValues {
   schedule: string
 }
 
+export interface CronModelChoice {
+  model: string
+  provider: string
+}
+
+/** Encode the provider/model pair as an opaque Select value without delimiter ambiguity. */
+export function cronModelChoiceValue(provider: string, model: string): string {
+  return JSON.stringify([provider, model])
+}
+
+export function parseCronModelChoiceValue(value: string): CronModelChoice | null {
+  try {
+    const parsed: unknown = JSON.parse(value)
+
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== 2 ||
+      typeof parsed[0] !== 'string' ||
+      typeof parsed[1] !== 'string'
+    ) {
+      return null
+    }
+
+    return { provider: parsed[0], model: parsed[1] }
+  } catch {
+    return null
+  }
+}
+
 export function parseCronDeliveryTargets(value: string): string[] {
   const targets = value
     .split(',')
@@ -66,6 +95,30 @@ export function toggleCronDeliveryTarget(value: string, target: string, checked:
   }
 
   return targets.filter(candidate => candidate !== target).join(',')
+}
+
+// The scheduler stores `last_error` as the raw exception text, e.g.
+// "RuntimeError: Cron job 'x' has no model configured (job.model=None, …). Set a
+// per-job model via `hermes cron edit …`". Users need the first plain sentence,
+// not the Python wrapper; the full text stays reachable via a hover title.
+const ERROR_PREFIX_RE = /^(?:[A-Za-z_][\w.]*(?:Error|Exception)|Exception):\s*/
+const ERROR_MARKER_RE = /^\[[a-z_]+(?::[a-z_]+)?\]\s*/
+const ERROR_EMOJI_RE = /^(?:\u26A0\uFE0F?|\uD83D\uDED1|\u274C|\u{1F6AB})\s*/u
+const ERROR_SUMMARY_MAX = 200
+
+export function lastErrorSummary(lastError: string | null | undefined): string {
+  let text = (lastError ?? '').trim()
+
+  // Wrappers can nest (marker, then emoji, then exception class); peel until stable.
+  for (let previous = ''; previous !== text;) {
+    previous = text
+    text = text.replace(ERROR_MARKER_RE, '').replace(ERROR_EMOJI_RE, '').replace(ERROR_PREFIX_RE, '').trimStart()
+  }
+
+  const sentenceEnd = text.search(/\. |\n/)
+  const sentence = (sentenceEnd === -1 ? text : text.slice(0, sentenceEnd + 1)).trim()
+
+  return sentence.length > ERROR_SUMMARY_MAX ? `${sentence.slice(0, ERROR_SUMMARY_MAX - 1).trimEnd()}…` : sentence
 }
 
 /** Build the API update payload, preserving an empty prompt on script-only jobs. */

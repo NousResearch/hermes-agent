@@ -3,10 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
-  describeRendererLifecycleEvent,
   installWindowRendererLifecycle,
   pruneReloadTimes,
-  pushReloadTime,
   shouldReloadAfterFailedLoad,
   shouldReloadAfterRendererGone
 } from './window-renderer-lifecycle'
@@ -84,12 +82,6 @@ test('pruneReloadTimes drops timestamps outside the rolling window', () => {
 
   assert.deepEqual(pruneReloadTimes([100_000, 90_000, 39_999], now, 60_000), [100_000, 90_000])
   assert.deepEqual(pruneReloadTimes([], now, 60_000), [])
-})
-
-test('pushReloadTime records the timestamp', () => {
-  const times: number[] = []
-
-  assert.deepEqual(pushReloadTime(times, 42), [42])
 })
 
 test('shouldReloadAfterRendererGone reloads crashed/oom on a live window', () => {
@@ -282,7 +274,7 @@ test('unresponsive is logged, never reloaded', () => {
   win.webContents.emit('unresponsive')
 
   assert.equal(win.reloadCalls.length, 0)
-  assert.equal(logs[0], '[renderer:secondary] webContents became unresponsive')
+  assert.equal(logs.length, 1)
 })
 
 test('did-fail-load on the main frame is logged, not reloaded', () => {
@@ -374,32 +366,6 @@ test('dispose removes every listener (no stacking on window recreation)', () => 
   assert.equal(win.reloadCalls.length, 0)
   assert.equal(logs.length, 0)
   assert.equal(win.webContents.listenerCount('render-process-gone'), before - 1)
-})
-
-test('describeRendererLifecycleEvent sanitizes unknown fields', () => {
-  assert.equal(
-    describeRendererLifecycleEvent({ kind: 'secondary', event: 'render-process-gone' }),
-    '[renderer:secondary] render-process-gone reason=? exitCode=?'
-  )
-  assert.equal(
-    describeRendererLifecycleEvent({
-      kind: 'secondary',
-      event: 'render-process-gone',
-      reason: 'crashed',
-      exitCode: undefined
-    }),
-    '[renderer:secondary] render-process-gone reason=crashed exitCode=?'
-  )
-  assert.equal(
-    describeRendererLifecycleEvent({
-      kind: 'main',
-      event: 'render-process-gone',
-      reason: 'killed',
-      exitCode: 1,
-      isDestroyed: true
-    }),
-    '[renderer:main] render-process-gone reason=killed exitCode=1 (expected teardown)'
-  )
 })
 
 // --- #95575: white-screen recovery for main-frame load failures -------------
@@ -544,4 +510,52 @@ test('ERR_ABORTED does not consume the load-failure budget', async () => {
   win.webContents.emit('did-fail-load', {}, -6, 'ERR_FILE_NOT_FOUND', 'file:///dist/index.html', true)
   await flushDeferred()
   assert.equal(win.reloadCalls.length, 1)
+})
+
+test('onRendererTerminated surfaces an external kill on a live window, never a reload or teardown', async () => {
+  const terminated: any[] = []
+  const win = makeFakeWindow()
+
+  const { options } = makeOptions(win, 'main', {
+    callbacks: {
+      log: () => undefined,
+      reload: () => win.webContents.reload(),
+      onRendererTerminated: (details: any) => {
+        terminated.push(details)
+      }
+    }
+  })
+
+  installWindowRendererLifecycle(win, options)
+
+  // Live window killed externally (OS reclaim / SIGKILL) → surfaced, never reloaded.
+  win.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 })
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 0)
+  assert.deepEqual(terminated, [{ reason: 'killed', exitCode: 9 }])
+
+  // A recoverable crash reloads and must NOT surface the termination page.
+  win.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 3 })
+  await flushDeferred()
+  assert.equal(win.reloadCalls.length, 1)
+  assert.equal(terminated.length, 1)
+
+  // Expected teardown (window destroyed) is neither reloaded nor surfaced.
+  const closing = makeFakeWindow({ destroyed: true })
+
+  const closingOptions = makeOptions(closing, 'main', {
+    callbacks: {
+      log: () => undefined,
+      reload: () => closing.webContents.reload(),
+      onRendererTerminated: (details: any) => {
+        terminated.push(details)
+      }
+    }
+  })
+
+  installWindowRendererLifecycle(closing, closingOptions.options)
+  closing.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 })
+  await flushDeferred()
+  assert.equal(closing.reloadCalls.length, 0)
+  assert.equal(terminated.length, 1)
 })

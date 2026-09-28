@@ -23,8 +23,6 @@ helper's internal shape.
 from __future__ import annotations
 
 import threading
-import time
-import types
 from typing import Any
 
 import pytest
@@ -279,13 +277,3 @@ class TestHealthyPathUnchanged:
         # the final flush after tracked operations drain.
         assert fake.subscribers.flushed == 0
 
-    def test_healthy_pop_result_propagates_synchronously(self, coordinator):
-        """A healthy pop completes and is observed before end_turn returns."""
-        runtime = _make_runtime(_FakeRelay())
-        lease = _acquire(coordinator, runtime)
-        turn = coordinator.begin_turn(lease, turn_id="t1", task_id="task1")
-        coordinator.end_turn(turn, outcome="success")
-        assert relay_runtime.TURN_SCOPE in runtime.relay.scope.popped, (
-            "healthy-path pop must complete before end_turn returns "
-            "(no fire-and-forget on the default lane)"
-        )

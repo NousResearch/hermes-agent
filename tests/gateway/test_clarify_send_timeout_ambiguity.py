@@ -17,7 +17,7 @@ today's teardown + sentinel behavior.
 import concurrent.futures
 from unittest.mock import MagicMock
 
-from gateway.run import _clarify_send_disposition, _clarify_send_then_wait
+from gateway.run_turn_runner_clarify_delivery import _clarify_send_disposition, _clarify_send_then_wait
 
 SENTINEL = "[clarify prompt could not be delivered]"
 
@@ -103,7 +103,7 @@ def test_ambiguous_send_reaches_wait_for_response():
         fut, clarify_id="cid123", session_key="sk", clarify_mod=clarify_mod
     )
 
-    assert out == "user picked B"
+    assert out == ("user picked B", True)
     clarify_mod.clear_session.assert_not_called()
     clarify_mod.wait_for_response.assert_called_once_with("cid123", timeout=600.0)
 
@@ -119,7 +119,7 @@ def test_sent_reaches_wait_for_response():
         _clarify_send_then_wait(
             fut, clarify_id="cid123", session_key="sk", clarify_mod=clarify_mod
         )
-        == "answer"
+        == ("answer", True)
     )
     clarify_mod.wait_for_response.assert_called_once_with("cid123", timeout=600.0)
 
@@ -133,7 +133,7 @@ def test_definitive_failure_never_waits():
         _clarify_send_then_wait(
             fut, clarify_id="cid123", session_key="sk", clarify_mod=clarify_mod
         )
-        == SENTINEL
+        == (SENTINEL, False)
     )
     clarify_mod.wait_for_response.assert_not_called()
     clarify_mod.clear_session.assert_called_once_with("sk")
@@ -150,26 +150,12 @@ def test_no_response_returns_timeout_sentinel():
         _clarify_send_then_wait(
             fut, clarify_id="cid123", session_key="sk", clarify_mod=clarify_mod
         )
-        == "[user did not respond within 10m]"
+        == ("[user did not respond within 10m]", False)
     )
 
 
 # --- Definitive failures keep their diagnostic detail in the log ----------
 
 
-def test_failed_send_exception_detail_is_logged(caplog):
-    fut = MagicMock()
-    fut.result.side_effect = RuntimeError("loop unavailable")
-    clarify_mod = MagicMock()
-    with caplog.at_level("WARNING", logger="gateway.run"):
-        _clarify_send_disposition(fut, session_key="sk", clarify_mod=clarify_mod)
-    assert "loop unavailable" in caplog.text
 
 
-def test_failed_send_result_error_detail_is_logged(caplog):
-    fut = MagicMock()
-    fut.result.return_value = _Result(False, "relay prompt op unavailable")
-    clarify_mod = MagicMock()
-    with caplog.at_level("WARNING", logger="gateway.run"):
-        _clarify_send_disposition(fut, session_key="sk", clarify_mod=clarify_mod)
-    assert "relay prompt op unavailable" in caplog.text

@@ -1,0 +1,19 @@
+name: provider-status
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: b270520f14d5141c2ad686d7053907a341c8a46f
+subdir: public/provider-status
+description: Multi-provider quota chips in the desktop status bar, with OAuth, color warnings, and extra
+  keys. This edition does not rotate Hermes env keys on exhaust. Disclosure — quota checks for Codex and
+  Grok present those vendors' CLI client identity/user-agent to their CLI endpoints.
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/provider-status
+version: 1.5.7
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/b270520f14d5141c2ad686d7053907a341c8a46f/public/provider-status/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

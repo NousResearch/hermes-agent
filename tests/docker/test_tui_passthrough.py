@@ -55,11 +55,3 @@ def test_tty_passthrough_to_container(built_image: str) -> None:
     assert int(value) > 0
 
 
-def test_tui_flag_recognized(built_image: str) -> None:
-    """``docker run -it <image> --help`` should run without crashing."""
-    cmd = f"docker run --rm -t {built_image} --help"
-    r = subprocess.run(
-        ["script", "-qc", cmd, "/dev/null"],
-        capture_output=True, text=True, timeout=60,
-    )
-    assert r.returncode == 0

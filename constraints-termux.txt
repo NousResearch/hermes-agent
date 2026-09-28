@@ -5,6 +5,13 @@
 #
 # These pins keep the tested Android install path stable when upstream packages
 # move faster than Termux-compatible wheels / sdists.
+#
+# NOTE: uvloop is excluded from the Termux install path because libuv's
+# ./configure script does not run on Android (non-FHS layout, bionic libc).
+# uvicorn falls back to the stdlib asyncio event loop automatically when
+# uvloop is absent — no performance-critical codepath depends on it.
+# The [uvloop] optional extra is included in [all] but intentionally omitted
+# from [termux] and [termux-all].  See pyproject.toml for details.
 
 ipython<10
 jedi>=0.18.1,<0.20

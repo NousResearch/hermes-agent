@@ -1,0 +1,131 @@
+"""Slash-command config writes must land in the routed profile's config.yaml.
+
+Regression for #87939 / #75684: the multiplexed inbound handler already runs
+every slash handler inside ``_profile_runtime_scope`` (routed HERMES_HOME
+override), but several handlers built their write path from the module
+constant ``gateway.run._hermes_home`` — the LAUNCH home — so ``/reasoning
+--global``, ``/fast``, ``/memory approval``, ``/skills approval``, ``/verbose``
+and ``/footer`` persisted into the default profile's config.yaml. They now go
+through ``_gateway_config_home()`` like the reads do.
+"""
+
+from __future__ import annotations
+
+import pytest
+import yaml
+
+import gateway.run as gateway_run
+from gateway.config import GatewayConfig
+from gateway.run import GatewayRunner, _profile_runtime_scope
+from tools import write_approval as wa
+
+
+class _Runner(GatewayRunner):
+    """Bare runner (no __init__): the dispatcher binds the routed runtime scope ONCE around every
+    table handler (#119915), so drive the handlers through it rather than calling them directly."""
+
+    def __init__(self):  # skip GatewayRunner.__init__: only the dispatcher + slash mixins are exercised
+        self.config = GatewayConfig(multiplex_profiles=True)
+
+    def _session_key_for_source(self, _source):
+        return "k"
+
+    def _evict_cached_agent(self, _session_key):
+        pass
+
+    def _resolve_profile_home_for_source(self, _source):
+        return getattr(self, "routed_home", gateway_run._gateway_config_home())
+
+    async def slash(self, name: str, args: str) -> str:
+        """``/<name> <args>`` through the real dispatcher (ambient scope = the receiving bot's)."""
+        event = _Event(args)
+        handled, reply = await self._hm_dispatch_canonical_command(event, event.source, "k", name)
+        assert handled
+        return reply
+
+
+class _Event:
+    def __init__(self, args: str = ""):
+        self._args = args
+        self.source = object()
+
+    def get_command_args(self) -> str:
+        return self._args
+
+
+@pytest.fixture
+def homes(tmp_path, monkeypatch):
+    default_home = tmp_path / "default"
+    routed_home = tmp_path / "profiles" / "beta"
+    default_home.mkdir()
+    routed_home.mkdir(parents=True)
+    (default_home / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n")
+    (routed_home / "config.yaml").write_text("agent:\n  reasoning_effort: none\n")
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    return default_home, routed_home
+
+
+@pytest.mark.asyncio
+async def test_slash_config_writes_hit_routed_profile_and_leave_default_untouched(homes):
+    default_home, routed_home = homes
+    default_before = (default_home / "config.yaml").read_bytes()
+    runner = _Runner()
+
+    with _profile_runtime_scope(routed_home):
+        assert runner._save_gateway_config_key("agent.reasoning_effort", "high")
+        await runner._handle_memory_command(_Event("approval on"))
+        await runner._handle_skills_command(_Event("approval on"))
+
+    routed = yaml.safe_load((routed_home / "config.yaml").read_text())
+    assert routed["agent"]["reasoning_effort"] == "high"
+    assert routed["memory"]["write_approval"] is True
+    assert routed["skills"]["write_approval"] is True
+    assert (default_home / "config.yaml").read_bytes() == default_before
+
+
+@pytest.mark.asyncio
+async def test_memory_and_skills_review_commands_use_routed_profile_from_dispatch(homes):
+    """The dispatcher binds the routed runtime around the handlers (the ambient scope is the
+    receiving bot's = the default home here), including destructive actions."""
+    default_home, routed_home = homes
+    default_before = (default_home / "config.yaml").read_bytes()
+    runner = _Runner()
+    runner.routed_home = routed_home
+
+    with _profile_runtime_scope(routed_home):
+        memory_approve = wa.stage_write(
+            wa.MEMORY, {"action": "add", "target": "memory", "content": "routed approved"},
+            summary="routed-memory-approve", origin="foreground")
+        memory_reject = wa.stage_write(
+            wa.MEMORY, {"action": "add", "target": "memory", "content": "routed rejected"},
+            summary="routed-memory-reject", origin="foreground")
+        skill_reject = wa.stage_write(
+            wa.SKILLS, {"action": "create", "name": "routed-skill", "content": "---\nname: routed-skill\n---\n"},
+            summary="routed-skill-reject", origin="foreground")
+        skill_approve = wa.stage_write(
+            wa.SKILLS, {"action": "create", "name": "routed-approved-skill",
+                        "content": "---\nname: routed-approved-skill\ndescription: Use when testing routed approval.\n---\n\nVerify the routed profile.\n"},
+            summary="routed-skill-approve", origin="foreground")
+
+    with _profile_runtime_scope(default_home):
+        assert "routed-memory-approve" in await runner.slash("memory", "pending")
+        assert "Approved 1 memory write(s)." in await runner.slash("memory", f"approve {memory_approve['id']}")
+        assert "routed approved" in (routed_home / "memories" / "MEMORY.md").read_text()
+        assert "Rejected pending memory write" in await runner.slash("memory", f"reject {memory_reject['id']}")
+        assert "routed-skill-reject" in await runner.slash("skills", "pending")
+        assert "Pending skill write" in await runner.slash("skills", f"diff {skill_reject['id']}")
+        assert "Rejected pending skills write" in await runner.slash("skills", f"reject {skill_reject['id']}")
+        assert "Approved 1 skills write(s)." in await runner.slash("skills", f"approve {skill_approve['id']}")
+        assert (routed_home / "skills" / "routed-approved-skill" / "SKILL.md").exists()
+        assert "set to 'on'" in await runner.slash("memory", "approval on")
+        assert "set to 'on'" in await runner.slash("skills", "approval on")
+        assert gateway_run._gateway_config_home() == default_home  # ambient scope restored per dispatch
+
+    routed = yaml.safe_load((routed_home / "config.yaml").read_text())
+    assert routed["memory"]["write_approval"] is True
+    assert routed["skills"]["write_approval"] is True
+    assert not (default_home / "pending").exists()
+    assert not (default_home / "memories").exists()
+    assert not (default_home / "skills").exists()
+    assert (default_home / "config.yaml").read_bytes() == default_before

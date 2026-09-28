@@ -14,7 +14,6 @@ import tempfile
 import pytest
 
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
-from hermes_cli.commands import resolve_command
 
 
 class _Stub(CLICommandsMixin):
@@ -40,10 +39,6 @@ def _no_visual(monkeypatch):
     monkeypatch.delenv("VISUAL", raising=False)
 
 
-def test_command_registered():
-    cd = resolve_command("prompt")
-    assert cd and cd.name == "prompt"
-    assert resolve_command("compose").name == "prompt"
 
 
 def test_compose_reads_and_strips_header(monkeypatch):

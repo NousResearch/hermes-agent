@@ -3,7 +3,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandItemCheck,
+  CommandList
+} from '@/components/ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { HermesGitBaseBranch } from '@/global'
 import { useI18n } from '@/i18n'
@@ -119,10 +127,17 @@ export function BaseBranchPicker({
             <span className="shrink-0">{parts.after}</span>
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="z-(--z-modal-popover) min-w-(--radix-popover-trigger-width) p-0">
-          <Command filter={(searchValue, search) => (searchValue.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}>
+        <PopoverContent
+          align="start"
+          className="z-(--z-modal-popover) min-w-(--radix-popover-trigger-width)"
+          variant="menu"
+        >
+          <Command
+            filter={(searchValue, search) => (searchValue.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}
+            variant="menu"
+          >
             <CommandInput autoFocus placeholder={p.baseBranchPlaceholder} />
-            <CommandList className="max-h-64">
+            <CommandList>
               <CommandEmpty>{p.baseBranchNone}</CommandEmpty>
               <CommandGroup>
                 {sorted.map(branch => (
@@ -134,20 +149,14 @@ export function BaseBranchPicker({
                     }}
                     value={branch.name}
                   >
-                    <div className="flex items-center justify-start gap-1.5">
-                      <Codicon
-                        className="shrink-0 text-(--ui-text-tertiary)"
-                        name={branch.isRemote ? 'repo' : 'git-branch'}
-                        size="0.8rem"
-                      />
-                      {branch.isDefault && (
-                        <span className="ml-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">★</span>
-                      )}
-                      <span className="truncate">{branch.name}</span>
-                      {value === branch.name && (
-                        <Codicon className="ml-auto shrink-0 text-(--ui-accent)" name="check" size="0.8rem" />
-                      )}
-                    </div>
+                    <Codicon
+                      className="shrink-0 text-(--ui-text-tertiary)"
+                      name={branch.isRemote ? 'repo' : 'git-branch'}
+                      size="0.8rem"
+                    />
+                    <span className="truncate">{branch.name}</span>
+                    {branch.isDefault && <span className="shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">★</span>}
+                    <CommandItemCheck checked={value === branch.name} />
                   </CommandItem>
                 ))}
               </CommandGroup>

@@ -6,107 +6,61 @@ import base64
 import binascii
 import re
 import tempfile
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable
 from urllib.parse import quote, unquote
 
 from plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
 from tools.microsoft_graph_client import MicrosoftGraphAPIError, MicrosoftGraphClient
 
-# Graph uses both slash keys (users/{id}/...) and quoted keys (users('{id}')/...).
-_USERS_MEETING_RE = re.compile(
-    r"(?i)(?:^|/)users(?:\('([^']+)'\)|/([^/'()]+))/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))"
-)
-_COMM_MEETING_RE = re.compile(
-    r"(?i)(?:^|/)communications/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))"
-)
+# Graph uses both slash keys (users/{id}/...) and quoted keys (users('{id}')/...),
+# so every segment pattern has a quoted group and a slash group.
+_USERS_MEETING_RE = re.compile(r"(?i)(?:^|/)users(?:\('([^']+)'\)|/([^/'()]+))/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))")
+_COMM_MEETING_RE = re.compile(r"(?i)(?:^|/)communications/onlineMeetings(?:\('([^']+)'\)|/([^/'?]+))")
 _TRANSCRIPT_RE = re.compile(r"(?i)/transcripts(?:\('([^']+)'\)|/([^/'?]+))")
 _RECORDING_RE = re.compile(r"(?i)/recordings(?:\('([^']+)'\)|/([^/'?]+))")
-_RESOURCE_SENTINELS = frozenset(
-    {
-        "getalltranscripts",
-        "getallrecordings",
-        "transcripts",
-        "recordings",
-    }
-)
+# Collection function names that the meeting regex can capture in place of a real meeting id.
+_RESOURCE_SENTINELS = frozenset({"getalltranscripts", "getallrecordings", "transcripts", "recordings"})
 
 
-class TeamsMeetingError(RuntimeError):
-    """Base class for Teams meeting pipeline failures."""
+class TeamsMeetingError(RuntimeError): """Base class for Teams meeting pipeline failures."""
+class TeamsMeetingNotFoundError(TeamsMeetingError): """Raised when the meeting cannot be resolved from Graph."""
+class TeamsMeetingArtifactNotFoundError(TeamsMeetingError): """Raised when a transcript or recording cannot be found."""
+class TeamsMeetingPermissionError(TeamsMeetingError): """Raised when Graph access is denied for the requested resource."""
 
 
-class TeamsMeetingNotFoundError(TeamsMeetingError):
-    """Raised when the meeting cannot be resolved from Graph."""
-
-
-class TeamsMeetingArtifactNotFoundError(TeamsMeetingError):
-    """Raised when a transcript or recording cannot be found."""
-
-
-class TeamsMeetingPermissionError(TeamsMeetingError):
-    """Raised when Graph access is denied for the requested resource."""
+def _match_id(match: re.Match[str] | None, *groups: int) -> str | None:
+    """Unquoted, stripped value of the first non-empty capture group, or None."""
+    if match is None:
+        return None
+    return unquote(next((match.group(g) for g in groups if match.group(g)), "")).strip() or None
 
 
 def parse_graph_meeting_resource(resource: str) -> dict[str, str | None]:
     """Parse organizer, meeting, and artifact ids from a Graph resource or @odata.id."""
-
     text = str(resource or "").strip()
-    organizer_user_id: str | None = None
-    meeting_id: str | None = None
-    transcript_id: str | None = None
-    recording_id: str | None = None
-
     users_match = _USERS_MEETING_RE.search(text)
-    if users_match:
-        organizer_user_id = unquote(users_match.group(1) or users_match.group(2) or "").strip() or None
-        meeting_id = unquote(users_match.group(3) or users_match.group(4) or "").strip() or None
-
-    if not meeting_id:
-        comm_match = _COMM_MEETING_RE.search(text)
-        if comm_match:
-            meeting_id = unquote(comm_match.group(1) or comm_match.group(2) or "").strip() or None
-
+    meeting_id = _match_id(users_match, 3, 4) or _match_id(_COMM_MEETING_RE.search(text), 1, 2)
     if meeting_id and meeting_id.lower() in _RESOURCE_SENTINELS:
         meeting_id = None
-
-    transcript_match = _TRANSCRIPT_RE.search(text)
-    if transcript_match:
-        transcript_id = unquote(transcript_match.group(1) or transcript_match.group(2) or "").strip() or None
-
-    recording_match = _RECORDING_RE.search(text)
-    if recording_match:
-        recording_id = unquote(recording_match.group(1) or recording_match.group(2) or "").strip() or None
-
     return {
-        "organizer_user_id": organizer_user_id,
+        "organizer_user_id": _match_id(users_match, 1, 2),
         "meeting_id": meeting_id,
-        "transcript_id": transcript_id,
-        "recording_id": recording_id,
-    }
+        "transcript_id": _match_id(_TRANSCRIPT_RE.search(text), 1, 2),
+        "recording_id": _match_id(_RECORDING_RE.search(text), 1, 2)}
 
 
 def looks_like_transcript_id(value: str, *, odata_type: str | None = None) -> bool:
     """True when a Graph id is a callTranscript artifact rather than an onlineMeeting."""
-
     if "calltranscript" in str(odata_type or "").lower():
         return True
-    text = str(value or "")
-    if "transcript" in text.lower():
-        return True
-    return "transcript" in _decoded_id_hint(text)
+    return "transcript" in str(value or "").lower() or "transcript" in _decoded_id_hint(str(value or ""))
 
 
 def _decoded_id_hint(value: str) -> str:
-    """Best-effort base64 decode of a Graph id for artifact-marker sniffing.
-
-    Graph transcript ids are base64url blobs whose *decoded* payload carries a
-    ``...-TranscriptV2`` suffix while the encoded form contains no readable
-    marker (this is exactly the id shape from getAllTranscripts
-    ``resourceData.id``). Returns lowercase decoded text, or "" when the value
-    does not decode.
-    """
-
+    """Best-effort base64 decode of a Graph id: getAllTranscripts ``resourceData.id`` blobs only carry
+    their ``-TranscriptV2`` marker in the *decoded* payload. Lowercase decoded text, or "" if undecodable."""
     stripped = value.strip()
     if len(stripped) < 16:
         return ""
@@ -119,254 +73,141 @@ def _decoded_id_hint(value: str) -> str:
     return ""
 
 
-def _meeting_path(meeting_ref: TeamsMeetingRef | str) -> str:
-    if isinstance(meeting_ref, TeamsMeetingRef):
-        meeting_id = meeting_ref.meeting_id
-        organizer_user_id = meeting_ref.organizer_user_id
-    else:
-        meeting_id = str(meeting_ref)
-        organizer_user_id = None
-    encoded_meeting_id = quote(meeting_id, safe="")
-    if organizer_user_id:
-        return (
-            f"/users/{quote(organizer_user_id, safe='')}/onlineMeetings/{encoded_meeting_id}"
-        )
-    return f"/communications/onlineMeetings/{encoded_meeting_id}"
+def _meetings_collection(organizer_user_id: str | None) -> str:
+    """Organizer-scoped collection when the organizer is known (required for app-only Graph access)."""
+    return f"/users/{quote(organizer_user_id, safe='')}/onlineMeetings" if organizer_user_id else "/communications/onlineMeetings"
+
+
+def _meeting_path(meeting_ref: TeamsMeetingRef) -> str:
+    return f"{_meetings_collection(meeting_ref.organizer_user_id)}/{quote(meeting_ref.meeting_id, safe='')}"
 
 
 def _wrap_graph_error(exc: MicrosoftGraphAPIError, *, missing_message: str) -> TeamsMeetingError:
     if exc.status_code in {401, 403}:
         return TeamsMeetingPermissionError(str(exc))
-    if exc.status_code == 404:
-        return TeamsMeetingNotFoundError(missing_message)
-    return TeamsMeetingError(str(exc))
+    return TeamsMeetingNotFoundError(missing_message) if exc.status_code == 404 else TeamsMeetingError(str(exc))
+
+
+async def _graph(awaitable: Awaitable[Any], *, missing_message: str) -> Any:
+    """Await a Graph client call, translating MicrosoftGraphAPIError into TeamsMeetingError subclasses."""
+    try:
+        return await awaitable
+    except MicrosoftGraphAPIError as exc:
+        raise _wrap_graph_error(exc, missing_message=missing_message) from exc
 
 
 def _parse_organizer_user_id(payload: dict[str, Any]) -> str | None:
     organizer = payload.get("organizer")
-    if not isinstance(organizer, dict):
-        return None
-    identity = organizer.get("identity")
-    if not isinstance(identity, dict):
-        return None
-    user = identity.get("user")
-    if not isinstance(user, dict):
-        return None
-    return user.get("id")
+    identity = organizer.get("identity") if isinstance(organizer, dict) else None
+    user = identity.get("user") if isinstance(identity, dict) else None
+    return user.get("id") if isinstance(user, dict) else None
 
 
-def _parse_thread_id(payload: dict[str, Any]) -> str | None:
+def _normalize_meeting_ref(payload: dict[str, Any], *, tenant_id: str | None = None, organizer_user_id: str | None = None) -> TeamsMeetingRef:
+    metadata = {key: payload.get(key) for key in ("subject", "startDateTime", "endDateTime", "createdDateTime", "participants")
+                if payload.get(key) is not None}
     chat = payload.get("chatInfo")
-    if isinstance(chat, dict):
-        thread_id = chat.get("threadId")
-        if thread_id:
-            return str(thread_id)
-    return payload.get("threadId")
-
-
-def _normalize_meeting_ref(
-    payload: dict[str, Any],
-    *,
-    tenant_id: str | None = None,
-    organizer_user_id: str | None = None,
-) -> TeamsMeetingRef:
-    metadata = {
-        key: payload.get(key)
-        for key in ("subject", "startDateTime", "endDateTime", "createdDateTime")
-        if payload.get(key) is not None
-    }
-    participants = payload.get("participants")
-    if participants is not None:
-        metadata["participants"] = participants
+    thread_id = str(chat["threadId"]) if isinstance(chat, dict) and chat.get("threadId") else payload.get("threadId")
     return TeamsMeetingRef(
         meeting_id=str(payload.get("id") or "").strip(),
         organizer_user_id=organizer_user_id or _parse_organizer_user_id(payload),
-        join_web_url=payload.get("joinWebUrl"),
-        calendar_event_id=payload.get("calendarEventId"),
-        thread_id=_parse_thread_id(payload),
-        tenant_id=tenant_id or payload.get("tenantId"),
-        metadata=metadata,
-    )
+        join_web_url=payload.get("joinWebUrl"), calendar_event_id=payload.get("calendarEventId"),
+        thread_id=thread_id, tenant_id=tenant_id or payload.get("tenantId"), metadata=metadata)
 
 
-def _normalize_artifact(
-    artifact_type: str,
-    payload: dict[str, Any],
-    *,
-    default_source_url: str | None = None,
-) -> MeetingArtifact:
-    metadata = dict(payload)
-    download_url = (
-        payload.get("@microsoft.graph.downloadUrl")
-        or payload.get("downloadUrl")
-        or payload.get("recordingContentUrl")
-        or payload.get("transcriptContentUrl")
-    )
-    source_url = payload.get("webUrl") or payload.get("contentUrl") or default_source_url
+def _normalize_artifact(artifact_type: str, payload: dict[str, Any]) -> MeetingArtifact:
     return MeetingArtifact(
         artifact_type=artifact_type,  # type: ignore[arg-type]
         artifact_id=str(payload.get("id") or "").strip(),
         display_name=payload.get("displayName") or payload.get("name"),
         content_type=payload.get("contentType") or payload.get("fileMimeType"),
-        source_url=source_url,
-        download_url=download_url,
+        source_url=payload.get("webUrl") or payload.get("contentUrl"),
+        download_url=(payload.get("@microsoft.graph.downloadUrl") or payload.get("downloadUrl")
+                      or payload.get("recordingContentUrl") or payload.get("transcriptContentUrl")),
         created_at=payload.get("createdDateTime"),
         available_at=payload.get("lastModifiedDateTime") or payload.get("meetingEndDateTime"),
-        size_bytes=payload.get("size"),
-        metadata=metadata,
-    )
+        size_bytes=payload.get("size"), metadata=dict(payload))
 
 
 def _transcript_sort_key(artifact: MeetingArtifact) -> tuple[int, int, str]:
+    """Prefer completed, downloadable, most recent transcripts (in that priority order)."""
     status = str(artifact.metadata.get("status") or "").lower()
     has_download = int(bool(artifact.download_url or artifact.source_url))
     is_completed = int(status in {"available", "completed", "succeeded"})
-    timestamp = ""
-    if artifact.available_at is not None:
-        timestamp = artifact.available_at.isoformat()
-    elif artifact.created_at is not None:
-        timestamp = artifact.created_at.isoformat()
-    return (is_completed, has_download, timestamp)
-
-
-def _recording_download_path(meeting_ref: TeamsMeetingRef, artifact: MeetingArtifact) -> str:
-    if artifact.download_url:
-        return artifact.download_url
-    return f"{_meeting_path(meeting_ref)}/recordings/{quote(artifact.artifact_id, safe='')}/content"
-
-
-def _transcript_download_path(meeting_ref: TeamsMeetingRef, artifact: MeetingArtifact) -> str:
-    if artifact.download_url:
-        return artifact.download_url
-    return f"{_meeting_path(meeting_ref)}/transcripts/{quote(artifact.artifact_id, safe='')}/content"
+    stamp = artifact.available_at or artifact.created_at
+    return (is_completed, has_download, stamp.isoformat() if stamp is not None else "")
 
 
 async def resolve_meeting_reference(
-    client: MicrosoftGraphClient,
-    *,
-    meeting_id: str | None = None,
-    join_web_url: str | None = None,
-    tenant_id: str | None = None,
-    organizer_user_id: str | None = None,
-) -> TeamsMeetingRef:
+    client: MicrosoftGraphClient, *, meeting_id: str | None = None, join_web_url: str | None = None,
+    tenant_id: str | None = None, organizer_user_id: str | None = None) -> TeamsMeetingRef:
     if meeting_id and looks_like_transcript_id(meeting_id):
-        if join_web_url:
-            meeting_id = None
-        else:
-            raise TeamsMeetingError(
-                "Refusing to GET /communications/onlineMeetings/{id} with a transcript id. "
-                "Graph v1.0 does not support that id format; use the organizer-scoped meeting "
-                "id from the notification @odata.id, or a join URL."
-            )
+        if not join_web_url:
+            raise TeamsMeetingError("Refusing to GET /communications/onlineMeetings/{id} with a transcript id. "
+                                    "Graph v1.0 does not support that id format; use the organizer-scoped meeting "
+                                    "id from the notification @odata.id, or a join URL.")
+        meeting_id = None
+    collection = _meetings_collection(organizer_user_id)
     if meeting_id:
-        try:
-            payload = await client.get_json(
-                _meeting_path(
-                    TeamsMeetingRef(meeting_id=meeting_id, organizer_user_id=organizer_user_id)
-                )
-            )
-        except MicrosoftGraphAPIError as exc:
-            raise _wrap_graph_error(exc, missing_message=f"Teams meeting not found: {meeting_id}") from exc
+        missing = f"Teams meeting not found: {meeting_id}"
+        path = f"{collection}/{quote(meeting_id, safe='')}"
+        payload = await _graph(client.get_json(path), missing_message=missing)
         if not isinstance(payload, dict) or not payload.get("id"):
-            raise TeamsMeetingNotFoundError(f"Teams meeting not found: {meeting_id}")
-        return _normalize_meeting_ref(
-            payload,
-            tenant_id=tenant_id,
-            organizer_user_id=organizer_user_id,
-        )
-
-    if join_web_url:
-        escaped_join_url = join_web_url.replace("'", "''")
-        lookup_path = "/communications/onlineMeetings"
-        if organizer_user_id:
-            lookup_path = f"/users/{quote(organizer_user_id, safe='')}/onlineMeetings"
-        try:
-            payload = await client.get_json(
-                lookup_path,
-                params={"$filter": f"JoinWebUrl eq '{escaped_join_url}'"},
-            )
-        except MicrosoftGraphAPIError as exc:
-            raise _wrap_graph_error(
-                exc,
-                missing_message=f"Teams meeting not found for join URL: {join_web_url}",
-            ) from exc
-        candidates = payload.get("value") if isinstance(payload, dict) else None
+            raise TeamsMeetingNotFoundError(missing)
+    elif join_web_url:
+        missing = f"Teams meeting not found for join URL: {join_web_url}"
+        params = {"$filter": f"JoinWebUrl eq '{join_web_url.replace(chr(39), chr(39) * 2)}'"}
+        listing = await _graph(client.get_json(collection, params=params), missing_message=missing)
+        candidates = listing.get("value") if isinstance(listing, dict) else None
         if not isinstance(candidates, list) or not candidates:
-            raise TeamsMeetingNotFoundError(f"Teams meeting not found for join URL: {join_web_url}")
-        return _normalize_meeting_ref(
-            candidates[0],
-            tenant_id=tenant_id,
-            organizer_user_id=organizer_user_id,
-        )
-
-    raise ValueError("Either meeting_id or join_web_url is required.")
+            raise TeamsMeetingNotFoundError(missing)
+        payload = candidates[0]
+    else:
+        raise ValueError("Either meeting_id or join_web_url is required.")
+    return _normalize_meeting_ref(payload, tenant_id=tenant_id, organizer_user_id=organizer_user_id)
 
 
-async def list_transcript_artifacts(
-    client: MicrosoftGraphClient,
-    meeting_ref: TeamsMeetingRef,
-) -> list[MeetingArtifact]:
-    try:
-        payloads = await client.collect_paginated(f"{_meeting_path(meeting_ref)}/transcripts")
-    except MicrosoftGraphAPIError as exc:
-        raise _wrap_graph_error(
-            exc,
-            missing_message=f"No transcripts found for Teams meeting {meeting_ref.meeting_id}",
-        ) from exc
-    return [_normalize_artifact("transcript", payload) for payload in payloads if isinstance(payload, dict)]
+async def _list_artifacts(client: MicrosoftGraphClient, meeting_ref: TeamsMeetingRef, *, artifact_type: str) -> list[MeetingArtifact]:
+    collection = f"{artifact_type}s"
+    payloads = await _graph(
+        client.collect_paginated(f"{_meeting_path(meeting_ref)}/{collection}"),
+        missing_message=f"No {collection} found for Teams meeting {meeting_ref.meeting_id}")
+    return [_normalize_artifact(artifact_type, payload) for payload in payloads if isinstance(payload, dict)]
+
+
+list_transcript_artifacts = partial(_list_artifacts, artifact_type="transcript")
+list_recording_artifacts = partial(_list_artifacts, artifact_type="recording")
+
+
+async def _download_artifact(
+    client: MicrosoftGraphClient, meeting_ref: TeamsMeetingRef, artifact: MeetingArtifact, destination: Path, *,
+    kind: str, **download_kwargs: Any) -> dict[str, Any]:
+    path = artifact.download_url or f"{_meeting_path(meeting_ref)}/{kind}s/{quote(artifact.artifact_id, safe='')}/content"
+    return await _graph(
+        client.download_to_file(path, destination, **download_kwargs),
+        missing_message=f"{kind.capitalize()} {artifact.artifact_id} not found for meeting {meeting_ref.meeting_id}")
 
 
 def select_preferred_transcript(candidates: list[MeetingArtifact]) -> MeetingArtifact | None:
     transcripts = [candidate for candidate in candidates if candidate.artifact_type == "transcript"]
-    if not transcripts:
-        return None
-    return sorted(transcripts, key=_transcript_sort_key, reverse=True)[0]
+    return max(transcripts, key=_transcript_sort_key) if transcripts else None
 
 
 async def download_transcript_text(
-    client: MicrosoftGraphClient,
-    meeting_ref: TeamsMeetingRef,
-    transcript: MeetingArtifact,
-    *,
-    encoding: str = "utf-8",
-) -> str:
+    client: MicrosoftGraphClient, meeting_ref: TeamsMeetingRef, transcript: MeetingArtifact, *, encoding: str = "utf-8") -> str:
     suffix = Path(transcript.display_name or "transcript.vtt").suffix or ".txt"
-    with tempfile.NamedTemporaryFile(prefix="teams-transcript-", suffix=suffix, delete=False) as handle:
-        destination = Path(handle.name)
-    try:
+    with tempfile.TemporaryDirectory(prefix="teams-transcript-", ignore_cleanup_errors=True) as tmp_dir:
+        destination = Path(tmp_dir) / f"transcript{suffix}"
         # Graph's transcript /content endpoint rejects JSON content negotiation.
-        await client.download_to_file(
-            _transcript_download_path(meeting_ref, transcript),
-            destination,
-            headers={"Accept": "text/vtt"},
-        )
+        await _download_artifact(client, meeting_ref, transcript, destination, kind="transcript", headers={"Accept": "text/vtt"})
         text = destination.read_text(encoding=encoding).strip()
-    except MicrosoftGraphAPIError as exc:
-        raise _wrap_graph_error(
-            exc,
-            missing_message=(
-                f"Transcript {transcript.artifact_id} not found for meeting {meeting_ref.meeting_id}"
-            ),
-        ) from exc
-    finally:
-        try:
-            destination.unlink(missing_ok=True)
-        except OSError:
-            pass
-
     if not text:
-        raise TeamsMeetingArtifactNotFoundError(
-            f"Transcript {transcript.artifact_id} for meeting {meeting_ref.meeting_id} was empty."
-        )
+        raise TeamsMeetingArtifactNotFoundError(f"Transcript {transcript.artifact_id} for meeting {meeting_ref.meeting_id} was empty.")
     return text
 
 
-async def fetch_preferred_transcript_text(
-    client: MicrosoftGraphClient,
-    meeting_ref: TeamsMeetingRef,
-) -> tuple[MeetingArtifact | None, str | None]:
-    transcripts = await list_transcript_artifacts(client, meeting_ref)
-    transcript = select_preferred_transcript(transcripts)
+async def fetch_preferred_transcript_text(client: MicrosoftGraphClient, meeting_ref: TeamsMeetingRef) -> tuple[MeetingArtifact | None, str | None]:
+    transcript = select_preferred_transcript(await list_transcript_artifacts(client, meeting_ref))
     if transcript is None:
         return None, None
     try:
@@ -375,44 +216,44 @@ async def fetch_preferred_transcript_text(
         return None, None
 
 
-async def list_recording_artifacts(
-    client: MicrosoftGraphClient,
-    meeting_ref: TeamsMeetingRef,
-) -> list[MeetingArtifact]:
-    try:
-        payloads = await client.collect_paginated(f"{_meeting_path(meeting_ref)}/recordings")
-    except MicrosoftGraphAPIError as exc:
-        raise _wrap_graph_error(
-            exc,
-            missing_message=f"No recordings found for Teams meeting {meeting_ref.meeting_id}",
-        ) from exc
-    return [_normalize_artifact("recording", payload) for payload in payloads if isinstance(payload, dict)]
-
-
 async def download_recording_artifact(
-    client: MicrosoftGraphClient,
-    meeting_ref: TeamsMeetingRef,
-    recording: MeetingArtifact,
-    destination: str | Path,
-) -> dict[str, Any]:
+    client: MicrosoftGraphClient, meeting_ref: TeamsMeetingRef, recording: MeetingArtifact, destination: str | Path) -> dict[str, Any]:
     destination_path = Path(destination)
-    try:
-        result = await client.download_to_file(
-            _recording_download_path(meeting_ref, recording),
-            destination_path,
-        )
-    except MicrosoftGraphAPIError as exc:
-        raise _wrap_graph_error(
-            exc,
-            missing_message=f"Recording {recording.artifact_id} not found for meeting {meeting_ref.meeting_id}",
-        ) from exc
+    result = await _download_artifact(client, meeting_ref, recording, destination_path, kind="recording")
     return {
-        "artifact": recording.to_dict(),
-        "path": str(destination_path),
+        "artifact": recording.to_dict(), "path": str(destination_path),
         "size_bytes": result.get("size_bytes") or recording.size_bytes,
-        "content_type": result.get("content_type") or recording.content_type,
-    }
+        "content_type": result.get("content_type") or recording.content_type}
 
+
+async def enrich_meeting_with_call_record(
+    client: MicrosoftGraphClient, meeting_ref: TeamsMeetingRef, *, call_record_id: str | None = None, allow_permission_errors: bool = True
+) -> MeetingArtifact | None:
+    """Call records need the extra CallRecords.Read.All scope, so denial is optional-soft (None)."""
+    if not (call_record_id := str(call_record_id or meeting_ref.metadata.get("call_record_id") or "")):
+        return None
+    try:
+        payload = await client.get_json(f"/communications/callRecords/{quote(call_record_id, safe='')}")
+    except MicrosoftGraphAPIError as exc:
+        if exc.status_code == 404 or (exc.status_code in {401, 403} and allow_permission_errors):
+            return None
+        raise _wrap_graph_error(exc, missing_message=f"Call record not found: {call_record_id}") from exc
+    if not isinstance(payload, dict) or not payload.get("id"):
+        return None
+    metrics = {"version": payload.get("version"), "modalities": payload.get("modalities"),
+               "participant_count": len(payload.get("participants") or []), "organizer": _parse_organizer_user_id(payload)}
+    if sessions := payload.get("sessions"):
+        metrics["session_count"] = len(sessions)
+    return MeetingArtifact(
+        artifact_type="call_record", artifact_id=str(payload["id"]), display_name=payload.get("type") or "call_record",
+        source_url=payload.get("webUrl"), created_at=payload.get("startDateTime"), available_at=payload.get("endDateTime"),
+        metadata={"call_record": payload, "metrics": metrics})
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
 
 async def fetch_call_record_artifact(
     client: MicrosoftGraphClient,
@@ -451,20 +292,4 @@ async def fetch_call_record_artifact(
         available_at=payload.get("endDateTime"),
         metadata={"call_record": payload, "metrics": metrics},
     )
-
-
-async def enrich_meeting_with_call_record(
-    client: MicrosoftGraphClient,
-    meeting_ref: TeamsMeetingRef,
-    *,
-    call_record_id: str | None = None,
-    allow_permission_errors: bool = True,
-) -> MeetingArtifact | None:
-    resolved_call_record_id = call_record_id or meeting_ref.metadata.get("call_record_id")
-    if not resolved_call_record_id:
-        return None
-    return await fetch_call_record_artifact(
-        client,
-        call_record_id=str(resolved_call_record_id),
-        allow_permission_errors=allow_permission_errors,
-    )
+# ---- END PLUGIN-COMPAT ----

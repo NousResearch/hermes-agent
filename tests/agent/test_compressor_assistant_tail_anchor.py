@@ -471,35 +471,5 @@ class TestFindLastUserMessageIdxSkipsSummaryMarker:
         assert compressor._find_last_user_message_idx(messages, head_end=1) == -1
 
 
-class TestSourceGuardrail:
-    @pytest.fixture
-    def source(self) -> str:
-        from pathlib import Path
-        return (Path(__file__).resolve().parents[2]
-                / "agent" / "context_compressor.py").read_text(
-                    encoding="utf-8")
-
-    def test_helper_defined(self, source):
-        assert "def _find_last_assistant_message_idx(" in source
-        assert "def _ensure_last_assistant_message_in_tail(" in source
-
-    def test_anchor_called_from_find_tail_cut(self, source):
-        """Without the call site the helper is dead code and the bug
-        regresses silently — pin both the definition AND the wiring."""
-        assert "self._ensure_last_assistant_message_in_tail(" in source
-
-    def test_anchor_called_after_user_anchor(self, source):
-        """The two anchors must run in sequence; reversing or skipping
-        one drops the corresponding side of the guarantee."""
-        user_call = "self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)"
-        asst_call = "self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)"
-        user_idx = source.find(user_call)
-        asst_idx = source.find(asst_call)
-        assert user_idx >= 0 and asst_idx >= 0
-        assert asst_idx > user_idx, (
-            "The assistant anchor must come AFTER the user anchor in "
-            "``_find_tail_cut_by_tokens`` — each anchor walks cut_idx "
-            "backward, and ordering keeps the chain monotonic."
-        )
 
 

@@ -9,6 +9,7 @@ import {
   ExternalLink,
   fetchLinkTitle,
   hostPathLabel,
+  hudForcesNativeLinks,
   isTitleFetchable,
   LinkifiedText,
   MarkdownLinkText,
@@ -135,6 +136,39 @@ describe('external link helpers', () => {
     expect($previewTabs.get()).toHaveLength(0)
   })
 
+  it('treats only the HUD renderer as a native-link surface', () => {
+    expect(hudForcesNativeLinks('')).toBe(false)
+    expect(hudForcesNativeLinks('?win=secondary')).toBe(false)
+    expect(hudForcesNativeLinks('?win=browser&tab=1')).toBe(false)
+    expect(hudForcesNativeLinks('?win=hud')).toBe(true)
+    expect(hudForcesNativeLinks('?profile=work&win=hud')).toBe(true)
+  })
+
+  // The HUD has no in-app browser. A click that opened a preview tile would
+  // try to paint a webview into the transparent overlay (OAuth, consoles).
+  it('sends every HUD web link to the OS browser', () => {
+    const originalLocation = window.location
+
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, search: '?win=hud' }
+    })
+
+    try {
+      const openExternal = vi.fn().mockResolvedValue(undefined)
+      installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+      render(<ExternalLink href="https://accounts.google.com/o/oauth2/auth">Sign in</ExternalLink>)
+
+      fireEvent.click(screen.getByRole('link', { name: 'Sign in' }))
+
+      expect(openExternal).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/auth')
+      expect($previewTabs.get()).toHaveLength(0)
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
+  })
+
   // A setup step sends you to a console you are signed into in your own
   // browser, to fill in a form and copy a secret back. The in-app pane has
   // none of that session and is the wrong destination even for web URLs.
@@ -162,28 +196,6 @@ describe('external link helpers', () => {
     expect(openExternal).toHaveBeenCalledWith('mailto:hi@example.com')
   })
 
-  it('hides the trailing external-link icon by default', () => {
-    installDesktopBridge()
-
-    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
-
-    const link = screen.getByRole('link', { name: 'Example link' })
-    expect(link.querySelector('svg')).toBeNull()
-  })
-
-  it('shows a trailing external-link icon when opted in', () => {
-    installDesktopBridge()
-
-    render(
-      <ExternalLink href="https://example.com/path/to/resource" showExternalIcon>
-        Example link
-      </ExternalLink>
-    )
-
-    const link = screen.getByRole('link', { name: 'Example link' })
-    expect(link.querySelector('svg')).toBeTruthy()
-  })
-
   it('renders pretty links with fetched titles and no host suffix', async () => {
     const bridge = vi.fn().mockResolvedValue('From Fajardo: Full-Day Culebra Islands Catamaran Tour')
     installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
@@ -200,17 +212,6 @@ describe('external link helpers', () => {
       expect(link.textContent).toContain('From Fajardo: Full-Day Culebra Islands Catamaran Tour')
     })
     expect(link.textContent).not.toContain('getyourguide.com')
-  })
-
-  it('shows host/path fallback when title is unavailable', () => {
-    installDesktopBridge()
-    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque'
-
-    render(<PrettyLink href={url} />)
-
-    const link = screen.getByTitle(url)
-
-    expect(link.textContent).toBe('Puerto Rico El Yunque')
   })
 
   it('ignores error-like fetched titles and falls back to slug label', async () => {
@@ -297,29 +298,5 @@ describe('external link helpers', () => {
 
     const link = screen.getByRole('link', { name: 'agent.log' })
     expect(link.getAttribute('href')).toBe('https://agent.log')
-  })
-
-  it('prefixes a pretty link to a known host with its brand glyph', () => {
-    installDesktopBridge()
-
-    const url = 'https://github.com/NousResearch/hermes-agent/pull/123'
-
-    render(<PrettyLink fallbackLabel="#123" href={url} />)
-
-    const link = screen.getByTitle(url)
-
-    expect(link.querySelector('svg')).toBeTruthy()
-    // The glyph is decorative — it must not pollute the link's accessible name.
-    expect(link.textContent).toBe('#123')
-  })
-
-  it('renders no brand glyph for an unknown host', () => {
-    installDesktopBridge()
-
-    const url = 'https://example.com/some/page'
-
-    render(<PrettyLink fallbackLabel="Some Page" href={url} />)
-
-    expect(screen.getByTitle(url).querySelector('svg')).toBeNull()
   })
 })

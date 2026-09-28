@@ -323,7 +323,7 @@ Results are delivered to your home channel.
 Run long operations without blocking the conversation:
 
 ```
-/background Analyze all files in the archive
+/bg Analyze all files in the archive
 ```
 
 ### Cross-Platform Messages
@@ -337,6 +337,6 @@ hermes chat -q "Send 'Hello from CLI' to yuanbao:group:group_code"
 ## Related Documentation
 
 - [Messaging Gateway Overview](./index.md)
-- [Slash Commands Reference](/reference/slash-commands)
-- [Cron Jobs](/user-guide/features/cron)
-- [Background Sessions](/user-guide/cli#background-sessions)
+- [Slash Commands Reference](../../reference/slash-commands.md)
+- [Cron Jobs](../features/cron.md)
+- [Background Sessions](../cli.md#background-sessions)

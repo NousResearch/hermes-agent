@@ -91,6 +91,12 @@ export interface WindowRendererLifecycleOptions {
      *  (`reloadOnFailedLoad`): the window would otherwise stay blank, so the
      *  caller should load a visible error page in its place. */
     onFailedLoadBudgetExhausted?: (details?: FailedLoadDetails) => void
+    /** Called when a LIVE window's renderer is terminated by something other than a
+     *  recoverable crash or an expected teardown (e.g. an external SIGKILL / OS
+     *  reclaim). Deliberately never reloaded — reloading a killed-after-close window
+     *  would pop it back up — so this is the caller's chance to surface WHY instead
+     *  of a silent loss (#116472). */
+    onRendererTerminated?: (details?: RendererLifecycleDetails) => void
   }
   /** Rolling crash-loop window, ms. Defaults to 60_000 (RENDERER_RELOAD_WINDOW_MS). */
   reloadWindowMs?: number
@@ -265,7 +271,7 @@ export function installWindowRendererLifecycle(
   options: WindowRendererLifecycleOptions
 ): () => void {
   const kind = options.kind
-  const { log, reload, onCrashLoopSuppressed } = options.callbacks
+  const { log, reload, onCrashLoopSuppressed, onRendererTerminated } = options.callbacks
   const reloadWindowMs = options.reloadWindowMs ?? DEFAULT_RELOAD_WINDOW_MS
   const reloadMax = options.reloadMax ?? DEFAULT_RELOAD_MAX
   const now = options.now
@@ -298,6 +304,19 @@ export function installWindowRendererLifecycle(
           `[renderer:${kind}] suppressing reload: ${budgetRef.current.length} crashes within ${reloadWindowMs}ms (likely a crash loop)`
         )
         onCrashLoopSuppressed?.(details)
+
+        return
+      }
+
+      // A live window whose renderer was lost to something other than a recoverable
+      // crash (e.g. an external SIGKILL / OS reclaim). We deliberately do not reload,
+      // but the loss must not be silent — let the caller surface WHY (#116472).
+      if (decision.suppressedReason === 'unrecoverable-reason' && !destroyed) {
+        log(
+          `[renderer:${kind}] renderer terminated while live (reason=${String(details?.reason || 'unknown')}` +
+            `${details?.exitCode === undefined ? '' : `, exitCode=${String(details.exitCode)}`}); not reloading`
+        )
+        onRendererTerminated?.(details)
       }
 
       return

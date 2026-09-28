@@ -41,7 +41,7 @@ describe('readActivePreview (read_preview tool)', () => {
   })
 
   it('serializes the Browser tab through its registered page reader', async () => {
-    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
+    openPreview(urlTarget('https://news.ycombinator.com'))
     register($rightRailActiveTabId.get()!, async () => ({
       text: 'Top stories…',
       title: 'Hacker News',
@@ -59,7 +59,7 @@ describe('readActivePreview (read_preview tool)', () => {
   })
 
   it('windows long pages with start/count and reports the full length', async () => {
-    openPreview(urlTarget('https://example.com'), 'tool-result')
+    openPreview(urlTarget('https://example.com'))
     register($rightRailActiveTabId.get()!, async () => ({
       text: 'abcdefghij',
       title: 't',
@@ -75,7 +75,7 @@ describe('readActivePreview (read_preview tool)', () => {
   })
 
   it('caps a single read at PREVIEW_READ_MAX_CHARS even when asked for more', async () => {
-    openPreview(urlTarget('https://example.com'), 'tool-result')
+    openPreview(urlTarget('https://example.com'))
     register($rightRailActiveTabId.get()!, async () => ({
       text: 'x'.repeat(PREVIEW_READ_MAX_CHARS + 5000),
       title: 't',
@@ -89,7 +89,7 @@ describe('readActivePreview (read_preview tool)', () => {
   })
 
   it('answers identity + retry note for a Browser tab whose pane is not mounted', async () => {
-    openPreview(urlTarget('https://example.com'), 'tool-result')
+    openPreview(urlTarget('https://example.com'))
 
     expect(await readActivePreview()).toMatchObject({
       kind: 'url',
@@ -100,7 +100,7 @@ describe('readActivePreview (read_preview tool)', () => {
   })
 
   it('answers a file tab with its identity and points at read_file', async () => {
-    openPreview(fileTarget('/work/notes.md'), 'file-browser')
+    openPreview(fileTarget('/work/notes.md'))
 
     expect(await readActivePreview()).toMatchObject({
       kind: 'file',
@@ -110,15 +110,15 @@ describe('readActivePreview (read_preview tool)', () => {
   })
 
   it('reads the tab the user is LOOKING at, not the last one opened', async () => {
-    openPreview(fileTarget('/work/one.md'), 'file-browser')
-    openPreview(fileTarget('/work/two.md'), 'file-browser')
+    openPreview(fileTarget('/work/one.md'))
+    openPreview(fileTarget('/work/two.md'))
     selectRightRailTab('file:file:///work/one.md')
 
     expect(await readActivePreview()).toMatchObject({ path: '/work/one.md' })
   })
 
   it('falls back to the identity answer when the reader throws (webview booting)', async () => {
-    openPreview(urlTarget('https://example.com'), 'tool-result')
+    openPreview(urlTarget('https://example.com'))
     register($rightRailActiveTabId.get()!, async () => {
       throw new Error('webview gone')
     })
@@ -127,7 +127,7 @@ describe('readActivePreview (read_preview tool)', () => {
   })
 
   it('unregister is idempotent and scoped to the same reader', async () => {
-    openPreview(urlTarget('https://example.com'), 'tool-result')
+    openPreview(urlTarget('https://example.com'))
     const tabId = $rightRailActiveTabId.get()!
     const first = register(tabId, async () => ({ text: 'first', title: '', url: '' }))
 

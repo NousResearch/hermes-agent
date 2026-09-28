@@ -9,7 +9,6 @@ import {
   desktopPluginFolderName,
   detectPluginComponents,
   findDesktopEntry,
-  repoNameFromUrl,
   resolvePluginGitUrl,
   resolveSubdirWithin
 } from './desktop-plugin-install'
@@ -40,12 +39,6 @@ describe('resolvePluginGitUrl', () => {
       gitUrl: 'https://github.com/o/r.git',
       subdir: 'nested/plugin'
     })
-  })
-})
-
-describe('repoNameFromUrl', () => {
-  it('strips .git suffix', () => {
-    expect(repoNameFromUrl('https://github.com/o/my-plugin.git')).toBe('my-plugin')
   })
 })
 

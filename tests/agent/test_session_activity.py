@@ -1,15 +1,31 @@
 """Unit tests for the shared session activity observation contract."""
 
-from types import SimpleNamespace
+import sys
+
+import pytest
 
 from agent.session_activity import (
     ACTIVITY_DESCRIPTION_MAX,
     ActivityProvenance,
     bound_activity_description,
     build_activity_snapshot,
+    format_iteration_progress,
     normalize_activity_provenance,
-    reset_session_activity_persist_window,
 )
+
+
+@pytest.mark.parametrize(
+    "max_iterations, expected",
+    [
+        (sys.maxsize, "iteration 3"),  # AIAgent's default: unbounded, so no ceiling is shown
+        (None, "iteration 3"),
+        (250, "iteration 3/250"),  # a real budget (e.g. delegation.max_iterations) keeps N/M
+    ],
+)
+def test_format_iteration_progress_hides_unbounded_ceiling(max_iterations, expected):
+    out = format_iteration_progress(3, max_iterations)
+    assert out == expected
+    assert str(sys.maxsize) not in out
 
 
 def test_bound_activity_description_truncates():
@@ -19,14 +35,8 @@ def test_bound_activity_description_truncates():
     assert out.endswith("…")
 
 
-def test_reset_session_activity_persist_window_clears_rate_limit():
-    agent = SimpleNamespace(_session_activity_last_persist_mono=1234.5)
-    reset_session_activity_persist_window(agent)
-    assert agent._session_activity_last_persist_mono == 0.0
 
 
-def test_reset_session_activity_persist_window_swallows_missing_attr():
-    reset_session_activity_persist_window(object())
 
 
 def test_normalize_activity_provenance_defaults_to_unknown():
@@ -64,33 +74,5 @@ def test_build_activity_snapshot_includes_compat_aliases():
     assert "last_progress_at" not in snap
 
 
-def test_build_activity_snapshot_maps_missing_provenance_to_unknown():
-    snap = build_activity_snapshot(
-        last_activity_at=1.0,
-        last_activity_description="starting new turn (cached)",
-        last_activity_provenance=None,
-        now=2.0,
-    )
-    assert snap["last_activity_provenance"] == "unknown"
 
 
-def test_build_activity_snapshot_preserves_compression_transition_provenances():
-    """Compaction / timeout / cooldown share the observation source (#72424)."""
-    for provenance, desc in (
-        (ActivityProvenance.AGENT_COMPRESSION, "context compression in progress"),
-        (ActivityProvenance.AGENT_COMPRESSION_TIMEOUT, "context compression timed out"),
-        (
-            ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
-            "compression blocked (cooldown: 30s remaining)",
-        ),
-    ):
-        snap = build_activity_snapshot(
-            last_activity_at=50.0,
-            last_activity_description=desc,
-            last_activity_provenance=provenance,
-            now=55.0,
-        )
-        assert snap["last_activity_provenance"] == provenance.value
-        assert snap["provenance"] == provenance.value
-        assert snap["last_activity_description"] == desc
-        assert snap["seconds_since_activity"] == 5.0

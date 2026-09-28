@@ -13,18 +13,49 @@ the real rename attempt hitting the real sharing violation.
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
+from hermes_cli import main_install_repair
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows shim-lock E2E"
-)
+pytestmark = pytest.mark.windows_only
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _wait_until(predicate, timeout: float = 15.0, interval: float = 0.05) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
+
+
+def _readline(stream, timeout: float = 60.0) -> str:
+    """``stream.readline()`` bounded by *timeout* (a hung child fails, not hangs)."""
+    got: queue.Queue = queue.Queue()
+    threading.Thread(target=lambda: got.put(stream.readline()), daemon=True).start()
+    try:
+        return got.get(timeout=timeout)
+    except queue.Empty:
+        return ""
+
+
+def _rename_round_trips(path: Path) -> bool:
+    """True once no handle blocks a rename of *path* (the holder is gone)."""
+    probe = path.with_name(path.name + ".probe")
+    try:
+        os.rename(path, probe)
+    except OSError:
+        return False
+    os.rename(probe, path)
+    return True
 
 # Child that opens a file with GENERIC_READ and NO FILE_SHARE_DELETE —
 # the exact sharing mode a running .exe image / desktop backend exhibits.
@@ -56,7 +87,7 @@ def held_shim(tmp_path: Path):
         stdout=subprocess.PIPE,
         text=True,
     )
-    line = holder.stdout.readline().strip()
+    line = _readline(holder.stdout).strip()
     if line != "HOLDING":
         holder.kill()
         pytest.fail(f"lock-holder child failed: {line!r}")
@@ -74,6 +105,7 @@ def test_locked_shim_really_cannot_be_renamed(held_shim):
 
 def test_strict_quarantine_refuses_against_real_lock(held_shim, monkeypatch):
     import hermes_cli.main as cli_main
+    import hermes_cli.main_install_repair as hermes_cli_main_install_repair
 
     scripts, _shim = held_shim
     install_ran: list = []
@@ -82,9 +114,14 @@ def test_strict_quarantine_refuses_against_real_lock(held_shim, monkeypatch):
         "_run_install_with_heartbeat",
         lambda cmd, env=None: install_ran.append(cmd),
     )
+    monkeypatch.setattr(
+        hermes_cli_main_install_repair,
+        "_run_install_with_heartbeat",
+        lambda cmd, env=None: install_ran.append(cmd),
+    )
 
-    with pytest.raises(cli_main.ShimQuarantineError) as exc_info:
-        cli_main._run_quarantined_install(
+    with pytest.raises(main_install_repair.ShimQuarantineError) as exc_info:
+        main_install_repair._run_quarantined_install(
             ["would-be", "uv", "pip", "install"],
             scripts_dir=scripts,
             strict_quarantine=True,
@@ -113,6 +150,7 @@ def test_recovery_installer_refuses_against_real_lock(held_shim, monkeypatch):
 def test_release_then_strict_quarantine_succeeds(tmp_path, monkeypatch):
     """After the holder exits, the same strict path proceeds normally."""
     import hermes_cli.main as cli_main
+    import hermes_cli.main_install_repair as hermes_cli_main_install_repair
 
     scripts = tmp_path / "venv" / "Scripts"
     scripts.mkdir(parents=True)
@@ -123,10 +161,12 @@ def test_release_then_strict_quarantine_succeeds(tmp_path, monkeypatch):
         stdout=subprocess.PIPE,
         text=True,
     )
-    assert holder.stdout.readline().strip() == "HOLDING"
+    assert _readline(holder.stdout).strip() == "HOLDING"
     holder.kill()
     holder.wait()
-    time.sleep(0.3)  # handle teardown
+    # The handle is released when the kernel tears the (possibly trampolined)
+    # holder down, not when wait() returns.
+    assert _wait_until(lambda: _rename_round_trips(scripts / "hermes.exe")), "holder handle never released"
 
     install_ran: list = []
     monkeypatch.setattr(
@@ -134,7 +174,12 @@ def test_release_then_strict_quarantine_succeeds(tmp_path, monkeypatch):
         "_run_install_with_heartbeat",
         lambda cmd, env=None: install_ran.append(cmd),
     )
-    cli_main._run_quarantined_install(
+    monkeypatch.setattr(
+        hermes_cli_main_install_repair,
+        "_run_install_with_heartbeat",
+        lambda cmd, env=None: install_ran.append(cmd),
+    )
+    main_install_repair._run_quarantined_install(
         ["fake"], scripts_dir=scripts, strict_quarantine=True
     )
     assert install_ran == [["fake"]]

@@ -141,6 +141,8 @@ No secrets land in `~/.hermes/.env` for Entra mode — `azure-identity` caches t
 
 Interactive browser credential is excluded by default for unattended Hermes runs; use Azure CLI, Azure Developer CLI, managed identity, workload identity, or service principal credentials instead.
 
+**Multiplexed profiles (`gateway.multiplex_profiles: true`):** every source in that chain resolves from the *process* — the launch profile's `AZURE_*`, its `az login` session, the host's managed identity. A served profile that sets no `AZURE_*` of its own is therefore refused instead of borrowing the launch identity (the same rule the Vertex adapter applies to Application Default Credentials). Give each profile its own `AZURE_TENANT_ID` + `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` (or `AZURE_FEDERATED_TOKEN_FILE`) in its `.env`; `AZURE_CLIENT_ID` alone opts that profile into the host's user-assigned managed identity. Single-profile runs (`hermes`, `hermes -p beta`) keep the full chain.
+
 ### Deployment patterns
 
 **Local development:**
@@ -186,6 +188,8 @@ azure-foundry (Microsoft Entra ID):
   Status: configured; live token probe is skipped here
 ```
 
+Auxiliary tasks that follow the main model (`provider: auto` — session titles, context compression, smart approval) reuse the main session's Entra token provider instead of re-authenticating; a `--api-key` string on the CLI still overrides it for one-off testing.
+
 ### Limitations
 
 - **Anthropic-style endpoints use an httpx event hook.** The Anthropic Python SDK does not accept a callable `auth_token` natively (≤ 0.86.0). Hermes installs a request event hook on a custom `httpx.Client` that mints a fresh JWT per outbound request and rewrites `Authorization: Bearer <jwt>`. This is functionally equivalent to the OpenAI SDK's native `Callable[[], str]` contract but adds one indirection layer. If the Anthropic SDK adds first-class callable-auth support in a future release, Hermes will switch to it transparently.
@@ -226,6 +230,7 @@ model:
 Important behaviour:
 
 - **GPT-5.x, codex, and o-series auto-route to the Responses API.** Microsoft Foundry deploys GPT-5 / codex / o1 / o3 / o4 models as Responses-API-only — calling `/chat/completions` against them returns `400 "The requested operation is unsupported."`. Hermes detects these model families by name and upgrades `api_mode` to `codex_responses` transparently, even when `config.yaml` still reads `api_mode: chat_completions`. GPT-4, GPT-4o, Llama, Mistral, and other deployments stay on `/chat/completions`.
+- **`api_mode: responses` is accepted as a spelling of `codex_responses`.** The alias works on `model.api_mode`, on `fallback_providers` entries and on per-task `auxiliary.<task>.api_mode` (e.g. an `auxiliary.vision` route to a GPT-5.x deployment), and selects the same Responses adapter.
 - **`max_completion_tokens` is used automatically.** Azure OpenAI (like direct OpenAI) requires `max_completion_tokens` for gpt-4o, o-series, and gpt-5.x models. Hermes sends the right parameter based on the endpoint.
 - **Pre-v1 endpoints that require `api-version`.** If you have a legacy base URL like `https://<resource>.openai.azure.com/openai?api-version=2025-04-01-preview`, Hermes extracts the query string and forwards it via `default_query` on every request (the OpenAI SDK otherwise drops it when joining paths).
 
@@ -248,6 +253,7 @@ Important behaviour:
 - **Bearer auth is used instead of `x-api-key`.** Azure's Anthropic-compatible route requires `Authorization: Bearer <key>` rather than Anthropic's native `x-api-key` header. Hermes detects `azure.com` in the base URL and routes the API key through the SDK's `auth_token` field so the right header reaches the upstream.
 - **1M context window beta header is kept.** Azure still gates the 1M-token Claude context (Opus 4.6/4.7, Sonnet 4.6) behind the `anthropic-beta: context-1m-2025-08-07` header. Hermes keeps that beta header on Azure paths (it's stripped from native Anthropic OAuth requests because some subscriptions reject it, but Azure requires it).
 - **OAuth token refresh is disabled.** Azure deployments use static API keys. The `~/.claude/.credentials.json` OAuth token refresh loop that applies to Anthropic Console is explicitly skipped for Azure endpoints to prevent the Claude Code OAuth token from overwriting your Azure key mid-session.
+- **`hermes doctor` probes the same route.** The `/anthropic` route has no `GET /models`, so the connectivity check sends a one-token `POST /v1/messages` with the same Bearer auth and `api-version` query the runtime uses; a 200 (or a 400 from the Messages API) reports the endpoint as healthy, 401/403 as an auth problem.
 
 ## Alternative: `provider: anthropic` + Azure base URL
 
@@ -271,11 +277,24 @@ Azure does **not** expose a pure-API-key endpoint to list your *deployed* model 
 
 What Hermes can do:
 
-- Azure OpenAI v1 endpoints (`<resource>.openai.azure.com/openai/v1`) expose `GET /models` with the resource's **available** model catalog. Hermes uses this list to prefill the model picker.
-- Microsoft Foundry `/anthropic` routes: detected via URL path, model name entered manually.
+- Azure OpenAI v1 endpoints (`<resource>.openai.azure.com/openai/v1`) expose `GET /models` with the resource's **available** model catalog. Hermes uses this list to prefill the setup wizard's model picker **and** the in-session `/model azure-foundry` picker (CLI, TUI, Desktop, gateway), so you can switch deployments without re-running `hermes setup`.
+- Microsoft Foundry `/anthropic` routes: detected via URL path, model name entered manually (no `/models` there — the `/model` picker shows only the current selection and any `providers.azure-foundry.models` you declare).
 - Private / firewalled endpoints: manual entry with a friendly "couldn't probe" message.
+- Entra ID (`model.auth_mode: entra_id`, no `AZURE_FOUNDRY_API_KEY`): the `/model` picker lists the provider as soon as `model.base_url` (or `AZURE_FOUNDRY_BASE_URL`) is set — no token is minted just to show the row.
 
 You can always type a deployment name directly — Hermes does not validate against the returned list.
+
+To pin the picker to the deployments you actually use (the catalog can be long), or to list them for an endpoint without `/models`, declare them in `config.yaml`; they are listed first, ahead of the live catalog:
+
+```yaml
+providers:
+  azure-foundry:
+    models:
+      - gpt-5.4
+      - kimi-k2.6
+```
+
+The runtime picker resolves the endpoint from `model.base_url` while Azure Foundry is the active provider; set `AZURE_FOUNDRY_BASE_URL` as well if you want the row to stay populated after switching to another provider.
 
 ## Environment variables
 
@@ -328,7 +347,7 @@ Verify the same `Azure AI User` (or `Foundry User`) role is assigned on the Foun
 
 ## Related
 
-- [Environment variables](/reference/environment-variables)
-- [Configuration](/user-guide/configuration)
-- [AWS Bedrock](/guides/aws-bedrock) — the other major cloud provider integration
+- [Environment variables](../reference/environment-variables.md)
+- [Configuration](../user-guide/configuration.md)
+- [AWS Bedrock](./aws-bedrock.md) — the other major cloud provider integration
 - [Microsoft: Configure Entra ID for Foundry](https://learn.microsoft.com/azure/ai-foundry/foundry-models/how-to/configure-entra-id) — upstream documentation for the keyless path

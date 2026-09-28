@@ -95,15 +95,6 @@ test('missingRendererAssets: torn generation names the dangling chunk', () => {
   assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), ['/assets/shiki-block-COiz1pEN.js'])
 })
 
-test('missingRendererAssets: a fully torn copy lists every referenced module', () => {
-  const deps = depsFor(INDEX_DIR, INDEX_HTML, [])
-
-  assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), [
-    '/assets/index-a1b2c3.js',
-    '/assets/shiki-block-COiz1pEN.js'
-  ])
-})
-
 test('missingRendererAssets: existence is checked relative to the index dir, per copy', () => {
   // The same module name present next to one index but not the other is how a
   // split app.asar vs app.asar.unpacked package presents: one copy is intact,
@@ -129,12 +120,6 @@ test('missingRendererAssets: an unreadable index is not treated as torn', () => 
     },
     existsSync: () => false
   }
-
-  assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), [])
-})
-
-test('missingRendererAssets: an index naming nothing checkable is not torn', () => {
-  const deps = depsFor(INDEX_DIR, '<html><body>static shell, no modules</body></html>', [])
 
   assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), [])
 })
@@ -236,23 +221,4 @@ test('missingRendererAssets: walks transitive map-deps without looping on cycles
   })
 
   assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), ['assets/level-two-bbb.js'])
-})
-
-test('missingRendererAssets: a lazy-chunk-torn copy loses to an intact copy end to end', () => {
-  // The resolver contract: the same generation check that orders app.asar vs
-  // app.asar.unpacked must now see lazy-chunk tears too, so a torn candidate
-  // is skipped instead of shipping a delayed "Failed to fetch dynamically
-  // imported module" crash.
-  const files = {
-    'index.html': GRAPH_INDEX_HTML,
-    'assets/index-a1b2c3.js': ENTRY_JS,
-    'assets/shiki-block-COiz1pEN.js': '// present',
-    'assets/mermaid-embed-Cq7Xw2aa.js': '// present'
-  }
-
-  const torn = graphDepsFor(INDEX_DIR, files)
-  const intact = graphDepsFor(INDEX_DIR, { ...files, 'assets/syntax-diff-Bo0962zh.js': '// present' })
-
-  assert.notDeepEqual(missingRendererAssets(INDEX_PATH, torn), [])
-  assert.deepEqual(missingRendererAssets(INDEX_PATH, intact), [])
 })

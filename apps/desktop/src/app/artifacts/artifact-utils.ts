@@ -1,4 +1,5 @@
-import { mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
+import { mediaTagValues } from '@/lib/chat-messages/parts'
+import { isArtifactFilePath, mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -12,6 +13,7 @@ export interface ArtifactRecord {
   href: string
   label: string
   sessionId: string
+  profile?: string
   sessionTitle: string
   timestamp: number
 }
@@ -28,14 +30,13 @@ export interface ArtifactLoadResult {
 
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-const MEDIA_RE = /[`"']?MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
-const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
+const PATH_RE = /(^|[\s("'`])((?:\/|~[\\/]|\.\.?[\\/]|\\\\)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
 
 const FILE_EXT_RE =
-  /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|avi|flac|m4a|mkv|mp3|ogg|opus|wav|webm|mp4|mov)(?:\?.*)?$/i
+  /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|xlsx?|docx?|pptx?|html|zip|tar|gz|avi|flac|m4a|mkv|mp3|ogg|opus|wav|webm|mp4|mov)(?:\?.*)?$/i
 
 const MAX_UNIX_SECONDS = 10_000_000_000
 
@@ -49,6 +50,31 @@ const PRODUCER_TOOL_ARTIFACT_KEY_RE =
   /^(?:artifact(?:s|_(?:file|image|path|url))?|attachment(?:s|_(?:file|image|path|url))?|download(?:s|_(?:file|path|url))?|(?:audio|image|video)(?:_(?:file|path|url))?|file_path|local_path|media(?:_(?:file|path|url))?|path)$/i
 
 const SCREENSHOT_PATH_RE = /Screenshot path:\s*([^\r\n<>]+)/gi
+
+// A pushValue callback plus whether the value is an explicit delivery the
+// author asserted as an artifact (a raw `MEDIA:` tag), as opposed to a path
+// scraped heuristically out of prose or a tool payload.
+type PushValue = (value: string, explicit?: boolean) => void
+
+function looksLikeArtifact(value: string, explicit = false): boolean {
+  if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
+    return true
+  }
+
+  if (!looksLikePathOrUrl(value)) {
+    return false
+  }
+
+  // An explicitly delivered file is an artifact by definition even when its
+  // extension is unknown — it should be listed as an opaque `file` entry
+  // rather than silently vanish. Extensionless bare paths scraped from prose
+  // stay excluded.
+  if (explicit) {
+    return true
+  }
+
+  return IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value)
+}
 
 function artifactSessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
@@ -71,9 +97,9 @@ function unquoteMediaValue(value: string): string {
   return trimmed
 }
 
-function collectMediaValues(text: string, pushValue: (value: string) => void): void {
-  for (const match of text.matchAll(MEDIA_RE)) {
-    pushValue(unquoteMediaValue(match[1] || ''))
+function collectMediaValues(text: string, pushValue: PushValue): void {
+  for (const value of mediaTagValues(text)) {
+    pushValue(unquoteMediaValue(value), true)
   }
 }
 
@@ -135,22 +161,9 @@ function looksLikePathOrUrl(value: string): boolean {
   return (
     value.startsWith('http://') ||
     value.startsWith('https://') ||
-    value.startsWith('file://') ||
     value.startsWith('data:image/') ||
-    value.startsWith('/') ||
-    value.startsWith('./') ||
-    value.startsWith('../') ||
-    value.startsWith('~/') ||
-    isWindowsPath(value)
+    isArtifactFilePath(value)
   )
-}
-
-function looksLikeArtifact(value: string): boolean {
-  if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
-    return true
-  }
-
-  return looksLikePathOrUrl(value) && (IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value))
 }
 
 function artifactKind(value: string): ArtifactKind {
@@ -158,14 +171,7 @@ function artifactKind(value: string): ArtifactKind {
     return 'image'
   }
 
-  if (
-    value.startsWith('/') ||
-    value.startsWith('./') ||
-    value.startsWith('../') ||
-    value.startsWith('~/') ||
-    value.startsWith('file://') ||
-    isWindowsPath(value)
-  ) {
+  if (isArtifactFilePath(value)) {
     return 'file'
   }
 
@@ -268,7 +274,7 @@ function collectStringValues(
   }
 }
 
-function collectArtifactsFromText(text: string, pushValue: (value: string) => void): void {
+function collectArtifactsFromText(text: string, pushValue: PushValue): void {
   collectMediaValues(text, pushValue)
 
   for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
@@ -341,7 +347,7 @@ function structuredToolPayload(message: SessionMessage): null | unknown {
   return content
 }
 
-function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value: string) => void): void {
+function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushValue): void {
   const text = messageText(message)
 
   if (message.role === 'assistant' && text) {
@@ -400,10 +406,10 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
       continue
     }
 
-    collectArtifactsFromMessage(message, candidate => {
+    collectArtifactsFromMessage(message, (candidate, explicit = false) => {
       const value = normalizeValue(candidate)
 
-      if (!value || !looksLikeArtifact(value)) {
+      if (!value || !looksLikeArtifact(value, explicit)) {
         return
       }
 
@@ -420,6 +426,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         href: artifactHref(value),
         label: artifactLabel(value),
         sessionId: session.id,
+        profile: session.profile,
         sessionTitle: title,
         timestamp: artifactTimestamp(message, session)
       })

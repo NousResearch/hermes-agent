@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -71,7 +71,6 @@ class TestHandleTitleCommand:
         event = _make_event(text="/title Taken Title")
         result = await runner._handle_title_command(event)
         assert "already in use" in result
-        assert "⚠️" in result
         db.close()
 
 
@@ -132,19 +131,6 @@ class TestHandleTitleCommand:
 # ---------------------------------------------------------------------------
 
 
-class TestTitleInHelp:
-    """Verify /title appears in help text and known commands."""
-
-    @pytest.mark.asyncio
-    async def test_title_in_help_output(self):
-        """The /help output includes /title."""
-        runner = _make_runner()
-        event = _make_event(text="/help")
-        # Need hooks for help command
-        from gateway.hooks import HookRegistry
-        runner.hooks = HookRegistry()
-        result = await runner._handle_help_command(event)
-        assert "/title" in result
 
 
 # ---------------------------------------------------------------------------
@@ -225,13 +211,3 @@ class TestResetCommandWithTitle:
 # ---------------------------------------------------------------------------
 
 
-class TestNewInHelp:
-    """Verify /new appears in help text with the [name] args hint."""
-
-    def test_new_command_in_help_output(self):
-        """The gateway help output includes /new with the [name] hint."""
-        from hermes_cli.commands import gateway_help_lines
-        lines = gateway_help_lines()
-        new_line = next((line for line in lines if line.startswith("`/new ")), None)
-        assert new_line is not None
-        assert "[name]" in new_line

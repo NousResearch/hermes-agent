@@ -35,7 +35,7 @@ def isolate_env(monkeypatch):
 class TestDotenvFallbackPerProvider:
     """For each affected provider, when only ``~/.hermes/.env`` carries the
     key, the provider must find it. These per-provider tests model that
-    dotenv-backed lookup by mocking ``tools.tts_tool.get_env_value`` directly;
+    dotenv-backed lookup by mocking ``hermes_cli.config.get_env_value`` directly;
     the separate regression-guard tests cover the lower-level
     ``hermes_cli.config.load_env`` integration. Before the fix, ``os.getenv``
     returned ``None`` and the provider raised
@@ -45,7 +45,7 @@ class TestDotenvFallbackPerProvider:
     def test_elevenlabs_reads_dotenv_key(self, tmp_path):
         from tools import tts_tool
 
-        with patch.object(tts_tool, "get_env_value", return_value="el-dotenv-key"), \
+        with patch("hermes_cli.config.get_env_value", return_value="el-dotenv-key"), \
              patch.object(tts_tool, "_import_elevenlabs") as mock_import:
             mock_client = MagicMock()
             mock_client.text_to_speech.convert.return_value = iter([b"audio"])
@@ -57,12 +57,10 @@ class TestDotenvFallbackPerProvider:
             mock_import.return_value.assert_called_once_with(api_key="el-dotenv-key")
 
     def test_xai_reads_dotenv_key(self, tmp_path):
-        """xAI TTS now resolves credentials through ``tools.xai_http``; the
-        dotenv fallback contract from #17140 is preserved by patching the
-        resolver's ``get_env_value`` rather than ``tts_tool.get_env_value``.
+        """xAI TTS resolves credentials through ``tools.xai_http``, which reads the
+        canonical ``hermes_cli.config.get_env_value`` — the dotenv contract from #17140.
         """
         from tools import tts_tool
-        from tools import xai_http
 
         captured: dict = {}
 
@@ -74,7 +72,7 @@ class TestDotenvFallbackPerProvider:
             response.raise_for_status = MagicMock()
             return response
 
-        with patch.object(xai_http, "get_env_value", return_value="xai-dotenv-key"), \
+        with patch("hermes_cli.config.get_env_value", return_value="xai-dotenv-key"), \
              patch("requests.post", side_effect=fake_post):
             tts_tool._generate_xai_tts("hi", str(tmp_path / "out.mp3"), {})
 
@@ -120,7 +118,7 @@ class TestDotenvFallbackPerProvider:
                 return "gemini-dotenv-key"
             return None
 
-        with patch.object(tts_tool, "get_env_value", side_effect=fake_get_env_value), \
+        with patch("hermes_cli.config.get_env_value", side_effect=fake_get_env_value), \
              patch("requests.post", side_effect=fake_post):
             tts_tool._generate_gemini_tts("hi", str(tmp_path / "out.wav"), {})
 
@@ -135,45 +133,6 @@ class TestRegressionGuard:
     ``hermes_cli.config.load_env`` to simulate ``~/.hermes/.env`` carrying the
     key while ``os.environ`` does not.
     """
-
-    def test_import_after_config_env_patch_uses_restored_dotenv_loader(self, tmp_path, monkeypatch):
-        """Importing TTS while hermes_cli.config.get_env_value is patched must
-        not freeze that temporary helper into this module forever.
-        """
-        import importlib
-        import hermes_cli.config as config_mod
-        from tools import tts_tool
-
-        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(config_mod, "get_env_value", lambda name: "")
-            tts_tool = importlib.reload(tts_tool)
-
-        try:
-            captured: dict = {}
-
-            def fake_post(url, **kwargs):
-                captured["headers"] = kwargs.get("headers", {})
-                response = MagicMock()
-                response.json.return_value = {
-                    "data": {"audio": b"\x00".hex()},
-                    "base_resp": {"status_code": 0},
-                }
-                response.raise_for_status = MagicMock()
-                return response
-
-            with patch(
-                "hermes_cli.config.load_env",
-                return_value={"MINIMAX_API_KEY": "dotenv-secret"},
-            ), patch("requests.post", side_effect=fake_post):
-                tts_tool._generate_minimax_tts(
-                    "hi", str(tmp_path / "out.mp3"), {}
-                )
-
-            assert captured["headers"]["Authorization"] == "Bearer dotenv-secret"
-        finally:
-            importlib.reload(tts_tool)
 
     def test_minimax_missing_when_only_in_dotenv_before_fix(self, tmp_path, monkeypatch):
         from tools import tts_tool

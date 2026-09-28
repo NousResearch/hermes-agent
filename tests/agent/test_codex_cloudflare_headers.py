@@ -33,18 +33,27 @@ from hermes_cli import __version__
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def _make_codex_jwt(account_id: str = "acct-test-123") -> str:
+def _make_codex_jwt(
+    account_id: str = "acct-test-123",
+    data_residency: str | None = None,
+    compute_residency: str | None = None,
+) -> str:
     """Build a syntactically valid Codex-style JWT with the account_id claim."""
     def b64url(data: bytes) -> str:
         return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
     header = b64url(b'{"alg":"RS256","typ":"JWT"}')
+    auth_claims: dict = {
+        "chatgpt_account_id": account_id,
+        "chatgpt_plan_type": "plus",
+    }
+    if data_residency is not None:
+        auth_claims["chatgpt_data_residency"] = data_residency
+    if compute_residency is not None:
+        auth_claims["chatgpt_compute_residency"] = compute_residency
     claims = {
         "sub": "user-xyz",
         "exp": 9999999999,
-        "https://api.openai.com/auth": {
-            "chatgpt_account_id": account_id,
-            "chatgpt_plan_type": "plus",
-        },
+        "https://api.openai.com/auth": auth_claims,
     }
     payload = b64url(json.dumps(claims).encode())
     sig = b64url(b"fake-sig")
@@ -64,14 +73,6 @@ class TestCodexCloudflareHeaders:
         assert headers["originator"] == "hermes-agent"
 
 
-    def test_canonical_header_casing(self):
-        """Upstream codex-rs uses PascalCase with trailing -ID. Match exactly."""
-        from agent.auxiliary_client import _codex_cloudflare_headers
-        headers = _codex_cloudflare_headers(_make_codex_jwt())
-        assert "ChatGPT-Account-ID" in headers
-        # The lowercase/titlecase variants MUST NOT be used — pin to be explicit
-        assert "chatgpt-account-id" not in headers
-        assert "ChatGPT-Account-Id" not in headers
 
 
 
@@ -88,6 +89,57 @@ class TestCodexCloudflareHeaders:
         assert headers["originator"] == "hermes-agent"
         assert "ChatGPT-Account-ID" not in headers
 
+    def test_residency_header_from_jwt_claims(self, monkeypatch):
+        """#23896: residency-enforced workspaces 401 without x-openai-internal-codex-residency.
+        chatgpt_data_residency wins; chatgpt_compute_residency is the fallback; and the two
+        models-catalog probes (picker via httpx, context-length via requests) send it on the
+        wire — not just the shared helper."""
+        import sys
+
+        from agent import model_metadata
+        from agent.auxiliary_client import _codex_cloudflare_headers
+        from hermes_cli import codex_models
+
+        both = _make_codex_jwt(data_residency="us", compute_residency="eu")
+        assert _codex_cloudflare_headers(both)["x-openai-internal-codex-residency"] == "us"
+        compute_only = _make_codex_jwt(compute_residency="eu")
+
+        sent: list[dict] = []
+
+        class _FakeResp:
+            status_code = 200
+
+            def json(self):
+                # Non-empty so the newest-client request is accepted and each site makes one call
+                # (an empty answer would legitimately trigger the 0.0.0 sentinel fallback).
+                return {"models": [{"slug": "gpt-5.5", "visibility": "list"}]}
+
+        class _FakeHttp:
+            @staticmethod
+            def get(url, headers=None, timeout=None, verify=None):
+                sent.append(dict(headers or {}))
+                return _FakeResp()
+
+        monkeypatch.setitem(sys.modules, "httpx", _FakeHttp)
+        codex_models._fetch_models_from_api(access_token=compute_only)
+        monkeypatch.setattr(model_metadata, "requests", _FakeHttp)
+        monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
+        monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
+        model_metadata._fetch_codex_oauth_context_lengths_with_source(compute_only)
+
+        assert len(sent) == 2
+        for headers in sent:
+            assert headers["x-openai-internal-codex-residency"] == "eu"
+            assert headers["ChatGPT-Account-ID"] == "acct-test-123"
+
+    def test_no_residency_claim_omits_header(self):
+        """Control: tokens without the claim, and malformed tokens, never carry the header."""
+        from agent.auxiliary_client import _codex_cloudflare_headers
+        for token in [_make_codex_jwt(), "not-a-jwt", "", "only.one", "  ", "...."]:
+            headers = _codex_cloudflare_headers(token)
+            assert "x-openai-internal-codex-residency" not in headers
+            assert headers["originator"] == "hermes-agent"
+
 
 # ---------------------------------------------------------------------------
 # Primary chat client wiring (run_agent.AIAgent)
@@ -99,7 +151,7 @@ class TestPrimaryClientWiring:
         """Credential-rotation / base-url change path must also emit codex headers."""
         from run_agent import AIAgent
         token = _make_codex_jwt("acct-rotation")
-        with patch("run_agent.OpenAI") as mock_openai:
+        with patch("agent.process_bootstrap.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             agent = AIAgent(
                 api_key="placeholder-openrouter-key",
@@ -124,7 +176,7 @@ class TestPrimaryClientWiring:
         """Switching AWAY from chatgpt.com must drop the codex headers."""
         from run_agent import AIAgent
         token = _make_codex_jwt()
-        with patch("run_agent.OpenAI") as mock_openai:
+        with patch("agent.process_bootstrap.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             agent = AIAgent(
                 api_key=token,

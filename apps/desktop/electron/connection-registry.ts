@@ -64,6 +64,8 @@ export interface RegistryConnection {
   headers?: Record<string, unknown>
   /** cloud: portal org slug/id the instance was discovered under. */
   org?: string
+  /** Cloud instance name, separate from the user-editable label. */
+  name?: string
   /** ssh fields (normalizeSshConfig shapes). */
   host?: string
   user?: string
@@ -493,7 +495,17 @@ export function resolveRegistryLocalRoute(
 ): RegistryLocalRoute {
   const profileKey = String(profile ?? '').trim() || 'default'
 
-  if (opts.globalRemote || opts.profileRemoteOverride) {
+  // A per-profile SSH/remote override is an explicit per-profile routing
+  // decision: the override owns this profile's backend, so the 'local' entry
+  // must delegate to the legacy profile route (which resolves the override),
+  // not spawn a forced-local child. Forcing local here is the #90477 split:
+  // the roster lists the profile via its override, but opening the thread
+  // spawned a local backend that fails when the profile doesn't exist locally.
+  if (opts.profileRemoteOverride) {
+    return { delegate: true, poolKey: profileKey }
+  }
+
+  if (opts.globalRemote) {
     return { delegate: false, poolKey: `${backendScopePrefix(LOCAL_CONNECTION_ID)}${profileKey}` }
   }
 
@@ -812,6 +824,8 @@ export interface ConnectionInput {
   token?: unknown
   headers?: Record<string, unknown>
   org?: string
+  /** Cloud instance name, separate from the user-editable label. */
+  name?: string
   host?: string
   user?: string
   port?: number | string
@@ -896,7 +910,16 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
       throw new Error(`A connection to this SSH host already exists ("${sshDupe.label}").`)
     }
 
-    return { id, kind: 'ssh', label, ...sshFields }
+    const entry: RegistryConnection = { id, kind: 'ssh', label, ...sshFields }
+
+    // Carry the adopted session-token envelope across edits (mirrors the remote
+    // branch): dropping it made a label rename wipe the backend's reuse
+    // credential and force the reap-and-respawn loop of #103795.
+    if (input.token !== undefined) {
+      entry.token = input.token
+    }
+
+    return entry
   }
 
   if (kind === 'remote' || kind === 'cloud') {
@@ -939,6 +962,12 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
       }
     }
 
+    const name = String(input.name || '').trim()
+
+    if (kind === 'cloud' && name) {
+      entry.name = name
+    }
+
     const org = String(input.org || '').trim()
 
     if (kind === 'cloud' && org) {
@@ -976,6 +1005,14 @@ export function mergeConnectionInput(input: ConnectionInput, existing?: null | R
   inherit('url')
   inherit('authMode')
   inherit('org')
+
+  if (
+    input.kind === 'cloud' &&
+    (input.url === undefined || normalizeRemoteBaseUrl(input.url) === normalizeRemoteBaseUrl(existing.url))
+  ) {
+    inherit('name')
+  }
+
   inherit('host')
   inherit('keyPath')
   inherit('remoteHermesPath')
@@ -1165,6 +1202,12 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
           clean.headers = storedHeaders
         }
 
+        const name = String(entry.name || '').trim()
+
+        if (kind === 'cloud' && name) {
+          clean.name = name
+        }
+
         const org = String(entry.org || '').trim()
 
         if (kind === 'cloud' && org) {
@@ -1181,6 +1224,14 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
 
         const { mode: _mode, ...sshFields } = ssh
         Object.assign(clean, sshFields)
+
+        // normalizeSshConfig describes only the dial, so the token
+        // persistSshConnectionToken() adopted must be carried explicitly (as the
+        // remote/cloud branch does). Losing it on a cold read fails the
+        // remote-lifecycle reuse gate and reaps a healthy backend (#103795).
+        if (entry.token !== undefined) {
+          clean.token = entry.token
+        }
       }
 
       connections.push(clean)
@@ -1266,6 +1317,12 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
 
     if (Object.keys(v1Headers).length > 0) {
       entry.headers = v1Headers
+    }
+
+    const name = String(block.name || '').trim()
+
+    if (kind === 'cloud' && name) {
+      entry.name = name
     }
 
     const org = String(block.org || '').trim()
@@ -1415,7 +1472,7 @@ export function setLastUsedConnection(registry: ConnectionRegistry, id: string):
  *
  * Remote-shaped entries are matched by normalized URL across remote/cloud so
  * changing provenance never duplicates a gateway. Existing identity and
- * user-chosen label win; a new entry derives both from the host. Switching to
+ * user-chosen label win; a Cloud name upgrades only the default host label. Switching to
  * local keeps registered remotes available while moving primary/last-used
  * back to This device.
  */
@@ -1452,12 +1509,16 @@ export function reconcileAppliedGlobalConnection(
 
   const kind: ConnectionKind = mode === 'cloud' ? 'cloud' : 'remote'
 
+  const hostLabel = hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway')
+  const name = kind === 'cloud' ? String(block.name ?? existing?.name ?? '').trim() : ''
+
   const label =
-    existing?.label ||
-    uniqueLabel(
-      hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway'),
-      registry.connections.map(connection => connection.label)
-    )
+    existing && (!name || existing.label !== hostLabel)
+      ? existing.label
+      : uniqueLabel(
+          name || hostLabel,
+          registry.connections.filter(connection => connection.id !== existing?.id).map(connection => connection.label)
+        )
 
   const entry = normalizeConnectionInput(
     {
@@ -1468,7 +1529,8 @@ export function reconcileAppliedGlobalConnection(
       authMode: block.authMode,
       token: block.token,
       headers: block.headers,
-      org: block.org
+      org: block.org,
+      name
     },
     registry
   )
@@ -1496,6 +1558,13 @@ export function reconcileAppliedGlobalConnection(
  * registry entry at all. That is the drift state and nothing else. If the
  * route is already registered but `primary` names another source, the user
  * chose that in the Connections panel and we leave it alone.
+ *
+ * SSH drifts the same way remote does: a v1 global `mode:'ssh'` route (host,
+ * no url) written by Settings after the one-shot migration has no registry
+ * identity, so `resolvedConnectionId` returns null, `primary` stays `local`,
+ * and every launch re-homes the window onto a local backend — and because the
+ * heal used to skip SSH entirely, the two files re-drifted after every update
+ * relaunch instead of converging once.
  */
 export function reconcileRegistryDrift(
   registry: ConnectionRegistry,
@@ -1503,6 +1572,60 @@ export function reconcileRegistryDrift(
 ): { changed: boolean; registry: ConnectionRegistry } {
   const config = v1 && typeof v1 === 'object' ? (v1 as Record<string, any>) : {}
   const unchanged = { changed: false, registry }
+
+  if (config.mode === 'ssh') {
+    const ssh = normalizeSshConfig({
+      ...(config.remote && typeof config.remote === 'object' ? config.remote : {}),
+      mode: 'ssh'
+    })
+
+    if (!ssh) {
+      // A v1 SSH route without a usable host is not a route we can register.
+      return unchanged
+    }
+
+    const target = normalizedSshTarget(ssh)
+
+    const alreadyRegistered = registry.connections.some(
+      connection =>
+        connection.kind === 'ssh' &&
+        normalizedSshTarget(connection) === target &&
+        (connection.port ?? 22) === (ssh.port ?? 22)
+    )
+
+    if (alreadyRegistered) {
+      // Route is known; if primary names another source, that is the user's
+      // Connections-panel choice, not drift.
+      return unchanged
+    }
+
+    const { mode: _mode, ...sshFields } = ssh
+
+    let entry: RegistryConnection
+
+    try {
+      entry = normalizeConnectionInput(
+        {
+          kind: 'ssh',
+          label: uniqueLabel(
+            ssh.host,
+            registry.connections.map(connection => connection.label)
+          ),
+          ...sshFields
+        },
+        registry
+      )
+    } catch {
+      // Validation failure (e.g. a crafted collision) must not corrupt the
+      // registry; the v1 path keeps failing the way it already does.
+      return unchanged
+    }
+
+    return {
+      changed: true,
+      registry: { ...upsertConnection(registry, entry), primary: entry.id, lastUsed: entry.id }
+    }
+  }
 
   if (!modeIsRemoteLike(config.mode)) {
     return unchanged

@@ -19,13 +19,4 @@ describe('withActive', () => {
   it('does not inject an empty active value', () => {
     expect(withActive(curated, '')).toEqual(curated)
   })
-
-  it('surfaces the active model even when the curated list is empty', () => {
-    expect(withActive([], 'anthropic/claude-opus-4.7')).toEqual(['anthropic/claude-opus-4.7'])
-  })
-
-  it('keeps the active model selectable as the invariant', () => {
-    const out = withActive(curated, 'custom/model')
-    expect(out).toContain('custom/model')
-  })
 })

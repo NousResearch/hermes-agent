@@ -10,6 +10,7 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
+import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -61,10 +62,17 @@ export function PromptZone({
   onClarifyAnswer,
   onClarifyQuestionAnswer,
   onSecretSubmit,
-  onSudoSubmit
+  onSudoSubmit,
+  onVaultUnlockSubmit
 }: Pick<
   AppOverlaysProps,
-  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onClarifyQuestionAnswer' | 'onSecretSubmit' | 'onSudoSubmit'
+  | 'cols'
+  | 'onApprovalChoice'
+  | 'onClarifyAnswer'
+  | 'onClarifyQuestionAnswer'
+  | 'onSecretSubmit'
+  | 'onSudoSubmit'
+  | 'onVaultUnlockSubmit'
 >) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
@@ -105,6 +113,14 @@ export function PromptZone({
     return (
       <PromptCell cols={cols} id="subscription">
         <SubscriptionOverlay onClose={onClose} onPatch={onPatch} overlay={current} t={theme} />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.connection) {
+    return (
+      <PromptCell cols={cols} id="connection">
+        <ConnectionSetupOverlay cols={cols} t={theme} />
       </PromptCell>
     )
   }
@@ -158,6 +174,21 @@ export function PromptZone({
           label={overlay.secret.prompt}
           onSubmit={onSecretSubmit}
           sub={`for ${overlay.secret.envVar}`}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultUnlock) {
+    return (
+      <PromptCell cols={cols} id="vault-unlock">
+        <MaskedPrompt
+          cols={cols}
+          icon="🔐"
+          label={`Unlock ${overlay.vaultUnlock.displayName} for this session`}
+          onSubmit={onVaultUnlockSubmit}
+          sub="master password · hidden · goes to the manager CLI only · Esc keeps it locked"
           t={theme}
         />
       </PromptCell>

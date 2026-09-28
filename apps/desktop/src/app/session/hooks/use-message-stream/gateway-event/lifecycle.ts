@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
 import {
@@ -6,9 +7,11 @@ import {
   notifyPetChanged,
   notifyPlatformsChanged,
   notifySessionsChanged,
+  notifySetupReady,
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { markRuntimeGone } from '@/store/runtime-gone'
 import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
 // module graph into the gateway event hot path.
@@ -16,17 +19,32 @@ import { ingestBackendSkin } from '@/themes/backend-sync'
 
 import type { GatewayEventContext } from './types'
 
-/** gateway.ready / skin.changed / change-watcher broadcasts / session.reclaimed. */
+/** gateway.ready / setup.ready / skin.changed / change-watcher broadcasts / session.reclaimed. */
 export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, fromActiveSource } = ctx
 
   if (event.type === 'gateway.ready') {
+    const ready = (event as GatewayEvent<'gateway.ready'>).payload
     // Seed the active skin into the desktop theme registry without applying,
     // so a fresh connect never overrides the user's persisted desktop theme.
-    ingestBackendSkin((payload as { skin?: HermesSkin } | undefined)?.skin, { apply: false })
+    ingestBackendSkin(ready?.skin, { apply: false })
     // Backends with the change watcher broadcast pet/cron/sessions change
     // events; consumers demote their legacy polls to slow backstops.
-    setChangeEventsAvailable(Boolean((payload as { change_events?: boolean } | undefined)?.change_events))
+    setChangeEventsAvailable(Boolean(ready?.change_events))
+
+    return true
+  }
+
+  if (event.type === 'setup.ready') {
+    // The boot bootstrap (hermes_cli/free_tier_bootstrap.py) resolved the
+    // free-tier identity and the inference route, and broadcast once. The
+    // payload is only a hint — the status snapshot re-reads `setup.status` /
+    // `setup.runtime_check` / `free_tier.status` through its own scoped
+    // requester so the chip, strip and onboarding react now rather than on
+    // the next ambient tick. Only the active source's boot matters here.
+    if (fromActiveSource()) {
+      notifySetupReady()
+    }
 
     return true
   }
@@ -80,6 +98,8 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     const reclaimedRuntimeId = String((payload as { session_id?: string } | undefined)?.session_id ?? '')
 
     if (reclaimedRuntimeId) {
+      // Heal while the cached stored-id mapping is still intact, then drop.
+      markRuntimeGone(reclaimedRuntimeId)
       dropSessionState(reclaimedRuntimeId)
       // A tile bound to the reclaimed runtime would otherwise render an
       // empty transcript forever: its view reads $sessionStates[runtime]

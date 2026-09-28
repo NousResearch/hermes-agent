@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test, vi } from 'vitest'
 
+import { createBackendConnectionState } from './backend-connection-state'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import {
   createPrimaryRemoteConnection,
@@ -17,6 +18,7 @@ const bootstrapBackend = {
 
 function startupOptions(overrides: Record<string, unknown> = {}) {
   return {
+    assertCurrentAttempt: () => {},
     connectRemote: vi.fn(async remote => ({ baseUrl: remote.baseUrl, mode: 'remote' as const })),
     ensureLocalRuntime: vi.fn(async backend => ({ ...backend, command: 'hermes' })),
     prepareLocalBackend: vi.fn(async () => bootstrapBackend),
@@ -46,6 +48,30 @@ test('primary remote descriptor preserves a resolved registry connection id', ()
   assert.equal(connection.mode, 'remote')
   assert.deepEqual(connection.logs, ['ready'])
   assert.equal(connection.isFullscreen, false)
+})
+
+test('primary remote descriptor preserves the gateway extra headers for REST calls', () => {
+  // Chat and the Test button carry the headers via the exact-URL WS store, but
+  // fetchJsonForBackend reads descriptor.headers — dropping them here made every
+  // Settings/session-history call hit an access proxy unauthenticated (#112072).
+  const headers = { 'CF-Access-Client-Id': 'client-id', 'CF-Access-Client-Secret': 'client-secret' }
+
+  const connection = createPrimaryRemoteConnection(
+    {
+      authMode: 'token',
+      baseUrl: 'https://gateway.example.com',
+      connectionId: 'gateway',
+      headers,
+      remoteKind: 'url',
+      source: 'settings',
+      token: 'secret',
+      wsUrl: 'wss://gateway.example.com/api/ws?token=secret'
+    },
+    [],
+    {}
+  )
+
+  assert.deepEqual(connection.headers, headers)
 })
 
 test('primary remote descriptor preserves the effective SSH dialing identity', () => {
@@ -159,6 +185,36 @@ test('continue local waits for update exclusion and ensures the prepared runtime
   assert.deepEqual(options.prepareLocalBackend.mock.calls, [[]])
   assert.deepEqual(options.ensureLocalRuntime.mock.calls, [[bootstrapBackend]])
   assert.deepEqual(options.resolveRemote.mock.calls, [[]])
+})
+
+test('invalidating a pending runtime discovery prevents setup and bootstrap', async () => {
+  const state = createBackendConnectionState()
+  const attempt = state.startAttempt()
+  let finish!: (backend: typeof bootstrapBackend) => void
+  let started!: () => void
+
+  const resolving = new Promise<void>(resolve => {
+    started = resolve
+  })
+
+  const options = startupOptions({
+    assertCurrentAttempt: () => state.assertCurrentAttempt(attempt),
+    prepareLocalBackend: async () => {
+      started()
+
+      return new Promise<typeof bootstrapBackend>(resolve => {
+        finish = resolve
+      })
+    }
+  })
+
+  const pending = runPrimaryBackendStartup(options)
+  await resolving
+  state.invalidate()
+  finish(bootstrapBackend)
+  await assert.rejects(pending, /superseded/)
+  assert.equal(options.waitForDecision.mock.calls.length, 0)
+  assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
 })
 
 test('reset rejects with a typed error and never enters either backend', async () => {

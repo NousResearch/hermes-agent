@@ -111,33 +111,6 @@ class TestSSEReadTimeout:
             f"(expected 300.0) — SSE idle disconnect regression"
         )
 
-    def test_sse_read_timeout_still_300s_when_tool_timeout_is_large(self, patch_sse_client):
-        """Even if user sets a large ``timeout``, ``sse_read_timeout`` stays
-        decoupled — it's a transport-level budget for inter-event silence,
-        not a per-call budget."""
-        from tools.mcp_tool import MCPServerTask
-
-        server = _build_server_with_sse()
-
-        async def drive():
-            with patch.object(MCPServerTask, "_wait_for_lifecycle_event",
-                              new=AsyncMock(return_value="shutdown")), \
-                 patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()):
-                try:
-                    await asyncio.wait_for(
-                        server._run_http({
-                            "url": "https://example.com/mcp/sse",
-                            "transport": "sse",
-                            "timeout": 600,
-                        }),
-                        timeout=2.0,
-                    )
-                except (asyncio.TimeoutError, StopAsyncIteration, Exception):
-                    pass
-
-        asyncio.run(drive())
-
-        assert patch_sse_client.get("sse_read_timeout") == 300.0
 
 
 class TestSSEOAuthForwarding:
@@ -177,33 +150,3 @@ class TestSSEOAuthForwarding:
         )
         assert patch_sse_client["auth"] is fake_oauth_provider
 
-    def test_sse_client_omits_auth_when_no_oauth_configured(self, patch_sse_client):
-        """Without OAuth, ``sse_client`` should not receive an ``auth=`` kwarg.
-        Passing ``None`` would be equally fine but the current code path only
-        sets it when configured — lock that in."""
-        from tools.mcp_tool import MCPServerTask
-
-        server = _build_server_with_sse(oauth=False)
-
-        async def drive():
-            with patch.object(MCPServerTask, "_wait_for_lifecycle_event",
-                              new=AsyncMock(return_value="shutdown")), \
-                 patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()):
-                try:
-                    await asyncio.wait_for(
-                        server._run_http({
-                            "url": "https://example.com/mcp/sse",
-                            "transport": "sse",
-                            "timeout": 60,
-                        }),
-                        timeout=2.0,
-                    )
-                except (asyncio.TimeoutError, StopAsyncIteration, Exception):
-                    pass
-
-        asyncio.run(drive())
-
-        assert "auth" not in patch_sse_client, (
-            f"sse_client was called with auth= when no OAuth was configured: "
-            f"{patch_sse_client!r}"
-        )

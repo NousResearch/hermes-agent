@@ -25,13 +25,21 @@ const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 // ever fires when the turn itself would have been abandoned server-side.
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
+export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
+
 export class HermesGateway extends JsonRpcGatewayClient {
   constructor() {
     super({
       closedErrorMessage: 'Hermes gateway connection closed',
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,
-      notConnectedErrorMessage: 'Hermes gateway is not connected',
+      notConnectedErrorMessage: GATEWAY_NOT_CONNECTED_MESSAGE,
+      // The channel already answered -32603; surface the crash in devtools like the dial-failure sink.
+      onRequestHandlerError: (error, request) =>
+        console.error(`[gateway] server request handler crashed for ${request.method} (${request.id}):`, error),
+      // The channel already answered -32601; note the missing registry in devtools.
+      onUnhandledRequest: request =>
+        console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
     })
   }
@@ -50,10 +58,37 @@ export function setApiRequestProfile(profile: null | string): void {
   _apiProfile = profile || null
 }
 
-export function profileScoped(profile?: null | string): { profile?: string } {
+// An explicit scope (string or object, not `undefined`/`null`) is a user
+// pointing a scope selector (Settings "Applies to", Capabilities, Messaging)
+// at another profile — a visible action whose cold dial may take the pool's
+// reserved foreground slot (#111651). The ambient path and the deliberate
+// `null` → primary path stay untagged (main's background default) so
+// hydration cannot consume that slot. The tag rides on the scope helper itself
+// so no api/ helper can carry a scope without it.
+export function profileScoped(profile?: null | string): { priority?: 'foreground'; profile?: string } {
   const selected = profile === undefined ? _apiProfile : profile
 
-  return selected ? { profile: selected } : {}
+  return {
+    ...(selected ? { profile: selected } : {}),
+    ...(profile == null ? {} : { priority: 'foreground' as const })
+  }
+}
+
+/** A session's OWNER as a request scope: a profile belongs to ONE gateway, so
+ *  a Bot on another connection is (its connection, its profile) — never the
+ *  active connection with the Bot's profile name. Missing halves fall back to
+ *  the ambient scope; an explicit connection — `'local'` included — overrides
+ *  the ambient tag `hermesApi` spreads underneath (as capabilityScoped does). */
+export interface OwnerScope {
+  connectionId?: null | string
+  profile?: null | string
+}
+
+export function ownerScoped(owner?: OwnerScope): { connectionId?: string; priority?: 'foreground'; profile?: string } {
+  return {
+    ...profileScoped(owner?.profile || undefined),
+    ...(owner?.connectionId ? { connectionId: owner.connectionId } : {})
+  }
 }
 
 /** Profile that profile-scoped REST/WS calls should target (null → primary).
@@ -86,16 +121,34 @@ export function connectionScoped(): { connectionId?: string } {
   return _apiConnectionId ? { connectionId: _apiConnectionId } : {}
 }
 
+// Whether the window's primary connection is the local pool. Pushed from
+// store/session's setConnection (same no-store-import contract as _apiProfile)
+// so api/ helpers can name the backend an UNTAGGED request lands on without
+// importing the heavy session store — which would close a module cycle
+// through @/hermes.
+let _apiLocalMode = false
+
+export function setApiRequestLocalMode(local: boolean): void {
+  _apiLocalMode = local
+}
+
+/** The connection an ambient (untagged) request is served by: the registry
+ *  tag when one is active, else `'local'` for the local pool. Identity only —
+ *  never send this as a request pin (an explicit `'local'` bypasses Electron's
+ *  legacy per-profile remote overrides). */
+export function ambientOwnerConnectionId(): string | undefined {
+  return _apiConnectionId ?? (_apiLocalMode ? 'local' : undefined)
+}
+
 /** Send a REST request to the renderer's active registry source. Request-level
  *  routing may override the active source for an explicitly-owned resource.
  *
  *  Helpers under `api/` go through here rather than calling the preload bridge
- *  directly, so the connection tag cannot be forgotten on a new one — with one
- *  exception. A capabilityScoped() helper must NOT: that scope says "the local
- *  pool" by omitting `connectionId` entirely, and an absent key cannot override
- *  the ambient tag spread underneath it, so a 'local' pin would silently route
- *  to whatever remote gateway happened to be active. Those helpers call the
- *  bridge directly and own their routing end to end. */
+ *  directly, so the connection tag cannot be forgotten on a new one.
+ *  capabilityScoped() now emits an explicit `connectionId` for EVERY object
+ *  pin — `'local'` included — so a pin always overrides the ambient tag spread
+ *  underneath it. (It used to omit the key for 'local', which made the pin
+ *  unable to beat the ambient tag; helpers then had to bypass this wrapper.) */
 export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
   return window.hermesDesktop.api<T>({ ...connectionScoped(), ...request })
 }
@@ -105,7 +158,7 @@ export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
 //
 // A profile is not a machine-global name — it belongs to ONE gateway. The
 // Capabilities surface can be pointed at any (connection, profile) pair
-// (SkillsView's scope selector, Bot Mode's fixedProfile/fixedConnection), so
+// (CapabilitiesView's scope selector, Bot Mode's fixedProfile/fixedConnection), so
 // its REST helpers accept either the legacy string form or an explicit scope
 // object:
 //
@@ -113,35 +166,47 @@ export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
 //     connection tag (connectionScoped, same contract the cron helpers adopted
 //     in #87882). Without the tag, a window activated onto a registered remote
 //     gateway read the LOCAL pool's skills/tools/MCP — the wrong machine.
-//   - `{ connectionId, profile }` → explicit pin. `''`/`'local'` connection
-//     ids mean the local pool and deliberately DROP the ambient connection
-//     tag, so a local-profile pick made while a remote gateway is active still
-//     routes to the local machine.
+//   - `{ connectionId, profile }` → explicit pin. A non-empty connection id —
+//     `'local'` INCLUDED — is sent through so Electron's registry resolver
+//     owns the routing. Dropping the `'local'` pin (the pre-#91564 behavior,
+//     when an absent id always meant the local pool) silently re-routes a
+//     "This device" pick to the registry PRIMARY once that primary is a
+//     remote/cloud/ssh gateway: the v1 fallback route treats a remote registry
+//     primary as global-remote, so the explicit pin is the ONLY way back to
+//     this machine (see apiRequestRegistryConnectionId in Electron main).
 export type ProfileScope = undefined | null | string | { connectionId?: null | string; profile?: null | string }
 
-export function capabilityScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
+export function capabilityScoped(scope?: ProfileScope): {
+  connectionId?: string
+  priority?: 'foreground'
+  profile?: string
+} {
   if (scope && typeof scope === 'object') {
     const profile = (scope.profile ?? '').trim()
     const connectionId = (scope.connectionId ?? '').trim()
 
     return {
       ...(profile ? { profile } : {}),
-      ...(connectionId && connectionId !== 'local' ? { connectionId } : {})
+      ...(connectionId ? { connectionId } : {}),
+      priority: 'foreground'
     }
   }
 
   return { ...profileScoped(scope), ...connectionScoped() }
 }
 
-/** Stable cache-key for a capability scope: `profile` for the local/legacy
- *  path, `connectionId::profile` for an explicit remote pin. Mirrors
- *  normalizeProfileKey for plain strings so existing keys stay byte-identical. */
+/** Stable cache-key for a capability scope: `profile` for the ambient/legacy
+ *  path, `connectionId::profile` for ANY explicit pin — `local` included. An
+ *  explicit "This device" pick and the ambient path are no longer guaranteed
+ *  to hit the same backend (a remote registry PRIMARY makes the ambient path
+ *  remote), so sharing the bare-profile cache row between them painted one
+ *  machine's config under the other's scope (AGENTS.md scope-in-key rule). */
 export function profileScopeKey(scope?: ProfileScope): string {
   if (scope && typeof scope === 'object') {
     const profile = (scope.profile ?? '').trim() || 'default'
     const connectionId = (scope.connectionId ?? '').trim()
 
-    return connectionId && connectionId !== 'local' ? `${connectionId}::${profile}` : profile
+    return connectionId ? `${connectionId}::${profile}` : profile
   }
 
   return (scope ?? '').trim() || 'default'

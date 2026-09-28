@@ -41,8 +41,3 @@ class TestPrependToolPaths:
         assert str(Path(sys.executable).parent) in parts
         assert str(Path.home() / ".local" / "bin") in parts
 
-    def test_managed_bin_leads_path(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
-        env = {"PATH": "/bin"}
-        result = tui_server._prepend_tool_paths(env)
-        assert result["PATH"].split(os.pathsep)[0] == str(tmp_path / "hh" / "bin")

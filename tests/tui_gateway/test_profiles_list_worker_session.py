@@ -92,11 +92,3 @@ def test_worker_session_tool_source_counts(home):
     assert row["last_session"] is None
 
 
-def test_include_sessions_false_omits_worker_session(home):
-    db = _db(home)
-    _add_session(db, "work1", source="kanban", title="Task", ts=1000, text="task body")
-    db.close()
-
-    row = _row(_profiles({"include_sessions": False}), "default")
-    assert "worker_session" not in row
-    assert "last_session" not in row

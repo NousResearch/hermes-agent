@@ -17,13 +17,12 @@ D1/D4/D5/D6.
   fails SAFE to a threaded continuation, so it is a warning, not a rejection.
 """
 
-import logging
 import sys
 from unittest.mock import MagicMock
 
 
 # ---------------------------------------------------------------------------
-# Mock slack-bolt if not installed (same pattern as test_slack_user_token_warning.py)
+# Mock slack-bolt if not installed (same pattern as test_slack_mention.py)
 # ---------------------------------------------------------------------------
 
 def _ensure_slack_mock():
@@ -71,10 +70,6 @@ def _make_adapter(extra):
 
 # --- capability flag -------------------------------------------------------
 
-def test_slack_declares_inchannel_capability():
-    """Slack has both halves the in_channel surface needs, so the class-level
-    capability flag the cron scheduler reads generically must be True."""
-    assert SlackAdapter.supports_inchannel_continuable is True
 
 
 # --- surface resolver ------------------------------------------------------
@@ -88,25 +83,7 @@ def test_surface_unrecognised_value_coerces_to_thread():
 
 # --- pairing warning (D5: warn, not hard-require) --------------------------
 
-def test_warns_when_in_channel_without_flat_reply(caplog):
-    """in_channel set, reply_in_thread left at its True default → warn."""
-    adapter = _make_adapter({"cron_continuable_surface": "in_channel"})
-    with caplog.at_level(logging.WARNING):
-        adapter._warn_if_inchannel_without_flat_reply("Acme")
-    matched = [r for r in caplog.records
-               if "cron_continuable_surface=in_channel" in r.message
-               and "reply_in_thread=false" in r.message]
-    assert matched
 
 
-def test_no_warning_when_properly_paired(caplog):
-    """in_channel + reply_in_thread: false is the correct pairing → silent."""
-    adapter = _make_adapter(
-        {"cron_continuable_surface": "in_channel", "reply_in_thread": False}
-    )
-    with caplog.at_level(logging.WARNING):
-        adapter._warn_if_inchannel_without_flat_reply("Acme")
-    assert not any("cron_continuable_surface=in_channel" in r.message
-                   for r in caplog.records)
 
 

@@ -183,36 +183,5 @@ def test_sigterm_with_kanban_task_env_terminates_quickly():
         _cleanup(proc)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="SIGTERM semantics differ on Windows; kanban dispatcher is POSIX-only",
-)
-def test_sigterm_without_kanban_task_env_uses_keyboard_interrupt_path():
-    """Without HERMES_KANBAN_TASK, the original KeyboardInterrupt path runs.
-
-    This is the contrast case proving the fix is gated on the env var: in
-    interactive ``hermes chat -q`` (no env var), behavior is unchanged. The
-    process MAY hang under non-daemon threads, but that's not a kanban-worker
-    concern. We just verify the handler logs the KeyboardInterrupt branch
-    rather than os._exit'ing.
-    """
-    proc = _spawn_synthetic({})
-    try:
-        os.kill(proc.pid, signal.SIGTERM)
-        # Wait a moment for the handler to react.
-        time.sleep(0.5)
-        # The process may or may not be dead depending on whether the
-        # KeyboardInterrupt unwinds cleanly. The behavioral guarantee is
-        # only that the env-gated path didn't fire.
-        try:
-            # Drain stdout up to whatever's available.
-            if proc.stdout is not None:
-                proc.stdout.close()
-            if proc.stderr is not None:
-                proc.stderr.close()
-        except Exception:
-            pass
-    finally:
-        _cleanup(proc)
 
 

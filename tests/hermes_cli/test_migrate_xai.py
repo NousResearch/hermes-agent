@@ -162,7 +162,7 @@ class TestBackup:
         result = apply_migration(trap_config, issues, backup=False)
         assert result.backup_path is None
         # No bak file in the directory
-        assert not list(trap_config.parent.glob("*.bak-pre-migrate-xai-*"))
+        assert not list(trap_config.parent.rglob("config.yaml.pre-migrate-xai.*"))
 
 
 

@@ -33,16 +33,19 @@ describe('voiceFieldVisible', () => {
     expect(voiceFieldVisible('stt.groq.model', config)).toBe(false)
   })
 
+  it('falls back to backend defaults when provider is unset so model fields stay visible', () => {
+    const unset = { tts: {}, stt: { enabled: true } } as unknown as HermesConfigRecord
+    expect(voiceFieldVisible('tts.edge.voice', unset)).toBe(true)
+    expect(voiceFieldVisible('tts.openai.voice', unset)).toBe(false)
+    expect(voiceFieldVisible('stt.local.model', unset)).toBe(true)
+    expect(voiceFieldVisible('stt.openai.model', unset)).toBe(false)
+  })
+
   it('hides every STT provider sub-field when STT is disabled', () => {
     const config = cfg({ stt: { enabled: false, provider: 'local', local: {} } })
     expect(voiceFieldVisible('stt.local.model', config)).toBe(false)
     // ...but the enable/provider toggles themselves stay visible.
     expect(voiceFieldVisible('stt.enabled', config)).toBe(true)
     expect(voiceFieldVisible('stt.provider', config)).toBe(true)
-  })
-
-  it('tracks a provider switch', () => {
-    expect(voiceFieldVisible('tts.openai.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(true)
-    expect(voiceFieldVisible('tts.edge.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(false)
   })
 })

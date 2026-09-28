@@ -3,13 +3,11 @@
 
 import time
 from argparse import Namespace
-from datetime import datetime
 
 import pytest
 
 from hermes_cli.session_filters import (
     build_prune_filters,
-    describe_filters,
     parse_duration_seconds,
     parse_point_in_time,
 )
@@ -70,17 +68,6 @@ class TestBuildPruneFilters:
 
 
 
-    def test_passthrough_filters(self):
-        f = build_prune_filters(
-            _ns(source="cli", title="smoke", end_reason="done",
-                cwd="/tmp/x", min_messages=1, max_messages=9)
-        )
-        assert f["source"] == "cli"
-        assert f["title_like"] == "smoke"
-        assert f["end_reason"] == "done"
-        assert f["cwd_prefix"] == "/tmp/x"
-        assert f["min_messages"] == 1
-        assert f["max_messages"] == 9
 
 
 

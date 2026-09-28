@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 
 // Match the POSIX fallback surface used by the Python terminal environment.
@@ -103,12 +104,23 @@ function buildDesktopBackendPath({
   return appendUniquePathEntries([hermesNodeDirs, venvBin, currentPath, saneEntries], { delimiter })
 }
 
-function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) }: any = {}) {
+function normalizeHermesHomeRoot(
+  hermesHome,
+  { pathModule = pathModuleForPlatform(process.platform), homedir = os.homedir() }: any = {}
+) {
   if (!hermesHome) {
     return hermesHome
   }
 
-  const resolved = pathModule.resolve(String(hermesHome))
+  // fish (and any shell when the value is quoted) hands a literal `~` through; path.resolve()
+  // would pin it under cwd and the Python backend inherits that absolute path via HERMES_HOME.
+  let raw = String(hermesHome)
+
+  if (raw === '~' || raw.startsWith('~/') || (pathModule === path.win32 && raw.startsWith('~\\'))) {
+    raw = pathModule.join(homedir, raw.slice(1))
+  }
+
+  const resolved = pathModule.resolve(raw)
   const parent = pathModule.dirname(resolved)
 
   if (pathModule.basename(parent).toLowerCase() === 'profiles') {

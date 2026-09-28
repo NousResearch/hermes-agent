@@ -1,0 +1,162 @@
+# Reusable runner for ONE macOS install/update combination.
+#
+# Two driver arms, one runs per dispatch (the other natively skips):
+#
+#   e2e (script arms)       tests/install/installer-script-e2e.sh - the
+#                           OS-agnostic git-redirect driver shared with
+#                           linux. installer-script(+desktop) installs,
+#                           script/updater/hermes-desktop-app-update
+#                           updates.
+#   gui-e2e (desktop arm)   tests/install/macos-desktop-e2e.sh - the
+#                           published Hermes-Setup.dmg, mounted and run,
+#                           then the app driven by Playwright for the
+#                           app-update methods.
+#
+# Method pairs without a driver arm yet NATIVELY SKIP (grey check, no
+# runner): the capability knowledge lives here, next to the drivers.
+
+name: install-e2e macos leg
+
+on:
+  workflow_call:
+    inputs:
+      install-method:
+        description: 'How OLD gets installed. Supported: installer-script, installer-script+desktop (curl | bash one-liner, optionally with --include-desktop) and desktop-installer@latest (the published Hermes-Setup.dmg).'
+        required: true
+        type: string
+      update-method:
+        description: 'How the install updates to HEAD. Script installs support hermes-update / installer-script / installer-script+desktop / hermes-desktop-app-update; dmg installs support open-app-update / hermes-desktop-app-update.'
+        required: true
+        type: string
+      install-ref:
+        description: 'What to install before updating: a branch, a tag, or a SHA reachable from main.'
+        required: false
+        type: string
+        default: refs/heads/main
+      tag-has-desktop:
+        description: "Whether install-ref ships the desktop app (apps/desktop). The caller annotates this from the tag's own tree; desktop-method legs from pre-desktop releases natively skip."
+        required: false
+        type: boolean
+        default: true
+      leg-id:
+        description: 'Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg''s logs + player artifacts so the report job can link a row to its zip.'
+        required: true
+        type: string
+      dmg-url:
+        description: 'Bootstrap dmg to install OLD with. Default: the latest published one — what a user downloads today.'
+        required: false
+        type: string
+        default: https://hermes-assets.nousresearch.com/Hermes-Setup.dmg
+      timeout-minutes:
+        description: 'Job timeout. App-update legs do a full Electron build.'
+        required: false
+        type: number
+        default: 60
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- arm 1: script installs (the shared OS-agnostic driver) --------------
+  e2e:
+    name: install & update
+    if: >-
+      (inputs.install-method == 'installer-script'
+        || (inputs.install-method == 'installer-script+desktop' && inputs.tag-has-desktop))
+      && (contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
+        || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update"]'), inputs.update-method) && inputs.tag-has-desktop))
+    uses: ./.github/workflows/install-e2e-run.yml
+    with:
+      install-method: ${{ inputs.install-method }}
+      update-method: ${{ inputs.update-method }}
+      install-ref: ${{ inputs.install-ref }}
+      tag-has-desktop: ${{ inputs.tag-has-desktop }}
+      leg-id: ${{ inputs.leg-id }}
+      runner: macos-latest
+      timeout-minutes: ${{ inputs.timeout-minutes }}
+
+  # ---- arm 2: the published dmg, then Playwright drives the app ------------
+  gui-e2e:
+    # Short static name on purpose: name expressions render UNEXPANDED on
+    # skipped jobs.
+    name: Hermes-Setup.dmg
+    if: >-
+      inputs.install-method == 'desktop-installer@latest' && inputs.tag-has-desktop
+      && contains(fromJSON('["open-app-update", "hermes-desktop-app-update", "hermes-update", "installer-script", "installer-script+desktop"]'), inputs.update-method)
+    runs-on: macos-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    steps:
+      # Full history: the driver bare-clones this checkout as the repo the
+      # installer/updater talk to.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Start screen recording
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: start
+          output: ${{ runner.temp }}/e2e-logs/recording.mkv
+
+      - name: Stage serve repo (main -> ${{ inputs.install-ref }})
+        run: |
+          set -euo pipefail
+          tests/install/macos-desktop-e2e.sh --phase stage \
+            --update-method '${{ inputs.update-method }}' \
+            --install-ref '${{ inputs.install-ref }}' \
+            --dmg-url '${{ inputs.dmg-url }}'
+        env:
+          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+
+      - name: Install ${{ inputs.install-ref }} via Hermes-Setup.dmg
+        run: |
+          set -euo pipefail
+          tests/install/macos-desktop-e2e.sh --phase install \
+            --update-method '${{ inputs.update-method }}' \
+            --install-ref '${{ inputs.install-ref }}' \
+            --dmg-url '${{ inputs.dmg-url }}'
+        env:
+          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+
+      - name: Update ${{ inputs.install-ref }} -> HEAD (${{ inputs.update-method }})
+        run: |
+          set -euo pipefail
+          tests/install/macos-desktop-e2e.sh --phase update \
+            --update-method '${{ inputs.update-method }}' \
+            --install-ref '${{ inputs.install-ref }}' \
+            --dmg-url '${{ inputs.dmg-url }}'
+        env:
+          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+
+      - name: Stop screen recording
+        if: always()
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: stop
+          output: ${{ runner.temp }}/e2e-logs/recording.mkv
+
+      - name: Remux recording for browser playback
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f "${{ runner.temp }}/e2e-logs/recording.mkv" ]; then
+            ffmpeg -y -hide_banner -loglevel error -i "${{ runner.temp }}/e2e-logs/recording.mkv" \
+              -c copy "${{ runner.temp }}/e2e-logs/recording.mp4"
+          fi
+
+      # Artifact names cannot contain '/'; install-ref may be a full ref.
+      - name: Build artifact name
+        id: artifact
+        if: always()
+        run: |
+          echo "name=install-e2e-logs-${{ inputs.leg-id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ runner.temp }}/e2e-logs
+          retention-days: 14
+          if-no-files-found: ignore

@@ -114,17 +114,6 @@ def _assert_identity(request, account_id="acct-attribution-test"):
     assert "extra_headers" not in json.loads(request.content)
 
 
-@pytest.mark.parametrize("legacy_enabled", [None, False, True])
-def test_required_identity_preserves_account_id(profile, legacy_enabled):
-    from agent.auxiliary_client import _codex_cloudflare_headers
-
-    _set_legacy_attribution(profile, legacy_enabled)
-    headers = _codex_cloudflare_headers(_jwt())
-
-    assert headers["originator"] == "hermes-agent"
-    assert headers["User-Agent"] == f"HermesAgent/{__version__}"
-    assert headers["ChatGPT-Account-ID"] == "acct-attribution-test"
-    assert "ChatGPT-Account-ID" not in _codex_cloudflare_headers("not-a-jwt")
 
 
 @pytest.mark.parametrize(
@@ -157,13 +146,11 @@ def test_new_identity_is_limited_to_the_official_endpoint(base_url, attributed):
     )
 
 
-@pytest.mark.parametrize("legacy_enabled", [None, False, True])
 def test_primary_client_and_credential_rebuild_send_expected_headers(
-    profile, wire, legacy_enabled,
+    profile, wire,
 ):
     from run_agent import AIAgent
 
-    _set_legacy_attribution(profile, legacy_enabled)
     agent = AIAgent(
         api_key=_jwt(),
         base_url=CODEX_URL,
@@ -199,13 +186,11 @@ def test_primary_client_and_credential_rebuild_send_expected_headers(
             client.close()
 
 
-@pytest.mark.parametrize("legacy_enabled", [None, False, True])
 def test_auxiliary_raw_and_async_clients_send_expected_headers(
-    profile, wire, monkeypatch, legacy_enabled,
+    profile, wire, monkeypatch,
 ):
     from agent import auxiliary_client
 
-    _set_legacy_attribution(profile, legacy_enabled)
     monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p: (False, None))
     monkeypatch.setattr(auxiliary_client, "_read_codex_access_token", _jwt)
 

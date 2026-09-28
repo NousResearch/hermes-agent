@@ -347,19 +347,7 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
 
   const code = String(children).replace(/\n$/, '')
 
-  const highlighted = (
-    <ShikiHighlighter
-      addDefaultStyles={false}
-      as="div"
-      defaultColor="light-dark()"
-      delay={80}
-      language={language}
-      showLanguage={false}
-      theme={SHIKI_THEME}
-    >
-      {code}
-    </ShikiHighlighter>
-  )
+  const highlighted = <ShikiHighlighter code={code} language={language} theme={SHIKI_THEME} />
 
   // ```mermaid / ```svg fences route to the shared lazy renderers (same
   // registry the chat transcript uses); everything else stays on Shiki.
@@ -661,17 +649,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
               })}
             </div>
             <div className="preview-source-code min-w-0 [&_pre]:m-0" data-selectable-text="true">
-              <ShikiHighlighter
-                addDefaultStyles={false}
-                as="div"
-                defaultColor="light-dark()"
-                delay={80}
-                language={language || 'text'}
-                showLanguage={false}
-                theme={SHIKI_THEME}
-              >
-                {chunk.text}
-              </ShikiHighlighter>
+              <ShikiHighlighter code={chunk.text} language={language || 'text'} theme={SHIKI_THEME} />
             </div>
           </Fragment>
         ))}
@@ -683,7 +661,17 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
 
 export type PreviewViewMode = 'diff' | 'rendered' | 'source'
 
-export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
+export function LocalFilePreview({
+  onSelectRendered,
+  reloadKey,
+  target
+}: {
+  /** Present when the pane can render this file live (HTML). Adds the
+   *  `rendered` mode to the switcher and routes its selection to the pane. */
+  onSelectRendered?: () => void
+  reloadKey: number
+  target: PreviewTarget
+}) {
   const { t } = useI18n()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
@@ -728,8 +716,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     baselineRef.current = ''
   }, [filePath, reloadKey])
 
-  // HTML files are rendered as source code, not in a webview - so they take
-  // the same path as plain text files. `previewKind === 'binary'` arrives
+  // In source mode HTML files take the same path as plain text files; the
+  // pane owns the rendered (webview) mode. `previewKind === 'binary'` arrives
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
@@ -1103,7 +1091,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     // Order the toggle reads left→right; default lands on the most useful view.
     const modes: PreviewViewMode[] = []
 
-    if (isMarkdown) {
+    if (isMarkdown || onSelectRendered) {
       modes.push('rendered')
     }
 
@@ -1114,7 +1102,17 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     }
 
     const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
-    const mode = userMode && modes.includes(userMode) ? userMode : autoMode
+    // The pane hands an HTML file over only once Source was picked; that pick
+    // outranks the diff-first default.
+    const mode = userMode && modes.includes(userMode) ? userMode : onSelectRendered ? 'source' : autoMode
+
+    const selectMode = (next: PreviewViewMode) => {
+      if (next === 'rendered' && onSelectRendered) {
+        onSelectRendered()
+      } else {
+        setUserMode(next)
+      }
+    }
 
     return (
       <div
@@ -1135,7 +1133,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         <PreviewModeSwitcher
           active={mode}
           modes={modes}
-          onSelect={setUserMode}
+          onSelect={selectMode}
           trailing={
             canEdit ? (
               <Tip label={`${t.preview.edit} (e)`}>

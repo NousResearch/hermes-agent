@@ -259,27 +259,6 @@ test('update-all deduplicates the same recovery scope and keeps primary preceden
   )
 })
 
-test('POSIX managed launcher is detached, correlation-scoped, and never publishes handoff exit 75', () => {
-  const command = buildPosixManagedUpdateLaunch(
-    {
-      ssh: { exec: async () => '' },
-      platform: 'Linux',
-      hermesPath: '~/.local/bin/hermes',
-      hermesHome: '~/.hermes'
-    },
-    CORRELATION
-  )
-
-  assert.match(command, /setsid/)
-  assert.match(command, /update --yes/)
-  assert.doesNotMatch(command, /update --yes --gateway/)
-  assert.match(command, new RegExp(`HERMES_UPDATE_CORRELATION_ID=.*${CORRELATION}`))
-  assert.match(command, /\[ "\$rc" -ne 75 \]/)
-  assert.match(command, new RegExp(`\\.update_exit_code\\.${CORRELATION}`))
-  assert.match(command, new RegExp(`\\.update_launch_intent\\.${CORRELATION}`))
-  assert.match(command, /while \[ ! -e/)
-})
-
 test('POSIX managed launcher executes the updater command and atomically publishes its status', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-launch-'))
 

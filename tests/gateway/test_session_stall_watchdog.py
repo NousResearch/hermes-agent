@@ -11,7 +11,6 @@ import pytest
 from agent.session_activity import ActivityProvenance, build_activity_snapshot
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session_stall import (
-    format_session_stall_notification,
     resolve_session_idle_seconds_from_activity,
     should_clear_session_stall_notification,
     should_emit_session_stall_notification,
@@ -117,11 +116,6 @@ def test_should_clear_holds_latch_when_idle_unknown():
     )
 
 
-def test_format_session_stall_notification_minutes():
-    msg = format_session_stall_notification(125)
-    assert "2 min ago" in msg
-    assert "/new" in msg
-    assert format_session_stall_notification(30).count("1 min ago") == 1
 
 
 def test_resolve_idle_uses_shared_activity_snapshot_only():
@@ -164,7 +158,9 @@ def _runner_for_stall(adapter: _FakeAdapter) -> GatewayRunner:
 
 
 def _pending_event(chat_id: str = "chat-1", thread_id: str | None = None):
-    source = SimpleNamespace(chat_id=chat_id, thread_id=thread_id, platform=None)
+    from gateway.session import SessionSource
+    from gateway.config import Platform
+    source = SessionSource(chat_id=chat_id, thread_id=thread_id, platform=Platform.TELEGRAM)
     return SimpleNamespace(text="follow-up", source=source, timestamp=time.time())
 
 
@@ -286,7 +282,7 @@ async def test_check_session_stalls_queued_events_overflow_notifies():
     event = _pending_event()
     runner._queued_events[session_key] = [event]
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
 
     assert await runner._check_session_stalls(60) == 1
     assert adapter.sent and "/new" in adapter.sent[0]["content"]
@@ -454,12 +450,18 @@ def test_resolve_idle_rejects_nonfinite_seconds_since_activity():
     assert idle == 15.0
 
 
-def test_session_stall_timeout_in_default_config():
-    from hermes_cli.config import DEFAULT_CONFIG
+def test_resolve_idle_rejects_boolean_seconds_and_uses_timestamp():
+    now = 1_000_000.0
+    idle = resolve_session_idle_seconds_from_activity(
+        {
+            "seconds_since_activity": True,
+            "last_activity_ts": now - 3,
+        },
+        now=now,
+    )
+    assert idle == 3.0
 
-    timeout = DEFAULT_CONFIG["agent"]["session_stall_timeout"]
-    assert isinstance(timeout, (int, float))
-    assert timeout > 0  # enabled by default; 0 would disable the watchdog
+
 
 
 class _NeverResolvingAdapter:
@@ -515,3 +517,32 @@ async def test_check_session_stalls_bounds_wedged_send(monkeypatch):
     assert sent2 == 0  # healthy already latched; wedged timed out again
     assert wedged.send_attempts == 2
     assert wedged_key not in runner._session_stall_notified
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setting", [None, False, True])
+async def test_stall_policy_owner_latch_and_source_log_conservation(tmp_path, monkeypatch, caplog, setting):
+    import yaml
+    owner, launch = tmp_path / "owner", tmp_path / "launch"
+    owner.mkdir(); launch.mkdir()
+    (owner / "config.yaml").write_text(yaml.safe_dump({} if setting is None else {"display": {"suppress_warning_notifications": setting}}))
+    (launch / "config.yaml").write_text(yaml.safe_dump({"display": {"suppress_warning_notifications": setting is not True}}))
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    for home, muted in [(owner, setting is True), (launch, setting is not True), (owner, setting is True)]:
+        adapter = _FakeAdapter()
+        runner = _runner_for_stall(adapter)
+        runner._resolve_profile_home_for_source = lambda source: home
+        key = "agent:default:telegram:dm:policy"
+        adapter._pending_messages[key] = _pending_event()
+        agent = _FakeAgent(time.time() - 120)
+        runner._running_agents[key] = agent
+        assert await runner._check_session_stalls(60) == (0 if muted else 1)
+        assert runner._session_stall_notified[key] is True
+        assert await runner._check_session_stalls(60) == 0
+        assert "Session stall detected" in caplog.text
+        agent._last_activity_ts = time.time()
+        assert await runner._check_session_stalls(60) == 0
+        assert key not in runner._session_stall_notified
+        agent._last_activity_ts = time.time() - 120
+        assert await runner._check_session_stalls(60) == (0 if muted else 1)
+        assert len(adapter.sent) == (0 if muted else 2)

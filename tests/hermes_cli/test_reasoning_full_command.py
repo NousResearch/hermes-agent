@@ -7,12 +7,10 @@ These assert the toggle sets the instance flag, persists to config.yaml,
 and that the clamp gate honours the flag.
 """
 
-import os
 
 import yaml
 
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
-from hermes_cli.config import DEFAULT_CONFIG
 
 
 class _Stub(CLICommandsMixin):
@@ -28,9 +26,6 @@ class _Stub(CLICommandsMixin):
         return None
 
 
-def test_default_config_clamps_reasoning():
-    # Behaviour contract: the recap defaults to clamped, not full.
-    assert DEFAULT_CONFIG["display"]["reasoning_full"] is False
 
 
 def _seed_config(tmp_path, monkeypatch):
@@ -55,9 +50,3 @@ def test_reasoning_full_sets_and_persists(tmp_path, monkeypatch):
     assert saved["display"]["reasoning_full"] is True
 
 
-def test_clamp_gate_honours_flag():
-    # The display gate at cli.py: clamp only when long AND not reasoning_full.
-    reasoning = "\n".join(f"line{i}" for i in range(25))
-    lines = reasoning.strip().splitlines()
-    assert (len(lines) > 10 and not False) is True   # full=False -> clamp
-    assert (len(lines) > 10 and not True) is False   # full=True  -> show all

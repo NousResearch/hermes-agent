@@ -271,7 +271,8 @@ class TestRedecoratePromptCacheOnPolicyChange:
             {"role": "system", "content": prompt},
             {"role": "user", "content": "task"},
             {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "task\n\n" + guidance},
+            {"role": "user", "content": "task"},
+            {"role": "user", "content": guidance},
         ]
         decorated = apply_anthropic_cache_control(base, native_anthropic=True)
 

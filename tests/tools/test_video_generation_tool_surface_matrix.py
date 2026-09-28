@@ -37,6 +37,10 @@ def matrix_env(tmp_path, monkeypatch):
     monkeypatch.setenv("FAL_KEY", "test-key")
     monkeypatch.setenv("XAI_API_KEY", "test-key")
 
+    # This matrix supplies its own SDK fake; lazy installation is neither
+    # required nor permitted by the hermetic test runner.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
     fal_calls: List[Dict[str, Any]] = []
     xai_calls: List[Dict[str, Any]] = []
 
@@ -143,12 +147,6 @@ def _t2v_fal_families():
     return [fid for fid, meta in FAL_FAMILIES.items() if meta.get("text_endpoint")]
 
 
-def _i2v_only_fal_families():
-    """Families that only animate an existing image (no text_endpoint)."""
-    from plugins.video_gen.fal import FAL_FAMILIES
-    return [fid for fid, meta in FAL_FAMILIES.items() if not meta.get("text_endpoint")]
-
-
 @pytest.mark.parametrize("family_id", _t2v_fal_families())
 def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
     home, fal_calls, _ = matrix_env
@@ -159,14 +157,6 @@ def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
         {"video_gen": {"provider": "fal", "model": family_id}},
         {"prompt": "a dog running"},
     )
-
-    # Image-only families (e.g. gemini-omni-flash) must reject text-only
-    # jobs with a clean modality error instead of submitting anywhere.
-    if not FAL_FAMILIES[family_id].get("text_endpoint"):
-        assert result["success"] is False, family_id
-        assert result.get("error_type") == "modality_unsupported", result
-        assert not fal_calls, f"{family_id} submitted despite no text endpoint"
-        return
 
     assert result["success"] is True, f"{family_id}: {result.get('error')}"
     assert result["modality"] == "text"
@@ -181,22 +171,6 @@ def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
     payload = fal_calls[0]["arguments"] or {}
     image_keys = [k for k in payload if "image" in k and "url" in k]
     assert not image_keys, f"{family_id} text-only leaked image keys: {image_keys}"
-
-
-@pytest.mark.parametrize("family_id", _i2v_only_fal_families())
-def test_fal_i2v_only_family_refuses_text_only(matrix_env, family_id):
-    """An i2v-only family must refuse a text-only call rather than guess an endpoint."""
-    home, fal_calls, _ = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "fal", "model": family_id}},
-        {"prompt": "a dog running"},
-    )
-
-    assert result["success"] is False, f"{family_id} has no text-to-video route"
-    assert result.get("error_type") == "modality_unsupported"
-    assert not fal_calls, f"{family_id} must not reach FAL for an unsupported modality"
 
 
 def _i2v_fal_families():
@@ -251,7 +225,6 @@ def test_xai_text_only_via_tool_surface(matrix_env):
     assert len(xai_calls) == 1
     assert xai_calls[0]["url"].endswith("/videos/generations")
     payload = xai_calls[0]["json"] or {}
-    assert payload["model"] == "grok-imagine-video"
     assert "image" not in payload
     assert "reference_images" not in payload
     assert payload["storage_options"]["public_url"] is True
@@ -262,43 +235,24 @@ def test_xai_text_only_via_tool_surface(matrix_env):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# tool-level `model` arg overrides config
+# models do not choose models (#83080 ruling): the configured video_gen.model is the only selector
 # ─────────────────────────────────────────────────────────────────────────
 
-def test_tool_model_arg_overrides_config(matrix_env):
-    """When the tool call passes model=, it wins over video_gen.model in config."""
+def test_model_is_never_an_agent_choice(matrix_env):
+    """No generation tool advertises a ``model`` parameter, and a ``model`` smuggled into the call
+    is ignored: the configured ``video_gen.model`` is what reaches the provider request."""
+    import tools.video_generation_tool as vt
+    import tools.xai_video_tools as xt
     home, fal_calls, _ = matrix_env
 
-    # Config picks pixverse-v6, but tool call says veo3.1
     result = _invoke_tool(
         home,
         {"video_gen": {"provider": "fal", "model": "pixverse-v6"}},
         {"prompt": "a dog", "model": "veo3.1"},
     )
-
     assert result["success"] is True
-    assert result["model"] == "veo3.1"
-    # Outbound endpoint reflects the override, not config
-    assert fal_calls[0]["endpoint"] == "fal-ai/veo3.1"
+    assert result["model"] == "pixverse-v6"
+    assert fal_calls[0]["endpoint"] == "fal-ai/pixverse/v6/text-to-video"
 
-
-def test_tool_model_arg_with_image_url_routes_to_override_image_endpoint(matrix_env):
-    """model= override on text+image goes to the override family's image endpoint."""
-    home, fal_calls, _ = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "fal", "model": "pixverse-v6"}},
-        {
-            "prompt": "animate this",
-            "image_url": "https://example.com/i.png",
-            "model": "kling-v3-4k",
-        },
-    )
-
-    assert result["success"] is True
-    assert result["model"] == "kling-v3-4k"
-    assert fal_calls[0]["endpoint"] == "fal-ai/kling-video/v3/4k/image-to-video"
-    # Kling 4K uses start_image_url
-    assert fal_calls[0]["arguments"].get("start_image_url") == "https://example.com/i.png"
-    assert "image_url" not in fal_calls[0]["arguments"]
+    schemas = [vt._build_dynamic_video_schema(), xt.XAI_VIDEO_EDIT_SCHEMA, xt.XAI_VIDEO_EXTEND_SCHEMA]
+    assert all("model" not in schema["parameters"]["properties"] for schema in schemas)

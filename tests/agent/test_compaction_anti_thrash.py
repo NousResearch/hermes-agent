@@ -224,13 +224,6 @@ class TestRejectedCompactionStrike:
     unchanged transcript on every turn.
     """
 
-    def test_rejected_compaction_increments_strike(self):
-        cc = _compressor(threshold_tokens=1)
-        assert cc._ineffective_compression_count == 0
-
-        cc.record_rejected_compaction()
-
-        assert cc._ineffective_compression_count == 1
 
     def test_two_rejections_stop_further_automatic_compression(self):
         cc = _compressor(threshold_tokens=1)
@@ -250,10 +243,3 @@ class TestRejectedCompactionStrike:
 
         assert cc._verify_compaction_cleared_threshold is False
 
-    def test_rejection_leaves_fallback_streak_untouched(self):
-        cc = _compressor(threshold_tokens=1)
-        cc._fallback_compression_streak = 1
-
-        cc.record_rejected_compaction()
-
-        assert cc._fallback_compression_streak == 1

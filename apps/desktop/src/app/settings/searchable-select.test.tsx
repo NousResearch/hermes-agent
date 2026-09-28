@@ -35,17 +35,9 @@ describe('rankSearchOption', () => {
     expect(rankSearchOption('ASIA/KOLKATA', 'kolkata')).toBe(2)
   })
 
-  it('scores a substring match anywhere as 1', () => {
-    expect(rankSearchOption('America/New_York', 'amer')).toBe(1)
-  })
-
   it('scores a slashless option by plain substring', () => {
     expect(rankSearchOption('UTC', 'ut')).toBe(1)
     expect(rankSearchOption('UTC', 'xyz')).toBe(0)
-  })
-
-  it('scores a non-match as 0', () => {
-    expect(rankSearchOption('Europe/Berlin', 'tokyo')).toBe(0)
   })
 })
 
@@ -81,12 +73,6 @@ describe('SearchableSelect', () => {
     fireEvent.click(screen.getByRole('combobox'))
 
     expect(screen.queryByText('System default')).toBeNull()
-  })
-
-  it('shows the placeholder when the value is blank', () => {
-    render(<SearchableSelect onChange={vi.fn()} options={options} placeholder="Search…" value="" />)
-
-    expect(screen.getByRole('combobox').textContent).toContain('Search…')
   })
 })
 

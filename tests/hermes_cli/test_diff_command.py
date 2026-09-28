@@ -36,6 +36,9 @@ class _Mgr:
         self._result = result
         self.calls = []
 
+    def unsupported_backend_reason(self, task_id="default"):
+        return None
+
     def session_diff(self, cwd):
         self.calls.append(cwd)
         return self._result

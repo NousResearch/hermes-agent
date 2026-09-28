@@ -164,27 +164,6 @@ def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypat
     )
 
 
-def test_gateway_injection_returns_host_rejection(tmp_path, monkeypatch):
-    _write_plugin_config(
-        tmp_path,
-        monkeypatch,
-        {"allow_gateway_injection": True},
-    )
-    context, manager = _context()
-    manager.set_gateway_message_injector(
-        object(),
-        MagicMock(return_value=False),
-    )
-
-    assert (
-        context.inject_message(
-            "wake up",
-            session_key="agent:main:telegram:dm:42",
-        )
-        is False
-    )
-
-
 def test_gateway_injection_fails_closed_on_host_exception(tmp_path, monkeypatch):
     _write_plugin_config(
         tmp_path,

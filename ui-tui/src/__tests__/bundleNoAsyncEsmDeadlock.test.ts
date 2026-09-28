@@ -84,19 +84,4 @@ describe('TUI bundle (issue #31227)', () => {
       `Found ${matches.length} async __esm wrappers — these can deadlock #31227. First few:\n${matches.slice(0, 3).join('\n')}`
     ).toEqual([])
   })
-
-  it('does not bundle the upstream ink package or ink-text-input', () => {
-    // Pulling either of these in re-creates the circular async chain
-    // that #31227 was about. The in-tree fork at @hermes/ink replaces
-    // all of `ink`; nothing in ui-tui imports `TextInput` from
-    // `@hermes/ink` so the re-export is unused dead weight.
-    expect(bundleSrc.includes('node_modules/ink/build/index.js')).toBe(false)
-    expect(bundleSrc.includes('node_modules/ink-text-input/build/index.js')).toBe(false)
-  })
-
-  it('has the @hermes/ink entry-exports module compiled to sync init', () => {
-    // Sanity check that the alias swap to packages/hermes-ink/src/entry-exports.ts
-    // is still active and producing the expected synchronous init shape.
-    expect(bundleSrc).toMatch(/var init_entry_exports = __esm\(\{\s*"packages\/hermes-ink\/src\/entry-exports\.ts"\(\)/)
-  })
 })

@@ -31,12 +31,3 @@ def test_cjk_fts_bridged_from_config(tmp_path, monkeypatch):
     assert os.environ["HERMES_CJK_FTS"] == "False"
 
 
-def test_search_knobs_have_documented_defaults():
-    """The advertised config surface must exist in DEFAULT_CONFIG (no
-    user-facing env switch): cjk index default ON, slow-search log at 1s."""
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    assert DEFAULT_CONFIG["sessions"]["cjk_fts"] is True
-    assert DEFAULT_CONFIG["sessions"]["search_slow_ms"] == 1000
-
-

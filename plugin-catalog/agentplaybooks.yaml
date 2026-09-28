@@ -1,0 +1,19 @@
+name: agentplaybooks
+repo: https://github.com/matebenyovszky/agentplaybooks
+sha: e29e1765c5dd6781b3da46408409c67e960a7e21
+subdir: packages/hermes-memory/agentplaybooks
+description: "Private, portable AgentPlaybooks memory: native recall, explicit memory-write mirroring, archive and history. Disclosure — hosted memory: each turn's query is sent to agentplaybooks.ai for recall and explicit built-in memory writes are mirrored there; only https (or localhost http) endpoints are accepted."
+maintainer: matebenyovszky
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+version: "0.1.0"
+docs_url: https://github.com/matebenyovszky/agentplaybooks/tree/e29e1765c5dd6781b3da46408409c67e960a7e21/packages/hermes-memory/agentplaybooks
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - AGENTPLAYBOOKS_MEMORY_API_KEY

@@ -8,9 +8,12 @@ uses.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from pathlib import Path
+
+import pytest
 
 from hermes_cli.gitlock import (
     STALE_TMP_PACK_MIN_AGE_SECONDS,
@@ -78,17 +81,55 @@ def test_skips_sweep_while_git_is_running(tmp_path, monkeypatch):
     assert p.exists()
 
 
+def test_bare_repo_pack_dir_is_swept(tmp_path, monkeypatch):
+    """A bare repo (e.g. the checkpoint store) has no .git/ layer — objects/pack hangs directly
+    off the repo root, where a gc killed mid-repack strands the same debris (#115410)."""
+    monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
+    pack = tmp_path / "objects" / "pack"
+    pack.mkdir(parents=True)
+    debris = pack / "tmp_pack_killedGc"
+    debris.write_bytes(b"x" * 256)
+    _age(debris, STALE_TMP_PACK_MIN_AGE_SECONDS + 60)
+
+    removed = clear_stale_tmp_packs(tmp_path)
+    assert removed == [str(debris)]
+    assert not debris.exists()
+
+
 def test_no_git_dir_is_a_noop(tmp_path):
     assert clear_stale_tmp_packs(tmp_path) == []
 
 
-def test_never_raises_on_unlink_failure(tmp_path, monkeypatch):
+
+
+@pytest.mark.windows_only
+def test_windows_readonly_debris_is_cleared(tmp_path, monkeypatch):
+    """git renames its transfer temps into place read-only, and Windows refuses to unlink a
+    read-only file with EACCES — the exact rule that let aborted-fetch debris survive this
+    sweep for months (#116384). Runs on a real Windows host: no faked unlink, no faked OS."""
     repo = _mkrepo(tmp_path)
     monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
     pack = repo / ".git" / "objects" / "pack"
-    p = pack / "tmp_pack_stuck"
-    p.write_bytes(b"x")
-    _age(p, STALE_TMP_PACK_MIN_AGE_SECONDS + 60)
+
+    debris = pack / "tmp_pack_ReadOnly"
+    debris.write_bytes(b"x" * 128)
+    _age(debris, STALE_TMP_PACK_MIN_AGE_SECONDS + 60)
+    os.chmod(debris, 0o444)  # read-only, as git writes its pack temps
+
+    removed = clear_stale_tmp_packs(repo)
+    assert removed == [str(debris)]  # write bit cleared first, then unlinked
+    assert not debris.exists()
+
+
+def test_unlink_failure_is_surfaced_at_warning(tmp_path, monkeypatch, caplog):
+    """The skip used to be logged at debug, which hid the months-long Windows no-op sweep;
+    a cleaner that fails silently is worse than none, so every skip must be visible (#116384)."""
+    repo = _mkrepo(tmp_path)
+    monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
+    pack = repo / ".git" / "objects" / "pack"
+    stuck = pack / "tmp_pack_stuck"
+    stuck.write_bytes(b"x")
+    _age(stuck, STALE_TMP_PACK_MIN_AGE_SECONDS + 60)
 
     real_unlink = Path.unlink
 
@@ -98,4 +139,10 @@ def test_never_raises_on_unlink_failure(tmp_path, monkeypatch):
         return real_unlink(self, *a, **k)
 
     monkeypatch.setattr(Path, "unlink", failing_unlink)
-    assert clear_stale_tmp_packs(repo) == []  # skipped, not raised
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.gitlock"):
+        assert clear_stale_tmp_packs(repo) == []
+    assert any(
+        r.levelname == "WARNING" and "tmp_pack_stuck" in r.getMessage()
+        for r in caplog.records
+    )

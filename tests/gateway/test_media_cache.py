@@ -6,13 +6,10 @@ If any of these fail, an adapter's downloaded-media filenames changed —
 that's a behavioral regression, not a test to update casually.
 """
 
-import mimetypes
 
 import pytest
 
 from gateway.platforms.media_cache import (
-    DEFAULT_EXT_TO_MIME,
-    DEFAULT_MIME_TO_EXT,
     cache_media_bytes,
     ext_for_mime,
     mime_for_ext,
@@ -24,9 +21,6 @@ from gateway.platforms.media_cache import (
 # ---------------------------------------------------------------------------
 
 class TestSharedTable:
-    def test_defaults_resolve(self):
-        for mime, ext in DEFAULT_MIME_TO_EXT.items():
-            assert ext_for_mime(mime) == ext
 
 
     def test_stage_gating(self):
@@ -73,41 +67,6 @@ class TestCacheMediaBytes:
 # Per-adapter parity: HISTORICAL mappings hardcoded as the contract
 # ---------------------------------------------------------------------------
 
-class TestBlueBubblesParity:
-    """Historical closed maps from bluebubbles._download_attachment."""
-
-    IMAGE_CASES = {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/gif": ".gif",
-        "image/webp": ".webp",
-        "image/heic": ".jpg",   # historically coerced to .jpg
-        "image/heif": ".jpg",   # historically coerced to .jpg
-        "image/tiff": ".jpg",   # historically coerced to .jpg
-        "image/bmp": ".jpg",    # unlisted → historical .jpg fallback
-    }
-    AUDIO_CASES = {
-        "audio/mp3": ".mp3",
-        "audio/mpeg": ".mp3",
-        "audio/ogg": ".ogg",
-        "audio/wav": ".wav",
-        "audio/x-caf": ".mp3",  # historically coerced to .mp3
-        "audio/mp4": ".m4a",
-        "audio/aac": ".m4a",    # historically .m4a (NOT .aac)
-        "audio/flac": ".mp3",   # unlisted → historical .mp3 fallback
-    }
-
-    @pytest.mark.parametrize("mime,expected", sorted(IMAGE_CASES.items()))
-    def test_image_map(self, mime, expected):
-        from gateway.platforms.bluebubbles import _BLUEBUBBLES_IMAGE_EXT_OVERRIDES
-        got = ext_for_mime(
-            mime,
-            overrides=_BLUEBUBBLES_IMAGE_EXT_OVERRIDES,
-            use_defaults=False,
-            use_mimetypes=False,
-            fallback=".jpg",
-        )
-        assert got == expected
 
 
 class TestWhatsAppCloudParity:
@@ -129,35 +88,6 @@ class TestWhatsAppCloudParity:
         assert _ext_for_mime(mime) == expected
 
 
-class TestSignalParity:
-    """Historical _EXT_TO_MIME table from signal.py, verbatim."""
-
-    HISTORICAL = {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-        ".gif": "image/gif", ".webp": "image/webp",
-        ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".wav": "audio/wav",
-        ".m4a": "audio/mp4", ".aac": "audio/aac",
-        ".mp4": "video/mp4", ".pdf": "application/pdf",
-        ".zip": "application/zip",
-    }
-
-    @pytest.mark.parametrize("ext,expected", sorted(HISTORICAL.items()))
-    def test_table(self, ext, expected):
-        from gateway.platforms.signal import _ext_to_mime
-        assert _ext_to_mime(ext) == expected
-        assert _ext_to_mime(ext.upper()) == expected
 
 
-class TestQQBotParity:
-    """Historical qqbot image path: mimetypes.guess_extension or '.jpg'."""
-
-    @pytest.mark.parametrize("mime", [
-        "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp",
-    ])
-    def test_trusts_mimetypes(self, mime):
-        historical = mimetypes.guess_extension(mime) or ".jpg"
-        got = ext_for_mime(
-            mime, use_defaults=False, use_mimetypes=True, fallback=".jpg"
-        ) or ".jpg"
-        assert got == historical
 

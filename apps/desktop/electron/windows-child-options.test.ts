@@ -13,10 +13,6 @@ test('hiddenWindowsChildOptions preserves an existing windowsHide:false on Windo
   assert.deepEqual(hiddenWindowsChildOptions({ windowsHide: false }, true), { windowsHide: false })
 })
 
-test('hiddenWindowsChildOptions preserves an existing windowsHide:true on Windows', () => {
-  assert.deepEqual(hiddenWindowsChildOptions({ windowsHide: true }, true), { windowsHide: true })
-})
-
 test('hiddenWindowsChildOptions leaves options unchanged off Windows', () => {
   assert.deepEqual(hiddenWindowsChildOptions({}, false), {})
   assert.deepEqual(hiddenWindowsChildOptions({ stdio: 'ignore' }, false), { stdio: 'ignore' })
@@ -28,13 +24,6 @@ test('hiddenWindowsChildOptions merges windowsHide alongside other options on Wi
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true
   })
-})
-
-test('hiddenWindowsChildOptions defaults isWindows from process.platform when omitted', () => {
-  const result = hiddenWindowsChildOptions({})
-  const expectedHide = process.platform === 'win32'
-
-  assert.equal(Boolean(result.windowsHide), expectedHide)
 })
 
 function makeChild(overrides: Partial<{ pid: number | null; killed: boolean }> = {}) {

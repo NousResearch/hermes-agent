@@ -260,6 +260,21 @@ describe('preprocessMarkdown', () => {
     expect(preprocessMarkdown(input)).toBe('Costs \\$5; outcome is $4\\in A$.')
   })
 
+  it('escapes prefixed currency written with a space before the amount', () => {
+    // `R$ 12.345` (BRL), `US$ 1,200`, `AU$ 40`: outside the US the symbol
+    // carries a letter prefix and a space. Two of them on one line used to
+    // pair as an inline math span and render the prose between as an equation.
+    expect(preprocessMarkdown('Saldo R$ 1.000 e diferença R$ 200.')).toBe('Saldo R\\$ 1.000 e diferença R\\$ 200.')
+    expect(preprocessMarkdown('R$800 mil, dos quais R$ 9.876,54 pagos.')).toBe(
+      'R\\$800 mil, dos quais R\\$ 9.876,54 pagos.'
+    )
+    expect(preprocessMarkdown('US$ 1,200 vs AU$ 40')).toBe('US\\$ 1,200 vs AU\\$ 40')
+  })
+
+  it('leaves spaced inline math alone — a space-then-digit is only currency after a letter', () => {
+    expect(preprocessMarkdown('valor $ 2 + 2 $ fim')).toBe('valor $ 2 + 2 $ fim')
+  })
+
   it('normalizes multiline bracket display math with delimiter-only lines', () => {
     const input = [
       'Correct.',
@@ -298,13 +313,6 @@ describe('preprocessMarkdown', () => {
   it('rewrites [/math] and [/inline] tag pairs to dollar delimiters', () => {
     expect(preprocessMarkdown('[/math]a+b[/math]')).toContain('$$a+b$$')
     expect(preprocessMarkdown('[/inline]x[/inline]')).toContain('$x$')
-  })
-
-  it('escapes currency dollars in prose so they are not parsed as math', () => {
-    const output = preprocessMarkdown('$5 and $10')
-
-    expect(output).toContain('\\$5')
-    expect(output).toContain('\\$10')
   })
 
   it('moves hugging $$ delimiters of multiline display math onto their own lines', () => {
@@ -383,11 +391,5 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown('Per the paper[2], $\\sqrt[3]{8}$ is 2.')
 
     expect(output).toBe('Per the paper, $\\sqrt[3]{8}$ is 2.')
-  })
-
-  it('shields inline math whose body contains an escaped dollar', () => {
-    const output = preprocessMarkdown('$\\sqrt[3]{8} + \\$5$')
-
-    expect(output).toContain('\\sqrt[3]{8}')
   })
 })

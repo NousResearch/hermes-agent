@@ -33,7 +33,11 @@ def client(tmp_path, monkeypatch):
     from hermes_cli import web_server
 
     with TestClient(web_server.app, raise_server_exceptions=False) as c:
-        c.headers["Authorization"] = "Bearer soul-test-token"
+        # web_server resolves _SESSION_TOKEN once, at import. Read it back from
+        # the module instead of assuming the env var above won the race — any
+        # test file that imports web_server earlier in the session fixes the
+        # token before this fixture runs.
+        c.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
         yield c
 
 
@@ -45,6 +49,8 @@ def profile_dir(tmp_path, monkeypatch) -> Path:
 
     d = profiles_mod.get_profile_dir("demo")
     d.mkdir(parents=True, exist_ok=True)
+    # Identity marker (SOUL.md is one too, but these tests own SOUL.md; config.yaml is neutral).
+    (d / "config.yaml").write_text("{}\n")
     return d
 
 
@@ -129,3 +135,23 @@ class TestSoulWriteDurability:
         assert r.status_code == 200, r.text
         mode = stat.S_IMODE(soul.stat().st_mode)
         assert mode == 0o644, f"first save created SOUL.md as {oct(mode)}"
+
+
+class TestSoulReadReportsPresence:
+    def test_missing_soul_is_still_reported_absent(self, client, profile_dir: Path):
+        """The offloaded reader must keep distinguishing "no file" from
+        "empty file" — the whole point of the durability tests above."""
+        assert not (profile_dir / "SOUL.md").exists()
+
+        r = client.get("/api/profiles/demo/soul")
+
+        assert r.status_code == 200, r.text
+        assert r.json() == {"content": "", "exists": False}
+
+    def test_empty_soul_is_still_reported_present(self, client, profile_dir: Path):
+        (profile_dir / "SOUL.md").write_text("", encoding="utf-8")
+
+        r = client.get("/api/profiles/demo/soul")
+
+        assert r.status_code == 200, r.text
+        assert r.json() == {"content": "", "exists": True}

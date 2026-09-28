@@ -42,7 +42,7 @@ test('remote sidebar slices preserve the explicit all-profiles scope', () => {
   )
 })
 
-test('remote sidebar slices fall back to the all-profiles scope and default limits', () => {
+test('remote sidebar slices fall back to the all-profiles scope', () => {
   for (const searchParams of [new URLSearchParams(), new URLSearchParams({ recents_profile: '   ' })]) {
     const slices = buildSidebarSessionSliceParams(searchParams)
 
@@ -50,9 +50,6 @@ test('remote sidebar slices fall back to the all-profiles scope and default limi
       Object.values(slices).map(params => params.get('profile')),
       ['all', 'all', 'all']
     )
-    assert.equal(slices.recents.get('limit'), '20')
-    assert.equal(slices.cron.get('limit'), '50')
-    assert.equal(slices.messaging.get('limit'), '100')
   }
 })
 

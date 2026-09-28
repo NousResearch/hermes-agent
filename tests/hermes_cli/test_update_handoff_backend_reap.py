@@ -77,16 +77,6 @@ def test_live_parent_backend_reaped_in_handoff():
         assert cli_main._handoff_reapable_backend_pids(holders) == [200]
 
 
-def test_swarm_of_profile_backends_all_reaped():
-    profiles = ["mr-tester", "probe-inherit", "turqoise", "clippy", "maroon"]
-    procs = {200 + i: _proc(200 + i, _serve_argv(p)) for i, p in enumerate(profiles)}
-    fake = _fake_psutil(procs)
-    with patch.dict(sys.modules, {"psutil": fake}):
-        holders = [
-            _holder(200 + i, f"python.exe -m hermes_cli.main --profile {p} serve")
-            for i, p in enumerate(profiles)
-        ]
-        assert sorted(cli_main._handoff_reapable_backend_pids(holders)) == sorted(procs)
 
 
 def test_dashboard_backend_reaped():

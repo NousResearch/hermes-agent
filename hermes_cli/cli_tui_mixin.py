@@ -84,6 +84,20 @@ def _term_rows() -> int:
     return shutil.get_terminal_size((100, 24)).lines
 
 
+def _term_cols() -> int:
+    """Live terminal width: prompt_toolkit's size follows resizes; shutil covers
+    callers outside a running app (tests, early startup)."""
+    try:
+        from prompt_toolkit.application import get_app
+        from prompt_toolkit.application.dummy import DummyApplication
+        app = get_app()
+        if not isinstance(app, DummyApplication):  # DummyOutput always reports 80x24
+            return app.output.get_size().columns
+    except Exception:
+        pass
+    return shutil.get_terminal_size((100, 24)).columns
+
+
 class _Panel:
     """Fragment accumulator for one bordered overlay panel (``(style, text)`` tuples)."""
 
@@ -526,8 +540,12 @@ class CLITuiMixin:
                         rows.append(('class:clarify-active-other', wrapped))
             return rows
 
-        preview_rows = _status_rows(60)
-        box_width = _panel_box_width(title, [header] + [text for _, text in preview_rows])
+        # Preview wrap and box cap follow the live width — the shared helper's
+        # default max_width=76 caps panels at ~67 columns on wide terminals.
+        cols = _term_cols()
+        preview_rows = _status_rows(max(24, cols - 10))
+        box_width = _panel_box_width(
+            title, [header] + [text for _, text in preview_rows], max_width=max(76, cols - 4))
         rows = _status_rows(max(8, box_width - 2))
 
         panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')

@@ -885,15 +885,36 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True and result.should_fallback is False
 
-    def test_proxy_paraphrase_without_thinking_word_reaches_signature_strip(self):
-        """Relay proxies paraphrase the thinking-signature 400 without the word "thinking"
-        ("bad request: invalid signature"); the phrase must still reach the one-shot thinking
-        strip instead of hard-looping — the degrade promise the preserve_thinking opt-in makes
-        (#120723)."""
-        e = MockAPIError("Error code: 400 - bad request: invalid signature", status_code=400)
-        result = classify_api_error(e, provider="custom", model="claude-sonnet-4")
-        assert result.reason == FailoverReason.thinking_signature
-        assert result.retryable is True and result.should_fallback is False
+    def test_proxy_signature_wordings_classify_by_thinking_anchor(self):
+        """The thinking-signature heuristic stays anchored on the word "thinking": the canonical
+        Anthropic wording and the relay paraphrase actually measured in #120723 both carry that
+        word, and both must reach the one-shot strip."""
+        for message in (
+            "Error code: 400 - thinking block signature mismatch: blocks were modified",
+            "Error code: 400 - messages.1.content.0: Invalid signature in thinking block",
+        ):
+            result = classify_api_error(MockAPIError(message, status_code=400), provider="custom", model="claude-sonnet-4")
+            assert result.reason == FailoverReason.thinking_signature
+            assert result.retryable is True and result.should_fallback is False
+
+    def test_non_thinking_invalid_signature_stays_format_error(self):
+        """A 400 with "invalid signature" but no thinking context is a request-auth/HMAC rejection
+        or an unrelated bad request: it must stay format_error instead of winning a thinking-strip
+        retry that strips reasoning_details from a transcript it should never touch. A proxy
+        appending the phrase to overflow / reasoning-effort rejections must not hijack those
+        verdicts either — _provider_special_cases runs before _by_status on 400s."""
+        cases = [
+            ("Error code: 400 - bad request: invalid signature", FailoverReason.format_error),
+            ("Error code: 400 - invalid signature for request authentication", FailoverReason.format_error),
+            ("Error code: 400 - invalid signature: HMAC verification failed", FailoverReason.format_error),
+            ("Error code: 400 - prompt is too long: 250000 tokens > 200000 maximum; invalid signature",
+             FailoverReason.context_overflow),
+            ("Error code: 400 - reasoning_effort is not supported on this route; invalid signature",
+             FailoverReason.reasoning_mandatory),
+        ]
+        for message, expected in cases:
+            result = classify_api_error(MockAPIError(message, status_code=400), provider="custom", model="claude-sonnet-4")
+            assert result.reason == expected, message
 
     @pytest.mark.parametrize(("provider", "model", "message", "code"), [
         ("azure-foundry", "gpt-6-astra", "Conflicting authenticated continuation identities.", "invalid_value"),

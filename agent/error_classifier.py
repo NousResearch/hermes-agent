@@ -848,12 +848,6 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
     if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
         return _v(_R.thinking_signature)
-    # Proxies paraphrase the same 400 without the word "thinking" ("bad request: invalid
-    # signature"); in an anthropic_messages conversation that phrase is still a thinking-signature
-    # rejection and must reach the one-shot strip instead of hard-looping — the degrade promise
-    # the preserve_thinking opt-in makes (#120723).
-    if status == 400 and "invalid signature" in msg:
-        return _v(_R.thinking_signature)
     # Anthropic long-context tier gate (429 "extra usage" + "long context").
     if status == 429 and "extra usage" in msg and "long context" in msg:
         return _v(_R.long_context_tier, should_compress=True)

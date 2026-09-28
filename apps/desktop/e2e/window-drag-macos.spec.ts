@@ -2,16 +2,10 @@ import { execFileSync } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
-import {
-  buildAppEnv,
-  createSandbox,
-  findElectron,
-  waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig
-} from './fixtures'
+import { buildAppEnv, createSandbox, findElectron, waitForAppReady } from './fixtures'
 import { _electron, type ElectronApplication, expect, installErrorBannerGuard, test } from './test'
 
 // This moves the system pointer. Run alone in an unlocked macOS desktop:

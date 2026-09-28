@@ -218,6 +218,52 @@ class TestResponsesItemImageAccounting:
         assert est >= (len(item["output"]) // 4) * 0.9
 
 
+class TestAnthropicOrderedBlocksAccounting:
+    """Direct-Anthropic replies that interleave signed thinking with tool_use carry
+    ``anthropic_content_blocks``: an ordered replay copy of blocks already counted under
+    ``content``/``tool_calls``/``reasoning_details``. The outbound strip (``_STRIP_MSG_KEYS``)
+    drops it before send, so the rough estimator must not price it a second time (#125761)."""
+
+    def test_ordered_blocks_carrier_does_not_double_count(self):
+        thinking = "plan: search the docs first, then answer with the exact quote " * 30
+        signature = "EqoBCkgIBRABGAIiQKg" * 60
+        base = {
+            "role": "assistant",
+            "content": "Answer with the exact quote.",
+            "tool_calls": [
+                {"id": "toolu_1", "type": "function",
+                 "function": {"name": "web_search", "arguments": '{"query": "docs quote"}'}}
+            ],
+            "reasoning": thinking,
+            "reasoning_details": [
+                {"type": "thinking", "thinking": thinking, "signature": signature}
+            ],
+        }
+        with_carrier = dict(
+            base,
+            anthropic_content_blocks=[
+                {"type": "thinking", "thinking": thinking, "signature": signature},
+                {"type": "text", "text": base["content"]},
+                {"type": "tool_use", "id": "toolu_1", "name": "web_search",
+                 "input": {"query": "docs quote"}},
+            ],
+        )
+
+        assert (estimate_messages_tokens_rough([with_carrier])
+                == estimate_messages_tokens_rough([base]))
+
+    def test_carrier_drop_keeps_thinking_priced_once(self):
+        """Dropping the carrier must not lose the thinking itself: it still rides the
+        ``reasoning`` field (no ``reasoning_content`` promotion on this row), so a reply
+        with thinking prices well above the same reply without it."""
+        thinking = "consider the retrieval options and their token costs " * 40
+        with_reasoning = {"role": "assistant", "content": "ok", "reasoning": thinking}
+        without_reasoning = {"role": "assistant", "content": "ok"}
+
+        assert (estimate_messages_tokens_rough([with_reasoning])
+                > estimate_messages_tokens_rough([without_reasoning]) * 5)
+
+
 class TestEstimateRequestTokensRough:
 
     def test_tools_cache_is_bounded(self):

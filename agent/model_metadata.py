@@ -2489,14 +2489,18 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     * Opaque provider blobs (``encrypted_content`` on codex reasoning / compaction items) are
       ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
       checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
-      prices them, and the usage anchor carries that price forward."""
+      prices them, and the usage anchor carries that price forward.
+    * ``anthropic_content_blocks`` is an ordered replay copy of blocks already counted under
+      ``content``/``tool_calls``/``reasoning_details`` (direct-Anthropic replies interleaving
+      signed thinking with tool_use); the outbound strip (``_STRIP_MSG_KEYS``) drops it before
+      send, so the estimate must not price it a second time (#125761)."""
     sidecar = msg.get("api_content")
     sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
     _rc = msg.get("reasoning_content")
     drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
-        if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
+        if k in ("_anthropic_content_blocks", "anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
             continue
         if k == "api_content":
             if sidecar_wins:

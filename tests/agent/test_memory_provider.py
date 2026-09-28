@@ -5,8 +5,10 @@ import threading
 import time
 import pytest
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import MagicMock
 
+import agent.memory_manager as memory_manager
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager, inject_memory_provider_tools
 
@@ -313,6 +315,47 @@ class TestMemoryManager:
 
     # -- Error resilience ---------------------------------------------------
 
+
+    def test_external_prefetch_timeout_defaults_pinned(self):
+        """Pin both bounds: the shared fail-fast default and the per-provider map.
+
+        The shared constant is the turn-blocking bound for *every* external provider,
+        so silently raising it is a cross-provider regression; going above 8.0s is only
+        sanctioned via _PROVIDER_PREFETCH_TIMEOUT_S for providers with measured latency.
+        """
+        assert memory_manager._EXTERNAL_PREFETCH_TIMEOUT_S == 8.0
+        assert memory_manager._PROVIDER_PREFETCH_TIMEOUT_S == {"hindsight": 20.0}
+
+    def test_provider_map_overrides_shared_default(self):
+        """A provider named in _PROVIDER_PREFETCH_TIMEOUT_S gets its own ceiling."""
+        overrides = {"hindsight": 0.01}
+        with mock.patch.object(memory_manager, "_PROVIDER_PREFETCH_TIMEOUT_S", overrides):
+            mgr = MemoryManager()
+            hindsight = BlockingPrefetchProvider("hindsight")
+            mgr.add_provider(hindsight)
+
+            started = time.monotonic()
+            result = mgr.prefetch_all("query")
+            elapsed = time.monotonic() - started
+
+            assert result == ""
+            assert elapsed < 0.5  # per-provider 0.01s bound applied, not the 8.0s default
+            assert hindsight.started.wait(timeout=1.0)
+
+    def test_explicit_override_beats_provider_map(self):
+        """An explicit constructor timeout wins even for a mapped provider."""
+        with mock.patch.object(memory_manager, "_PROVIDER_PREFETCH_TIMEOUT_S", {"hindsight": 30.0}):
+            mgr = MemoryManager(external_prefetch_timeout=0.01)
+            hindsight = BlockingPrefetchProvider("hindsight")
+            mgr.add_provider(hindsight)
+
+            started = time.monotonic()
+            result = mgr.prefetch_all("query")
+            elapsed = time.monotonic() - started
+
+            assert result == ""
+            assert elapsed < 0.5  # explicit 0.01s override, not the 30.0s map value
+            assert hindsight.started.wait(timeout=1.0)
 
     def test_external_prefetch_timeout_skips_stuck_provider(self):
         mgr = MemoryManager(external_prefetch_timeout=0.01)

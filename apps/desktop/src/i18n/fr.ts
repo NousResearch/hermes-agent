@@ -14,9 +14,12 @@ export const frOverrides = {
     collectedModels: 'Routes de modèles et totaux de tokens',
     collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
     collectedMilestones: 'Comptes de configuration regroupés',
-    collectedReliability: 'Résultats et durée des mises à jour, plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
-    collectedUsage: "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
-    collectedMachine: "Données générales de la machine : plage de RAM, type de GPU, âge et canal de la version de Hermes, mises à jour en retard, utilisation d'un serveur de modèles local",
+    collectedReliability:
+      'Résultats et durée des mises à jour, plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
+    collectedUsage:
+      "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
+    collectedMachine:
+      "Données générales de la machine : plage de RAM, type de GPU, âge et canal de la version de Hermes, mises à jour en retard, utilisation d'un serveur de modèles local",
     installId:
       'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
     consentWindow:
@@ -1211,7 +1214,8 @@ export const frOverrides = {
       introSplashTitle: "Écran d'accueil",
       introSplashDesc: "Le logo et l'invite affichés dans une conversation vide.",
       modelPricingTitle: 'Tarifs des modèles',
-      modelPricingDesc: "Affiche les prix d'entrée, de sortie et de lecture du cache par million de jetons dans le sélecteur de modèle.",
+      modelPricingDesc:
+        "Affiche les prix d'entrée, de sortie et de lecture du cache par million de jetons dans le sélecteur de modèle.",
       reactionsTitle: 'Réactions aux messages',
       reactionsDesc: 'Réactions emoji façon iMessage — réagissez aux messages, et Hermes peut réagir aux vôtres.',
       tipsTitle: "Astuces dans l'application",
@@ -5036,7 +5040,8 @@ export const frOverrides = {
     removeCustomModel: 'Retirer le modèle personnalisé',
     resetToDefaults: 'Rétablir les valeurs par défaut',
     resetConfirm: 'Rétablir la visibilité des modèles par défaut ?',
-    resetDescription: 'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
+    resetDescription:
+      'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
     resetAction: 'Rétablir'
   },
   shell: {

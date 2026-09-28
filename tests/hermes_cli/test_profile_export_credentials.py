@@ -57,9 +57,14 @@ class TestCredentialExclusion:
 
     def test_export_ships_no_credential_store_a_loader_reads(self, tmp_path, monkeypatch):
         """Every credential store Hermes loads from a profile home stays out of a named-profile
-        export and stays user-owned on a distribution install. .op.env (env_loader) and npmrc
-        (source_build) have no suffix the text scrub pass edits, so exclusion is their only guard."""
-        from hermes_cli.profile_distribution import USER_OWNED_EXCLUDE
+        export and stays user-owned on a distribution install: a distribution can neither ship
+        one (nested ones included) nor opt one back in through ``distribution_owned``. .op.env
+        (env_loader) and npmrc (source_build) have no suffix the text scrub pass edits, so
+        exclusion is their only guard; the legacy Google Chat token file ships its client_secret."""
+        import shutil
+        from pathlib import Path
+
+        from hermes_cli.profile_distribution import DistributionManifest, install_distribution, write_manifest
         from hermes_cli.profiles import PROFILE_CREDENTIAL_PATHS
 
         profiles_root = tmp_path / "profiles"
@@ -67,12 +72,29 @@ class TestCredentialExclusion:
         (profile_dir / "platforms").mkdir(parents=True)
         (profile_dir / "config.yaml").write_text("model: gpt-4\n")
         (profile_dir / "platforms" / "keep.json").write_text("{}")
-        stores = {".op.env", "npmrc", *PROFILE_CREDENTIAL_PATHS}
+        stores = {".op.env", "npmrc", "google_chat_user_token.json", "google_chat_user_oauth_pending",
+                  "workspace/meetings/node_token.json", *PROFILE_CREDENTIAL_PATHS}
         for rel in stores:
             is_dir = "." not in rel.rsplit("/", 1)[-1] and rel != "npmrc"  # token dirs vs single files
             target = profile_dir / rel / "store" if is_dir else profile_dir / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("fake-credential")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        (tmp_path / ".hermes").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        tops = sorted({r.split("/")[0] for r in stores})
+        for owned in ([], sorted(stores) + tops):  # legacy whole-payload, then explicit opt-in
+            staged = tmp_path / f"dist{len(owned)}"
+            shutil.copytree(profile_dir, staged)
+            write_manifest(staged, DistributionManifest(name=staged.name, version="0.1.0", distribution_owned=owned))
+            installed = install_distribution(str(staged), name=staged.name).target_dir
+            assert (installed / "platforms" / "keep.json").exists()
+            planted = sorted(r for r in stores if any(
+                f.is_file() and f.read_text() == "fake-credential"
+                for f in ((installed / r), *((installed / r).rglob("*") if (installed / r).is_dir() else ()))))
+            assert not planted, (staged.name, planted)
+
         _patch_named_profile(monkeypatch, profiles_root, profile_dir)
 
         with tarfile.open(export_profile("testprofile", str(tmp_path / "export.tar.gz")), "r:gz") as tf:
@@ -81,8 +103,6 @@ class TestCredentialExclusion:
         assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= names
         leaked = sorted(r for r in stores if any(n == f"testprofile/{r}" or n.startswith(f"testprofile/{r}/") for n in names))
         assert not leaked, leaked
-        root_stores = {r for r in stores if "/" not in r}
-        assert root_stores <= USER_OWNED_EXCLUDE, sorted(root_stores - USER_OWNED_EXCLUDE)
 
     def test_export_ships_no_recovery_copy_hermes_writes_of_a_store(self, tmp_path, monkeypatch):
         """Every copy Hermes' own writers leave in a profile home (pre-update zip, update snapshot,

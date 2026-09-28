@@ -158,6 +158,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     ".anthropic_oauth.json",        # Anthropic OAuth tokens (credential_sources)
     "google_token.json", "google_oauth_pending.json", "google_client_secret.json",
     "google_chat_user_tokens", "google_chat_user_client_secret.json", "google_chat_user_oauth_pending.json",
+    "google_chat_user_token.json", "google_chat_user_oauth_pending",  # legacy single-user layouts
     "slack_tokens.json",
     "webhook_subscriptions.json",   # per-route HMAC secrets
     "mcp-tokens",                   # MCP OAuth tokens
@@ -166,7 +167,22 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "pairing", "platforms/pairing", "feishu_comment_pairing.json",
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
     "cache/bws_cache.json", "cache/bws_cache.enc.json",
+    "workspace/meetings/node_token.json",  # google_meet node RPC secret
 })
+_CREDENTIAL_PATH_PARTS = tuple(tuple(p.casefold().split("/")) for p in PROFILE_CREDENTIAL_PATHS)
+
+
+def profile_path_is_private(parts: Tuple[str, ...]) -> bool:
+    """True for a PROFILE_CREDENTIAL_PATHS store or anything below one. Case-folded: on a
+    case-insensitive filesystem ``Platforms/Pairing`` IS the pairing store."""
+    folded = tuple(str(part).casefold() for part in parts)
+    return any(folded[:len(store)] == store for store in _CREDENTIAL_PATH_PARTS)
+
+
+def profile_path_contains_private_store(parts: Tuple[str, ...]) -> bool:
+    """True for a strict ancestor of a store (``platforms`` holds ``platforms/pairing``)."""
+    folded = tuple(str(part).casefold() for part in parts)
+    return any(len(store) > len(folded) and store[:len(folded)] == folded for store in _CREDENTIAL_PATH_PARTS)
 
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
 # The default profile contains infrastructure (repo checkout, worktrees, DBs,
@@ -2216,8 +2232,8 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     def _ignore_credentials(directory: str, contents: list) -> set:
         ignored = _non_exportable_entries(directory, contents)
         ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
-        rel = Path(directory).relative_to(profile_dir)
-        ignored.update(e for e in contents if (rel / e).as_posix() in PROFILE_CREDENTIAL_PATHS)
+        rel = Path(directory).relative_to(profile_dir).parts
+        ignored.update(e for e in contents if profile_path_is_private((*rel, e)))
         if Path(directory) == profile_dir:
             ignored |= (PM_RUNTIME_ROOT_DIRS | _EXPORT_RECOVERY_ROOT_DIRS) & set(contents)
             ignored.update(e for e in contents if e.startswith(_EXPORT_STORE_COPY_PREFIXES))

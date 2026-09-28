@@ -175,7 +175,7 @@ research-bot/
 |---|---|---|
 | **分发所有** | `SOUL.md`、`config.yaml`、`mcp.json`、`skills/`、`cron/`、`distribution.yaml` | 从新克隆中替换 |
 | **配置覆盖** | `config.yaml` | 默认实际保留——安装者可能已调整模型或 provider。更新时传入 `--force-config` 可重置。 |
-| **用户所有** | `memories/`、`sessions/`、`state.db*`、`auth.json`、`.env` 及其他凭据存储、`logs/`、`workspace/`、`plans/`、`home/`、`*_cache/`、`local/` | 永不触碰 |
+| **用户所有** | `memories/`、`sessions/`、`state.db*`、`auth.json`、`.env` 及其他凭据存储（包括位于分发所有目录之下的存储，例如 `platforms/pairing/` 和 `platforms/whatsapp/session/`）、`logs/`、`workspace/`、`plans/`、`home/`、`*_cache/`、`local/` | 永不触碰，且 `distribution_owned` 不能声明凭据存储 |
 
 你可以在 manifest 中覆盖分发所有列表：
 

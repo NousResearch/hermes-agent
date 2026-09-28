@@ -274,7 +274,7 @@ When an installer updates to a new version, some things get replaced (author's d
 |---|---|---|
 | **Distribution-owned** | `SOUL.md`, `config.yaml`, `mcp.json`, `skills/`, `cron/jobs.json`, `distribution.yaml` | Files are replaced from the new clone. Skill directories are merged per entry. `cron/jobs.json` is merged by job id: shipped definitions update in place, your local jobs and each job's paused/enabled state survive, and newly shipped jobs arrive paused. Other `cron/` files and root-level hidden `skills/` metadata are runtime state and stay local. |
 | **Config override** | `config.yaml` | Actually preserved by default — the installer may have tuned model or provider. Pass `--force-config` on update to reset. |
-| **User-owned** | `memories/`, `sessions/`, `state.db*`, `auth.json`, `.env` and the other credential stores, `logs/`, `workspace/`, `plans/`, `home/`, `*_cache/`, `local/` | Never touched |
+| **User-owned** | `memories/`, `sessions/`, `state.db*`, `auth.json`, `.env` and the other credential stores (including those below a distribution-owned directory, such as `platforms/pairing/` and `platforms/whatsapp/session/`), `logs/`, `workspace/`, `plans/`, `home/`, `*_cache/`, `local/` | Never touched, and `distribution_owned` cannot claim a credential store |
 
 You can override the distribution-owned list in the manifest:
 

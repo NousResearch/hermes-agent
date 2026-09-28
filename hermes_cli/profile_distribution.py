@@ -22,7 +22,9 @@ import hermes_yaml as yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.archive_safe import normalize_archive_parts
-from hermes_cli.profiles import DEFAULT_EXPORT_EXCLUDE_ROOT
+from hermes_cli.profiles import (
+    DEFAULT_EXPORT_EXCLUDE_ROOT, profile_path_contains_private_store, profile_path_is_private,
+)
 from utils import rmtree_readonly
 
 
@@ -343,7 +345,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
         # Do NOT narrow to DEFAULT_DIST_OWNED — existing distributions ship arbitrary extra
         # top-level paths without declaring them.
         for entry in staged.iterdir():
-            if entry.name not in USER_OWNED_EXCLUDE:
+            if entry.name not in USER_OWNED_EXCLUDE and not profile_path_is_private((entry.name,)):
                 yield entry, (entry.name,)
         return
     # Path-aware allowlist: copy exactly the declared paths.
@@ -352,7 +354,8 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
             rel_parts = tuple(normalize_archive_parts(rel))
         except ValueError:
             continue
-        if rel_parts[0] in USER_OWNED_EXCLUDE or _is_distribution_runtime_path(rel_parts):
+        if (rel_parts[0] in USER_OWNED_EXCLUDE or profile_path_is_private(rel_parts)
+                or _is_distribution_runtime_path(rel_parts)):
             continue
         src = staged.joinpath(*rel_parts)
         if src.exists():
@@ -459,11 +462,11 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
     """Merge authored roots while leaving runtime-owned nested state untouched."""
     for child in src.iterdir():
         parts = (*rel, child.name)
-        if _is_distribution_runtime_path(parts):
+        if profile_path_is_private(parts) or _is_distribution_runtime_path(parts):
             continue
         if parts == _CRON_STORE_REL:
             continue  # merged up front by _copy_dist_payload
-        if _is_container(child, parts):
+        if _merges_per_root(child, parts):
             _merge_dir(child, _real_dir(dest, (child.name,)), parts)
         else:
             _replace_entry(child, dest / child.name)
@@ -472,9 +475,9 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
 def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
     for child in src.iterdir():
         parts = (*rel, child.name)
-        if _is_distribution_runtime_path(parts):
+        if profile_path_is_private(parts) or _is_distribution_runtime_path(parts):
             continue
-        if _is_container(child, parts):
+        if _merges_per_root(child, parts):
             _refuse_symlink(dest / child.name)
             _refuse_symlinked_containers(child, dest / child.name, parts)
 
@@ -484,8 +487,11 @@ def _merges_per_root(src: Path, rel_parts: Tuple[str, ...]) -> bool:
     ``_is_container``), is merged per authored root instead of replaced whole, so skills the installer
     added to it (``hermes skills install`` and agent-created skills land in
     ``skills/<category>/``) survive. The pre-write symlink guard and the copy loop both
-    use this, so the guard covers exactly what the copy merges."""
-    return src.is_dir() and (len(rel_parts) == 1 or _is_container(src, rel_parts))
+    use this, so the guard covers exactly what the copy merges. An ancestor of a credential
+    store (``platforms`` of ``platforms/pairing``) is merged too, so replacing it whole can
+    neither delete the installer's store nor plant the author's."""
+    return src.is_dir() and (len(rel_parts) == 1 or _is_container(src, rel_parts)
+                             or profile_path_contains_private_store(rel_parts))
 
 
 def _refuse_symlinked_targets(target: Path, entries) -> None:

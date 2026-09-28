@@ -310,17 +310,6 @@ class TestAdoption:
         assert db.adopt_orphaned_gateway_session(orphan, "no_key_donor") is False
 
 
-def _profiled_store(tmp_path, monkeypatch):
-    """A ``<HERMES_HOME>/state.db`` store, so ``_own_profile_name()`` returns ``default``."""
-    import hermes_state
-
-    root = tmp_path / "hermes"
-    root.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
-    return SessionDB(db_path=root / "state.db")
-
-
 def _stamp_profile(db, session_id, profile_name):
     with db._lock:
         db._conn.execute(
@@ -330,63 +319,38 @@ def _stamp_profile(db, session_id, profile_name):
         db._conn.commit()
 
 
-class TestDonorProfileFence:
-    """A donor carries the routing identity adoption stamps onto the orphan, so a
-    donor from a sibling profile in a shared legacy store would splice this
-    profile's orphan into the sibling's ``agent:<ns>:`` namespace. Donor and
-    orphan must share an effective profile (NULL reads as the store's own)."""
+def test_donor_must_share_the_orphans_profile(tmp_path, monkeypatch):
+    """#119121: adoption stamps the donor's ``agent:<ns>:`` identity onto the orphan, so a
+    sibling profile's keyed row in a shared legacy store must never be named as donor
+    (by contiguity or lineage), and the write-time re-verify must refuse the pair even
+    from a stale report. A legacy NULL-stamped row still reads as this store's own."""
+    import hermes_state
 
-    def test_contiguity_donor_must_share_the_orphans_profile(self, tmp_path, monkeypatch):
-        store = _profiled_store(tmp_path, monkeypatch)
-        try:
-            stale, orphan = _incident(store)  # orphan auto-stamped 'default'
-            _stamp_profile(store, stale, "bot2")
-            record = store.find_orphaned_gateway_sessions()[0]
-            assert record["adoptable"] is False
-            assert record["donor_id"] is None
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionDB(db_path=root / "state.db")  # owner: default
+    try:
+        stale, orphan = _incident(store)  # both rows auto-stamped 'default'
+        _stamp_profile(store, stale, "bot2")
+        record = store.find_orphaned_gateway_sessions()[0]
+        assert record["adoptable"] is False and record["donor_id"] is None
+        assert store.adopt_orphaned_gateway_session(orphan, stale) is False
+        assert store.get_session(orphan)["session_key"] is None
 
-            # A legacy NULL-stamped row still reads as this store's own.
-            _stamp_profile(store, stale, None)
-            record = store.find_orphaned_gateway_sessions()[0]
-            assert record["adoptable"] is True
-            assert record["donor_id"] == stale
+        _stamp_profile(store, stale, None)  # legacy unowned row: still ours
+        record = store.find_orphaned_gateway_sessions()[0]
+        assert record["adoptable"] is True and record["donor_id"] == stale
 
-            # A bot2 orphan may still adopt a bot2 donor inside a shared store.
-            _stamp_profile(store, orphan, "bot2")
-            _stamp_profile(store, stale, "bot2")
-            record = store.find_orphaned_gateway_sessions()[0]
-            assert record["adoptable"] is True
-            assert record["session_key"] == PEER["session_key"]
-        finally:
-            store.close()
-
-    def test_lineage_donor_must_share_the_orphans_profile(self, tmp_path, monkeypatch):
-        store = _profiled_store(tmp_path, monkeypatch)
-        try:
-            stale, _ = _incident(store, parent_link=True)
-            _stamp_profile(store, stale, "bot2")
-            record = store.find_orphaned_gateway_sessions()[0]
-            assert record["adoptable"] is False
-            assert record["donor_id"] is None
-        finally:
-            store.close()
-
-    def test_adoption_reverify_refuses_a_cross_profile_pair(self, tmp_path, monkeypatch):
-        store = _profiled_store(tmp_path, monkeypatch)
-        try:
-            stale, orphan = _incident(store)
-            _stamp_profile(store, stale, "bot2")
-            assert store.adopt_orphaned_gateway_session(orphan, stale) is False
-            assert store.get_session(orphan)["session_key"] is None
-            assert store.get_session(stale)["end_reason"] == "agent_close"
-        finally:
-            store.close()
-
-    def test_unowned_store_keeps_unfenced_donor_matching(self, db):
-        # ``db`` lives outside the profile tree: no derivable owner, so the
-        # historical behavior (any compatible keyed predecessor) stands.
-        stale, _ = _incident(db)
-        _stamp_profile(db, stale, "bot2")
-        record = db.find_orphaned_gateway_sessions()[0]
-        assert record["adoptable"] is True
-        assert record["donor_id"] == stale
+        with store._lock:  # same fence on the lineage path
+            store._conn.execute("UPDATE sessions SET parent_session_id = ? WHERE id = ?", (stale, orphan))
+            store._conn.commit()
+        _stamp_profile(store, stale, "bot2")
+        record = store.find_orphaned_gateway_sessions()[0]
+        assert record["adoptable"] is False and record["donor_id"] is None
+        _stamp_profile(store, stale, "default")
+        record = store.find_orphaned_gateway_sessions()[0]
+        assert record["evidence"] == "lineage" and record["donor_id"] == stale
+    finally:
+        store.close()

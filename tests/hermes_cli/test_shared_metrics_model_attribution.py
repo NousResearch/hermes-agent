@@ -314,6 +314,20 @@ def test_cli_undo_counts_friction_only_when_something_was_undone(direct_runtime,
         ({"model": PUBLIC, "provider": "openrouter", "signal": "undo"}, 1)]
 
 
+def test_cli_undo_n_counts_the_user_turns_actually_undone_not_compaction_handoffs(direct_runtime, tmp_path):
+    from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, SUMMARY_PREFIX
+
+    cli = _cli(None)
+    cli.conversation_history = [
+        {"role": "user", "content": SUMMARY_PREFIX + "\nearlier work", COMPRESSED_SUMMARY_METADATA_KEY: True},
+        {"role": "assistant", "content": "ack"},
+        {"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}]
+    cli._cmd_undo("/undo 5")
+    _flush()
+    assert sum(value for _, value in _stored_values(tmp_path, "hermes.wasted_tokens.count")) == 2
+
+
 def test_context_peak_is_one_row_per_conversation_across_compression_rotation(direct_runtime, tmp_path):
     """Compression hands the session id off (s1 -> s1c): the
     conversation reports its fullest segment once, whatever order the segments close in. A

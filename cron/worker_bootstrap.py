@@ -32,9 +32,8 @@ logger = logging.getLogger(__name__)
 
 # Set by ``_launch_external_cron_worker`` in the child's env and consumed here, so it never
 # reaches the worker's own children -- they inherit the activated PYTHONPATH instead.
-WORKER_MARKER = "HERMES_CRON_EXTERNAL_WORKER"
-
-_root = Path(__file__).resolve().parent.parent
+# Distinct from ``_HERMES_CRON_EXTERNAL_WORKER`` (the owning execution id) in scheduler.py.
+WORKER_MARKER = "_HERMES_CRON_WORKER_BOOT"
 
 
 def worker_bootstrap() -> None:
@@ -44,6 +43,6 @@ def worker_bootstrap() -> None:
     try:
         from pm.environments import activate_dependencies
 
-        activate_dependencies(_root)
+        activate_dependencies(Path(__file__).resolve().parent.parent)
     except Exception as exc:
         logger.warning("cron external worker dependency activation failed: %s", exc)

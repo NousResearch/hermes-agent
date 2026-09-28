@@ -71,7 +71,9 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     and pinning it would move site-packages ahead of the stdlib on ``sys.path``.
 
     Order (checkout, generation, sanitizer-kept) mirrors ``activate_dependencies``' own
-    ``sys.path``, so the worker resolves every module exactly as the gateway did.
+    ``sys.path``. The worker's boot (``cron/worker_bootstrap.py``) re-selects and leases the
+    committed generation before any third-party import; this pin is what the worker still
+    imports through if that boot fails.
     """
     root = str(repo_root)
     if _installed_purelib() == Path(root).resolve():

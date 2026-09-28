@@ -648,7 +648,6 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
     assert "PYTHONPATH" not in worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
 
 
-
 def test_pin_restores_the_committed_generation_site_packages(tmp_path):
     """#122222: the sanitizer drops the generation ``activate_dependencies`` put on our
     ``sys.path``, and the worker inherits the store Python, which owns no dependencies. The
@@ -691,7 +690,7 @@ import pm.environments
 boots = []
 pm.environments.activate_dependencies = lambda root: boots.append("cron.jobs" in sys.modules)
 import cron
-print(json.dumps({"boots": boots, "marker": os.environ.get("HERMES_CRON_EXTERNAL_WORKER")}))
+print(json.dumps({"boots": boots, "marker": os.environ.get(sys.argv[1])}))
 """
 
 
@@ -710,7 +709,7 @@ def test_marked_worker_boots_dependencies_before_cron_jobs(marked):
     if marked:
         env[worker_bootstrap.WORKER_MARKER] = "1"
     child = subprocess.run(
-        [sys.executable, "-c", _BOOT_ORDER_PROBE],
+        [sys.executable, "-c", _BOOT_ORDER_PROBE, worker_bootstrap.WORKER_MARKER],
         cwd=repo_root, env=env, capture_output=True, text=True, timeout=60,
     )
     assert child.returncode == 0, child.stderr

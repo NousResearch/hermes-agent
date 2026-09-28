@@ -29,6 +29,19 @@ _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
 _ENVELOPE_METADATA_TAG = "<mcp-result-metadata>"
 _ENVELOPE_METADATA_CLOSING_TAG = "</mcp-result-metadata>"
+
+# The terminal tool's result envelope family (tools/terminal_tool_result.py
+# finalize_foreground_result, tools/terminal_tool.py _error_json / yielded /
+# degraded shapes). Recognized by SHAPE, like the MCP envelope below.
+_TERMINAL_ENVELOPE_KEYS = frozenset({
+    "output", "exit_code", "error", "status", "cwd", "environment_recreated",
+    "output_total_chars", "full_output_path", "truncation_note",
+    "verification_evidence", "approval", "exit_code_meaning", "hint",
+    "sudo_auth_failed", "sudo_cache_cleared", "traceback", "session_id",
+    "pid", "notify_on_complete", "note", "reason", "retry_hint",
+})
+_TERMINAL_METADATA_TAG = "<terminal-result-metadata>"
+_TERMINAL_METADATA_CLOSING_TAG = "</terminal-result-metadata>"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
 
@@ -220,6 +233,49 @@ def _pageable_text(content: str) -> str:
     return f"{text}\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n"
 
 
+def _terminal_result_text(content: str) -> str:
+    """Rewrite a terminal tool result envelope into metadata block + pageable output, else
+    return *content*.
+
+    ``tools/terminal_tool_result.py::finalize_foreground_result`` (and the ``_error_json``
+    family in ``tools/terminal_tool.py``) hand the model a JSON string that LEADS with
+    ``output``: ``{"output": <text>, "exit_code": ..., "error": ...}``. Persisting an
+    oversized one verbatim made the ``generate_preview`` head window the start of ``output``
+    only, so ``exit_code``/``error``/``hint`` were cut out of what the model saw exactly
+    when the result was too big to inline (#126444).
+
+    Recognized by SHAPE, not by tool name: keys are a subset of the terminal envelope
+    family with a non-empty string ``output`` and an ``exit_code`` member. That keeps
+    opaque JSON from any other tool verbatim, and covers the aggregate path
+    (``enforce_turn_budget`` persists under ``_BUDGET_TOOL_NAME``).
+
+    Unlike the MCP envelope, the metadata block goes BEFORE the text: ``generate_preview``
+    is a head truncation, so metadata appended after the output would be cut again.
+    ``None``-valued members are dropped (the producer's own convention is "None means
+    omit"), which also keeps a successful result's preview free of a bare ``"error"`` key
+    that substring failure-detectors key on. Anything unrecognized — unparseable JSON, a
+    non-object, an unknown key, a missing/empty/non-string ``output`` — is persisted
+    verbatim, exactly as before.
+    """
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return content
+    if not isinstance(payload, dict) or not set(payload) <= _TERMINAL_ENVELOPE_KEYS:
+        return content
+    text = payload.get("output")
+    if not isinstance(text, str) or not text or "exit_code" not in payload:
+        return content
+    extras = {key: value for key, value in payload.items() if key != "output" and value is not None}
+    if not extras:
+        return text
+    try:
+        metadata = json.dumps(extras, ensure_ascii=False, indent=1, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return text
+    return f"{_TERMINAL_METADATA_TAG}\n{metadata}\n{_TERMINAL_METADATA_CLOSING_TAG}\n\n{text}"
+
+
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     """Write content into the sandbox via env.execute(); True on success. Content goes through
     stdin, not the command string: Linux ``MAX_ARG_STRLEN`` caps one argv element at 128 KB,
@@ -301,8 +357,10 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     if threshold == float("inf") or len(content) <= threshold:
         return content
     # The size decision above stays on the raw inline result (that is what cost context); the file
-    # and the preview carry the pageable text inside an MCP envelope (#90426).
-    persisted_content = _pageable_text(content)
+    # and the preview carry the pageable text inside an MCP envelope (#90426), or the metadata
+    # block + output text of a terminal envelope so exit_code/error survive the head preview
+    # window (#126444).
+    persisted_content = _terminal_result_text(_pageable_text(content))
     filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
 

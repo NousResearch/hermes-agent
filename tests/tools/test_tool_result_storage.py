@@ -240,8 +240,10 @@ class TestMaybePersistToolResult:
         assert "tc_456.txt" in result
         assert len(result) < len(content)
 
-    def test_persists_full_content_as_is(self):
-        """Content is persisted verbatim — no JSON extraction."""
+    def test_persists_full_output_via_stdin(self):
+        """The full output reaches the sandbox write through stdin, complete and
+        out of the command string. A terminal-shaped envelope is carried as
+        metadata block + pageable output text (#126444), not dropped or clipped."""
         import json
         env = MagicMock()
         # Readability probe fails -> falls back to the in-sandbox write,
@@ -264,7 +266,9 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
         # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args_list[1][1]["stdin_data"] == content
+        transported = env.execute.call_args_list[1][1]["stdin_data"]
+        assert transported.endswith(raw)
+        assert '"exit_code": 0' in transported
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()

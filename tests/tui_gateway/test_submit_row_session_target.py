@@ -68,6 +68,20 @@ def _rows(db, key):
             db.get_messages_as_conversation(key, include_inactive=True)]
 
 
+def _rotated_session(monkeypatch, db):
+    """A live desktop session whose agent already rotated onto a continuation while ``session_key``
+    still names the (reopened) parent — the state every turn after a compression rotation sees."""
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    with session["history_lock"]:
+        session["running"] = True
+        server._start_inflight_turn(session, "earlier turn")
+    assert server._ensure_session_db_row(session) is not False
+    agent = _flush_agent(db, key)
+    session["agent"] = agent
+    return sid, key, session, agent, _rotate_to_compression_child(db, key, agent, reopen_parent=True)
+
+
 def test_submit_user_row_lands_where_the_turns_tool_rows_land(monkeypatch, tmp_path):
     """The reporter's exact shape: one typed message, a tool result and the final text — all one session."""
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -147,6 +161,10 @@ def test_expanded_submit_row_is_rewritten_on_the_session_that_owns_it(monkeypatc
         db.close()
 
 
+def _full_rows(db, key):
+    return [(r["role"], str(r["content"])) for r in db.get_messages_as_conversation(key, include_inactive=True)]
+
+
 def test_model_switch_marker_lands_in_the_live_session(monkeypatch, tmp_path):
     """``_append_model_switch_marker`` writes a DURABLE ``role=user`` pivot under ``session_key`` while the
     live agent writes to ``agent.session_id``. On a rotated session the notice is filed under a parent the
@@ -156,12 +174,10 @@ def test_model_switch_marker_lands_in_the_live_session(monkeypatch, tmp_path):
     sid, key, session, agent, child = _rotated_session(monkeypatch, db)
     try:
         server._append_model_switch_marker(session, model="test-model-2", provider="test-provider")
-        full = lambda k: [(r["role"], str(r["content"])) for r in  # noqa: E731
-                           db.get_messages_as_conversation(k, include_inactive=True)]
         prefix = server._MODEL_SWITCH_MARKER_PREFIX
-        assert [r for r in full(child) if prefix in r[1]], f"marker not in the live session: {full(child)}"
-        assert not [r for r in full(key) if prefix in r[1]], (
-            f"marker filed under the rotated-away parent: {full(key)}")
+        assert [r for r in _full_rows(db, child) if prefix in r[1]], f"marker not in the live session: {_full_rows(db, child)}"
+        assert not [r for r in _full_rows(db, key) if prefix in r[1]], (
+            f"marker filed under the rotated-away parent: {_full_rows(db, key)}")
     finally:
         server._sessions.pop(sid, None)
         db.close()
@@ -248,18 +264,6 @@ def test_unrotated_session_keeps_writing_to_session_key(monkeypatch, tmp_path):
         db.close()
 
 
-def _rotated_session(monkeypatch, db):
-    """A live desktop session whose agent already rotated onto a continuation while ``session_key``
-    still names the (reopened) parent — the state every turn after a compression rotation sees."""
-    sid, key = _desktop_session(monkeypatch, db)
-    session = server._sessions[sid]
-    with session["history_lock"]:
-        session["running"] = True
-        server._start_inflight_turn(session, "earlier turn")
-    assert server._ensure_session_db_row(session) is not False
-    agent = _flush_agent(db, key)
-    session["agent"] = agent
-    return sid, key, session, agent, _rotate_to_compression_child(db, key, agent, reopen_parent=True)
 
 
 def test_busy_queue_accept_row_lands_with_the_turn_and_is_addressed_there(monkeypatch, tmp_path):

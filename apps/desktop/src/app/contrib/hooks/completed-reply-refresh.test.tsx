@@ -206,7 +206,12 @@ function deferredHistory() {
   return { promise, resolve }
 }
 
-async function finishTurn() {
+async function finishTurn(persistedTurn?: {
+  row_ids: number[]
+  user_row_id: number
+  final_assistant_row_id: number
+  complete: boolean
+}) {
   send('message.start')
   send('tool.start', { name: 'read_file', tool_id: 'read-tool', args: { path: 'example.txt' } })
   send('tool.complete', { name: 'read_file', tool_id: 'read-tool', result: 'example content' })
@@ -214,7 +219,7 @@ async function finishTurn() {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(100)
   })
-  send('message.complete', { text: FINAL })
+  send('message.complete', { text: FINAL, persisted_turn: persistedTurn })
 }
 
 beforeEach(() => {
@@ -363,6 +368,39 @@ it.each([false, true])(
     expect(texts).toContain('Earlier answer')
   }
 )
+
+it.each([false, true])('keeps a completed tool card when a text-only refresh lands (tile: %s)', async tile => {
+  if (tile) {
+    setActiveSessionId('other-runtime')
+    setSelectedStoredSessionId('other-stored')
+    $sessionTiles.set([{ runtimeId: RUNTIME, storedSessionId: STORED }])
+  }
+
+  render(<Harness tile={tile} />)
+  act(() => cache.updateSessionState(RUNTIME, state => ({ ...state, messages: toChatMessages(history) }), STORED))
+  await finishTurn({ row_ids: [3, 4, 5, 6], user_row_id: 3, final_assistant_row_id: 6, complete: true })
+  expect(
+    $sessionStates
+      .get()
+      [RUNTIME].messages.flatMap(message => message.parts)
+      .some(part => part.type === 'tool-call')
+  ).toBe(true)
+
+  vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+    session_id: STORED,
+    messages: [...history, { id: 6, role: 'assistant', content: FINAL, timestamp: 6 }]
+  })
+  await act(async () => {
+    await refresh()
+  })
+
+  expect(
+    $sessionStates
+      .get()
+      [RUNTIME].messages.flatMap(message => message.parts)
+      .filter(part => part.type === 'tool-call')
+  ).toMatchObject([{ toolCallId: 'read-tool', result: 'example content' }])
+})
 
 it('retries an interrupted reconnect read once on idle, even before that read returns', async () => {
   const stale = deferredHistory()

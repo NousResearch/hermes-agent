@@ -1106,7 +1106,10 @@ def _cute_delegate(a: dict, _r) -> str:
 
 
 def _cute_process_manage(a: dict, _r) -> str:
-    action, sid = a.get("action", "?"), a.get("session_id", "")[:12]
+    action = a.get("action", "?")
+    # `get("session_id", "")` still yields None when a tool call sends an
+    # explicit null — slice it only after coalescing to a string.
+    sid = str(a.get("session_id") or "")[:12]
     return f"┊ ⚙️  proc      {'ls processes' if action == 'list' else f'{action} {sid}'}"
 
 

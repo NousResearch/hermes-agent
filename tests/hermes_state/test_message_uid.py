@@ -83,52 +83,35 @@ class TestMintAndRestore:
         db.append_messages_batch("s", [msg])
         assert _rows(db, "s")[0]["message_uid"] == "0" * 32
 
-    def test_legacy_rows_are_backfilled_once_on_open(self, tmp_path):
+    def test_legacy_rows_are_backfilled_in_bounded_slices_across_opens(self, tmp_path, monkeypatch):
+        """A single full-table UPDATE held the write lock for minutes on a large store; each open now
+        mints at most one chunk past its time budget, keeps earlier uids, and converges."""
+        import hermes_state_schema
+
+        monkeypatch.setattr(hermes_state_schema, "_MESSAGE_UID_BACKFILL_CHUNK", 2)
+        monkeypatch.setattr(hermes_state_schema, "_MESSAGE_UID_BACKFILL_BUDGET_S", 0.0)
         path = tmp_path / "legacy.db"
         first = SessionDB(db_path=path)
         try:
-            _seed(first, "s")
-            # Rows written by a build that predates the column: NULL uid, schema behind v31, no marker.
+            _seed(first, "s", n=5)
+            # Rows written by a build that predates the column: NULL uid, no backfill marker.
             first._conn.execute("UPDATE messages SET message_uid = NULL")
-            first._conn.execute("UPDATE schema_version SET version = 30")
             first._conn.execute("DELETE FROM state_meta WHERE key = 'message_uid_backfill'")
             first._conn.commit()
         finally:
             first.close()
-        second = SessionDB(db_path=path)
-        try:
-            uids = [r["message_uid"] for r in _rows(second, "s")]
-            assert all(u and UID_RE.match(u) for u in uids)
-            assert len(set(uids)) == len(uids)
-            assert second._conn.execute("SELECT version FROM schema_version").fetchone()[0] >= 31
-            assert second.get_meta("message_uid_backfill") == "1"
-            # Idempotent: a second open keeps the backfilled values.
-            second.close()
-            third = SessionDB(db_path=path)
+        seen = []
+        for _ in range(3):
+            handle = SessionDB(db_path=path)
             try:
-                assert [r["message_uid"] for r in _rows(third, "s")] == uids
+                seen.append([r["message_uid"] for r in _rows(handle, "s")])
+                done = handle.get_meta("message_uid_backfill")
             finally:
-                third.close()
-        finally:
-            second.close()
-
-    def test_the_backfill_marker_gates_the_scan_when_the_version_cannot_advance(self, tmp_path):
-        """A store whose schema_version stays behind (no FTS5) must not rescan on every open: the marker,
-        not the version, says the one-time backfill ran."""
-        path = tmp_path / "marked.db"
-        first = SessionDB(db_path=path)
-        try:
-            _seed(first, "s")
-            first._conn.execute("UPDATE messages SET message_uid = NULL")
-            first._conn.execute("UPDATE schema_version SET version = 30")
-            first.set_meta("message_uid_backfill", "1")
-        finally:
-            first.close()
-        second = SessionDB(db_path=path)
-        try:
-            assert [r["message_uid"] for r in _rows(second, "s")] == [None] * 4
-        finally:
-            second.close()
+                handle.close()
+        assert [sum(u is not None for u in uids) for uids in seen] == [2, 4, 5]
+        assert seen[1][:2] == seen[0][:2] and seen[2][:4] == seen[1][:4]
+        assert all(UID_RE.match(u) for u in seen[2]) and len(set(seen[2])) == 5
+        assert done == "1"
 
     def test_a_row_inserted_without_a_uid_by_an_older_writer_gets_one(self, db):
         """The store mints for a build that predates the column (its INSERT binds no uid)."""

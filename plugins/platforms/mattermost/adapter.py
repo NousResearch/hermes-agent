@@ -339,7 +339,7 @@ class MattermostAdapter(BasePlatformAdapter):
                                 kind: str = "file", metadata: _Metadata = None) -> SendResult:
         """Download a URL and upload it as a file attachment (text fallback with the URL on failure)."""
         from gateway.platforms.base import read_httpx_body_with_limit
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import is_safe_url, ssrf_checked_aiohttp_get
 
         async def fallback() -> SendResult:
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
@@ -350,7 +350,7 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         for attempt in range(3):  # retry 5xx/429 and network errors twice with linear backoff
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                async with ssrf_checked_aiohttp_get(self._session, url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     if (resp.status >= 500 or resp.status == 429) and attempt < 2:
                         logger.debug("Mattermost download retry %d/2 for %s (status %d)",
                                      attempt + 1, url[:80], resp.status)
@@ -361,7 +361,7 @@ class MattermostAdapter(BasePlatformAdapter):
                             resp, media_type="image", body=resp.content.iter_chunked(65536))
                         ct = resp.content_type or "application/octet-stream"
                         break
-            except ValueError as exc:  # over gateway.max_inbound_media_bytes; a retry would refetch it
+            except ValueError as exc:  # over the media cap or an SSRF-blocked redirect hop; a retry would repeat it
                 logger.warning("Mattermost: refusing %s: %s", url[:80], exc)
                 return await fallback()
             except (TimeoutError, aiohttp.ClientError) as exc:
@@ -398,12 +398,12 @@ class MattermostAdapter(BasePlatformAdapter):
                 return None
             return p.read_bytes(), p.name, mimetypes.guess_type(p.name)[0] or "image/png"
         from gateway.platforms.base import read_httpx_body_with_limit
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import is_safe_url, ssrf_checked_aiohttp_get
         if not is_safe_url(image_url):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
             return None
         try:
-            async with self._session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with ssrf_checked_aiohttp_get(self._session, image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status >= 400:
                     logger.warning("Mattermost: failed to download image (HTTP %d): %s", resp.status, image_url[:80])
                     return None

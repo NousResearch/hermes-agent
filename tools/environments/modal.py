@@ -4,7 +4,6 @@
 import asyncio
 import base64
 import io
-import itertools
 import logging
 import shlex
 import tarfile
@@ -152,24 +151,12 @@ class ModalEnvironment(BaseEnvironment):
             logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
         ensure_lazy_dep("modal")
         import modal as _modal
-        cred_mounts = []
-        try:
-            from tools.credential_files import get_credential_file_mounts, iter_skills_files, iter_cache_files
-            # from_iterable keeps each source lazy so a failure mid-way leaves the earlier mounts in place
-            for entry in itertools.chain.from_iterable(
-                    fn() for fn in (get_credential_file_mounts, iter_skills_files, iter_cache_files)):
-                cred_mounts.append(
-                    _modal.Mount.from_local_file(entry["host_path"], remote_path=entry["container_path"]))
-        except Exception as e:
-            logger.debug("Modal: could not load credential file mounts: %s", e)
         self._worker.start()
 
         def _create(image_spec: Any) -> None:
             async def _create_sandbox():
                 app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True)
                 create_kwargs = dict(modal_sandbox_kwargs or {})
-                if cred_mounts:
-                    create_kwargs["mounts"] = list(create_kwargs.pop("mounts", [])) + cred_mounts
                 sandbox = await _modal.Sandbox.create.aio(
                     "sleep", "infinity", image=image_spec, app=app,
                     timeout=int(create_kwargs.pop("timeout", 3600)), **create_kwargs)

@@ -427,7 +427,17 @@ def _cmd_list(args: argparse.Namespace) -> int:
         # failing with a mutation refusal (#123733).
         from agent.delegation_context import kanban_path_is_fenced
 
-        if not kanban_path_is_fenced(kb.kanban_home()):
+        # Match the mutation guard at ``_is_delegated_child_cli_mutation``: the
+        # connection fences on ``kanban_db_path()`` (what ``connect``/``write_txn``
+        # open), so a grandchild that moved ``HERMES_KANBAN_HOME`` off the fenced
+        # root but still inherits the dispatcher-pinned ``HERMES_KANBAN_DB`` leaves
+        # ``kanban_home()`` unfenced while the board it reads is read-only. Checking
+        # only ``kanban_home()`` here would run ``recompute_ready`` into a refused
+        # write txn — the #123733 failure this guard exists to prevent.
+        if not (
+            kanban_path_is_fenced(kb.kanban_home())
+            or kanban_path_is_fenced(kb.kanban_db_path())
+        ):
             kb.recompute_ready(conn)
         tasks = kb.list_tasks(
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,

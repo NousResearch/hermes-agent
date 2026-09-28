@@ -2210,14 +2210,13 @@ class TestThresholdTokensCap:
         assert comp.threshold_tokens_cap is None
 
     @pytest.mark.parametrize("context_length", [128_000, 1_000_000])
-    def test_default_config_uses_lower_effective_trigger(self, context_length):
-        """Shipped defaults: the trigger is the LOWER of the ratio trigger and the absolute cap, so a
-        1M window compacts at the cap while windows whose ratio trigger sits below it are untouched."""
+    def test_default_config_compacts_at_the_ratio_trigger(self, context_length):
+        """Shipped defaults carry no token cap: every window compacts at its ratio trigger, so a 1M
+        window is not cut to a fixed count that suits some models and not others."""
         from hermes_cli.config import DEFAULT_CONFIG
 
         default_pct = DEFAULT_CONFIG["compression"]["threshold"]
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
-        assert isinstance(default_cap, int) and 0 < default_cap < 1_000_000
         with patch("agent.context_compressor.get_model_context_length", return_value=context_length):
             ratio_only = ContextCompressor("model-a", threshold_percent=default_pct, quiet_mode=True)
             comp = ContextCompressor(
@@ -2225,10 +2224,8 @@ class TestThresholdTokensCap:
             )
             _ = ratio_only.context_length, comp.context_length
 
-        expected_threshold = min(ratio_only.threshold_tokens, default_cap)
-        assert comp.threshold_tokens == expected_threshold
-        assert comp.should_compress(expected_threshold - 1) is False
-        assert comp.should_compress(expected_threshold) is True
+        assert comp.threshold_tokens_cap is None
+        assert comp.threshold_tokens == ratio_only.threshold_tokens
 
 
 
@@ -2271,23 +2268,16 @@ class TestThresholdTokensCap:
         assert comp.should_compress(200_000) is True    # at cap (below 500K pct)
         assert comp.should_compress(250_000) is True    # above cap
 
-    def test_default_config_cap_survives_model_switch(self):
-        """The shipped cap remains effective when the active model changes."""
-        from hermes_cli.config import DEFAULT_CONFIG
-
+    def test_explicit_cap_survives_model_switch(self):
+        """A user-set cap remains effective when the active model changes."""
+        cap = 200_000
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
-            comp = ContextCompressor(
-                "model-a",
-                threshold_percent=DEFAULT_CONFIG["compression"]["threshold"],
-                threshold_tokens_cap=DEFAULT_CONFIG["compression"]["threshold_tokens"],
-                quiet_mode=True,
-            )
+            comp = ContextCompressor("model-a", threshold_percent=0.50, threshold_tokens_cap=cap, quiet_mode=True)
             _ = comp.context_length
 
-        default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
-        assert comp.threshold_tokens == default_cap
+        assert comp.threshold_tokens == cap
         comp.update_model("model-b", context_length=2_000_000)
-        assert comp.threshold_tokens == default_cap
+        assert comp.threshold_tokens == cap
 
 
 

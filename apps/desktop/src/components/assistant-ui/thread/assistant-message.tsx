@@ -835,26 +835,33 @@ const ErrorRecoveryActions: FC = () => {
 
   // Reveal a local folder through Electron; `logsRoot` is the profile's
   // HERMES_HOME/logs, and its parent is the Hermes data folder itself (what
-  // the user needs to see to free space after a disk-full failure).
-  const openLocalDir = useCallback(async (resolve: (logsRoot: string) => string, failedMessage: string) => {
-    try {
-      const root = await window.hermesDesktop?.logsRoot?.()
+  // the user needs to see to free space after a disk-full failure). Resolved
+  // for the profile that OWNS this session (a tile / Bot chat names it in its
+  // composer scope), not the pooled backend's launch profile (#119080).
+  const ownerProfile = useComposerScope().profile || gatewayProfile
 
-      if (!root) {
-        notifyError(new Error('logs root unavailable'), failedMessage)
+  const openLocalDir = useCallback(
+    async (resolve: (logsRoot: string) => string, failedMessage: string) => {
+      try {
+        const root = await window.hermesDesktop?.logsRoot?.(normalizeProfileKey(ownerProfile))
 
-        return
+        if (!root) {
+          notifyError(new Error('logs root unavailable'), failedMessage)
+
+          return
+        }
+
+        const result = await window.hermesDesktop?.openDir?.(resolve(root))
+
+        if (result && !result.ok) {
+          notifyError(new Error(result.error || 'open failed'), failedMessage)
+        }
+      } catch (error) {
+        notifyError(error, failedMessage)
       }
-
-      const result = await window.hermesDesktop?.openDir?.(resolve(root))
-
-      if (result && !result.ok) {
-        notifyError(new Error(result.error || 'open failed'), failedMessage)
-      }
-    } catch (error) {
-      notifyError(error, failedMessage)
-    }
-  }, [])
+    },
+    [ownerProfile]
+  )
 
   const openLogs = useCallback(
     () => openLocalDir(root => root, copy.errorOpenLogsFailed),

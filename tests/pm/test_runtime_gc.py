@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from pm.runtime import collect_runtime_generations
 
 
@@ -69,6 +71,7 @@ os._exit(0)
     leases = generation / ".leases"
     stale = list(leases.iterdir())
     assert len(stale) == 1
+    os.utime(stale[0], (0, 0))  # past LEASE_GRACE_SECONDS: nobody can still be between create and flock
 
     release = lease_directory(generation)
     try:
@@ -79,3 +82,28 @@ os._exit(0)
         release()
 
     assert list(leases.iterdir()) == []
+
+
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root opens mode-0 files")
+def test_prune_keeps_unopenable_and_just_created_sibling_leases(tmp_path):
+    """A lease this user cannot open (root-owned, `sudo hermes` on the same checkout) or one a
+    peer created but has not flocked yet is HELD: boot never raises, GC never collects."""
+    from hermes_cli.runtime_state import lease_directory, leases_held
+
+    generation = _generation(tmp_path / "pm-runtime", "selected")
+    leases = generation / ".leases"
+    leases.mkdir()
+    foreign = leases / "foreign"
+    foreign.touch()
+    os.utime(foreign, (0, 0))
+    foreign.chmod(0)
+    fresh = leases / "fresh"
+    fresh.touch()
+    try:
+        lease_directory(generation)()
+        assert foreign.exists() and fresh.exists()
+        assert leases_held(generation)
+        os.utime(fresh, (0, 0))
+        assert leases_held(generation) and not fresh.exists()
+    finally:
+        foreign.chmod(0o600)

@@ -34,6 +34,10 @@ LOG = logging.getLogger(__name__)
 # same rule boot_bootstrap._RecordLock states for home maintenance.
 INSTALL_LOCK_TIMEOUT_SECONDS = 10.0
 
+# A lease file younger than this is never a prune candidate: its creator may still sit between
+# ``O_CREAT|O_EXCL`` and ``flock`` (two syscalls; the window is microseconds, the margin generous).
+LEASE_GRACE_SECONDS = 60.0
+
 @contextmanager
 def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_SECONDS):
     """Hold the per-install dependency lock; yields True when held, False when the wait expired.
@@ -209,6 +213,12 @@ def _prune_unlocked_leases(leases: Path) -> bool:
     Kernel locks disappear even when ``execv``, ``os._exit`` or a crash bypasses
     ``atexit``. Cleaning those unlocked files whenever a reader arrives bounds leaks in
     the selected generation too, which generation GC intentionally never visits.
+
+    Fail closed: a lease this user cannot open (root-owned 0o600 from a ``sudo hermes`` on the
+    same checkout) is held, never a boot failure; a lease younger than ``LEASE_GRACE_SECONDS``
+    is held too, because ``lease_directory`` creates and locks in two syscalls and callers
+    outside ``runtime_lock`` (pm workers, launch) would otherwise prune a peer's lease in
+    between — leaving that peer locking an unlinked inode for its lifetime.
     """
     held = False
     for lease in leases.glob("*"):
@@ -216,8 +226,11 @@ def _prune_unlocked_leases(leases: Path) -> bool:
             fd = os.open(lease, os.O_RDWR)
         except FileNotFoundError:
             continue
+        except OSError:
+            held = True
+            continue
         try:
-            if not _lock(fd, wait=False):
+            if time.time() - os.fstat(fd).st_mtime < LEASE_GRACE_SECONDS or not _lock(fd, wait=False):
                 held = True
             else:
                 with suppress(OSError):

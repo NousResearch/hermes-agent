@@ -16,7 +16,7 @@ import type {
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
-import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
+import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, UNICODE_SPINNER_NAMES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -488,9 +488,9 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'pick the busy indicator: kaomoji (default), emoji, unicode (braille), or ascii',
+    help: 'pick the busy indicator: kaomoji (default), emoji, unicode[:spinner] (braille, breathe, orbit, helix, …), or ascii',
     name: 'indicator',
-    usage: `/indicator [${INDICATOR_STYLES.join('|')}]`,
+    usage: '/indicator [ascii|emoji|kaomoji|unicode[:spinner]]',
     run: (arg, ctx) => {
       const value = arg.trim().toLowerCase()
 
@@ -505,7 +505,9 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       if (!(INDICATOR_STYLES as readonly string[]).includes(value)) {
-        return ctx.transcript.sys(`usage: /indicator [${INDICATOR_STYLES.join('|')}]`)
+        return ctx.transcript.sys(
+          `usage: /indicator [ascii|emoji|kaomoji|unicode[:spinner]]  (spinners: ${UNICODE_SPINNER_NAMES.join(', ')})`
+        )
       }
 
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'indicator', value }).then(

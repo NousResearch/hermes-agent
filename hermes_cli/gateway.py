@@ -5593,12 +5593,12 @@ def _status_host_kind() -> str:
 
 def _cmd_status(args):
     from hermes_cli.gateway_profile_lifecycle import print_parked_status
-    if print_parked_status():
-        return
     deep = getattr(args, "deep", False)
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
     snapshot = get_gateway_runtime_snapshot(system=system)
+    if print_parked_status() and not snapshot.running:
+        return
     from hermes_cli.profiles import get_active_profile_name, profile_is_standalone
 
     active_standalone = ((get_active_profile_name() or "default") != "default"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator
 
 
@@ -17,6 +17,27 @@ class AuthenticatedPlatformContext:
     user_id: str
     chat_id: str
     thread_id: str | None = None
+    # Optional: bound when the host adapter can supply them reliably, else left None
+    # (never guessed — a missing field belongs in the consumer's absent-fields report,
+    # never in a made-up value).
+    #
+    # compare=False: authority (__eq__/__hash__, and therefore the forgery check in
+    # resolve_authenticated_platform_context/set_authenticated_platform_context) must depend
+    # only on the 5 identity fields above. These 4 fields are carried alongside identity, not
+    # part of it. With compare=True (the dataclass default) they entered __eq__/__hash__, so an
+    # ambient context populated with all 9 fields stopped equaling a 5-field reconstruction of
+    # the same identity, and the "explicit != ambient" / "context != current" guards raised
+    # ValueError on a call that was accepted before these fields were added. Measured: the exact
+    # construction that passed before commit 8355271a6 now raises "cannot replace ambient
+    # gateway context".
+    message_id: str | None = field(compare=False, default=None)
+    profile_name: str | None = field(compare=False, default=None)
+    # The adapter's session LANE key (``BasePlatformAdapter._event_session_key``). It binds a
+    # callback to the conversation lane that created it. It is deterministic and NOT a secret:
+    # a consumer must not treat it as an unguessable incarnation. What makes an approval
+    # unguessable is the one-time nonce, never this field.
+    session_incarnation: str | None = field(compare=False, default=None)
+    profile_home: str | None = field(compare=False, default=None)
 
 
 _authenticated_platform_context: ContextVar[AuthenticatedPlatformContext | None] = ContextVar(

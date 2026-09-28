@@ -277,11 +277,11 @@ _FRONTING_PLATFORMS = frozenset({"relay"})
 
 def _source_platform(adapter: Any, chat_id: Any) -> Any:
     """The platform a fronting adapter's chat really lives on (the relay connector learned it from
-    the inbound, else its primary platform); the adapter's own platform otherwise. Read-only."""
+    the inbound, else the one platform it fronts); the adapter's own platform otherwise. Read-only."""
     platform = getattr(adapter, "platform", None)
     if str(getattr(platform, "value", platform) or "") not in _FRONTING_PLATFORMS or chat_id in (None, ""):
         return adapter
-    resolve = getattr(adapter, "_chat_platform", None)
+    resolve = getattr(adapter, "_metrics_platform", None)
     try:
         return (resolve(str(chat_id)) if callable(resolve) else None) or adapter
     except Exception:

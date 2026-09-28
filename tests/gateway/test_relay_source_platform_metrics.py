@@ -58,10 +58,26 @@ def test_an_unresolvable_relay_chat_keeps_the_relay_label(rows, chat_platform):
     class _Front:
         platform = Platform.RELAY
 
-        def _chat_platform(self, chat_id):
+        def _metrics_platform(self, chat_id):
             if isinstance(chat_platform, BaseException):
                 raise chat_platform
             return chat_platform
 
     smg._record_delivery(_Front(), SimpleNamespace(success=True), chat_id="c1")
     assert rows("hermes.platform.delivery") == [{"failure_class": "none", "outcome": "sent", "platform": "relay"}]
+
+
+def test_an_unstamped_chat_on_a_multiplatform_connector_is_not_labelled_as_its_primary(rows):
+    relay = _relay("discord")
+    relay._transport._identities = [("discord", "bot-a"), ("slack", "bot-b")]
+    event = _inbound(relay, Platform.RELAY, "c7")
+    smg.start_reply_clock(event.source)
+    asyncio.run(relay.send_final_ledgered(event, "k", "final answer", {}, reply_to=None))
+    assert rows("hermes.platform.delivery") == [{"failure_class": "none", "outcome": "sent", "platform": "relay"}]
+
+
+def test_a_relay_stamped_turn_is_a_gateway_message():
+    from hermes_cli.observability.shared_metrics_contract import task_start_fields
+
+    assert task_start_fields({"platform": "relay"}) == {
+        "entrypoint": "gateway_message", "execution_surface": "gateway", "platform": "relay"}

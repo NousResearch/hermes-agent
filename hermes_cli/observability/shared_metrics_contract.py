@@ -147,7 +147,8 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
     "repeated_errors", "restart_limit", "session_busy", "shutdown",
 })
 # Surfaces that are not messaging platforms keep their own execution_surface value.
-_CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin"}
+# ``relay``: a connector inbound whose platform neither the inbound nor a single-platform connector names.
+_CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin", "relay"}
 TOOL_NAMES = BUILTIN_TOOL_NAMES | {"mcp", "plugin", "unknown"}
 TOOL_ERROR_CLASSES = frozenset({
     "blocked", "contract_violation", "exception", "interrupted", "invalid_arguments", "none",
@@ -1246,6 +1247,8 @@ def skill_provenance(value: Any) -> str:
 
 _SURFACE_ALIASES = {
     "api_server": "api",
+    # The relay connector's own platform: an inbound it could not stamp is still a gateway message.
+    "relay": "gateway",
     **dict.fromkeys(("cron", "scheduler", "scheduled"), "scheduled_task"),
 }
 _KNOWN_GATEWAY_PLATFORMS = frozenset({"discord", "email", "slack", "telegram", "teams", "whatsapp"})

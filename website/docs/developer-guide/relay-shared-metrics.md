@@ -313,8 +313,10 @@ itself ships.
 | `hermes.gateway.reply_latency` | platform, first-response bucket (`lt_2s` … `gte_60s`) | Time from an accepted inbound message to the first visible reply text (stream first chunk or final message). |
 
 Replies the relay connector carries report the platform the conversation lives
-on (the inbound's platform, else the platform the connector fronts), never
-`relay`; `relay` remains only when neither is known.
+on (the inbound's platform, else the platform the connector fronts when it
+fronts exactly one), never `relay`; `relay` remains only when neither is known.
+A turn whose inbound the connector did not stamp is still a gateway message
+(`execution_surface=gateway`, task/session `platform=relay`).
 | `hermes.cron.run` | outcome (`success`/`failed`/`missed`/`skipped`), delivery kind (`local`/`platform`/`webhook`/`none`/`other`), duration bucket | Do scheduled jobs run, fail, get skipped by a gate or overlap, or get missed while Hermes was down. Job names, prompts, schedules and targets are never included. |
 | `hermes.startup.latency` | surface (`cli`, `tui`, `desktop_attach`, `gateway_boot`, `serve_boot`), latency bucket (`lt_500ms` … `gte_10s`) | How long each surface takes from launch to usable, so startup regressions show per surface and release. One row per process start: CLI = process start to first rendered prompt (or a `-q` query dispatched; Kanban workers excluded), TUI = Ink process start to gateway ready, Desktop = app start to backend attached, gateway = process start to adapters connected, `hermes serve` = process start to listening. Not counted: a process re-exec'd in place (e.g. `hermes sessions browse` resuming a session) and each dashboard Chat-tab terminal; a TUI/Desktop reconnect to the same backend never re-counts. |
 | `hermes.update.run` | kind, outcome, failed_stage, duration_bucket, from_version_age_bucket, apply_mode | Whether updates succeed, how long they take, where they fail, and how stale the version being updated from was. `hermes update` rows are derived from the final update receipt, once per run (`kind` is `desktop` when Desktop's source-checkout hand-off ran it); a run the pre-update interpreter finishes is parked locally with only these fields, only while collection is on, and counted by the next start; Desktop packaged self-updates (`apply_mode=package`) are reported once by the app, after the restart that applies them. |

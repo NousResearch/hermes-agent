@@ -2487,9 +2487,15 @@ def _module_hermes_argv() -> list[str]:
     itself. Preferring it makes the worker independent of both cwd and the
     caller's environment. Falls back to the interpreter form only when no
     launcher is published (e.g. isolated test fixtures).
+
+    POSIX-only: the extensionless shim is what this prefers, and Windows
+    publishes ``hermes.exe``/``hermes.cmd`` instead.
     """
     launcher = Path(__file__).resolve().parent.parent / ".hermes" / "bin" / "hermes"
-    if launcher.is_file() and os.access(launcher, os.X_OK):
+    # ``X_OK`` is POSIX-only: CPython answers Windows from file attributes, so
+    # there it is an existence check and a non-executable file would be handed
+    # to Popen as argv[0]. Windows has no extensionless launcher to find.
+    if not _kb._IS_WINDOWS and launcher.is_file() and os.access(launcher, os.X_OK):
         return [str(launcher)]
     return [sys.executable, "-m", "hermes_cli.main"]
 

@@ -71,36 +71,99 @@ def test_module_argv_prefers_published_launcher():
     assert kbd._module_hermes_argv() == [str(LAUNCHER)]
 
 
-def test_module_argv_falls_back_to_interpreter(monkeypatch):
-    """With no launcher published, the interpreter form is preserved."""
-    monkeypatch.setattr(kbd, "Path", _AlwaysMissingPath)
+def test_module_argv_falls_back_to_interpreter(fake_repo, monkeypatch):
+    """With no launcher published, the interpreter form is preserved.
+
+    The launcher directory exists but stays empty, so this exercises the real
+    ``is_file()`` miss rather than a stand-in reporting a miss.
+    """
+    monkeypatch.setattr(kbd, "__file__", str(fake_repo / "hermes_cli" / "kanban_db_dispatch.py"))
     argv = kbd._module_hermes_argv()
     assert argv == [sys.executable, "-m", "hermes_cli.main"]
 
 
-class _AlwaysMissingPath:
-    """Stand-in whose launcher path never reports as a file.
+@pytest.mark.platforms("posix")
+def test_non_executable_launcher_is_not_preferred(fake_repo, monkeypatch):
+    """The ``X_OK`` half must actually bite: a non-executable file sitting at
+    the launcher path is not a spawnable command, so it must not be preferred.
 
-    ``parent`` is a property, matching pathlib — the production code chains
-    ``Path(...).resolve().parent.parent / "..."``, so a method here would make
-    ``.parent.parent`` an AttributeError instead of a path.
+    Native POSIX, nothing patched — ``_IS_WINDOWS`` is genuinely False here, so
+    this exercises the real branch rather than a faked platform flag (the
+    tree's convention: see ``tests/tools/test_windows_native_support.py``).
     """
+    monkeypatch.setattr(kbd, "__file__", str(fake_repo / "hermes_cli" / "kanban_db_dispatch.py"))
+    launcher = fake_repo / ".hermes" / "bin" / "hermes"
+    launcher.write_text('#!/bin/sh\nexec true "$@"\n', encoding="utf-8")
+    launcher.chmod(0o644)
+    assert launcher.is_file()
+    assert not os.access(launcher, os.X_OK)
 
-    def __init__(self, *_args, **_kwargs):
-        pass
+    assert kbd._module_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
 
-    def resolve(self):
-        return self
 
-    @property
-    def parent(self):
-        return self
+@pytest.mark.platforms("posix")
+def test_executable_launcher_is_preferred(fake_repo, monkeypatch):
+    """The same seam with the execute bit set: now the launcher IS preferred.
 
-    def __truediv__(self, _other):
-        return self
+    Paired with the test above so the pair pins both halves of the gate — a
+    bare existence check fails the first, a broken ``X_OK`` check the second.
+    """
+    monkeypatch.setattr(kbd, "__file__", str(fake_repo / "hermes_cli" / "kanban_db_dispatch.py"))
+    launcher = fake_repo / ".hermes" / "bin" / "hermes"
+    launcher.write_text('#!/bin/sh\nexec true "$@"\n', encoding="utf-8")
+    launcher.chmod(0o755)
 
-    def is_file(self):
-        return False
+    assert kbd._module_hermes_argv() == [str(launcher)]
+
+
+@pytest.mark.platforms("posix")
+def test_directory_at_launcher_path_is_not_preferred(fake_repo, monkeypatch):
+    """A DIRECTORY named ``hermes`` must not become argv[0].
+
+    This is the half ``is_file()`` carries. A directory is ``X_OK`` on POSIX
+    (it is searchable), so without the ``is_file()`` check a directory at the
+    launcher path would be preferred and handed to ``Popen`` as an executable
+    command. Dropping ``is_file()`` from the gate makes this test fail.
+    """
+    monkeypatch.setattr(kbd, "__file__", str(fake_repo / "hermes_cli" / "kanban_db_dispatch.py"))
+    launcher = fake_repo / ".hermes" / "bin" / "hermes"
+    launcher.mkdir()
+    assert not launcher.is_file()
+    assert os.access(launcher, os.X_OK), "precondition: a directory is X_OK on POSIX"
+
+    assert kbd._module_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+
+@pytest.mark.platforms("windows")
+def test_extensionless_launcher_is_never_preferred_on_windows(fake_repo, monkeypatch):
+    """Windows publishes ``hermes.exe``/``hermes.cmd``, not this shim.
+
+    ``os.access(..., os.X_OK)`` degrades to an existence check there (CPython
+    answers from the file attributes), so without an explicit platform guard a
+    plain non-executable file at ``.hermes/bin/hermes`` would be preferred as
+    argv[0] and fail to spawn. Native Windows lane, nothing patched.
+    """
+    monkeypatch.setattr(kbd, "__file__", str(fake_repo / "hermes_cli" / "kanban_db_dispatch.py"))
+    launcher = fake_repo / ".hermes" / "bin" / "hermes"
+    launcher.write_text("not a launcher\n", encoding="utf-8")
+
+    assert kbd._module_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+
+@pytest.fixture
+def fake_repo(tmp_path):
+    """A synthetic repo root so production resolves a REAL launcher path.
+
+    ``_module_hermes_argv`` derives the launcher from its own ``__file__``, so
+    pointing that at ``<tmp>/repo/hermes_cli/`` makes the production chain
+    (``resolve().parent.parent / ".hermes" / "bin" / "hermes"``) land inside the
+    temp dir with no stand-in and no patch of ``pathlib``.
+    """
+    (tmp_path / "hermes_cli").mkdir(parents=True)
+    (tmp_path / ".hermes" / "bin").mkdir(parents=True)
+    return tmp_path
+
+
 
 
 @pytest.mark.skipif(not LAUNCHER_PUBLISHED, reason="no published launcher in this checkout")

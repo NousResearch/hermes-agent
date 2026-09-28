@@ -1,6 +1,6 @@
 """Source orchestration uses real node-deps/npm in an isolated checkout.
 
-Only PM's tool acquisition is substituted with the host's node/npm. Small
+Only PM's tool acquisition (and its installed-node record) is substituted with the host's node/npm. Small
 workspace scripts stand in for the expensive UI compilers; subprocess failures,
 locked dependency selection, environment propagation and publication are real.
 """
@@ -12,11 +12,19 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 import pm
 from pm.package import Runner
+
+
+def use_host_node_as_pm_node(monkeypatch):
+    """Freshness reads run only under PM's recorded Node; stand the host's node in for it."""
+    node, real = Path(shutil.which("node")), pm.installed_package
+    monkeypatch.setattr(pm, "installed_package", lambda name, **kwargs: (
+        SimpleNamespace(binary=node) if name == "node" else real(name, **kwargs)))
 
 
 def copy_freshness_scripts(root):
@@ -108,6 +116,7 @@ def source_checkout(tmp_path, monkeypatch):
             [str(Path(npm).parent), str(Path(node).parent), os.environ["PATH"]])})
 
     monkeypatch.setattr(pm, "ensure", acquire)
+    use_host_node_as_pm_node(monkeypatch)
     root = tmp_path / "source with spaces"
     root.mkdir()
     workspaces = ["ui-tui", "web", "apps/desktop", "unrelated"]

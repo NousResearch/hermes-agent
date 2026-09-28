@@ -38,7 +38,11 @@ def _secret_result(var_name: str, value: str) -> dict:
     if not value:
         cprint(f"\n{_DIM}  ⏭ Secret entry skipped{_RST}")
         return _skipped(var_name, "cancelled", "Secret setup was skipped.")
-    stored = save_env_value_secure(var_name, value)
+    try:
+        stored = save_env_value_secure(var_name, value)
+    except ValueError as exc:  # a locked or denylisted key: the skill setup only logs it, so say why here
+        cprint(f"\n  ✗ {exc}")
+        raise
     cprint(f"\n{_DIM}  ✓ Stored secret in {display_hermes_home()}/.env as {var_name}{_RST}")
     return {
         **stored,

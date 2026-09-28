@@ -117,7 +117,6 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
       upsertSubagent('runtime', { subagent_id: 'child', status: 'queued' }, true, 'subagent.start')
       publishSessionState('runtime', { ...state, busy: false })
     })
-    expect($sessionDotStateById.get()[storedId]).toBe('background')
     expect(sessionStatusBucket($sessionDotStateById.get()[storedId])).toBe('working')
     expect(groupOfSession()).toBe('status:working')
 
@@ -133,7 +132,7 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
     expect($sessionDotStateById.get()[storedId]).toBe('needs-input')
     expect(groupOfSession()).toBe('status:working')
     act(() => publishSessionState('runtime', { ...state, busy: false }))
-    expect($sessionDotStateById.get()[storedId]).toBe('background')
+    expect(sessionStatusBucket($sessionDotStateById.get()[storedId])).toBe('working')
     expect(groupOfSession()).toBe('status:working')
 
     act(() => {

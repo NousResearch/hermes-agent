@@ -450,11 +450,26 @@ def _ensure_session_db_row(session: dict) -> bool:
                         session.pop("pending_archived", None)
                 except Exception:
                     logger.debug("failed to apply pending archived flag", exc_info=True)
+            _schedule_row_git_meta(session, key, db)
         except Exception as exc:
             # Disk-full is not a soft failure: swallowed here, prompt.submit returns {"status":"streaming"} and the
             # message vanishes silently.
             _workdir_reraise_disk_full(exc, "failed to persist desktop session row")
     return True
+
+
+def _schedule_row_git_meta(session: dict, key: str, db) -> None:
+    """Git-enrich a lazily created row once per live session. The row lands here with its cwd on the first submit, so
+    ``_hydrate_session_cwd`` (which ran when no row existed) never claimed a probe, and a desktop row kept NULL
+    git_branch/git_repo_root for life: its lane fell back to a fake ``main`` label (#108784). Probes the row's own
+    cwd (the upsert never overwrites it), and only when enrichment is missing."""
+    if session.get("row_git_meta_checked"):
+        return
+    session["row_git_meta_checked"] = True
+    row = (db.get_session(key) if hasattr(db, "get_session") else None) or {}
+    cwd = str(row.get("cwd") or "").strip()
+    if cwd and not (row.get("git_branch") and row.get("git_repo_root")):
+        _persist_session_cwd_and_schedule_git_meta(session, cwd, db=db)
 
 
 def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:

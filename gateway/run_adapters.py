@@ -235,7 +235,8 @@ class GatewayAdapterLifecycleMixin:
             **({"queued_at": now} if queued else {}),
             "credential_claim": self._adapter_credential_claim(platform, adapter),
             "listener_claim": self._adapter_listener_claim(platform, adapter),
-            "inbound_dedup": inbound_dedup_caches(adapter),
+            # adapter is None for a platform queued without one (plugin not loaded at boot, #126356).
+            "inbound_dedup": inbound_dedup_caches(adapter) if adapter is not None else {},
         }
 
     def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter) -> bool:
@@ -788,8 +789,23 @@ class GatewayAdapterLifecycleMixin:
         try:
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                self._drop_from_reconnect_queue(platform, "adapter creation returned None")
+                if info.get("adapter_unavailable"):
+                    # The platform's plugin has not (re)registered an adapter yet — the loader's
+                    # bounded retry or a mid-run install/reload lands here eventually. Stay queued
+                    # like any other retryable failure instead of dropping the platform forever.
+                    backoff = self._bump_reconnect_backoff(
+                        platform, info, attempt, "adapter_unavailable",
+                        "no adapter available (plugin not loaded yet)",
+                    )
+                    logger.info(
+                        "Reconnect %s: no adapter available yet (plugin not loaded), next retry in %ds",
+                        platform.value, backoff,
+                    )
+                else:
+                    self._drop_from_reconnect_queue(platform, "adapter creation returned None")
                 return
+            # Creation works again; a later None then means the plugin went away mid-run (old semantics).
+            info.pop("adapter_unavailable", None)
             carry_inbound_dedup(info.get("inbound_dedup"), adapter)
             self._wire_adapter_handlers(adapter)
             # is_reconnect keeps the server-side update queue so offline-period messages are delivered.

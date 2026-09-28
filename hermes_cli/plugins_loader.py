@@ -30,6 +30,7 @@ from hermes_cli.plugins_state import _plugin_settings_entry
 
 if TYPE_CHECKING:  # pragma: no cover
     from hermes_cli.plugins import LoadedPlugin, PluginContext
+    from hermes_cli.plugins_load_retry import PluginLoadRetryScheduler
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -183,6 +184,15 @@ def _dist_installed(req: str) -> Optional[bool]:
 
 
 class PluginLoaderMixin:
+    @property
+    def _load_retry(self) -> "PluginLoadRetryScheduler":
+        """Lazily created per-manager retry scheduler (late import keeps the module graph acyclic)."""
+        from hermes_cli.plugins_load_retry import PluginLoadRetryScheduler
+        sched = self.__dict__.get("_load_retry_scheduler")
+        if sched is None:
+            sched = self.__dict__["_load_retry_scheduler"] = PluginLoadRetryScheduler(self)  # type: ignore[arg-type]
+        return sched
+
     def on_plugin_loaded(self, callback: Callable[[List[Dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
         :meth:`discover_and_load` (never emitted by an install RPC) with one
@@ -490,6 +500,11 @@ class PluginLoaderMixin:
             # from later event dispatch.
             self._remove_plugin_subscriptions(plugin_key)
             logger.warning("Failed to load plugin '%s': %s", manifest.name, _load_error_text(exc), exc_info=_PLUGINS_DEBUG)
+            # A transient boot failure (deadline under I/O contention, a locked db) must not cost
+            # the plugin for the process lifetime (#126356): schedule a bounded delayed retry.
+            # Permanent skips never reach this path — version/compat gates return early above, and
+            # "no register()" comes back as a normal False, not an exception.
+            self._load_retry.seed(manifest, plugin_key)
         # The failure path swept this plugin's whole ledger (not just the registration_start slice), so
         # discovery-time pre-registrations are gone too.
         # There is no live tool left to credit — attribution and the registry agree at zero. Only the

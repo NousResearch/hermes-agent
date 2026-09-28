@@ -107,12 +107,120 @@ struct UpdateMarkerGuard {
     owned: bool,
 }
 
-/// Never treat a marker older than this as a live update. Mirrors
-/// UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts and
-/// UPDATE_MARKER_MAX_AGE_SECONDS in hermes_cli/update_lock.py — all three read
-/// this one file, so a shorter ceiling in any of them would steal a lock the
-/// others still consider live.
+/// Past this age a live pid is only honored once its identity is verified
+/// (`marker_owner_is_live`). The ceiling exists because the OS can recycle a
+/// dead updater's pid onto an unrelated process — not because updates are
+/// short: a Windows update with a desktop rebuild takes 40+ minutes (#109795).
+/// Mirrors UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts
+/// and UPDATE_MARKER_MAX_AGE_SECONDS in hermes_cli/update_lock.py — all three
+/// read this one file and must agree on when a lock is live.
 const UPDATE_MARKER_MAX_AGE_SECS: u64 = 20 * 60;
+
+/// The owner wrote the marker (or was spawned just before the desktop wrote
+/// it), so it was created no later than the marker file's last write; a pid
+/// created after that write is recycled. Slack for 1s `ps` resolution. Mirrors
+/// PID_REUSE_TOLERANCE_SECONDS in hermes_cli/update_lock.py.
+const PID_REUSE_TOLERANCE_SECS: u64 = 5;
+
+/// The liveness decision shared (by contract) with update_lock.py and the
+/// Electron gate: a dead pid is never live; a live pid inside the ceiling is;
+/// past the ceiling a live pid stays live only when its process predates the
+/// marker's last write. A recycled (created after the write) or unverifiable
+/// pid still expires on age.
+fn marker_owner_is_live(
+    pid_alive: bool,
+    age_secs: u64,
+    owner_started_at: Option<u64>,
+    marker_written_at: Option<u64>,
+) -> bool {
+    if !pid_alive {
+        return false;
+    }
+    if age_secs <= UPDATE_MARKER_MAX_AGE_SECS {
+        return true;
+    }
+    match (owner_started_at, marker_written_at) {
+        (Some(started), Some(written)) => started <= written + PID_REUSE_TOLERANCE_SECS,
+        _ => false,
+    }
+}
+
+/// Seconds from `ps -o etime=` (`[[dd-]hh:]mm:ss`, shared by macOS and procps).
+#[cfg_attr(windows, allow(dead_code))]
+fn parse_ps_etime(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let (days, clock) = match text.rsplit_once('-') {
+        Some((d, c)) => (d.parse::<u64>().ok()?, c),
+        None => (0, text),
+    };
+    let parts: Vec<&str> = clock.split(':').collect();
+    if !(2..=3).contains(&parts.len()) {
+        return None;
+    }
+    let mut secs: u64 = 0;
+    for part in parts {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        secs = secs * 60 + part.parse::<u64>().ok()?;
+    }
+    Some(secs + days * 86_400)
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Wall-clock creation time (unix seconds) of `pid`, or `None` when
+/// unverifiable.
+#[cfg(windows)]
+fn process_started_at(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // 100ns ticks between 1601-01-01 and 1970-01-01.
+    const FILETIME_UNIX_EPOCH: u64 = 116_444_736_000_000_000;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        let ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
+        CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        let ticks = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
+        ticks
+            .checked_sub(FILETIME_UNIX_EPOCH)
+            .map(|t| t / 10_000_000)
+    }
+}
+
+#[cfg(not(windows))]
+fn process_started_at(pid: u32) -> Option<u64> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "etime=", "-p", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let elapsed = parse_ps_etime(&String::from_utf8_lossy(&out.stdout))?;
+    Some(unix_now_secs().saturating_sub(elapsed))
+}
 
 /// The pid + age of a confirmed-live update holding the marker.
 struct MarkerOwner {
@@ -121,8 +229,9 @@ struct MarkerOwner {
 }
 
 /// Read the marker and report a live owner, if any. `None` for every "no live
-/// update" case — absent, unreadable, malformed, dead pid, or past the ceiling
-/// — matching `readLiveUpdateMarker` in the Electron gate. Never panics.
+/// update" case — absent, unreadable, malformed, dead pid, or a recycled /
+/// unverifiable pid past the ceiling (`marker_owner_is_live`) — matching
+/// `readLiveUpdateMarker` in the Electron gate. Never panics.
 ///
 /// A marker judged stale (dead pid, past the age ceiling, or unparseable) is
 /// REMOVED here, mirroring `read_live_update` in `hermes_cli/update_lock.py`.
@@ -148,18 +257,23 @@ fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
         let _ = std::fs::remove_file(path);
         return None;
     };
-    let started_at: u64 = lines.next().unwrap_or("").trim().parse().unwrap_or(0);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let age_secs = now.saturating_sub(started_at);
-    if age_secs > UPDATE_MARKER_MAX_AGE_SECS || !pid_is_alive(pid) {
+    let started_at: Option<u64> = lines.next().and_then(|l| l.trim().parse().ok());
+    let age_secs = unix_now_secs().saturating_sub(started_at.unwrap_or(0));
+    let alive = pid_is_alive(pid);
+    // Only a well-formed marker past the ceiling pays for the identity probe.
+    let probe = alive && age_secs > UPDATE_MARKER_MAX_AGE_SECS && started_at.is_some();
+    let owner_started_at = if probe { process_started_at(pid) } else { None };
+    let marker_written_at = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    if !marker_owner_is_live(alive, age_secs, owner_started_at, marker_written_at) {
         // Stale marker: the owning update is gone (crashed before its Drop
-        // ran) or past the staleness ceiling. Self-heal by removing it now —
-        // exactly like read_live_update in hermes_cli/update_lock.py — so the
-        // next acquire writes a fresh marker instead of refusing on stale
-        // bytes for the rest of the ceiling.
+        // ran), or past the ceiling with a recycled / unverifiable pid.
+        // Self-heal by removing it now — exactly like read_live_update in
+        // hermes_cli/update_lock.py — so the next acquire writes a fresh
+        // marker instead of refusing on stale bytes for the rest of the ceiling.
         let _ = std::fs::remove_file(path);
         return None;
     }
@@ -291,8 +405,8 @@ impl UpdateMarkerGuard {
                 // Repeated acquisition in this process is intentionally
                 // re-entrant because the desktop may have pre-written our pid.
                 // The desktop races ahead and pre-writes our pid. Adopt that
-                // claim verbatim: rewriting started_at here lets retries reset
-                // a wedged updater's age before the stale ceiling can clear it.
+                // claim verbatim so the holder age stays the whole chain's
+                // acquisition time (#74761).
                 return Ok(Self { path, owned: true });
             }
             return Err(owner);
@@ -315,8 +429,8 @@ impl UpdateMarkerGuard {
     /// The updater still owns a Tauri/Cocoa event loop while it relaunches the
     /// desktop, and that loop can outlive `app.exit(0)`. Relying on `Drop`
     /// alone therefore leaves a *successful* update looking active — a live
-    /// pid holding a fresh marker — which blocks desktop startup and every
-    /// other updater for the full age ceiling. Idempotent: `Drop` still runs
+    /// pid holding its marker — which blocks desktop startup and every other
+    /// updater for as long as the process lingers. Idempotent: `Drop` still runs
     /// and tolerates an already-removed marker.
     fn complete(&self) {
         if !self.owned {
@@ -694,7 +808,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // relaunch: this process can stay wedged in its native event loop even
     // after a successful app.exit(), and a live pid on a fresh marker would
     // make a completed update look active — blocking desktop startup and
-    // every other updater until the age ceiling expires.
+    // every other updater for as long as this process lingers.
     _update_marker.complete();
 
     if let Some(target_app) = launch_target {
@@ -1495,7 +1609,7 @@ mod tests {
         // #74761: desktop writeUpdateMarker(hermesHome, child.pid) races ahead
         // of UpdateMarkerGuard::acquire. The marker names US; refusing it made
         // every in-app desktop update loop forever. Adopt it without resetting
-        // the holder age, so a wedged updater still reaches the stale ceiling.
+        // the holder age (the shared acquisition time of the whole chain).
         let dir = unique_tmp_dir("marker-own-pid");
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join(".hermes-update-in-progress");
@@ -1668,23 +1782,55 @@ mod tests {
     }
 
     #[test]
-    fn acquire_reclaims_a_marker_past_the_age_ceiling() {
-        let dir = unique_tmp_dir("marker-stale-age");
+    fn acquire_refuses_a_live_owner_past_the_age_ceiling() {
+        // #109795: a slow update (40+ min on Windows with a desktop rebuild)
+        // must keep its lock. The owner predates the marker write, so its
+        // identity is verified and age alone must not admit a second updater.
+        let dir = unique_tmp_dir("marker-slow-owner");
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join(".hermes-update-in-progress");
+        let mut foreign = spawn_foreign_holder();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let long_ago = unix_now_secs().saturating_sub(UPDATE_MARKER_MAX_AGE_SECS + 60);
+        std::fs::write(&marker, format!("{}\n{long_ago}", foreign.id())).unwrap();
 
-        // Our own (live) pid, but started well past the ceiling: a wedged
-        // updater must not hold the lock forever.
-        let long_ago = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            .saturating_sub(UPDATE_MARKER_MAX_AGE_SECS + 60);
-        std::fs::write(&marker, format!("{}\n{long_ago}", std::process::id())).unwrap();
+        let owner = UpdateMarkerGuard::acquire(marker.clone())
+            .err()
+            .expect("a verified live owner past the ceiling must still block");
+        assert_eq!(owner.pid, foreign.id());
+        assert!(marker.exists(), "the live owner's marker must survive");
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acquire_reclaims_a_recycled_pid_past_the_age_ceiling() {
+        // The reason the ceiling exists: a dead updater's pid reused by an
+        // unrelated process, which was created after the marker's last write.
+        let dir = unique_tmp_dir("marker-recycled");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".hermes-update-in-progress");
+        let mut foreign = spawn_foreign_holder();
+        let long_ago = unix_now_secs().saturating_sub(UPDATE_MARKER_MAX_AGE_SECS + 60);
+        std::fs::write(&marker, format!("{}\n{long_ago}", foreign.id())).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&marker)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(long_ago))
+            .unwrap();
 
         let guard = UpdateMarkerGuard::acquire(marker.clone())
-            .unwrap_or_else(|_| panic!("a marker past the ceiling must be reclaimable"));
+            .unwrap_or_else(|_| panic!("a recycled pid past the ceiling must be reclaimable"));
+        let body = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            body.lines().next().unwrap().trim().parse::<u32>().unwrap(),
+            std::process::id()
+        );
         drop(guard);
+        let _ = foreign.kill();
+        let _ = foreign.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1717,14 +1863,18 @@ mod tests {
     fn live_marker_owner_removes_marker_past_the_age_ceiling() {
         let dir = unique_tmp_dir("marker-read-stale-age");
         let marker = dir.join(".hermes-update-in-progress");
-        // Our own (live) pid, but started past the ceiling: age alone must
-        // stale it, and the stale file must not survive to wedge the next run.
-        let long_ago = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            .saturating_sub(UPDATE_MARKER_MAX_AGE_SECS + 60);
+        // Our own (live) pid, but past the ceiling AND created after the
+        // marker's last write — i.e. a recycled pid (#109795: a verified
+        // owner would keep the lock). Age must stale it, and the stale file
+        // must not survive to wedge the next run.
+        let long_ago = unix_now_secs().saturating_sub(UPDATE_MARKER_MAX_AGE_SECS + 60);
         std::fs::write(&marker, format!("{}\n{long_ago}", std::process::id())).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&marker)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(long_ago))
+            .unwrap();
 
         assert!(live_marker_owner(&marker).is_none());
         assert!(
@@ -1900,6 +2050,46 @@ mod tests {
             let mut status: libc::c_int = 0;
             libc::waitpid(pid, &mut status, 0);
         }
+    }
+
+    #[test]
+    fn marker_owner_is_live_decision_table() {
+        let past = UPDATE_MARKER_MAX_AGE_SECS + 1;
+        let w = 1_000_000;
+        assert!(!marker_owner_is_live(false, 5, None, Some(w)));
+        assert!(marker_owner_is_live(true, 5, None, Some(w)));
+        assert!(!marker_owner_is_live(true, past, None, Some(w)));
+        assert!(!marker_owner_is_live(true, past, Some(w - 1), None));
+        assert!(marker_owner_is_live(true, past, Some(w - 1), Some(w)));
+        let edge = w + PID_REUSE_TOLERANCE_SECS;
+        assert!(marker_owner_is_live(true, past, Some(edge), Some(w)));
+        assert!(!marker_owner_is_live(true, past, Some(edge + 1), Some(w)));
+        assert!(!marker_owner_is_live(false, past, Some(w - 1), Some(w)));
+    }
+
+    #[test]
+    fn parse_ps_etime_formats() {
+        assert_eq!(parse_ps_etime("05:07"), Some(307));
+        assert_eq!(parse_ps_etime("  01:02:03\n"), Some(3723));
+        assert_eq!(parse_ps_etime("2-00:00:01"), Some(172_801));
+        assert_eq!(parse_ps_etime(""), None);
+        assert_eq!(parse_ps_etime("abc"), None);
+        assert_eq!(parse_ps_etime("1:2:3:4"), None);
+        assert_eq!(parse_ps_etime("x-01:02"), None);
+    }
+
+    #[test]
+    fn process_started_at_reads_a_live_child() {
+        let before = unix_now_secs();
+        let mut child = spawn_foreign_holder();
+        let started = process_started_at(child.id()).expect("a live child's creation time");
+        assert!(
+            started + PID_REUSE_TOLERANCE_SECS >= before
+                && started <= unix_now_secs() + PID_REUSE_TOLERANCE_SECS,
+            "started={started} before={before}"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

@@ -19,10 +19,18 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Keep in sync with UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts:
-# a shorter ceiling here would let Python steal a lock Electron still considers live.
-# A full update (git pull + uv sync + desktop rebuild) is minutes.
+# Keep in sync with UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts and
+# UPDATE_MARKER_MAX_AGE_SECS in apps/bootstrap-installer/src-tauri/src/update.rs.
+# Past this age a live pid is only honored once its identity is verified: the ceiling exists
+# because the OS can recycle a dead updater's pid onto an unrelated process, not because an
+# update is short (a Windows update with a desktop rebuild can take 40+ minutes, #109795).
 UPDATE_MARKER_MAX_AGE_SECONDS = 20 * 60
+
+# A marker's owner is the process that wrote it (or was spawned just before the desktop wrote
+# it), so the owner was created no later than the marker file's last write. A pid whose process
+# was created AFTER that write is a recycled pid. The slack absorbs one-second ps resolution and
+# clock granularity; keep in sync with the Rust and Electron readers.
+PID_REUSE_TOLERANCE_SECONDS = 5
 
 MARKER_NAME = ".hermes-update-in-progress"
 
@@ -76,6 +84,91 @@ def _handoff_pid() -> int | None:
     return pid if pid > 0 else None
 
 
+def _windows_creation_filetime(pid: int) -> int | None:
+    """Creation time of ``pid`` as a Windows FILETIME (100ns ticks since 1601), or ``None``."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+            return None
+        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _parse_ps_etime(text: str) -> int | None:
+    """Seconds from ``ps -o etime=`` (``[[dd-]hh:]mm:ss``, the format macOS and procps share)."""
+    days, _, clock = text.strip().rpartition("-")
+    parts = clock.split(":")
+    if not 2 <= len(parts) <= 3 or not all(p.isdigit() for p in parts) or (days and not days.isdigit()):
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return seconds + int(days or 0) * 86400
+
+
+def _process_started_at(pid: int) -> float | None:
+    """Wall-clock creation time (unix seconds) of ``pid``, or ``None`` when unverifiable.
+
+    psutil first; the ``-I -S -B`` takeover child has no site-packages (and psutil can be
+    denied another user's process), so fall back to
+    GetProcessTimes on Windows and ``ps -o etime=`` elsewhere (the same probe the Rust and
+    Electron readers use).
+    """
+    try:
+        import psutil
+        return float(psutil.Process(pid).create_time())
+    except Exception:  # ImportError, or AccessDenied for another user's process on macOS
+        pass
+    if sys.platform == "win32":
+        try:
+            filetime = _windows_creation_filetime(pid)
+        except (OSError, AttributeError, ValueError):
+            return None
+        return None if filetime is None else (filetime - 116444736000000000) / 10_000_000
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "etime=", "-p", str(pid)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    elapsed = _parse_ps_etime(out)
+    return None if elapsed is None else time.time() - elapsed
+
+
+def marker_owner_is_live(
+    *, pid_alive: bool, age_seconds: float, owner_started_at: float | None, marker_written_at: float | None,
+) -> bool:
+    """The liveness decision shared (by contract) with the Rust and Electron readers.
+
+    A dead pid is never live. A live pid inside the age ceiling is live. Past the ceiling a live
+    pid stays live only when its identity is verified — its process predates the marker's last
+    write — so a slow update is never handed to a second updater, while a recycled pid (created
+    after the write) or an unverifiable one still expires on age.
+    """
+    if not pid_alive:
+        return False
+    if age_seconds <= UPDATE_MARKER_MAX_AGE_SECONDS:
+        return True
+    if owner_started_at is None or marker_written_at is None:
+        return False
+    return owner_started_at <= marker_written_at + PID_REUSE_TOLERANCE_SECONDS
+
+
 def _windows_parent_pid(pid: int) -> int | None:
     """The parent of ``pid`` from a Toolhelp32 process snapshot (stdlib ctypes).
 
@@ -100,24 +193,10 @@ def _windows_parent_pid(pid: int) -> int | None:
     for walk in (kernel32.Process32FirstW, kernel32.Process32NextW):
         walk.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
         walk.restype = wintypes.BOOL
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
-    kernel32.GetProcessTimes.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
 
-    def created(target: int) -> int | None:
-        handle = kernel32.OpenProcess(0x1000, False, target)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not handle:
-            return None
-        try:
-            times = [wintypes.FILETIME() for _ in range(4)]
-            if not kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
-                return None
-            return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
-        finally:
-            kernel32.CloseHandle(handle)
+    created = _windows_creation_filetime
 
     snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
     if not snapshot or snapshot == ctypes.c_void_p(-1).value:
@@ -257,12 +336,14 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     """Return the live update holding the lock, or ``None``.
 
     Mirrors ``readLiveUpdateMarker`` in ``electron/update-marker.ts``: absent, unreadable,
-    malformed, dead-pid, and past-the-ceiling all mean "no live update", and a stale marker
-    file is deleted so it can't strand future runs. Never raises.
+    malformed, dead-pid, and past-the-ceiling-without-verified-identity all mean "no live
+    update" (see :func:`marker_owner_is_live`), and a stale marker file is deleted so it can't
+    strand future runs. Never raises.
     """
     marker = path or update_marker_path()
     try:
         lines = marker.read_text(encoding="utf-8-sig").splitlines()
+        written_at: float | None = marker.stat().st_mtime
     except OSError:
         return None
     try:
@@ -275,7 +356,13 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
         started_at = float("-inf")
 
     age = time.time() - started_at
-    if not _pid_alive(pid) or age > UPDATE_MARKER_MAX_AGE_SECONDS:
+    alive = _pid_alive(pid)
+    # Only a well-formed marker past the ceiling pays for the identity probe.
+    probe = alive and age > UPDATE_MARKER_MAX_AGE_SECONDS and started_at != float("-inf")
+    owner_started_at = _process_started_at(pid) if probe else None
+    if not marker_owner_is_live(
+        pid_alive=alive, age_seconds=age, owner_started_at=owner_started_at, marker_written_at=written_at,
+    ):
         with suppress(OSError):
             marker.unlink()
         return None
@@ -292,7 +379,8 @@ def describe_holder(holder: UpdateHolder | None) -> str:
         "\n"
         "  Running two at once would corrupt the install. Wait for it to finish\n"
         "  (watch `hermes logs`), or close the Desktop/dashboard window that\n"
-        "  started it, then run `hermes update` again."
+        "  started it, then run `hermes update` again. If it is stuck, stop\n"
+        "  that process first."
     )
 
 

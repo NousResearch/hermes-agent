@@ -20,9 +20,14 @@ import path from 'path'
 import { test } from 'vitest'
 
 import {
+  cachedProcessStartMs,
   isPidAlive,
+  markerOwnerIsLive,
   markerPath,
+  parsePsEtime,
+  PID_REUSE_TOLERANCE_MS,
   posixProcessState,
+  probeProcessStartMs,
   readLiveUpdateMarker,
   UPDATE_MARKER_MAX_AGE_MS,
   updateHandoffConflict,
@@ -102,13 +107,121 @@ test('an unknown process state fails open to alive (keeps the marker)', () => {
   assert.ok(fs.existsSync(markerPath(home)))
 })
 
-test('expired marker (past age ceiling) => no live update and pruned', () => {
+// Owner creation times relative to the marker file's real mtime.
+const UNVERIFIABLE = () => null
+const STARTED_BEFORE_WRITE = () => Date.now() - 60_000
+const STARTED_AFTER_WRITE = () => Date.now() + 60_000
+
+test('expired marker with an unverifiable owner => no live update and pruned', () => {
   const home = tmpHome('expired')
   const now = 1_000_000_000_000
   writeMarker(home, 4242, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
-  // Even though the pid is "alive", the marker is too old to trust.
-  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now }), null)
+  // The pid is "alive" but its identity can't be checked: the age ceiling applies.
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now, ownerStartedMs: UNVERIFIABLE }), null)
   assert.ok(!fs.existsSync(markerPath(home)), 'an expired marker self-heals (deleted)')
+})
+
+test('#109795: a verified live owner past the age ceiling is still a live update', () => {
+  const home = tmpHome('slow-update')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
+  const res = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now, ownerStartedMs: STARTED_BEFORE_WRITE })
+  assert.ok(res, 'a slow update keeps its lock while its owner is alive')
+  assert.equal(res.pid, 4242)
+  assert.ok(fs.existsSync(markerPath(home)), 'a live marker is NOT deleted')
+})
+
+test('a recycled pid (created after the marker write) past the ceiling => pruned', () => {
+  const home = tmpHome('recycled')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
+  assert.equal(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now, ownerStartedMs: STARTED_AFTER_WRITE }), null)
+  assert.ok(!fs.existsSync(markerPath(home)))
+})
+
+test('a pending identity probe keeps the marker live (never guess a second updater in)', () => {
+  const home = tmpHome('pending')
+  const now = 1_000_000_000_000
+  writeMarker(home, 4242, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
+  assert.ok(readLiveUpdateMarker(home, { kill: ALIVE, now: () => now, ownerStartedMs: () => undefined }))
+  assert.ok(fs.existsSync(markerPath(home)))
+})
+
+test('inside the ceiling the identity probe is never consulted', () => {
+  const home = tmpHome('young-no-probe')
+  const now = 1_000_000_000_000
+  let probed = false
+  writeMarker(home, 4242, Math.floor(now / 1000) - 5)
+
+  const res = readLiveUpdateMarker(home, {
+    kill: ALIVE,
+    now: () => now,
+    ownerStartedMs: () => {
+      probed = true
+
+      return null
+    }
+  })
+
+  assert.ok(res)
+  assert.equal(probed, false)
+})
+
+test('markerOwnerIsLive decision table', () => {
+  const past = UPDATE_MARKER_MAX_AGE_MS + 1
+  const w = 1_000_000
+
+  const cases: [Parameters<typeof markerOwnerIsLive>[0], boolean][] = [
+    [{ pidAlive: false, ageMs: 5, ownerStartedMs: null, markerWrittenMs: w }, false],
+    [{ pidAlive: true, ageMs: 5, ownerStartedMs: null, markerWrittenMs: w }, true],
+    [{ pidAlive: true, ageMs: past, ownerStartedMs: null, markerWrittenMs: w }, false],
+    [{ pidAlive: true, ageMs: past, ownerStartedMs: w - 1, markerWrittenMs: null }, false],
+    [{ pidAlive: true, ageMs: past, ownerStartedMs: undefined, markerWrittenMs: w }, true],
+    [{ pidAlive: true, ageMs: past, ownerStartedMs: w - 1, markerWrittenMs: w }, true],
+    [{ pidAlive: true, ageMs: past, ownerStartedMs: w + PID_REUSE_TOLERANCE_MS, markerWrittenMs: w }, true],
+    [{ pidAlive: true, ageMs: past, ownerStartedMs: w + PID_REUSE_TOLERANCE_MS + 1, markerWrittenMs: w }, false],
+    [{ pidAlive: false, ageMs: past, ownerStartedMs: w - 1, markerWrittenMs: w }, false]
+  ]
+
+  for (const [input, live] of cases) {
+    assert.equal(markerOwnerIsLive(input), live, JSON.stringify(input))
+  }
+})
+
+test('parsePsEtime handles the macOS/procps etime formats', () => {
+  assert.equal(parsePsEtime('05:07'), 307)
+  assert.equal(parsePsEtime('  01:02:03\n'), 3723)
+  assert.equal(parsePsEtime('2-00:00:01'), 172_801)
+  assert.equal(parsePsEtime(''), null)
+  assert.equal(parsePsEtime('abc'), null)
+  assert.equal(parsePsEtime('1:2:3:4'), null)
+  assert.equal(parsePsEtime('x-01:02'), null)
+})
+
+test('cachedProcessStartMs is pending first, then serves the probe result', async () => {
+  const pid = 7_000_001
+
+  let resolveProbe: (v: number) => void = () => {}
+  const probe = () => new Promise<number>(r => (resolveProbe = r))
+  assert.equal(cachedProcessStartMs(pid, { probe }), undefined, 'pending while the probe is in flight')
+  assert.equal(cachedProcessStartMs(pid, { probe }), undefined)
+  resolveProbe(1234)
+  await new Promise(r => setTimeout(r, 0))
+  assert.equal(cachedProcessStartMs(pid, { probe }), 1234)
+})
+
+test('cachedProcessStartMs maps a failed probe to unverifiable (null)', async () => {
+  const pid = 7_000_002
+  const probe = () => Promise.reject(new Error('Get-Process denied'))
+  assert.equal(cachedProcessStartMs(pid, { probe }), undefined)
+  await new Promise(r => setTimeout(r, 0))
+  assert.equal(cachedProcessStartMs(pid, { probe }), null)
+})
+
+test.skipIf(process.platform === 'win32')('probeProcessStartMs reads this process creation time', async () => {
+  const expected = Date.now() - process.uptime() * 1000
+  const started = await probeProcessStartMs(process.pid)
+  assert.ok(Math.abs(started - expected) <= PID_REUSE_TOLERANCE_MS, `${started} vs ${expected}`)
 })
 
 test('malformed marker => no live update and pruned', () => {
@@ -235,9 +348,18 @@ test('a dead-pid marker does not block a hand-off (self-heals)', () => {
   assert.equal(updateHandoffConflict(home, { kill: DEAD }), null)
 })
 
-test('an expired marker does not block a hand-off (self-heals)', () => {
+test('an expired marker with an unverifiable owner does not block a hand-off (self-heals)', () => {
   const home = tmpHome('conflict-expired')
   const now = 1_000_000_000_000
   writeMarker(home, 1010, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
-  assert.equal(updateHandoffConflict(home, { kill: ALIVE, now: () => now }), null)
+  assert.equal(updateHandoffConflict(home, { kill: ALIVE, now: () => now, ownerStartedMs: UNVERIFIABLE }), null)
+})
+
+test('#109795: a slow but live updater past the ceiling still blocks a second hand-off', () => {
+  const home = tmpHome('conflict-slow')
+  const now = 1_000_000_000_000
+  writeMarker(home, 1010, Math.floor((now - UPDATE_MARKER_MAX_AGE_MS - 60_000) / 1000))
+  const conflict = updateHandoffConflict(home, { kill: ALIVE, now: () => now, ownerStartedMs: STARTED_BEFORE_WRITE })
+  assert.ok(conflict, 'age alone must not admit a second updater')
+  assert.equal(conflict.pid, 1010)
 })

@@ -454,3 +454,95 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             _run("y = 2")
             self.assertIsNot(kernel.cell_authority, first_authority)
             self.assertFalse(kernel.cell_authority.active)
+
+
+class TestKernelInvalidatedByFileEdits(unittest.TestCase):
+    """An imported module keeps serving its pre-edit code after patch/write_file changes it on
+    disk, so the model's correct fix looked like it "still fails". The next execute_code must
+    respawn the kernel and say why the earlier variables are gone — but only for edits that can
+    stale an import, and only for kernels of the same conversation."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.module = self.tmp / "stale_mod.py"
+        # Each edit changes the file size: a same-size rewrite within the same second can be
+        # served from the stale .pyc, which would make these tests flaky.
+        self.module.write_text("VALUE = 1\n")
+
+    def _as(self, session_key, fn):
+        from tools.approval_context import reset_current_session_key, set_current_session_key
+
+        token = set_current_session_key(session_key)
+        try:
+            return fn()
+        finally:
+            reset_current_session_key(token)
+
+    def _cell(self, session_key, code):
+        return self._as(session_key, lambda: json.loads(execute_code(code, task_id="turn")))
+
+    def _import_and_keep_state(self, session_key="conv-a"):
+        first = self._cell(session_key, f"import sys; sys.path.insert(0, {str(self.tmp)!r})\n"
+                                        "import stale_mod; kept = 'kept'; print(stale_mod.VALUE)")
+        self.assertIn("1", first["output"], first)
+
+    def _check_value(self, session_key="conv-a"):
+        return self._cell(session_key, f"import sys; sys.path.insert(0, {str(self.tmp)!r})\n"
+                                       "import stale_mod; print(stale_mod.VALUE, globals().get('kept', 'GONE'))")
+
+    def test_python_edit_respawns_the_kernel_and_names_the_file(self):
+        from tools.file_tools import write_file_tool
+
+        with _kernel_config():
+            self._import_and_keep_state()
+            self._as("conv-a", lambda: write_file_tool(str(self.module), "VALUE = 22\n", task_id="turn"))
+            after = self._check_value()
+        self.assertIn("22 GONE", after["output"], after)
+        self.assertTrue(after["kernel"]["state_reset"], after)
+        self.assertIn("stale_mod.py", after.get("warning", ""), after)
+
+    def test_non_python_edit_keeps_the_kernel_state(self):
+        from tools.file_tools import write_file_tool
+
+        with _kernel_config():
+            self._import_and_keep_state()
+            self._as("conv-a", lambda: write_file_tool(str(self.tmp / "notes.md"), "notes\n", task_id="turn"))
+            after = self._check_value()
+        self.assertIn("1 kept", after["output"], after)
+        self.assertFalse(after["kernel"]["state_reset"], after)
+        self.assertNotIn("warning", after)
+
+    def test_delegated_child_edit_resets_the_parent_but_another_conversation_does_not(self):
+        from agent.delegation_context import delegated_child_context
+        from tools.file_tools import patch_tool
+
+        def edit(old, new):
+            return patch_tool(mode="replace", path=str(self.module), old_string=old, new_string=new,
+                              task_id="turn")
+
+        with _kernel_config():
+            self._import_and_keep_state()
+            self._as("conv-b", lambda: edit("VALUE = 1", "VALUE = 22"))
+            unrelated = self._check_value()
+            with delegated_child_context("child-1"):
+                self._as("conv-a", lambda: edit("VALUE = 22", "VALUE = 333"))
+            after_child = self._check_value()
+        self.assertIn("kept", unrelated["output"], unrelated)
+        self.assertFalse(unrelated["kernel"]["state_reset"], unrelated)
+        self.assertIn("333 GONE", after_child["output"], after_child)
+        self.assertTrue(after_child["kernel"]["state_reset"], after_child)
+
+    def test_only_python_edits_inside_a_kernels_folder_count(self):
+        from tools.code_kernel import SessionKernel, mark_dirty_for_edit
+
+        project = self.tmp / "project"
+        (project / "pkg").mkdir(parents=True)
+        key = ("conv-a", "project", sys.executable, str(project), ())
+        _KERNELS[key] = kernel = SessionKernel(key)
+        outside = [str(self.tmp / "elsewhere.py"), str(self.tmp / "project2" / "mod.py")]
+        self._as("conv-a", lambda: mark_dirty_for_edit("turn", outside))
+        self.assertIsNone(kernel.stale_edit)
+        inside = project / "pkg" / "mod.py"
+        self._as("conv-a", lambda: mark_dirty_for_edit("turn", [str(inside)]))
+        self.assertEqual(kernel.stale_edit, os.path.realpath(inside))

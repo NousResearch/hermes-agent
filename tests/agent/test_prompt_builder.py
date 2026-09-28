@@ -508,6 +508,29 @@ class TestBuildContextFilesPrompt:
         assert "From uppercase" in result
         assert "From lowercase" not in result
 
+    @pytest.mark.parametrize("rel", [".hermes.md", "AGENTS.md", "CLAUDE.md", ".cursorrules", ".cursor/rules/team.mdc"])
+    def test_context_file_loads_only_when_it_resolves_inside_the_project(self, tmp_path, rel):
+        outside = tmp_path / "outside.txt"
+        outside.write_text("OUTSIDE-MARKER")
+        project = tmp_path / "project"
+        (project / ".git").mkdir(parents=True)
+        (project / "docs").mkdir()
+        (project / "docs" / "shared.md").write_text("INSIDE-MARKER")
+        link = project / rel
+        link.parent.mkdir(parents=True, exist_ok=True)
+
+        link.symlink_to(outside)
+        assert "OUTSIDE-MARKER" not in build_context_files_prompt(cwd=str(project), skip_soul=True)
+        # The /context manifest shares the discovery walk and must not report the skipped file as loaded.
+        from agent.context_file_sources import list_context_file_sources
+        assert not any(s["loaded"] for s in list_context_file_sources(cwd=str(project), skip_soul=True))
+        link.unlink()
+        link.symlink_to(project / "docs" / "shared.md")
+        assert "INSIDE-MARKER" in build_context_files_prompt(cwd=str(project), skip_soul=True)
+        link.unlink()
+        link.write_text("REGULAR-MARKER")
+        assert "REGULAR-MARKER" in build_context_files_prompt(cwd=str(project), skip_soul=True)
+
 
 
 

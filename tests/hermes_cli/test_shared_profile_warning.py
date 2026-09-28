@@ -223,3 +223,34 @@ def test_warning_rejects_reused_or_unverifiable_process_identity(homes, tmp_path
         assert not ledger.exists()
         assert not (homes / "config.yaml").exists()
         assert not (homes / "state.db").exists()
+
+
+def test_managed_environment_of_same_install_shares_no_warning(homes, tmp_path):
+    """A PM environment workspace is the SAME installation as its parent checkout.
+
+    Layout built with pm.environments.install_key (installs/<key16>/environments/<gen>/
+    workspace) and a verified stamp; two live ledger processes — the host gateway stand-in
+    from the parent, the workflow-child stand-in from the environment. The warning must
+    stay silent; a genuinely different checkout sharing the home must still warn
+    (control lives in the sibling tests).
+    """
+    from pm.environments import install_key
+    from hermes_cli.shared_profile_warning import shared_profile_warning
+
+    parent = tmp_path / "stable"
+    parent.mkdir()
+    state = homes / "installs" / install_key(parent)
+    env_ws = state / "environments" / ("a" * 32) / "workspace"
+    env_ws.mkdir(parents=True)
+    (state / "inputs").mkdir(parents=True)
+    (state / "inputs" / ".project-root").write_text(str(parent.resolve()), encoding="utf-8")
+
+    assert shared_profile_warning(home=homes, project_root=parent) == ""
+    # The workflow child runs through the real CLI entrypoint (purpose=cli, project root
+    # = the environment workspace), like a spawned agent node; host stand-in is a serve.
+    with running_install(homes, parent), running_cli(homes, env_ws) as (child, _output):
+        entries = [e for e in process_identity.ledger_entries(all_installs=True, verified_only=True)
+                   if e["pid"] == child.pid]
+        assert entries and entries[0]["install"] == process_identity.install_id(parent)
+        assert shared_profile_warning(home=homes, project_root=parent) == ""
+        assert shared_profile_warning(home=homes, project_root=env_ws) == ""

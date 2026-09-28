@@ -554,7 +554,13 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
         pending["pattern_keys"] = pattern_keys
     pending["description"] = description
     if smart_denied:
-        pending.update(smart_denied=True, allow_permanent=False)
+        # ``smart_denied=True`` means the smart-approval LLM declined — keep
+        # that signal for audit, but DO NOT strip ``allow_permanent``: the
+        # user is now reviewing this card personally and may legitimately
+        # want to allow it forever. (Prior bug: every smart-denied card
+        # silently lost the ✅-Always option across all platforms, so
+        # Mattermost users saw only once/session/deny.)
+        pending["smart_denied"] = True
     submit_pending(session_key, pending)
     if not spec.pending_keys:
         return {
@@ -575,7 +581,10 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
         ),
     }
     if smart_denied:
-        result.update(smart_denied=True, allow_permanent=False)
+        # See ``pending`` block above: keep the smart-denied audit flag,
+        # but preserve ``allow_permanent`` so the user gets the full choice
+        # set on the human-in-the-loop card.
+        result["smart_denied"] = True
     return result
 
 
@@ -856,13 +865,18 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         display_description = redact_sensitive_text(description)
         notify_cb = _gateway_notify_cb(session_key)
         if notify_cb is not None:
-            # Smart DENY overrides are one-operation decisions, so the UI must not offer a
-            # permanent scope. Session approval is safe for every non-Smart-DENY prompt —
-            # including pure-tirith ones, where persistence already caps scope at session.
+            # v4 (2026-09-27): preserve ``allow_permanent`` even when the
+            # smart-approval LLM denied the call. The LLM declined on its own
+            # behalf; once the user is reviewing the card personally they are
+            # the final authority and may legitimately want to allow the
+            # command forever (matrix-parity UX: ✅/🌀/♾️/🚫 must always be
+            # the full choice set). Strip ``allow_session`` only — smart-deny
+            # remains a one-operation override if the user chooses session or
+            # once, but they can opt into a permanent allow if they want.
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": permanent_capable and not smart_denied,
+                "allow_permanent": permanent_capable,
                 "allow_session": not smart_denied,
             }
             if smart_denied:
@@ -1224,6 +1238,19 @@ def check_all_command_guards(command: str, env_type: str,
     # "Always" is offered when at least one warning is a dangerous-pattern key the persistence layer would actually
     # allowlist permanently. Pure-tirith findings are session-max by design, so a tirith-only prompt hides Always;
     # mixed prompts offer it (the pattern key persists, tirith downgrades to session — see _persist_choice).
+    # "Always" is offered when at least one warning is a dangerous-pattern key the persistence layer would actually
+    # allowlist permanently. Pure-tirith findings are session-max by design, so a tirith-only prompt hides Always;
+    # mixed prompts offer it (the pattern key persists, tirith downgrades to session — see _persist_choice).
+    # v6 (2026-09-28 01:36) tried to always offer ♾️ for matrix-parity UX —
+    # reverted (2026-09-28 01:38) on principle: showing a permanent-allow button
+    # that the persistence layer silently downgrades to session is dishonest
+    # UX. The right contract is: ♾️ means "this exact command will never
+    # re-appear in an approval card". Tirith-only prompts don't get that —
+    # they stay session-max — so the correct render is 3 emojis, not 4.
+    # This matches the original 2026 design choice in the comment above;
+    # the intermittent 3-vs-4 the user observed was actually a feature
+    # working correctly (only the cross-model-audit card happened to also
+    # trip a non-tirith DANGEROUS_PATTERNS rule, hence got the 4th).
     return _human_decision(
         _COMMAND_GATE, command=command, description=combined_desc,
         pattern_key=primary_key, pattern_keys=all_keys, warnings=warnings,

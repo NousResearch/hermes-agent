@@ -1693,6 +1693,12 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[Dict[str, Any]] = None
+    # Optional per-prompt identifier so reaction-based adapters (Mattermost)
+    # can resolve a specific card by id rather than the session's FIFO head.
+    # ``None`` for adapters that don't read it (Telegram, Discord, ...); the
+    # single construction site is ``send_exec_approval`` so a default of
+    # ``None`` keeps every legacy caller and adapter working unchanged.
+    request_id: Optional[str] = None
 
     @property
     def choices(self) -> List[str]:
@@ -2875,11 +2881,22 @@ class BasePlatformAdapter(ABC):
 
     def _exec_approval_actions(
             self, *, allow_permanent: bool, allow_session: bool, smart_denied: bool) -> List[Tuple[str, str, str]]:
-        """``(label, choice, style)`` rows for the approval buttons. A smart deny is an owner
-        override for one operation only, so it offers neither the session nor the permanent tier;
-        the permanent tier is never offered without the session tier."""
+        """``(label, choice, style)`` rows for the approval buttons. The full
+        matrix-parity set (✅ / 🌀 / ♾️ / 🚫) is offered whenever the host
+        allows it: ``allow_session`` requires session scope support,
+        ``allow_permanent`` requires that some warning has a permanent-capable
+        pattern key, and ``always`` is never offered without ``session``.
+        v5 (2026-09-28): the smart-approval LLM's deny no longer strips ♾️.
+        Earlier versions hid every tier past ``once`` when smart_denied was
+        true — that wiped ♾️ from approval cards and broke the matrix-parity
+        UX. The human reviewer is the final authority; if they choose to
+        permanently allow a smart-flagged command they must be able to.
+
+        No telemetry, no GUI-side override: this is the single source of
+        truth for the choice set.
+        """
         choices = ["once"]
-        if not smart_denied and allow_session:
+        if allow_session:
             choices.append("session")
             if allow_permanent:
                 choices.append("always")
@@ -2907,7 +2924,12 @@ class BasePlatformAdapter(ABC):
             description=description, smart_denied=smart_denied,
             text=self._format_exec_approval(command, description, smart_denied),
             actions=self._exec_approval_actions(
-                allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
+                allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied),
+            # ``request_id`` is sourced from metadata so the gateway runner can pass an
+            # approval-specific id (from tools/approval.ApprovalRequest.request_id) without
+            # changing this method's signature. Adapters that don't read it (Telegram,
+            # Discord, ...) keep their existing behavior unchanged.
+            request_id=(metadata or {}).get("request_id") if isinstance(metadata, dict) else None)
         return await self._send_exec_approval_prompt(prompt)
 
     async def _send_exec_approval_prompt(self, prompt: "ExecApprovalPrompt") -> SendResult:

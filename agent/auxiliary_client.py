@@ -7340,7 +7340,6 @@ def _resolve_call_client(
                             if _direct_client is not None:
                                 client = _direct_client
                                 final_model = _direct_model or final_model
-                                resolved_api_key = _env_key
                                 effective_provider = "minimax"
                                 logger.info(
                                     "Auxiliary approval v3: built provider client successfully "

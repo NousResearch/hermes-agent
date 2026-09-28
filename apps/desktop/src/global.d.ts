@@ -606,9 +606,9 @@ declare global {
         onPendingRun?: (callback: () => void) => () => void
       }
       desktopMetrics?: {
-        /** Mirror the user's shared-metrics opt-in; false deletes any pending crash record. */
-        setEnabled?: (on: boolean) => Promise<void>
-        /** Claim the pending renderer-crash reasons (null when disabled, none, or already claimed). */
+        /** Mirror this window's focused profile and its opt-in; false deletes that profile's pending crashes. */
+        setEnabled?: (on: boolean, profile: string) => Promise<void>
+        /** Claim this window's profile's pending renderer-crash reasons (null when off, none, or claimed). */
         takeRendererCrashes?: () => Promise<{ reasons: Array<'crash' | 'killed' | 'oom' | 'other'> } | null>
         /** `sent` drops the claimed reasons; false keeps them for the next attach. */
         ackRendererCrashes?: (sent: boolean) => Promise<void>

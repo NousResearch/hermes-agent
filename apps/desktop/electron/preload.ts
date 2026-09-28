@@ -641,7 +641,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   desktopMetrics: {
-    setEnabled: on => ipcRenderer.invoke('hermes:desktop-metrics:set-enabled', on),
+    setEnabled: (on, profile) => ipcRenderer.invoke('hermes:desktop-metrics:set-enabled', on, profile),
     takeRendererCrashes: () => ipcRenderer.invoke('hermes:desktop-metrics:crash:take'),
     ackRendererCrashes: sent => ipcRenderer.invoke('hermes:desktop-metrics:crash:ack', sent)
   },

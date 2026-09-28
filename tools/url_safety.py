@@ -16,7 +16,7 @@ import os
 import socket
 import asyncio
 import re
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
@@ -580,3 +580,27 @@ def redirect_target_from_response(response: Any) -> Optional[str]:
         return urljoin(str(getattr(response, "url", "")), str(location))
     next_request = getattr(response, "next_request", None)
     return str(next_request.url) if next_request else None
+
+
+_AIOHTTP_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_AIOHTTP_MAX_REDIRECTS = 10
+
+
+@asynccontextmanager
+async def ssrf_checked_aiohttp_get(session: Any, url: str, **kwargs: Any):
+    """``session.get(url)`` on an aiohttp session with every hop checked by :func:`async_is_safe_url`.
+    aiohttp follows redirects by default, so a pre-flight check alone lets a public URL 302 to
+    loopback or cloud metadata; raises ``ValueError`` on a blocked hop or too many redirects.
+    The async check keeps each hop's DNS lookup off the event loop."""
+    current_url = url
+    for _ in range(_AIOHTTP_MAX_REDIRECTS + 1):
+        if not await async_is_safe_url(current_url):
+            raise ValueError("Blocked URL targeting a private or internal address")
+        async with session.get(current_url, allow_redirects=False, **kwargs) as response:
+            location = response.headers.get("Location")
+            if response.status in _AIOHTTP_REDIRECT_STATUSES and location:
+                current_url = urljoin(current_url, location)
+                continue
+            yield response
+            return
+    raise ValueError("Too many redirects")

@@ -432,6 +432,57 @@ def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
+def _trailing_comment_holder(container, key):
+    """``(collection, key)`` whose comment slot holds the lines after ``container[key]``: ruamel
+    files them on the entry that ends above them, so a section defers to its last nested entry."""
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    value = container[key]
+    while isinstance(value, (CommentedMap, CommentedSeq)) and len(value):
+        container, key = value, (next(reversed(value)) if isinstance(value, CommentedMap) else len(value) - 1)
+        value = container[key]
+    return container, key
+
+
+def _delete_rt_entry(container, key) -> None:
+    """Delete ``container[key]`` from a ruamel map or list, keeping the comment lines below it.
+
+    Those lines usually introduce the NEXT entry or section, yet ruamel stores them on the deleted
+    one; a bare ``del`` took them along. They move to the entry now above them."""
+    from ruamel.yaml.comments import CommentedMap
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    keys = list(container) if isinstance(container, CommentedMap) else list(range(len(container)))
+    index = keys.index(key)
+    holder, holder_key = _trailing_comment_holder(container, key)
+    slot = 2 if isinstance(holder, CommentedMap) else 0
+    token = (holder.ca.items.get(holder_key) or [None] * 4)[slot]
+    del container[key]
+    # The first line ends the deleted entry itself: its end-of-line comment, or just the newline.
+    below = token.value.split("\n", 1)[1] if token is not None and "\n" in token.value else ""
+    if not below:
+        return
+    if index > 0:
+        holder, holder_key = _trailing_comment_holder(container, keys[index - 1])
+        slot = 2 if isinstance(holder, CommentedMap) else 0
+        entry = holder.ca.items.setdefault(holder_key, [None] * 4)
+        if entry[slot] is None:
+            token.value = "\n" + below
+            entry[slot] = token
+        else:
+            entry[slot].value += below
+    elif len(container):
+        # Nothing above inside this collection: the lines become the new first entry's lead-in.
+        entry = container.ca.items.setdefault(next(iter(container)) if isinstance(container, CommentedMap) else 0,
+                                              [None] * 4)
+        lead = [] if entry[1] is None else entry[1]
+        for line in below.splitlines():
+            text = line.lstrip()
+            lead.append(CommentToken(text + "\n", CommentMark(len(line) - len(text) if text else 0)))
+        entry[1] = lead
+
+
 def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
     """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode.
 
@@ -460,7 +511,8 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
         seg, consumed = _greedy_literal_match(dict(current), remaining) or (remaining[0], 1)
         if i + consumed == len(keys):
             if value is None:
-                current.pop(seg, None)
+                if seg in current:
+                    _delete_rt_entry(current, seg)
             else:
                 current[seg] = value
             break
@@ -536,7 +588,8 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
                 _merge_item(dst, i, value)
             else:
                 dst.append(_rt_value(value))
-        del dst[len(src):]
+        while len(dst) > len(src):
+            _delete_rt_entry(dst, len(dst) - 1)
 
     def _merge_item(dst, key, value) -> None:
         current = dst[key]
@@ -555,7 +608,7 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
             else:
                 dst[key] = _rt_value(value)
         for key in [k for k in dst if k not in src]:
-            del dst[key]
+            _delete_rt_entry(dst, key)
 
     _merge(existing, new_state)
     _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)

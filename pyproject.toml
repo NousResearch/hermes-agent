@@ -373,6 +373,11 @@ supermemory = ["supermemory==3.50.0"]
 # provider is simply unavailable.
 mem0 = [
   "mem0ai==2.0.10; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  # The mem0 OSS embedder (provider: fastembed in mem0.json) needs fastembed at
+  # backend init; mem0ai does not pull it in. Pre-1.0 bound per supply-chain
+  # policy; no win_arm64 wheel — same gate as mem0ai. Floor 0.8.0: the repo's
+  # exclude-newer cutoff predates 0.8.1.
+  "fastembed>=0.8.0,<0.10; platform_machine != 'ARM64' or sys_platform != 'win32'",
 ]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on

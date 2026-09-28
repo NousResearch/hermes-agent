@@ -261,14 +261,30 @@ def _launchd_plist_dirs() -> list[tuple[str, Path]]:
     ]
 
 
+def _hermes_launchd_wrapper_candidate(argv: list[str]) -> bool:
+    """True for a launchd job argv that cannot be parsed as a serve/dashboard command yet still
+    looks like it launches one: a wrapper script under the Hermes home (``bash
+    ~/.hermes/bin/start-serve-remote.sh`` — the wrapper's own argv carries no serve tail at all) or
+    a hermes-named executable. Such jobs must still reach the loaded-job scan, because the live PID
+    launchd reports for them IS the backend's ancestor; unrelated jobs stay out, which also bounds
+    the per-label ``launchctl print`` probe count. A stray match is harmless: attribution below is
+    by live PID, ancestor, or exact argv, never by this heuristic alone."""
+    for token in argv:
+        if "/.hermes" in token or token.rsplit("/", 1)[-1] == "hermes":
+            return True
+    return False
+
+
 def _loaded_launchd_backend_jobs(
     plist_dirs: list[tuple[str, Path]] | None = None,
 ) -> list[tuple[str, str, list[str], int | None]]:
     """``(domain, label, program_arguments, live_pid)`` for every LOADED launchd job whose
-    ``ProgramArguments`` is a ``hermes dashboard`` / ``hermes serve`` backend. macOS only (empty
-    elsewhere). Reads the plists (unreadable/malformed ones are skipped) and asks ``launchctl print``
-    per candidate label — a job that is not loaded in any domain is not returned, so an operator's
-    stale plist never claims a process."""
+    ``ProgramArguments`` is a ``hermes dashboard`` / ``hermes serve`` backend — spelled directly or
+    via a Hermes-referencing wrapper script, whose argv has no parseable serve tail but whose live
+    PID is the backend's ancestor. macOS only (empty elsewhere). Reads the plists
+    (unreadable/malformed ones are skipped) and asks ``launchctl print`` per candidate label — a
+    job that is not loaded in any domain is not returned, so an operator's stale plist never claims
+    a process."""
     if sys.platform != "darwin":
         return []
     import plistlib
@@ -299,7 +315,7 @@ def _loaded_launchd_backend_jobs(
             if not label or not isinstance(args, list) or not args:
                 continue
             argv = [str(a) for a in args]
-            if _parse_dashboard_runtime(shlex.join(argv)) is None:
+            if _parse_dashboard_runtime(shlex.join(argv)) is None and not _hermes_launchd_wrapper_candidate(argv):
                 continue
             domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
             for domain in domains:

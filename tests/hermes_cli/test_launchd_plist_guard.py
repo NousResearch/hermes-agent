@@ -67,3 +67,48 @@ def test_malformed_sibling_does_not_hide_the_good_job(tmp_path):
     ]
     # Only the well-formed label was probed against launchd.
     assert [c.args[1] for c in probe.call_args_list] == ["ai.hermes.dashboard.test"]
+
+
+# A LaunchAgent whose argv is a wrapper script under the Hermes home: the wrapper resolves the
+# bind address at login and then starts the backend, so the job's own ProgramArguments carries no
+# ``hermes … serve`` tail at all — only the live PID launchd reports (the wrapper shell) links the
+# job to the backend process it supervises (#116536 follow-up report).
+WRAPPER_PLIST = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n'
+    "  <key>Label</key>\n  <string>ai.hermes.serve.remote</string>\n"
+    "  <key>ProgramArguments</key>\n  <array>\n"
+    "    <string>/bin/bash</string>\n    <string>/Users/gabe/.hermes/bin/start-serve-remote.sh</string>\n"
+    "  </array>\n</dict>\n</plist>\n"
+)
+
+
+def test_wrapper_script_job_is_collected_and_claims_its_backend_by_ancestor(tmp_path):
+    (tmp_path / "ai.hermes.serve.remote.plist").write_text(WRAPPER_PLIST, encoding="utf-8")
+    (tmp_path / "com.example.unrelated.plist").write_text(
+        WRAPPER_PLIST.replace("ai.hermes.serve.remote", "com.example.unrelated")
+        .replace("/Users/gabe/.hermes/bin/start-serve-remote.sh", "/Users/gabe/scripts/sync.sh"),
+        encoding="utf-8",
+    )
+    with mock.patch(
+        "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 4321)
+    ) as probe:
+        jobs = main_dashboard._loaded_launchd_backend_jobs([("agent", tmp_path)])
+    assert jobs == [
+        (
+            f"gui/{os.getuid()}",
+            "ai.hermes.serve.remote",
+            ["/bin/bash", "/Users/gabe/.hermes/bin/start-serve-remote.sh"],
+            4321,
+        )
+    ]
+    # The Hermes-referencing wrapper was probed; the unrelated job never reached launchctl.
+    assert [c.args[1] for c in probe.call_args_list] == ["ai.hermes.serve.remote"]
+    # And the collected wrapper job claims the backend PID through the ancestor it supervises:
+    # the backend's argv never equals the wrapper's, so only the ancestor link can attribute it.
+    assert main_dashboard._launchd_job_owning_backend(
+        9999, ["hermes", "serve", "--host", "100.64.0.2", "--port", "9119"], jobs, ancestors=[4321, 1]
+    ) == (f"gui/{os.getuid()}", "ai.hermes.serve.remote", 4321)
+    # Without the ancestor link the wrapper job claims nothing (argv never matches).
+    assert main_dashboard._launchd_job_owning_backend(
+        9999, ["hermes", "serve", "--host", "100.64.0.2", "--port", "9119"], jobs
+    ) is None

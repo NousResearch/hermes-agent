@@ -310,10 +310,18 @@ def cron_tick():
 
 def cron_runs(job_id: Optional[str] = None, limit: int = 20):
     """Show indexed durable cron execution history."""
-    from cron.executions import list_executions
+    from cron.executions import execution_history_summary, list_executions
     records = list_executions(job_id=job_id, limit=limit)
+    summary = execution_history_summary(job_id=job_id)
+    print(f"Retained history: {summary['retained_count']} attempt(s)"
+          + (f" for job={job_id}" if job_id is not None else " across this profile"))
+    if summary["retained_count"]:
+        print(f"  Claimed timestamps: {summary['oldest_claimed_at']} .. "
+              f"{summary['newest_claimed_at']}; Showing {len(records)}")
+    print("  History is pruned; a missing row does not prove a job did not run. "
+          "Retained endpoints do not guarantee a complete time window.")
     if not records:
-        print("No cron execution attempts recorded.")
+        print("No retained cron execution attempts match this query.")
         return
     for record in records:
         print(f"{record.get('id', '?')}  {record.get('status', '?'):<9}  "

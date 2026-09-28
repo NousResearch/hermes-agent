@@ -406,6 +406,25 @@ def list_executions(
     return [dict(row) for row in rows]
 
 
+def execution_history_summary(*, job_id: Optional[str] = None) -> Dict[str, Any]:
+    """Describe retained rows, not a guarantee of complete history between their endpoints."""
+    where = " WHERE job_id=?" if job_id is not None else ""
+    params = (str(job_id),) if job_id is not None else ()
+    with _transaction() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM executions" + where, params).fetchone()[0]
+        # ISO offsets can differ between writes; compare instants, not timestamp text.
+        endpoints = []
+        for order in ("ASC", "DESC"):
+            row = conn.execute(
+                "SELECT claimed_at FROM executions" + where
+                + f" ORDER BY julianday(claimed_at) {order}, claimed_at {order} LIMIT 1",
+                params,
+            ).fetchone()
+            endpoints.append(row[0] if row is not None else None)
+    return {"retained_count": count, "oldest_claimed_at": endpoints[0],
+            "newest_claimed_at": endpoints[1]}
+
+
 def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     """Return one exact execution attempt, or ``None`` when it is absent."""
     with _transaction() as conn:

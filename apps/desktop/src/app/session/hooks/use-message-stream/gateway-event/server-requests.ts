@@ -479,6 +479,7 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
         {
           allowShortcut: p.allow_shortcut === true,
           amount: p.amount as never,
+          full: p.full === true,
           key: p.key as never,
           kind: (str(p.action) || '') as never,
           max: p.max as never,

@@ -746,7 +746,7 @@
     },
     {
       "name": "cron.manage",
-      "summary": "List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store.",
+      "summary": "List/add/update/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store.",
       "params": [
         {
           "name": "params",
@@ -10973,6 +10973,7 @@
         "enum": [
           "list",
           "add",
+          "update",
           "remove",
           "pause",
           "resume"
@@ -11360,6 +11361,18 @@
             "$ref": "#/components/schemas/CronAction",
             "default": "list"
           },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Job Id"
+          },
           "name": {
             "anyOf": [
               {
@@ -11471,7 +11484,7 @@
       },
       "CronManageResult": {
         "additionalProperties": true,
-        "description": "Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` \u2192 ``jobs``/``count``\n(+ ``scoped`` when profile-scoped); ``add`` \u2192 the created job's summary + ``job``; ``remove`` \u2192\n``removed_job``; ``pause``/``resume`` \u2192 ``job``. A tool-level failure lands in ``error``.",
+        "description": "Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` \u2192 ``jobs``/``count``\n(+ ``scoped`` when profile-scoped); ``add`` \u2192 the created job's summary + ``job``; ``update`` \u2192\n``job``; ``remove`` \u2192\n``removed_job``; ``pause``/``resume`` \u2192 ``job``. A tool-level failure lands in ``error``.",
         "properties": {
           "success": {
             "anyOf": [

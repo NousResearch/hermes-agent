@@ -415,6 +415,7 @@ method("rollback.diff", params=RollbackDiffParams, result=RollbackDiffResult,
 class CronAction(WireEnum):
     list = "list"
     add = "add"
+    update = "update"
     remove = "remove"
     pause = "pause"
     resume = "resume"
@@ -422,6 +423,7 @@ class CronAction(WireEnum):
 
 class CronManageParams(Params):
     action: CronAction = CronAction.list
+    job_id: str | None = None
     name: str | None = None
     include_disabled: bool | str | None = None
     schedule: str | None = None
@@ -478,7 +480,8 @@ class CronRemovedJob(Result):
 
 class CronManageResult(_Open):
     """Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count``
-    (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` →
+    (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``update`` →
+    ``job``; ``remove`` →
     ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``."""
 
     success: bool | None = None
@@ -503,7 +506,7 @@ class CronManageResult(_Open):
 
 
 method("cron.manage", params=CronManageParams, result=CronManageResult,
-       doc="List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store.")
+       doc="List/add/update/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store.")
 
 
 # ── browser.manage ────────────────────────────────────────────────────────────────────────────

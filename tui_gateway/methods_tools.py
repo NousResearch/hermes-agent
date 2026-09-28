@@ -1265,6 +1265,17 @@ def _(rid, params: dict) -> dict:
             continuity=is_truthy_value(params.get("continuity")) if params.get("continuity") is not None else None,
             deliver=_str_arg(params, "deliver") or None)
         return _ok(rid, json.loads(raw))
+    if action == "update":
+        job_id = _str_arg(params, "job_id")
+        if not job_id:
+            return _err(rid, 4063, "job_id required")
+        update_kwargs: dict = {"action": "update", "job_id": job_id}
+        for _key in ("name", "prompt", "schedule", "repeat", "deliver"):
+            if _key in params:
+                update_kwargs[_key] = params[_key]
+        if "continuity" in params:
+            update_kwargs["continuity"] = is_truthy_value(params.get("continuity"))
+        return _ok(rid, json.loads(cronjob(**update_kwargs)))
     if action in {"remove", "pause", "resume"}:
         return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
     return _err(rid, 4016, f"unknown cron action: {action}")

@@ -6,6 +6,7 @@ import {
   frameSizeFromMessage,
   intentFromMessage,
   themePrelude,
+  widgetIntentTarget,
   withInlineChrome
 } from './inline-preview-directive'
 
@@ -165,5 +166,25 @@ describe('intentFromMessage', () => {
     expect(intentFromMessage(msg({ prompt: '   ' }), 'tok')).toBeNull()
     expect(intentFromMessage(msg({ prompt: 42 }), 'tok')).toBeNull()
     expect(intentFromMessage(null, 'tok')).toBeNull()
+  })
+})
+
+describe('widgetIntentTarget', () => {
+  // The intent must route to the OWNING session's composer, never to the
+  // focus-resolved 'active' target — a background tab's widget steering the
+  // foreground session is the cross-tab OOB leak (t_9867e532).
+  it('routes a tile widget to its own tile composer', () => {
+    expect(widgetIntentTarget('tile', 'sess-42')).toBe('tile:sess-42')
+  })
+
+  it('routes a primary-chat widget to main', () => {
+    expect(widgetIntentTarget('primary', 'sess-42')).toBe('main')
+    expect(widgetIntentTarget('primary', null)).toBe('main')
+  })
+
+  it('never resolves to the focus-dependent active target', () => {
+    for (const kind of ['primary', 'tile'] as const) {
+      expect(widgetIntentTarget(kind, 's')).not.toBe('active')
+    }
   })
 })

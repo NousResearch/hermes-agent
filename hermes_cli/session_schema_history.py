@@ -239,7 +239,7 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'display_identity', 'display_metadata'),
             ('+', 'display_order', 'display_identity'),
         )),
-        ('16 2026-09-28T08:42Z 20d67ffb5e', (
+        ('16 2026-09-28T08:42Z eed37d63ce', (
             ('+', 'message_uid', 'display_order'),
             ('+', 'absorbed_message_uids', 'message_uid'),
             ('+', 'tool_call_uids', 'absorbed_message_uids'),

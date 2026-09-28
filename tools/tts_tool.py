@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Callable, Dict, Any, List, Optional
 
@@ -151,6 +152,10 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 # Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
 OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
 
+# Hard wait bound for one Edge TTS synthesis (module-level so tests can shrink it). On expiry the
+# worker thread is abandoned (daemon), not joined: a wedged aiohttp session never unwinds.
+_EDGE_TTS_TIMEOUT_S = 60
+
 # MEDIA:<path> is a line-level gateway protocol. A filename containing an anchored media
 # directive forges a second attachment whenever the path is echoed into the tool result
 # (media_tag / file_path fields, error text): the collector scans producer output with a
@@ -197,12 +202,34 @@ def _error_json(message: str) -> str:
 
 
 def _run_edge_tts(text: str, file_str: str, tts_config: Dict[str, Any]) -> None:
-    """Run the async Edge generator from sync code (worker thread; direct run if that fails)."""
+    """Run the async Edge generator from sync code with a hard wait bound (direct run if that fails).
+
+    A plain ``future.result(timeout=60)`` does bound the *wait*, but leaving the
+    ``with ThreadPoolExecutor(...)`` block calls ``shutdown(wait=True)``, which joins the
+    worker thread and cannot be interrupted: when edge-tts wedges (DNS stall / zombie
+    keepalive connection behind a proxy — neither ``sock_connect`` nor ``sock_read``
+    covers it), the caller blocks forever and the timeout never propagates. Run the
+    generator on a daemon thread and abandon it on timeout instead, so the failure path
+    (error envelope -> chunk failure -> auto voice reply skipped) actually runs.
+    """
     run = lambda: asyncio.run(_generate_edge_tts(text, file_str, tts_config))  # noqa: E731
     try:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            pool.submit(run).result(timeout=60)
+        box: Dict[str, Any] = {}
+
+        def _runner() -> None:
+            try:
+                run()
+            except BaseException as exc:  # re-raised on the caller's thread below
+                box["error"] = exc
+
+        worker = threading.Thread(target=_runner, name="edge-tts", daemon=True)
+        worker.start()
+        worker.join(timeout=_EDGE_TTS_TIMEOUT_S)
+        if worker.is_alive():
+            raise TimeoutError(
+                f"Edge TTS did not finish within {_EDGE_TTS_TIMEOUT_S}s; abandoning worker")
+        if "error" in box:
+            raise box["error"]
     except RuntimeError:
         run()
 

@@ -1556,11 +1556,21 @@ class GatewayTurnMixin:
             _model = str(agent_result.get("model") or "").strip() or "The model"
             response = "⚠️ " + EMPTY_RESPONSE_EXPLANATION.format(model=_model)
         agent_messages = agent_result.get("messages", [])
-        logger.info(
-            "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars",
-            _platform_name, source.chat_id or "unknown", session_key or "unknown",
-            time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
-        )
+        from agent.log_previews import completion_preview, gateway_previews_enabled
+        from gateway.run import _load_gateway_config
+        if gateway_previews_enabled(_load_gateway_config()):
+            logger.info(
+                "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars response_preview=%s",
+                _platform_name, source.chat_id or "unknown", session_key or "unknown",
+                time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
+                completion_preview(response),
+            )
+        else:
+            logger.info(
+                "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars",
+                _platform_name, source.chat_id or "unknown", session_key or "unknown",
+                time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
+            )
 
         # Successful turn: clear the consecutive-restart stuck-loop counter and resume_pending (set
         # by drain-timeout shutdown) so later messages don't get the restart-interruption note.
@@ -2494,6 +2504,8 @@ class GatewayTurnMixin:
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
                 )
+                from agent.log_previews import gateway_previews_enabled
+                agent._gateway_completion_previews = gateway_previews_enabled(user_config)
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:

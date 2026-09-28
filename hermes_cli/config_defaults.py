@@ -2008,6 +2008,7 @@ DEFAULT_CONFIG = {
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # max size per log file before rotation
         "backup_count": 3,     # rotated backups to keep
+        "tool_previews": False,  # gateway-only: bounded args, results and final reply in logs
     },
     # Remote model-catalog manifest: curated OpenRouter / Nous Portal model lists fetched from this
     # URL (falls back to the in-repo snapshot on network failure), so picker lists update without a

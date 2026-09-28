@@ -6,7 +6,7 @@ ground truth after it. Unknown shapes round UP (never underestimate memory).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from hermes_cli.local_runtime.gguf import GGUFHeader
@@ -68,6 +68,8 @@ class ModelProfile:
     # postures): the draft adds ~17% to per-token KV; 1.2 rounds up so the error stays on the safe
     # side (+250 MiB at 256K, never negative).
     kv_scale: float = 1.0
+    # block index -> FFN weight bytes (from the tensor table); empty when unknown.
+    ffn_block_bytes: dict[int, int] = field(default_factory=dict)
 
     @property
     def per_token_kv_f16(self) -> int:
@@ -134,7 +136,8 @@ def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
     return ModelProfile(
         name=header.path, weights_bytes=header.tensor_bytes, embd_table_bytes=header.embd_table_bytes,
         n_ctx_train=header.n_ctx_train, layers=layers, swa_window=header.sliding_window,
-        moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab)
+        moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab,
+        ffn_block_bytes=dict(header.ffn_block_bytes))
 
 
 def kv_dtype_factor(flash_attention: bool) -> float:

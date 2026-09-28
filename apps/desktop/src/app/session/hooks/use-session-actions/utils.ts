@@ -1966,16 +1966,22 @@ export async function resolveStoredSession(
   return result.status === 'found' ? result.session : undefined
 }
 
-/** Preserve the probe ladder's evidence: only explicit session 404s prove absence. */
+/** `resolveStoredSession` with the ladder's evidence kept: `gone` only when
+ *  every rung answered an explicit session 404 (a 5xx, a network failure or a
+ *  bare 404 from a proxy is `inconclusive`), and — without an owner — only once
+ *  the profile inventory is known, or a single-profile sweep would vouch for
+ *  ids that live on a profile not yet listed (#125678). */
 export async function probeStoredSession(
   storedSessionId: string,
   ownerRoute?: SessionProfileRoute
 ): Promise<StoredSessionProbe> {
   let allGone = true
+
   const recordFailure = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error ?? '')
     allGone &&= /\b404\b/.test(message) && /session not found/i.test(message)
   }
+
   // Snapshot BEFORE any await: a resolve that started before an archive/delete
   // must reject its own stale response (see upsertResolvedSession).
   const tombstoneGenerationsAtRequestStart = captureSessionTombstoneGenerations()
@@ -2008,6 +2014,7 @@ export async function probeStoredSession(
       // An explicit owner is fail-closed. Probing the ambient or another
       // profile would turn a stale route into a cross-connection open.
       recordFailure(error)
+
       return { status: allGone ? 'gone' : 'inconclusive' }
     }
   }
@@ -2072,7 +2079,7 @@ export async function probeStoredSession(
     }
   }
 
-  return { status: allGone ? 'gone' : 'inconclusive' }
+  return { status: allGone && $profiles.get().length > 0 ? 'gone' : 'inconclusive' }
 }
 
 /**

@@ -624,15 +624,15 @@ export function tileStoredRow(storedSessionId: string): SessionInfo | undefined 
  *  A restored background tab has no runtimeId and does not mount its pane, so
  *  the resolution effect above never runs; when its row is outside the recents
  *  page and project tree, `tileTitle()` reads "New session" until first click.
- *  The shared probe upserts found rows for the tab strip. An empty restored
- *  tile with authoritative all-profile absence is persistently closed; drafts
- *  and inconclusive/switching lookups stay recoverable. */
+ *  The probe upserts a found row into `$sessions`, which the tab strip already
+ *  watches. A tile whose id every profile answered 404 for is retired
+ *  (#125678): left alone it is re-probed on every launch and never heals. */
 export function startUnrestoredTileTitleBackfill(lookup = probeStoredSession): () => void {
-  // Only tiles present at startup can be retired: a newly created unbound
-  // draft may legitimately have no durable row yet.
-  const restored = new Set($sessionTiles.get().filter(tile => !tile.runtimeId))
-  const pendingCleanups = new Set<() => void>()
-  let cancelled = false
+  // Only tiles restored from a previous run can be retired: a draft opened in
+  // this run before the gateway answers has no durable row yet either.
+  const restored = new Set($sessionTiles.get().flatMap(tile => (tile.runtimeId ? [] : [tile.storedSessionId])))
+  let stopped = false
+
   const run = () => {
     if ($gatewayState.get() !== 'open') {
       return
@@ -640,60 +640,55 @@ export function startUnrestoredTileTitleBackfill(lookup = probeStoredSession): (
 
     off()
 
-    for (const tile of $sessionTiles.get()) {
-      if (!tile.runtimeId && !tile.workspaceTabTitle && !tileStoredRow(tile.storedSessionId)) {
-        // Any scope transition invalidates absence evidence, including A→B→A.
-        let changed = $gatewaySwitching.get() || Boolean($gatewaySwapTarget.get())
-        const invalidate = () => {
-          changed = true
-        }
-        const unlisten = [
-          $connection.listen(invalidate),
-          $activeGatewayProfile.listen(invalidate),
-          $profiles.listen(invalidate),
-          $gatewayState.listen(invalidate),
-          $gatewaySwitching.listen(invalidate),
-          $gatewaySwapTarget.listen(invalidate)
-        ]
-        const cleanup = () => {
-          if (pendingCleanups.delete(cleanup)) unlisten.forEach(off => off())
-        }
-        pendingCleanups.add(cleanup)
-        const hasInventory = Boolean(tile.ownerRoute) || $profiles.get().length > 0
+    // Absence is only authoritative in calm conditions — the same inputs as
+    // `goneSessionVerdict`, plus any scope change while the probes are out
+    // (a profile A→B→A lands the 404s on a backend that never owned the id).
+    let calm = !$gatewaySwitching.get() && !$gatewaySwapTarget.get()
 
-        void lookup(tile.storedSessionId, tile.ownerRoute)
+    const unsettle = () => {
+      calm = false
+    }
+
+    const scopes = [$connection, $activeGatewayProfile, $profiles, $gatewayState, $gatewaySwitching, $gatewaySwapTarget]
+    const offScopes = scopes.map(scope => scope.listen(unsettle))
+
+    const probes = $sessionTiles
+      .get()
+      .filter(tile => !tile.runtimeId && !tile.workspaceTabTitle && !tileStoredRow(tile.storedSessionId))
+      .map(tile =>
+        lookup(tile.storedSessionId, tile.ownerRoute)
           .then(result => {
             const draft = takeSessionDraft(tile.storedSessionId)
+            const current = $sessionTiles.get().find(candidate => candidate.storedSessionId === tile.storedSessionId)
+
             if (
-              result?.status === 'gone' &&
-              !cancelled &&
-              !changed &&
-              hasInventory &&
-              restored.has(tile) &&
-              $sessionTiles.get().includes(tile) &&
-              !tile.runtimeId &&
-              tile.workspaceMode !== 'bots' &&
+              result.status === 'gone' &&
+              calm &&
+              !stopped &&
+              restored.has(tile.storedSessionId) &&
+              current &&
+              !current.runtimeId &&
               !tileStoredRow(tile.storedSessionId) &&
               !tileBackendIdentityChanged(tile.ownerRoute?.connectionId, $connection.get()) &&
               !draft.text.trim() &&
               draft.attachments.length === 0
             ) {
+              // Not `closeSessionTile`: a dead id must not sit on the reopen stack.
               discardSessionTile(tile.storedSessionId)
             }
           })
           .catch(() => undefined)
-          .finally(cleanup)
-      }
-    }
+      )
+
+    void Promise.all(probes).finally(() => offScopes.forEach(offScope => offScope()))
   }
 
   const off = $gatewayState.listen(run)
   run()
 
   return () => {
-    cancelled = true
+    stopped = true
     off()
-    pendingCleanups.forEach(cleanup => cleanup())
   }
 }
 

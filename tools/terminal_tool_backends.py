@@ -66,6 +66,7 @@ _CONTAINER_KEYS = (
     ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
     ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
     ("docker_shared_container_key", ""), ("docker_orphan_reaper", True), ("docker_snap_compat", False),
+    ("docker_image_pinned", False),
 )
 _DOCKER_KWARGS = (
     ("volumes", "docker_volumes", []), ("auto_mount_cwd", "docker_mount_cwd_to_workspace", False),
@@ -73,7 +74,7 @@ _DOCKER_KWARGS = (
     ("run_as_host_user", "docker_run_as_host_user", False), ("network", "docker_network", True),
     ("extra_args", "docker_extra_args", []), ("persist_across_processes", "docker_persist_across_processes", True),
     ("shared_container_key", "docker_shared_container_key", ""), ("shm_size", "docker_shm_size", "1g"),
-    ("snap_compat", "docker_snap_compat", False),
+    ("snap_compat", "docker_snap_compat", False), ("image_pinned", "docker_image_pinned", False),
 )
 
 

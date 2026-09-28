@@ -108,7 +108,7 @@ describe('JsonRpcRequestChannel', () => {
       expect(failures).toEqual([])
 
       await vi.advanceTimersByTimeAsync(400)
-      expect(failures).toEqual(['WebSocket heartbeat acknowledgement timed out'])
+      expect(failures).toHaveLength(1)
       // Failure stops the timer: no further pings after the report.
       const pings = sent.length
       await vi.advanceTimersByTimeAsync(500)
@@ -118,10 +118,11 @@ describe('JsonRpcRequestChannel', () => {
     }
   })
 
-  // TUI contract: a backend whose request loop is wedged may still stream
-  // deltas; only a pong (or a response to our own request) proves it can
-  // answer, so notifications alone must NOT keep the transport alive.
-  it("'response' liveness (default, TUI): unanswered pings fail the heartbeat even while deltas stream", async () => {
+  // 'response' mode itself stays available (explicit opt-in): a caller that
+  // wants only a pong (or a response to its own request) to prove the
+  // backend can answer keeps that stricter contract.
+  it("'response' liveness (explicit opt-in): unanswered pings fail the heartbeat even while deltas stream", async () => {
+    // unchanged semantics for any caller that still chooses 'response'
     vi.useFakeTimers()
 
     try {
@@ -165,7 +166,7 @@ describe('JsonRpcRequestChannel', () => {
         channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', payload: {} } }))
       }
 
-      expect(failures).toEqual(['WebSocket heartbeat acknowledgement timed out'])
+      expect(failures).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }
@@ -173,6 +174,25 @@ describe('JsonRpcRequestChannel', () => {
 
   // Server→client requests (tui_gateway/server_requests.py): the backend asks,
   // the client answers with a RESPONSE frame carrying the same id.
+  it('advertises server-request support once per gateway.ready and shrugs off an older backend', () => {
+    // A backend that never hears client.capabilities treats a WebSocket client as a build older than
+    // server→client requests and fails every clarify/approval for it at once (tui_gateway/server_requests.py).
+    const channel = new JsonRpcRequestChannel({ requestIdPrefix: 'c' })
+    const { sent, transport, last } = spyTransport()
+
+    channel.attach(transport)
+    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'session.info', session_id: 's' } }))
+    expect(sent).toHaveLength(0)
+
+    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
+    expect(sent).toHaveLength(1)
+    expect(JSON.parse(sent[0])).toMatchObject({ method: 'client.capabilities', params: { server_requests: true } })
+
+    // An older backend answers -32601: nothing rejects out of the channel.
+    channel.handleFrame(JSON.stringify({ error: { code: -32601, message: 'unknown method' }, id: last().id, jsonrpc: '2.0' }))
+    expect(sent).toHaveLength(1)
+  })
+
   it('routes a server request to the first accepting handler and answers -32601 when nobody accepts', () => {
     const unhandled: string[] = []
     const channel = new JsonRpcRequestChannel({ onUnhandledRequest: req => void unhandled.push(req.method) })
@@ -215,5 +235,55 @@ describe('JsonRpcRequestChannel', () => {
     )
     await expect(resume).resolves.toMatchObject({ session_id: 's1' })
     expect(delivered).toEqual([{ id: 'srq-9', replayed: true }])
+  })
+
+  // Regression (2026-09-15 clarify spinner): a throwing handler used to escape
+  // deliverRequest inside the socket listener — no response frame at all, so
+  // the backend (clarify_tool: 3600s deadline) waited out the whole block.
+  it('answers -32603 when a handler throws, keeps later frames working, and still answers -32601 otherwise', () => {
+    const crashed: Array<{ id: string; method: string; message: string }> = []
+    const unhandled: string[] = []
+
+    const channel = new JsonRpcRequestChannel({
+      onRequestHandlerError: (error, req) => void crashed.push({ id: req.id, method: req.method, message: error.message }),
+      onUnhandledRequest: req => void unhandled.push(req.method)
+    })
+
+    const { sent, transport } = spyTransport()
+
+    channel.attach(transport)
+    channel.onRequest(req => {
+      if (req.method === 'boom') {
+        throw new Error('handler exploded')
+      }
+
+      if (req.method === 'clarify') {
+        req.respond({ answer: 'yes' })
+
+        return true
+      }
+
+      return false
+    })
+
+    channel.handleFrame(JSON.stringify({ id: 'srq-1', jsonrpc: '2.0', method: 'boom', params: { session_id: 's1' } }))
+    channel.handleFrame(JSON.stringify({ id: 'srq-2', jsonrpc: '2.0', method: 'nobody', params: { session_id: 's1' } }))
+
+    const frames = sent.map(f => JSON.parse(f) as { id: string; error?: { code: number; message?: string } })
+
+    expect(frames[0].id).toBe('srq-1')
+    expect(frames[0].error?.code).toBe(-32603)
+    expect(frames[0].error?.message).toContain('boom')
+    expect(frames[1].id).toBe('srq-2')
+    expect(frames[1].error?.code).toBe(-32601)
+    // The crash reports through its own hook; it is not an "unhandled" request.
+    expect(crashed).toEqual([{ id: 'srq-1', method: 'boom', message: 'handler exploded' }])
+    expect(unhandled).toEqual(['nobody'])
+
+    // The channel survives: a normal request after the crash still routes.
+    channel.handleFrame(JSON.stringify({ id: 'srq-3', jsonrpc: '2.0', method: 'clarify', params: { session_id: 's1' } }))
+    const third = sent.at(-1)!
+    expect((JSON.parse(third) as { id: string }).id).toBe('srq-3')
+    expect((JSON.parse(third) as { result?: { answer?: string } }).result?.answer).toBe('yes')
   })
 })

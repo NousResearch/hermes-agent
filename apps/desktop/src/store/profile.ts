@@ -15,7 +15,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
-import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
+import { registryConnectionKind } from '@/store/connection-registry-state'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -29,6 +29,7 @@ import {
 import { notifyError } from '@/store/notifications'
 import { $poolLimits } from '@/store/pool-limits'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
+import { exitProjectScope } from '@/store/project-scope'
 import { $connection, clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { resetStarmapGraph } from '@/store/starmap'
@@ -320,11 +321,34 @@ export const $newChatRoute = atom<AgentProfileRoute | null>(null)
 // profile pick on the explicit `local` source — see profilePickConnectionId).
 export const $newChatConnectionId = atom<null | string>(null)
 
+// A saved null default explicitly chooses the legacy profile door even while
+// a remote source is still active. Ordinary profile picks retain their existing
+// source policy; only this pinned intent suppresses the ambient fallback.
+let legacyNewChatProfile: null | string = null
+
 /** Capture the registry source a new-chat profile intent lands on — by
  *  default the active one; callers that dial a different door (a profile
  *  pick, see profilePickConnectionId) pass the source that door uses. */
 export function captureNewChatSource(connectionId: null | string = activeGatewayConnectionId()): void {
+  legacyNewChatProfile = null
   $newChatConnectionId.set(connectionId)
+}
+
+export function pinLegacyNewChatProfile(profile: string): void {
+  const target = normalizeProfileKey(profile)
+  $newChatProfile.set(target)
+  $newChatRoute.set(null)
+  captureNewChatSource(null)
+  legacyNewChatProfile = target
+}
+
+export function isLegacyNewChatProfile(profile: string): boolean {
+  return (
+    legacyNewChatProfile === normalizeProfileKey(profile) &&
+    $newChatProfile.get() === legacyNewChatProfile &&
+    $newChatRoute.get() === null &&
+    $newChatConnectionId.get() === null
+  )
 }
 
 /**
@@ -374,6 +398,10 @@ export function resolveNewChatOwnerRoute(forProfile?: string): AgentProfileRoute
 
   const intentProfile = forProfile ? normalizeProfileKey(forProfile) : $newChatProfile.get()
 
+  if (intentProfile && isLegacyNewChatProfile(intentProfile)) {
+    return null
+  }
+
   const connectionId = (
     (intentProfile
       ? ($newChatConnectionId.get() ?? profilePickConnectionId(intentProfile))
@@ -412,7 +440,6 @@ $activeGatewayProfile.subscribe(value => {
   setApiRequestProfile(key)
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
-    invalidateCronModelImpactScopeState()
     // Profile-scoped settings + the unified session list are now stale.
     // Narrowed so account/marketplace/onboarding caches don't refetch on
     // every profile switch.
@@ -472,6 +499,14 @@ export function prewarmProfileBackend(name: string, connectionId: null | string 
     key === normalizeProfileKey($activeGatewayProfile.get()) &&
     (!connection || connection === activeGatewayConnectionId())
   ) {
+    return
+  }
+
+  // SSH sources are connect-on-demand (#89756): dialing one bootstraps the
+  // tunnel and spawns `hermes -p <profile> serve --isolated` on the remote
+  // box, so a hover sweep across the roster spawned one isolated backend per
+  // bot and knocked the primary chat over. Only an explicit open may dial SSH.
+  if (connection && registryConnectionKind(connection) === 'ssh') {
     return
   }
 
@@ -546,7 +581,10 @@ async function resolveConnectionForProfile(profile: string): Promise<HermesConne
 // their sockets — so their sessions keep streaming concurrently. A null/empty
 // target means "no explicit profile" → keep the current gateway (a plain new
 // chat stays put; single-profile users never leave the primary).
-export async function ensureGatewayProfile(profile: string | null | undefined): Promise<void> {
+export async function ensureGatewayProfile(
+  profile: string | null | undefined,
+  { forceLegacyRoute = false }: { forceLegacyRoute?: boolean } = {}
+): Promise<void> {
   if (profile == null || !String(profile).trim()) {
     // "No explicit profile" = use the current gateway. But if an explicit swap
     // (e.g. the user just picked a profile in the switcher) is still in flight,
@@ -566,7 +604,7 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
   // renderer-side $activeGatewayProfile mirror is not proof of the socket:
   // applyActive can decline an epoch-losing publication while call sites
   // publish the atom anyway, leaving "atom says X, socket serves Y" (the
-  // #89206 split-brain — observed live as atom 'default' over a hermes-setup
+  // #89206 split-brain — observed live as atom 'default' over a setup-profile
   // socket during the guided-onboarding handoff). Verify the leg we're about
   // to rely on; on disagreement fall through to the full ensure path, which
   // re-activates the socket and leaves the atom and route agreeing. The one
@@ -575,6 +613,12 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
   // scope — recognized via the active descriptor so global-remote keeps its
   // fast path instead of re-running the swap on every create.
   const routeAgrees = (): boolean => {
+    // A saved legacy default names a door, not just a profile. A registry
+    // source can serve the SAME name without being that legacy backend.
+    if (forceLegacyRoute && activeGatewayConnectionId() !== null) {
+      return false
+    }
+
     if (normalizeProfileKey($activeGatewayProfile.get()) !== target || $gateway.get()?.connectionState !== 'open') {
       return false
     }
@@ -912,6 +956,7 @@ export function selectProfile(name: string): void {
   captureNewChatSource(profilePickConnectionId(target))
 
   if (switching) {
+    leaveForeignProjectScope(target)
     requestFreshSession()
   }
 
@@ -982,6 +1027,16 @@ function activateOnCurrentSource(target: string): Promise<void> {
   return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
 }
 
+// A project id names a row in ONE backend's projects.db. A draft headed for
+// another profile (or source) must not resolve its cwd from the scope entered on
+// the current one: the fresh draft runs before the gateway swap refreshes the
+// project tree, so it would start in the previous profile's project (#54990).
+function leaveForeignProjectScope(profile: string, connectionId: null | string = activeGatewayConnectionId()): void {
+  if (profile !== normalizeProfileKey($activeGatewayProfile.get()) || connectionId !== activeGatewayConnectionId()) {
+    exitProjectScope()
+  }
+}
+
 // Pin the next new chat to `name` (legacy profile-only door) so session.create
 // reads the profile the user clicked "+" under, not whatever
 // $activeGatewayProfile holds once an in-flight profile swap settles (#79005).
@@ -1002,6 +1057,7 @@ export function pinNewChatProfile(name: string): string {
 // message lands in the right place.
 export function newSessionInProfile(name: string): void {
   const target = pinNewChatProfile(name)
+  leaveForeignProjectScope(target)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
   void activateOnCurrentSource(target).catch((error: unknown) => {
@@ -1028,7 +1084,8 @@ export function newSessionInAgent(route: AgentProfileRoute): void {
 
   $newChatProfile.set(captured.profile)
   $newChatRoute.set(captured)
-  $newChatConnectionId.set(captured.connectionId)
+  captureNewChatSource(captured.connectionId)
+  leaveForeignProjectScope(captured.profile, captured.connectionId)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
   void ensureGatewayAgent(captured.connectionId, captured.profile).catch((error: unknown) => {

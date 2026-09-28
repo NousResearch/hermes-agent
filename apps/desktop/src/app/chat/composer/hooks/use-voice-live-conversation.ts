@@ -6,6 +6,8 @@ import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession 
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 
+import { useComposerScope } from '../scope'
+
 import { micError } from './use-mic-recorder'
 import type { ConversationStatus } from './use-voice-conversation'
 
@@ -121,6 +123,12 @@ export function useVoiceLiveConversation({
   // restart the feed loop, and a ref write alone does not re-render.
   const [activeDelegation, setActiveDelegation] = useState<null | string>(null)
   const sessionRef = useRef<null | VoiceLiveSession>(null)
+  // The scope's session owner (a Bot's own connection + profile) picks the
+  // GPT-Live backend and voice; a ref keeps the long-lived start closures
+  // reading the current value.
+  const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
+  const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile })
+  ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
   // Bumped by every start/end so an in-flight start() that lost the race
   // (StrictMode double-effect, quick toggle) closes its session instead of
   // leaving a second billed one running.
@@ -238,95 +246,98 @@ export function useVoiceLiveConversation({
       return
     }
 
-    const session = new VoiceLiveSession({
-      // The voice model answers a bare "stop" itself (it just goes quiet) and
-      // never delegates it, so the spoken stop phrase is judged on the user
-      // transcript once the utterance settles.
-      onTranscript: fragment => {
-        if (fragment.speaker !== 'user') {
-          return
-        }
+    const session = new VoiceLiveSession(
+      {
+        // The voice model answers a bare "stop" itself (it just goes quiet) and
+        // never delegates it, so the spoken stop phrase is judged on the user
+        // transcript once the utterance settles.
+        onTranscript: fragment => {
+          if (fragment.speaker !== 'user') {
+            return
+          }
 
-        userUtteranceRef.current += fragment.text
+          userUtteranceRef.current += fragment.text
 
-        if (utteranceTimerRef.current) {
-          window.clearTimeout(utteranceTimerRef.current)
-        }
+          if (utteranceTimerRef.current) {
+            window.clearTimeout(utteranceTimerRef.current)
+          }
 
-        utteranceTimerRef.current = window.setTimeout(() => {
-          utteranceTimerRef.current = null
-          const utterance = userUtteranceRef.current
-          userUtteranceRef.current = ''
+          utteranceTimerRef.current = window.setTimeout(() => {
+            utteranceTimerRef.current = null
+            const utterance = userUtteranceRef.current
+            userUtteranceRef.current = ''
 
-          if (sessionRef.current === session && isVoiceStopCommand(utterance)) {
+            if (sessionRef.current === session && isVoiceStopCommand(utterance)) {
+              void end()
+              latest.current.onStopWord?.()
+            }
+          }, UTTERANCE_SETTLE_MS)
+        },
+        onClosed: (reason, usageSeconds) => {
+          if (sessionRef.current !== session) {
+            return
+          }
+
+          sessionRef.current = null
+          setDelegation(null)
+          setStatus('idle')
+
+          if (reason !== 'close_requested') {
+            notify({
+              kind: 'warning',
+              message: liveEndedMessage(reason, usageSeconds, voiceCopy),
+              title: voiceCopy.liveEnded
+            })
+            latest.current.onFatalError?.()
+          }
+        },
+        onDelegation: (delegationId, context) => {
+          if (sessionRef.current !== session) {
+            return
+          }
+
+          const { context: voiceContext, prompt } = delegationPrompt(context)
+
+          // A spoken stop command ends the conversation instead of becoming a turn.
+          if (prompt && isVoiceStopCommand(prompt)) {
             void end()
             latest.current.onStopWord?.()
+
+            return
           }
-        }, UTTERANCE_SETTLE_MS)
-      },
-      onClosed: (reason, usageSeconds) => {
-        if (sessionRef.current !== session) {
-          return
-        }
 
-        sessionRef.current = null
-        setDelegation(null)
-        setStatus('idle')
+          // A newer request supersedes an in-flight turn: stop it so the answer
+          // the voice speaks is for what the user asked last.
+          if (busyRef.current) {
+            void latest.current.onInterrupt?.()
+          }
 
-        if (reason !== 'close_requested') {
-          notify({
-            kind: 'warning',
-            message: liveEndedMessage(reason, usageSeconds, voiceCopy),
-            title: voiceCopy.liveEnded
-          })
-          latest.current.onFatalError?.()
-        }
-      },
-      onDelegation: (delegationId, context) => {
-        if (sessionRef.current !== session) {
-          return
-        }
-
-        const { context: voiceContext, prompt } = delegationPrompt(context)
-
-        // A spoken stop command ends the conversation instead of becoming a turn.
-        if (prompt && isVoiceStopCommand(prompt)) {
-          void end()
-          latest.current.onStopWord?.()
-
-          return
-        }
-
-        // A newer request supersedes an in-flight turn: stop it so the answer
-        // the voice speaks is for what the user asked last.
-        if (busyRef.current) {
-          void latest.current.onInterrupt?.()
-        }
-
-        setDelegation(delegationId)
-        spokenResponseIdRef.current = null
-        spokenLengthRef.current = 0
-        lastToolLabelRef.current = null
-        turnObservedRef.current = false
-        submittedAtRef.current = Date.now()
-        latest.current.consumePendingResponse()
-        refreshStatus()
-        void Promise.resolve(latest.current.onSubmit(prompt, voiceContext)).catch(error => {
-          notifyError(error, voiceCopy.liveDelegationFailed)
-          session.speak(delegationId, 'Sorry, I could not reach Hermes for that request.')
-          setDelegation(null)
+          setDelegation(delegationId)
+          spokenResponseIdRef.current = null
+          spokenLengthRef.current = 0
+          lastToolLabelRef.current = null
+          turnObservedRef.current = false
+          submittedAtRef.current = Date.now()
+          latest.current.consumePendingResponse()
           refreshStatus()
-        })
+          void Promise.resolve(latest.current.onSubmit(prompt, voiceContext)).catch(error => {
+            notifyError(error, voiceCopy.liveDelegationFailed)
+            session.speak(delegationId, 'Sorry, I could not reach Hermes for that request.')
+            setDelegation(null)
+            refreshStatus()
+          })
+        },
+        onError: (message, fatal) => {
+          notify({ kind: fatal ? 'error' : 'warning', message, title: voiceCopy.liveError })
+        },
+        onSpeakingChange: speaking => {
+          speakingRef.current = speaking
+          setLevel(speaking ? 0.6 : 0)
+          refreshStatus()
+        }
       },
-      onError: (message, fatal) => {
-        notify({ kind: fatal ? 'error' : 'warning', message, title: voiceCopy.liveError })
-      },
-      onSpeakingChange: speaking => {
-        speakingRef.current = speaking
-        setLevel(speaking ? 0.6 : 0)
-        refreshStatus()
-      }
-    })
+      ownerRef.current
+    )
 
     sessionRef.current = session
     startingRef.current = false

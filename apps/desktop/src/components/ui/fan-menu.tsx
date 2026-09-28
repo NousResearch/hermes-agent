@@ -37,8 +37,7 @@ export interface FanMenuProps {
   /** Gap between discs, px. Discs are the hub's measured size; the step
    *  between them is that size plus this. */
   gap?: number
-  /** Where each disc's tooltip sits. Defaults to left, so tips hang off the
-   *  side of the fan rather than covering the next disc up. */
+  /** Override the outward-facing tooltip side derived from the fan geometry. */
   tipAnchor?: 'top' | 'left' | 'right' | 'bottom'
   /** The hairline caret on the hub that says "there is more". */
   hint?: boolean
@@ -117,6 +116,20 @@ export function fanOffsets(direction: FanDirection, count: number, step: number)
 const sameRect = (a: DOMRect | null, b: DOMRect) =>
   a !== null && a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height
 
+const OPEN_HUB_TIP_SIDE = { vertical: 'left', horizontal: 'top', arc: 'bottom' } as const
+
+function fanTipSide(direction: FanDirection, offset: Point): NonNullable<FanMenuProps['tipAnchor']> {
+  if (direction === 'vertical') {
+    return 'left'
+  }
+
+  if (direction === 'horizontal' || Math.abs(offset.x) < Math.abs(offset.y)) {
+    return 'top'
+  }
+
+  return offset.x < 0 ? 'left' : 'right'
+}
+
 /**
  * One control that fans its siblings out on hover — a column, a row centred
  * on it, or an arc. The hub stays in the flow where the consumer puts it; the
@@ -126,15 +139,7 @@ const sameRect = (a: DOMRect | null, b: DOMRect) =>
  * Hover, geometry and open/close timing live here. The consumer only
  * re-renders when its own items change; pointer traffic never reaches it.
  */
-export function FanMenu({
-  direction = 'vertical',
-  gap = 4,
-  hint = true,
-  hub,
-  items,
-  label,
-  tipAnchor = 'left'
-}: FanMenuProps) {
+export function FanMenu({ direction = 'vertical', gap = 4, hint = true, hub, items, label, tipAnchor }: FanMenuProps) {
   const anchorRef = useRef<HTMLSpanElement | null>(null)
   const [rect, setRect] = useState<DOMRect | null>(null)
   const [open, setOpen] = useState(false)
@@ -247,7 +252,7 @@ export function FanMenu({
         onPointerLeave={hideSoon}
         ref={anchorRef}
       >
-        <Tip label={hub.label} side={tipAnchor}>
+        <Tip label={hub.label} side={tipAnchor ?? (open ? OPEN_HUB_TIP_SIDE[direction] : 'top')}>
           <Button
             aria-expanded={open}
             aria-haspopup="true"
@@ -333,7 +338,7 @@ const FanCluster = memo(function FanCluster({
   open: boolean
   rect: DOMRect
   step: number
-  tipAnchor: NonNullable<FanMenuProps['tipAnchor']>
+  tipAnchor: FanMenuProps['tipAnchor']
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   // Mount folded, then unfold on the next style pass so the translate
@@ -371,7 +376,7 @@ const FanCluster = memo(function FanCluster({
       style={{ height: rect.height, left: rect.left, top: rect.top, width: rect.width }}
     >
       {items.map((item, index) => (
-        <Tip key={item.id} label={item.label} side={tipAnchor}>
+        <Tip key={item.id} label={item.label} side={tipAnchor ?? fanTipSide(direction, offsets[index])}>
           <Button
             aria-label={item.label}
             aria-pressed={item.active}

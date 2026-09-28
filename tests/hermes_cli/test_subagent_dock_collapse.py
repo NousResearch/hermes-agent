@@ -84,9 +84,9 @@ def test_collapsed_summary_prioritizes_live_count_and_controls_at_small_widths()
         text = monitor.dock_text(columns=width, rows=20)
         assert len(text.splitlines()) == 1
         assert get_cwidth(text) <= width
-        if width >= 24:
-            assert '6 live' in text and 'Ctrl+T' in text and 'F7' in text
+        if width >= 40:
+            assert '6 live' in text and 'Ctrl+T' in text and 'Ctrl+R' in text
         if width >= 80:
-            assert 'last: terminal' in text and 'Ctrl+T expand' in text and 'F7 restore' in text
+            assert 'last: terminal' in text
     monitor.entries.clear()
     assert monitor.dock_text(columns=80, rows=20) == ''

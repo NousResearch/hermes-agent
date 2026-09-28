@@ -22,7 +22,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
 import { $activeConnectionId } from '@/store/connections'
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $gatewayState } from '@/store/session'
 import { $settingsScopeProfile } from '@/store/settings-scope'
@@ -150,23 +150,32 @@ function buildSecret(form: VaultForm): Record<string, string> {
   return secret
 }
 
-export function VaultSettings() {
+interface VaultSettingsProps {
+  subpage?: string
+}
+
+export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const { t } = useI18n()
   const v = t.settings.vault
   const gatewayState = useStore($gatewayState)
   const queryClient = useQueryClient()
   // The owner this panel edits: every RPC below goes through the owner's socket with an explicit
-  // profile — never the ambient foreground gateway. The mount site keys the panel by this same
-  // owner, so a profile switch / connection swap remounts it: dialogs close and drafts (including a
-  // typed master password) are gone by construction rather than by cleanup code.
+  // (connection, profile) — never the ambient foreground gateway, and never a bare profile name:
+  // a bare name equal to the primary profile resolves onto the PRIMARY socket, so two connections
+  // both serving `default` would have this device's panel answered by the other machine (#94811).
+  // The mount site keys the panel by this same owner, so a profile switch / connection swap
+  // remounts it: dialogs close and drafts (including a typed master password) are gone by
+  // construction rather than by cleanup code.
   const scopeProfile = useStore($settingsScopeProfile)
   const connectionId = useStore($activeConnectionId)
   const owner = vaultOwnerKey(connectionId, scopeProfile)
 
   const requestGateway = useCallback(
     <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForProfile<T>(scopeProfile, method, params, undefined, undefined, { spawnPriority: 'foreground' }),
-    [scopeProfile]
+      requestGatewayForAgent<T>(connectionId, scopeProfile, method, params, undefined, undefined, {
+        spawnPriority: 'foreground'
+      }),
+    [connectionId, scopeProfile]
   )
 
   const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])
@@ -380,148 +389,156 @@ export function VaultSettings() {
 
   return (
     <SettingsContent>
-      <SectionHeading
-        aside={
-          <Button className="gap-1.5" onClick={() => openAdd()} size="sm" type="button" variant="outline">
-            <Plus className="size-3.5" />
-            {v.add}
-          </Button>
-        }
-        icon={ShieldLock}
-        meta={items.length > 0 ? v.count(items.length) : undefined}
-        title={v.title}
-      />
-      <p className="mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        {v.blurb}
-      </p>
-
-      {!isPending && items.length === 0 && <EmptyState description={v.emptyDesc} title={v.empty} />}
-
-      {items.map(item => (
-        <ListRow
-          action={
-            item.backend && item.backend !== 'local' ? (
-              <Pill tone="muted">{sourceLabel(item.backend)}</Pill>
-            ) : (
-              <Button
-                aria-label={v.deleteAction}
-                className="text-(--ui-text-tertiary) hover:text-destructive"
-                onClick={() => setPendingDelete(item)}
-                size="icon-sm"
-                type="button"
-                variant="ghost"
-              >
-                <Trash2 className="size-3.5" />
+      {(subpage === undefined || subpage === 'credentials') && (
+        <>
+          <SectionHeading
+            aside={
+              <Button className="gap-1.5" onClick={() => openAdd()} size="sm" type="button" variant="outline">
+                <Plus className="size-3.5" />
+                {v.add}
               </Button>
-            )
-          }
-          description={
-            // identifier · origin · date, separated so the row scans as three facts; the origin is
-            // omitted when the label already IS the host (save-on-page items are labelled by host).
-            <span className="flex flex-wrap items-center gap-x-2">
-              {item.identifier && <span className="truncate">{v.identifierShown(item.identifier)}</span>}
-              {item.origin && item.origin.replace(/^https?:\/\//, '') !== item.label && (
-                <>
-                  {item.identifier && (
-                    <span aria-hidden className="text-(--ui-text-tertiary)">
-                      ·
-                    </span>
-                  )}
-                  <span className="truncate">{item.origin}</span>
-                </>
-              )}
-              <span aria-hidden className="text-(--ui-text-tertiary)">
-                ·
-              </span>
-              <span>{v.createdOn(formatCreated(item.created_at))}</span>
-            </span>
-          }
-          key={item.id}
-          title={
-            <span className="flex items-center gap-2">
-              <span className="truncate">{item.label}</span>
-              <Pill tone={item.kind === 'login' ? 'primary' : 'muted'}>{kindLabel(item.kind)}</Pill>
-              {item.has_otp && <Pill tone="muted">{v.twoFactorBadge}</Pill>}
-            </span>
-          }
-        />
-      ))}
+            }
+            icon={ShieldLock}
+            meta={items.length > 0 ? v.count(items.length) : undefined}
+            page
+            title={v.title}
+          />
+          <p className="mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {v.blurb}
+          </p>
 
-      {/* Password managers */}
-      <div className="mt-6">
-        <SectionHeading icon={KeyRound} title={v.sources.title} />
-      </div>
-      <p className="mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        {v.sources.blurb}
-      </p>
-      {externalSources.map(source => (
-        <ListRow
-          action={
-            <span className="flex items-center justify-end gap-2">
-              {source.enabled &&
-                (source.unlocked ? (
+          {!isPending && items.length === 0 && <EmptyState description={v.emptyDesc} title={v.empty} />}
+
+          {items.map(item => (
+            <ListRow
+              action={
+                item.backend && item.backend !== 'local' ? (
+                  <Pill tone="muted">{sourceLabel(item.backend)}</Pill>
+                ) : (
                   <Button
-                    className="gap-1.5"
-                    disabled={lockSource.isPending}
-                    onClick={() => lockSource.mutate(source.name)}
-                    size="sm"
+                    aria-label={v.deleteAction}
+                    className="text-(--ui-text-tertiary) hover:text-destructive"
+                    onClick={() => setPendingDelete(item)}
+                    size="icon-sm"
                     type="button"
                     variant="ghost"
                   >
-                    <Lock className="size-3.5" />
-                    {v.sources.lock}
+                    <Trash2 className="size-3.5" />
                   </Button>
-                ) : (
-                  <Button
-                    className="gap-1.5"
-                    onClick={() => setUnlockTarget(source)}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    <KeyRound className="size-3.5" />
-                    {v.sources.unlock}
-                  </Button>
-                ))}
-              {source.installed && (
-                <Switch
-                  aria-label={source.display_name}
-                  checked={source.enabled}
-                  disabled={setSourceEnabled.isPending}
-                  onCheckedChange={enabled => {
-                    triggerHaptic('selection')
-                    setSourceEnabled.mutate({ name: source.name, enabled })
-                  }}
-                />
-              )}
-            </span>
-          }
-          description={
-            !source.installed
-              ? v.sources.notInstalled(source.display_name)
-              : source.enabled
-                ? source.unlocked
-                  ? v.sources.unlockedDesc
-                  : v.sources.lockedDesc
-                : v.sources.disabledDesc
-          }
-          key={source.name}
-          title={
-            <span className="flex items-center gap-2">
-              <span>{source.display_name}</span>
-              <Pill tone={source.enabled && source.unlocked ? 'primary' : 'muted'}>
-                {!source.installed
-                  ? v.sources.statusNotDetected
-                  : !source.enabled
-                    ? v.sources.statusOff
-                    : source.unlocked
-                      ? v.sources.statusUnlocked
-                      : v.sources.statusLocked}
-              </Pill>
-            </span>
-          }
-        />
-      ))}
+                )
+              }
+              description={
+                // identifier · origin · date, separated so the row scans as three facts; the origin is
+                // omitted when the label already IS the host (save-on-page items are labelled by host).
+                <span className="flex flex-wrap items-center gap-x-2">
+                  {item.identifier && <span className="truncate">{v.identifierShown(item.identifier)}</span>}
+                  {item.origin && item.origin.replace(/^https?:\/\//, '') !== item.label && (
+                    <>
+                      {item.identifier && (
+                        <span aria-hidden className="text-(--ui-text-tertiary)">
+                          ·
+                        </span>
+                      )}
+                      <span className="truncate">{item.origin}</span>
+                    </>
+                  )}
+                  <span aria-hidden className="text-(--ui-text-tertiary)">
+                    ·
+                  </span>
+                  <span>{v.createdOn(formatCreated(item.created_at))}</span>
+                </span>
+              }
+              key={item.id}
+              title={
+                <span className="flex items-center gap-2">
+                  <span className="truncate">{item.label}</span>
+                  <Pill tone={item.kind === 'login' ? 'primary' : 'muted'}>{kindLabel(item.kind)}</Pill>
+                  {item.has_otp && <Pill tone="muted">{v.twoFactorBadge}</Pill>}
+                </span>
+              }
+            />
+          ))}
+        </>
+      )}
+
+      {(subpage === undefined || subpage === 'sources') && (
+        <>
+          <div className={subpage === undefined ? 'mt-6' : undefined}>
+            <SectionHeading icon={KeyRound} page title={v.sources.title} />
+          </div>
+          <p className="mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {v.sources.blurb}
+          </p>
+          {externalSources.map(source => (
+            <ListRow
+              action={
+                <span className="flex items-center justify-end gap-2">
+                  {source.enabled &&
+                    (source.unlocked ? (
+                      <Button
+                        className="gap-1.5"
+                        disabled={lockSource.isPending}
+                        onClick={() => lockSource.mutate(source.name)}
+                        size="sm"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Lock className="size-3.5" />
+                        {v.sources.lock}
+                      </Button>
+                    ) : (
+                      <Button
+                        className="gap-1.5"
+                        onClick={() => setUnlockTarget(source)}
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                      >
+                        <KeyRound className="size-3.5" />
+                        {v.sources.unlock}
+                      </Button>
+                    ))}
+                  {source.installed && (
+                    <Switch
+                      aria-label={source.display_name}
+                      checked={source.enabled}
+                      disabled={setSourceEnabled.isPending}
+                      onCheckedChange={enabled => {
+                        triggerHaptic('selection')
+                        setSourceEnabled.mutate({ name: source.name, enabled })
+                      }}
+                    />
+                  )}
+                </span>
+              }
+              description={
+                !source.installed
+                  ? v.sources.notInstalled(source.display_name)
+                  : source.enabled
+                    ? source.unlocked
+                      ? v.sources.unlockedDesc
+                      : v.sources.lockedDesc
+                    : v.sources.disabledDesc
+              }
+              key={source.name}
+              title={
+                <span className="flex items-center gap-2">
+                  <span>{source.display_name}</span>
+                  <Pill tone={source.enabled && source.unlocked ? 'primary' : 'muted'}>
+                    {!source.installed
+                      ? v.sources.statusNotDetected
+                      : !source.enabled
+                        ? v.sources.statusOff
+                        : source.unlocked
+                          ? v.sources.statusUnlocked
+                          : v.sources.statusLocked}
+                  </Pill>
+                </span>
+              }
+            />
+          ))}
+        </>
+      )}
 
       {/* Unlock dialog */}
       <Dialog onOpenChange={open => !open && closeUnlock()} open={unlockTarget !== null}>

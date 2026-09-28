@@ -8,6 +8,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
+from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND, display_kind_for_event
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 from hermes_cli.heartbeat import HeartbeatManager
@@ -37,12 +38,12 @@ def poller(monkeypatch):
     goals._get_session_db()
     clock = SimpleNamespace(now=1000.0)
     monkeypatch.setattr(heartbeat, "time", SimpleNamespace(time=lambda: clock.now))
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm")
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm", message_id="watch-cmd")
     key = build_session_key(source)
     adapter = _HeartbeatAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     runner._run_in_executor_with_context = asyncio.to_thread
     watch = {key: (source, "heartbeat-session")}
     HeartbeatManager("heartbeat-session").set("check status", 60)
@@ -77,6 +78,10 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
             await runner._heartbeat_poll_once(watch)
         assert len(received) == 1
         assert not received[0].internal  # authorization and emergency-stop still apply
+        # Gateway-stamped provenance: the turn may end silently (#113031) and is not a reply to
+        # the message that registered the watch (#112149).
+        assert display_kind_for_event(received[0]) == INTERNAL_NOTIFICATION_DISPLAY_KIND
+        assert received[0].source.message_id is None
         assert runner._queue_depth(key, adapter=adapter) == 0
         assert HeartbeatManager("heartbeat-session").state.fire_count == 1
     finally:
@@ -91,9 +96,9 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
     original = HeartbeatManager("heartbeat-session").state.to_json()
     user = MessageEvent(text="user follow-up", source=watch[key][0])
     # Missing adapter and missing handler must not consume a due tick.
-    runner._adapter_for_source = lambda source: None
+    runner._delivery_adapter_for = lambda source: None
     await runner._heartbeat_poll_once(watch)
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     await runner._heartbeat_poll_once(watch)
 
     async def handler(event):

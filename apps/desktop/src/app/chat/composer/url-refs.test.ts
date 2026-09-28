@@ -52,8 +52,83 @@ describe('linkifyUrls', () => {
     expect(linkifyUrls('@url:`https://example.dev`')).toBe('@url:`https://example.dev`')
   })
 
+  // #74741: a URL inside a fenced block is verbatim payload (a stack trace, a
+  // log line, a command), not prose to chip.
+  it('preserves a URL inside a fenced code block verbatim', () => {
+    const text = [
+      '```',
+      'android.content.ActivityNotFoundException: No Activity found to handle Intent { act=android.intent.action.VIEW dat=https://google.com/... (has extras) }',
+      '```'
+    ].join('\n')
+
+    expect(linkifyUrls(text)).toBe(text)
+  })
+
+  it('preserves links inside fenced code while rewriting surrounding prose', () => {
+    const text = [
+      'before https://before.dev',
+      '```ini',
+      'endpoint=https://code.dev/api',
+      '```',
+      'after https://after.dev'
+    ].join('\n')
+
+    expect(linkifyUrls(text)).toBe(
+      [
+        'before @url:`https://before.dev`',
+        '```ini',
+        'endpoint=https://code.dev/api',
+        '```',
+        'after @url:`https://after.dev`'
+      ].join('\n')
+    )
+  })
+
+  it('preserves links inside tilde-fenced code', () => {
+    const text = ['~~~yaml', 'endpoint: https://code.dev/api', '~~~'].join('\n')
+
+    expect(linkifyUrls(text)).toBe(text)
+  })
+
+  it('preserves links inside inline code while rewriting surrounding prose', () => {
+    expect(linkifyUrls('see https://before.dev then `curl https://code.dev/api` and https://after.dev')).toBe(
+      'see @url:`https://before.dev` then `curl https://code.dev/api` and @url:`https://after.dev`'
+    )
+  })
+
+  it('supports arbitrary backtick runs around inline code', () => {
+    const text = 'run ``curl ` https://code.dev/api`` now'
+
+    expect(linkifyUrls(text)).toBe(text)
+  })
+
+  it('preserves links in unfinished code while the user is composing it', () => {
+    const unfinishedFence = ['```sh', 'curl https://code.dev/api'].join('\n')
+    const unfinishedInline = 'run `curl https://code.dev/api'
+
+    expect(linkifyUrls(unfinishedFence)).toBe(unfinishedFence)
+    expect(linkifyUrls(unfinishedInline)).toBe(unfinishedInline)
+  })
+
+  it('rewrites prose links after an escaped unmatched backtick', () => {
+    expect(linkifyUrls('show \\` literally, then visit https://example.dev/api')).toBe(
+      'show \\` literally, then visit @url:`https://example.dev/api`'
+    )
+  })
+
   it('leaves text without a scheme alone', () => {
     expect(linkifyUrls('example.dev/a and src/foo.ts')).toBe('example.dev/a and src/foo.ts')
+  })
+
+  // The paste handler runs resolveExactLinkPaste before linkifyUrls on the same
+  // payload; a match left in the shared regex's lastIndex made linkifyUrls skip
+  // the first link (a lone pasted URL landed as raw text) — see #112479.
+  it('still chips the first link after resolveExactLinkPaste saw the same payload', () => {
+    expect(resolveExactLinkPaste('https://example.dev/a/b')).toBe('https://example.dev/a/b')
+    expect(linkifyUrls('https://example.dev/a/b')).toBe('@url:`https://example.dev/a/b`')
+
+    resolveExactLinkPaste('https://a.dev and https://b.dev')
+    expect(linkifyUrls('https://a.dev and https://b.dev')).toBe('@url:`https://a.dev` and @url:`https://b.dev`')
   })
 })
 
@@ -187,6 +262,48 @@ describe('chipTypedUrlOnSpace', () => {
 
     expect(chipTypedUrlOnSpace({ ...event, altKey: true })).toBe(false)
     expect(composerPlainText(editor)).toBe('https://example.dev')
+
+    editor.remove()
+  })
+
+  it('does not chip a link typed inside an unfinished fenced code block', () => {
+    const text = ['```sh', 'curl https://code.dev/api'].join('\n')
+    const { editor, event } = spaceOn(text, text.length)
+
+    expect(chipTypedUrlOnSpace(event)).toBe(false)
+    expect(composerPlainText(editor)).toBe(text)
+
+    editor.remove()
+  })
+
+  it('does not chip a link typed inside an unfinished inline code span', () => {
+    const text = 'run `curl https://code.dev/api'
+    const { editor, event } = spaceOn(text, text.length)
+
+    expect(chipTypedUrlOnSpace(event)).toBe(false)
+    expect(composerPlainText(editor)).toBe(text)
+
+    editor.remove()
+  })
+
+  it('still chips a link typed after a completed code block', () => {
+    const text = ['```', 'https://code.dev/api', '```', 'see https://example.dev/api'].join('\n')
+    const { editor, event } = spaceOn(text, text.length)
+
+    expect(chipTypedUrlOnSpace(event)).toBe(true)
+    expect(composerPlainText(editor)).toBe(
+      ['```', 'https://code.dev/api', '```', 'see @url:`https://example.dev/api` '].join('\n')
+    )
+
+    editor.remove()
+  })
+
+  it('chips a prose link typed after an escaped unmatched backtick', () => {
+    const text = 'show \\` literally, then visit https://example.dev/api'
+    const { editor, event } = spaceOn(text, text.length)
+
+    expect(chipTypedUrlOnSpace(event)).toBe(true)
+    expect(composerPlainText(editor)).toBe('show \\` literally, then visit @url:`https://example.dev/api` ')
 
     editor.remove()
   })

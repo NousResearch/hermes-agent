@@ -42,6 +42,24 @@ export const LOCALE_OPTIONS = [
     name: LOCALE_ENDONYMS.ru,
     englishName: 'Russian',
     configValue: 'ru'
+  },
+  {
+    id: 'fr',
+    name: LOCALE_ENDONYMS.fr,
+    englishName: 'French',
+    configValue: 'fr'
+  },
+  {
+    id: 'de',
+    name: LOCALE_ENDONYMS.de,
+    englishName: 'German',
+    configValue: 'de'
+  },
+  {
+    id: 'es',
+    name: LOCALE_ENDONYMS.es,
+    englishName: 'Spanish',
+    configValue: 'es'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -96,7 +114,40 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   russian: 'ru',
   'russian-russian': 'ru',
   русский: 'ru',
-  руский: 'ru'
+  руский: 'ru',
+  fr: 'fr',
+  'fr-fr': 'fr',
+  fr_fr: 'fr',
+  'fr-be': 'fr',
+  fr_be: 'fr',
+  'fr-ca': 'fr',
+  fr_ca: 'fr',
+  'fr-ch': 'fr',
+  fr_ch: 'fr',
+  french: 'fr',
+  français: 'fr',
+  francais: 'fr',
+  de: 'de',
+  'de-de': 'de',
+  de_de: 'de',
+  'de-at': 'de',
+  de_at: 'de',
+  'de-ch': 'de',
+  de_ch: 'de',
+  german: 'de',
+  deutsch: 'de',
+  es: 'es',
+  'es-es': 'es',
+  es_es: 'es',
+  'es-mx': 'es',
+  es_mx: 'es',
+  'es-ar': 'es',
+  es_ar: 'es',
+  'es-419': 'es',
+  es_419: 'es',
+  spanish: 'es',
+  español: 'es',
+  espanol: 'es'
 }
 
 export function isLocale(value: unknown): value is Locale {

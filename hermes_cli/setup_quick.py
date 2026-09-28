@@ -200,7 +200,6 @@ def _blank_slate_minimize_config(config: dict):
     mem["user_profile_enabled"] = False
     config.setdefault("checkpoints", {})["enabled"] = False
     config.setdefault("smart_model_routing", {})["enabled"] = False
-    config.setdefault("display", {})["tool_progress"] = "all"
 
 
 def _set_bundled_skills_opt_out(opt_out: bool, log_label: str, on_success=None, on_error=None) -> None:

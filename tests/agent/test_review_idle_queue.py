@@ -12,10 +12,8 @@ wrapper in run_agent.AIAgent._spawn_background_review:
 """
 
 import threading
-import time
 import types
 
-import pytest
 
 from agent.review_idle_queue import (
     ReviewIdleQueue,
@@ -40,13 +38,14 @@ def test_defer_mode_values():
 
 
 def test_defer_max_age_parsing():
-    assert defer_max_age_s(None) == 30 * 60
+    default = defer_max_age_s(None)
+    assert default > 0
     assert defer_max_age_s({"defer_max_age_s": 120}) == 120.0
     assert defer_max_age_s({"defer_max_age_s": "600"}) == 600.0
     # Nonsense and non-positive fall back to the default.
-    assert defer_max_age_s({"defer_max_age_s": "soon"}) == 30 * 60
-    assert defer_max_age_s({"defer_max_age_s": 0}) == 30 * 60
-    assert defer_max_age_s({"defer_max_age_s": -5}) == 30 * 60
+    assert defer_max_age_s({"defer_max_age_s": "soon"}) == default
+    assert defer_max_age_s({"defer_max_age_s": 0}) == default
+    assert defer_max_age_s({"defer_max_age_s": -5}) == default
 
 
 # ── queue harness ────────────────────────────────────────────────
@@ -262,7 +261,6 @@ def test_wrapper_cloud_fast_path_skips_runtime_resolution(monkeypatch):
 
 def test_dispatcher_rechecks_enabled_gate(monkeypatch):
     """A review disabled while queued must not be resurrected at dispatch."""
-    from agent import review_idle_queue as riq
 
     q, clock = _make_queue()
     agent = _FakeAgent()

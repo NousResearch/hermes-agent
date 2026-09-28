@@ -34,6 +34,54 @@ def shared_ingress_profile(adapter: Any) -> Optional[str]:
     return getattr(adapter, "_shared_listener_profile", None) or None
 
 
+def bound_site_endpoints(site: Any, host: Any, port: Any) -> tuple[str, ...]:
+    """Stable host:port strings for the sockets a started aiohttp site actually bound.
+
+    TCPSite keeps the bound sockets on its asyncio server. Reading them after start() makes
+    ephemeral ports (port=0) and dual-stack wildcard binds truthful. The fallback preserves
+    a useful diagnostic for test doubles / older aiohttp shapes without making listener
+    introspection a startup dependency.
+    """
+    endpoints: list[str] = []
+    server = getattr(site, "_server", None)
+    for sock in getattr(server, "sockets", ()) or ():
+        try:
+            address = sock.getsockname()
+            bound_host, bound_port = str(address[0]), int(address[1])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            continue
+        endpoint = f"[{bound_host}]:{bound_port}" if ":" in bound_host else f"{bound_host}:{bound_port}"
+        if endpoint not in endpoints:
+            endpoints.append(endpoint)
+    if endpoints:
+        return tuple(endpoints)
+    try:
+        fallback_port = int(port or 0)
+    except (TypeError, ValueError):
+        fallback_port = 0
+    if fallback_port <= 0:
+        return ()
+    fallback_host = str(host or "*")
+    if ":" in fallback_host and not fallback_host.startswith("["):
+        fallback_host = f"[{fallback_host}]"
+    return (f"{fallback_host}:{fallback_port}",)
+
+
+def bound_listener_port(endpoints: tuple[str, ...], configured_port: Any) -> int:
+    """Return a started listener's real port, falling back safely for test doubles."""
+    for endpoint in endpoints:
+        try:
+            port = int(endpoint.rsplit(":", 1)[1])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if port > 0:
+            return port
+    try:
+        return int(configured_port or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def listener_base_url(host: Any, port: Any) -> str:
     """``http://host:port`` clients use to reach a listener bound on ``host`` (wildcards → loopback)."""
     host = "127.0.0.1" if is_wildcard_host(host) else str(host)
@@ -50,7 +98,9 @@ def shared_listener_base(runner: Any) -> Optional[str]:
         adapter = adapters.get(platform)
         if adapter is None:
             continue
-        return listener_base_url(getattr(adapter, "_host", None), getattr(adapter, "_port", 0))
+        endpoints = getattr(adapter, "_bound_listener_endpoints", ())
+        port = bound_listener_port(endpoints, getattr(adapter, "_port", 0))
+        return listener_base_url(getattr(adapter, "_host", None), port)
     return None
 
 
@@ -74,6 +124,7 @@ async def bind_listener(
     except BaseException:
         await runner.cleanup()
         raise
+    adapter._bound_listener_endpoints = bound_site_endpoints(site, host, port)
     return runner
 
 

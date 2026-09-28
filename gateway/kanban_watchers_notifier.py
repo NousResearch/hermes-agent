@@ -38,6 +38,59 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
 
+# The two kinds whose notice predicts a retry ("dispatcher will retry").
+_INTERRUPTION_KINDS = ("timed_out", "crashed")
+
+# Statuses an interrupted attempt (timed_out / crashed) is parked in while it waits for
+# another spawn — ``hermes_cli.kanban_db::_retry_status_for_run`` restores exactly these.
+# Any other status means no retry is coming.
+RETRY_PENDING_STATUSES = ("ready", "review")
+# The card is finished; its own terminal notice already told the story.
+TERMINAL_STATUSES = ("done", "archived")
+
+
+def live_task_status(task) -> str:
+    """The task's CURRENT status, lowercased — ``""`` when the row is unreadable."""
+    return str(getattr(task, "status", "") or "").strip().lower()
+
+
+def retry_notice_claim(task) -> str:
+    """What an interruption notice (``timed_out`` / ``crashed``) may claim about the retry.
+
+    Both events are true records of what happened to ONE attempt, emitted by the
+    dispatcher under a ``rowcount == 1`` guard on the running row. The notice is
+    rendered later, from the event, so it must not promise a retry the live board
+    contradicts: an attempt that was retried and then finished (or whose circuit
+    breaker gave up, or that is already re-running) still produced the event, and
+    "will retry" for a card the owner can see is done is the false alarm this guards.
+
+    ``"pending"`` — queued for another spawn, so a retry claim is true.
+    ``"terminal"`` — ``done``/``archived``: say nothing (a retry claim here is the bug).
+    ``"other"`` — blocked / already re-running / unreadable row: state the live status
+    and claim nothing. An unverifiable retry is not a claimable retry.
+    """
+    status = live_task_status(task)
+    if status in RETRY_PENDING_STATUSES:
+        return "pending"
+    return "terminal" if status in TERMINAL_STATUSES else "other"
+
+
+def no_retry_clause(task) -> str:
+    """The honest tail for a notice whose retry is not queued."""
+    status = live_task_status(task)
+    return f"no retry is queued — the card is now {status}." if status else "no retry is queued."
+
+
+def wake_worthy(ev, task) -> bool:
+    """A ``timed_out``/``crashed`` event only wakes the creator on a retry that is really queued.
+
+    The wake turn renders ``gateway.kanban.wake.<kind>`` ("timed out; dispatcher will
+    retry"), so an event whose retry already happened must not reach it.
+    """
+    if getattr(ev, "kind", "") in _INTERRUPTION_KINDS:
+        return retry_notice_claim(task) == "pending"
+    return True
+
 
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
@@ -450,7 +503,25 @@ def _fmt_timed_out(ev, n) -> tuple:
     limit = int(_payload(ev, "limit_seconds") or 0)
     minutes = max(1, round(limit / 60)) if limit else 0
     span = f"its {minutes}-minute limit" if minutes else "its time limit"
-    return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
+    head = f"⏱ {n.head} ran past {span} and was stopped"
+    claim = retry_notice_claim(n.task)
+    if claim == "terminal":
+        # The card already finished; its own completed notice is the story. A stale
+        # timeout ping that promises a retry the owner can disprove is worse than silence.
+        return None, None, None
+    if claim == "pending":
+        return f"{head}; it will be retried automatically.", None, None
+    return f"{head}; {no_retry_clause(n.task)}", None, None
+
+
+def _fmt_crashed(ev, n) -> tuple:
+    head = f"✖ {n.head} — its worker stopped unexpectedly"
+    claim = retry_notice_claim(n.task)
+    if claim == "terminal":
+        return None, None, None
+    if claim == "pending":
+        return f"{head}; it will be retried automatically.", None, None
+    return f"{head}; {no_retry_clause(n.task)}", None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but
@@ -460,9 +531,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
     "gave_up": _fmt_gave_up,
-    "crashed": lambda ev, n: (
-        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
-    ),
+    "crashed": _fmt_crashed,
     "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,
@@ -560,7 +629,8 @@ class _KanbanNotification:
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        self.wake_kinds = ({ev.kind for ev in self.d["events"]
+                            if ev.kind in _WAKE_KINDS and wake_worthy(ev, task)} if self.wake_agent else set())
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
             return

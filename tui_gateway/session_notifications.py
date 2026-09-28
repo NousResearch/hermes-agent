@@ -5,6 +5,7 @@ desktop UI wiring, HUD surface note. Bodies are rebound onto server.py's globals
 from __future__ import annotations
 
 import contextlib
+from typing import Optional
 
 from .method_ctx import bind_module
 
@@ -311,10 +312,40 @@ def _kb_completed(task, payload: dict, title: str) -> str:
     return f" done — {title}{handoff}"
 
 
-def _kb_timed_out(task, payload: dict, title: str) -> str:
+def _kb_timed_out(task, payload: dict, title: str) -> Optional[str]:
+    """None when the card has since finished — the retry claim must come from the LIVE row.
+
+    The ``timed_out`` event is a true record of one attempt; by render time the card may
+    have been retried and completed, so "will retry" here is the false alarm (see
+    ``gateway.kanban_watchers_notifier.retry_notice_claim``).
+    """
+    from gateway.kanban_watchers_notifier import no_retry_clause, retry_notice_claim
+    limit = 0
     with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+        limit = int(payload.get("limit_seconds") or 0)
+    claim = retry_notice_claim(task)
+    if claim == "terminal":
+        return None  # the card's own terminal notice already told the story
+    if claim == "pending":
+        return f" timed out (max_runtime={limit}s); will retry"
+    return f" timed out (max_runtime={limit}s); {no_retry_clause(task)}"
+
+
+def _kb_crashed(task, payload: dict, title: str) -> Optional[str]:
+    """None when the card has since finished — the retry claim must come from the LIVE row.
+
+    Sibling of ``_kb_timed_out``: ``crashed`` predicts the same retry, so it carries the
+    same defect (and the gateway renderer already guards it in
+    ``gateway.kanban_watchers_notifier._fmt_crashed``). Keeping the guard here too is what
+    makes the two surfaces agree for this kind.
+    """
+    from gateway.kanban_watchers_notifier import no_retry_clause, retry_notice_claim
+    claim = retry_notice_claim(task)
+    if claim == "terminal":
+        return None  # the card's own terminal notice already told the story
+    if claim == "pending":
+        return " worker crashed (pid gone); dispatcher will retry"
+    return f" worker crashed (pid gone); {no_retry_clause(task)}"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
@@ -323,7 +354,7 @@ _KANBAN_EVENT_FORMATTERS = {
     "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
     "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
                 + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
-    "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
+    "crashed": ("✖", _kb_crashed),
     "timed_out": ("⏱", _kb_timed_out),
     "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
 }
@@ -339,7 +370,10 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
     title = (getattr(task, "title", None) or task_id)[:120]
     who = getattr(task, "assignee", None) or ""
     prefix = f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + (f"@{who} " if who else "")
-    return f"{prefix}Kanban {task_id}{fmt(task, getattr(ev, 'payload', None) or {}, title)}"
+    suffix = fmt(task, getattr(ev, 'payload', None) or {}, title)
+    if suffix is None:
+        return None  # stale notice: the event happened, but saying it would lie about the card
+    return f"{prefix}Kanban {task_id}{suffix}"
 
 
 def _kb_board_key(_kb, board_meta) -> tuple[str, str]:

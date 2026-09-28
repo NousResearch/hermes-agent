@@ -74,16 +74,27 @@ export function collapseDuplicateFinalAfterToolInterim(
  * rows the transcript must keep. Only the nearest sealed interim is considered
  * (the loop stops at the first one): anything further back is an earlier
  * segment of the turn.
+ *
+ * `interimBoundaryPending` bounds the scan to the CURRENT occurrence. The
+ * prompt row is not the only boundary: `message.start` also starts one while
+ * keeping the prior messages (a chained turn, a prompt-less turn), and it
+ * resets that flag. Without it, `interim('X') → message.start → delta('X') →
+ * complete('X')` reaches back past the boundary, settles the PREVIOUS turn's
+ * interim and deletes this turn's live bubble. The flag is exactly "an interim
+ * was sealed since the last `message.start`", so a false value means the only
+ * interims in range belong to an earlier occurrence and must not be touched.
  */
 export function identicalInterimSiblingIndex(
   messages: ChatMessage[],
   boundaryIndex: number,
   finalText: string,
-  excludeIndex = -1
+  options: { interimBoundaryPending: boolean; excludeIndex?: number }
 ): number {
-  if (!finalText) {
+  if (!finalText || !options.interimBoundaryPending) {
     return -1
   }
+
+  const excludeIndex = options.excludeIndex ?? -1
 
   for (let index = messages.length - 1; index > boundaryIndex; index -= 1) {
     if (index === excludeIndex) {

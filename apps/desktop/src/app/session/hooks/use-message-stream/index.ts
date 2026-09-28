@@ -872,7 +872,13 @@ export function useMessageStream({
         // A sealed text-only interim carrying exactly this reply IS the reply
         // (#123801) — see identicalInterimSiblingIndex. Settling it keeps one
         // bubble for the one stored row instead of painting the text twice.
-        const identicalInterimIndex = identicalInterimSiblingIndex(prev, lastUserIndex, finalText, streamIndex)
+        // Gated on the occurrence boundary: an interim sealed before a
+        // `message.start` belongs to a previous turn and must not be reached
+        // (the new turn's bubble would be the one deleted).
+        const identicalInterimIndex = identicalInterimSiblingIndex(prev, lastUserIndex, finalText, {
+          interimBoundaryPending,
+          excludeIndex: streamIndex
+        })
 
         if (streamIndex >= 0) {
           collapsed =

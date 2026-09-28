@@ -5,15 +5,21 @@ const artifacts = [{ filename: "status-comparison.csv", sha256: "verified" }];
 
 describe("reportArtifactPath", () => {
   it("returns a scoped URL only for an artifact in the selected report", () => {
-    expect(reportArtifactPath("as24-de-partial-20260927-v4", "status-comparison.csv", artifacts)).toBe(
-      "/api/reports/as24-de-partial-20260927-v4/status-comparison.csv",
+    expect(reportArtifactPath("sample-report", "status-comparison.csv", artifacts)).toBe(
+      "/api/reports/sample-report/status-comparison.csv",
     );
-    expect(reportArtifactPath("as24-de-partial-20260927-v4", "other.csv", artifacts)).toBeNull();
-    expect(reportArtifactPath("as24-de-partial-20260927-v4", "../status-comparison.csv", artifacts)).toBeNull();
+    expect(reportArtifactPath("sample-report", "other.csv", artifacts)).toBeNull();
+    expect(reportArtifactPath("sample-report", "../status-comparison.csv", artifacts)).toBeNull();
   });
 });
 
 describe("rewriteReportLinks", () => {
+  it("closes the restrictive CSP attribute before report markup with no head element", () => {
+    const html = rewriteReportLinks("<!doctype html><html><body><h1>Executive summary</h1></body></html>", "report-1", "");
+    expect(html).toMatch(/<meta http-equiv="Content-Security-Policy" content="sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'">/);
+    expect(html.indexOf("<h1>Executive summary</h1>")).toBeGreaterThan(html.indexOf("<meta "));
+  });
+
   it("bridges a bound standalone detail and relative downloads under the configured base path", () => {
     const html = rewriteReportLinks(
       '<head></head><a href="/reports/report-1/f001-details.html">Details</a><a href="findings.csv">CSV</a>',

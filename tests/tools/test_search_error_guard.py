@@ -93,6 +93,44 @@ class TestSearchErrorGuard:
         assert res.total_count >= 4
 
 
+@pytest.fixture
+def unreadable_dir_tree(tmp_path):
+    """Matching file names plus one directory the walker cannot enter."""
+    for i in range(3):
+        (tmp_path / f"target{i}.txt").write_text("x\n")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "target_hidden.txt").write_text("x\n")
+    os.chmod(locked, 0o000)
+    yield tmp_path
+    os.chmod(locked, 0o755)  # let pytest clean up tmp_path
+
+
+@pytest.mark.skipif(not shutil.which("rg"), reason="needs ripgrep")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root can read a 0o000 dir")
+@pytest.mark.parametrize("native", [True, False], ids=["native", "shell"])
+def test_file_search_keeps_results_when_one_dir_is_unreadable(unreadable_dir_tree, monkeypatch, native):
+    """``rg --files`` exits 2 when it could not enter a directory, but it still lists every file
+    it could reach. That partial error must not throw away the readable results."""
+    ops = _ops(unreadable_dir_tree)
+    monkeypatch.setattr(ops, "_native_read_enabled", lambda: native)
+    res = ops.search("target*", path=str(unreadable_dir_tree), target="files")
+    assert res.error is None, res.error
+    assert sorted(os.path.basename(f) for f in res.files) == ["target0.txt", "target1.txt", "target2.txt"]
+    assert res.total_count == 3
+    assert res.warning and "could not read part of the tree" in res.warning
+
+
+@pytest.mark.skipif(not shutil.which("rg"), reason="needs ripgrep")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root can read a 0o000 dir")
+def test_file_search_with_nothing_reachable_still_reports_the_error(tmp_path):
+    """A partial error with no usable output is still a real failure and must be surfaced."""
+    missing = tmp_path / "does-not-exist"
+    res = _ops(tmp_path).search("target*", path=str(missing), target="files")
+    assert res.error is not None
+    assert not res.files
+
+
 class TestSearchContentNewlineWarning:
     def test_odd_backslash_n_is_detected_as_regex_newline(self):
         assert _pattern_has_regex_newline(r"needle\n")

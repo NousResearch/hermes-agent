@@ -809,7 +809,12 @@ class SearchMixin:
                 f if posixpath.isabs(f) else posixpath.normpath(posixpath.join(scoped_common, f))
                 for f in all_files]
         bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
-        if result.exit_code not in {0, 1, 124} and not bounded_sigpipe:
+        # rg exits 2 on a PARTIAL error too (a directory it could not enter) while still listing
+        # every file it reached; stderr is discarded here, so any output line is a real path.
+        # Discovery order keeps those paths and says the walk was incomplete, like content search
+        # does; exact modified order still fails closed because a partial walk is not "exact".
+        partial_error = order == "discovery" and result.exit_code == 2 and bool(all_files)
+        if result.exit_code not in {0, 1, 124} and not bounded_sigpipe and not partial_error:
             if order == "modified":
                 return SearchResult(error=(
                     "Exact modification-time order failed; ripgrep 14+ is "
@@ -817,7 +822,9 @@ class SearchMixin:
             return SearchResult(error="File search failed while running ripgrep.")
         return SearchResult(
             files=all_files[offset:offset + limit], total_count=len(all_files),
-            truncated=len(all_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
+            truncated=len(all_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason,
+            warning=("ripgrep could not read part of the tree (e.g. a directory without permission); "
+                     "these results only cover what it could reach.") if partial_error else None)
 
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:

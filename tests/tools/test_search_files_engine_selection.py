@@ -205,7 +205,19 @@ def test_modified_capability_failure_is_actionable_and_not_downgraded():
     assert "ripgrep" in result.error
 
 
-@pytest.mark.parametrize("order", ["discovery", "modified"])
+def test_rg_partial_output_with_error_exit_keeps_discovery_results_with_warning():
+    """rg exits 2 when it could not enter a directory but still lists what it reached."""
+    env = RecordingEnvironment(rg_output="/repo/partial.py\n", rg_code=2)
+
+    result = ShellFileOperations(env).search("*.py", path="/repo", target="files")
+
+    assert result.error is None
+    assert result.files == ["/repo/partial.py"]
+    assert result.warning and "could not read part of the tree" in result.warning
+    assert len(env.rg_commands) == 1
+
+
+@pytest.mark.parametrize("order", ["modified"])
 def test_rg_partial_output_with_error_exit_fails_closed(order):
     env = RecordingEnvironment(rg_output="/repo/partial.py\n", rg_code=2)
 

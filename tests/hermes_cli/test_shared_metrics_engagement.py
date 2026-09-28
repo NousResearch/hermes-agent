@@ -106,6 +106,20 @@ def test_internal_and_unattended_turns_are_not_engagement(direct_runtime, tmp_pa
     assert [d["surface"] for d, _ in _stored_values(tmp_path, "hermes.engagement.surface_day.count")] == ["cli"]
 
 
+def test_a_late_interaction_never_reopens_a_closed_day():
+    """An interaction sampled before midnight that lands after the day rolled folds into the newer day:
+    the closed day is reported once, and the only close path is a later clock."""
+    resource = {"architecture": "x86_64", "hermes_version": "0.0.0", "install_method": "git", "os_family": "linux"}
+    midnight = int(datetime(2026, 9, 28, tzinfo=timezone.utc).timestamp() * 1000)
+    state, _ = engagement.apply(None, now_ms=midnight - 3_600_000, resource=resource, surface="cli")
+    state, closed = engagement.apply(state, now_ms=midnight + 500, resource=resource, surface="cli")
+    assert [r[3] for r in closed] == ["2026-09-27", "2026-09-27"]
+    state, late = engagement.apply(state, now_ms=midnight - 500, resource=resource, surface="cli")
+    assert late == [] and state["day"] == "2026-09-28"
+    _, next_day = engagement.apply(state, now_ms=midnight + 86_400_000, resource=resource, surface="cli")
+    assert {r[3] for r in next_day} == {"2026-09-28"}
+
+
 def test_collection_off_writes_no_engagement_state(direct_runtime, tmp_path, clock, monkeypatch):
     monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", lambda: {})
     _turn("s1", "t1", clock=clock, at=DAY1)

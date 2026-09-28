@@ -1451,6 +1451,22 @@ def test_cross_process_model_call_updates_are_transactional(tmp_path):
     assert restarted.counter_snapshot()[0]["value"] == 20
 
 
+def test_a_write_the_busy_store_cannot_take_is_deferred_not_lost(tmp_path):
+    """Another writer holding the store past the short busy timeout: the caller returns at once and the
+    increment lands with the next write (or the exit drain), never raised or dropped."""
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    blocker = sqlite3.connect(tmp_path / "metrics.sqlite3")
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        store.record_model_call(_dimensions(), _resource())
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert store.counter_snapshot() == []
+    store.record_model_call(_dimensions(), _resource())
+    assert store.counter_snapshot()[0]["value"] == 2
+
+
 def test_cross_process_client_active_attempts_record_one_install(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"

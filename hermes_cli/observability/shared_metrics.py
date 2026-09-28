@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import sqlite3
+import threading
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -33,6 +35,8 @@ _PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v3"
 _STORE_SCHEMA_VERSION = "2"
 _BUSY_TIMEOUT_MS = 250
 _SCHEMA_BUSY_TIMEOUT_MS = 5_000
+# Writes a busy store could not take within _BUSY_TIMEOUT_MS, kept in memory for the next write.
+_DEFERRED_WRITES_MAX = 1_024
 _LOCAL_HISTORY_RETENTION_DAYS = 30
 _ACTIVE_INSTALL_STATE_KEY = "client_active_recorded_at"
 _INSTALL_SNAPSHOT_STATE_KEY = "install_snapshot_recorded_at"
@@ -191,6 +195,9 @@ class SharedMetricsStore:
         _ensure_private(self.outbox_directory, 0o700)
         _ensure_private(self.database_path, 0o600)
         self._ensure_schema()
+        self._deferred: list[Callable[[sqlite3.Connection], None]] = []
+        self._deferred_lock = threading.Lock()
+        self._drain_at_exit = False
 
     def record_model_call(self, dimensions: dict[str, str], resource: dict[str, str]) -> None:
         """Increment the terminal model-call counter for the current UTC day."""
@@ -261,10 +268,10 @@ class SharedMetricsStore:
             amount != 1 and metric_name not in SUM_METRICS
         ):
             raise ValueError(f"Unsupported amount for shared metric: {metric_name}")
-        with self._connection() as connection:
-            self._record_counter_in_transaction(
-                connection, metric_name, dimensions, resource, _utc_now().date().isoformat(), amount
-            )
+        period_start = _utc_now().date().isoformat()
+        self._write_or_defer(lambda connection: self._record_counter_in_transaction(
+            connection, metric_name, dimensions, resource, period_start, amount
+        ))
 
     def update_rollup_state(
         self, state_key: str,
@@ -273,29 +280,35 @@ class SharedMetricsStore:
         """Read-modify-write one JSON rollup state and record the ``(metric, dimensions, resource,
         period_start)`` rows ``update`` closes, in one write transaction: every process of the profile
         serializes here, so a closed period is emitted exactly once. Rows the contract rejects are
-        dropped (never retried) so one bad row cannot wedge the rollup."""
-        with self._write() as connection:
-            row = connection.execute(
-                "SELECT value FROM telemetry_state WHERE key = ?", (state_key,)
-            ).fetchone()
-            try:
-                state = json.loads(row["value"]) if row is not None else None
-            except (TypeError, ValueError):
-                state = None
-            new_state, rows = update(state if isinstance(state, dict) else None)
-            valid = [
-                r for r in rows
-                if counter_dimensions_are_valid(r[0], r[1]) and client_resource_is_valid(r[2])
-            ]
-            if valid:
-                self._install_id(connection)
-            for metric_name, dimensions, resource, period_start in valid:
-                self._record_counter_in_transaction(connection, metric_name, dimensions, resource, period_start)
-            connection.execute(
-                "INSERT INTO telemetry_state(key, value) VALUES (?, ?)"
-                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (state_key, _compact_json(new_state)),
-            )
+        dropped (never retried) so one bad row cannot wedge the rollup. A busy store defers the update
+        to the next write (it then runs with that write's clock)."""
+        self._write_or_defer(lambda connection: self._update_rollup_state(connection, state_key, update))
+
+    def _update_rollup_state(
+        self, connection: sqlite3.Connection, state_key: str,
+        update: Callable[[dict[str, Any] | None], tuple[dict[str, Any], list[tuple[str, dict, dict, str]]]],
+    ) -> None:
+        row = connection.execute(
+            "SELECT value FROM telemetry_state WHERE key = ?", (state_key,)
+        ).fetchone()
+        try:
+            state = json.loads(row["value"]) if row is not None else None
+        except (TypeError, ValueError):
+            state = None
+        new_state, rows = update(state if isinstance(state, dict) else None)
+        valid = [
+            r for r in rows
+            if counter_dimensions_are_valid(r[0], r[1]) and client_resource_is_valid(r[2])
+        ]
+        if valid:
+            self._install_id(connection)
+        for metric_name, dimensions, resource, period_start in valid:
+            self._record_counter_in_transaction(connection, metric_name, dimensions, resource, period_start)
+        connection.execute(
+            "INSERT INTO telemetry_state(key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (state_key, _compact_json(new_state)),
+        )
 
     def recorded_milestones(self) -> frozenset[str]:
         return self._latched(_MILESTONE_STATE_PREFIX)
@@ -397,8 +410,43 @@ class SharedMetricsStore:
                 break
         return self._export_and_prune()
 
+    def _write_or_defer(self, write: Callable[[sqlite3.Connection], None]) -> None:
+        """Run ``write`` (after any deferred ones) in one write transaction. A store another writer
+        holds past the short busy timeout keeps them in memory for the next write or process exit
+        instead of losing them or stalling the caller."""
+        with self._deferred_lock:
+            pending, self._deferred = [*self._deferred, write], []
+        try:
+            with self._write() as connection:
+                for item in pending:
+                    item(connection)
+        except sqlite3.OperationalError as exc:
+            busy = "locked" in str(exc) or "busy" in str(exc)
+            with self._deferred_lock:
+                # A failure that is not contention drops only this write: the earlier ones stay queued.
+                self._deferred = [*(pending if busy else pending[:-1]), *self._deferred][-_DEFERRED_WRITES_MAX:]
+                register, self._drain_at_exit = not self._drain_at_exit, True
+            if register:
+                atexit.register(self.drain_deferred)
+            if not busy:
+                raise
+
+    def drain_deferred(self, busy_timeout_ms: int = _SCHEMA_BUSY_TIMEOUT_MS) -> None:
+        """Write the deferred writes (process exit / export waits longer than the user's path does)."""
+        with self._deferred_lock:
+            pending, self._deferred = self._deferred, []
+        if not pending:
+            return
+        try:
+            with self._write(busy_timeout_ms=busy_timeout_ms) as connection:
+                for item in pending:
+                    item(connection)
+        except Exception:
+            logger.warning("Unable to write %d deferred shared-metrics updates", len(pending), exc_info=True)
+
     def create_and_export_package_if_due(self) -> list[Path]:
         """Create pending packages at most once per UTC day, then export them."""
+        self.drain_deferred(_BUSY_TIMEOUT_MS)
         self._create_pending_packages_if_due()
         return self._export_and_prune()
 

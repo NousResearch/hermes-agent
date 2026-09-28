@@ -98,19 +98,24 @@ def turn_route(event: Any) -> tuple[str, str] | None:
 
 
 def record(store: Any, resource: dict[str, str], *, surface: str | None, route: tuple[str, str] | None) -> None:
-    now_ms = int(_now() * 1000)
+    """The clock is read inside each write transaction: writers then apply in clock order, so no
+    process closes a day another already closed. A busy store defers the interaction, never drops it."""
     profile_home = Path(store.database_path).parent.parent.parent
     root_home = _root_home(profile_home)
     owner = root_home == profile_home
     profile = _profile_hash(profile_home) if surface is not None else None
     store.update_rollup_state(STATE_KEY, lambda state: apply(
-        state, now_ms=now_ms, resource=resource, surface=surface, route=route,
+        state, now_ms=_now_ms(), resource=resource, surface=surface, route=route,
         profile=profile if owner else None, owner=owner,
     ))
     if profile is not None and not owner and _collects(root_home):
         _root_store(root_home).update_rollup_state(STATE_KEY, lambda state: apply(
-            state, now_ms=now_ms, resource=resource, profile=profile, owner=True,
+            state, now_ms=_now_ms(), resource=resource, profile=profile, owner=True,
         ))
+
+
+def _now_ms() -> int:
+    return int(_now() * 1000)
 
 
 def _root_home(profile_home: Path) -> Path:
@@ -186,11 +191,10 @@ def apply(
     today, rows = _utc_day(now_ms), []
     if state is not None and not _valid_state(state):
         state = None
-    if state is not None and state["day"] != today:
-        # A day behind the clock closes; a day ahead of it (clock correction) is dropped unemitted.
-        if state["day"] < today:
-            rows = close_day(state)
-        state = None
+    if state is not None and state["day"] < today:
+        # The only close path. A stored day ahead of the clock (a step back across midnight) keeps
+        # the interaction: the stored day never moves backwards, so no day is re-opened or emitted twice.
+        rows, state = close_day(state), None
     state = state or _fresh(today, resource, owner)
     state["owner"] = owner
     profiles = state.setdefault("profiles", [])

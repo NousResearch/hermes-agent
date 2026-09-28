@@ -402,19 +402,20 @@ the curator, delegated subagents' own turns) is not a user turn.
 
 | Metric | Dimensions | Question it answers |
 |---|---|---|
-| `hermes.engagement.surface_day.count` | surface (`cli`, `tui`, `desktop`, `gateway`, `acp`, `cron`), active-minutes bucket (`0`, `lt_5m`, `5m_to_30m`, `30m_to_2h`, `2h_to_6h`, `gte_6h`) | How long each surface is actually used per day. One row per surface used on a closed UTC day. |
-| `hermes.engagement.day.count` | active-minutes bucket, surfaces-used count (`0`–`3`, `gte_4`), primary provider, primary model, active-profile count bucket | Days active per week, multi-surface use, and next-day / next-week return by model. One row per closed UTC day with activity. |
-| `hermes.model_switch_after.count` | provider, model (the model switched away from), turns-before-switch bucket (`1`, `2_to_3`, `4_to_10`, `11_to_30`, `gte_31`) | How long users stay on a model before `/model` leaves it. Counts the old model's turns in the conversation (compression segments included); a switch before any turn on the current model is not counted. |
+| `hermes.engagement.surface_day.count` | surface (`cli`, `tui`, `desktop`, `gateway`, `acp`), active-minutes bucket (`0`, `lt_5m`, `5m_to_30m`, `30m_to_2h`, `2h_to_6h`, `gte_6h`) | How long each surface is actually used per day. One row per surface used on a closed UTC day. |
+| `hermes.engagement.day.count` | active-minutes bucket, surfaces-used count (`0`–`3`, `gte_4`), primary provider, primary model, active-profile count bucket | Days active per week, multi-surface use, and next-day / next-week return by model. One row per closed UTC day a person used Hermes on. The root (default) profile also writes a host row on days only other profiles were active: `surfaces_used_count` `0`, active minutes `0`, carrying the active-profile count; exclude `surfaces_used_count=0` rows when counting days active. |
+| `hermes.model_switch_after.count` | provider, model (the model switched away from), turns-before-switch bucket (`1`, `2_to_3`, `4_to_10`, `11_to_30`, `gte_31`) | How long users stay on a model before `/model` leaves it. Counts the user turns sent on the old model in the conversation (compression segments included; a turn that failed over to a fallback still counts for the model it was sent on; background review forks are not turns); a switch before any turn on the current model is not counted. |
 
 Active time is accumulated locally per UTC day: the sum of the gaps between
-consecutive interactions (a user-owned turn starting or ending: interactive
-surfaces, gateway messages and cron runs; delegated children, background
-review, batch and API/python embedding are excluded), each gap capped at 5
+consecutive interactions (a user turn starting or ending on an interactive
+surface or a gateway message; unattended cron runs, which `hermes.cron.run`
+counts, delegated children, background review, curator, batch and API-server /
+python embedding are excluded), each gap capped at 5
 minutes. The day's rows are recorded once the day closes, by the first
 interaction on a later day, in one database transaction, so a day is reported
 exactly once per profile however many processes see the rollover; they are
 dated to the day they describe. The primary model is the one that served the
-most attended turns that day (`none` when none did), named by the model-route
+most of those user turns that day (`none` when none did), named by the model-route
 rules. Days active per week and return by model are derived server-side from
 these daily rows and the existing `install_id`: Hermes keeps no weekly window
 and no identifier beyond `install_id` for them.

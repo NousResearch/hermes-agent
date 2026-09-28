@@ -42,10 +42,9 @@ _ACTIVE_THRESHOLDS = (
     (360 * _MINUTE_MS, "2h_to_6h"),
 )
 _SWITCH_THRESHOLDS = ((2, "1"), (4, "2_to_3"), (11, "4_to_10"), (31, "11_to_30"))
-# Task entrypoints that are a person (or their schedule) using Hermes; delegated children,
-# background review forks, batch and API/python embedding are not engagement.
-_ENGAGED_ENTRYPOINTS = frozenset({"gateway_message", "interactive", "scheduled_task"})
-_SURFACE_NAMES = {"scheduled_task": "cron"}
+# Task entrypoints that are a person using Hermes. Unattended cron runs (counted by hermes.cron.run),
+# delegated children, background review forks, batch and API/python embedding are not engagement.
+_ENGAGED_ENTRYPOINTS = frozenset({"gateway_message", "interactive"})
 _INTERACTION_METRICS = frozenset({contract.TASK_STARTED_METRIC, contract.TASK_FINISHED_METRIC})
 _ALL = "*"
 
@@ -72,9 +71,13 @@ def interaction_surface(classified: list[tuple[str, dict, int]]) -> str | None:
     for metric_name, dimensions, _ in classified:
         if metric_name in _INTERACTION_METRICS and dimensions.get("entrypoint") in _ENGAGED_ENTRYPOINTS:
             surface = dimensions.get("execution_surface", "")
-            surface = _SURFACE_NAMES.get(surface, surface)
             return surface if surface in contract.ENGAGEMENT_SURFACES else None
     return None
+
+
+def engaged_turn(start_fields: dict[str, str] | None, user_turn: bool) -> bool:
+    """A turn a person sent on an engagement surface (its model counts toward the day's primary model)."""
+    return user_turn and (start_fields or {}).get("entrypoint") in _ENGAGED_ENTRYPOINTS
 
 
 def turn_route(event: Any) -> tuple[str, str] | None:
@@ -214,13 +217,14 @@ def _primary(models: dict[str, Any]) -> tuple[str, str]:
 
 
 def close_day(state: dict[str, Any]) -> list[tuple[str, dict, dict, str]]:
-    """The rows one closed day reports (none for a day with no activity)."""
+    """The rows one closed day reports: none for a day with no engaged surface, except the root
+    profile's host row (0 minutes, 0 surfaces) carrying the day's active-profile count."""
     day, resource = state["day"], state.get("resource") or {}
     streams = {k: v for k, v in state["surfaces"].items() if isinstance(v, list) and len(v) == 2}
     surfaces = {k: v for k, v in streams.items() if k in contract.ENGAGEMENT_SURFACES}
     profiles = state.get("profiles") if state.get("owner") is True else None
     active_profiles = len(profiles) if isinstance(profiles, list) else 0
-    if not surfaces and not state["models"] and not active_profiles:
+    if not surfaces and not active_profiles:
         return []
     rows = [
         (contract.ENGAGEMENT_SURFACE_METRIC,

@@ -140,6 +140,8 @@ class _TaskRun:
     unidentified_tool_calls: int = 0
     retry_count: int = 0
     model_route: dict[str, str] | None = None
+    # The route the turn was sent on (its first request): provider failover does not change it.
+    selected_route: dict[str, str] | None = None
     cost: eff.TurnCost = field(default_factory=eff.TurnCost)
 
 
@@ -382,6 +384,7 @@ class _Runtime:
                 return
             if task is not None:
                 task.model_route = fields
+                task.selected_route = task.selected_route or fields
                 task.model_call_ids.add(request_id)
                 if _retry_ordinal(event) > 0:
                     # A real Hermes retry can advance api_request_id while carrying the
@@ -905,13 +908,13 @@ class _Runtime:
         """A turn the user saw end (session-close aborts excluded): trailing-failure state and interrupts."""
         route = task.model_route or session.model_state.last_route
         session.model_state.observe_turn(fields["outcome"], route, session.last_turn_ns)
-        if task.model_route is not None:
-            self._with_route_run(session.session_id, session.route_run, lambda run: run.observe(task.model_route))
-            if model_.attended(task.start_fields):
-                self._guarded(
-                    "Hermes shared-metrics engagement mark failed", self._mark,
-                    session, None, contract.ENGAGEMENT_TURN_MARK, dict(task.model_route),
-                )
+        if task.selected_route is not None and task.cost.user_turn:
+            self._with_route_run(session.session_id, session.route_run, lambda run: run.observe(task.selected_route))
+        if task.model_route is not None and engagement_.engaged_turn(task.start_fields, task.cost.user_turn):
+            self._guarded(
+                "Hermes shared-metrics engagement mark failed", self._mark,
+                session, None, contract.ENGAGEMENT_TURN_MARK, dict(task.model_route),
+            )
         if fields["end_reason"] == "user_cancelled" and route is not None and model_.attended(task.start_fields):
             self._guarded(
                 "Hermes shared-metrics friction mark failed", self._mark,

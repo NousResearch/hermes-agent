@@ -87,6 +87,25 @@ def test_a_closed_day_reports_active_time_surfaces_and_primary_model_once(direct
     assert periods == {"2026-09-27"}
 
 
+def test_internal_and_unattended_turns_are_not_engagement(direct_runtime, tmp_path, clock):
+    """API-server and cron turns add no active time, surface, profile or primary model: a day of them
+    alone reports nothing, and they never outvote the person's model."""
+    _turn("api-1", "a1", platform="api_server", model=OTHER, clock=clock, at=DAY1)
+    _turn("cron-1", "c1", platform="cron", model=OTHER, clock=clock, at=DAY1 + 300, took=7200)
+    _turn("cli-1", "t0", clock=clock, at=DAY1 + 86_400)       # day 2 closes day 1
+    _flush()
+    assert not _stored_values(tmp_path, "hermes.engagement.day.count")
+    for n in range(5):
+        _turn("api-1", f"a{n + 2}", platform="api_server", model=OTHER, clock=clock, at=DAY1 + 86_400 + 60 * n)
+    _turn("cli-1", "t1", clock=clock, at=DAY1 + 86_400 + 400)
+    clock["now"] = DAY1 + 2 * 86_400
+    _turn("cli-1", "t2", clock=clock, at=DAY1 + 2 * 86_400)
+    _flush()
+    [(day, _)] = _stored_values(tmp_path, "hermes.engagement.day.count")
+    assert (day["primary_model"], day["surfaces_used_count"]) == (PUBLIC, "1")
+    assert [d["surface"] for d, _ in _stored_values(tmp_path, "hermes.engagement.surface_day.count")] == ["cli"]
+
+
 def test_collection_off_writes_no_engagement_state(direct_runtime, tmp_path, clock, monkeypatch):
     monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", lambda: {})
     _turn("s1", "t1", clock=clock, at=DAY1)
@@ -191,6 +210,30 @@ def test_a_background_review_fork_on_the_session_id_adds_no_session_volume(direc
     _flush()
     [(row, _)] = _stored_values(tmp_path, "hermes.session.count")
     assert (row["turn_count_bucket"], row["model_call_count_bucket"], row["message_count_bucket"]) == ("1", "1", "2")
+
+
+def test_turns_before_switch_ignore_failover_and_review_forks(direct_runtime, tmp_path):
+    """The run counts the route each user turn was sent on: a turn that failed over to a fallback
+    still served the selected model, and a background review fork on another model is not a turn."""
+    from hermes_cli.observability.shared_metrics_events import record_model_switch
+
+    _turn("s1", "t1")
+    base = {"session_id": "s1", "task_id": "t2", "provider": "openrouter"}
+    lifecycle.invoke_hook("pre_llm_call", **base, model=PUBLIC, platform="cli")
+    lifecycle.invoke_hook("pre_api_request", **base, model=PUBLIC, api_request_id="t2-r")
+    lifecycle.invoke_hook("api_request_error", **base, model=PUBLIC, api_request_id="t2-r")
+    lifecycle.invoke_hook("pre_api_request", **base, model=OTHER, api_request_id="t2-fallback")
+    lifecycle.invoke_hook("post_api_request", **base, model=OTHER, api_request_id="t2-fallback", usage={})
+    relay_shared_metrics.finish_task_run(session_id="s1", task_id="t2", platform="cli", result={"completed": True})
+    relay_shared_metrics.start_task_run(session_id="s1", task_id="review", platform="cli")
+    lifecycle.invoke_hook("pre_api_request", session_id="s1", task_id="review", provider="openrouter",
+                          model=OTHER, api_request_id="rv-r")
+    relay_shared_metrics.finish_task_run(session_id="s1", task_id="review", platform="cli", result={"completed": True})
+    record_model_switch(from_provider="openrouter", to_provider="openrouter", surface="cli",
+                        from_model=PUBLIC, session_id="s1")
+    _flush()
+    assert _stored_values(tmp_path, "hermes.model_switch_after.count") == [
+        ({"model": PUBLIC, "provider": "openrouter", "turns_before_switch_bucket": "2_to_3"}, 1)]
 
 
 def test_turns_before_switch_count_the_model_left_across_rotation(direct_runtime, tmp_path):

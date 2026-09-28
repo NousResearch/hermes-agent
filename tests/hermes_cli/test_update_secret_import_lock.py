@@ -57,7 +57,9 @@ secrets:
         text=True,
         timeout=120,
         cwd=REPO_ROOT,
-        env={**os.environ, "HERMES_HOME": str(home), "BWS_ACCESS_TOKEN": ""},
+        # PYTHONPATH marks this tree as chosen, so main() does not hand off to the
+        # checkout owning a shared venv (update_owning_install.owning_install_root).
+        env={**os.environ, "HERMES_HOME": str(home), "BWS_ACCESS_TOKEN": "", "PYTHONPATH": str(REPO_ROOT)},
     )
     assert result.returncode == 0, result.stderr
     line = next(

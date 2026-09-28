@@ -1103,6 +1103,11 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "markers", "allow_real_home_io: explicitly bypass the test-only home I/O guard."
     )
     config.addinivalue_line(
+        "markers",
+        "real_owning_install_retarget: keep the real retarget_to_owning_install "
+        "(no autouse stub; the test fakes the owning venv itself).",
+    )
+    config.addinivalue_line(
         "markers", "real_release_channels: keep the real R2 channel reader (no local source-branch stub)."
     )
     config.addinivalue_line(
@@ -1419,6 +1424,20 @@ def _forbid_real_hermes_home_io(monkeypatch, request):
     from tests.home_io_guard import HomeIOGuard
 
     HomeIOGuard(lambda: _REAL_HERMES_ROOT_CANDIDATES, lambda: _REAL_INSTALLED_GUI_APPS).install(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _no_owning_install_retarget(monkeypatch, request):
+    """Never let ``cmd_update`` re-exec another checkout's real updater.
+
+    ``cmd_update`` hands off to the checkout owning ``sys.prefix`` when it is not the
+    tree under test; in the shared-venv worktree layout that is the main checkout, so
+    every update test would run a real ``hermes update`` there with pytest's argv.
+    ``main.py`` imports the function from its module at call time, so patch it there.
+    """
+    if request.node.get_closest_marker("real_owning_install_retarget"):
+        return
+    monkeypatch.setattr("hermes_cli.update_owning_install.retarget_to_owning_install", lambda *_: None)
 
 
 @pytest.fixture

@@ -1034,6 +1034,27 @@ def test_up_to_date_update_leaves_current_fleet_alone(monkeypatch, tmp_path, cap
     assert any(skip.get("name") == "gateway_restart" for skip in receipt.get("skips", []))
 
 
+def test_update_under_test_never_retargets_to_another_checkouts_venv(monkeypatch, tmp_path):
+    """Tests run on a venv that may belong to another checkout (the shared-venv worktree
+    layout); cmd_update must not re-exec that checkout's real updater from inside a test."""
+    other = tmp_path / "other"
+    (other / "hermes_cli").mkdir(parents=True)
+    (other / "hermes_cli" / "main.py").write_text("")
+    monkeypatch.setattr("sys.prefix", str(other / ".venv"))
+    monkeypatch.setattr("sys.base_prefix", str(tmp_path / "base"))
+    spawned = []
+    monkeypatch.setattr("hermes_cli.update_owning_install.subprocess.call", lambda *a, **k: spawned.append(a) or 0)
+    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect("abc123"))
+    _patch_marker_sha(monkeypatch, "abc123")
+    _plan_with_current_gateway(monkeypatch, "abc123")
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **k: _current_row("abc123"))
+    _spy_fleet_restart(monkeypatch)
+
+    hermes_main.cmd_update(_update_args())
+
+    assert spawned == []
+
+
 def test_up_to_date_update_still_restarts_a_stale_gateway(monkeypatch, tmp_path):
     """The guard is evidence-based: one gateway still on pre-update code means the restart runs."""
     args = _update_args()

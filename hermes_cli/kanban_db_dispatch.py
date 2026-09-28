@@ -1473,6 +1473,31 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
 
 
+def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: int) -> bool:
+    """Worker-side half of ``_set_worker_pid``, run by the worker before its first model call.
+
+    A dispatcher killed between spawning the worker and ``_set_worker_pid`` leaves the run with no
+    pid: no liveness check can see the worker, so a TTL expiry reclaims the card and spawns a second
+    worker beside it. The worker fills the missing pid itself (``worker_registered``). False when
+    ``run_id`` is no longer the card's live run: the card was reclaimed before this worker got here,
+    and it must exit without working it."""
+    started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
+    with _kb.write_txn(conn):
+        row = conn.execute("SELECT status, current_run_id, worker_pid, claim_lock FROM tasks WHERE id = ?",
+                           (task_id,)).fetchone()
+        if row is None or row["status"] != "running" or row["current_run_id"] != int(run_id):
+            return False
+        # Liveness checks are host-local: a pid from another host (or pid namespace) proves nothing here.
+        if row["worker_pid"] is None and (row["claim_lock"] or "").startswith(_kb._host_prefix()):
+            conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                         (int(pid), started_at, task_id))
+            conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                         (int(pid), started_at, int(run_id)))
+            _kb._append_event(conn, task_id, "worker_registered", {"pid": int(pid), "started_at": started_at},
+                              run_id=int(run_id))
+    return True
+
+
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     """Reset the unified consecutive-failures counter.
 

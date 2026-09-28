@@ -454,6 +454,8 @@ export const zh = defineLocale({
       'composer.modelPicker': '打开模型选择器',
       'composer.voice': '开始 / 停止语音对话',
       'composer.dictate': '开始 / 停止听写',
+      'composer.reasoningUp': '提高推理等级',
+      'composer.reasoningDown': '降低推理等级',
       'view.toggleSidebar': '切换会话侧边栏',
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.toggleReview': '切换审查面板',
@@ -892,7 +894,9 @@ export const zh = defineLocale({
       toursTitle: '引导导览',
       toursDesc: '让 Hermes 逐步高亮每个位置，带你熟悉应用。开始使用满30天后自动关闭，你可以重新开启。',
       composerPopoutTitle: '悬浮输入框',
-      composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
+      composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭时，输入框停靠在底部。',
+      fileBrowserTitle: '文件浏览器',
+      fileBrowserDesc: '打开工作区时，在聊天旁显示文件浏览器。标题栏的切换按钮也会更改此设置。',
       vibeHeartsTitle: '心情爱心',
       vibeHeartsDesc: '当你说谢谢、爱你、good bot 或发送爱心时飘出的爱心。与上方的消息回应是两回事。',
       embedsTitle: '内嵌预览',
@@ -3036,6 +3040,7 @@ export const zh = defineLocale({
     skillsLabel: '技能',
     notSet: '未设置',
     soulDesc: '内置于此配置档案的系统提示词与人格指令。',
+    soulMissing: '此配置档案尚无 SOUL.md 文件。在下方输入指令并保存即可创建。config.yaml 中的人格预设需单独管理。',
     soulOptional: '可选',
     soulPlaceholder: mode => `此配置档案的系统提示词 / 人格说明。\n留空则保留${mode}默认值。`,
     soulPlaceholderCloned: '克隆的',
@@ -3190,6 +3195,8 @@ export const zh = defineLocale({
     nameLabel: '名称',
     namePlaceholder: '晨间简报',
     promptLabel: '提示词',
+    scriptLabel: '脚本',
+    scriptBadge: '脚本',
     promptPlaceholder: '总结我未读的 Slack 话题，并把前 5 条邮件发给我…',
     frequencyLabel: '频率',
     deliverLabel: '投递至',
@@ -3466,6 +3473,7 @@ export const zh = defineLocale({
       backgroundRunning: '后台任务运行中',
       draftSession: '草稿 — 尚未发送',
       handoffOrigin: platform => `从 ${platform} 转接`,
+      continuationOrigin: '自动延续 — 此对话已压缩并延续',
       ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',
       renameFailed: '重命名失败',
@@ -3669,6 +3677,8 @@ export const zh = defineLocale({
     queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
     queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
+    queueDroppedTitle: '已丢弃排队内容',
+    queueDroppedBody: '该后台队列条目因会话多次尝试后仍无法恢复而被丢弃。队列中的其他内容不受影响。',
     previewUnavailable: '预览不可用',
     previewLabel: label => `预览 ${label}`,
     couldNotPreview: label => `无法预览 ${label}`,
@@ -3762,6 +3772,7 @@ export const zh = defineLocale({
     goalWaiting: '目标等待中',
     subagents: count => `${count} 个子代理`,
     todos: (done, total) => `任务 ${done}/${total}`,
+    previousTodos: (done, total) => `以往任务 ${done}/${total}`,
     running: '运行中',
     stop: '停止',
     dismiss: '关闭',
@@ -4740,8 +4751,8 @@ export const zh = defineLocale({
           body: provider => `${provider} 返回了服务器错误。请稍后重试或切换服务商。`
         },
         timeout: {
-          title: '回复超时',
-          body: provider => `${provider} 未及时响应。请重试以重新发送。`
+          title: '无法连接到 AI 服务',
+          body: provider => `无法连接到 ${provider}，或其未及时响应。请检查网络连接后重试。`
         },
         ssl_cert_verification: {
           title: '安全连接失败',
@@ -4779,6 +4790,8 @@ export const zh = defineLocale({
       preparingAudio: '正在准备音频...',
       stopReading: '停止朗读',
       readAloud: '朗读',
+      copyFullResponse: '复制完整回复',
+      readAloudFullResponseHint: '按住 Shift 点击：朗读完整回复',
       editMessage: '编辑消息',
       expandMessage: '展开消息',
       scrollToBottom: '滚动到底部',
@@ -4824,7 +4837,8 @@ export const zh = defineLocale({
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
       lateAnswerTip: '将此回答起草为后续消息',
-      lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
+      lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。',
+      notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
     },
     catalogInstall: {
       preparing: '正在准备安装…',

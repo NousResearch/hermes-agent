@@ -83,7 +83,16 @@ import {
   openReview,
   REVIEW_PANE_ID
 } from '@/store/review'
-import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
+import {
+  $cronSessions,
+  $currentCwd,
+  $messagingSessions,
+  $selectedStoredSessionId,
+  $sessions,
+  $yoloActive,
+  ownerLookupSessionRows,
+  sessionMatchesStoredId
+} from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
@@ -113,6 +122,7 @@ import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-preset
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { ContribWiring, WiredPane } from './wiring'
+import { WorkspacePageHeaderHostContext } from './workspace-page-header'
 
 /**
  * Stripped-down app root (bb/contrib-areas) on the layout TREE model, mounting
@@ -135,7 +145,13 @@ import { ContribWiring, WiredPane } from './wiring'
 
 // ONE render identity for the workspace pane — syncWorkspaceTitle re-registers
 // the contribution (new title) and a fresh closure would remount the chat.
-const renderWorkspacePane = () => <WiredPane part="chatRoutes" />
+// The host context marks this subtree as the one whose zone paints
+// WORKSPACE_PAGE_HEADER_AREA; route tiles and the HUD render outside it.
+const renderWorkspacePane = () => (
+  <WorkspacePageHeaderHostContext.Provider value={true}>
+    <WiredPane part="chatRoutes" />
+  </WorkspacePageHeaderHostContext.Provider>
+)
 
 // Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
 // them to idle so they're off the first-paint path, warm before reveal.
@@ -153,7 +169,7 @@ const workspaceDragPayload = (): SessionDragPayload | null => {
     return null
   }
 
-  const stored = $sessions.get().find(s => sessionMatchesStoredId(s, selected))
+  const stored = ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, selected))
 
   return { id: selected, profile: stored?.profile ?? '', title: stored ? storedSessionTitle(stored) : '' }
 }
@@ -487,7 +503,12 @@ watchUnreadWriteGuard()
 // above, so the pane content never remounts.
 const syncWorkspaceTitle = () => {
   const selected = $selectedStoredSessionId.get()
-  const stored = selected ? $sessions.get().find(s => sessionMatchesStoredId(s, selected)) : null
+  // Every loaded slice, not just recents: a telegram/discord/cron conversation
+  // is listed ONLY in $messagingSessions / $cronSessions (recents excludes
+  // those sources), so a recents-only scan missed the row and fell through to
+  // the NEW_SESSION_TITLE placeholder — a loaded gateway chat titled
+  // "New session" in the tab while its sidebar row read correctly.
+  const stored = selected ? ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, selected)) : null
 
   registry.register({
     id: 'workspace',
@@ -531,6 +552,11 @@ const syncWorkspaceTitle = () => {
 
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
+// The cron and messaging slices arrive on their OWN fetch, after a restored
+// tab has already registered. Without these listens the workspace tab keeps
+// whatever it resolved at register time — "New session" for a gateway chat.
+$cronSessions.listen(syncWorkspaceTitle)
+$messagingSessions.listen(syncWorkspaceTitle)
 $botChatScopes.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)

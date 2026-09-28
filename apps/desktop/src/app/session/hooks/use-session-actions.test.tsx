@@ -84,6 +84,7 @@ import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-r
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
 import {
   $sessionTiles,
+  clearAllSessionStates,
   dropSessionState,
   knownOwnerForSession,
   publishSessionState,
@@ -91,6 +92,7 @@ import {
   sessionTileOwnerRoute
 } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
+import { $retainedTodosBySession, clearSessionTodos } from '@/store/todos'
 import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
@@ -172,16 +174,24 @@ function Harness({
   navigate = vi.fn(),
   onReady,
   requestGateway,
+  runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefOverride,
   selectedStoredSessionId = null,
-  selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride
+  selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride,
+  updateSessionState: updateSessionStateOverride
 }: {
   activeSessionId?: null | string
   activeSessionIdRef?: MutableRefObject<null | string>
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   selectedStoredSessionId?: null | string
   selectedStoredSessionIdRef?: MutableRefObject<null | string>
+  updateSessionState?: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: null | string
+  ) => ClientSessionState
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
 
@@ -196,12 +206,12 @@ function Harness({
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
-    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefOverride ?? ref(new Map<string, string>()),
     selectedStoredSessionId,
     selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride ?? ref(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
-    updateSessionState: () => ({}) as ClientSessionState
+    updateSessionState: updateSessionStateOverride ?? (() => ({}) as ClientSessionState)
   })
 
   useEffect(() => {
@@ -421,6 +431,100 @@ describe('connection-qualified session deletion', () => {
     expect(selectedStoredSessionIdRef.current).toBeNull()
     expect(activeSessionIdRef.current).toBeNull()
   })
+
+  // #75587: deleting a NON-selected (sidebar/background) session used to skip
+  // session.close entirely (`closingRuntimeId` was gated on selection), so its
+  // in-flight turn kept running and could surface an approval prompt for a
+  // conversation that no longer existed. The runtime must be resolved from the
+  // stored→runtime map, marked interrupted, interrupted, and closed.
+  it('interrupts and closes a non-selected session resolved from the runtime map', async () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['background-session', 'runtime-bg']])
+    }
+
+    const updateSessionState = vi.fn((_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) =>
+      updater({ interrupted: false, needsInput: true } as ClientSessionState)
+    )
+
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ id: 'background-session' })])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    render(
+      <Harness
+        activeSessionId="runtime-foreground"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="foreground-session"
+        updateSessionState={updateSessionState}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await actions?.removeSession('background-session')
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime-bg' })
+    expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-bg' })
+    // The selected session's runtime must not be touched by another row's delete.
+    expect(requestGateway).not.toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime-foreground' })
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', { session_id: 'runtime-foreground' })
+    // Marked interrupted BEFORE the RPCs so a queued blocking-input frame is
+    // declined instead of parked.
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-bg', expect.any(Function))
+    expect(updateSessionState.mock.results[0].value).toMatchObject({ interrupted: true, needsInput: false })
+    expect(updateSessionState.mock.invocationCallOrder[0]).toBeLessThan(requestGateway.mock.invocationCallOrder[0])
+  })
+
+  it('rolls the delete back when the interrupt fails for a reason other than a gone runtime', async () => {
+    const requestGateway = vi.fn().mockImplementation(async (method: string) => {
+      if (method === 'session.interrupt') {
+        throw new Error('gateway unreachable')
+      }
+
+      return {}
+    })
+
+    const updateSessionState = vi.fn((_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) =>
+      updater({ interrupted: false, needsInput: true } as ClientSessionState)
+    )
+
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ id: 'background-session' })])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    render(
+      <Harness
+        activeSessionId="runtime-foreground"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={{ current: new Map([['background-session', 'runtime-bg']]) }}
+        selectedStoredSessionId="foreground-session"
+        updateSessionState={updateSessionState}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await actions?.removeSession('background-session')
+    })
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+    expect(deleteSession).not.toHaveBeenCalled()
+    // The live state the interrupt clobbered is restored, and the row survives.
+    expect(updateSessionState.mock.results.at(-1)?.value).toMatchObject({ interrupted: false, needsInput: true })
+    expect($sessions.get().some(session => session.id === 'background-session')).toBe(true)
+  })
 })
 
 function StoredIdRotationHarness({
@@ -494,6 +598,35 @@ describe('active stored-session id rotation routing', () => {
     expect($selectedStoredSessionId.get()).toBe('stored-A-next')
     expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-A-next'), { replace: true })
     expect($activeSessionStoredIdRotation.get()).toBeNull()
+  })
+
+  it('leaves only the rotated main session when handleTransition publishes before route-follow', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-ordering' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-previous' }
+    const navigate = vi.fn()
+
+    setActiveSessionId('runtime-ordering')
+    setSelectedStoredSessionId('stored-previous')
+    $sessionTiles.set([{ storedSessionId: 'stored-previous' }])
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-previous'}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      publishSessionState('runtime-ordering', createClientSessionState('stored-previous'))
+      publishSessionState('runtime-ordering', createClientSessionState('stored-next'))
+    })
+
+    await waitFor(() => expect(selectedStoredSessionIdRef.current).toBe('stored-next'))
+    expect($selectedStoredSessionId.get()).toBe('stored-next')
+    expect($sessionTiles.get()).toEqual([])
+
+    clearAllSessionStates()
   })
 
   it('keeps draft on the previous tip when the new tip row is not loaded yet', async () => {
@@ -1115,6 +1248,7 @@ describe('resumeSession failure recovery', () => {
     $removedSessionIds.set(new Set())
     $sessionMutationsInFlight.set(new Set())
     clearClarifyRequest()
+    clearSessionTodos('runtime-1')
     vi.restoreAllMocks()
   })
 
@@ -1485,6 +1619,52 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).toContain('partial answer')
     expect(renderedMessages).toContain('newest prompt')
     expect(resumedState?.turnStartedAt).toBe(1_700_000_000_000)
+  })
+
+  it('restores a paused checklist from REST when deferred resume has no todo_state', async () => {
+    const todos = [{ id: 'next', content: 'Next task', status: 'in_progress' as const }]
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: 'stored-1',
+      messages: [
+        { id: 1, role: 'user', content: 'Work through the list', timestamp: 1 },
+        {
+          id: 2,
+          role: 'assistant',
+          content: '',
+          timestamp: 2,
+          tool_calls: [{ id: 'todo-call', type: 'function', function: { name: 'todo_list', arguments: '{}' } }]
+        },
+        {
+          id: 3,
+          role: 'tool',
+          tool_call_id: 'todo-call',
+          tool_name: 'todo_list',
+          content: JSON.stringify({ todos, revision: 3 }),
+          timestamp: 3
+        },
+        { id: 4, role: 'assistant', content: 'Continuing later', timestamp: 4 }
+      ]
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-1',
+          session_key: 'stored-1',
+          resumed: 'stored-1',
+          messages_omitted: true,
+          messages: [],
+          message_count: 4,
+          running: false,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+    expect($retainedTodosBySession.get()['runtime-1']).toEqual(todos)
   })
 
   it('preserves a runtime-cache delta that arrives while cold resume waits for REST', async () => {
@@ -1867,6 +2047,85 @@ describe('resumeSession failure recovery', () => {
     expect(sessionStateByRuntimeIdRef.current.has('runtime-stale')).toBe(false)
     expect($activeSessionId.get()).toBe('runtime-1')
     expect($messages.get().length).toBe(1)
+  })
+
+  it('arms the failure latch when a stale list row hides history the resume RPC still reports', async () => {
+    // #83154: a stale/empty sessions-list row (a compressed tip, or a list that
+    // has not refreshed since a backend respawn) can carry message_count 0 while
+    // the stored transcript is intact. Conditioning the latch on that row alone
+    // left the window on an empty thread with an ACTIVE runtime and no latch:
+    // no retry, no error, just a silently blank chat. The resume RPC is
+    // authoritative about the stored size even when it omits the transcript.
+    setSessions([storedSession({ message_count: 0 })])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 12,
+          messages: [],
+          messages_omitted: true,
+          resumed: params?.session_id,
+          session_id: 'runtime-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    // The REST page is transiently empty too (a respawn racing its state.db read).
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway)
+
+    expect($resumeFailedSessionId.get()).toBe('stored-1')
+    expect($activeSessionId.get()).toBeNull()
+    expect($messages.get()).toEqual([])
+  })
+
+  it('arms the failure latch when a wake warm-resume bail falls to an empty cold resume', async () => {
+    // #82806: on sleep/wake the cached runtime id can be stale, so the warm path
+    // binds it, `session.activate` 404s (the backend respawned), the mapping is
+    // dropped, and the resume falls through to the cold path. If that cold
+    // resume paints nothing — REST and the omitted-messages resume both empty
+    // while the list row has not refreshed — the thread was left silently
+    // blank. It must arm the retry latch instead.
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-1', 'rt-stale']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-stale', clientState('stored-1')]])
+    }
+
+    // The list row has not caught up with the respawned backend yet.
+    setSessions([storedSession({ message_count: 0 })])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.activate') {
+        throw new Error('404: Session not found')
+      }
+
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 9,
+          messages: [],
+          messages_omitted: true,
+          resumed: params?.session_id,
+          session_id: 'runtime-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+
+    expect($resumeFailedSessionId.get()).toBe('stored-1')
+    expect($activeSessionId.get()).toBeNull()
   })
 })
 

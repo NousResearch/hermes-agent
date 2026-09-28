@@ -87,7 +87,12 @@ describe('a row click lands on the canonical chat, never a remembered side tab',
     try {
       await expect(openRosterBot(canonicalBot)).resolves.toBe(true)
 
-      expect(openBotCanonicalChat).toHaveBeenCalledWith(canonicalBot, expect.any(Function))
+      expect(openBotCanonicalChat).toHaveBeenCalledWith(
+        canonicalBot,
+        // A fronting refresh re-pulls the transcript without navigating —
+        // background: true threads refreshInPlace (issue 121874).
+        { background: true, openingStillCurrent: expect.any(Function) }
+      )
     } finally {
       busy.mockRestore()
       $selectedStoredSessionId.set(null)
@@ -102,7 +107,7 @@ describe('a row click lands on the canonical chat, never a remembered side tab',
 
     await expect(openRosterBot(canonicalBot)).resolves.toBe(true)
 
-    expect(openBotCanonicalChat).toHaveBeenCalledWith(canonicalBot, expect.any(Function))
+    expect(openBotCanonicalChat).toHaveBeenCalledWith(canonicalBot, { openingStillCurrent: expect.any(Function) })
     expect($openBotChat.get()?.openedSessionId).toBe('bot-chat-tip')
   })
 

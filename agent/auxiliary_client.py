@@ -1171,6 +1171,10 @@ def _close_quietly(target: Any, failure_note: Optional[str]) -> None:
                 logger.debug("Codex auxiliary: %s", failure_note, exc_info=True)
 
 
+# The context compressor keys its retry-ladder classification on this text (#124077).
+CODEX_STREAM_STALL_MARKER = "stream stalled"
+
+
 class _CodexStreamGuard:
     """Progress-aware deadline + FD-safe timeout watchdog for one Codex aux stream attempt.
 
@@ -1272,7 +1276,7 @@ class _CodexStreamGuard:
                 "Codex auxiliary Responses stream produced no output "
                 f"within {float(self.no_progress_timeout):.1f}s (no-progress timeout, {elapsed:.1f}s elapsed)")
         return (
-            "Codex auxiliary Responses stream stalled: no new output "
+            f"Codex auxiliary Responses {CODEX_STREAM_STALL_MARKER}: no new output "
             f"for {float(self.no_progress_timeout):.1f}s ({elapsed:.1f}s elapsed)")
 
     def _close_client_on_timeout(self) -> None:
@@ -1505,8 +1509,8 @@ class _CodexCompletionsAdapter:
                 resp_kwargs["service_tier"] = service_tier.strip()
             reasoning_cfg = extra_body.get("reasoning")
             if isinstance(reasoning_cfg, dict):
-                # Shared per-model vocabulary with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra"
-                # rejected; ``()`` = the model takes no ``reasoning`` field at all — gpt-4o/4.1 on api.openai.com,
+                # Shared per-model vocabulary with the main transport ("max" only where the model publishes it; "minimal"/"ultra"
+                # clamp to a listed level; ``()`` = the model takes no ``reasoning`` field at all — gpt-4o/4.1 on api.openai.com,
                 # #76255). ``enabled: False`` goes on the wire as ``effort: none`` where the vocabulary has it,
                 # since an omitted field leaves the model's default effort on (#75227).
                 from agent.reasoning_effort import clamp_effort

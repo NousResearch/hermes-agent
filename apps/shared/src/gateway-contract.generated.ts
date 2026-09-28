@@ -1691,10 +1691,11 @@ export interface CompletionItem {
   meta?: string
   kind?: string | null
 }
-/** ``session_id`` binds skill completions to that session's profile and workspace (project skills). */
+/** ``session_id`` binds skill completions to that session's profile and workspace (project skills); ``profile`` scopes a session-less request (a new-chat draft). */
 export interface CompleteSlashParams {
   text?: string | null
   session_id?: string | null
+  profile?: string | null
 }
 /** ``replace_from`` is the column the accepted item replaces from. */
 export interface CompleteSlashResult {
@@ -2062,10 +2063,10 @@ export interface SessionForeignImportResult {
   session_id: string
   already_imported?: boolean
 }
-/** ``delegations`` is reserved for async delegation records and is currently always empty. */
+/** ``delegations``: recently failed async delegation tasks for the session (durable store), newest first. */
 export interface SubagentListResult {
   subagents?: SubagentSnapshot[]
-  delegations?: Record<string, unknown>[]
+  delegations?: FailedDelegation[]
 }
 /** ``methods_subagents._SUBAGENT_SNAPSHOT_FIELDS`` projection of one live child record. */
 export interface SubagentSnapshot {
@@ -2083,6 +2084,16 @@ export interface SubagentSnapshot {
 }
 /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
+/** ``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation. */
+export interface FailedDelegation {
+  delegation_id: string
+  task_index?: number
+  status: string
+  goal?: string
+  error?: string | null
+  dispatched_at?: number | null
+  completed_at?: number | null
+}
 export interface SubagentIdParams {
   session_id: string
   profile?: string | null
@@ -2312,6 +2323,7 @@ export interface ProjectTreeSession {
   handoff_state?: string | null
   _lineage_root_id?: string | null
   _lineage_ids?: string[] | null
+  continuation_kind?: string | null
   profile?: string | null
   [key: string]: unknown
 }
@@ -2844,6 +2856,7 @@ export interface SessionResumeParams {
   omit_messages?: boolean
   eager_build?: boolean
   close_on_disconnect?: boolean
+  inline_images?: boolean
 }
 export interface SessionResumeResult {
   session_id: string
@@ -3012,6 +3025,17 @@ export interface SessionSetHiddenParams {
 }
 export interface SessionSetHiddenResult {
   hidden: boolean
+  session_key: string
+}
+/** ``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title. */
+export interface SessionArchiveParams {
+  session_id?: string | null
+  session_key?: string | null
+  archived?: boolean
+  profile?: string | null
+}
+export interface SessionArchiveResult {
+  archived: boolean
   session_key: string
 }
 export interface SessionWorkspaceMoveParams {
@@ -3770,9 +3794,10 @@ export interface SkillInspectInfo {
   skill_md_preview?: string | null
   [key: string]: unknown
 }
-/** ``session_id`` binds the rescan to that session's profile and workspace (project skills). */
+/** ``session_id`` binds the rescan to that session's profile and workspace (project skills); ``profile`` scopes a session-less rescan. */
 export interface SkillsReloadParams {
   session_id?: string | null
+  profile?: string | null
 }
 export interface SkillsReloadResult {
   output: string
@@ -4047,6 +4072,7 @@ export interface PluginsManageResult {
   warnings?: string[] | null
   missing_env?: string[] | null
   python_dependencies?: string[] | null
+  known_issues?: string[] | null
   after_install_path?: string | null
   enabled?: boolean | null
   sha?: string | null
@@ -4083,7 +4109,7 @@ export interface PluginServerRow {
   state: PluginServerState
   sentence: string
 }
-export type PluginServerState = 'connected' | 'app_not_running' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
+export type PluginServerState = 'connected' | 'app_not_running' | 'hermes_not_connected' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
 /** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. */
 export interface PluginSettingField {
   key: string
@@ -5002,6 +5028,8 @@ export interface RpcMethods {
   'session.activate': { params: SessionActivateParams; result: SessionActivateResult }
   /** Live sessions in this process, insertion order (not a DB browser). */
   'session.active_list': { params: SessionActiveListParams; result: SessionActiveListResult }
+  /** Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity. */
+  'session.archive': { params: SessionArchiveParams; result: SessionArchiveResult }
   /** Fork a live session into a new stored child that shares the parent's history so far. */
   'session.branch': { params: SessionBranchParams; result: SessionBranchResult }
   /** Whole-session branch of a stored parent: the owning backend reads and copies the transcript, which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty branch). */
@@ -5314,6 +5342,7 @@ export const RPC_METHODS = [
   'rollback.restore',
   'session.activate',
   'session.active_list',
+  'session.archive',
   'session.branch',
   'session.branch_stored',
   'session.branch_whole',
@@ -5516,7 +5545,7 @@ export interface BackendGatewayEventMap {
   'preview.restart.complete': SideAgentCompletePayload
   /** Progress line from the preview-restart agent. */
   'preview.restart.progress': PreviewRestartProgressPayload
-  /** projects.db moved; refetch the Projects sidebar. */
+  /** projects.db moved; refetch the project list + tree. */
   'projects.changed': ChangeSignalPayload
   /** Affection reaction detected in the user's message (hearts etc.). */
   reaction: ReactionPayload

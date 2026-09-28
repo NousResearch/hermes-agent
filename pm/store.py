@@ -23,10 +23,13 @@ ALL_TARGETS = (
     "win32-arm64",
     "linux-x64",
     "linux-arm64",
+    "linux-x64-musl",
+    "linux-arm64-musl",
     "linux-arm64-bionic",
     "darwin-x64",
     "darwin-arm64",
 )
+MUSL_TARGETS = frozenset({"linux-x64-musl", "linux-arm64-musl"})
 
 
 def _native_machine() -> str:
@@ -96,6 +99,53 @@ def _is_bionic_libc() -> bool:
     return bool(sysconfig.get_config_var("ANDROID_API_LEVEL"))
 
 
+def _elf_loader_is_musl(binary: Path) -> bool | None:
+    """Read an ELF's interpreter string without executing foreign bytes."""
+    try:
+        with binary.resolve().open("rb") as handle:
+            head = handle.read(8192)
+    except OSError:
+        return None
+    if not head.startswith(b"\x7fELF"):
+        return None
+    if b"ld-musl-" in head:
+        return True
+    if b"ld-linux" in head:
+        return False
+    return None
+
+
+def _native_linux_uses_musl() -> bool | None:
+    """libc of the native userland, independent of the Python bootstrap."""
+    for candidate in (Path("/bin/sh"), Path("/bin/ls")):
+        verdict = _elf_loader_is_musl(candidate)
+        if verdict is not None:
+            return verdict
+    return None
+
+
+def _is_musl_libc() -> bool:
+    """True on native Linux musl userlands (Alpine, Void-musl, etc.).
+
+    libc is part of PM's artifact identity. The native userland takes
+    precedence over a bootstrap Python built for a different libc.
+    Python build metadata breaks ties when native binaries cannot be inspected;
+    a musl loader on disk alone is the last resort because glibc hosts may
+    install musl as a secondary toolchain.
+    """
+    native = _native_linux_uses_musl()
+    if native is not None:
+        return native
+
+    import sysconfig
+
+    for key in ("HOST_GNU_TYPE", "MULTIARCH"):
+        value = str(sysconfig.get_config_var(key) or "").lower()
+        if "musl" in value:
+            return True
+    return any(Path("/lib").glob("ld-musl-*.so.1"))
+
+
 def current_target() -> str:
     machine = _native_machine()
     if machine in ("arm64", "aarch64"):
@@ -110,6 +160,8 @@ def current_target() -> str:
         return f"darwin-{arch}"
     if _is_bionic_libc():
         return f"linux-{arch}-bionic"
+    if _is_musl_libc():
+        return f"linux-{arch}-musl"
     return f"linux-{arch}"
 
 
@@ -198,7 +250,7 @@ def _tar_data_filter(member, dest: str):
         link_target = os.path.realpath(os.path.join(dest, member.linkname))
         if os.path.commonpath([link_target, dest]) != dest:
             raise _tar_filter_error("LinkOutsideDestinationError", member, link_target)
-    mode = member.mode & 0o755 if member.mode is not None else None
+    mode = None if member.isdir() or member.mode is None else (member.mode & 0o755)
     return _tar_replace(member, uid=None, gid=None, uname=None, gname=None, mode=mode)
 
 
@@ -222,19 +274,17 @@ def _tar_filter(member, dest: str):
 
 def _extract_tar_member(tf, member, dest: Path, real_dest: str) -> None:
     filtered = _tar_filter(member, real_dest)
+    set_attrs = not filtered.isdir()
     try:
-        tf.extract(filtered, dest, filter="fully_trusted")
+        tf.extract(filtered, dest, set_attrs=set_attrs, filter="fully_trusted")
     except TypeError:
-        tf.extract(filtered, dest)
+        tf.extract(filtered, dest, set_attrs=set_attrs)
 
 
-def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False) -> None:
+def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
     with the one containment policy every PM tar consumer shares. Unsafe
     members raise tarfile.FilterError.
-
-    MSYS Git ships dev/fd links and etc/mtab into /proc; those aren't usable
-    on Windows. Skip only those known links, never a filter error or failed file write.
     """
     import tarfile
 
@@ -242,16 +292,8 @@ def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False
     real_dest = os.path.realpath(dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
     with opened as tf:
-        if git_msys:
-            members = (m for m in tf if not (m.issym() and (
-                (m.name.lstrip("./").startswith("dev/") and m.linkname.startswith("/proc/"))
-                or (m.name == "etc/mtab" and m.linkname == "/proc/mounts")
-            )))
-            for member in members:
-                _extract_tar_member(tf, member, dest, real_dest)
-        else:
-            for member in tf:
-                _extract_tar_member(tf, member, dest, real_dest)
+        for member in tf:
+            _extract_tar_member(tf, member, dest, real_dest)
 
 
 def extract(archive: Path, dest: Path) -> None:
@@ -416,7 +458,8 @@ class Store:
                 destination = scratch / entry_name / url.rsplit("/", 1)[-1]
             sources.append(pinned_source(url, destination, digest))
 
-        urls = {str(source.dest): source.url for source in sources}
+        # Progress keeps the lockfile URL even when the transport is a mirror (#123132).
+        urls = {str(source.dest): artifact["url"] for source, artifact in zip(sources, artifacts)}
 
         def tick(done, total, ranges):
             if progress is not None:

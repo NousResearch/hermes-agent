@@ -41,10 +41,15 @@ no-foreground invariant, click-dispatch internals — see
 
 ## Enabling
 
-**The driver is a PM-managed tool.** `cua-driver` is pinned in
-`pm/lock.json`; the installer does not fetch it up front (there is no
-`--skip-computer-use` / `-SkipComputerUse` flag), and it is prepared the
-first time something enables Computer Use:
+**The driver ships with Hermes.** `cua-driver` is pinned in `pm/lock.json`
+and is a default PM package: the installers, a bare `hermes pm install`, and
+`hermes update` install it on every macOS, Windows, and glibc Linux target
+(cua-driver publishes no musl or Android build). The desktop app's bundle
+carries it too. To leave it out, pass `--skip-computer-use` on POSIX or
+`-SkipComputerUse` on Windows (or run `hermes pm install --without cua-driver`);
+Hermes remembers the choice, and `hermes pm install cua-driver` undoes it.
+
+If the download failed or you opted out earlier, any of these installs it:
 
 - **`hermes tools`** → pick `🖱️  Computer Use` — installs the driver
   automatically if it's still missing.
@@ -481,6 +486,30 @@ Override the driver binary path (tests / CI / local builds):
 ```
 HERMES_CUA_DRIVER_CMD=/path/to/your/cua-driver
 ```
+
+### Windows auto-start (opt-in)
+
+On Windows, cua-driver can run from a per-boot Scheduled Task
+(`cua-driver-serve`) so it is already listening when Hermes needs it. This
+task is **opt-in**: by default Computer Use starts the driver on demand,
+per session — exactly as on macOS and Linux — and no scheduled task is
+registered when you install or enable the toolset (#97389).
+
+Set this in `config.yaml` to opt in (the task is registered — or repaired —
+the next time the driver is installed or the toolset is enabled):
+
+```yaml
+computer_use:
+  autostart: true   # default: false (on-demand; no scheduled task)
+```
+
+You need this when driving Windows over SSH: Session 0 has no interactive
+desktop, so an on-demand driver cannot reach one
+([windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) has the
+recipe). If the task exists but you want it gone, remove it with
+`cua-driver autostart disable` (or `schtasks /Delete /TN cua-driver-serve`)
+from an elevated shell — Hermes does not re-register it once
+`computer_use.autostart` is false.
 
 Swap the backend entirely (for testing):
 

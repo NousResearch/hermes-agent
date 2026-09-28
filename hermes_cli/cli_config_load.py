@@ -24,14 +24,16 @@ def _cli():
     return cli
 
 
-def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
-    """Load prefill messages (JSON array) from *file_path*; relative to ~/.hermes/; missing/empty -> []."""
-    from cli import _hermes_home
+def _load_prefill_messages(file_path: str, base_dir: Path | None = None) -> List[Dict[str, Any]]:
+    """Load prefill messages (JSON array) from *file_path*; missing/empty -> [].
+
+    Relative paths resolve against *base_dir*, defaulting to the CLI's hermes home.
+    """
     if not file_path:
         return []
     path = Path(file_path).expanduser()
     if not path.is_absolute():
-        path = _hermes_home / path
+        path = (base_dir or _cli()._hermes_home) / path
     if not path.exists():
         logger.warning("Prefill messages file not found: %s", path)
         return []

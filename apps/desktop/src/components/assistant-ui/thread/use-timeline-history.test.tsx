@@ -15,7 +15,7 @@ vi.mock('@/api/client', () => ({ capabilityScoped: (scope: object) => scope, her
 vi.mock('@/app/chat/session-view', () => ({ useSessionView: () => view }))
 vi.mock('@/store/profile', () => ({ $activeGatewayProfile: atom('default') }))
 vi.mock('@/store/session', () => ({ $connection: atom({ mode: 'local' }), getSessionOwnerHint: () => undefined }))
-vi.mock('@/store/transcript-tail', () => ({ transcriptTailState: () => undefined }))
+vi.mock('@/store/transcript-tail', () => ({ pageHonorsLatestOrder: () => true, transcriptTailState: () => undefined }))
 
 const page = (ids: number[], more = false) => ({
   entries: ids.map(id => ({ row_id: id, preview: `Prompt ${id}` })),

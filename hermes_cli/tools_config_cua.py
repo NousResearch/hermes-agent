@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -93,7 +94,12 @@ def _cua_driver_install_ready() -> bool:
     if sys.platform == "darwin":
         from tools.computer_use.cua_backend_daemon import _resolve_cua_driver_app_path
         return bool(_resolve_cua_driver_app_path(state["binary"]))
-    return sys.platform != "win32" or _cua_driver_autostart_registered_windows()
+    # On-demand default (#97389): with computer_use.autostart off, a missing
+    # cua-driver-serve logon task is intentional, not a repair condition —
+    # requiring it here biased every enable flow toward registering it.
+    return (sys.platform != "win32"
+            or _cua_driver_autostart_registered_windows()
+            or not _cua_autostart_opt_in())
 
 
 def install_cua_driver(upgrade: bool = False, show_installer_progress: bool = True) -> bool:
@@ -186,9 +192,43 @@ def _cua_driver_autostart_registered_windows(binary: Optional[str] = None) -> bo
         return False
 
 
+def _cua_autostart_opt_in() -> bool:
+    """``computer_use.autostart`` — opt IN to the Windows per-boot ``cua-driver-serve`` logon
+    task. The default (absent/False) is on-demand (#97389): Computer Use starts the driver per
+    session exactly as macOS and Linux do, install/enable flows register no scheduled task, and
+    a missing task is not a repair condition. True registers (or repairs) the logon task at
+    install/enable time — needed when driving Windows over SSH (Session 0 has no interactive
+    desktop). Unreadable config fails closed to the on-demand default."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import load_config
+        return bool(((load_config() or {}).get("computer_use") or {}).get("autostart", False))
+    return False
+
+
+def _cua_autostart_registration_ps_command(binary: str) -> str:
+    """PowerShell body for the elevated registration: Start-Process with a STRUCTURED
+    ``-FilePath`` / ``-ArgumentList`` (older install.ps1 builds interpolated the binary path
+    into a command string, which split at the first space) and ``-Verb RunAs -Wait -PassThru``
+    so the exit code propagates."""
+    return (f"$exe = {_ps_single_quote(binary)}; "
+            "$proc = Start-Process -FilePath $exe -ArgumentList @('autostart','enable') "
+            "-Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $proc.ExitCode")
+
+
 def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> bool:
-    """Register autostart using structured arguments, including paths with spaces."""
+    """Register autostart using structured arguments, including paths with spaces.
+
+    Only registers when the user opted into the per-boot task via
+    ``computer_use.autostart`` (#97389): the on-demand default registers
+    nothing, silently — returning True (nothing to repair) keeps callers from
+    printing "auto-start was not registered" warnings for an intentional
+    absence."""
     if sys.platform != "win32":
+        return True
+    if not _cua_autostart_opt_in():
+        # On-demand default (#97389): the per-boot cua-driver-serve task is opt-in
+        # via computer_use.autostart. Registering here would recreate, on every
+        # enable/install, exactly the silent boot-time task the issue reports.
         return True
     binary = shutil.which(driver_cmd)
     if not binary:
@@ -196,9 +236,7 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
     if _cua_driver_autostart_registered_windows(binary):
         return True
     ps = shutil.which("powershell") or shutil.which("powershell.exe") or "powershell"
-    ps_cmd = (f"$exe = {_ps_single_quote(binary)}; "
-              "$proc = Start-Process -FilePath $exe -ArgumentList @('autostart','enable') "
-              "-Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $proc.ExitCode")
+    ps_cmd = _cua_autostart_registration_ps_command(binary)
     _print_info("    Registering cua-driver auto-start..." if verbose
                 else "    Repairing cua-driver auto-start registration...")
     try:

@@ -1,6 +1,7 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
+import { sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
 import {
   assistantTextPart,
   type ChatMessage,
@@ -196,6 +197,10 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
 //   serverRowSpan — backend rows the folded message covers; the older-page offset
 //                   accounting reads it, the transcript never paints it
+//   systemNotice  — hydration's provenance flag for a backend-authored notice
+//                   (a model switch, a process completion); the stale-transcript
+//                   compare reads it, while the visible system row is painted
+//                   from role + parts, and role is already COMPARED
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -229,7 +234,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'systemNotice'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -778,7 +783,26 @@ export function preserveLocalPendingTurnMessages(
     }
   }
 
-  const latestAuthoritativeUser = [...remainingNext].reverse().find(message => message.role === 'user')
+  // #121088: the acknowledged prompt's committed twin can sit anywhere in the
+  // newly committed window — a compaction handoff or preserved-task notice
+  // (synthetic user rows) may be NEWER than it, so the newest-only compare
+  // misses the committed copy and the optimistic row is re-appended below the
+  // whole refreshed turn. Dedupe against EVERY newly committed durable user
+  // row, plus the newest user row as it was before (a rowId-less positional
+  // hydration window keeps parity with the legacy compare). Every candidate
+  // is identity-gated: a rowId-bearing optimistic row is never matched
+  // against a committed row it provably is not, so a genuinely
+  // unacknowledged repeat whose committed twin predates the acknowledged
+  // boundary (and never enters this window) still survives.
+  const newestAuthoritativeUser = [...remainingNext].reverse().find(message => message.role === 'user')
+
+  const acknowledgedUserCandidates = remainingNext.filter(
+    message =>
+      message.role === 'user' &&
+      !isGatewaySystemMarker(message) &&
+      (message.rowId !== undefined || message === newestAuthoritativeUser)
+  )
+
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
@@ -862,10 +886,18 @@ export function preserveLocalPendingTurnMessages(
 
     if (
       isOptimisticUser &&
-      latestAuthoritativeUser &&
-      !conflictingTranscriptIdentity(message, latestAuthoritativeUser) &&
-      textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
-        textWithoutReferenceLines(chatMessageText(message))
+      acknowledgedUserCandidates.some(
+        candidate =>
+          // #122079: the tolerant arm widens the TEXT compare only — it stays
+          // inside the identity gate, so a rowId-bearing optimistic row is
+          // never swallowed by a committed row it provably is not (a genuine
+          // repeat of the same captioned paste). The rowId-less paste from
+          // #120978 carries no identity and keeps matching tolerantly.
+          !conflictingTranscriptIdentity(message, candidate) &&
+          (textWithoutReferenceLines(chatMessageText(candidate)) ===
+            textWithoutReferenceLines(chatMessageText(message)) ||
+            sameAttachmentTurn(candidate, message))
+      )
     ) {
       continue
     }
@@ -980,7 +1012,10 @@ export function preserveLocalPendingTurnMessages(
   const withReplacements =
     replacements.size > 0 ? nextMessages.map(message => replacements.get(message.id) ?? message) : nextMessages
 
-  return preserved.length ? [...withReplacements, ...preserved] : withReplacements
+  // #120978: a kept run whose rowIds predate the whole hydrated page belongs
+  // earlier — splice it in front of the first newer row instead of appending it
+  // below the newest turn (non-qualifying runs keep the trailing behavior).
+  return preserved.length ? spliceOlderPreservedRows(withReplacements, preserved) : withReplacements
 }
 
 /**
@@ -1083,34 +1118,24 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
-    // A synthetic starting prompt (process_complete, hidden, …) carries the
-    // display typing its persisted row will get: render it through the same
-    // timeline projection history uses instead of as a user bubble (#112144).
-    // `toChatMessages` yields nothing for `hidden`, so the prompt is omitted.
+    // Project the prompt through the same conversion history uses, so the live
+    // bubble matches its persisted twin: attachment refs lift into the chip row,
+    // and a synthetic starting prompt (process_complete, hidden, …) takes the
+    // display typing its row will get (#112144) — `hidden` yields nothing.
     const displayKind = projection.inflight?.display_kind
 
-    const typed = displayKind
-      ? toChatMessages([
-          {
-            role: 'user',
-            content: inflightUser,
-            display_kind: displayKind,
-            ...(projection.inflight?.display_metadata !== undefined
-              ? { display_metadata: projection.inflight.display_metadata }
-              : {})
-          }
-        ])
-      : null
-
-    if (typed) {
-      projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
-    } else {
-      projected.push({
-        id: `user-inflight-${sessionId}`,
+    const typed = toChatMessages([
+      {
         role: 'user',
-        parts: [textPart(inflightUser)]
-      })
-    }
+        content: inflightUser,
+        ...(displayKind ? { display_kind: displayKind } : {}),
+        ...(displayKind && projection.inflight?.display_metadata !== undefined
+          ? { display_metadata: projection.inflight.display_metadata }
+          : {})
+      }
+    ])
+
+    projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
   }
 
   // Keep a pending assistant boundary even before the first delta when a
@@ -1511,14 +1536,29 @@ export function overlayConcurrentMessageChanges(
       const text = textWithoutReferenceLines(chatMessageText(current)).trim()
       const lastUser = overlaid.findLastIndex(message => message.role === 'user')
 
-      const committed = overlaid.some(
-        (message, index) =>
-          index > lastUser &&
-          message.role === 'assistant' &&
-          !baselineById.has(message.id) &&
-          !isLiveTailRow(message) &&
-          textWithoutReferenceLines(chatMessageText(message)).trim() === text
-      )
+      const committed = overlaid.some((message, index) => {
+        if (
+          !(index > lastUser) ||
+          message.role !== 'assistant' ||
+          baselineById.has(message.id) ||
+          isLiveTailRow(message)
+        ) {
+          return false
+        }
+
+        // The committed row and the settled live row capture the same reply
+        // at two moments while it kept streaming, so neither side is
+        // guaranteed to be textually identical: accept either as a forward
+        // text-extension of the other, the same trade
+        // removeRepresentedLocalLiveProjection made in 2494b95929.
+        const candidate = textWithoutReferenceLines(chatMessageText(message)).trim()
+
+        return (
+          candidate === text ||
+          isStrictAnswerTextExtension(candidate, text) ||
+          isStrictAnswerTextExtension(text, candidate)
+        )
+      })
 
       if (text && committed) {
         continue
@@ -1720,6 +1760,7 @@ function buildOptimisticSession(
     model: created.info?.model ?? null,
     output_tokens: 0,
     parent_session_id: parentSessionId,
+    ...(parentSessionId ? { _branched_from: parentSessionId } : {}),
     preview,
     profile: profileKey,
     source: 'tui',

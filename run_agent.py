@@ -1050,7 +1050,7 @@ class AIAgent(
 
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only
-        results paired with an earlier assistant ``todo`` call count — a forged bare ``role: tool`` message
+        results paired with an earlier assistant Todo-tool call count — a forged bare ``role: tool`` message
         must not seed the store (GHSA-5g4g-6jrg-mw3g)."""
         found = self._latest_todo_response(history)
         if found is not None:
@@ -1092,8 +1092,9 @@ class AIAgent(
 
     @classmethod
     def _tool_response_matches_todo_call(cls, history: List[Dict[str, Any]], tool_index: int) -> bool:
-        """True when the nearest prior assistant message issued a ``todo`` call with this ``tool_call_id``; a
-        ``user``/``system`` boundary or missing id means unpaired → must not hydrate."""
+        """True when the nearest prior assistant message issued a Todo-tool call (legacy aliases and the
+        ``tool_call`` bridge canonicalized) with this ``tool_call_id``; a ``user``/``system`` boundary or
+        missing id means unpaired → must not hydrate."""
         tool_call_id = history[tool_index].get("tool_call_id") if 0 <= tool_index < len(history) else None
         if not tool_call_id:
             return False
@@ -1107,11 +1108,12 @@ class AIAgent(
 
     @classmethod
     def _assistant_has_todo_tool_call(cls, assistant_msg: Dict[str, Any], tool_call_id: str) -> bool:
-        """True when the assistant message issued a ``todo`` call with this id."""
+        """True when the paired call resolves to the registered Todo tool."""
+        from tools.todo_tool import is_todo_tool_call
+
         tool_calls = assistant_msg.get("tool_calls")
         return isinstance(tool_calls, list) and any(
-            cls._get_tool_call_id_static(tc) == tool_call_id and cls._get_tool_call_name_static(tc) == "todo"
-            for tc in tool_calls
+            cls._get_tool_call_id_static(tc) == tool_call_id and is_todo_tool_call(tc) for tc in tool_calls
         )
 
     @property

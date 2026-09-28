@@ -740,7 +740,10 @@ def _canonical_url_param_name(name: str) -> str:
         if next_value == decoded:
             break
         decoded = next_value
-    return decoded.casefold().replace("-", "_")
+    folded = decoded.casefold()
+    # Preserve policy names that are canonically hyphenated (for example
+    # x-amz-signature) before accepting underscore-normalized aliases.
+    return folded if folded in _SENSITIVE_QUERY_PARAMS else folded.replace("-", "_")
 
 
 def _redact_strict_url_credentials(text: str) -> str:

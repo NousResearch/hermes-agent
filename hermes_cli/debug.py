@@ -256,13 +256,15 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     return None
 
 
-def _redact_log_text(text: str) -> str:
+def _redact_log_text(text: str, *, redact_url_credentials: bool = False) -> str:
     """``redact_sensitive_text(force=True)`` + email scrub — fires regardless of the operator's
     ``security.redact_secrets`` setting; only the in-memory upload copy is sanitized."""
     if not text:
         return text
     from agent.redact import redact_sensitive_text
-    text = redact_sensitive_text(text, force=True)
+    text = redact_sensitive_text(
+        text, force=True, redact_url_credentials=redact_url_credentials
+    )
     return _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
 
 
@@ -347,13 +349,15 @@ def _capture_default_log_snapshots(
 
 
 def _capture_dump(redact: bool = True) -> str:
-    """Run ``hermes dump`` and return its stdout, force-redacted like the logs unless *redact* is
-    False: the dump is upload-bound and quotes config values (e.g. ``fallback_providers``)."""
+    """Run ``hermes dump`` and return its stdout, force-redacted unless *redact* is False: the dump
+    is upload-bound and quotes config values (e.g. ``fallback_providers``), so URL credentials are
+    redacted too, unlike the logs (whose policy spares OAuth/magic-link URLs)."""
     from hermes_cli.dump import run_dump
     capture = io.StringIO()
     with contextlib.redirect_stdout(capture), contextlib.suppress(SystemExit):
         run_dump(SimpleNamespace(show_keys=False))
-    return _redact_log_text(capture.getvalue()) if redact else capture.getvalue()
+    text = capture.getvalue()
+    return _redact_log_text(text, redact_url_credentials=True) if redact else text
 
 
 def collect_debug_report(

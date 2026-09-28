@@ -115,7 +115,7 @@ class TestForward:
 
         async def handler(event, source):
             seen.append((event, source))
-            return [{"_callback_query_claim": True}]
+            return [True]
 
         a.set_platform_event_handler(handler)
         q = _query()
@@ -146,7 +146,7 @@ class TestForward:
 
     def test_no_subscriber_answers_without_dispatch(self):
         a = _adapter()
-        handler = AsyncMock(return_value=[{"_callback_query_claim": True}])
+        handler = AsyncMock(return_value=[True])
         a.set_platform_event_handler(handler)
         q = _query()
         with patch("hermes_cli.lifecycle.has_hook", return_value=False):
@@ -160,7 +160,7 @@ class TestForward:
 
         async def slow(event, source):
             await asyncio.sleep(1)
-            return [{"_callback_query_claim": True}]
+            return [True]
 
         a.set_platform_event_handler(slow)
         q = _query()
@@ -176,7 +176,7 @@ class TestForward:
 
     def test_other_prefixes_keep_existing_routing(self):
         a = _adapter()
-        handler = AsyncMock(return_value=[{"_callback_query_claim": True}])
+        handler = AsyncMock(return_value=[True])
         a.set_platform_event_handler(handler)
         a._handle_exec_approval_callback = AsyncMock()
         q = _query("ea:once:abc")
@@ -187,7 +187,7 @@ class TestForward:
 
     def test_unknown_prefix_still_ignored(self):
         a = _adapter()
-        handler = AsyncMock(return_value=[{"_callback_query_claim": True}])
+        handler = AsyncMock(return_value=[True])
         a.set_platform_event_handler(handler)
         q = _query("zz:1")
         asyncio.run(_tap(a, q))
@@ -236,7 +236,7 @@ class TestRunnerBoundary:
 
         def on_event(platform, event_type, payload):
             seen.append((platform, event_type, payload))
-            return {"_callback_query_claim": True}
+            return True
 
         context.register_hook("gateway_platform_action", on_event)
         runner = object.__new__(GatewayRunner)

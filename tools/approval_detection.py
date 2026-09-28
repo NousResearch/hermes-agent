@@ -51,9 +51,18 @@ _BLOCK_DEVICE_PATH = (
     # so ``shred -u ~/dev/sdk/token.json`` and ``mkswap /home/user/dev/sdk/swapfile`` hit an
     # unapprovable floor. A real device path is never preceded by a word character, a dot or
     # a tilde; ``//dev/sda``, ``of=/dev/sda`` and a quoted operand all still match.
-    r'(?<![\w.~-])/dev/(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*'
-    r'|r?disk[0-9]+[a-z0-9]*'
-    r'|mapper/[^\s;&|<>()"\']+'
+    # Traversal and collapsed spellings of the same node (``../dev/sda``, ``/tmp/../dev/sda``,
+    # ``/dev/nvme/../sda``, ``//dev/sda``, ``/dev/./sda``) never reach this fragment: every
+    # detection variant has them rewritten to ``/dev/sda`` by _collapse_device_paths first, so
+    # each rule sees one spelling however it anchors the operand (``of=``, ``>``, a lookahead).
+    r'(?<![\w.~-])/dev/'
+    # A device node is the LAST path component: ``sda`` is a disk, while ``sda-notes`` and
+    # ``sdk/token.json`` are files under some directory called ``dev`` (``../dev/sdk/token.json``
+    # reaches here as ``/dev/sdk/token.json``). ``mapper``, ``md`` and ``disk/by-*`` are the
+    # directories that hold device links, so those take a name.
+    r'(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*(?![\w/-])'
+    r'|r?disk[0-9]+[a-z0-9]*(?![\w/-])'
+    r'|(?:mapper|md)/[^\s;&|<>()"\']+'
     r'|disk/by-(?:id|uuid|path|label|partuuid|partlabel)/[^\s;&|<>()"\']+)'
 )
 _SENSITIVE_WRITE_TARGET = (
@@ -178,7 +187,9 @@ HARDLINE_PATTERNS = [
     # of the command (see _QUOTE_MASKED_HARDLINE / _mask_quoted_strings) so quoted prose (`echo "cat f >
     # /dev/sda"`) cannot trip it, while shell-carrying wrappers (sh -c / bash -c / eval) still surface their
     # payload as a raw detection variant — quoting is not a bypass (#93392).
-    (rf'>\s*["\']?{_BLOCK_DEVICE_PATH}\b', "redirect to raw block device"),
+    # `\>` is a literal argument, never a redirect. _strip_shell_escapes blanks it on the normalized
+    # variants; the raw structural variants keep their escapes, so the operator is not read through one.
+    (rf'(?<!\\)>\s*["\']?{_BLOCK_DEVICE_PATH}\b', "redirect to raw block device"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
@@ -258,8 +269,10 @@ def _mask_quoted_prose(command: str) -> str:
         if stripped:
             # An ESCAPED `>` is a literal argument, not a redirect operator -- real bash prints
             # `hello > /dev/disk0` for `echo hello \> "/dev/disk0"` and writes nothing -- so it
-            # must not arm the exception. Recording the backslash keeps it distinct from an
-            # operator without needing a second flag.
+            # must not arm the exception. _strip_shell_escapes already blanks that `\>` on the
+            # normalized variants; this arm covers the raw structural variants, which keep their
+            # escapes, and the `\ ` that an escaped backslash leaves in front of a real `>`.
+            # Recording the backslash keeps it distinct from an operator without a second flag.
             last_significant = "\\" if kind == "esc" else stripped[-1]
     return "".join(out)
 
@@ -591,6 +604,99 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 
 
 # ---- Detection ----------------------------------------------------------------------------
+# The parent read an escaped operator as live everywhere: ``\\>`` stripped to ``>`` before matching, so
+# ``eval echo hello \\> /dev/sda`` (eval joins its argv and parses it again), ``xargs bash -c '...'``,
+# ``find -exec bash -c '...'``, ``env -S bash -c '...'`` and ``eval${IFS}echo${IFS}hello${IFS}\\>...``
+# all hit the floor. Bash ground truth: every one of them writes. The same reading also blocked
+# ``echo hello \\> "/dev/disk0"``, which prints and writes nothing. There is no list of dispatchers
+# that closes the first set -- anything can carry ``bash -c`` as an argument -- so the floor keeps the
+# parent's reading everywhere a second parse could exist and reads a line as a SINGLE parse only when
+# nothing on it can hand an argument to anyone: one simple command, no substitution, and a command
+# word that is a builtin printer. Only there is an escaped operator certainly an argument.
+_SINGLE_PARSE_COMMAND_NAMES = frozenset({"echo", "printf"})
+
+
+def _single_parse_only(command: str) -> bool:
+    """Return whether the shell parses this line exactly once (see _SINGLE_PARSE_COMMAND_NAMES)."""
+    if "$(" in command or "`" in command or "<(" in command or ">(" in command:
+        return False
+    words = [
+        os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+        for _, _, word in _iter_shell_command_word_spans(command)
+    ]
+    return len(words) == 1 and words[0] in _SINGLE_PARSE_COMMAND_NAMES
+
+
+def _strip_shell_escapes(command: str, *, live_operators: bool = False) -> str:
+    """Strip backslash escapes for matching (``r\\m`` runs as ``rm``), left to right as the shell reads
+    them. An escaped redirect operator is the one escape that must NOT become its bare character:
+    ``echo hello \\> "/dev/disk0"`` prints ``hello > /dev/disk0`` and writes nothing, so its ``\\>``
+    becomes a space -- unless ``live_operators`` says a second parse may read it (the line is not a
+    lone builtin printer, see _single_parse_only), in which case it is the bare operator that parse
+    would run.
+    ``echo foo\\\\> "/dev/disk0"`` is the word ``foo\\`` followed by a REAL redirect either way, so
+    the operator survives with the literal backslash detached from it (``foo\\ >``); left glued,
+    _mask_quoted_prose would read ``\\>`` as an escape and let the write past the floor."""
+    out: list[str] = []
+    i, n = 0, len(command)
+    while i < n:
+        char = command[i]
+        if char == "\\" and i + 1 < n and command[i + 1] != "\n":
+            following = command[i + 1]
+            if following in "<>":
+                out.append(following if live_operators else " ")
+            else:
+                out.append(following)
+                if following == "\\" and i + 2 < n and command[i + 2] in "<>":
+                    out.append(" ")
+            i += 2
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
+# A device path is matched on its RESOLVED spelling. The kernel collapses ``//`` and ``/./`` and pops a
+# segment for ``..``, so ``//dev/sda``, ``/dev/./sda``, ``/dev/nvme/../sda``, ``/dev/disk/by-id/../../sda``
+# and ``/tmp/../dev/sda`` all open ``/dev/sda``. A fragment anchored on ``/dev/`` sees none of them, and
+# each hardline rule anchors the operand differently (``of=``, ``>``, a lookahead), so the collapse happens
+# in the text, once, before any rule runs. Only a token that resolves to ``/dev/...`` is rewritten; nothing
+# else in the command changes shape.
+#
+# A ``..`` that climbs above where the token starts -- a relative ``../dev/sda``, ``~/../dev/sda`` or
+# ``$HOME/../dev/sda`` -- is read as reaching the root: the classifier cannot see the working directory,
+# and from /tmp (or, as root, from ~) that IS /dev/sda (review P1 #2 on #120926). A lone ``.`` never
+# climbs, so ``./dev/sdk/token.json`` stays a relative file, and ``build/../dev/sda`` is a path under the
+# working directory, not the device. What no spelling rule can see -- ``D=/dev; wipefs -a $D/sda``,
+# ``cd /dev && wipefs -a sda`` -- is the execution boundary's to resolve.
+_DEVICE_PATH_TOKEN_RE = re.compile(r'(?<![\w.~$/:-])(\$\{?\w+\}?|~|\.\.?|)(/[^\s;&|<>()"\'`]*)')
+
+
+def _collapse_device_paths(command: str) -> str:
+    def collapse(match: re.Match) -> str:
+        token, head, rest = match.group(0), match.group(1), match.group(2)
+        if "dev" not in rest.lower():
+            return token
+        rooted = head in ("", "..")
+        stack: list[str] = []
+        for segment in rest.split("/"):
+            if segment in ("", "."):
+                continue
+            if segment == "..":
+                if stack:
+                    stack.pop()
+                elif not rooted:
+                    rooted = True  # climbed above the start: read as the root
+                continue
+            stack.append(segment)
+        if not rooted or not stack or stack[0].lower() != "dev":
+            return token
+        collapsed = "/" + "/".join(stack)
+        return collapsed if collapsed != token else token
+
+    return _DEVICE_PATH_TOKEN_RE.sub(collapse, command)
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
     forms, and shell splicing tricks cannot bypass detection."""
@@ -606,12 +712,16 @@ def _normalize_command_for_detection(command: str) -> str:
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
-    # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
-    command = re.sub(r'\\([^\n])', r'\1', command)
+    # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm). An escaped
+    # operator stays live unless the line is a lone builtin printer that nothing parses again.
+    command = _strip_shell_escapes(command, live_operators=not _single_parse_only(command))
     command = re.sub(r"''|\"\"", '', command)
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.
-    return re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+    command = re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+    # Last, after escapes are gone (``..\/dev\/sda`` is a path only once the backslashes are): a path that
+    # resolves to a device node is spelled the way the kernel resolves it.
+    return _collapse_device_paths(command)
 
 
 def _lower_preserving_flags(command: str) -> str:
@@ -1093,6 +1203,45 @@ def _execution_flag_findings(command: str):
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
 
 
+def _iter_unquoted_word_spans(text: str):
+    """Yield (start, end) of every shell word in ``text``, split on UNQUOTED whitespace only."""
+    start = None
+    for kind, i, _, quote in _scan_shell(text):
+        if kind == "char" and quote is None and text[i].isspace():
+            if start is not None:
+                yield start, i
+                start = None
+        elif start is None:
+            start = i
+    if start is not None:
+        yield start, len(text)
+
+
+def _dispatched_shell_findings(command: str):
+    """Yield the ``-c`` payload of a shell reached THROUGH another command.
+
+    ``xargs bash -c '...'``, ``find . -exec sh -c '...' \\;`` and ``env -S bash -c '...'`` hand a
+    shell exactly the payload ``bash -c '...'`` would get at command position, and the payload is a
+    quoted argument the positionless rules read as prose. Any command can carry a shell as an
+    argument, so it is the shell word that is looked for, anywhere in the segment, never the
+    dispatcher. _execution_flag_findings owns the shells at command position; this owns the rest,
+    with the same payload parser, so the two cannot disagree on what a ``-c`` carries."""
+    for segment in _iter_top_level_shell_segments(command):
+        command_starts = {start for start, _, _ in _iter_shell_command_word_spans(segment)}
+        for start, end in _iter_unquoted_word_spans(segment):
+            if start in command_starts:
+                continue
+            name = os.path.basename(_deobfuscate_shell_word_for_detection(segment[start:end])).lower()
+            if name not in _SHELL_NAMES:
+                continue
+            tokens = _shell_segment_tokens(segment, start)
+            if not tokens:
+                continue
+            found, payload = _bash_exec_payload(tokens[1:])
+            if found and payload:
+                yield ("shell command via -c/-lc flag", payload)
+
+
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
@@ -1530,7 +1679,8 @@ def _command_detection_variants(command: str):
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]
     while pending:
-        for _, payload in _execution_flag_findings(pending.pop()):
+        source = pending.pop()
+        for _, payload in (*_execution_flag_findings(source), *_dispatched_shell_findings(source)):
             if fresh(payload):
                 yield payload
                 # A payload may start with an option-looking program and then invoke a hardline command

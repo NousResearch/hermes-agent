@@ -77,19 +77,23 @@ class LiveGateway:
     model: FakeLLMServer
     home: Path
 
-    def restart(self) -> None:
+    def restart(self, *, wait_for_checkpoint: bool = True) -> None:
         gateway_log = self.home / "logs" / "gateway.log"
         log_offset = len(gateway_log.read_text(encoding="utf-8"))
         self.container.get_wrapped_container().restart(timeout=5)
+        if not wait_for_checkpoint:
+            return
 
         def connected() -> bool:
-            return "Matrix: initial sync complete" in gateway_log.read_text(
-                encoding="utf-8"
-            )[log_offset:]
+            log = gateway_log.read_text(encoding="utf-8")[log_offset:]
+            return (
+                "Matrix: connected after initial dispatch checkpoint" in log
+                and "Press Ctrl+C to stop" in log
+            )
 
         _wait_for(
             connected,
-            "Matrix gateway sync after restart",
+            "Matrix gateway sync and startup restoration after restart",
             timeout=30,
             details=lambda: self.container.get_wrapped_container()
             .logs()
@@ -330,6 +334,7 @@ def linux_nio_observer(
     gateway_image: str,
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
+    gateway: LiveGateway,
 ) -> Iterator[LinuxNioObserver]:
     _, _, network = synapse
     with DockerContainer(
@@ -339,6 +344,8 @@ def linux_nio_observer(
         command="infinity",
     ).with_volume_mapping(
         REPO_ROOT / "tests" / "integration" / "matrix_live", "/matrix_live", "ro"
+    ).with_volume_mapping(
+        gateway.home, "/gateway-barriers", "rw"
     ).with_env("PYTHONPATH", "/matrix_live").with_env(
         "NIO_HOMESERVER", "http://synapse:8008"
     ).with_env("NIO_USER_ID", live_room.observer.user_id).with_env(
@@ -413,6 +420,11 @@ def gateway_config() -> str:
 
 
 @pytest.fixture
+def gateway_home_setup() -> Callable[[Path], None]:
+    return lambda _home: None
+
+
+@pytest.fixture
 def gateway(
     request: pytest.FixtureRequest,
     tmp_path: Path,
@@ -421,6 +433,7 @@ def gateway(
     gateway_image: str,
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
+    gateway_home_setup: Callable[[Path], None],
 ) -> Iterator[LiveGateway]:
     param = getattr(request, "param", GatewaySettings())
     settings = GatewaySettings(mode=param) if isinstance(param, str) else param
@@ -603,6 +616,7 @@ def gateway(
                 (Path(__file__).parent / "resolution_probe.py").read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
+        gateway_home_setup(home)
 
         with DockerContainer(
             gateway_image,
@@ -619,8 +633,11 @@ def gateway(
             def connected() -> bool:
                 output = container.get_wrapped_container().logs().decode(errors="replace")
                 gateway_log = home / "logs" / "gateway.log"
-                if gateway_log.exists() and _gateway_ready(gateway_log.read_text(errors="replace"), room_id):
-                    return True
+                if gateway_log.exists():
+                    log = gateway_log.read_text(errors="replace")
+                    if (_gateway_ready(log, room_id)
+                            and "Matrix: connected after initial dispatch checkpoint" in log):
+                        return True
                 if container.get_wrapped_container().status == "exited":
                     pytest.fail(f"Gateway exited before Matrix connected:\n{output}")
                 return False

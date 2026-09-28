@@ -175,3 +175,15 @@ async def test_agent_reaction_records_keep_the_most_recently_used_targets(monkey
         (ROOM, "$a"): ["$1", "$3"],
         (ROOM, "$c"): ["$4"],
     }
+
+
+@pytest.mark.asyncio
+async def test_missing_reaction_target_errors_explain_the_required_argument():
+    adapter = _adapter()
+    assert (
+        await adapter.add_reaction(chat_id=ROOM, emoji="👍"),
+        await adapter.remove_reaction(chat_id=ROOM),
+    ) == (
+        {"success": False, "error": "message_id is required"},
+        {"success": False, "error": "message_id is required"},
+    )

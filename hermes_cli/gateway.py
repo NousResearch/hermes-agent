@@ -3154,8 +3154,8 @@ def _append_node_dir_for_service(path_entries: list[str], hermes_root: Path | No
     home's store records node/npm PATH entries, and those dirs — resolved via
     Facts.env_for — are used verbatim. With managed Node recorded, consulting
     the invoker's PATH would make a system unit depend on who ran sudo, so
-    lookup stops there. The legacy ``<hermes>/node`` tree and finally a PATH
-    lookup are fallbacks for installs pm never recorded.
+    lookup stops there. The legacy ``<hermes>/node`` tree is the only fallback,
+    for installs pm never recorded; the invoker's PATH node never is.
     """
     home = Path(hermes_root) if hermes_root is not None else Path(get_hermes_home())
     try:
@@ -3178,19 +3178,6 @@ def _append_node_dir_for_service(path_entries: list[str], hermes_root: Path | No
             present = False
         if present and entry not in path_entries:
             path_entries.append(entry)
-
-    # With managed Node present, consulting the invoker's PATH would make a system unit depend on who ran sudo.
-    if managed_node_present:
-        return
-
-    resolved_node = shutil.which("node")
-    if not resolved_node:
-        return
-
-    # Use the dir where node is FOUND, not the symlink target (~/.local/bin/node often links into one profile).
-    resolved_node_dir = str(Path(resolved_node).parent)
-    if resolved_node_dir not in path_entries:
-        path_entries.append(resolved_node_dir)
 
 
 def _systemd_command(argv: list[str]) -> str:

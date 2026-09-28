@@ -207,3 +207,99 @@ async def test_internal_event_keeps_channel_prompt_and_parent_override(monkeypat
     eph = [_effective_ephemeral(runner, kw) for kw in calls]
     assert "Channel hint." in eph[0] and "Parent persona." in eph[0]
     assert eph[0] == eph[1] == eph[2], "internal event toggled the channel ephemeral components"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result_key", "interrupted"),
+    (("pending_steer", False), ("interrupt_message", True)),
+    ids=("leftover-steer", "interrupt-text"),
+)
+@pytest.mark.parametrize("channel_prompt", ["Channel hint.", "", None], ids=("hint", "empty", "none"))
+async def test_eventless_followup_keeps_effective_prompt_through_next_human(
+    monkeypatch, result_key, interrupted, channel_prompt
+):
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._refresh_agent_cache_message_count = AsyncMock()
+
+    adapter = MagicMock()
+    adapter.get_pending_message.return_value = None
+    adapter._active_sessions = {}
+    source = _human_thread_source()
+
+    await _drive(runner, ((False, source),), channel_prompt=channel_prompt)
+    first = calls[0]
+    turn_ctx = TurnContext(
+        source=first["source"],
+        context_prompt=first["context_prompt"],
+        channel_prompt=first["channel_prompt"],
+        session_key=first["session_key"],
+        session_id=first["session_id"],
+        run_generation=1,
+        history=[],
+    )
+    result = {
+        "final_response": "done",
+        "messages": [],
+        result_key: "follow up",
+        "interrupted": interrupted,
+    }
+
+    pending_event, pending = await runner._run_agent_drain_pending(result, adapter, source, KEY)
+    assert pending_event is None
+    assert pending == "follow up"
+    await runner._run_agent_queued_followup(
+        turn_ctx, adapter, pending, pending_event, "done", result, None
+    )
+    await _drive(runner, ((False, source),), channel_prompt=channel_prompt)
+
+    assert [call["channel_prompt"] for call in calls] == [channel_prompt] * 3
+    ephemeral = [_effective_ephemeral(runner, call) for call in calls]
+    assert "Parent persona." in ephemeral[0]
+    assert ephemeral[0] == ephemeral[1] == ephemeral[2]
+
+
+@pytest.mark.asyncio
+async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypatch):
+    runner = _make_runner(monkeypatch)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="queued")
+    runner._session_key_for_source = lambda source: KEY
+
+    source = _human_source()
+    adapter = MagicMock()
+    adapter._active_sessions = {}
+    pending_event = MessageEvent(
+        text="queued",
+        source=source,
+        message_id="queued-message-1",
+        channel_prompt="Queued event prompt.",
+    )
+    turn_ctx = TurnContext(
+        source=source,
+        context_prompt="ctx",
+        channel_prompt="Inherited prompt.",
+        session_key=KEY,
+        session_id="sess-wiring",
+        run_generation=1,
+        history=[],
+    )
+    result = {"final_response": "done", "messages": []}
+
+    await runner._run_agent_queued_followup(
+        turn_ctx, adapter, "queued", pending_event, "done", result, None
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["channel_prompt"] == "Queued event prompt.", "event prompt must win over the inherited one"

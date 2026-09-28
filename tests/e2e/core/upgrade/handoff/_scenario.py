@@ -42,12 +42,12 @@ _IMPORT_ERR = re.compile(r"ModuleNotFoundError|ImportError|No module named|canno
 # verdict text its bug produces; any other failure of the same property propagates.
 # A dashboard started from a shell that runs under a systemd service (every GitHub-hosted job runs in
 # hosted-compute-agent.service) sits in that unit's cgroup; the update restarts the unit instead of
-# respawning the dashboard. The N-1 column keeps this gate until a release carrying the fix is N-1.
+# respawning the dashboard. Fixed at HEAD by #124940; the N-1 column keeps this gate until a release
+# carrying the fix is N-1.
 _FOREIGN_UNIT_GATE = (r"the update restarted the systemd unit \S+ the dashboard was started under",
                       "gated on #124938: the update restarts the systemd unit whose cgroup a manual dashboard "
                       "was started in instead of respawning the dashboard")
 DASHBOARD_GATES = {
-    "head": [_FOREIGN_UNIT_GATE],
     "n1": [(r"the respawned dashboard died parsing its launcher",
             "gated on #124778: the update respawns a manual dashboard on a launcher the PM takeover made a shell "
             "shim"), _FOREIGN_UNIT_GATE],

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from hermes_cli.sqlite_util import write_txn
+from hermes_cli.sqlite_util import add_column_if_missing, write_txn
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -348,9 +348,7 @@ class SharedMetricsStore:
             }
             for column, declaration in _SEND_COLUMNS:
                 if column not in existing:
-                    connection.execute(
-                        f"ALTER TABLE package_outbox ADD COLUMN {column} {declaration}"
-                    )
+                    add_column_if_missing(connection, "package_outbox", column, f"{column} {declaration}")
             for statement in _CREATE_CONSENT_TABLES_SQL:
                 connection.execute(statement)
             connection.execute(

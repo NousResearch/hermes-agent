@@ -13,6 +13,7 @@ import json
 import os
 import posixpath
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -26,7 +27,7 @@ from xml.etree import ElementTree as ET
 __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_bytes",
            "extract_document_text", "is_extractable_document"]
 
-EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
+EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx", ".db", ".sqlite", ".sqlite3"})
 ANYDOC_EXTENSIONS = frozenset({
     ".doc", ".docm", ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
     ".xls", ".xlsm", ".xlsb", ".odt", ".ods", ".odp", ".rtf", ".epub", ".pdf"})
@@ -74,9 +75,14 @@ def _anydoc() -> Optional[Any]:
                 and time.monotonic() - _anydoc_failed_at < ANYDOC_RETRY_SECONDS):
             return None
         try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("tool.doc_extract", prompt=False)  # read_file must never block on a prompt
-            _anydoc_module = importlib.import_module("anydoc")
+            from pm import ensure_import
+
+            # read_file must never block on an install prompt.
+            ensure_import("doc-extract")
+        except Exception:
+            _anydoc_failed_at = time.monotonic()
+            return None
+        try:            _anydoc_module = importlib.import_module("anydoc")
         except Exception:  # install failure, ImportError or a broken native binding
             _anydoc_failed_at = time.monotonic()
             return None
@@ -123,6 +129,8 @@ def extract_document_bytes(data: bytes, path: str) -> str:
     if ext not in EXTRACTABLE_EXTENSIONS:
         raise ExtractionError(f"Unsupported document type: {path!r}")
     with _temp_copy(data, ext) as temp_path:  # the stdlib extractors are path-oriented
+        if ext == ".ipynb":
+            return _extract_notebook(temp_path, display_path=path)
         return _STDLIB_EXTRACTORS[ext](temp_path)
 
 
@@ -136,8 +144,8 @@ def _anydoc_missing_error(path: str) -> str:
     return (
         f"Cannot convert {path!r}: this format needs the optional anydoc "
         "converter, which is not installed (install blocked or first "
-        "attempt failed; retried every 5 minutes). Fix: `pip install "
-        "firecrawl-anydoc` in Hermes's environment, or convert the file "
+        "attempt failed; retried every 5 minutes). Run `hermes pm repair` "
+        "to restore firecrawl-anydoc, or convert the file "
         "yourself via terminal (e.g. libreoffice --headless --convert-to "
         "txt).")
 
@@ -146,8 +154,10 @@ def _hosted_ocr_config() -> tuple:
     """(enabled, api_key, api_url); never raises, no network. Maintainer decision: the ONLY route
     is a direct ``FIRECRAWL_API_KEY`` (anydoc defaults api_url); the Nous gateway's Parse proxy
     live-probed broken, so it is NOT used. ``file_tools.hosted_ocr: false`` disables even with a
-    key."""
-    api_key = os.environ.get("FIRECRAWL_API_KEY") or None
+    key. The key is a profile credential: read through the secret scope so a multiplexed
+    secondary never spends (or reveals its documents to) the default profile's Firecrawl key."""
+    from agent.secret_scope import get_secret
+    api_key = get_secret("FIRECRAWL_API_KEY") or None
     enabled = api_key is not None
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly
@@ -171,7 +181,7 @@ def _needs_ocr_warning(path: str, pages, hosted_error: str = "") -> str:
         f"[NEEDS OCR: pages {page_list} of this PDF are scanned images "
         f"with no text layer — their content is MISSING below. {hosted}"
         "If the missing pages matter: render just those pages with "
-        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> '{path}' /tmp/page` "
+        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(path)} $TMPDIR/page` "
         "and inspect via vision_analyze, or check whether an OCR skill is "
         "available (skills_list).]\n")
 
@@ -302,7 +312,7 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
         f"{_gap_map(counts, texts, empty)}\n"
         "Decide which gaps you actually need — do NOT OCR or render "
         "everything. For the gaps that matter, render just that range with "
-        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> '{shown}' /tmp/page` "
+        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(shown)} $TMPDIR/page` "
         "and inspect each image with the vision_analyze tool, or use the "
         "ocr-and-documents skill (marker-pdf) for bulk OCR of large "
         "ranges.]\n")
@@ -393,7 +403,7 @@ def _notebook_outputs(cell: dict, jq_pointer: str = "", filename: str = "") -> s
     joined = "\n".join(filter(None, map(_notebook_output_text, outputs)))
     if len(joined) <= _MAX_OUTPUT_CHARS:
         return joined
-    hint = f" — full output: jq -r '{jq_pointer}' {filename}" if jq_pointer and filename else ""
+    hint = f" — full output: jq -r '{jq_pointer}' {shlex.quote(filename)}" if jq_pointer and filename else ""
     omitted = len(joined) - _MAX_OUTPUT_CHARS
     return joined[:_MAX_OUTPUT_CHARS] + f"\n… [{omitted:,} output chars truncated{hint}]"
 
@@ -401,9 +411,9 @@ def _notebook_outputs(cell: dict, jq_pointer: str = "", filename: str = "") -> s
 _CELL_LABELS = {"markdown": "Markdown", "code": "Code", "raw": "Raw"}
 
 
-def _extract_notebook(path: str) -> str:
+def _extract_notebook(path: str, *, display_path: Optional[str] = None) -> str:
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
             nb = json.load(fh)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise ExtractionError(f"Not a valid notebook: {exc}") from exc
@@ -419,7 +429,9 @@ def _extract_notebook(path: str) -> str:
             for ci, cell in enumerate(ws.get("cells", []))]
     if not cells:
         raise ExtractionError("Notebook contains no cells")
-    nb_name = os.path.basename(path)
+    # Backend bytes are parsed through a disposable host copy; recovery commands
+    # must instead name the original notebook in the user's filesystem.
+    nb_name = display_path if display_path is not None else path
     counts = dict.fromkeys(_CELL_LABELS, 0)
     out: list[str] = []
     for jq_pointer, cell in cells:
@@ -466,10 +478,20 @@ def _extract_docx(path: str) -> str:
     breaks = {f"{w}tab": "\t", f"{w}br": "\n", f"{w}cr": "\n"}
     lines: list[str] = []
     for para in root.iter(f"{w}p"):
+        # w:rt is the ruby (phonetic) guide over w:rubyBase; it annotates the text, it is not text.
+        guide = {n for rt in para.iter(f"{w}rt") for n in rt.iter()}
         text = "".join(
-            (n.text or "") if n.tag == f"{w}t" else breaks.get(n.tag, "") for n in para.iter())
+            (n.text or "") if n.tag == f"{w}t" else breaks.get(n.tag, "")
+            for n in para.iter() if n not in guide)
         lines.extend(text.split("\n"))
     return _joined(lines, "DOCX contains no extractable text")
+
+
+def _xlsx_string_text(item: ET.Element, s: str) -> str:
+    """Base text of an si/is, excluding rPh phonetic annotations."""
+    return "".join(
+        (child.text or "") if child.tag == f"{s}t" else child.findtext(f"{s}t") or ""
+        for child in item if child.tag in {f"{s}t", f"{s}r"})
 
 
 def _extract_xlsx(path: str) -> str:
@@ -477,7 +499,7 @@ def _extract_xlsx(path: str) -> str:
     with _open_zip(path, "XLSX") as zf:
         names = set(zf.namelist())
         sst = _zip_xml(zf, "xl/sharedStrings.xml", optional=True)
-        shared = ["".join(t.text or "" for t in item.iter(f"{s}t")) for item in sst.iter(f"{s}si")]
+        shared = [_xlsx_string_text(item, s) for item in sst.iter(f"{s}si")]
         rels_root = _zip_xml(zf, "xl/_rels/workbook.xml.rels", optional=True)
         rels = {rel.get("Id", ""): rel.get("Target", "")
                 for rel in rels_root.iter(f"{pr}Relationship") if rel.get("Id")}
@@ -529,15 +551,76 @@ def _cell_value(cell: ET.Element, shared: list[str], s: str) -> str:
             return ""
     if typ == "inlineStr":
         inline = cell.find(f"{s}is")
-        return "" if inline is None else "".join(t.text or "" for t in inline.iter(f"{s}t"))
+        return "" if inline is None else _xlsx_string_text(inline, s)
     if typ == "b":
         return "TRUE" if value.strip() in {"1", "true", "TRUE"} else "FALSE"
     return (value or "#ERROR") if typ == "e" else value
 
 
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+_SQLITE_PREVIEW_ROWS = 5
+_SQLITE_MAX_TABLES = 200
+_SQLITE_CELL_CHARS = 80
+
+
+def _extract_sqlite(path: str) -> str:
+    """Render a SQLite file as a schema overview: per table the CREATE statement, row count and the
+    first rows. A ``.db`` that is not SQLite raises ExtractionError so read_file reports the real type."""
+    import sqlite3
+
+    with open(path, "rb") as fh:
+        if fh.read(len(_SQLITE_MAGIC)) != _SQLITE_MAGIC:
+            raise ExtractionError("not a SQLite database (magic bytes do not match)")
+    # Read-only URI: never create or mutate; immutable=1 also skips WAL/journal sidecars so a live
+    # database that another process has open is still readable without taking locks.
+    uri = Path(path).resolve().as_uri() + "?mode=ro&immutable=1"
+    con = sqlite3.connect(uri, uri=True)
+    try:
+        objs = con.execute(
+            "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type DESC, name"
+        ).fetchall()
+        out = ["# SQLite database", ""]
+        tables = [o for o in objs if o[0] == "table"]
+        others = [o for o in objs if o[0] != "table"]
+        out.append(f"{len(tables)} table(s), {len(others)} index/view/trigger(s)")
+        for _, name, sql in tables[:_SQLITE_MAX_TABLES]:
+            quoted = '"' + name.replace('"', '""') + '"'
+            count = con.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0]
+            out += ["", f"## {name}  ({count:,} rows)", sql.strip()]
+            cur = con.execute(f"SELECT * FROM {quoted} LIMIT {_SQLITE_PREVIEW_ROWS}")
+            cols = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+            if rows:
+                out.append("| " + " | ".join(cols) + " |")
+                out.append("|" + "---|" * len(cols))
+                for row in rows:
+                    cells = [_sqlite_cell(v) for v in row]
+                    out.append("| " + " | ".join(cells) + " |")
+        if len(tables) > _SQLITE_MAX_TABLES:
+            out.append(f"\n... {len(tables) - _SQLITE_MAX_TABLES} more tables omitted")
+        if others:
+            out += ["", "## Indexes / views / triggers"] + [f"- {t} {n}" for t, n, _ in others]
+        out += ["", "Query it with the terminal: sqlite3 <path> 'SELECT ...'  (or Python's sqlite3 module)."]
+        return "\n".join(out)
+    except sqlite3.DatabaseError as exc:
+        raise ExtractionError(f"SQLite read failed: {exc}") from exc
+    finally:
+        con.close()
+
+
+def _sqlite_cell(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, (bytes, bytearray)):
+        return f"<blob {len(value)} bytes>"
+    text = str(value).replace("|", "\\|").replace("\n", " ")
+    return text if len(text) <= _SQLITE_CELL_CHARS else text[:_SQLITE_CELL_CHARS - 1] + "…"
+
+
 # Extension -> stdlib extractor; anydoc formats fall through in extract_document_text.
 _STDLIB_EXTRACTORS: dict[str, Callable[[str], str]] = {
-    ".ipynb": _extract_notebook, ".docx": _extract_docx, ".xlsx": _extract_xlsx}
+    ".ipynb": _extract_notebook, ".docx": _extract_docx, ".xlsx": _extract_xlsx,
+    ".db": _extract_sqlite, ".sqlite": _extract_sqlite, ".sqlite3": _extract_sqlite}
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

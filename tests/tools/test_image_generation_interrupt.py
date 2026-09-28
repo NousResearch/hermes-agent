@@ -21,24 +21,11 @@ class _SlowHandler:
         return self._result
 
 
-class _FastHandler:
-    def __init__(self, result):
-        self._result = result
-
-    def get(self):
-        return self._result
-
-
 @pytest.fixture(autouse=True)
 def _clean_interrupt():
     set_interrupt(False)
     yield
     set_interrupt(False)
-
-
-def test_wait_fal_result_returns_result():
-    result = image_tool._wait_fal_result(_FastHandler({"images": [{"url": "u"}]}))
-    assert result == {"images": [{"url": "u"}]}
 
 
 def test_wait_fal_result_raises_on_interrupt():

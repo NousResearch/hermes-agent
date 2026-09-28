@@ -1,0 +1,16 @@
+name: hermes-plugin-chrome-profiles
+repo: https://github.com/anpicasso/hermes-plugin-chrome-profiles
+sha: 03d24e95e7b14125c5227797a3a6682c3d890c84
+description: Switch Hermes browser tools to a named Chromium-family profile (Chrome, Edge, Brave), local or remote, over CDP.
+maintainer: anpicasso
+tier: community
+category: web
+docs_url: https://github.com/anpicasso/hermes-plugin-chrome-profiles
+version: "2.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - browser_profile
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

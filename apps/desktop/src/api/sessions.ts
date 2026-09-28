@@ -1,7 +1,7 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
-import { recordTranscriptTail } from '@/store/transcript-tail'
+import { pageHonorsLatestOrder, recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
   SessionInfo,
@@ -10,7 +10,16 @@ import type {
   SessionSearchResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, getApiRequestConnection, hermesApi, type ProfileScope, profileScoped } from './client'
+import {
+  ambientOwnerConnectionId,
+  capabilityScoped,
+  connectionScoped,
+  getApiRequestConnection,
+  getApiRequestProfile,
+  hermesApi,
+  type ProfileScope,
+  profileScoped
+} from './client'
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
@@ -19,13 +28,30 @@ function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?:
     return {}
   }
 
-  const scoped = capabilityScoped(scope)
+  // Session reads keep the ambient dial default (main's background): the
+  // cross-profile probe that resolves a remembered/404'd session id walks every
+  // other profile (resolveStoredSession) and must not cold-start each one on the
+  // pool's reserved foreground slot. The tag belongs to the scope selectors
+  // (Settings, Capabilities, Messaging), not to session lookups.
+  const { priority: _priority, ...scoped } = capabilityScoped(scope)
 
   if (typeof scope === 'object' && scope.connectionId?.trim() === 'local') {
     return { ...scoped, connectionId: 'local' }
   }
 
   return scoped
+}
+
+/**
+ * The profile a session WRITE must name in its body. The PATCH handler reads
+ * its target DB from `body.profile` alone (`_with_db(body.profile, ...)`), and
+ * under multiplex-only there is no per-profile backend whose HERMES_HOME could
+ * stand in for it: an unnamed owner lands the rename/pin/archive/mark-read on
+ * the shared backend's own state.db. "Unnamed" therefore means "the profile I
+ * am looking at", not "whatever home the backend was launched in".
+ */
+function sessionWriteProfile(profile?: null | string): string | undefined {
+  return String(profile ?? '').trim() || getApiRequestProfile() || undefined
 }
 
 function sessionScopeQuery(scope?: ProfileScope): string {
@@ -148,6 +174,12 @@ export interface SidebarSessionSlice {
   /** Per-profile tokens and spend over every session, not just this window.
    *  Absent from the legacy per-slice endpoint, which has no aggregate. */
   profiles_usage?: Record<string, { cost_usd: number; tokens: number }>
+  /** This slice is a failed load, not a successful empty session list. */
+  failed?: boolean
+  /** Ask the sidebar to offer Retry instead of rendering "No sessions yet". */
+  retry?: boolean
+  /** Profiles whose scan failed while a sibling profile still returned rows. */
+  profiles_failed?: Record<string, { failed?: boolean; retry?: boolean; error?: string }>
   /** Profiles whose scan for THIS slice failed. Batched `/sidebar` stamps the
    *  same profile errors on every slice (one DB open). Legacy per-slice calls
    *  stamp only the slice that actually failed, so a cron I/O error cannot
@@ -157,16 +189,17 @@ export interface SidebarSessionSlice {
 
 /** Which profiles filled their per-profile window in a returned page. The
  *  legacy per-slice endpoint doesn't report this, so derive it from the rows:
- *  a profile at (or over) the cap still has more on disk. Pinned rows are
- *  discounted — they're back-filled past the LIMIT, so counting them fakes a
- *  full page and leaves a "Load more" that can never resolve. */
+ *  a profile at (or over) the cap still has more on disk. Pinned rows count
+ *  like any other: they occupy LIMIT slots, and a short list has nothing past
+ *  the page for the pin back-fill to add, so pins cannot fake a full page
+ *  (#81484). */
 function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<string, boolean> {
   const counts = new Map<string, number>()
 
   for (const session of sessions) {
     const key = session.profile || 'default'
 
-    counts.set(key, (counts.get(key) ?? 0) + (session.pinned ? 0 : 1))
+    counts.set(key, (counts.get(key) ?? 0) + 1)
   }
 
   return Object.fromEntries([...counts].map(([name, count]) => [name, count >= cap]))
@@ -177,6 +210,11 @@ export interface SidebarSessionsResponse {
   cron: SidebarSessionSlice
   messaging: SidebarSessionSlice
   errors?: Array<{ profile: string; error: string }>
+  /** Profiles that failed while another profile's rows are still in the slices. */
+  profiles_failed?: Record<string, { failed?: boolean; retry?: boolean; error?: string }>
+  /** `{profile: 'corrupt'}` for each profile whose state.db the backend has found
+   *  structurally damaged. Absent from older backends. */
+  storage?: Record<string, 'corrupt'>
 }
 
 export interface SidebarSessionsRequest {
@@ -225,7 +263,9 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
   const cronErrors = cron.errors ?? []
   const messagingErrors = messaging.errors ?? []
 
-  return {
+  const storage = { ...recents.storage, ...cron.storage, ...messaging.storage }
+
+  const response: SidebarSessionsResponse = {
     recents: {
       profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
       sessions: recents.sessions,
@@ -240,6 +280,12 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
       ...(messagingErrors.length ? { errors: messagingErrors } : {})
     }
   }
+
+  if (Object.keys(storage).length > 0) {
+    response.storage = storage
+  }
+
+  return response
 }
 
 /** The PR each of these sessions opened, recovered from its own transcript —
@@ -316,7 +362,9 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
       sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
-    errors: result.errors
+    errors: result.errors,
+    profiles_failed: result.profiles_failed,
+    storage: result.storage
   }
 }
 
@@ -329,11 +377,13 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
   // remote gateway with no remoteProfile alias: the archive lands on the wrong
   // (default) state.db, no-ops on a missing row, and the archived/unarchived
   // state silently fails to stick — the same class as the unscoped DELETE.
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived, ...(profile ? { profile } : {}) }
+    body: { archived, ...(owner ? { profile: owner } : {}) }
   })
 }
 
@@ -345,11 +395,13 @@ export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: st
   // Owning profile in the PATCH body (see setSessionArchived / renameSession):
   // the handler reads its target DB from body.profile, so a remote/foreign
   // profile's pin must travel in the body or it no-ops on the wrong state.db.
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { pinned, ...(profile ? { profile } : {}) }
+    body: { pinned, ...(owner ? { profile: owner } : {}) }
   })
 }
 
@@ -362,11 +414,13 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   // the handler reads its target DB from body.profile, so a remote/foreign
   // profile's unread toggle must travel in the body or it no-ops on the wrong
   // state.db.
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { unread, ...(profile ? { profile } : {}) }
+    body: { unread, ...(owner ? { profile: owner } : {}) }
   })
 }
 
@@ -396,7 +450,8 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
 export function getSessionMessages(
   id: string,
   profile?: ProfileScope,
-  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {}
+  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {},
+  options: { passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
@@ -426,7 +481,8 @@ export function getSessionMessages(
 
   return hermesApi<SessionMessagesResponse>({
     ...sessionScope,
-    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
+    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`,
+    ...(options.passive ? { passive: true } : {})
   })
 }
 
@@ -439,27 +495,94 @@ export function getSessionMessages(
  */
 export const LATEST_SESSION_MESSAGES_LIMIT = 120
 
-export function getLatestSessionMessages(id: string, profile?: ProfileScope): Promise<SessionMessagesResponse> {
+export function getLatestSessionMessages(
+  id: string,
+  profile?: ProfileScope,
+  options: { passive?: boolean } = {}
+): Promise<SessionMessagesResponse> {
+  // Key pagination by the effective request owner, not the caller's spelling
+  // (ambient, profile string, or explicit pin). Otherwise refreshes create
+  // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
+  // Capture before awaiting: the active gateway may change during the read.
+  const route = { ...connectionScoped(), ...sessionScoped(profile) }
+  // Only the lookup key is normalized — backfill replays `route` verbatim.
+  const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
+  const ambientProfile = getApiRequestProfile() || 'default'
+
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
   // silently ends at the compaction boundary and earlier turns are unreachable.
-  return getSessionMessages(id, profile, {
-    limit: LATEST_SESSION_MESSAGES_LIMIT,
-    order: 'latest',
-    includeCompacted: true
-  }).then(page => {
+  return getSessionMessages(
+    id,
+    profile,
+    {
+      limit: LATEST_SESSION_MESSAGES_LIMIT,
+      order: 'latest',
+      includeCompacted: true
+    },
+    options
+  ).then(async page => {
+    // Order-echo guard. A backend built before the `order` param silently drops
+    // it (FastAPI ignores unknown query params) and serves the OLDEST page
+    // while still answering with a `pagination` object — so a full page looked
+    // like a truncated tail and the transcript silently became its first N
+    // rows, with "Show earlier" then prepending rows N..2N counted from the
+    // oldest end. Only a page that echoes `order: 'latest'` may be adopted as
+    // the tail; anything else is read as the complete transcript instead, which
+    // is the one paging contract both backend generations honour.
+    const authoritativePage = pageHonorsLatestOrder(page)
+      ? page
+      : await completeTranscriptForOrderlessBackend(id, profile, page, options)
+
     // Record whether the tail was truncated (page came back full) and where
     // the next older page starts, so "Show earlier" can backfill over REST
     // (app/chat/transcript-backfill). Keyed under both the requested id and
     // the resolved id — callers hold either.
-    recordTranscriptTail(id, page, profile)
-
-    if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, profile)
+    // A backend that predates the `profile` field cannot name itself; its
+    // untagged read landed on the ambient profile.
+    const owner = {
+      ...route,
+      connectionId: ambientConnectionId,
+      profile: route.profile || page.profile || ambientProfile
     }
 
-    return page
+    recordTranscriptTail(id, authoritativePage, route, owner)
+
+    if (authoritativePage.session_id && authoritativePage.session_id !== id) {
+      recordTranscriptTail(authoritativePage.session_id, authoritativePage, route, owner)
+    }
+
+    return authoritativePage
   })
+}
+
+/**
+ * Complete chronological transcript for a backend that did not honour
+ * `order=latest` (#92508).
+ *
+ * A page with no `pagination` at all (the pre-paging generation) or an
+ * orderless page that came back SHORT already holds every row: both were
+ * served from the oldest row at offset 0. Only a full orderless page needs
+ * the paged read. `getAllSessionMessages` pages with `order: 'oldest'`: the
+ * newer generation honours that explicitly and the older one drops the param
+ * and always paged from the start, so both return the same full history. The
+ * result carries NO `pagination`, the established "this is everything" signal
+ * (`tailStateFromPage`), so nothing arms a REST backfill against the wrong end
+ * of the transcript.
+ */
+async function completeTranscriptForOrderlessBackend(
+  id: string,
+  profile: ProfileScope | undefined,
+  page: SessionMessagesResponse,
+  options: { passive?: boolean }
+): Promise<SessionMessagesResponse> {
+  const { pagination, ...complete } = page
+
+  if (!pagination || page.messages.length < pagination.limit) {
+    return complete
+  }
+
+  return { ...complete, messages: (await getAllSessionMessages(id, profile, options)).messages }
 }
 
 /**
@@ -524,7 +647,7 @@ export function getOlderSessionMessages(
 export async function getAllSessionMessages(
   id: string,
   profile?: ProfileScope,
-  options: { maxJsonChars?: number } = {}
+  options: { maxJsonChars?: number; passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const messages: SessionMessage[] = []
   const pageSize = 500
@@ -534,12 +657,17 @@ export async function getAllSessionMessages(
   let resolvedSessionId = id
 
   while (true) {
-    const page = await getSessionMessages(id, profile, {
-      limit: pageSize,
-      offset,
-      order: 'oldest',
-      includeCompacted: true
-    })
+    const page = await getSessionMessages(
+      id,
+      profile,
+      {
+        limit: pageSize,
+        offset,
+        order: 'oldest',
+        includeCompacted: true
+      },
+      { passive: options.passive }
+    )
 
     resolvedSessionId = page.session_id
     jsonChars += (JSON.stringify(page.messages) ?? '').length
@@ -590,10 +718,12 @@ export function renameSession(
   title: string,
   profile?: string | null
 ): Promise<{ ok: boolean; title: string }> {
+  const owner = sessionWriteProfile(profile)
+
   return hermesApi<{ ok: boolean; title: string }>({
-    ...(profile ? { profile } : {}),
+    ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { title, ...(profile ? { profile } : {}) }
+    body: { title, ...(owner ? { profile: owner } : {}) }
   })
 }

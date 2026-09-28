@@ -59,10 +59,11 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     OS-essential allowlist passes by exact name.
     """
     try:
-        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
+        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
     except Exception:
         is_env_passthrough = lambda _: False  # noqa: E731
         resolve_passthrough_value = lambda _name, _fallback: None  # noqa: E731
+        scoped_passthrough_additions = lambda _present: {}  # noqa: E731
     if is_passthrough is None:
         is_passthrough = is_env_passthrough
     if is_windows is None:
@@ -85,6 +86,9 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             scrubbed[k] = v
         elif k.startswith("HERMES_"):
             _dropped_hermes.append(k)
+    # Declared names only the bound profile scope holds (a routed profile's own .env / sources
+    # never enter the process env) — the loop above sees only names ``source_env`` carries.
+    scrubbed.update((k, v) for k, v in scoped_passthrough_additions(scrubbed).items() if is_passthrough(k))
     if _dropped_hermes:
         logger.debug(
             "execute_code: dropped %d non-allowlisted HERMES_* var(s) from the "
@@ -112,7 +116,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
                      child_python: str) -> Dict[str, str]:
     """Build the scrubbed child environment both execution paths share."""
-    from hermes_constants import apply_subprocess_home_env
+    from hermes_constants import apply_scratch_tmp_env, apply_subprocess_home_env, get_hermes_home_override
     child_env = _scrub_child_env(os.environ)
     child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
     child_env["HERMES_RPC_TOKEN"] = rpc_token
@@ -121,12 +125,26 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     # code page (cp1252) and print("→") raises; harmless under a C/POSIX locale (containers).
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUTF8"] = "1"
-    # Only TZ reaches the child; HERMES_TIMEZONE is an internal setting.
-    _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
-    if _tz_name:
+    # Only TZ reaches the child; HERMES_TIMEZONE is an internal setting (and under the multiplexed
+    # gateway holds only the default profile's value — hermes_time resolves the routed profile's).
+    from hermes_time import get_timezone_name
+
+    _tz_name = get_timezone_name()
+    # Windows CPython does not support IANA names in TZ.  Leaving TZ unset
+    # preserves the OS-configured local timezone for the child process.
+    if _tz_name and not _IS_WINDOWS:
         child_env["TZ"] = _tz_name
     child_env.pop("HERMES_TIMEZONE", None)
     apply_subprocess_home_env(child_env)
+    # Multiplexed gateway/Desktop (#110303): the server process env carries the machine-default
+    # HERMES_HOME, but this turn runs under a per-profile override (ContextVar bound per turn).
+    # The scrub above passed the stale default through; rewrite it so skill scripts see the
+    # active profile's home — the same per-turn rewrite apply_subprocess_home_env does for HOME.
+    # No override (dedicated per-profile process) → leave the inherited value untouched.
+    _home_override = get_hermes_home_override()
+    if _home_override:
+        child_env["HERMES_HOME"] = _home_override
+        apply_scratch_tmp_env(child_env)  # TMPDIR follows the routed home, like HOME does
     # PYTHONPATH: the staging dir (hermes_tools.py) must always be importable even when project
     # mode changes CWD. Hermes's root is added ONLY when the child runs in Hermes's Python env —
     # exposing Hermes's site-packages to an external interpreter can mix incompatible compiled

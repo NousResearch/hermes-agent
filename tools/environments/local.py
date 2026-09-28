@@ -353,10 +353,21 @@ def build_subprocess_env(
     bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win.
     ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
     (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
-    acts for a routed profile sees only that profile's declared names, never the launch profile's."""
+    acts for a routed profile sees only that profile's declared names, never the launch profile's.
+    Under multiplex semantics it then overlays the bound secret scope (the routed profile's own
+    ``.env`` + source values, which never enter ``os.environ``) and re-applies the managed keys,
+    all BEFORE the scrub, so those values pass the same scrub / passthrough rules as any other."""
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
     if strip_launch_profile:
         strip_launch_profile_env(env)
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        if is_multiplex_active():
+            # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
+            # values the child already inherits byte-identical.
+            env.update(current_secret_scope() or {})
+            # Administrator-managed values keep their precedence over the routed profile's own .env,
+            # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
+            restore_managed_env(env)
     if scrub_secrets:
         return _sanitize_subprocess_env(env, dict(extra) if extra else None)
     if inherit_profile_home:

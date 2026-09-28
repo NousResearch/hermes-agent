@@ -2,8 +2,10 @@
 
 Persistent memory via the ByteRover CLI (``brv``): hierarchical context tree with tiered retrieval
 (fuzzy text → LLM-driven search), local-first with optional cloud sync (BRV_API_KEY). Requires the
-``brv`` CLI (npm install -g byterover-cli, or byterover.dev/install.sh). Working directory is
-$HERMES_HOME/byterover/ (profile-scoped); ``memory.byterover.auto_extract: false`` disables curate hooks.
+``brv`` CLI (npm install -g byterover-cli, or byterover.dev/install.sh). Working directory defaults
+to $HERMES_HOME/byterover/ (profile-scoped); ``memory.byterover.workdir`` overrides it so several
+profile-isolated workers can share ONE context tree without sharing a Hermes home.
+``memory.byterover.auto_extract: false`` disables curate hooks.
 """
 
 from __future__ import annotations
@@ -51,8 +53,18 @@ def _load_plugin_config() -> Dict[str, Any]:
     return {}
 
 
-def _get_brv_cwd() -> Path:
-    """Profile-scoped working directory for the brv context tree."""
+def _get_brv_cwd(config: Optional[Dict[str, Any]] = None) -> Path:
+    """Working directory for the brv context tree.
+
+    ``memory.byterover.workdir`` (a ``workdir`` key in *config*) overrides the profile-scoped
+    default so independently-homed workers can point at one shared tree. Absolute paths are the
+    supported configuration; a relative path resolves against the process cwd — deliberately not
+    the profile home, so a worker's task workspace can never silently change which tree it sees.
+    """
+    config = _load_plugin_config() if config is None else config
+    workdir = str((config or {}).get("workdir") or "").strip()
+    if workdir:
+        return Path(workdir).expanduser().resolve()
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "byterover"
 
@@ -171,7 +183,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        self._cwd, self._session_id, self._turn_count = str(_get_brv_cwd()), session_id, 0
+        self._cwd, self._session_id, self._turn_count = str(_get_brv_cwd(self._config)), session_id, 0
         Path(self._cwd).mkdir(parents=True, exist_ok=True)
 
     def system_prompt_block(self) -> str:

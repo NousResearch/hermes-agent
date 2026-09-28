@@ -547,6 +547,13 @@ class TestSpillover:
             lambda: {"sessions": {"retention_days": -5}})
         assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
 
+        # 0 is a legal prune setting (ended sessions go at once) but open sessions survive it;
+        # a 0h spill window would delete the file the first spill just wrote.
+        monkeypatch.setattr(
+            hermes_cli.config, "load_config_readonly",
+            lambda: {"sessions": {"retention_days": 0}})
+        assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
+
     def test_cleanup_missing_dir_returns_zero(self):
         assert cleanup_spillover_cache() == 0
 

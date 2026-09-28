@@ -89,13 +89,16 @@ export function createGeminiLiveHandler(sink: GeminiLiveSink, player: GeminiAudi
 
     let output: string
 
-    if (name !== 'ask_jarvis') {
+    if (name !== 'ask_jarvis' && name !== 'delegate_to_hermes') {
       output = `Unknown tool: ${name || '(none)'}`
     } else {
       const request = text(call.args?.request).trim()
+      const delegate = name === 'delegate_to_hermes'
 
       try {
-        output = request ? (await events.onAsk(request)).trim() || 'Done.' : 'The request was empty.'
+        output = request
+          ? (await (delegate ? events.onDelegate(request) : events.onAsk(request))).trim() || 'Done.'
+          : 'The request was empty.'
       } catch (error) {
         output = `Jarvis could not finish that: ${error instanceof Error ? error.message : String(error)}`
       }

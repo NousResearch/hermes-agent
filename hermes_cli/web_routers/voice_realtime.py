@@ -75,6 +75,22 @@ ASK_JARVIS_TOOL: Dict[str, Any] = {
     },
 }
 
+DELEGATE_TO_HERMES_TOOL: Dict[str, Any] = {
+    "type": "function",
+    "name": "delegate_to_hermes",
+    "description": (
+        "Start a substantial task in Czesiek's main Hermes session without waiting for it to finish. "
+        "Use this for work involving tools, files, research, commands, or multiple steps. Acknowledge "
+        "the handoff immediately and keep talking with the user; the completed result will be delivered "
+        "to you later so you can announce it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"request": {"type": "string", "description": "The complete task to perform."}},
+        "required": ["request"],
+    },
+}
+
 _LANGUAGE_NAMES = {"pl": "Polish", "en": "English", "zh": "Chinese", "es": "Spanish", "de": "German"}
 
 
@@ -116,10 +132,11 @@ def realtime_instructions(language: str) -> str:
         "the same joke repeatedly, fabricate real events, or claim to be a biological human if asked. "
         "Keep spoken replies to one or two sentences, with no lists, markdown or URLs read aloud. "
         "For every real question or request, including general knowledge and status changes, call "
-        "ask_jarvis with the complete request. That session owns memory and tools and may delegate "
-        "long work to background agents while the user keeps talking. Briefly acknowledge the handoff, "
-        "then relay the session's status or result naturally without claiming completion early. Answer "
-        "directly only greetings, thanks and simple confirmations."
+        "ask_jarvis with the complete request. For substantial work involving tools, files, research, "
+        "commands, or multiple steps, call delegate_to_hermes instead: acknowledge the handoff in one short "
+        "sentence and keep talking while Hermes passes the work to background agents. When a completed report "
+        "arrives, announce it naturally without "
+        "claiming completion early. Answer directly only greetings, thanks and simple confirmations."
     )
 
 
@@ -135,7 +152,7 @@ def session_config(settings: Dict[str, str]) -> Dict[str, Any]:
             },
             "output": {"voice": settings["voice"]},
         },
-        "tools": [ASK_JARVIS_TOOL],
+        "tools": [ASK_JARVIS_TOOL, DELEGATE_TO_HERMES_TOOL],
         "tool_choice": "auto",
     }
 
@@ -147,7 +164,10 @@ def gemini_setup(settings: Dict[str, str]) -> Dict[str, Any]:
     instructions already name it. Transcriptions on both sides feed the chat; the sliding
     window keeps a long conversation from hitting the context limit.
     """
-    declaration = {key: ASK_JARVIS_TOOL[key] for key in ("name", "description", "parameters")}
+    declarations = [
+        {key: tool[key] for key in ("name", "description", "parameters")}
+        for tool in (ASK_JARVIS_TOOL, DELEGATE_TO_HERMES_TOOL)
+    ]
     return {
         "model": f"models/{settings['gemini_model']}",
         "generationConfig": {
@@ -155,7 +175,7 @@ def gemini_setup(settings: Dict[str, str]) -> Dict[str, Any]:
             "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": settings["gemini_voice"]}}},
         },
         "systemInstruction": {"parts": [{"text": realtime_instructions(settings["language"])}]},
-        "tools": [{"functionDeclarations": [declaration]}],
+        "tools": [{"functionDeclarations": declarations}],
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
         "contextWindowCompression": {"slidingWindow": {}},

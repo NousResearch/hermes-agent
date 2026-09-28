@@ -17,6 +17,7 @@ function setup(onAsk: (request: string) => Promise<string> = async () => 'Masz j
 
   const handle = createGeminiLiveHandler({ send: message => sent.push(message) }, player, {
     onAsk,
+    onDelegate: async request => `Przyjęto: ${request}`,
     onError: vi.fn(),
     onResumeHandle: h => handles.push(h),
     onStatus: status => statuses.push(status),
@@ -77,6 +78,26 @@ describe('Gemini Live protocol', () => {
       {
         toolResponse: {
           functionResponses: [{ id: 'call-1', name: 'ask_jarvis', response: { output: 'Masz jutro dwa spotkania.' } }]
+        }
+      }
+    ])
+  })
+
+  it('routes delegated work separately and returns an immediate acknowledgement', async () => {
+    const onAsk = vi.fn(async () => 'blocking answer')
+    const { handle, sent } = setup(onAsk)
+
+    await handle({
+      toolCall: { functionCalls: [{ args: { request: 'Zrób raport' }, id: 'delegate-1', name: 'delegate_to_hermes' }] }
+    })
+
+    expect(onAsk).not.toHaveBeenCalled()
+    expect(sent).toEqual([
+      {
+        toolResponse: {
+          functionResponses: [
+            { id: 'delegate-1', name: 'delegate_to_hermes', response: { output: 'Przyjęto: Zrób raport' } }
+          ]
         }
       }
     ])

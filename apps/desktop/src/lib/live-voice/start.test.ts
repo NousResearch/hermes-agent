@@ -10,7 +10,7 @@ vi.mock('../realtime-voice', () => ({ startRealtimeVoice: providers.openai }))
 
 import { startLiveVoice } from './start'
 
-const handlers = { onAsk: vi.fn(), onError: vi.fn(), onStatus: vi.fn() }
+const handlers = { onAsk: vi.fn(), onDelegate: vi.fn(), onError: vi.fn(), onStatus: vi.fn() }
 
 describe('startLiveVoice', () => {
   it('follows the provider the backend minted the session for', async () => {

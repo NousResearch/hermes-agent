@@ -18,8 +18,10 @@ export type RealtimeVoiceStatus = 'connecting' | 'listening' | 'thinking' | 'spe
 
 export interface RealtimeVoiceHandlers {
   onStatus: (status: RealtimeVoiceStatus) => void
-  /** Run the request through the agent; resolves with the text to speak. */
+  /** Run a short request through the agent and wait for its text answer. */
   onAsk: (request: string) => Promise<string>
+  /** Queue substantial work and return an acknowledgement without waiting for completion. */
+  onDelegate: (request: string) => Promise<string>
   onError: (message: string) => void
   onTranscript?: (role: 'assistant' | 'user', text: string) => void
   /** Measured level, 0…1: the mic while listening, the voice while speaking. */
@@ -65,15 +67,18 @@ export function createRealtimeEventHandler(sink: RealtimeEventSink, handlers: Re
 
     let output: string
 
-    if (text(event.name) !== 'ask_jarvis') {
+    if (text(event.name) !== 'ask_jarvis' && text(event.name) !== 'delegate_to_hermes') {
       output = `Unknown tool: ${text(event.name) || '(none)'}`
     } else {
       const request = askRequest(event.arguments)
+      const delegate = text(event.name) === 'delegate_to_hermes'
 
       handlers.onStatus('thinking')
 
       try {
-        output = request ? (await handlers.onAsk(request)).trim() || 'Done.' : 'The request was empty.'
+        output = request
+          ? (await (delegate ? handlers.onDelegate(request) : handlers.onAsk(request))).trim() || 'Done.'
+          : 'The request was empty.'
       } catch (error) {
         output = `Jarvis could not finish that: ${error instanceof Error ? error.message : String(error)}`
       }

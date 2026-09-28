@@ -27,7 +27,9 @@ def test_realtime_voice_is_czesiek_and_keeps_main_session_bridge():
     assert "Speak Polish" in instructions
     assert "background agents" in instructions
     assert "ask_jarvis" in instructions
+    assert "delegate_to_hermes" in instructions
     assert voice_realtime.ASK_JARVIS_TOOL["name"] == "ask_jarvis"
+    assert voice_realtime.DELEGATE_TO_HERMES_TOOL["name"] == "delegate_to_hermes"
     assert "Czesiek's main Hermes session" in voice_realtime.ASK_JARVIS_TOOL["description"]
 
 
@@ -65,7 +67,7 @@ def test_session_returns_only_the_ephemeral_secret(client, monkeypatch):
     assert sent["api_key"] == "sk-live-never-leaves"
     assert sent["session"]["model"] == body["model"] == "gpt-realtime-2.1-mini"
     assert sent["session"]["audio"]["output"]["voice"] == body["voice"] == "cedar"
-    assert [t["name"] for t in sent["session"]["tools"]] == ["ask_jarvis"]
+    assert [t["name"] for t in sent["session"]["tools"]] == ["ask_jarvis", "delegate_to_hermes"]
     assert body["calls_url"].startswith(sent["base_url"])
 
 
@@ -147,7 +149,7 @@ def test_gemini_session_hands_out_a_one_use_token_with_the_setup_locked_in(clien
     assert locked == body["setup"]
     assert locked["model"] == f"models/{voice_realtime.DEFAULT_GEMINI_MODEL}" and body["model"] == voice_realtime.DEFAULT_GEMINI_MODEL
     assert locked["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
-    assert [f["name"] for f in locked["tools"][0]["functionDeclarations"]] == ["ask_jarvis"]
+    assert [f["name"] for f in locked["tools"][0]["functionDeclarations"]] == ["ask_jarvis", "delegate_to_hermes"]
     assert minted["body"]["uses"] == 1
     for field in ("model", "systemInstruction", "tools", "generationConfig"):
         assert field in minted["body"]["fieldMask"].split(",")

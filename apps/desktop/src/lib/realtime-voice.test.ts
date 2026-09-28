@@ -7,6 +7,7 @@ function setup(onAsk: RealtimeVoiceHandlers['onAsk'] = async request => `answer 
 
   const handlers = {
     onAsk: vi.fn(onAsk),
+    onDelegate: vi.fn(async (request: string) => `queued ${request}`),
     onError: vi.fn(),
     onStatus: vi.fn(),
     onTranscript: vi.fn()
@@ -39,6 +40,20 @@ describe('createRealtimeEventHandler', () => {
       },
       { type: 'response.create' }
     ])
+  })
+
+  it('acknowledges delegated work through the async path without calling ask_jarvis', async () => {
+    const { handle, handlers, sent } = setup()
+
+    await handle({ ...call('d1', 'zbadaj rynek'), name: 'delegate_to_hermes' })
+
+    expect(handlers.onDelegate).toHaveBeenCalledWith('zbadaj rynek')
+    expect(handlers.onAsk).not.toHaveBeenCalled()
+    expect(sent[0]).toEqual({
+      item: { call_id: 'd1', output: 'queued zbadaj rynek', type: 'function_call_output' },
+      type: 'conversation.item.create'
+    })
+    expect(sent[1]).toEqual({ type: 'response.create' })
   })
 
   it('answers each call once, and still answers when the agent fails', async () => {

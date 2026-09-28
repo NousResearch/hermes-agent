@@ -101,6 +101,23 @@ export function useRealtimeConversation({
   }, [sessionId])
 
   const ask = useCallback(async (request: string) => {
+    const reply = await submitAndAwaitReply(
+      { busy: () => args.current.busy(), messages: () => args.current.messages() },
+      () => args.current.onSubmit(request),
+      ASK_TIMEOUT_MS
+    )
+
+    if (reply.id === null) {
+      return reply.reason === 'timeout'
+        ? 'Hermes nadal pracuje nad odpowiedzią. Wynik pozostanie w rozmowie tekstowej.'
+        : 'Hermes nie zwrócił odpowiedzi.'
+    }
+
+    args.current.markSpoken(reply.id)
+    return reply.text
+  }, [])
+
+  const delegate = useCallback(async (request: string) => {
     const sid = currentSession.current
 
     const live = ($subagentsBySession.get()[sid || ''] || []).filter(
@@ -238,6 +255,7 @@ export function useRealtimeConversation({
     void startLiveVoice(
       {
         onAsk: ask,
+        onDelegate: delegate,
         onTranscript: (role, text) => {
           if (role === 'user' && isJarvisMusicPhrase(text)) {
             startJarvisIntroMusic(true)
@@ -286,7 +304,7 @@ export function useRealtimeConversation({
       cancelled = true
       void end()
     }
-  }, [ask, enabled, end])
+  }, [ask, delegate, enabled, end])
 
   const toggleMute = useCallback(() => {
     setMuted(value => {

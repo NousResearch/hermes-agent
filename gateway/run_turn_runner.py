@@ -1928,13 +1928,13 @@ class TurnRunner:
                 # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
                 from gateway.run import _gateway_provider_error_reply
                 return {"final_response": _gateway_provider_error_reply(str(exc)),
-                        "messages": [], "api_calls": 0, "tools": []}
+                        "messages": [], "api_calls": 0, "tools": [], "failed": True}
             return {
                 "final_response": (
                     "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
                     "Use /login to sign in again, or /model to pick a different model. If it keeps "
                     "failing, run `hermes doctor` on the host."),
-                "messages": [], "api_calls": 0, "tools": [],
+                "messages": [], "api_calls": 0, "tools": [], "failed": True,
             }
         pr = runner._provider_routing
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)

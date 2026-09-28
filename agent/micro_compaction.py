@@ -145,9 +145,12 @@ class MicroCompactionMixin:
             )
             return None
 
+        from agent.message_content import flatten_message_text
         message = response.choices[0].message
-        content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
-        content = (content if isinstance(content, str) else str(content) if content else "").strip()
+        raw_content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
+        # Segmented (list) content from OpenAI-compatible relays: flatten, never
+        # str() — str(list) would persist Python repr garbage as the rolling summary.
+        content = (raw_content if isinstance(raw_content, str) else flatten_message_text(raw_content) if raw_content else "").strip()
 
         from agent.agent_runtime_helpers import strip_think_blocks
         content = strip_think_blocks(None, content).strip()

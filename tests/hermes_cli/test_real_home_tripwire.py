@@ -91,12 +91,16 @@ def test_installed_desktop_app_can_be_read_but_never_changed(tmp_path, monkeypat
     plist.write_text("unchanged", encoding="utf-8")
     replacement = tmp_path / "Hermes.app.new"
     replacement.mkdir()
-    (tmp_path / "linked").symlink_to(app.parent, target_is_directory=True)
-    monkeypatch.setattr(conftest, "_REAL_INSTALLED_GUI_APPS", [app])
+    changes = [lambda: shutil.rmtree(app), plist.unlink, lambda: replacement.replace(app),
+               lambda: plist.write_text("clobbered", encoding="utf-8")]
+    try:  # Windows without Developer Mode cannot create symlinks
+        (tmp_path / "linked").symlink_to(app.parent, target_is_directory=True)
+        changes.append(lambda: shutil.rmtree(tmp_path / "linked" / "Hermes.app"))
+    except OSError:
+        pass
+    monkeypatch.setattr(conftest, "_REAL_INSTALLED_GUI_APPS", [os.path.normcase(os.path.realpath(app))])
     assert plist.read_text(encoding="utf-8") == "unchanged"
-    for change in (lambda: shutil.rmtree(app), plist.unlink, lambda: replacement.replace(app),
-                   lambda: plist.write_text("clobbered", encoding="utf-8"),
-                   lambda: shutil.rmtree(tmp_path / "linked" / "Hermes.app")):
+    for change in changes:
         with pytest.raises(pytest.fail.Exception, match="REAL installed Hermes desktop app"):
             change()
     assert plist.read_text(encoding="utf-8") == "unchanged"

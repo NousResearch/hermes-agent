@@ -89,7 +89,8 @@ servers below start, each with settings that keep it on Hermes-side
 tools. Every other server is skipped, including rust-analyzer, gopls,
 jdtls, kotlin-language-server, elixir-ls, zls, clojure-lsp,
 haskell-language-server, lua-language-server, terraform-ls, prisma,
-astro and any server you declare under `lsp.servers`. The diagnostics
+astro, vue-language-server (it loads the `vueCompilerOptions.plugins`
+a project's `tsconfig.json` names) and any server you declare under `lsp.servers`. The diagnostics
 log records `skipped: untrusted workspace …; add it to
 lsp.trusted_workspaces`, and `hermes lsp status` marks those servers
 `[trusted workspaces only]`.
@@ -98,7 +99,6 @@ lsp.trusted_workspaces`, and `hermes lsp status` marks those servers
 |---|---|
 | pyright | `VIRTUAL_ENV` or the Hermes-managed Python, never the project's `.venv`/`venv` |
 | typescript-language-server | `tsserver.path` pinned to the TypeScript next to the server; skipped if there is none |
-| vue-language-server | `tsdk` from Hermes's staging tree only |
 | svelte-language-server | `isTrusted: false` (no `svelte.config.js`, no project `svelte`/`prettier`) |
 | bash-language-server, yaml-language-server, dockerfile-ls, intelephense | unchanged: they only parse files |
 | clangd | unchanged: Hermes never passes `--query-driver`, so no project compiler runs |

@@ -1,7 +1,7 @@
 """Nothing a checkout ships runs unless the operator trusts that workspace.
 
 A cloned repository can ship its own ``.venv/bin/python`` (pyright executes the configured
-interpreter), ``node_modules/typescript`` (typescript-language-server and Vue load it),
+interpreter), ``node_modules/typescript`` (typescript-language-server loads it), Vue compiler plugins,
 ``svelte.config.js``, Rust build scripts and Gradle builds (rust-analyzer, jdtls and
 kotlin-language-server evaluate them), and a ``node_modules/.bin/tsc`` or ``rust-toolchain.toml``
 the post-write shell linters would pick up.  Nothing here executes those files: the tests record
@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from types import SimpleNamespace
 
 from agent.lsp import manager
-from agent.lsp.servers import UNTRUSTED_SAFE_SERVERS, ServerContext, find_server_for_file
+from agent.lsp.servers import UNTRUSTED_SAFE_SERVERS
 from agent.lsp.workspace import clear_cache, is_inside_workspace
 
 _SERVERS = {"pyright": "a.py", "typescript": "a.ts", "vue-language-server": "a.vue",
@@ -107,17 +106,14 @@ def test_untrusted_checkout_starts_only_allowlisted_servers_pinned_to_hermes_cod
     untrusted = {sid: init for (sid, root), init in handed.items() if root == str(clone)}
     # Deny by default: servers that evaluate build files (cargo, Gradle) never start in the clone.
     assert set(untrusted) == set(_SERVERS) & UNTRUSTED_SAFE_SERVERS
-    assert {("rust-analyzer", str(clone)), ("jdtls", str(clone))} <= set(status["untrusted_skipped"])
+    assert {("rust-analyzer", str(clone)), ("jdtls", str(clone)), ("vue-language-server", str(clone))} \
+        <= set(status["untrusted_skipped"])
     for sid, init in untrusted.items():
         leaked = [s for s in _strings(init) if os.path.isabs(s) and is_inside_workspace(s, str(clone))]
         assert not leaked, (sid, leaked)
     # Allowlisted servers that would fall back to project code by themselves are told not to.
     assert os.path.isfile(os.path.join(untrusted["typescript"]["tsserver"]["path"], "tsserver.js"))
     assert untrusted["svelte-language-server"]["isTrusted"] is False
-    # With no Hermes-side SDK, Vue is skipped rather than handed the checkout's TypeScript.
-    shutil.rmtree(os.path.join(os.path.dirname(launcher), "typescript"))
-    ctx = ServerContext(workspace_root=str(clone), install_strategy="manual", binary_overrides={"vue-language-server": [launcher]})
-    assert find_server_for_file("a.vue").build_spawn(str(clone), ctx) is None
 
     # The launch worktree is trusted: every server starts, pyright gets the project interpreter back.
     trusted = {sid: init for (sid, root), init in handed.items() if root == str(launch)}

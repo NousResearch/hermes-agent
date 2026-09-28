@@ -72,7 +72,8 @@ agent 无法扩大信任范围：它在终端里执行 `cd` 不会改变会话�
 使用让它停留在 Hermes 一侧工具上的设置。其他所有服务器都会被跳过，包括
 rust-analyzer、gopls、jdtls、kotlin-language-server、elixir-ls、zls、
 clojure-lsp、haskell-language-server、lua-language-server、terraform-ls、
-prisma、astro，以及你在 `lsp.servers` 下声明的任何服务器。诊断日志会记录
+prisma、astro、vue-language-server（它会加载项目 `tsconfig.json` 中
+`vueCompilerOptions.plugins` 指定的插件），以及你在 `lsp.servers` 下声明的任何服务器。诊断日志会记录
 `skipped: untrusted workspace …; add it to lsp.trusted_workspaces`，
 `hermes lsp status` 会把这些服务器标记为 `[trusted workspaces only]`。
 
@@ -80,7 +81,6 @@ prisma、astro，以及你在 `lsp.servers` 下声明的任何服务器。诊断
 |---|---|
 | pyright | 使用 `VIRTUAL_ENV` 或 Hermes 管理的 Python，绝不使用项目的 `.venv`/`venv` |
 | typescript-language-server | `tsserver.path` 固定为服务器旁边的 TypeScript；若没有则跳过 |
-| vue-language-server | `tsdk` 仅取自 Hermes 的暂存目录 |
 | svelte-language-server | `isTrusted: false`（不加载 `svelte.config.js`，不加载项目的 `svelte`/`prettier`） |
 | bash-language-server、yaml-language-server、dockerfile-ls、intelephense | 不变：它们只解析文件 |
 | clangd | 不变：Hermes 从不传入 `--query-driver`，因此不会运行项目的编译器 |

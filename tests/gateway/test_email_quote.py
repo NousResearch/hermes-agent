@@ -111,7 +111,7 @@ class TestQuoteOriginal(unittest.TestCase):
         adapter = _make_adapter()
         _dispatch(adapter, _msg_data())
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", "The answer.", None)
+            adapter._send_email("user@test.com", "The answer.", None, final=True)
         self.assertEqual(smtp.bodies, ["The answer."])
         self.assertEqual(adapter._original_by_msg_id, {})
 
@@ -119,7 +119,7 @@ class TestQuoteOriginal(unittest.TestCase):
         adapter = _make_adapter(extra={"quote_original": True})
         _dispatch(adapter, _msg_data())
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", "The answer.", None)
+            adapter._send_email("user@test.com", "The answer.", None, final=True)
         self.assertEqual(smtp.bodies[0], "The answer.\n\nOn Wed, 16 Sep 2026 15:53 +0200, Some User <user@test.com> wrote:\n"
                                          "> Hello Hermes,\n> please help.")
 
@@ -127,7 +127,7 @@ class TestQuoteOriginal(unittest.TestCase):
         adapter = _make_adapter(extra={"quote_original": "true"})
         _dispatch(adapter, _msg_data())
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", "The answer.", None)
+            adapter._send_email("user@test.com", "The answer.", None, final=True)
         self.assertIn("> please help.", smtp.bodies[0])
 
     def test_flag_via_env_without_config(self):
@@ -135,7 +135,7 @@ class TestQuoteOriginal(unittest.TestCase):
         self.assertTrue(adapter._quote_original)
         _dispatch(adapter, _msg_data())
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", "The answer.", None)
+            adapter._send_email("user@test.com", "The answer.", None, final=True)
         self.assertIn("> Hello Hermes,", smtp.bodies[0])
 
     def test_env_wins_over_config(self):
@@ -146,7 +146,7 @@ class TestQuoteOriginal(unittest.TestCase):
         adapter = _make_adapter(extra={"quote_original": True, "quote_max_chars": len("> line 1\n> [...]")})
         _dispatch(adapter, _msg_data(body="line 1\nline 2\nline 3"))
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", "Answer", None)
+            adapter._send_email("user@test.com", "Answer", None, final=True)
         self.assertTrue(smtp.bodies[0].endswith("\n> line 1\n> [...]"))
 
     def test_quote_shrinks_to_max_message_length_and_reply_is_untouched(self):
@@ -156,7 +156,7 @@ class TestQuoteOriginal(unittest.TestCase):
         _dispatch(adapter, _msg_data(body="\n".join(f"original line {i}" for i in range(2000))))
         reply = "r" * (MAX_MESSAGE_LENGTH - 500)
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", reply, None)
+            adapter._send_email("user@test.com", reply, None, final=True)
         body = smtp.bodies[0]
         self.assertTrue(body.startswith(reply))
         self.assertLessEqual(len(body), MAX_MESSAGE_LENGTH)
@@ -169,16 +169,27 @@ class TestQuoteOriginal(unittest.TestCase):
         _dispatch(adapter, _msg_data())
         reply = "r" * MAX_MESSAGE_LENGTH
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", reply, None)
+            adapter._send_email("user@test.com", reply, None, final=True)
         self.assertEqual(smtp.bodies[0], reply)
+
+    def test_oversized_final_reply_goes_out_as_one_unquoted_email(self):
+        from plugins.platforms.email.adapter import MAX_MESSAGE_LENGTH
+
+        adapter = _make_adapter(extra={"quote_original": True})
+        _dispatch(adapter, _msg_data())
+        reply = "r" * (MAX_MESSAGE_LENGTH + 5000)
+        with _SmtpCapture() as smtp:
+            result = asyncio.run(adapter.send("user@test.com", reply, metadata={"notify": True}))
+        self.assertTrue(result.success)
+        self.assertEqual(smtp.bodies, [reply])
 
     def test_reply_to_selects_the_right_original(self):
         adapter = _make_adapter(extra={"quote_original": True})
         _dispatch(adapter, _msg_data(body="first mail", message_id="<a@test.com>"))
         _dispatch(adapter, _msg_data(body="second mail", message_id="<b@test.com>"))
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", "Reply to first", "<a@test.com>")
-            adapter._send_email("user@test.com", "Reply to second", "<b@test.com>")
+            adapter._send_email("user@test.com", "Reply to first", "<a@test.com>", final=True)
+            adapter._send_email("user@test.com", "Reply to second", "<b@test.com>", final=True)
         self.assertIn("> first mail", smtp.bodies[0])
         self.assertNotIn("second mail", smtp.bodies[0])
         self.assertIn("> second mail", smtp.bodies[1])
@@ -187,32 +198,53 @@ class TestQuoteOriginal(unittest.TestCase):
         adapter = _make_adapter(extra={"quote_original": True})
         _dispatch(adapter, _msg_data(body="latest mail", message_id="<b@test.com>"))
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", "Reply", "<evicted@test.com>")
+            adapter._send_email("user@test.com", "Reply", "<evicted@test.com>", final=True)
         self.assertEqual(smtp.bodies, ["Reply"])
 
     def test_mail_without_message_id_uses_sender_fallback(self):
         adapter = _make_adapter(extra={"quote_original": True})
         _dispatch(adapter, _msg_data(body="no id here", message_id=""))
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", "Reply", None)
+            adapter._send_email("user@test.com", "Reply", None, final=True)
         self.assertIn("> no id here", smtp.bodies[0])
 
     def test_only_first_send_per_inbound_mail_quotes(self):
+        """Several final-marked sends for one turn (final text + final attachments) still claim the quote once."""
         adapter = _make_adapter(extra={"quote_original": True})
         _dispatch(adapter, _msg_data())
         with _SmtpCapture() as smtp:
-            asyncio.run(adapter.send("user@test.com", "part 1", "<orig-1@test.com>"))
-            asyncio.run(adapter.send("user@test.com", "part 2", "<orig-1@test.com>"))
-            asyncio.run(adapter.send("user@test.com", "part 3", None))
+            asyncio.run(adapter.send("user@test.com", "part 1", "<orig-1@test.com>", metadata={"notify": True}))
+            asyncio.run(adapter.send("user@test.com", "part 2", "<orig-1@test.com>", metadata={"notify": True}))
+            asyncio.run(adapter.send("user@test.com", "part 3", None, metadata={"notify": True}))
         self.assertIn("> Hello Hermes,", smtp.bodies[0])
         self.assertEqual(smtp.bodies[1:], ["part 2", "part 3"])
+
+    def test_status_send_without_notify_does_not_quote_final_send_does(self):
+        adapter = _make_adapter(extra={"quote_original": True})
+        _dispatch(adapter, _msg_data())
+        with _SmtpCapture() as smtp:
+            asyncio.run(adapter.send("user@test.com", "still working on it", "<orig-1@test.com>"))
+            asyncio.run(adapter.send("user@test.com", "The answer.", "<orig-1@test.com>", metadata={"notify": True}))
+        self.assertEqual(smtp.bodies[0], "still working on it")
+        self.assertIn("> Hello Hermes,", smtp.bodies[1])
+
+    def test_busy_ack_does_not_quote_the_other_inbound_mail(self):
+        adapter = _make_adapter(extra={"quote_original": True})
+        _dispatch(adapter, _msg_data(body="first mail", message_id="<a@test.com>"))
+        _dispatch(adapter, _msg_data(body="second mail", message_id="<b@test.com>"))
+        with _SmtpCapture() as smtp:
+            asyncio.run(adapter.send("user@test.com", "Still working on your last message, hang tight.", "<b@test.com>"))
+            asyncio.run(adapter.send("user@test.com", "Reply to second", "<b@test.com>", metadata={"notify": True}))
+        self.assertEqual(smtp.bodies[0], "Still working on your last message, hang tight.")
+        self.assertIn("> second mail", smtp.bodies[1])
+        self.assertNotIn("first mail", smtp.bodies[1])
 
     def test_failed_send_is_quoted_again_on_retry(self):
         adapter = _make_adapter(extra={"quote_original": True})
         _dispatch(adapter, _msg_data())
         with _SmtpCapture(fail_first=True) as smtp:
-            first = asyncio.run(adapter.send("user@test.com", "Answer", "<orig-1@test.com>"))
-            second = asyncio.run(adapter.send("user@test.com", "Answer", "<orig-1@test.com>"))
+            first = asyncio.run(adapter.send("user@test.com", "Answer", "<orig-1@test.com>", metadata={"notify": True}))
+            second = asyncio.run(adapter.send("user@test.com", "Answer", "<orig-1@test.com>", metadata={"notify": True}))
         self.assertFalse(first.success)
         self.assertTrue(second.success)
         self.assertIn("> Hello Hermes,", smtp.bodies[0])
@@ -225,7 +257,8 @@ class TestQuoteOriginal(unittest.TestCase):
             tmp_path = f.name
         try:
             with _SmtpCapture() as smtp:
-                result = asyncio.run(adapter.send_document("user@test.com", tmp_path, "Here is the file"))
+                result = asyncio.run(adapter.send_document("user@test.com", tmp_path, "Here is the file",
+                                                            metadata={"notify": True}))
             self.assertTrue(result.success)
             self.assertIn("Here is the file\n\nOn ", smtp.bodies[0])
             self.assertIn("> please help.", smtp.bodies[0])
@@ -233,10 +266,58 @@ class TestQuoteOriginal(unittest.TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_send_document_without_notify_does_not_quote(self):
+        adapter = _make_adapter(extra={"quote_original": True})
+        _dispatch(adapter, _msg_data())
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"doc")
+            tmp_path = f.name
+        try:
+            with _SmtpCapture() as smtp:
+                result = asyncio.run(adapter.send_document("user@test.com", tmp_path, "A progress update file"))
+            self.assertTrue(result.success)
+            self.assertNotIn("please help", smtp.bodies[0])
+        finally:
+            os.unlink(tmp_path)
+
+    def test_send_document_does_not_quote_when_final_text_already_claimed(self):
+        adapter = _make_adapter(extra={"quote_original": True})
+        _dispatch(adapter, _msg_data())
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"doc")
+            tmp_path = f.name
+        try:
+            with _SmtpCapture() as smtp:
+                asyncio.run(adapter.send("user@test.com", "Here is my answer.", "<orig-1@test.com>",
+                                         metadata={"notify": True}))
+                result = asyncio.run(adapter.send_document("user@test.com", tmp_path, "Attached the file too",
+                                                            metadata={"notify": True}))
+            self.assertTrue(result.success)
+            self.assertIn("> Hello Hermes,", smtp.bodies[0])
+            self.assertNotIn("please help", smtp.bodies[1])
+        finally:
+            os.unlink(tmp_path)
+
+    def test_send_image_and_send_multiple_images_pass_through_notify(self):
+        adapter = _make_adapter(extra={"quote_original": True})
+        _dispatch(adapter, _msg_data())
+        with _SmtpCapture() as smtp:
+            asyncio.run(adapter.send_image("user@test.com", "https://example.com/x.png", "look",
+                                           reply_to="<orig-1@test.com>", metadata={"notify": True}))
+        self.assertIn("> Hello Hermes,", smtp.bodies[0])
+
+    def test_send_multiple_images_pass_through_notify(self):
+        adapter = _make_adapter(extra={"quote_original": True})
+        _dispatch(adapter, _msg_data())
+        with _SmtpCapture() as smtp:
+            asyncio.run(adapter.send_multiple_images(
+                "user@test.com", [("https://example.com/x.png", "look")], metadata={"notify": True}))
+        self.assertIn("> Hello Hermes,", smtp.bodies[0])
+
     def test_no_context_no_quote(self):
         adapter = _make_adapter(extra={"quote_original": True})
         with _SmtpCapture() as smtp:
-            adapter._send_email("stranger@test.com", "Cron report", None)
+            adapter._send_email("stranger@test.com", "Cron report", None, final=True)
         self.assertEqual(smtp.bodies, ["Cron report"])
 
     def test_standalone_send_never_quotes(self):
@@ -257,7 +338,7 @@ class TestQuoteOriginal(unittest.TestCase):
             _dispatch(adapter, _msg_data(sender="intruder@test.com"))
         adapter.handle_message.assert_not_called()
         with _SmtpCapture() as smtp:
-            adapter._send_email("intruder@test.com", "Pairing code: 123456", None)
+            adapter._send_email("intruder@test.com", "Pairing code: 123456", None, final=True)
         self.assertEqual(smtp.bodies, ["Pairing code: 123456"])
 
     def test_pair_reply_to_not_granted_sender_never_quotes(self):
@@ -266,7 +347,7 @@ class TestQuoteOriginal(unittest.TestCase):
             _dispatch(adapter, _msg_data(sender="stranger@test.com"))
         adapter.handle_message.assert_called_once()
         with _SmtpCapture() as smtp:
-            adapter._send_email("stranger@test.com", "Pairing code: 123456", "<orig-1@test.com>")
+            adapter._send_email("stranger@test.com", "Pairing code: 123456", "<orig-1@test.com>", final=True)
         self.assertEqual(smtp.bodies, ["Pairing code: 123456"])
         self.assertEqual(adapter._original_by_msg_id, {})
 
@@ -276,7 +357,7 @@ class TestQuoteOriginal(unittest.TestCase):
         with patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "", "EMAIL_ALLOWED_USERS": "friend@test.com"}):
             _dispatch(adapter, _msg_data(body="second mail", message_id=""))
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", "Access declined.", None)
+            adapter._send_email("user@test.com", "Access declined.", None, final=True)
         self.assertEqual(smtp.bodies, ["Access declined."])
 
     def test_failure_building_the_reply_releases_the_quote(self):
@@ -286,9 +367,9 @@ class TestQuoteOriginal(unittest.TestCase):
         _dispatch(adapter, _msg_data())
         with patch.object(EmailAdapter, "_new_reply", side_effect=ValueError("bad header")):
             with self.assertRaises(ValueError):
-                adapter._send_email("user@test.com", "Answer", "<orig-1@test.com>")
+                adapter._send_email("user@test.com", "Answer", "<orig-1@test.com>", final=True)
         with _SmtpCapture() as smtp:
-            adapter._send_email("user@test.com", "Answer", "<orig-1@test.com>")
+            adapter._send_email("user@test.com", "Answer", "<orig-1@test.com>", final=True)
         self.assertIn("> Hello Hermes,", smtp.bodies[0])
 
     def test_lookup_is_bounded(self):

@@ -1284,6 +1284,48 @@ class TestServicePathDirsPmVenv:
 
         assert str(venv_bin) not in dirs
 
+    def test_launchd_plist_drops_shell_path_pm_lease(self, tmp_path, monkeypatch):
+        """The shell PATH is copied verbatim into the plist, and a PM activation leaves its lease
+        (``installs/<key>/environments/<env>/venv/bin``) on it. Persisting that entry pins the
+        supervisor to one activation generation: a bare ``hermes`` then resolves to another install
+        key whose checkout lacks ``pm/uv.lock``, and the gateway crash-loops
+        (`hermes: no dependency environment is committed for this install`).
+
+        Regression: the lease must be dropped from the generated plist PATH while the shell's real
+        entries survive.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path / "hermes-agent")
+        from pm.environments import installs_root
+
+        lease_bin = installs_root() / "deadbeef" / "environments" / "gen-1" / "venv" / "bin"
+        lease_bin.mkdir(parents=True)
+        keeper = tmp_path / "custom-bin"
+        keeper.mkdir()
+        monkeypatch.setenv("PATH", f"{lease_bin}:/usr/bin:{keeper}")
+
+        plist = gateway_cli.generate_launchd_plist()
+        path_entries = plistlib.loads(plist.encode())["EnvironmentVariables"]["PATH"].split(":")
+
+        assert str(lease_bin) not in path_entries
+        assert str(keeper) in path_entries
+        assert "/usr/bin" in path_entries
+
+    def test_is_pm_lease_path_recognizes_activation_venv(self, tmp_path, monkeypatch):
+        """The predicate matches only PM-owned activation dirs, and ignores ordinary ones."""
+        from hermes_cli.gateway_launchd import _is_pm_lease_path
+        from pm.environments import installs_root
+
+        # Under pm's installs_root (tmp-isolated): a lease.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert _is_pm_lease_path(
+            str(installs_root() / "abc" / "environments" / "gen-1" / "venv" / "bin")
+        )
+        assert not _is_pm_lease_path("/usr/bin")
+        assert not _is_pm_lease_path("/opt/homebrew/bin")
+        assert not _is_pm_lease_path(str(tmp_path / "installs-lookalike" / "bin"))
+        assert not _is_pm_lease_path("")
+
 
 def _seed_pm_node_facts(hermes_root):
     """Write a pm installed-state file recording node/npm store entries.

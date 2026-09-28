@@ -190,8 +190,46 @@ class TestOpenCodeGoDeepSeekThinking:
         assert kwargs["reasoning_effort"] == "max"
 
 
+class TestOpenCodeGoRelayEffortVocabulary:
+    """Go models beyond Kimi K2/DeepSeek take a top-level reasoning_effort in the relay's own
+    vocabulary (live-probed per model), which is wider than direct vendor APIs for some."""
+
+    def test_glm_5_3_flash_effort_reaches_the_wire(self, opencode_go_profile):
+        """Regression: glm-5.3-flash fell through the profile and sent no effort at any level."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="glm-5.3-flash",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=opencode_go_profile,
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        assert kwargs["reasoning_effort"] == "medium"
+
+    @pytest.mark.parametrize(
+        ("model", "expected_top_level"),
+        [
+            # Thinking-only on the relay: any disable form 400s, so the server default must hold.
+            ("kimi-k2.7-code", {}),
+            ("glm-5.3", {}),
+            ("space-bunny-free", {}),
+            # Models whose relay vocabulary has "none" get the disable on the wire.
+            ("kimi-k3", {"reasoning_effort": "none"}),
+            ("mimo-v2.6-flash", {"reasoning_effort": "none"}),
+        ],
+    )
+    def test_disable_never_sends_a_rejected_value(self, opencode_go_profile, model, expected_top_level):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model=model,
+        )
+        assert extra_body == {}
+        assert top_level == expected_top_level
+
+
 class TestOpenCodeGoGLM52Reasoning:
-    """GLM-5.2 uses its native high/max reasoning_effort knob on OpenCode Go."""
+    """GLM-5.2 takes the relay's GLM reasoning_effort vocabulary on OpenCode Go."""
 
 
     @pytest.mark.parametrize("model", ["glm-5-2", "glm-5p2"])

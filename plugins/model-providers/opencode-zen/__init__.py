@@ -1,10 +1,10 @@
 """OpenCode provider profiles (Zen + Go).
 
 Both route api_mode per model in core; these profiles carry the
-chat_completions reasoning translations (GLM-5.2, Kimi K2, DeepSeek, Ox Alpha).
+chat_completions reasoning translations (Ox Alpha on Zen; the per-model table on Go).
 """
 
-from typing import Any
+from typing import Any, Callable
 
 from agent import reasoning_effort as re_
 from hermes_cli.version_info import get_version_info
@@ -37,10 +37,70 @@ def _is_deepseek_thinking_model(model: str | None) -> bool:
     return (m.startswith("deepseek-v") and not m.startswith("deepseek-v3")) or m in _THINKING_CAPABLE_IDS
 
 
-def _is_glm_5_2_model(model: str | None) -> bool:
-    """GLM-5.2 across alias spellings (glm-5.2 / glm-5-2 / glm-5p2)."""
+_ExtrasFn = Callable[[dict | None, str | None], tuple[dict, dict]]
+
+_GLM_5_3_TOKENS = ("glm-5.3", "glm-5-3", "glm-5p3")
+_GLM_5_2_PLUS_TOKENS = ("glm-5.2", "glm-5-2", "glm-5p2") + _GLM_5_3_TOKENS
+
+
+def _has_token(model: str | None, tokens: tuple[str, ...]) -> bool:
     m = _flat_model_name(model)
-    return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
+    return any(token in m for token in tokens)
+
+
+def _is_glm_5_3_flash(model: str | None) -> bool:
+    return _has_token(model, _GLM_5_3_TOKENS) and "flash" in _flat_model_name(model)
+
+
+def _prefixed(*prefixes: str) -> Callable[[str | None], bool]:
+    return lambda model: _flat_model_name(model).startswith(prefixes)
+
+
+def _effort_extras(efforts: tuple[str, ...], overrides: dict[str, str] | None = None) -> _ExtrasFn:
+    """Top-level ``reasoning_effort`` clamped onto a relay vocabulary. Disabled asks for ``none``;
+    where the model has no ``none`` (thinking-only) the field is omitted and the server default holds."""
+
+    def extras(reasoning_config: dict | None, model: str | None) -> tuple[dict, dict]:
+        disabled = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
+        effort = "none" if disabled else re_.requested_effort(reasoning_config)
+        if effort is None or (effort == "none" and "none" not in efforts):
+            return {}, {}
+        clamped = re_.clamp_effort(effort, efforts, overrides)
+        return ({}, {"reasoning_effort": clamped}) if clamped in efforts else ({}, {})
+
+    return extras
+
+
+# Kimi K2 models that are thinking-only on the relay: ``thinking: disabled`` 400s
+# ("only type=enabled is allowed"), so a disable leaves the server default.
+_THINKING_ONLY_KIMI_PREFIXES = ("kimi-k2.7",)
+
+
+def _kimi_k2_extras(reasoning_config: dict | None, model: str | None) -> tuple[dict, dict]:
+    if not isinstance(reasoning_config, dict):
+        return {}, {}
+    if reasoning_config.get("enabled") is False and _flat_model_name(model).startswith(_THINKING_ONLY_KIMI_PREFIXES):
+        return {}, {}
+    return re_.thinking_toggle_extras(reasoning_config, re_.KIMI_K2_EFFORTS)
+
+
+def _deepseek_extras(reasoning_config: dict | None, model: str | None) -> tuple[dict, dict]:
+    return re_.thinking_toggle_extras(reasoning_config, re_.DEEPSEEK_V4_EFFORTS, re_.DEEPSEEK_V4_OVERRIDES)
+
+
+# First match owns the model; unmatched models send nothing (relay default). Vocabularies are
+# the relay's accepted levels from live probes (agent.reasoning_effort OPENCODE_GO_*), so a new
+# Go model needs a probe and a row here. Flash must precede the wider GLM-5.2/5.3 row.
+_GO_REASONING_ROUTES: tuple[tuple[Callable[[str | None], bool], _ExtrasFn], ...] = (
+    (_is_glm_5_3_flash, _effort_extras(re_.OPENAI_COMPAT_WIRE_EFFORTS)),
+    (lambda model: _has_token(model, _GLM_5_2_PLUS_TOKENS), _effort_extras(re_.OPENCODE_GO_GLM_EFFORTS)),
+    (_prefixed("kimi-k3"), _effort_extras(re_.OPENAI_COMPAT_WIRE_EFFORTS)),
+    (_prefixed("kimi-k2"), _kimi_k2_extras),
+    (_is_deepseek_thinking_model, _deepseek_extras),
+    (_prefixed("mimo-v2.6-flash"), _effort_extras(re_.OPENCODE_GO_MIMO26_FLASH_EFFORTS)),
+    (_prefixed("mimo-v2.5", "longcat-", "hy3", "hy4"), _effort_extras(re_.OPENAI_COMPAT_WIRE_EFFORTS)),
+    (_prefixed("space-bunny"), _effort_extras(re_.OPENCODE_GO_SPACE_BUNNY_EFFORTS)),
+)
 
 
 class OpenCodeGoProfile(ProviderProfile):
@@ -91,19 +151,9 @@ class OpenCodeGoProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        if _is_glm_5_2_model(model):
-            # Native reasoning_effort knob (high/max); server default when unset/disabled.
-            effort = re_.requested_effort(reasoning_config)
-            if effort is None or effort == "none":
-                return {}, {}
-            clamped = re_.clamp_effort(effort, re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES)
-            return {}, {"reasoning_effort": clamped if clamped in re_.GLM52_EFFORTS else "high"}
-        if _flat_model_name(model).startswith("kimi-k2"):
-            if not isinstance(reasoning_config, dict):
-                return {}, {}
-            return re_.thinking_toggle_extras(reasoning_config, re_.KIMI_K2_EFFORTS)
-        if _is_deepseek_thinking_model(model):
-            return re_.thinking_toggle_extras(reasoning_config, re_.DEEPSEEK_V4_EFFORTS, re_.DEEPSEEK_V4_OVERRIDES)
+        for matches, extras in _GO_REASONING_ROUTES:
+            if matches(model):
+                return extras(reasoning_config, model)
         return {}, {}
 
 

@@ -63,6 +63,14 @@ KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 OX_ALPHA_EFFORTS: tuple[str, ...] = ("low", "high", "max")
 OX_ALPHA_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
+#: OpenCode Go relay, live-probed per model (2026-09-28). The relay validates on its own terms,
+#: not the vendor's: GLM-5.2/5.3 are thinking-only there (none/minimal 400) yet take low/medium,
+#: which direct Z.AI rejects for GLM-5.3-Flash (#98465). MiMo-V2.6-Flash 400s on minimal/xhigh/max;
+#: Space Bunny 400s on none. Every other relay model with a knob accepts the full compat set.
+OPENCODE_GO_GLM_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+OPENCODE_GO_MIMO26_FLASH_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high")
+OPENCODE_GO_SPACE_BUNNY_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
+
 #: Tencent TokenHub / Nebius Token Factory / Upstage Solar: plain three-level knobs.
 TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 NEBIUS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")

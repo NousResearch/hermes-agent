@@ -2507,16 +2507,24 @@ def _read_main_model_for_aux() -> str:
     return model
 
 
-def _read_main_api_key_if_same_host(aux_base_url: str) -> str:
+def _read_main_api_key_if_same_host(aux_base_url: str) -> Any:
     """Main api_key only when *aux_base_url* has the main base_url's exact origin.
 
     Unconditional inheritance would leak the credential to any misconfigured host; mismatch keeps ``no-key-required`` → 401.
     Origin, not hostname: another scheme (``http://``) or port on the same host is a different endpoint.
+    Anchor and key come from ONE source: the live runtime a turn bound, else config.yaml. The
+    per-field readers fall back to config field by field, so a keyless or key_cmd live main would
+    pair its own base_url with config's key and send that key to the live endpoint.
     """
     aux_origin = base_url_origin(aux_base_url)
-    if not aux_origin[1] or aux_origin != base_url_origin(_read_main_base_url()):
+    live_base, live_key = _runtime_main_value("base_url"), _runtime_main_value("api_key")
+    if live_base or live_key:
+        main_base, main_key = live_base, _normalize_api_key(live_key)
+    else:
+        main_base, main_key = _read_main_base_url(), _read_main_api_key()
+    if not aux_origin[1] or aux_origin != base_url_origin(main_base):
         return ""
-    return _read_main_api_key()
+    return main_key
 
 
 # Compatibility mirrors for older readers/tests; the ContextVar below is

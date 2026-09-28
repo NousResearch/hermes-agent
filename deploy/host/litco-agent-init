@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Render the matter profile into $HERMES_HOME before the gateway starts.
+
+Runs as ExecStartPre of litco-agent.service, as the hermes user. It renders
+config.yaml and SOUL.md from the templates in deploy/host/profile/ using ONLY
+the non-secret variables named in NON_SECRET_KEYS. It never reads any other
+environment variable and never writes an env file: provider keys, the host
+secret and the LitKit agent token stay in the environment systemd hands the
+gateway, where Hermes reads them itself.
+
+Standard library only, so it runs under the system python3.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+# The complete set of variables this script may read. Anything else in the
+# environment (secrets included) is never looked at.
+NON_SECRET_KEYS = (
+    "LITCO_MATTER_ID",
+    "LITCO_INSTANCE_URL",
+    "LITCO_MATTER_HOME",
+    "LITCO_MODEL",
+    "LITCO_MODEL_PROVIDER",
+    "LITCO_MODEL_BASE_URL",
+    "LITCO_MODEL_KEY_ENV",
+    "LITCO_APPROVALS_MODE",
+    "LITCO_TURN_HOST",
+    "LITCO_TURN_PORT",
+    "HERMES_HOME",
+    "LITCO_APP_DIR",
+    "LITCO_PROFILE_DIR",
+)
+
+DEFAULTS = {
+    "LITCO_MATTER_HOME": "/home/hermes/matter",
+    "LITCO_MODEL_PROVIDER": "auto",
+    "LITCO_TURN_HOST": "127.0.0.1",
+    "LITCO_TURN_PORT": "8765",
+    "HERMES_HOME": "/home/hermes/.hermes",
+    "LITCO_APP_DIR": "/opt/litco-agent/app",
+}
+
+# Upstream Hermes approval modes. Empty means "leave the upstream default".
+APPROVAL_MODES = ("manual", "smart", "off")
+_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_PLAIN = re.compile(r"^[A-Za-z0-9._:/@+-]*$")
+_TOKEN = re.compile(r"\{\{(\w+)\}\}")
+
+
+class InitError(Exception):
+    pass
+
+
+def read_settings(environ=None) -> dict:
+    """Copy the allowlisted keys out of the environment, apply defaults, validate."""
+    src = os.environ if environ is None else environ
+    values = {key: str(src.get(key, "") or "").strip() for key in NON_SECRET_KEYS}
+    for key, default in DEFAULTS.items():
+        values[key] = values[key] or default
+    if not values["LITCO_PROFILE_DIR"]:
+        values["LITCO_PROFILE_DIR"] = str(Path(values["LITCO_APP_DIR"]) / "deploy" / "host" / "profile")
+
+    if not _ID.match(values["LITCO_MATTER_ID"]):
+        raise InitError("LITCO_MATTER_ID is missing or not a plain id")
+    if not values["LITCO_TURN_PORT"].isdigit() or not 0 < int(values["LITCO_TURN_PORT"]) < 65536:
+        raise InitError("LITCO_TURN_PORT must be a port number")
+    mode = values["LITCO_APPROVALS_MODE"].lower()
+    if mode and mode not in APPROVAL_MODES:
+        raise InitError(f"LITCO_APPROVALS_MODE must be empty or one of {', '.join(APPROVAL_MODES)}")
+    values["LITCO_APPROVALS_MODE"] = mode
+    if values["LITCO_MODEL_KEY_ENV"] and not _ENV_NAME.match(values["LITCO_MODEL_KEY_ENV"]):
+        raise InitError("LITCO_MODEL_KEY_ENV must be an environment variable name")
+    for key in ("LITCO_INSTANCE_URL", "LITCO_MODEL", "LITCO_MODEL_PROVIDER", "LITCO_MODEL_BASE_URL",
+                "LITCO_MATTER_HOME", "LITCO_TURN_HOST", "LITCO_APP_DIR"):
+        if not _PLAIN.match(values[key]):
+            raise InitError(f"{key} contains characters that cannot go into the profile")
+    return values
+
+
+def hermes_config_version(app_dir: Path) -> str:
+    """The config schema version this checkout's Hermes expects, so no migration runs at start."""
+    defaults = app_dir / "hermes_cli" / "config_defaults.py"
+    try:
+        match = re.search(r'"_config_version":\s*(\d+)', defaults.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise InitError(f"cannot read {defaults}: {exc}") from exc
+    if not match:
+        raise InitError(f"no _config_version in {defaults}")
+    return match.group(1)
+
+
+def substitutions(values: dict) -> dict:
+    subst = dict(values)
+    subst["HERMES_CONFIG_VERSION"] = hermes_config_version(Path(values["LITCO_APP_DIR"]))
+    # The firm's legal skills ship in the checkout (litco/skills), so they move with the fork's ref.
+    subst["LITCO_SKILLS_DIR"] = str(Path(values["LITCO_APP_DIR"]) / "litco" / "skills")
+    extra = []
+    if values["LITCO_MODEL_BASE_URL"]:
+        extra.append(f'  base_url: "{values["LITCO_MODEL_BASE_URL"]}"')
+    if values["LITCO_MODEL_KEY_ENV"]:
+        # The NAME of the variable that holds the key (provider "custom"); Hermes reads the value.
+        extra.append(f"  key_env: {values['LITCO_MODEL_KEY_ENV']}")
+    subst["MODEL_EXTRA_LINES"] = "\n".join(extra)
+    mode = values["LITCO_APPROVALS_MODE"]
+    subst["APPROVALS_BLOCK"] = (
+        # Quoted: YAML 1.1 would read a bare off as the boolean false.
+        "# Set by the owner through LITCO_APPROVALS_MODE (see deploy/host/README.md).\n"
+        f'approvals:\n  mode: "{mode}"' if mode else
+        "# LITCO_APPROVALS_MODE is unset: approvals keep the upstream Hermes default."
+    )
+    return subst
+
+
+def render(template: str, subst: dict) -> str:
+    """Replace {{TOKEN}}s. An unknown token is an error, so no template can pull in other values."""
+    unknown = sorted({m for m in _TOKEN.findall(template) if m not in subst})
+    if unknown:
+        raise InitError(f"template uses unknown placeholders: {', '.join(unknown)}")
+    return _TOKEN.sub(lambda m: subst[m.group(1)], template)
+
+
+def write_atomic(path: Path, text: str, mode: int = 0o640) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def main(environ=None) -> int:
+    try:
+        values = read_settings(environ)
+        subst = substitutions(values)
+        profile = Path(values["LITCO_PROFILE_DIR"])
+        home = Path(values["HERMES_HOME"])
+        config = render((profile / "config.yaml.tmpl").read_text(encoding="utf-8"), subst)
+        soul = render((profile / "SOUL.md").read_text(encoding="utf-8"), subst)
+        home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        write_atomic(home / "config.yaml", config)
+        write_atomic(home / "SOUL.md", soul)
+        Path(values["LITCO_MATTER_HOME"]).mkdir(parents=True, exist_ok=True)
+    except (InitError, OSError) as exc:
+        print(f"litco-agent-init: {exc}", file=sys.stderr)
+        return 78  # EX_CONFIG: the unit fails before the gateway starts
+    print(f"litco-agent-init: rendered profile for matter {values['LITCO_MATTER_ID']} into {home}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

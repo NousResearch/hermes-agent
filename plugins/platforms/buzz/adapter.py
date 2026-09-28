@@ -1827,7 +1827,15 @@ def _profile_buzz_extra() -> dict:
         cfg = read_user_config_raw(Path(get_hermes_home()) / "config.yaml")
     except Exception:
         return {}
-    buzz = ((cfg.get("gateway") or {}).get("platforms") or {}).get("buzz") if isinstance(cfg, dict) else None
+    # Resolve the section with the runtime loader's own precedence (top-level ``buzz:`` →
+    # ``gateway.platforms.buzz`` → ``platforms.buzz``, see gateway.config_loader.platform_section);
+    # reading only ``gateway.platforms.buzz`` missed the documented top-level shapes, so a fully
+    # configured secondary profile failed the gate and its adapter never started (#125985).
+    try:
+        from gateway.config_loader import platform_section
+        buzz, _ = platform_section(cfg, "buzz", (cfg.get("gateway") or {}).get("platforms"))
+    except Exception:
+        return {}
     extra = buzz.get("extra", buzz) if isinstance(buzz, dict) else None
     return extra if isinstance(extra, dict) else {}
 

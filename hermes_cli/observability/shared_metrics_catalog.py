@@ -79,12 +79,22 @@ def display_languages() -> frozenset[str]:
 
 @functools.cache
 def provider_names() -> frozenset[str]:
-    """Provider ids Hermes itself ships (auth registry, overlays, model catalog, aliases)."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import _KNOWN_PROVIDER_NAMES
+    """Provider ids Hermes itself ships: built-in auth rows, overlays, alias tables and the
+    in-tree ``plugins/model-providers`` profiles. Never the live registries (``PROVIDER_REGISTRY``,
+    picker labels): ``$HERMES_HOME`` and pip provider plugins add their user-chosen names there."""
+    import providers
+    from hermes_cli.auth import _PROVIDER_ALIASES, BUILTIN_PROVIDER_IDS
+    from hermes_cli.models_catalog_static import _PROVIDER_ALIASES as _CATALOG_ALIASES
     from hermes_cli.providers import ALIASES, HERMES_OVERLAYS
 
-    return frozenset(PROVIDER_REGISTRY) | frozenset(HERMES_OVERLAYS) | frozenset(_KNOWN_PROVIDER_NAMES) | frozenset(ALIASES)
+    providers.list_providers()  # runs discovery; bundled profiles land in the process-wide layer
+    bundled = {
+        alias for name, profile in providers._REGISTRY.items() if providers._SOURCES.get(name) == "bundled"
+        for alias in (name, *profile.aliases)
+    }
+    return BUILTIN_PROVIDER_IDS.union(
+        HERMES_OVERLAYS, ALIASES, _PROVIDER_ALIASES, _CATALOG_ALIASES, bundled, ("openrouter", CUSTOM)
+    )
 
 
 @functools.cache

@@ -111,6 +111,50 @@ def test_shipped_provider_and_public_model_are_reported_as_is(direct_runtime, tm
             assert dims["model"] == PUBLIC, (name, dims)
 
 
+def test_user_provider_plugin_name_and_model_never_leave(direct_runtime, tmp_path, monkeypatch):
+    """A ``$HERMES_HOME/plugins/model-providers`` profile joins PROVIDER_REGISTRY under a name (and
+    aliases) the user chose: every metric, the provider-setup marker and the snapshot read
+    ``custom``/``custom``. An in-tree provider plugin (``deepinfra``) keeps its public name."""
+    from hermes_cli import auth, auth_plugin_providers, models_catalog_static as mcs
+    from hermes_cli.observability import shared_metrics_catalog as catalog, shared_metrics_setup as setup
+    from providers import get_provider_profile
+
+    for mod, attr in ((auth, "PROVIDER_REGISTRY"), (auth_plugin_providers, "PLUGIN_MIRRORED_PROVIDERS"),
+                      (mcs, "CANONICAL_PROVIDERS"), (mcs, "_canonical_slugs"), (mcs, "_PROVIDER_LABELS")):
+        monkeypatch.setattr(mod, attr, type(getattr(mod, attr))(getattr(mod, attr)))  # no registry leak
+    home = tmp_path / "hermes-home"
+    plugin = home / "plugins" / "model-providers" / "acmecorp-internal"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: acmecorp-internal\nkind: model-provider\n")
+    (plugin / "__init__.py").write_text(
+        "from providers import register_provider\nfrom providers.base import ProviderProfile\n"
+        "register_provider(ProviderProfile(name='acmecorp-internal', aliases=('acme-llm',),\n"
+        "    env_vars=('ACMECORP_LLM_API_KEY',), base_url='https://llm.acmecorp.internal/v1'))\n")
+    assert get_provider_profile("acmecorp-internal") is not None
+    assert "acmecorp-internal" in auth.PROVIDER_REGISTRY
+    catalog.provider_names.cache_clear()
+
+    snapshot = _emit_every_model_metric("acmecorp-internal", SECRET)
+    flow = setup.begin_provider_setup("cli_model", "acme-llm")
+    marker_dir = home / "telemetry" / "shared_metrics" / "provider_setup_markers"
+    markers = [p.read_text() for p in marker_dir.iterdir()]
+    setup.finish_provider_setup(flow, "completed")
+    _flush()
+    rows = _all_rows(home)
+
+    assert markers and not any("acme" in m for m in markers)
+    assert "acme" not in json.dumps(rows) + json.dumps(snapshot)
+    assert snapshot["main_provider"] == "custom"
+    assert _MODEL_METRICS | {"hermes.provider_setup.count"} <= {name for name, _ in rows}
+    for name, dims in rows:
+        for key in (*_PROVIDER_FIELDS, "to_provider"):
+            if dims.get(key) not in (None, "openrouter"):
+                assert dims[key] == "custom", (name, dims)
+        if "model" in dims:
+            assert dims["model"] == "custom", (name, dims)
+    assert catalog.provider_metric_name("deepinfra") == "deepinfra"
+
+
 @pytest.mark.parametrize(("configured", "expected"), [
     (("custom", "acme-private-llama", "http://localhost:8080/v1"), ("custom", "custom")),
     (("openrouter", PUBLIC, ""), ("openrouter", PUBLIC)),

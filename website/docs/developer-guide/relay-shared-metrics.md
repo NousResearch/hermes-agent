@@ -348,10 +348,13 @@ local database, so each fires once per install however many processes reach it.
 
 #### Per-model quality, friction and context pressure
 
-Provider and model follow the model-route rules: a provider Hermes ships and its
-model id; custom endpoints, the local-server aliases of `custom` (`ollama`, `local`,
-`vllm`, `llamacpp`, `llama.cpp`) and loopback servers read `custom`, and a model
-whose provider is unknown reads `custom`.
+Provider and model follow the model-route rules: a provider Hermes ships (built in,
+an in-tree `plugins/model-providers/` profile or a public models.dev id) and its
+model id; custom endpoints, provider plugins installed under
+`$HERMES_HOME/plugins/model-providers/` or from pip (names and aliases included),
+the local-server aliases of `custom` (`ollama`, `local`, `vllm`, `llamacpp`,
+`llama.cpp`) and loopback servers read `custom`, and a model whose provider is
+unknown reads `custom`.
 
 | Metric | Dimensions | Question it answers |
 |---|---|---|

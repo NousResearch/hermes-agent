@@ -97,3 +97,26 @@ def test_plain_manual_gateway_still_uses_stop_and_run(restart_calls, monkeypatch
     _run_restart()
     assert restart_calls["sigusr1"] is None, "no supervisor marker: the detached fallback is the restart"
     assert restart_calls["started"], "a plain manually-run gateway must still be restarted in-process"
+
+
+def test_service_managed_gateway_refuses_fallback_takeover(restart_calls, monkeypatch, capsys):
+    """A gateway supervised under ANY unit name must not be taken over by the fallback (#126474).
+
+    Pre-convention ``hermes.service`` system unit, no ``--external-supervisor`` marker, control
+    socket unreachable while busy serving webhooks: the identify/argv probe missed it, so the
+    fallback SIGKILLed a live gateway and spawned an unsupervised orphan in the caller's cgroup
+    while the unit's ``Restart=`` flapped against the stolen lock for hours.
+    """
+    monkeypatch.setattr(gw, "_capture_gateway_argv",
+                        lambda pid: ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run"])
+    monkeypatch.setattr("hermes_cli.main_dashboard._get_systemd_service_for_pid",
+                        lambda pid: "hermes.service" if pid == 4321 else None)
+    monkeypatch.setattr("hermes_cli.main_dashboard._get_pid_cgroup_path",
+                        lambda pid: "/system.slice/hermes.service" if pid == 4321 else None)
+    with pytest.raises(SystemExit) as exc:
+        _run_restart()
+    assert exc.value.code == 1
+    assert not restart_calls["stopped"], "must not SIGTERM a service-managed gateway"
+    assert not restart_calls["started"], "must not spawn an unsupervised orphan"
+    out = capsys.readouterr().out
+    assert "hermes.service" in out and "systemctl restart" in out

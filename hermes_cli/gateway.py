@@ -5499,6 +5499,55 @@ def _restart_all_as_host(owner, system: bool) -> None:
     run_gateway(verbose=0, replace=True)
 
 
+def _service_unit_owning_gateway(pid: int | None) -> str | None:
+    """systemd unit supervising gateway ``pid`` under ANY unit name, or None.
+
+    Canonical-unit checks miss pre-convention installs (``hermes.service``), so the restart
+    fallback SIGKILLed a service-managed gateway and spawned an unsupervised orphan in the
+    caller's cgroup while the unit flapped against the stolen lock (#126474). Reuses the
+    dashboard's MainPID-verified lookup: a bare ``.service`` cgroup alone (the caller itself
+    started under some unit) never proves ownership.
+    """
+    if not pid or pid <= 1:
+        return None
+    try:
+        from hermes_cli import main_dashboard as _dash
+        return _dash._get_systemd_service_for_pid(pid)
+    except Exception:
+        logger.debug("service-owner probe failed", exc_info=True)
+        return None
+
+
+def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
+    """Refuse the manual restart fallback when a supervisor owns the gateway (any unit name).
+
+    The fallback's stop + in-process ``run_gateway`` would kill a live service-managed gateway
+    and stamp the CLI's PID into gateway.pid, wedging every supervisor respawn with "already
+    running". Restart through the unit instead — never from here.
+    """
+    unit = _service_unit_owning_gateway(pid)
+    if unit is None:
+        return
+    try:
+        from hermes_cli import main_dashboard as _dash
+        scope = _dash._extract_scope_from_cgroup(_dash._get_pid_cgroup_path(pid) or "")
+    except Exception:
+        scope = None
+    cmd = f"systemctl --user restart {unit}" if scope == "user" else f"sudo systemctl restart {unit}"
+    _print_lines(
+        "",
+        f"✗ Gateway (PID {pid}) is managed by systemd unit {unit}.",
+        "  `hermes gateway restart` cannot restart it from here: the fallback would",
+        "  kill a live gateway and spawn an unsupervised replacement in this shell's",
+        "  cgroup while the unit keeps failing against the stolen lock.",
+        "  Restart it through its unit instead:",
+        f"    {cmd}",
+        "  (Pre-convention `hermes.service` installs: `hermes gateway migrate-legacy`",
+        "  removes the legacy unit so the canonical one can own the gateway.)",
+    )
+    sys.exit(1)
+
+
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
@@ -5574,6 +5623,7 @@ def _cmd_restart(args):
     if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
         restart_externally_supervised_gateway(supervised_pid)
         return
+    _refuse_restart_of_service_managed_gateway(supervised_pid)
 
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")

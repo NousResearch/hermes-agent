@@ -14,7 +14,8 @@ def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
 
 
 def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict,
-                   *, target_digest: str | None = None, require_consent: bool = False) -> None:
+                   *, target_digest: str | None = None, require_consent: bool = False,
+                   install_node_deps_unprompted: bool = False) -> None:
     from pm.client import sync_venv
     from pm.plugin_inputs import StagedUpdate
     from pm.store import tree_digest
@@ -29,6 +30,17 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
             if not consented:
                 raise plugins_cmd.PluginOperationError(
                     f"Reinstall declined: {reason}. The installed plugin and active environment are unchanged.")
+    elif install_node_deps_unprompted and (staged / "package.json").is_file():
+        # A caller that suppressed the y/N gate (a multi-home batch) already gathered one
+        # consent decision covering this exact install; the Node sidecar still needs
+        # preparing for an active install or it silently never gets one (#125794 follow-up).
+        from pm.workspace import enabled_plugin_dirs, install_node_sidecar
+
+        if target.resolve() in enabled_plugin_dirs(installing=target):
+            reason = install_node_sidecar(staged, explicit=True)
+            if reason:
+                from hermes_cli import plugins_cmd
+                plugins_cmd._console().print(f"[yellow]⚠[/yellow] Node deps: {reason}")
 
     sync_venv(explicit=True, plugins=StagedUpdate({
         "staged": str(staged.resolve()), "target": str(target.absolute()),

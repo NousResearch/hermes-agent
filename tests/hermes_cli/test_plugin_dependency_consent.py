@@ -45,6 +45,48 @@ def test_install_only_requests_relevant_python_consent(admission_env, monkeypatc
         assert 'dependency install skipped (non-interactive)' in output
 
 
+def test_batch_install_skips_the_prompt_but_still_prepares_the_node_sidecar(admission_env, monkeypatch):
+    """A caller that already gathered one consent decision for a whole batch
+    (``require_consent=False``, the memory-provider migration's multi-home install, #125794) must
+    not silently drop the Node sidecar for a provider that ships a package.json: it may skip the
+    y/N gate, but the install itself still has to happen, unprompted."""
+    from pm import workspace
+
+    root, home = admission_env
+    source = root / 'plugin-source'
+    source.mkdir()
+    manifest = {'name': 'sidecar-provider'}
+    (source / 'plugin.yaml').write_text(yaml.safe_dump(manifest), encoding='utf-8')
+    (source / '__init__.py').write_text('def register(ctx):\n    pass\n', encoding='utf-8')
+    (source / 'package.json').write_text(json.dumps({'name': 'sidecar-provider', 'version': '1.0.0'}), encoding='utf-8')
+    env = {k: v for k, v in os.environ.items() if k not in {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'}}
+    for args in [('init', '-q'), ('add', '.'), ('-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture')]:
+        subprocess.run(['git', *args], cwd=source, env=env, check=True, capture_output=True, timeout=30)
+
+    # The config already names the provider before its plugin dir physically exists — exactly what
+    # a memory-provider migration's home looks like (pm/plugins_state.py::_provider_from_config
+    # folds ``memory.provider`` into "enabled" for the dir about to be installed).
+    (home / 'config.yaml').write_text(yaml.safe_dump({'memory': {'provider': 'sidecar-provider'}}), encoding='utf-8')
+
+    installs: list = []
+    monkeypatch.setattr(workspace, 'install_node_sidecar', lambda path, **kwargs: installs.append((path, kwargs)))
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: True)
+
+    def fail_on_input(prompt=''):
+        pytest.fail("a batch install (require_consent=False) must not prompt")
+
+    monkeypatch.setattr('builtins.input', fail_on_input)
+
+    target, _, _ = plugins_cmd._install_plugin_core(
+        source.as_uri(), force=False, allow_removed=True, require_consent=False)
+
+    # Node sidecar prep runs on the staged tree, before it is published to `target`.
+    assert len(installs) == 1 and installs[0][1] == {'explicit': True}
+    assert installs[0][0] != target
+    assert (target / 'package.json').is_file()
+
+
 def test_node_sidecar_question_stays_independent(tmp_path, monkeypatch):
     from pm import workspace
 

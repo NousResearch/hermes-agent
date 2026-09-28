@@ -296,8 +296,9 @@ def _install_plugin_core(
     the single scan and portable-package check admit the merged tree (file-count/size limits
     included). It may return the relative paths it merged in, which a scan block then attributes,
     and may raise :class:`PluginOperationError` to abort (re-pin consent). *require_consent* False
-    skips the active-replacement dependency prompt in :func:`publish_plugin` — for a caller that
-    already gathered consent for this exact install itself (a multi-home batch)."""
+    skips the active-replacement dependency Y/N PROMPTS in :func:`publish_plugin` (Node sidecar
+    installs unprompted, Python deps still resolve at admission) — for a caller that already
+    gathered consent for this exact install itself (a multi-home batch)."""
     requested_revision = _pc()._normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _pc()._resolve_git_url(identifier)
@@ -387,7 +388,8 @@ def _install_plugin_core(
         from hermes_cli.plugins_transaction import publish_plugin
 
         try:
-            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=require_consent)
+            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=require_consent,
+                            install_node_deps_unprompted=not require_consent)
         except Exception as exc:
             raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}") from exc
 
@@ -538,8 +540,9 @@ def dashboard_install_plugin(
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
     contract as ``--ref``); every path enforces the kill list (no GUI bypass). *require_consent*
-    False skips the active-replacement dependency prompt for a caller that already gathered
-    consent for this exact install itself (the memory-provider migration's multi-home batch)."""
+    False skips the active-replacement dependency Y/N PROMPTS for a caller that already gathered
+    consent for this exact install itself (the memory-provider migration's multi-home batch) — the
+    Node sidecar still installs unprompted when the tree ships a package.json."""
     from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
     entry = None

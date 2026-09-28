@@ -2,12 +2,11 @@
 
 import re
 from typing import Any
+from xml.etree.ElementTree import Element
 
 
 _MATRIX_CODE_COMMAND_RE = re.compile(r"^/([A-Za-z][A-Za-z0-9_-]*)(?=\s|$)")
-_MATRIX_CODE_SPAN_RE = re.compile(
-    r"(?<![`\\])(`+)(?!`)((?:[^\n]|\n(?![ \t]*\r?\n))+?)(?<!`)\1(?!`)"
-)
+_MATRIX_COMMAND_CANDIDATE_RE = re.compile(r"(?<=`)/([A-Za-z][A-Za-z0-9_-]*)(?=\s|`|$)")
 
 
 def _platformize_command_mentions(text: str, platform: Any) -> str:
@@ -21,40 +20,47 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
 
     from agent.skill_commands import get_skill_commands
     from hermes_cli.commands import is_gateway_known_command
-    from markdown.extensions.fenced_code import FencedBlockPreprocessor
+    from markdown import Markdown
+    from markdown.inlinepatterns import BACKTICK_RE, BacktickInlineProcessor
 
     skill_command_names = {
         str(command).removeprefix("/") for command in get_skill_commands()
     }
 
-    def _replace_code_span(span: re.Match[str]) -> str:
-        delimiter, content = span.groups()
-        match = _MATRIX_CODE_COMMAND_RE.match(content)
-        if len(delimiter) == 1 and match:
-            command_name = match.group(1)
-            if (
-                is_gateway_known_command(command_name)
-                or command_name in skill_command_names
-            ):
-                content = f"!{command_name}{content[match.end() :]}"
-        return f"{delimiter}{content}{delimiter}"
+    marker = "HERMESCOMMAND"
+    while marker in rendered:
+        marker += "_"
+    marker_re = re.compile(rf"^/{marker}(\d+):")
+    command_offsets: set[int] = set()
 
-    normalized_lines: list[str] = []
-    line_offsets = [0]
-    for line in rendered.splitlines(keepends=True):
-        normalized_lines.append(line.rstrip("\r\n").expandtabs(4))
-        line_offsets.append(line_offsets[-1] + len(line))
-    normalized = "\n".join(normalized_lines)
+    def _mark_command(match: re.Match[str]) -> str:
+        command_name = match.group(1)
+        if (
+            is_gateway_known_command(command_name)
+            or command_name in skill_command_names
+        ):
+            return f"/{marker}{match.start()}:{match.group(0)}"
+        return match.group(0)
 
-    parts: list[str] = []
-    cursor = 0
-    for fence in FencedBlockPreprocessor.FENCED_BLOCK_RE.finditer(normalized):
-        start = line_offsets[normalized.count("\n", 0, fence.start())]
-        end = line_offsets[normalized.count("\n", 0, fence.end()) + 1]
-        parts.append(
-            _MATRIX_CODE_SPAN_RE.sub(_replace_code_span, rendered[cursor:start])
-        )
-        parts.append(rendered[start:end])
-        cursor = end
-    parts.append(_MATRIX_CODE_SPAN_RE.sub(_replace_code_span, rendered[cursor:]))
-    return "".join(parts)
+    class CommandBacktickProcessor(BacktickInlineProcessor):
+        def handleMatch(
+            self, m: re.Match[str], data: str
+        ) -> tuple[Element | str, int, int]:
+            if m.group(2) == "`":
+                command = marker_re.match(m.group(3))
+                if command and _MATRIX_CODE_COMMAND_RE.match(
+                    m.group(3)[command.end() :]
+                ):
+                    command_offsets.add(int(command.group(1)))
+            return super().handleMatch(m, data)
+
+    # Markers link parsed spans to the original reply because Markdown
+    # normalises whitespace and discards source positions.
+    md = Markdown(extensions=["fenced_code", "tables", "nl2br", "sane_lists"])
+    md.preprocessors.deregister("html_block")
+    md.inlinePatterns.register(CommandBacktickProcessor(BACKTICK_RE), "backtick", 190)
+    md.convert(_MATRIX_COMMAND_CANDIDATE_RE.sub(_mark_command, rendered))
+    return "".join(
+        "!" if index in command_offsets else character
+        for index, character in enumerate(rendered)
+    )

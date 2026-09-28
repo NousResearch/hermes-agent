@@ -208,6 +208,46 @@ async def test_skills_help_lists_all_installed_commands(
             "Example:\n```{.text #example}\n`/help`\n```\nTry `/help skills`.",
             "Example:\n```{.text #example}\n`/help`\n```\nTry `!help skills`.",
         ),
+        (
+            r"Use \\`echo /help` here. Try `/help skills`.",
+            r"Use \\`echo /help` here. Try `!help skills`.",
+        ),
+        (
+            r"Use \\\\``literal `/help` literal`` here. Try `/help skills`.",
+            r"Use \\\\``literal `/help` literal`` here. Try `!help skills`.",
+        ),
+        (
+            r"Try \\`/help skills`.",
+            r"Try \\`!help skills`.",
+        ),
+        (
+            r"Use \`/help\` here. Try `/help skills`.",
+            r"Use \`/help\` here. Try `!help skills`.",
+        ),
+        (
+            "Example:\n\n    `/help`\n\nTry `/help skills`.",
+            "Example:\n\n    `/help`\n\nTry `!help skills`.",
+        ),
+        (
+            "Example:\r\n\r\n\t`/help`\r\n\r\nTry `/help skills`.",
+            "Example:\r\n\r\n\t`/help`\r\n\r\nTry `!help skills`.",
+        ),
+        (
+            "Example:\n\n>     `/help`\n\nTry `/help skills`.",
+            "Example:\n\n>     `/help`\n\nTry `!help skills`.",
+        ),
+        (
+            "Example:\n\n* Literal:\n\n        `/help`\n\nTry `/help skills`.",
+            "Example:\n\n* Literal:\n\n        `/help`\n\nTry `!help skills`.",
+        ),
+        (
+            "Example:\n    `/help`\nTry `/help skills`.",
+            "Example:\n    `!help`\nTry `!help skills`.",
+        ),
+        (
+            "Use `/help`` literal` here. Try `/help skills`.",
+            "Use `/help`` literal` here. Try `!help skills`.",
+        ),
     ],
     ids=[
         "double-with-triple-and-single",
@@ -223,6 +263,16 @@ async def test_skills_help_lists_all_installed_commands(
         "fence-trailing-tabs",
         "exact-fence-close",
         "fence-attributes",
+        "even-backslashes-single",
+        "even-backslashes-double",
+        "even-backslashes-command",
+        "odd-backslashes-literal",
+        "indented-code",
+        "tab-indented-code-crlf",
+        "blockquote-indented-code",
+        "list-indented-code",
+        "indented-paragraph-continuation",
+        "literal-backticks-after-token",
     ],
 )
 async def test_matrix_catalogues_preserve_literal_spans_and_later_commands(

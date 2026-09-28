@@ -414,6 +414,26 @@ export function ChatRuntimeBoundary({
   // still names older marks, so the entry point must stay live here too.
   const olderAvailable = history.page ? history.page.olderAvailable : windowed || restBackfillAvailable
   const isHistorical = Boolean(history.page)
+
+  // Source rows can coalesce or form hidden/sibling branches. Follow the
+  // canonical repository's visible chain rather than comparing raw source IDs.
+  const expectedRuntimeIds = useMemo(() => {
+    if (!isHistorical) {
+      return null
+    }
+
+    const parents = new Map(runtimeMessageRepository.messages.map(item => [item.message.id, item.parentId]))
+    const ids: string[] = []
+    let id = runtimeMessageRepository.headId
+
+    while (id) {
+      ids.push(id)
+      id = parents.get(id) ?? null
+    }
+
+    return ids.reverse().join('\n')
+  }, [isHistorical, runtimeMessageRepository])
+
   const newerAvailable = history.page?.newerAvailable ?? false
   const leadingRowId = history.page?.leadingRowId ?? null
   const { revealRow, returnToLatest, revealNewer, error: historyError } = history
@@ -425,6 +445,7 @@ export function ChatRuntimeBoundary({
       revealRow,
       returnToLatest,
       currentMessages,
+      expectedRuntimeIds,
       isHistorical,
       newerAvailable,
       revealNewer,
@@ -437,6 +458,7 @@ export function ChatRuntimeBoundary({
       revealRow,
       returnToLatest,
       currentMessages,
+      expectedRuntimeIds,
       isHistorical,
       newerAvailable,
       revealNewer,

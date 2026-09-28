@@ -107,6 +107,9 @@ describe('bounded direct history runtime', () => {
     expect(url.searchParams.get('limit')).toBe('120')
     expect(mounted.view.$messages.get()).toBe(live)
     expect(mounted.runtime.thread.getState().messages).toHaveLength(120)
+    expect(mounted.window.expectedRuntimeIds).toBe(
+      mounted.runtime.thread.getState().messages.map(message => message.id).join('\n')
+    )
     expect(mounted.runtime.thread.getState().messages.some(message => message.id === id)).toBe(true)
     expect(mounted.window.currentMessages?.find(message => message.rowId === 40)?.id).toBe(id)
     expect(mounted.window.isHistorical).toBe(true)
@@ -350,6 +353,10 @@ describe('adjacent history windows', () => {
       const calls = mounted.window.currentMessages
         .flatMap(message => message.parts)
         .filter(part => part.type === 'tool-call')
+
+      expect(mounted.window.expectedRuntimeIds).toBe(
+        mounted.runtime.thread.getState().messages.map(message => message.id).join('\n')
+      )
 
       // Raw retention is three pages even though hundreds of rows hydrate into
       // one bubble; no cumulative full-transcript hydration.

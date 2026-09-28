@@ -16,6 +16,8 @@ export interface TranscriptWindowValue {
   leadingRowId?: number | null
   /** Exactly the selected bounded source slice, not the full live store. */
   currentMessages?: readonly ChatMessage[]
+  /** Canonical visible runtime branch expected after this history page commits. */
+  expectedRuntimeIds?: string | null
   /** Pull a page, capturing the reader immediately before the prepend commits.
    * A remote page resolves false on failure; callers can retry without growing
    * an empty render window or holding the reader still during network I/O. */
@@ -32,7 +34,8 @@ const DEFAULT_TRANSCRIPT_WINDOW: Required<TranscriptWindowValue> = {
   revealNewer: async () => false,
   historyError: null,
   leadingRowId: null,
-  currentMessages: []
+  currentMessages: [],
+  expectedRuntimeIds: null
 }
 
 const TranscriptWindowContext = createContext<Required<TranscriptWindowValue>>(DEFAULT_TRANSCRIPT_WINDOW)

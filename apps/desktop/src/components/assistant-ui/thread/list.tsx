@@ -525,8 +525,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     newerAvailable,
     revealNewer,
     currentMessages,
+    expectedRuntimeIds,
     historyError
   } = useTranscriptWindow()
+
+  const runtimeMessageIds = useAuiState(s =>
+    isHistorical ? s.thread.messages.map(message => message.id).join('\n') : ''
+  )
 
   const historyAnchorRef = useRef<HistoryScrollAnchor[]>([])
   const historyFrameRef = useRef(0)
@@ -1360,7 +1365,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useLayoutEffect(() => {
     const el = scrollRef.current
 
-    if (!el || !historyAnchorRef.current.length) {
+    // Context selects the source before the external-store runtime publishes
+    // its rows. Spending the two-frame restore on that old DOM loses the
+    // reading anchor before an eviction actually commits.
+    if (
+      !el ||
+      !historyAnchorRef.current.length ||
+      (expectedRuntimeIds !== null && runtimeMessageIds !== expectedRuntimeIds)
+    ) {
       return
     }
 
@@ -1375,7 +1387,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         historyAnchorRef.current = []
       })
     })
-  }, [currentMessages, structuralSignature, weightSignature, scrollRef])
+  }, [currentMessages, expectedRuntimeIds, runtimeMessageIds, structuralSignature, weightSignature, scrollRef])
 
   useEffect(() => {
     const el = scrollRef.current

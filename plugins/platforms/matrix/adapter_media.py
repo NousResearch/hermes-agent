@@ -35,7 +35,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
         relates_to: dict, msgtype: str, mention_claimed: bool = False, *,
-        reply_parent: MatrixEventContext | None = None) -> bool | None:
+        reply_parent: MatrixEventContext | None = None, receipt_event_id: str | None = None) -> bool | None:
         body = source_content.get("body", "") or ""
         declared_filename = str(source_content.get("filename") or "").strip()
         transport_filename = declared_filename or body
@@ -122,6 +122,8 @@ class MatrixMediaMixin(BasePlatformAdapter):
         if msg_event is not None:
             if msgtype == "m.sticker" and not cached_path:
                 msg_event.text += "\n[matrix sticker image unavailable]"
+            if receipt_event_id:
+                msg_event.metadata["matrix_read_receipt_event_id"] = receipt_event_id
             return await self._admit(msg_event)
 
 

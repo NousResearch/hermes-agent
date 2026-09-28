@@ -151,8 +151,16 @@ async def _pin_permissions(context: _InspectionContext) -> dict[str, Any]:
     return _permission_levels(context.requester, context.owner.bot_id, power, encryption, create)
 
 
+def room_permissions(
+    power: dict[str, Any] | None, encryption: dict[str, Any], create_event: Any,
+    requester: str, bot: str, *, event_type: str = "m.room.message",
+) -> dict[str, Any]:
+    return _permission_levels(requester, bot, power, encryption, _RoomCreate.parse(create_event), event_type=event_type)
+
+
 def _permission_levels(
     requester: str, bot: str, power: dict[str, Any] | None, encryption: dict[str, Any], create: _RoomCreate,
+    *, event_type: str = "m.room.message",
 ) -> dict[str, Any]:
     legacy_strings = create.legacy_string_levels
     levels = power or {}
@@ -162,7 +170,7 @@ def _permission_levels(
         events.get("m.room.pinned_events"),
         _level(levels, "state_default", 0 if power is None else 50, legacy_strings), legacy_strings,
     )
-    send_event_type = "m.room.encrypted" if _text(encryption, "algorithm") else "m.room.message"
+    send_event_type = "m.room.encrypted" if _text(encryption, "algorithm") else event_type
     message_level = _numeric_level(
         events.get(send_event_type),
         _level(levels, "events_default", 0, legacy_strings), legacy_strings,

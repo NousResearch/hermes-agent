@@ -409,13 +409,16 @@ class GatewayVoiceMixin:
 
     def _commentary_voice_guild(self, source: SessionSource, *, message_type=None) -> Optional[int]:
         """Guild to speak interim commentary in: the chat is the voice-linked text channel, the bot
-        is in that voice channel, and the chat's voice mode is on (``all`` or ``voice_only``)."""
+        is in that voice channel, and this turn qualifies under the same voice-mode precedence as
+        final replies (explicit mode before the adapter's global auto-TTS default)."""
         with suppress(Exception):
             mode = self._voice_mode.get(self._voice_key_for_source(source))
-            if mode != "all" and not (mode == "voice_only" and message_type == MessageType.VOICE):
+            adapter = self._delivery_adapter_for(source)  # type: ignore[attr-defined]  # supplied by GatewayRunner
+            adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(source.chat_id)) if mode is None else False
+            if not (mode == "all" or (mode == "voice_only" and message_type == MessageType.VOICE)
+                    or (mode is None and adapter_auto_tts)):
                 return None
-            return self._linked_voice_guild_in_vc(
-                self._delivery_adapter_for(source), source.chat_id)
+            return self._linked_voice_guild_in_vc(adapter, source.chat_id)
         return None
 
     async def _speak_commentary(self, source: SessionSource, text: str, *, message_type=None) -> None:

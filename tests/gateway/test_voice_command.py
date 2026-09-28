@@ -355,6 +355,7 @@ class TestSendVoiceReply:
     def _vc_adapter(self, in_vc=True, links=None):
         adapter = MagicMock()
         adapter._voice_text_channels = {111: 123} if links is None else links
+        adapter._should_auto_tts_for_chat.return_value = False
         adapter.is_in_voice_channel = MagicMock(return_value=in_vc)
         adapter.play_in_voice_channel = AsyncMock()
         adapter.send_voice = AsyncMock()
@@ -457,6 +458,21 @@ class TestSendVoiceReply:
         runner.adapters[event.source.platform] = self._vc_adapter()
         self._set_mode(runner, event.source, "voice_only")
         assert runner._commentary_voice_guild(event.source, message_type=MessageType.VOICE) == 111
+
+    def test_default_auto_tts_speaks_self_injected_commentary(self, runner):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        event = self._internal_discord_event()
+        event.raw_message = None  # background result has no inbound platform message
+        adapter = object.__new__(DiscordAdapter)
+        adapter._auto_tts_default = True
+        adapter._auto_tts_enabled_chats = set()
+        adapter._auto_tts_disabled_chats = set()
+        adapter._voice_text_channels = {111: 123}
+        adapter.is_in_voice_channel = MagicMock(return_value=True)
+        runner.adapters[event.source.platform] = adapter
+        assert runner._should_send_voice_reply(event, "Final", []) is True
+        assert runner._commentary_voice_guild(event.source, message_type=None) == 111
 
     @pytest.mark.asyncio
     async def test_speak_commentary_plays_clip_in_linked_voice_channel(self, runner, tmp_path):

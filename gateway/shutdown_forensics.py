@@ -27,6 +27,12 @@ _SIGNAL_NAME_BY_NUM: Dict[int, str] = {
     if getattr(signal, _name, None) is not None
 }
 
+# systemd systemd.unit(5) LoadState values. Only these two mean the manager
+# has NO such unit (the TimeoutStopUSec in that reply is the DEFAULT, not the
+# unit's real value). loaded/generated/transient/merged/stub/masked all mean
+# the unit IS present in the probed manager and its property is genuine.
+_ABSENT_LOAD_STATES = frozenset({"not-found", "error"})
+
 
 def _signal_name(sig: Any) -> str:
     """Human-readable signal name (``str(sig)`` as fallback)."""
@@ -241,12 +247,14 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
         # NOT loaded with the DEFAULT TimeoutStopUSec (90s) plus
         # LoadState=not-found — a user-manager probe would shadow the real
         # value in the system manager. Fall through unless the unit is
-        # actually loaded in the probed manager. A missing LoadState line
+        # actually present in the probed manager. Only not-found/error mean
+        # absent; loaded/generated/transient/merged/stub/masked all carry the
+        # unit's genuine timeout (#124082). A missing LoadState line
         # (bare systemctl output) keeps the historical behaviour.
         load_state = next((ln.split("=", 1)[1].strip() for ln in lines
                            if ln.startswith("LoadState=")), None)
-        if load_state is not None and load_state != "loaded":
-            # Not loaded in this manager — its TimeoutStopUSec is the DEFAULT
+        if load_state is not None and load_state in _ABSENT_LOAD_STATES:
+            # Unit absent in this manager — its TimeoutStopUSec is the DEFAULT
             # (90s), not the unit's real value; keep probing the other one.
             continue
         for line in lines:

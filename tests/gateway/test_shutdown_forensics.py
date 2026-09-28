@@ -211,6 +211,25 @@ def test_user_manager_loaded_value_wins_without_system_probe(monkeypatch):
     assert len(fake.calls) == 1
 
 
+@pytest.mark.parametrize(
+    "load_state",
+    ["loaded", "generated", "transient", "merged", "stub", "masked"],
+)
+@pytest.mark.platforms("linux")
+def test_present_load_states_trust_the_probed_timeout(monkeypatch, load_state):
+    """#124082: a unit is genuinely present in the manager under any of
+    loaded/generated/transient/merged/stub/masked — those replies carry the
+    unit's real TimeoutStopUSec and must win without a second probe. Notably
+    transient: cron/Kanban units are started via systemd-run --user."""
+    fake = _fake_systemctl_run([
+        (f"LoadState={load_state}\nTimeoutStopUSec=3min 30s\n", 0),
+    ])
+    monkeypatch.setattr(sf.subprocess, "run", fake)
+
+    assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+    assert len(fake.calls) == 1
+
+
 @pytest.mark.platforms("linux")
 def test_missing_loadstate_line_defaults_to_loaded(monkeypatch):
     """Older/bare systemctl output without LoadState keeps the historical
@@ -224,11 +243,34 @@ def test_missing_loadstate_line_defaults_to_loaded(monkeypatch):
     assert len(fake.calls) == 1
 
 
+@pytest.mark.parametrize(
+    "load_state",
+    ["not-found", "error"],
+)
 @pytest.mark.platforms("linux")
-def test_no_manager_has_the_unit_returns_none(monkeypatch):
+def test_absent_load_state_falls_through_to_system_manager(monkeypatch, load_state):
+    """#124082: only not-found/error mean the manager lacks the unit; their
+    TimeoutStopUSec is the DEFAULT, so the other manager's real value wins."""
     fake = _fake_systemctl_run([
-        ("LoadState=not-found\nTimeoutStopUSec=1min 30s\n", 0),
-        ("LoadState=not-found\nTimeoutStopUSec=1min 30s\n", 0),
+        (f"LoadState={load_state}\nTimeoutStopUSec=1min 30s\n", 0),  # --user probe
+        ("TimeoutStopUSec=3min 30s\n", 0),                           # system-manager probe
+    ])
+    monkeypatch.setattr(sf.subprocess, "run", fake)
+
+    assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+    assert len(fake.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "load_state",
+    ["not-found", "error"],
+)
+@pytest.mark.platforms("linux")
+def test_no_manager_has_the_unit_returns_none(monkeypatch, load_state):
+    """Both managers report the unit absent — nothing real to read."""
+    fake = _fake_systemctl_run([
+        (f"LoadState={load_state}\nTimeoutStopUSec=1min 30s\n", 0),
+        (f"LoadState={load_state}\nTimeoutStopUSec=1min 30s\n", 0),
     ])
     monkeypatch.setattr(sf.subprocess, "run", fake)
 

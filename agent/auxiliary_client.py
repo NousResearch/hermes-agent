@@ -5802,12 +5802,16 @@ def _borrowed_main_credential_key(provider: str, base_url: Optional[str], api_ke
     The client keeps that credential for its lifetime, so it joins the cache key: otherwise a
     later runtime (another session, a ``/model`` switch) is served the earlier one's key.
     """
-    if api_key or _normalize_aux_provider(provider) != "custom":
+    if _normalize_aux_provider(provider) != "custom":
         return ()
-    if base_url:
-        borrowed = _read_main_api_key_if_same_host(_to_openai_base_url(base_url).strip())
-        return (_runtime_cache_discriminator("api_key", borrowed),)
-    return (runtime.get("base_url", ""), _runtime_cache_discriminator("api_key", runtime.get("api_key", "")))
+    if not base_url:
+        # This shape takes the runtime's endpoint and key even when an explicit key was passed.
+        return (runtime.get("base_url", ""), _runtime_cache_discriminator("api_key", runtime.get("api_key", "")))
+    # Same normalization as the client build, which treats a blank explicit key as keyless.
+    if _normalize_api_key(api_key):
+        return ()
+    borrowed = _read_main_api_key_if_same_host(_to_openai_base_url(base_url).strip())
+    return (_runtime_cache_discriminator("api_key", borrowed),)
 
 
 def _current_event_loop() -> Any:

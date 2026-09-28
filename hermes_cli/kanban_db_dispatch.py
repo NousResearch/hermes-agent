@@ -1094,6 +1094,30 @@ def _record_task_failure(
         if event_payload_extra:
             payload.update(event_payload_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
+        # Terminal human hold: a tripped breaker must NOT be auto-promoted by
+        # ``recompute_ready``. ``_has_sticky_block`` treats the newest
+        # ``blocked``/``unblocked`` event as authoritative, so emitting a
+        # ``blocked`` lifecycle event pins the task until an explicit
+        # ``kanban_unblock``. Without this the trip limit used here (e.g. the
+        # protocol-violation budget of 3, or ``force_trip``) can disagree with
+        # the promotion guard's limit (``DEFAULT_FAILURE_LIMIT`` /
+        # ``kanban.failure_limit``), so a ``gave_up`` task was promoted and
+        # re-claimed — the block -> promote -> crash -> gave_up retry loop.
+        _kb._append_event(
+            conn, task_id, "blocked",
+            {
+                "reason": "circuit-breaker: automatic retries exhausted",
+                "failures": failures,
+                "effective_limit": effective_limit,
+                "limit_source": limit_source,
+                "trigger_outcome": outcome,
+                # Carry the source phase so ``_resume_status_from_events`` still
+                # resolves ``review`` for a trip during the review phase; this
+                # event is now the newest of the lifecycle kinds it scans.
+                "retry_status": retry_status,
+            },
+            run_id=run_id,
+        )
         return True
 
 

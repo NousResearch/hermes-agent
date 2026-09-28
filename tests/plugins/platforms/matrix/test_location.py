@@ -161,6 +161,76 @@ async def test_location_reaches_text_path_with_original_identity(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("html_fallback", [False, True])
+@pytest.mark.parametrize("label", ["Location", "Meeting point @file:current.txt"])
+@pytest.mark.parametrize(
+    "description", [None, "", ["invalid"], "> MSC label @file:current.txt"]
+)
+async def test_location_reply_keeps_quoted_references_out_of_current_text(
+    adapter, html_fallback, label, description
+):
+    adapter._require_mention = True
+    quoted_text = "@file:notes.txt\n@skill:previous-context"
+    event = location_event({
+        "geo_uri": "geo:1,2",
+        "body": f"> <@bot:example.org> @file:notes.txt\n> @skill:previous-context\n\n{label}",
+        "org.matrix.msc3488.location": {"description": description},
+        "m.relates_to": {
+            "rel_type": "m.thread",
+            "event_id": "$root",
+            "m.in_reply_to": {"event_id": "$reply"},
+        },
+    })
+    if html_fallback:
+        event.content.update({
+            "format": "org.matrix.custom.html",
+            "formatted_body": (
+                '<mx-reply><blockquote><a href="https://matrix.to/#/!room:example.org/$reply">'
+                'In reply to</a> <a href="https://matrix.to/#/@bot:example.org">Bot</a>'
+                f"<br>@file:notes.txt<br>@skill:previous-context</blockquote></mx-reply>{label}"
+            ),
+        })
+    original = deepcopy(event.content)
+    current_label = (
+        description if isinstance(description, str) and description else label
+    )
+    text = "📍 Location: 1.0, 2.0"
+    if current_label != "Location":
+        text += f" ({current_label})"
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    message = adapter.handle_message.await_args.args[0]
+    assert message == MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        raw_message=original,
+        message_id=event.event_id,
+        user_id=event.sender,
+        user_name="alice",
+        reply_to_message_id="$reply",
+        reply_to_text=quoted_text,
+        reply_to_author_id="@bot:example.org",
+        reply_to_author_name="bot",
+        source=SessionSource(
+            platform=Platform.MATRIX,
+            chat_id=event.room_id,
+            chat_name="Test Room",
+            chat_type="group",
+            user_id=event.sender,
+            user_name="alice",
+            thread_id="$root",
+            guild_id="example.org",
+            parent_chat_id=event.room_id,
+            message_id=event.event_id,
+        ),
+        timestamp=message.timestamp,
+    )
+    assert event.content == original
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "uri",
     [

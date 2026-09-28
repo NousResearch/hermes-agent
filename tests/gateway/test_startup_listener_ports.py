@@ -11,7 +11,7 @@ pytest.importorskip("aiohttp")
 from aiohttp import web  # noqa: E402
 
 from gateway.config import Platform  # noqa: E402
-from gateway.platforms.shared_ingress import bind_listener, bound_site_endpoints  # noqa: E402
+from gateway.platforms.shared_ingress import bind_listener, bound_listener_port, bound_site_endpoints  # noqa: E402
 from gateway.run_startup import GatewayStartupMixin  # noqa: E402
 
 
@@ -39,6 +39,13 @@ def test_bound_site_endpoints_uses_actual_dual_stack_socket_addresses() -> None:
 def test_bound_site_endpoints_falls_back_without_socket_introspection() -> None:
     assert bound_site_endpoints(SimpleNamespace(), "::", 8644) == ("[::]:8644",)
     assert bound_site_endpoints(SimpleNamespace(), None, 0) == ()
+
+
+def test_bound_listener_port_prefers_the_actual_socket_and_safe_fallback() -> None:
+    assert bound_listener_port(("127.0.0.1:6185",), 0) == 6185
+    assert bound_listener_port(("[::1]:6185",), 0) == 6185
+    assert bound_listener_port((), 8644) == 8644
+    assert bound_listener_port((), "not-a-port") == 0
 
 
 def test_startup_listener_summary_is_info_operator_notice(caplog) -> None:
@@ -110,6 +117,7 @@ async def test_bind_listener_records_the_actual_ephemeral_port() -> None:
         host, port = endpoints[0].rsplit(":", 1)
         assert host == "127.0.0.1"
         assert 0 < int(port) <= 65535
+        assert bound_listener_port(endpoints, 0) == int(port)
     finally:
         await runner.cleanup()
 

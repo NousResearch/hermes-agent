@@ -5994,6 +5994,8 @@ export const frOverrides = {
       "Aucun backend connecté ne revendique encore cette ancienne conversation ; elle est donc ouverte comme transcription en lecture seule. Son historique est intact, mais l'envoi reste désactivé jusqu'à ce qu'un backend la prenne en charge.",
     readOnlyTranscriptSendBlocked:
       "Cette conversation est ouverte comme transcription en lecture seule — l'envoi est désactivé.",
+    sessionTargetMismatch:
+      "Non envoyé : la conversation active n'est pas celle de ce champ de saisie. Le message est conservé en brouillon — vérifiez la conversation active et renvoyez-le.",
     resumeStrandedTitle: 'Impossible de charger cette session',
     resumeStrandedBody:
       "La connexion à cette session a échoué et les nouvelles tentatives automatiques ont été abandonnées. Vérifiez que la Gateway est en cours d'exécution, puis réessayez.",

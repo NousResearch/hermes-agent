@@ -5047,6 +5047,8 @@ export const zh = defineLocale({
     readOnlyTranscriptBody:
       '尚无已连接的后端认领这个较早的会话，因此它以只读记录方式打开。历史记录完好；在有后端认领之前无法发送消息。',
     readOnlyTranscriptSendBlocked: '该会话目前以只读记录方式打开——发送已禁用。',
+    sessionTargetMismatch:
+      '未发送：当前聚焦的会话不是此输入框所属的会话。消息已保留为草稿——请确认聚焦的会话后重新发送。',
     resumeStrandedTitle: '无法加载此会话',
     resumeStrandedBody: '与此会话的连接失败，自动重试已停止。请确认网关正在运行，然后重试。',
     poolSlotTimeoutBody:

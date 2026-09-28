@@ -4221,6 +4221,8 @@ export const zhHant = defineLocale({
     readOnlyTranscriptBody:
       '尚無已連線的後端認領這個較早的對話，因此它以唯讀逐字稿方式開啟。歷史紀錄完好；在有後端認領之前無法傳送訊息。',
     readOnlyTranscriptSendBlocked: '此對話目前以唯讀逐字稿方式開啟——傳送已停用。',
+    sessionTargetMismatch:
+      '未傳送：目前聚焦的對話不是此輸入框所屬的對話。訊息已保留為草稿——請確認聚焦的對話後重新傳送。',
     resumeStrandedTitle: '無法載入此工作階段',
     resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',
     poolSlotTimeoutBody:

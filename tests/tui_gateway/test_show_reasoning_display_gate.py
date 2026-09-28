@@ -1,7 +1,11 @@
-"""display.show_reasoning false is answer-only on the live callback path.
+"""Reasoning display and the tool feed are independent switches on the live callback path.
 
-The session flag, not reasoning_effort, decides whether reasoning/thinking
-deltas and non-essential tool chrome leave the gateway.
+``display.show_reasoning`` (the session flag, not reasoning_effort) gates
+reasoning/thinking deltas. The tool feed's chrome — tool.start/complete,
+tool.generating, child-mirror rows — follows ``display.tool_progress``; the
+answer-only default that ``show_reasoning: false`` sets still hides chrome,
+unless the user stated a feed preference themselves (``display.tool_progress``
+written in config, or HERMES_TUI_TOOL_PROGRESS).
 """
 
 import json
@@ -9,7 +13,20 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tui_gateway import server
+
+# The real predicate, captured before the autouse fixture swaps it out.
+_REAL_TOOL_PROGRESS_EXPLICIT = server._tool_progress_explicit
+
+
+@pytest.fixture(autouse=True)
+def _no_explicit_feed(monkeypatch):
+    """Pin the answer-only default. Unless a test overrides this, a real config
+    on the dev box carrying ``display.tool_progress`` must not leak in and flip
+    the suppression cases below."""
+    monkeypatch.setattr(server, "_tool_progress_explicit", lambda: False)
 
 
 def _capture(monkeypatch):
@@ -112,6 +129,67 @@ def test_hidden_reasoning_suppresses_nonessential_tool_chrome_without_effort_non
     failed = [event for event in events if event[2].get("tool_id") == "tool-fail"]
     assert [event[0] for event in failed] == ["tool.complete"]
     assert failed[0][2]["result"]["error"] == "disk full"
+
+
+def test_explicit_feed_keeps_process_chrome_when_reasoning_is_hidden(monkeypatch):
+    """The requested combination: execution flow without thinking.
+
+    A user-stated display.tool_progress (config key or HERMES_TUI_TOOL_PROGRESS)
+    is the feed's own switch — it overrides the answer-only hiding that
+    display.show_reasoning false otherwise implies, matching the classic CLI,
+    where the feed has always followed tool_progress alone.
+    """
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "flow-only", show_reasoning=False, effort="high")
+    monkeypatch.setattr(server, "_tool_progress_explicit", lambda: True)
+
+    server._on_tool_start("flow-only", "tool-read", "read_file", {"path": "README.md"})
+    server._on_tool_complete("flow-only", "tool-read", "read_file", {"path": "README.md"}, "contents")
+    server._agent_cbs("flow-only")["tool_gen_callback"]("terminal")
+
+    assert [event[0] for event in events if event[2].get("tool_id") == "tool-read"] == [
+        "tool.start",
+        "tool.complete",
+    ]
+    assert "tool.generating" in [event[0] for event in events]
+
+
+def test_tool_progress_off_silences_the_feed_even_with_reasoning_on(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "feed-off", show_reasoning=True, effort="high")
+    monkeypatch.setitem(server._sessions["feed-off"], "tool_progress_mode", "off")
+
+    server._on_tool_start("feed-off", "tool-read", "read_file", {"path": "README.md"})
+    server._on_tool_complete("feed-off", "tool-read", "read_file", {"path": "README.md"}, "contents")
+    server._on_tool_complete(
+        "feed-off",
+        "tool-fail",
+        "terminal",
+        {"command": "deploy"},
+        json.dumps({"error": "disk full"}),
+    )
+
+    assert not any(event[2].get("name") == "read_file" for event in events)
+    failed = [event for event in events if event[2].get("tool_id") == "tool-fail"]
+    assert [event[0] for event in failed] == ["tool.complete"]
+
+
+def test_tool_progress_explicit_reads_config_key_and_env(monkeypatch):
+    monkeypatch.setattr(server, "_tool_progress_explicit", _REAL_TOOL_PROGRESS_EXPLICIT)
+    monkeypatch.delenv("HERMES_TUI_TOOL_PROGRESS", raising=False)
+
+    monkeypatch.setattr(server, "_display_cfg", lambda: {})
+    assert server._tool_progress_explicit() is False
+
+    monkeypatch.setattr(server, "_display_cfg", lambda: {"tool_progress": "off"})
+    assert server._tool_progress_explicit() is True
+
+    # A non-mode env value is not a stated preference; a valid one is.
+    monkeypatch.setattr(server, "_display_cfg", lambda: {})
+    monkeypatch.setenv("HERMES_TUI_TOOL_PROGRESS", "bogus")
+    assert server._tool_progress_explicit() is False
+    monkeypatch.setenv("HERMES_TUI_TOOL_PROGRESS", "verbose")
+    assert server._tool_progress_explicit() is True
 
 
 def test_hidden_reasoning_drops_moa_reference_chrome(monkeypatch):

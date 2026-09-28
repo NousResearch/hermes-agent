@@ -237,11 +237,26 @@ def _configured_features_missing_deps() -> list[tuple[str, str]]:
     try:
         from gateway.config import load_gateway_config
         from gateway.platform_registry import platform_registry
+        from agent.secret_scope import (
+            build_profile_secret_scope, current_secret_scope, reset_secret_scope, set_secret_scope,
+        )
+        from hermes_constants import get_hermes_home
 
-        for platform in load_gateway_config().get_connected_platforms():
-            entry = platform_registry.get(platform.value)
-            if entry is not None and not entry.check_fn():
-                missing.append((entry.label, entry.install_hint or "Run `hermes setup` to install support."))
+        # The selected build child has not loaded .env. Some passive checks also
+        # require credentials (Email); give them the same profile-local mapping
+        # as the gateway without exporting secrets into the build environment.
+        token = None
+        try:
+            if current_secret_scope() is None:
+                home = get_hermes_home()
+                token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+            for platform in load_gateway_config().get_connected_platforms():
+                entry = platform_registry.get(platform.value)
+                if entry is not None and not entry.check_fn():
+                    missing.append((entry.label, entry.install_hint or "Run `hermes setup` to install support."))
+        finally:
+            if token is not None:
+                reset_secret_scope(token)
     except Exception as exc:
         logger.debug("configured-platform dependency check skipped: %s", exc)
     try:

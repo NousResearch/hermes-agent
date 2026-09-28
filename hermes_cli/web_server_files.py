@@ -1,4 +1,6 @@
-"""Managed-files policy for the dashboard file browser: root resolution, path containment, entry metadata.
+"""Managed-files policy for the dashboard file browser: root resolution, path
+containment, entry metadata, plus the sensitive-path denylist and canonical
+write-guard seam shared by the ``/api/files/*`` and ``/api/fs/*`` routes.
 """
 
 import mimetypes
@@ -21,12 +23,27 @@ class ManagedFilesPolicy:
     can_change_path: bool
 
 
+def _reject_namespace_path(raw: str) -> None:
+    """400 on NT/device-namespace and UNC input.
+
+    Checked on the raw string and again after ``file:`` unwrapping: merely
+    resolving ``\\?\\UNC\\host\\share`` or a bare ``\\\\host\\share`` can trigger
+    outbound SMB auth (NTLM leak) on Windows before any resolved-path denylist
+    could fire. ``is_nt_namespace_path`` deliberately permits bare UNC for
+    agent tools; this remote surface never needs it.
+    """
+    from agent.file_safety import is_nt_namespace_path
+    if is_nt_namespace_path(raw) or raw.replace("/", "\\").startswith("\\\\"):
+        raise HTTPException(status_code=400, detail="NT/device namespace paths are not allowed")
+
+
 def _fs_path(raw_path: str, *, cwd: str | None = None) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="Path is required")
     if "\0" in raw:
         raise HTTPException(status_code=400, detail="Invalid path")
+    _reject_namespace_path(raw)
     try:
         if raw.lower().startswith("file:"):
             parsed = urllib.parse.urlparse(raw)
@@ -36,6 +53,9 @@ def _fs_path(raw_path: str, *, cwd: str | None = None) -> Path:
                     raise ValueError
                 uri_path = f"//{parsed.netloc}{uri_path}"
             raw = urllib.request.url2pathname(uri_path)
+            # The netloc unwrap can manufacture a UNC path out of input the
+            # raw check already cleared (file://host/share -> \\host\share).
+            _reject_namespace_path(raw)
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
             base = Path(cwd).expanduser() if cwd is not None else Path.cwd()
@@ -78,7 +98,168 @@ def _path_text(raw_path: str | None) -> str:
     text = str(raw_path or "").strip()
     if "\x00" in text:
         raise HTTPException(status_code=400, detail="Invalid path")
+    _reject_namespace_path(text)
     return text
+
+
+# --- Sensitive-path denylist ------------------------------------------------
+# Basenames denied wherever they appear on the managed and free-fs surfaces:
+# credential stores that become live secrets in the browsable tree the moment an
+# operator points the managed root at HERMES_HOME (#57505). Mirrors the canonical
+# guards (agent.file_safety.get_read_block_error, gateway.platforms.base
+# ._ROOT_CREDENTIAL_PATHS) so this surface never lags them.
+_SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
+    "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
+    "google_token.json", "google_oauth_pending.json", "google_oauth.json",
+    "webhook_subscriptions.json", "bws_cache.json", "bws_cache.enc.json",
+    ".git-credentials",
+})
+
+# Directory names whose whole subtree is credential material, matched on ANY path
+# component so the trees are blocked wherever they sit, no root resolution needed.
+_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
+
+# Credential trees and stores the canonical guards deny ONLY beneath a Hermes
+# home: agent.file_safety._READ_DENIED_DIRS (vault/, browser-profile/, skills/.hub)
+# and the delivery guard's _ROOT_CREDENTIAL_PATHS (sessions/, state.db, kanban.db
+# + SQLite sidecars). Anchored to the first component below each credential home,
+# matching canonical semantics: these are common names a user may legitimately
+# browse elsewhere on disk, AND deeper inside the Hermes tree (a plugin's own
+# state.db, a backup dir's sessions/).
+_HERMES_SCOPED_DIR_RELS = (("vault",), ("browser-profile",), ("sessions",), ("skills", ".hub"))
+_HERMES_SCOPED_FILE_BASENAMES = frozenset({
+    name
+    for db in ("state.db", "kanban.db")
+    for name in (db, f"{db}-wal", f"{db}-shm", f"{db}-journal")
+})
+
+
+def _hermes_credential_roots() -> list[Path]:
+    """Resolved Hermes homes whose credential stores this surface guards: the
+    active home and shared root (``agent.file_safety._hermes_dirs``, already
+    resolved, deduplicated and fail-soft) plus every ``profiles/<name>`` home,
+    enumerated at check time like ``gateway.platforms.base._profile_dirs`` so a
+    profile created mid-process is covered.
+    """
+    from agent.file_safety import _hermes_dirs, _resolve_each
+
+    roots = _hermes_dirs()
+    profiles: list[Path] = []
+    for root in roots:
+        try:
+            profiles.extend(_resolve_each(p for p in (root / "profiles").iterdir() if p.is_dir()))
+        except OSError:
+            continue
+    return list(dict.fromkeys(roots + profiles))
+
+
+def _is_hermes_scoped_sensitive(target: Path, roots: list[Path] | None = None) -> bool:
+    """True when ``target`` names (or sits under) a credential path anchored at
+    the top of a Hermes home: ``vault/``, ``browser-profile/``, ``sessions/``,
+    ``skills/.hub/``, or the session/kanban SQLite stores. ``target`` must
+    already be resolved.
+
+    Compares on lowercased parts: on case-insensitive filesystems (default
+    macOS APFS) ``resolve()`` preserves the caller's typed case, so a
+    case-variant of the root prefix must still match (over-denying a
+    differently-cased directory on a case-sensitive FS is the safe direction).
+    """
+    tparts = tuple(part.lower() for part in target.parts)
+    for root in _hermes_credential_roots() if roots is None else roots:
+        rparts = tuple(part.lower() for part in root.parts)
+        if tparts[: len(rparts)] != rparts:
+            continue
+        below = tparts[len(rparts):]
+        if not below:
+            continue  # the home dir itself is not credential material
+        if any(below[: len(rel)] == rel for rel in _HERMES_SCOPED_DIR_RELS):
+            return True
+        if below[0] in _HERMES_SCOPED_FILE_BASENAMES:
+            return True
+        # kanban/boards/<board>/kanban.db* sit one level deeper than the
+        # home-anchored stores (the delivery guard enumerates them via
+        # _kanban_board_db_paths).
+        if below[:2] == ("kanban", "boards") and below[-1] in _HERMES_SCOPED_FILE_BASENAMES:
+            return True
+    return False
+
+
+def _is_sensitive_filename(name: str) -> bool:
+    """Basename denylist: ``.env`` / ``.env.<suffix>`` / ``.envrc`` plus the
+    credential-store basenames. Case-insensitive so ``.ENV`` / ``Auth.JSON``
+    on case-insensitive mounts can't slip past. Basename-only, call sites use
+    :func:`_is_sensitive_path`, which adds the credential-directory checks."""
+    lowered = name.lower()
+    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
+        return True
+    return lowered in _SENSITIVE_MANAGED_FILE_BASENAMES
+
+
+def _is_sensitive_path(path: Path, roots: list[Path] | None = None) -> bool:
+    """True when the basename is sensitive, any path component (case-insensitive)
+    is a credential directory, or the path sits inside a Hermes-scoped credential
+    tree. Read-side guard shared by the managed and free-fs routes; write
+    endpoints additionally apply the canonical write guard via
+    :func:`_raise_for_sensitive_target`.
+
+    ``roots`` lets directory listings compute the credential-home set once per
+    request instead of re-resolving it for every entry.
+    """
+    if _is_sensitive_filename(path.name):
+        return True
+    if any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts):
+        return True
+    return _is_hermes_scoped_sensitive(path, roots)
+
+
+def _raise_for_sensitive_target(target: Path, *, write: bool = False) -> None:
+    """403 when ``target`` is a denied credential path.
+
+    ``write=True`` additionally enforces the canonical write guard
+    (``agent.file_safety``): home credential dirs (``~/.ssh``, ``~/.aws``, ...),
+    system files, ``HERMES_WRITE_SAFE_ROOT``, and approval-gated paths
+    (``~/.ssh/config``) fail closed because the dashboard has no approval
+    channel. ``target`` must already be resolved; raw-string checks
+    (NT/device namespace, NUL) belong to ``_fs_path`` / ``_path_text``.
+    """
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    if not write:
+        return
+    from agent.file_safety import get_write_denied_error, is_write_approval_required
+    denial = get_write_denied_error(str(target), verb="Write")
+    if denial is None and is_write_approval_required(str(target)):
+        denial = "Write denied: this path requires an approval the dashboard cannot prompt for."
+    if denial:
+        raise HTTPException(status_code=403, detail=denial)
+
+
+def _raise_for_protected_tree_delete(target: Path) -> None:
+    """403 when a directory delete would remove a credential store.
+
+    The per-path denylist inspects the target itself, so deleting a CONTAINER
+    (``~/.hermes``, ``~/.ssh``, or any ancestor like ``~``) would destroy
+    ``vault/``, ``state.db`` and the home credential dirs it was written to
+    protect. Denies when ``target`` equals or contains a Hermes credential
+    home or a canonical write-denied directory.
+    """
+    protected: list[Path] = list(_hermes_credential_roots())
+    try:
+        from agent.file_safety import build_write_denied_prefixes
+        protected.extend(
+            Path(prefix.rstrip(os.sep))
+            for prefix in build_write_denied_prefixes(str(Path.home()))
+        )
+    except (OSError, RuntimeError):
+        pass
+    tlower = tuple(part.lower() for part in target.parts)
+    for path in protected:
+        plower = tuple(part.lower() for part in path.parts)
+        if len(tlower) <= len(plower) and plower[: len(tlower)] == tlower:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot delete a directory that contains credential stores",
+            )
 
 
 def _default_hermes_root_is_opt_data() -> bool:
@@ -161,15 +342,19 @@ def _resolve_managed_path(
     if ".." in candidate.parts:
         raise HTTPException(status_code=400, detail="Path cannot contain '..'")
 
-    if for_write and not candidate.exists():
-        parent = _canonical_path(candidate.parent)
-        resolved = parent / candidate.name
-    else:
-        resolved = _canonical_path(candidate, require_exists=not for_write)
+    # resolve(strict=False) still follows every symlink that exists, including a
+    # dangling leaf: a planted link must not launder a write past the denylist.
+    resolved = _canonical_path(candidate, require_exists=not for_write)
 
     if root is not None and not _path_is_under(root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
+    # Write ops deny sensitive targets outright (uploading over state.db, planting
+    # into mcp-tokens/, deleting credentials). Read ops keep the established
+    # contract: list filters sensitive entries rather than 403-ing the directory,
+    # and the file-read call sites 403 on sensitive targets themselves.
+    if for_write:
+        _raise_for_sensitive_target(resolved, write=True)
     return policy, resolved, str(resolved)
 
 

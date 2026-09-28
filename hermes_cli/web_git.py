@@ -283,6 +283,31 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
     return _review_result(cwd, files, None)
 
 
+def _review_file_arg(cwd: str, file_path: str) -> str:
+    """Validate a diff ``file`` argument against the worktree.
+
+    ``git diff --no-index -- /dev/null <file>`` serves ANY absolute path as an
+    all-add diff, repository or not, so the argument must resolve inside the
+    repo (this also stops a worktree symlink pointing outside it) and must not
+    name a dashboard-denied credential path.
+    """
+    from fastapi import HTTPException
+
+    try:
+        root = Path(cwd).resolve()
+        resolved = (root / file_path).resolve()
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="File must be inside the repository")
+    from hermes_cli.web_server_files import _is_sensitive_path
+    if _is_sensitive_path(resolved):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    return file_path
+
+
 def _all_add_diff(cwd: str, file_path: str) -> str:
     """Synthesized all-add diff for an untracked file (``--no-index`` exits non-zero by design)."""
     return _git(cwd, ["diff", "--no-index", "--", os.devnull, file_path])[1]
@@ -291,6 +316,7 @@ def _all_add_diff(cwd: str, file_path: str) -> str:
 def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
     if not _is_dir(cwd):
         return ""
+    file_path = _review_file_arg(cwd, file_path)
     if scope == "branch":
         base = _branch_base(cwd)
         return _git_out(cwd, ["diff", f"{base}...HEAD", "--", file_path]) if base else ""
@@ -307,6 +333,7 @@ def file_diff_vs_head(cwd: str, file_path: str) -> str:
     review_diff, never all-adds a clean tracked file; only a genuinely untracked one."""
     if not _is_dir(cwd):
         return ""
+    file_path = _review_file_arg(cwd, file_path)
     head = _git_out(cwd, ["diff", "HEAD", "--", file_path])
     if head.strip():
         return head

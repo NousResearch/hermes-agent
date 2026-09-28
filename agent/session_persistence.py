@@ -23,7 +23,7 @@ from agent.memory_manager import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
-from agent.message_metadata import DB_ROW_SNAPSHOT, REPAIR_BOOKKEEPING_FIELDS
+from agent.message_metadata import DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS
 from agent.transcript_repair import sync_flushed_message_markers
 
 
@@ -81,7 +81,7 @@ def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
 
 def _content_with_turn_override(msg: Dict, content: Any, override: Any) -> Any:
     """Replace only the absorbed current turn, leaving unanswered history intact."""
-    prefix = msg.get("_merged_turn_prefix")
+    prefix = msg.get(MERGED_TURN_PREFIX)
     if isinstance(content, str) and isinstance(override, str) and isinstance(prefix, str):
         if content.startswith(prefix):
             return prefix + override

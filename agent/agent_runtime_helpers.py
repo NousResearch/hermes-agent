@@ -29,6 +29,7 @@ from agent.credential_pool import (
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
+from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
@@ -600,19 +601,10 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             )
             had_api_sidecar = "api_content" in prev
             prev["content"] = merged_content
-            # The current turn can be absorbed into an unanswered persisted user row.
-            # Record the preserved prefix so a clean-text persist override cannot
-            # erase the older unanswered request, even on a second replay pass.
-            # Keep this marker after the override: a replay pass needs the same
-            # prefix to avoid overwriting the older unanswered turn again.
-            # Private scaffolding is stripped from the wire.
+            # The clean-text persist override must replace only the absorbed turn, never the
+            # unanswered text before it; kept across replay passes (an empty turn absorbs too).
             if prev_content:
-                # Even an empty incoming turn is absorbed. Its persist override
-                # must retain all earlier unanswered text, not a stale prefix
-                # left by the previous merge of two unanswered rows.
-                prev["_merged_turn_prefix"] = (
-                    prev_content + "\n\n" if new_content else prev_content
-                )
+                prev[MERGED_TURN_PREFIX] = prev_content + "\n\n" if new_content else prev_content
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
             # Pop the persist marker only when the durable row actually changed: a merge that

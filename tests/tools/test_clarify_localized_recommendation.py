@@ -6,7 +6,11 @@ import pytest
 from tools.clarify_tool import clarify_tool, mark_recommended, strip_recommended
 
 
-@pytest.mark.parametrize("marker", ["（推荐）", "(推荐)", "（推薦）", "(推薦)"])
+@pytest.mark.parametrize("marker", [
+    "（推荐）", "(推荐)", "（推薦）", "(推薦)",
+    "(рекомендуется)", "(РЕКОМЕНДУЮ)", "(Empfohlen)",
+    "(recomendado)", "(recommandé)",
+])
 @pytest.mark.parametrize("mode", ["single", "multi", "batch", "legacy_batch"])
 def test_localized_marker_display_and_answer(marker, mode):
     choices = [f"Option A{marker}", "Option B"]
@@ -35,7 +39,11 @@ def test_preexisting_stacked_markers_are_removed(text):
     assert strip_recommended(text) == "Option A"
 
 
-@pytest.mark.parametrize("text", ["Recommended reading", "Option A (optional)", "推荐算法", "A（推荐理由）", "A（推荐） details", ""])
+@pytest.mark.parametrize("text", [
+    "Recommended reading", "Option A (optional)", "推荐算法", "A（推荐理由）",
+    "A（推荐） details", "", "Рекомендуется проверить", "empfohlenes Buch",
+    "A (empfohlen) details", "A (non recommandé)", "A (recomendado para expertos)",
+])
 def test_ordinary_choice_text_is_preserved(text):
     assert strip_recommended(text) == text
 

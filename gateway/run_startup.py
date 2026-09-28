@@ -100,7 +100,7 @@ class GatewayStartupMixin:
         ):
             return False
         self._queue_startup_restore_event(event)
-        event._processing_state.deferred = True
+        event._processing_state.defer()
         return True
 
     async def _drain_startup_restore_queue(self) -> int:

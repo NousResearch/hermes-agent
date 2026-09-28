@@ -148,6 +148,7 @@ class GatewayBusySessionMixin:
             overflow.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+        queued_event._processing_state.defer()
         queued_event._gateway_accepted = True
         return True
 
@@ -774,10 +775,12 @@ class GatewayBusySessionMixin:
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent:
             return None
-        if turn.event is not None and turn.event is not event:
-            turn.event.absorb_turn_input(event)
+        event._processing_state.defer()
+        processing_event = turn.processing_event
+        if processing_event is not None and processing_event is not event:
+            processing_event.absorb_turn_input(event)
             if turn.ctx is not None:
-                turn.ctx.reply_expected = turn.event.reply_expected
+                turn.ctx.reply_expected = processing_event.reply_expected
         return turn
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:

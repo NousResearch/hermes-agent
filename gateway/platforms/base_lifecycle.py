@@ -50,13 +50,13 @@ class BaseLifecycleMixin:
         event = args[0] if args else None
         if isinstance(event, MessageEvent):
             if hook_name == "on_processing_start":
-                event._processing_state.deferred = False
-                event._processing_state.completed = False
-                event._processing_state.outcome = None
-            elif hook_name in {"on_processing_complete", "on_inline_processing_complete"}:
-                if event._processing_state.deferred or event._processing_state.completed:
+                event._processing_state.start()
+            elif hook_name == "on_processing_complete":
+                if not event._processing_state.complete():
                     return
-                event._processing_state.completed = True
+            elif hook_name == "on_inline_processing_complete":
+                if not event._processing_state.complete_inline():
+                    return
         try:
             await hook(*args, **kwargs)
         except Exception as e:

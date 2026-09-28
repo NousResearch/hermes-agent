@@ -123,7 +123,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
             if msgtype == "m.sticker" and not cached_path:
                 msg_event.text += "\n[matrix sticker image unavailable]"
             if receipt_event_id:
-                msg_event.read_receipt_message_id = receipt_event_id
+                msg_event._processing_state.receipt_message_id = receipt_event_id
             return await self._admit(msg_event)
 
 

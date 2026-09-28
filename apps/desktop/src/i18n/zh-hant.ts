@@ -3511,7 +3511,11 @@ export const zhHant = defineLocale({
     noAuthenticatedProviders: '沒有已驗證的提供方。',
     addProvider: '新增提供方…',
     addCustomModel: '新增自訂模型',
-    removeCustomModel: '移除自訂模型'
+    removeCustomModel: '移除自訂模型',
+    resetToDefaults: '恢復預設',
+    resetConfirm: '將模型可見性恢復為預設？',
+    resetDescription: '你對模型顯示與隱藏的選擇將被清除，每個提供方都會恢復預設清單。你新增的自訂模型會保留並顯示。',
+    resetAction: '恢復'
   },
 
   shell: {
@@ -3966,8 +3970,8 @@ export const zhHant = defineLocale({
           body: provider => `${provider} 傳回了伺服器錯誤。請稍後重試或切換服務商。`
         },
         timeout: {
-          title: '回覆逾時',
-          body: provider => `${provider} 未及時回應。請重試以重新傳送。`
+          title: '無法連線到 AI 服務',
+          body: provider => `無法連線到 ${provider}，或其未及時回應。請檢查網路連線後重試。`
         },
         ssl_cert_verification: {
           title: '安全連線失敗',

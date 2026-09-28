@@ -467,6 +467,7 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    tool_progress?: boolean | string
   }
   desktop?: {
     font_family?: string
@@ -487,6 +488,7 @@ export interface HermesConfig {
     stop_phrases?: unknown
     thinking_sound?: unknown
     barge_in_threshold_multiplier?: unknown
+    silence_duration?: unknown
   }
 }
 
@@ -712,7 +714,11 @@ export interface SessionMessagesResponse {
   pagination?: {
     limit: number
     offset: number
-    order: 'latest' | 'oldest'
+    /** Order the backend actually applied, echoed back from the request.
+     *  Absent on backends that predate the `order` param: they answered from
+     *  the OLDEST row while still returning this object, so a page may only be
+     *  read as a tail when this is `'latest'` (see `pageHonorsLatestOrder`). */
+    order?: 'latest' | 'oldest'
     returned: number
   }
   session_id: string

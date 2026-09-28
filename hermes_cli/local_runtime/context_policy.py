@@ -166,6 +166,34 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
     return lean
 
 
+def fit_to_free_memory(plan: LaunchPlan, profile: ModelProfile, live: HardwareBudget, *,
+                       mtp_capable: bool = False,
+                       fixed_overhead: int = RUNTIME_OVERHEAD_BYTES) -> LaunchPlan:
+    """Narrow a resident capacity plan to the window the card's free memory holds now.
+
+    Only the window moves, and only down to the floor. A plan that already spills keeps its
+    placement, and so does a card too busy to hold even the floor: moving weights to the CPU on a
+    live reading is how a launch once pinned a fitting model to the CPU, because the reading still
+    counted memory the outgoing server was about to free.
+    """
+    decision = plan.decision
+    if not isinstance(decision, WindowDecision) or decision.spilled:
+        return plan
+    now = plan_launch(profile, live, mtp_capable=mtp_capable, fixed_overhead=fixed_overhead)
+    if isinstance(now.decision, WindowDecision) and not now.decision.spilled:
+        if now.decision.window >= decision.window:
+            return plan
+        return LaunchPlan(replace(now.decision, reasons=[
+            f"{now.decision.window // 1024}K fits beside other programs' GPU memory "
+            f"({decision.window // 1024}K would not)"]), now.mtp_prefill, now.overhead_bytes)
+    floor = min(FLOOR, profile.n_ctx_train or FLOOR)
+    if decision.window <= floor:
+        return plan
+    return LaunchPlan(WindowDecision(window=floor, spill_bytes=0, kv_on_gpu=True, reasons=[
+        f"floor held at {floor // 1024}K; other programs hold most of the GPU memory"]),
+        plan.mtp_prefill, plan.overhead_bytes)
+
+
 @dataclass
 class GrowthDecision:
     action: str                   # "grow" | "hold" | "compress-default"

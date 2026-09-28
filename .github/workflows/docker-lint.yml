@@ -36,6 +36,13 @@ jobs:
           config: .hadolint.yaml
           failure-threshold: warning
 
+      - name: hadolint (sandbox desktop image)
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        with:
+          dockerfile: docker/sandbox-desktop.Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
+
   shellcheck:
     name: Lint docker/ shell scripts (shellcheck)
     runs-on: ubuntu-latest

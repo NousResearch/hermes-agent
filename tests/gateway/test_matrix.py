@@ -1161,7 +1161,7 @@ async def test_room_state_change_is_acknowledged_with_the_saved_turn(tmp_path, e
 
 
 @pytest.mark.asyncio
-async def test_reply_context_from_later_matrix_chunk_survives_text_batch():
+async def test_reply_context_from_later_matrix_chunk_survives_text_batch(monkeypatch):
     adapter = _make_adapter()
     adapter._client = MagicMock()
     adapter._client.get_state_event = AsyncMock(side_effect=Exception("no room state"))
@@ -1171,18 +1171,34 @@ async def test_reply_context_from_later_matrix_chunk_survives_text_batch():
     )
     adapter._get_display_name = AsyncMock(return_value="Bob")
     adapter._background_read_receipt = MagicMock()
-    adapter._text_batch_delay_seconds = 60
+    enqueued = asyncio.Event()
+    paused = asyncio.Event()
+    inputs = []
+    enqueue = adapter._enqueue_text_event
+
+    def queued(event):
+        enqueue(event)
+        enqueued.set()
+
+    async def clock(_delay):
+        await paused.wait()
+
+    adapter._enqueue_text_event = queued
+    monkeypatch.setattr(asyncio, "sleep", clock)
 
     try:
-        await adapter._handle_text_message(
+        inputs.append(asyncio.create_task(adapter._handle_text_message(
             "!room:example.org", "@alice:example.org", "$first", 0,
             {"msgtype": "m.text", "body": "first"}, {},
-        )
-        await adapter._handle_text_message(
+        )))
+        await enqueued.wait()
+        enqueued.clear()
+        inputs.append(asyncio.create_task(adapter._handle_text_message(
             "!room:example.org", "@alice:example.org", "$second", 0,
             {"msgtype": "m.text", "body": "> <@bob:example.org> earlier\n\nsecond"},
             {"m.in_reply_to": {"event_id": "$parent"}},
-        )
+        )))
+        await enqueued.wait()
 
         queued = list(adapter._pending_text_batches.values())
         assert [(
@@ -1193,8 +1209,10 @@ async def test_reply_context_from_later_matrix_chunk_survives_text_batch():
             "first\nsecond", "$parent", "earlier", "@bob:example.org", "Bob", False,
         )]
     finally:
-        for task in adapter._pending_text_batch_tasks.values():
+        tasks = [*inputs, *adapter._pending_text_batch_tasks.values()]
+        for task in tasks:
             task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

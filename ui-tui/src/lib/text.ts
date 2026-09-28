@@ -10,6 +10,7 @@ import {
   VERBOSE_TRAIL_MAX_LINES
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
+import { t } from '../i18n/runtime.js'
 import type { ThinkingMode } from '../types.js'
 
 const WS_RE = /\s+/g
@@ -64,15 +65,15 @@ export const edgePreview = (s: string, head = 16, tail = 28) => {
 export const pasteTokenLabel = (text: string, lineCount: number) => {
   const preview = edgePreview(text)
 
+  const chip = t('libText.text.pasteLinesChip', compactNumber(lineCount))
+
   if (!preview) {
-    return `[[ [${compactNumber(lineCount)} lines] ]]`
+    return `[[ ${chip} ]]`
   }
 
   const [head = preview, tail = ''] = preview.split('.. ', 2)
 
-  return tail
-    ? `[[ ${head.trimEnd()}.. [${compactNumber(lineCount)} lines] .. ${tail.trimStart()} ]]`
-    : `[[ ${preview} [${compactNumber(lineCount)} lines] ]]`
+  return tail ? `[[ ${head.trimEnd()}.. ${chip} .. ${tail.trimStart()} ]]` : `[[ ${preview} ${chip} ]]`
 }
 
 const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
@@ -106,7 +107,7 @@ export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: numb
 export const boundedLiveRenderText = (
   text: string,
   { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
-) => boundedRenderText(text, 'showing live tail', { maxChars, maxLines })
+) => boundedRenderText(text, t('libText.text.showingLiveTail'), { maxChars, maxLines })
 
 const boundedRenderText = (
   text: string,
@@ -146,10 +147,10 @@ const boundedRenderText = (
 
   const label =
     omittedLines > 0
-      ? `[${labelPrefix}; omitted ${compactNumber(omittedLines)} lines / ${compactNumber(omittedChars)} chars]\n`
-      : `[${labelPrefix}; omitted ${compactNumber(omittedChars)} chars]\n`
+      ? t('libText.text.omittedLinesChars', labelPrefix, compactNumber(omittedLines), compactNumber(omittedChars))
+      : t('libText.text.omittedChars', labelPrefix, compactNumber(omittedChars))
 
-  return `${label}${tail}`
+  return `${label}\n${tail}`
 }
 
 const countNewlines = (text: string, end: number) => {
@@ -228,7 +229,10 @@ export const verboseToolTrailLine = (
   argsText?: string,
   resultText?: string
 ) => {
-  const detail = [verboseToolBlock('Args', argsText), verboseToolBlock(error ? 'Error' : 'Result', resultText)]
+  const detail = [
+    verboseToolBlock(t('libText.text.argsLabel'), argsText),
+    verboseToolBlock(error ? t('libText.text.errorLabel') : t('libText.text.resultLabel'), resultText)
+  ]
     .filter(Boolean)
     .join('\n')
 
@@ -349,10 +353,10 @@ export const estimateRows = (text: string, w: number, compact = false) => {
  * on screen.  `reason` states why the prompt ended ("timed out", "cancelled").
  */
 export const formatAbandonedClarify = (question: string, choices: string[] | null, reason: string) => {
-  const head = `ask ${question.trim()}`
+  const head = t('libText.text.clarifyHead', question.trim())
   const opts = (choices ?? []).map((c, i) => `  ${i + 1}. ${c}`)
 
-  return [head, ...opts, `  (${reason} — no selection)`].join('\n')
+  return [head, ...opts, `  ${t('libText.text.clarifyNoSelection', reason)}`].join('\n')
 }
 
 /**
@@ -368,10 +372,16 @@ export const formatAbandonedClarifyBatch = (
   const lines = questions.map(q => {
     const answer = answers[q.qid]
 
-    return answer ? `  ✓ ${q.question} → ${answer}` : `  · ${q.question} (no answer)`
+    return answer
+      ? `  ${t('libText.text.clarifyAnswered', q.question, answer)}`
+      : `  ${t('libText.text.clarifyUnanswered', q.question)}`
   })
 
-  return [`ask (${questions.length} questions)`, ...lines, `  (${reason})`].join('\n')
+  return [
+    t('libText.text.clarifyBatchHead', questions.length),
+    ...lines,
+    `  ${t('libText.text.clarifyBatchReason', reason)}`
+  ].join('\n')
 }
 
 /**

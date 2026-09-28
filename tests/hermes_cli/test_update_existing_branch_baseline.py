@@ -245,3 +245,46 @@ def test_command_hands_off_after_existing_main_switch(update_tree, monkeypatch, 
     assert git(t.clone, "rev-parse", "HEAD") == t.newer
     assert len(t.requests) == 1
     assert "Already up to date" not in capsys.readouterr().out
+
+
+def test_fork_sync_round_trip_is_not_misclassified_as_noop(tmp_path, monkeypatch):
+    """origin/main moves first, then the upstream sync returns HEAD to the SHA that was
+    running before the update: still a successful branch repair, not a no-op."""
+    root = tmp_path / "fork"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.name", "Fixture")
+    git(root, "config", "user.email", "fixture@example.com")
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", root)
+
+    def commit(value):
+        (root / "state.txt").write_text(value + "\n", encoding="utf-8")
+        git(root, "add", "state.txt")
+        git(root, "commit", "-qm", value)
+        return git(root, "rev-parse", "HEAD")
+
+    old, fork_tip, upstream_tip = commit("old"), commit("fork"), commit("upstream")
+    git(root, "checkout", "-q", "--detach", upstream_tip)
+    git(root, "branch", "-f", "main", old)
+    git(root, "update-ref", "refs/remotes/origin/main", fork_tip)
+    git(root, "update-ref", "refs/remotes/upstream/main", upstream_tip)
+
+    plan = prepare(root, is_fork=True)
+    assert plan.commit_count != 0
+    assert plan.pre_sync_sha == upstream_tip
+    assert git(root, "rev-parse", "HEAD") == old
+
+    def sync_upstream(*_args, **_kwargs):
+        git(root, "merge", "--ff-only", "refs/remotes/upstream/main")
+        return True
+
+    monkeypatch.setattr(update_cmd._m(), "_sync_with_upstream_if_needed", sync_upstream)
+    update_cmd._pull_updates(
+        ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
+        gw_input_fn=None, discard_local_changes=False, keep_stash=False,
+        pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch, sync_upstream=True,
+    )
+
+    assert git(root, "rev-parse", "HEAD") == upstream_tip
+    assert git(root, "rev-parse", "main") == upstream_tip
+    assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == "main"

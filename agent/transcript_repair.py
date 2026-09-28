@@ -13,7 +13,8 @@ from agent.message_metadata import (
     CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
     copy_identity_fields)
 from hermes_state_common import _id_chunks, _placeholders
-from hermes_state_messages import _MESSAGE_WRITE_COLUMNS, _uid_map
+from hermes_state_identity import _uid_map
+from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,

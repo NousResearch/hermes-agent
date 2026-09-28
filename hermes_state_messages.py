@@ -22,7 +22,9 @@ from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+from hermes_state_identity import (
+    _restore_identity_columns, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list_json, _uid_map)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -73,15 +75,6 @@ _SET_CODEX_REASONING_SQL = "UPDATE messages SET codex_reasoning_items = ? WHERE 
 _INVALID = object()  # _json_or sentinel where the fallback must be distinguishable from JSON null
 
 
-def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
-    """``json.loads(raw)``; on failure log *warning* and return *fallback*."""
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        logger.warning(warning)
-        return fallback
-
-
 def _coerce_timestamp(value: Any, default: float) -> float:
     """Explicit message timestamp (datetime or number) or *default* when invalid or outside the sane
     epoch window — the write-side twin of the readers' ``coerce_epoch``: a bad row is never persisted."""
@@ -92,57 +85,6 @@ def _coerce_timestamp(value: Any, default: float) -> float:
     # in that stored form so -0.0 and 0.0 retain the historical SQL/Python
     # identity equality.
     return 0.0 if result == 0.0 else result
-
-
-def _uid_list(value: Any) -> List[str]:
-    """Normalize a uid list (a live list, or the JSON text an export/import carries) to unique non-empty
-    strings in order; anything else is ``[]``."""
-    if isinstance(value, str):
-        value = _json_or(value, [], "Failed to deserialize a message uid list, falling back to []")
-    if not isinstance(value, list):
-        return []
-    return list(dict.fromkeys(item for item in value if isinstance(item, str) and item))
-
-
-def _uid_list_json(msg: Dict[str, Any], live_key: str, column: str) -> Optional[str]:
-    """JSON text for a uid-list column, read from the live key first (flushed dicts, batch rows) and the
-    column name second (import payloads); ``None`` when empty."""
-    uids = _uid_list(msg.get(live_key) if live_key in msg else msg.get(column))
-    return json.dumps(uids) if uids else None
-
-
-def _uid_map(value: Any) -> Dict[str, str]:
-    """Normalize a ``{tool call id: uid}`` map (a live dict, or the JSON text an export/import carries): a
-    non-empty string uid, or a list of them for a provider id repeated inside one row (one per occurrence,
-    see ``merge_tool_call_uids``); anything else is dropped, and a non-map is ``{}``."""
-    if isinstance(value, str):
-        value = _json_or(value, {}, "Failed to deserialize a tool-call uid map, falling back to {}")
-    if not isinstance(value, dict):
-        return {}
-    return {k: v for k, v in value.items() if isinstance(k, str) and k and (
-        (isinstance(v, str) and v) or (isinstance(v, list) and v and all(isinstance(u, str) and u for u in v)))}
-
-
-def _restore_identity_columns(row: Any, msg: Dict[str, Any]) -> None:
-    """The stored identity columns onto a restored dict under their live keys (NULL/empty add nothing)."""
-    if row[MESSAGE_UID]:
-        msg[MESSAGE_UID] = row[MESSAGE_UID]
-    if absorbed := _uid_list(row["absorbed_message_uids"]):
-        msg[ABSORBED_MESSAGE_UIDS] = absorbed
-    if tool_uids := _uid_map(row["tool_call_uids"]):
-        msg[TOOL_CALL_UIDS] = tool_uids
-    if row["tool_call_uid"]:
-        msg[TOOL_CALL_UID] = row["tool_call_uid"]
-
-
-def _tool_call_uids_json(msg: Dict[str, Any]) -> Optional[str]:
-    uids = _uid_map(msg.get(TOOL_CALL_UIDS) if TOOL_CALL_UIDS in msg else msg.get("tool_call_uids"))
-    return json.dumps(uids, sort_keys=True) if uids else None
-
-
-def _tool_call_uid_or_none(msg: Dict[str, Any]) -> Optional[str]:
-    uid = msg.get(TOOL_CALL_UID) if TOOL_CALL_UID in msg else msg.get("tool_call_uid")
-    return uid if isinstance(uid, str) and uid else None
 
 
 def _parse_tool_calls(tool_calls: Any) -> Any:

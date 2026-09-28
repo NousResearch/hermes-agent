@@ -75,9 +75,9 @@ export function trackInboundActivity(roster: RosterRow[]) {
       continue
     }
 
-    // Activity in the exact bot owner the user is currently looking at is
-    // already visible — never badge the open chat or its same-named twin.
-    if ($selectedBot.get() === key) {
+    // Roster selection survives a group switch and a retained Bot Chat tab.
+    // Only the visible chat consumes this activity; the group hides it.
+    if ($selectedBot.get() === key && !$groupChatWorkspace.get()) {
       refreshOpenBotChat(bot)
 
       continue
@@ -168,6 +168,10 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
   const key = botRosterKey(bot)
 
   if (
+    // A cold roster open owns its own awaited hydration. Its focus edge can
+    // arrive before that open completes; a second background SDK open would
+    // advance openSessionGeneration and reject the foreground wait as superseded.
+    $pendingBotOpen.get()?.key === key ||
     !focused || !canonicalIds.includes(focused) || (!allowWhileBusy && host.state.busy.get()) ||
     (owner && key !== `${owner.connectionId}::${owner.profile}`)
   ) {

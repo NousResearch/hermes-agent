@@ -327,6 +327,55 @@ describe('returning to Sessions', () => {
 })
 
 describe('direct Bot Chat tab focus', () => {
+  it('does not start a second SDK open while a roster open is hydrating the same focus edge', async () => {
+    const { host } = await import('@hermes/plugin-sdk')
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+    const states = await import('@/store/session-states')
+    const session = await import('@/store/session')
+    const { openBotCanonicalChat } = await import('./canonical-chat')
+    const { $lastRoster } = await import('./data')
+    const { $pendingBotOpen } = await import('./bot-state')
+    const open = vi.mocked(openBotCanonicalChat)
+
+    const bot = { name: 'ops', connectionId: 'focus-race', sourceScoped: true,
+      canonical_session: { id: 'focus-race-chat', last_active: 100 } } as RosterRow
+
+    const paneId = 'session-tile:focus-race-chat'
+    const harness = recordingContext()
+    paneStores()
+    const previousTree = tree.$layoutTree.get()
+    const previousSelected = session.$selectedStoredSessionId.get()
+    const previousRoster = $lastRoster.get()
+    session.$selectedStoredSessionId.set(null)
+    session.setSessionOwnerHint('focus-race-chat', { connectionId: 'focus-race', profile: 'ops', mode: 'remote' })
+    states.openSessionTile('focus-race-chat', 'center', 'workspace', undefined, {
+      workspaceMode: 'bots', workspaceOwnerKey: 'bot:focus-race::ops', workspaceTabTitle: 'Bot Chat',
+      ownerRoute: { connectionId: 'focus-race', profile: 'ops', mode: 'remote' }
+    })
+    tree.$layoutTree.set(model.group(['workspace', paneId], { active: 'workspace', id: 'race-main' }))
+    tree.$activeTreeGroup.set('race-main')
+    $lastRoster.set([bot])
+    $pendingBotOpen.set({ generation: 1, key: 'focus-race::ops' })
+    plugin.register(harness.ctx)
+
+    try {
+      tree.activateTreePane('race-main', paneId)
+      await settle()
+      expect(host.state.focusedStoredSessionId.get()).toBe('focus-race-chat')
+      expect(open).not.toHaveBeenCalled()
+    } finally {
+      harness.dispose()
+      $pendingBotOpen.set(null)
+      states.discardSessionTile('focus-race-chat')
+      tree.$layoutTree.set(previousTree)
+      session.$selectedStoredSessionId.set(previousSelected)
+      session.forgetSessionOwnerHintsForConnection('focus-race')
+      $lastRoster.set(previousRoster)
+      open.mockReset()
+    }
+  })
+
   it('refreshes the focused source before acknowledging and preserves failed or superseded reads', async () => {
     const { host } = await import('@hermes/plugin-sdk')
     // Real tab-strip activation and unread stores; only the network hydration is gated.

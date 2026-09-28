@@ -43,7 +43,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
   }
 })
 
-vi.mock('./shared', () => ({
+vi.mock('./shared', async () => ({
+  $pendingBotOpen: (await import('nanostores')).atom(null),
   bumpBotOpenGeneration: vi.fn(),
   getBotOpenGeneration: vi.fn(),
   getPluginCtx: () => ({ storage: storageMock }),
@@ -164,6 +165,21 @@ describe('new activity after the seed', () => {
     trackInboundActivity([chatting('researcher', 6000)])
 
     expect(markUnreadMock).not.toHaveBeenCalled()
+  })
+
+  it('badges a selected bot whose retained tab is hidden by a group room', async () => {
+    const { $selectedBot, trackInboundActivity } = await loadActions()
+    const { $groupChatWorkspace } = await import('./group-chat')
+
+    try {
+      $selectedBot.set('researcher')
+      trackInboundActivity([chatting('researcher', 5000)])
+      $groupChatWorkspace.set('Team')
+      trackInboundActivity([chatting('researcher', 6000)])
+      expect(markUnreadMock).toHaveBeenCalledExactlyOnceWith('researcher-chat', 'researcher')
+    } finally {
+      $groupChatWorkspace.set(null)
+    }
   })
 
   it('does not re-toast an unchanged preview when last_active keeps advancing', async () => {

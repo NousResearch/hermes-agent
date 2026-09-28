@@ -45,6 +45,7 @@ are disabled, opportunistic, or required.
 | text | yes |
 | threads | yes |
 | reactions | yes |
+| native polls | create / vote / results / close |
 | approvals | yes |
 | model picker | yes |
 | thinking panes | yes |
@@ -55,6 +56,39 @@ are disabled, opportunistic, or required.
 | video | yes |
 | E2EE | off / optional / required |
 | diagnostics | yes |
+
+### Native Polls
+
+Ask Hermes to create a poll, vote in a poll, read its results or close it in
+the current Matrix room. The `matrix_polls` toolset is included in the Matrix
+bundle. Use `hermes tools` to enable or disable it for Matrix sessions.
+
+Polls support disclosed and undisclosed results and a configurable selection
+limit. An open undisclosed poll hides vote totals until an authorised user closes
+the poll. Hermes casts votes as the bot account, including when a user asks it to
+vote. A new vote replaces the bot's previous vote; an empty selection withdraws
+that vote. Other room members vote through their Matrix clients.
+
+Hermes can close a poll that the bot created. Closing another user's poll requires
+the bot to have permission to redact other users' events in the room. Closure is
+explicit; Hermes does not schedule poll deadlines automatically.
+
+Poll starts, votes and closures appear in bounded room reads and catch-up context.
+These events do not start an agent turn by themselves. Mention Hermes or use the
+room's usual message rules to ask for a poll action. Poll tools require the current
+room and an authorised requester.
+
+Each operation uses the receiving bot account throughout its server reads and
+write. If the bot disconnects, its client changes, the room becomes disallowed
+or the requester loses access during those reads, Hermes returns an error.
+Hermes checks access again before returning results or sending a poll action.
+
+Results examine up to 100 related events by default, with a maximum of 200.
+Truncated history or missing decryption keys makes results incomplete and hides
+all vote totals. Hermes refuses to vote or close a poll with incomplete state.
+Encrypted polls use the receiving bot's current encryption session and require
+available keys. Native poll display and voting also depend on the Matrix client's
+poll support.
 
 ### Session Model in Matrix
 

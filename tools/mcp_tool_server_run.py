@@ -200,6 +200,10 @@ class MCPServerRunMixin:
         # immediately.
         self._was_parked = True
         self._park_reason = revival_reason
+        # The failed attempt's still-live child sits in the orphan ledger waiting
+        # for the NEXT attempt's entry sweep — which only arrives when this park
+        # ends, and a revive can be hours away (#126990). Reap before going dormant.
+        await self._reap_superseded_stdio_children()
         self._deregister_tools()
         self._reconnect_event.clear()
         paused = False
@@ -373,6 +377,30 @@ class MCPServerRunMixin:
                 self.session = None
                 # Stale PIDs must never fast-fail the NEXT transport's calls.
                 self._stdio_child_pids = set()
+
+    async def _reap_superseded_stdio_children(self) -> None:
+        """Reap this server's orphaned stdio children before parking (#126990).
+
+        A failed transport attempt hands a still-live child to the orphan ledger
+        (``_release_spawned_children``) and relied on the NEXT attempt's entry sweep
+        to kill it — but while the task parks awaiting a revive (which can be hours
+        away), no next attempt ever comes, so a reconnect/revive loop accumulated
+        one orphaned bridge process per attempt for the life of the gateway.
+        Killing at the park boundary bounds each failed child's stray lifetime to
+        its own attempt. Scoped to this server; with no survivors the sweep is one
+        lock and returns. NOT called on the clean shutdown path: a child that
+        survived graceful teardown stays registered with the parent-death
+        supervisor by design (see test_a_server_that_survived_teardown_stays_registered)."""
+        from tools import mcp_tool_lifecycle as _lifecycle
+        try:
+            # Shielded: a shutdown cancel mid-reap must not shorten it (the worker
+            # thread runs to completion) nor mask the outcome the caller unwinds into.
+            await asyncio.shield(asyncio.to_thread(
+                _lifecycle._kill_orphaned_mcp_children, server_name=self.name))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("MCP server '%s': pre-park child reap failed", self.name, exc_info=True)
 
     async def _on_clean_return(self, lifecycle_reason: str, budget: "_RetryBudget") -> bool:
         """Clean transport return: shutdown, stdio recycle, or a requested rebuild (not a failure

@@ -18,6 +18,10 @@ vi.mock('@/hermes', async importOriginal => ({
   getProfiles: async () => ({ profiles: [] })
 }))
 
+vi.mock('@/sdk/runtime', () => ({ installPluginSdk: vi.fn(), sdkImportMap: {} }))
+vi.mock('@/store/confirm', () => ({ confirm: vi.fn() }))
+import { confirm } from '@/store/confirm'
+
 import { queryClient } from '@/lib/query-client'
 import {
   $pluginInstallRequest,
@@ -82,6 +86,40 @@ afterEach(() => {
 })
 
 describe('Install from Git entry flow', () => {
+  it.each([false, true])('retries Python dependency review only with explicit acceptance=%s', async accepted => {
+    $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
+    vi.mocked(confirm).mockResolvedValue(accepted)
+    const installs: Record<string, unknown>[] = []
+    requestGateway.mockImplementation(async (_method, params) => {
+      if (params?.action !== 'install') return { plugins: [] }
+      installs.push(params)
+      return params.dependency_consent
+        ? { ok: true, plugin_name: 'example' }
+        : {
+            ok: false,
+            consent_required: true,
+            dependency_consent: 'candidate-A',
+            python_dependencies: ['requests>=2,<3'],
+            error: 'Review Python dependencies'
+          }
+    })
+    installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'example' })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
+    await screen.findByText('This package includes')
+    fireEvent.click(screen.getByRole('button', { name: 'Install', exact: true }))
+    await waitFor(() => expect(confirm).toHaveBeenCalledOnce())
+    expect(vi.mocked(confirm).mock.calls[0][0].description).toContain('requests>=2,<3')
+    await waitFor(() => expect(installs).toHaveLength(accepted ? 2 : 1))
+    expect(installs[0]).not.toHaveProperty('dependency_consent')
+    if (accepted) {
+      expect(installs[1]).toEqual({ ...installs[0], dependency_consent: 'candidate-A' })
+    } else {
+      expect(installDesktopPlugin).not.toHaveBeenCalled()
+      expect($pluginInstallRequest.get()).not.toBeNull()
+    }
+  })
+
   it.each(['local', 'remote'] as const)(
     'opens repository entry and reviews without installing in %s mode',
     async mode => {

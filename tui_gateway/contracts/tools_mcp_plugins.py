@@ -605,6 +605,7 @@ class PluginsManageParams(ProfileParams):
     force: bool | None = None
     ref: str | None = None
     accept_capabilities: bool | None = None
+    dependency_consent: str | None = None
     values: dict[str, JsonValue] | None = None
 
 
@@ -757,6 +758,7 @@ class PluginsManageResult(Result):
     enabled: bool | None = None
     sha: str | None = None
     consent_required: bool | None = None
+    dependency_consent: str | None = None
     delta: dict[str, list[str]] | None = None
     delta_lines: list[str] | None = None
     error: str | None = None

@@ -1398,8 +1398,8 @@ export function useGatewayBoot({
       }
     })
 
-    const offExit = desktop.onBackendExit(() => {
-      if ($gatewaySwitching.get()) {
+    const offExit = desktop.onBackendExit((payload: any) => {
+      if ($gatewaySwitching.get() || isIntentionalDesktopQuitError(payload)) {
         return
       }
 

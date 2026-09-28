@@ -115,6 +115,46 @@ describe('session transcript pagination ownership', () => {
     })
   })
 
+  it('keeps a passive read passive when it falls back to the complete transcript', async () => {
+    setApiRequestConnection(null)
+    const oldest = Array.from({ length: LATEST_SESSION_MESSAGES_LIMIT }, (_, index) => row(index + 1))
+    api.mockResolvedValueOnce({
+      session_id: 'stored-session',
+      messages: oldest,
+      pagination: { limit: LATEST_SESSION_MESSAGES_LIMIT, offset: 0, returned: oldest.length }
+    })
+    api.mockResolvedValueOnce({ session_id: 'stored-session', messages: oldest })
+
+    await getLatestSessionMessages('stored-session', undefined, { passive: true })
+
+    // A hidden tile's refresh must never cold-start or hold a backend
+    // (#103375); the compatibility read inherits that.
+    expect(api).toHaveBeenCalledTimes(2)
+    expect(api).toHaveBeenLastCalledWith({
+      path: '/api/sessions/stored-session/messages?limit=500&offset=0&order=oldest&include_compacted=true',
+      passive: true
+    })
+  })
+
+  it.each([
+    ['a short orderless page', { limit: LATEST_SESSION_MESSAGES_LIMIT, offset: 0, returned: 3 }],
+    ['a page without pagination metadata', undefined]
+  ])('adopts %s as the complete transcript without a second read', async (_label, pagination) => {
+    setApiRequestConnection(null)
+    const owner = { connectionId: 'local', profile: 'default' }
+    const all = [row(1), row(2), row(3)]
+    // Served from the oldest row at offset 0 and fewer rows than the limit:
+    // this already is every row, so nothing is gained by paging again.
+    api.mockResolvedValueOnce({ session_id: 'stored-session', messages: all, ...(pagination ? { pagination } : {}) })
+
+    const authoritative = await getLatestSessionMessages('stored-session')
+
+    expect(api).toHaveBeenCalledTimes(1)
+    expect(authoritative.messages.map(message => message.id)).toEqual([1, 2, 3])
+    expect(authoritative.pagination).toBeUndefined()
+    expect(transcriptBackfillAvailable('stored-session', owner)).toBe(false)
+  })
+
   it('coalesces spellings against a backend that predates the profile field', async () => {
     setApiRequestConnection(null)
     const owner = { connectionId: 'local', profile: 'default' }

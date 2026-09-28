@@ -532,7 +532,7 @@ export function getLatestSessionMessages(
     // is the one paging contract both backend generations honour.
     const authoritativePage = pageHonorsLatestOrder(page)
       ? page
-      : await readCompleteTranscriptForOrderlessBackend(id, profile, page)
+      : await completeTranscriptForOrderlessBackend(id, profile, page, options)
 
     // Record whether the tail was truncated (page came back full) and where
     // the next older page starts, so "Show earlier" can backfill over REST
@@ -560,25 +560,29 @@ export function getLatestSessionMessages(
  * Complete chronological transcript for a backend that did not honour
  * `order=latest` (#92508).
  *
- * `getAllSessionMessages` pages with `order: 'oldest'`: the newer generation
- * honours that explicitly and the older one drops the param and always paged
- * from the start, so both return the same full history. The synthesized
- * response carries NO `pagination`, the established "this is everything"
- * signal (`tailStateFromPage`), so nothing arms a REST backfill against the
- * wrong end of the transcript.
+ * A page with no `pagination` at all (the pre-paging generation) or an
+ * orderless page that came back SHORT already holds every row: both were
+ * served from the oldest row at offset 0. Only a full orderless page needs
+ * the paged read. `getAllSessionMessages` pages with `order: 'oldest'`: the
+ * newer generation honours that explicitly and the older one drops the param
+ * and always paged from the start, so both return the same full history. The
+ * result carries NO `pagination`, the established "this is everything" signal
+ * (`tailStateFromPage`), so nothing arms a REST backfill against the wrong end
+ * of the transcript.
  */
-async function readCompleteTranscriptForOrderlessBackend(
+async function completeTranscriptForOrderlessBackend(
   id: string,
   profile: ProfileScope | undefined,
-  page: SessionMessagesResponse
+  page: SessionMessagesResponse,
+  options: { passive?: boolean }
 ): Promise<SessionMessagesResponse> {
-  const complete = await getAllSessionMessages(id, profile)
+  const { pagination, ...complete } = page
 
-  return {
-    session_id: page.session_id || complete.session_id,
-    ...(page.profile ? { profile: page.profile } : {}),
-    messages: complete.messages
+  if (!pagination || page.messages.length < pagination.limit) {
+    return complete
   }
+
+  return { ...complete, messages: (await getAllSessionMessages(id, profile, options)).messages }
 }
 
 /**
@@ -643,7 +647,7 @@ export function getOlderSessionMessages(
 export async function getAllSessionMessages(
   id: string,
   profile?: ProfileScope,
-  options: { maxJsonChars?: number } = {}
+  options: { maxJsonChars?: number; passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const messages: SessionMessage[] = []
   const pageSize = 500
@@ -653,12 +657,17 @@ export async function getAllSessionMessages(
   let resolvedSessionId = id
 
   while (true) {
-    const page = await getSessionMessages(id, profile, {
-      limit: pageSize,
-      offset,
-      order: 'oldest',
-      includeCompacted: true
-    })
+    const page = await getSessionMessages(
+      id,
+      profile,
+      {
+        limit: pageSize,
+        offset,
+        order: 'oldest',
+        includeCompacted: true
+      },
+      { passive: options.passive }
+    )
 
     resolvedSessionId = page.session_id
     jsonChars += (JSON.stringify(page.messages) ?? '').length

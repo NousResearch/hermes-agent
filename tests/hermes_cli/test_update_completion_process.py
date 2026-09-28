@@ -136,6 +136,7 @@ def transition(tmp_path):
         "import contextvars, json, os, pathlib\n"
         "_current = contextvars.ContextVar('receipt', default=None)\n"
         "class UpdateReceipt: pass\n"
+        "def record_stage(*args, **kwargs): pass\n"
         "def finalize_pending_update_receipt(code, reason):\n"
         "    r = _current.get()\n"
         "    if r is None: return\n"
@@ -271,7 +272,9 @@ def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transi
 
     def capture_child(*args, **kwargs):
         proc = popen(*args, **kwargs)
-        if not children:
+        # Hook the completion child itself: arming the host obligation may probe the checkout
+        # identity through git first (#125952), and that probe is not the process under test.
+        if not children and str(root / "hermes_cli/update_completion.py") in args[0]:
             children.append(proc)
             wait = proc.wait
             kill = proc.kill

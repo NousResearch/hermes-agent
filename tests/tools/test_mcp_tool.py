@@ -1069,6 +1069,11 @@ class TestDiscoverAndRegister:
 class TestMCPServerTask:
     """Test the MCPServerTask lifecycle with mocked MCP SDK."""
 
+    @pytest.fixture(autouse=True)
+    def _no_pm_launcher(self, monkeypatch):
+        # Launcher resolution is not under test here, and a CI host has no PM-managed Node.
+        monkeypatch.setattr("tools.mcp_tool_config._managed_launcher", lambda command: None)
+
     def _mock_stdio_and_session(self, session):
         """Return patches for stdio_client and ClientSession as async CMs."""
         mock_read, mock_write = MagicMock(), MagicMock()

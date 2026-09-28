@@ -11,11 +11,11 @@ import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
   isPaneVisible,
-  layoutHasRootSide,
   toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
+import { translateNow } from '@/i18n/runtime'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import {
   contributedKeybindHandler,
@@ -27,8 +27,10 @@ import {
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
+import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
+import { recordAction, recordDislike } from '@/store/desktop-metrics'
 import {
   $findInPage,
   findNext as findNextMatch,
@@ -40,13 +42,15 @@ import { toggleSimpleMode } from '@/store/interface-mode'
 import { $capture, $comboIndex, captureStep, endCapture, setBinding } from '@/store/keybinds'
 import {
   cycleSidebarGrouping,
+  layoutHasRightSide,
   requestSessionSearchFocus,
   setFileBrowserOpen,
-  toggleFileBrowserOpen,
   togglePanesFlipped,
+  toggleRightSide,
   toggleSidebarOpen
 } from '@/store/layout'
-import { openBrowserTab } from '@/store/preview'
+import { notifyError } from '@/store/notifications'
+import { toggleBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
   cycleProfile,
@@ -58,7 +62,15 @@ import {
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { openFolderAsProject } from '@/store/projects'
 import { toggleReview } from '@/store/review'
-import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentReasoningEffort,
+  $defaultReasoningEffort,
+  $selectedStoredSessionId,
+  markComposerSelectionManual,
+  setCurrentReasoningEffort,
+  setModelPickerOpen
+} from '@/store/session'
 import { $focusedStoredSessionId, reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
@@ -100,6 +112,8 @@ import {
 } from '../routes'
 
 export interface KeybindRuntimeDeps {
+  /** Gateway RPC requester for session-scoped model controls (reasoning). */
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /** Open/close the command center overlay (sessions / system / usage). */
   toggleCommandCenter: () => void
   /** Drop to a fresh new-session draft. */
@@ -211,6 +225,51 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     setTerminalTakeover(false)
   }
 
+  // Reasoning level up/down (#71627): step the ACTIVE session one notch
+  // through off → minimal → … → xhigh (clamped; max/ultra stay behind the
+  // menu). Optimistic store write with rollback, and a monotonic sequence so
+  // a slow earlier response can't revert a newer press.
+  const reasoningRequestSeqRef = useRef(0)
+
+  const stepSessionReasoning = (direction: 1 | -1) => {
+    const sessionId = $activeSessionId.get()
+
+    // No live session: the draft's pick still steps (it ships on the next
+    // session.create); no `config.set` — without a session the RPC falls
+    // back to the persistent profile config and would rewrite the default.
+    const rollback = $currentReasoningEffort.get()
+    const fallback = $defaultReasoningEffort.get() || undefined
+    const next = stepReasoningEffort(rollback, direction, fallback)
+
+    if (next === rollback.trim().toLowerCase()) {
+      return
+    }
+
+    markComposerSelectionManual()
+    setCurrentReasoningEffort(next)
+
+    if (!sessionId) {
+      return
+    }
+
+    const requestSeq = reasoningRequestSeqRef.current + 1
+
+    reasoningRequestSeqRef.current = requestSeq
+
+    void writeSessionReasoningEffort(deps.requestGateway, sessionId, next)
+      .then(value => {
+        if (reasoningRequestSeqRef.current === requestSeq) {
+          setCurrentReasoningEffort(value)
+        }
+      })
+      .catch(error => {
+        if (reasoningRequestSeqRef.current === requestSeq) {
+          setCurrentReasoningEffort(rollback)
+          notifyError(error, translateNow('shell.modelOptions.updateFailed'))
+        }
+      })
+  }
+
   handlersRef.current = {
     'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),
 
@@ -224,6 +283,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     },
     'composer.voice': requestVoiceToggle,
     'composer.dictate': requestComposerDictation,
+    'composer.reasoningUp': () => stepSessionReasoning(1),
+    'composer.reasoningDown': () => stepSessionReasoning(-1),
 
     // On the Settings overlay, ⌘K scopes to settings search; the second press
     // (or Esc) still closes as usual via toggle.
@@ -277,17 +338,17 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // Narrow-viewport reveal is handled inside the store toggles now.
     'view.toggleSidebar': toggleSidebarOpen,
     'view.cycleSidebarGrouping': cycleSidebarGrouping,
-    // ⌘J toggles the right sidebar — but a layout with no right side (e.g.
-    // terminal-on-bottom) would leave it a dead key, so it falls back to the
-    // terminal there. The single "secondary panel" toggle.
-    'view.toggleRightSidebar': () => (layoutHasRootSide('right') ? toggleFileBrowserOpen() : toggleTerminalPane()),
+    // ⌘J toggles the physical right side — whatever column lives there in the
+    // live tree (the Browser preview column, the files column). Falls back to
+    // the terminal when nothing lives on the right (terminal-on-bottom).
+    'view.toggleRightSidebar': () => (layoutHasRightSide() ? toggleRightSide() : toggleTerminalPane()),
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
     'view.toggleProfileRail': toggleProfileRailVisible,
     'view.toggleSimpleMode': toggleSimpleMode,
     'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),
     'view.showFiles': showFiles,
-    'view.showBrowser': openBrowserTab,
+    'view.showBrowser': toggleBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
     'view.showTerminal': () => toggleTerminalPane(),
     // Create first so the pane's open-effect ensure sees a non-empty set and
@@ -421,6 +482,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
         if (step.type === 'set') {
           setBinding(capturing, step.combos)
+        } else {
+          recordDislike('cancelled', 'keybind_capture')
         }
 
         endCapture()
@@ -505,6 +568,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         if (handler() === false && keybindAction(actionId)?.passthrough) {
           continue
         }
+
+        recordAction(actionId, 'shortcut')
 
         return
       }

@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { SessionMessagesResponse } from '@/types/hermes'
 
 import type { SidebarSessionsResponse } from './sessions'
 
@@ -6,6 +8,10 @@ vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
 vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
   capabilityScoped: vi.fn(),
+  // The cross-backend probe reads the session's own route too: `getLatestSessionMessages`
+  // spreads both scope selectors before it dials.
+  ambientOwnerConnectionId: vi.fn(() => 'local'),
+  connectionScoped: vi.fn(() => ({})),
   getApiRequestConnection: vi.fn(() => 'prometheus'),
   getApiRequestProfile: vi.fn(() => null),
   hermesApi: vi.fn(),
@@ -16,12 +22,15 @@ const client = await import('./client')
 
 const {
   deleteSession,
+  fetchStoredTranscriptAcrossBackends,
   getSession,
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
   listSidebarSessions
 } = await import('./sessions')
+
+const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 
 const hermesApi = vi.mocked(client.hermesApi)
 
@@ -245,5 +254,114 @@ describe('listSidebarSessions storage health', () => {
     })
 
     expect(result.storage).toEqual({ default: 'corrupt' })
+  })
+})
+
+/**
+ * #94724 no-owner recovery: the read-only cross-backend probe.
+ *
+ * The PR that normalized this 404 into a typed error was closed: the signal the
+ * routing needs — "a miss on the ambient store is not proof of absence, keep
+ * looking" — lives in the control flow, not in the exception. These tests pin
+ * that control flow, including the symmetric control the review asked for
+ * (every backend missing lands on the documented aggregate `null`).
+ */
+describe('fetchStoredTranscriptAcrossBackends (#94724 no-owner recovery)', () => {
+  const page = (sessionId: string, text: string) =>
+    ({ messages: [{ content: text, role: 'user' }], session_id: sessionId }) as unknown as SessionMessagesResponse
+
+  const notFound = () => new Error('404: {"detail":"Session not found"}')
+
+  beforeEach(() => {
+    vi.mocked(client.capabilityScoped).mockImplementation(scope =>
+      scope && typeof scope === 'object'
+        ? {
+            ...(scope.profile?.trim() ? { profile: scope.profile.trim() } : {}),
+            ...(scope.connectionId?.trim() ? { connectionId: scope.connectionId.trim() } : {}),
+            priority: 'foreground'
+          }
+        : { priority: 'foreground' }
+    )
+  })
+
+  afterEach(() => {
+    $connectionsRegistry.set(null)
+  })
+
+  it('serves the ambient transcript without probing any registered backend', async () => {
+    $connectionsRegistry.set({ connections: [{ id: 'backend-b' }] } as never)
+    hermesApi.mockResolvedValueOnce(page('sess-1', 'ambient') as never)
+
+    const result = await fetchStoredTranscriptAcrossBackends('sess-1')
+
+    expect(result).toMatchObject({ session_id: 'sess-1' })
+    expect(hermesApi).toHaveBeenCalledTimes(1)
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      path: expect.stringContaining('/api/sessions/sess-1/messages')
+    })
+  })
+
+  it('keeps probing a registered backend when the ambient read 404s', async () => {
+    // The routing signal must survive the first probe: a miss there is a plain
+    // 404 (no session minted, no live route), so the search continues by id.
+    $connectionsRegistry.set({ connections: [{ id: 'backend-b' }] } as never)
+    hermesApi.mockImplementation(
+      ((request: { connectionId?: string }) =>
+        request?.connectionId === 'backend-b'
+          ? Promise.resolve(page('sess-1', 'from-b'))
+          : Promise.reject(notFound())) as never
+    )
+
+    const result = await fetchStoredTranscriptAcrossBackends('sess-1')
+
+    expect(result).toMatchObject({ session_id: 'sess-1' })
+    expect(hermesApi).toHaveBeenCalledTimes(2)
+    expect(hermesApi.mock.calls[1][0]).toMatchObject({
+      connectionId: 'backend-b',
+      path: expect.stringContaining('/api/sessions/sess-1/messages')
+    })
+  })
+
+  it('probes past an unreachable backend and still finds the transcript', async () => {
+    $connectionsRegistry.set({ connections: [{ id: 'wedged' }, { id: 'backend-b' }] } as never)
+    hermesApi.mockImplementation(
+      ((request: { connectionId?: string }) =>
+        request?.connectionId === 'backend-b'
+          ? Promise.resolve(page('sess-1', 'from-b'))
+          : Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1:6262'))) as never
+    )
+
+    const result = await fetchStoredTranscriptAcrossBackends('sess-1')
+
+    expect(result).toMatchObject({ session_id: 'sess-1' })
+    expect(hermesApi).toHaveBeenCalledTimes(3)
+  })
+
+  it('skips the ambient id and local, and returns the aggregate null when every probe misses', async () => {
+    $connectionsRegistry.set({ connections: [{ id: 'prometheus' }, { id: 'local' }, { id: 'backend-b' }] } as never)
+    hermesApi.mockRejectedValue(notFound())
+
+    const result = await fetchStoredTranscriptAcrossBackends('sess-1')
+
+    // 'prometheus' is the ambient connection (already read first) and 'local' is
+    // the current window's own backend: neither is probed a second time.
+    expect(result).toBeNull()
+    expect(hermesApi).toHaveBeenCalledTimes(2)
+    expect(hermesApi.mock.calls[1][0]).toMatchObject({ connectionId: 'backend-b' })
+  })
+
+  it('returns the documented aggregate null when every backend is unreachable, never throwing', async () => {
+    $connectionsRegistry.set({ connections: [{ id: 'wedged' }] } as never)
+    hermesApi.mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:6262'))
+
+    await expect(fetchStoredTranscriptAcrossBackends('sess-1')).resolves.toBeNull()
+  })
+
+  it('returns null without dialing when no connection registry is installed', async () => {
+    $connectionsRegistry.set(null)
+    hermesApi.mockRejectedValue(notFound())
+
+    await expect(fetchStoredTranscriptAcrossBackends('sess-1')).resolves.toBeNull()
+    expect(hermesApi).toHaveBeenCalledTimes(1)
   })
 })

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import threading
 
 import pytest
 
@@ -31,9 +32,10 @@ import agent.hook_registration as hook_registration
 
 
 @pytest.fixture(autouse=True)
-def _fresh_hook_registration_guard():
-    """Start every test with a clean once-per-process guard."""
+def _fresh_hook_registration_guard(monkeypatch):
+    """Start every test with a clean profile-scoped registration guard."""
     hook_registration.reset_for_tests()
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
     yield
     hook_registration.reset_for_tests()
 
@@ -44,14 +46,22 @@ class TestEnsureHooksRegistered:
         import agent.shell_hooks as sh
 
         calls: dict[str, object] = {}
+        order: list[str] = []
+
+        def _discover_plugins():
+            order.append("plugins")
 
         def _shell(cfg, *, accept_hooks):
+            order.append("shell")
             calls["shell"] = (cfg, accept_hooks)
             return []
 
         def _outbound(cfg):
+            order.append("outbound")
             calls["outbound"] = cfg
             return []
+
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", _discover_plugins)
 
         monkeypatch.setattr(sh, "register_from_config", _shell)
         monkeypatch.setattr(ow, "register_from_config", _outbound)
@@ -65,6 +75,7 @@ class TestEnsureHooksRegistered:
         # never force-enabled from a backend.
         assert calls["shell"] == (cfg, False)
         assert calls["outbound"] is cfg
+        assert order == ["plugins", "shell", "outbound"]
 
     def test_repeat_calls_are_noops(self, monkeypatch):
         import agent.outbound_webhooks as ow
@@ -112,6 +123,103 @@ class TestEnsureHooksRegistered:
         cfg = {"hooks": {}}
         hook_registration.ensure_hooks_registered(cfg)
         assert seen == {"shell": cfg, "outbound": cfg}
+
+    def test_registration_is_scoped_to_each_home(self, monkeypatch, tmp_path):
+        """Each profile home registers once without suppressing another profile."""
+        import agent.outbound_webhooks as ow
+        import agent.shell_hooks as sh
+
+        observed: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            sh,
+            "register_from_config",
+            lambda cfg, *, accept_hooks: observed.append(("shell", cfg["name"])),
+        )
+        monkeypatch.setattr(
+            ow,
+            "register_from_config",
+            lambda cfg: observed.append(("outbound", cfg["name"])),
+        )
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        home_a.mkdir()
+        home_b.mkdir()
+
+        hook_registration.ensure_hooks_registered({"name": "a"}, home=home_a)
+        hook_registration.ensure_hooks_registered({"name": "a-repeat"}, home=home_a)
+        hook_registration.ensure_hooks_registered({"name": "b"}, home=home_b)
+
+        assert observed == [
+            ("shell", "a"), ("outbound", "a"),
+            ("shell", "b"), ("outbound", "b"),
+        ]
+
+    def test_inflight_call_waits_and_failed_registration_retries(self, monkeypatch, tmp_path):
+        """A home is complete only after its registration succeeds."""
+        import agent.outbound_webhooks as ow
+        import agent.shell_hooks as sh
+
+        started = threading.Event()
+        release = threading.Event()
+        second_returned = threading.Event()
+        monkeypatch.setattr(ow, "register_from_config", lambda cfg: None)
+
+        def _blocking_shell(cfg, *, accept_hooks):
+            started.set()
+            assert release.wait(2)
+
+        monkeypatch.setattr(sh, "register_from_config", _blocking_shell)
+        home = tmp_path / "profile"
+        home.mkdir()
+        first = threading.Thread(
+            target=lambda: hook_registration.ensure_hooks_registered({"hooks": {}}, home=home)
+        )
+        second = threading.Thread(
+            target=lambda: (
+                hook_registration.ensure_hooks_registered({"hooks": {}}, home=home),
+                second_returned.set(),
+            )
+        )
+        first.start()
+        assert started.wait(2)
+        second.start()
+        assert not second_returned.wait(2)
+        release.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+        assert not first.is_alive()
+        assert not second.is_alive()
+
+        retries = {"n": 0}
+
+        def _broken_load_config():
+            retries["n"] += 1
+            raise RuntimeError("bad config")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", _broken_load_config)
+        failed_home = tmp_path / "failed-profile"
+        failed_home.mkdir()
+        hook_registration.ensure_hooks_registered(home=failed_home)
+        hook_registration.ensure_hooks_registered(home=failed_home)
+        assert retries["n"] == 2
+
+    def test_slash_worker_registers_hooks_for_its_process(self, monkeypatch):
+        """The worker's independent runtime performs hook registration."""
+        from tui_gateway import slash_worker
+
+        calls = {"hooks": 0}
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.start_background_mcp_discovery", lambda **kwargs: None
+        )
+        monkeypatch.setattr("hermes_cli.mcp_startup.wait_for_mcp_discovery", lambda: None)
+        monkeypatch.setattr(
+            hook_registration,
+            "ensure_hooks_registered",
+            lambda: calls.__setitem__("hooks", calls["hooks"] + 1),
+        )
+
+        slash_worker._prepare_slash_worker_runtime()
+        assert calls == {"hooks": 1}
 
 
 class TestEntryPointWiring:

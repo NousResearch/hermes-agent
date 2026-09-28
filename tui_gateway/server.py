@@ -2363,9 +2363,10 @@ def _make_agent(
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
-    # Load hooks alongside the same profile config used to construct this agent.
-    from agent.shell_hooks import register_from_config
-    register_from_config(cfg)
+    # The build scope binds this session's HERMES_HOME; register both hook kinds
+    # from the same profile config without a second config read.
+    from agent.hook_registration import ensure_hooks_registered
+    ensure_hooks_registered(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     _pr = _load_provider_routing()

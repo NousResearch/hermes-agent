@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import plugins.dashboard_auth.drain as drain_plugin
+from plugins.dashboard_auth._shared import assess_secret_strength
 from hermes_cli.dashboard_auth import TokenPrincipal, assert_protocol_compliance
 from hermes_cli.dashboard_auth import token_auth
 
@@ -43,23 +44,23 @@ def _strong_secret() -> str:
 
 class TestEntropyGate:
     def test_strong_secret_passes(self, drain):
-        assert drain.assess_secret_strength(_strong_secret()) is None
+        assert assess_secret_strength(_strong_secret()) is None
 
     def test_empty_rejected(self, drain):
-        assert drain.assess_secret_strength("") is not None
+        assert assess_secret_strength("") is not None
 
     def test_too_short_rejected(self, drain):
         # 42 chars — one under the 43-char bar.
-        assert drain.assess_secret_strength("a1B2c3" * 7) is not None
+        assert assess_secret_strength("a1B2c3" * 7) is not None
 
     def test_long_but_repeated_rejected(self, drain):
         # 60 chars, one distinct character → low distinct count + low entropy.
-        assert drain.assess_secret_strength("a" * 60) is not None
+        assert assess_secret_strength("a" * 60) is not None
 
 
     def test_custom_min_chars_enforced(self, drain):
         s = _strong_secret()  # 43 chars
-        assert drain.assess_secret_strength(s, min_chars=999) is not None
+        assert assess_secret_strength(s, min_chars=999) is not None
 
 
 # ---------------------------------------------------------------------------

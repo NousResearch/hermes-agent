@@ -1,6 +1,6 @@
 name: kanban_api
 version: 1.0.0
-description: "Dashboard auth provider — non-interactive shared-bearer-secret for the external kanban REST API (/api/plugins/kanban). The second consumer of the generic token-auth capability (supports_token/verify_token), mirroring the drain plugin. The operator provisions a secret via HERMES_KANBAN_API_SECRET; this provider verifies an inbound Authorization bearer token against it with a constant-time compare and registers the kanban API prefix as token-authable (scope 'kanban'), excluding the interactive /dashboard subtree which stays on cookie/session auth. Fails CLOSED: a weak/short/low-entropy secret (< 256 bits) is rejected at registration and the credential stays disabled. No-op when the env var is unset. Behavioural knobs (scope, min_secret_chars) live under dashboard.kanban_api_auth in config.yaml."
+description: "Dashboard auth provider — non-interactive shared-bearer-secret for the sanitized kanban REST API (/api/plugins/kanban/v1). The operator provisions HERMES_KANBAN_API_SECRET; an inbound bearer is compared constant-time and the /v1 prefix is registered as token-authable with scope 'kanban'. Fails CLOSED on a weak (< 256-bit) secret; no-op when unset. Knobs (scope, min_secret_chars) live under dashboard.kanban_api_auth in config.yaml."
 author: NousResearch
 kind: backend
 requires_env:

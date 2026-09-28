@@ -9,17 +9,20 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import logging
+import math
 import os
 import secrets
 import urllib.parse
+from collections import Counter
 from typing import Any, Callable, Dict, Optional
 
 import httpx
 
 from hermes_cli.dashboard_auth import (
     DashboardAuthProvider, InvalidCodeError, LoginStart, ProviderError, RefreshExpiredError, Session,
-    classify_jwks_lookup_error)
+    TokenPrincipal, classify_jwks_lookup_error)
 
 # JWKS Cache-Control max-age (nous contract C7); self-hosted mirrors it.
 JWKS_CACHE_SECONDS = 300
@@ -244,6 +247,106 @@ class NonInteractiveMixin:
 
     def complete_login(self, *, code: str, state: str, code_verifier: str, redirect_uri: str) -> Session:
         raise NotImplementedError(self._NOT_INTERACTIVE)
+
+
+# ---- Shared-secret service credentials (drain control, kanban REST API) ----
+
+# token_urlsafe(32) produces exactly 43 chars, so a correctly-provisioned
+# secret clears the default bar exactly.
+DEFAULT_MIN_SECRET_CHARS = 43
+# Rejects degenerate values like "aaaa..." that are long but trivially low-entropy.
+_MIN_DISTINCT_CHARS = 16
+# Distribution-aware second guard on top of length + distinct-count.
+_MIN_SHANNON_BITS = 128.0
+
+
+def _shannon_bits(value: str) -> float:
+    """Total Shannon entropy (bits) of ``value`` over its character distribution."""
+    if not value:
+        return 0.0
+    n = len(value)
+    per_char = -sum((c / n) * math.log2(c / n) for c in Counter(value).values())
+    return per_char * n
+
+
+def assess_secret_strength(secret: str, *, min_chars: int = DEFAULT_MIN_SECRET_CHARS) -> Optional[str]:
+    """Human-readable rejection reason if ``secret`` is too weak, else ``None``. Checks, in
+    order: length >= ``min_chars``, distinct chars >= ``_MIN_DISTINCT_CHARS``, Shannon
+    entropy >= ``_MIN_SHANNON_BITS``."""
+    if not secret:
+        return "secret is empty"
+    if len(secret) < min_chars:
+        return (
+            f"secret too short: {len(secret)} chars (need >= {min_chars}; "
+            "use a >=256-bit value, e.g. `python -c \"import secrets; "
+            "print(secrets.token_urlsafe(32))\"`)")
+    distinct = len(set(secret))
+    if distinct < _MIN_DISTINCT_CHARS:
+        return f"secret has only {distinct} distinct characters (need >= {_MIN_DISTINCT_CHARS}); looks structured/low-entropy"
+    bits = _shannon_bits(secret)
+    if bits < _MIN_SHANNON_BITS:
+        return f"secret entropy too low: {bits:.0f} bits (need >= {_MIN_SHANNON_BITS:.0f}); looks structured/repeated"
+    return None
+
+
+def shared_secret_settings(
+    load_section: Callable[[], dict], *, env: str, default_scope: str, purpose: str,
+) -> dict:
+    """``SharedSecretProvider`` kwargs from ``env`` + the plugin's config section (``scope``,
+    ``min_secret_chars``); raises ``SkipRegistration`` when the secret is unset or weak, so a
+    weak secret fails CLOSED at load and is never silently accepted."""
+    secret = os.environ.get(env, "").strip()
+    if not secret:
+        raise SkipRegistration(
+            f"{env} is not set. Set a >=256-bit secret (e.g. `python -c \"import secrets; "
+            f"print(secrets.token_urlsafe(32))\"`) to enable {purpose}; leave it unset to keep it disabled.")
+    section = load_section()
+    scope = str(section.get("scope", default_scope) or default_scope).strip() or default_scope
+    try:
+        min_chars = int(section.get("min_secret_chars", DEFAULT_MIN_SECRET_CHARS))
+    except (TypeError, ValueError):
+        min_chars = DEFAULT_MIN_SECRET_CHARS
+    reason = assess_secret_strength(secret, min_chars=min_chars)
+    if reason is not None:
+        raise SkipRegistration(f"{env} rejected — {reason}. {purpose} stays disabled (fail-closed).", level="warning")
+    return {"secret": secret, "scope": scope}
+
+
+class SharedSecretProvider(NonInteractiveMixin, DashboardAuthProvider):
+    """Non-interactive shared-bearer-secret service credential. Subclasses set ``name``,
+    ``display_name``, ``_principal``, ``_default_scope`` and the ``_NOT_INTERACTIVE`` text."""
+
+    supports_token = True
+    supports_session = False
+    _principal: str = ""
+    _default_scope: str = ""
+
+    def __init__(self, *, secret: str, scope: str = "") -> None:
+        # Construction enforces the entropy bar too, so a caller bypassing register()
+        # still can't build a weak provider.
+        reason = assess_secret_strength(secret)
+        if reason is not None:
+            raise ValueError(f"{self.name} secret rejected: {reason}")
+        self._secret = secret
+        self._scope = scope or self._default_scope
+
+    def verify_token(self, *, token: str) -> Optional[TokenPrincipal]:
+        """Constant-time compare; a scoped principal on match, else ``None`` so the generic
+        seam falls through / fails closed."""
+        if token and hmac.compare_digest(token.encode("utf-8"), self._secret.encode("utf-8")):
+            return TokenPrincipal(principal=self._principal, provider=self.name, scopes=(self._scope,))
+        return None
+
+    def verify_session(self, *, access_token: str) -> Optional[Session]:
+        # Never mints a Session, so never recognises a cookie. Return None (don't raise)
+        # so it stacks harmlessly in the cookie-verify loop.
+        return None
+
+    def refresh_session(self, *, refresh_token: str) -> Session:
+        raise NotImplementedError(self._NOT_INTERACTIVE)
+
+    def revoke_session(self, *, refresh_token: str) -> None:
+        return None
 
 
 class JwtOAuthProvider(DashboardAuthProvider):

@@ -9,22 +9,10 @@ raise. Knobs ``scope`` / ``min_secret_chars`` live under ``dashboard.drain_auth`
 """
 from __future__ import annotations
 
-import hmac
 import logging
-import os
-from typing import Optional
 
-from hermes_cli.dashboard_auth import DashboardAuthProvider, Session, TokenPrincipal
-from plugins.dashboard_auth._shared import NonInteractiveMixin, SkipRegistration, load_config_section, register_provider
-
-# The entropy gate lives in the shared dashboard_auth framework module so every
-# service-credential plugin applies the same bar; re-exported here because this
-# plugin's public surface (and its tests) grew around it.
-from hermes_cli.dashboard_auth.secret_strength import (  # noqa: F401
-    DEFAULT_MIN_SECRET_CHARS as _DEFAULT_MIN_SECRET_CHARS,
-    _shannon_bits,
-    assess_secret_strength,
-)
+from plugins.dashboard_auth._shared import (
+    SharedSecretProvider, load_config_section, register_provider, shared_secret_settings)
 
 logger = logging.getLogger(__name__)
 _TAG = "dashboard-auth-drain"
@@ -35,46 +23,15 @@ DRAIN_ROUTE_PATH = "/api/gateway/drain"
 LAST_SKIP_REASON: str = ""
 
 
-class DrainSecretProvider(NonInteractiveMixin, DashboardAuthProvider):
+class DrainSecretProvider(SharedSecretProvider):
     """Non-interactive shared-bearer-secret provider for drain control."""
 
     name = "drain-secret"
     display_name = "Drain Control (service credential)"
-    supports_token = True
-    supports_session = False
+    _principal = "drain-control"
+    _default_scope = "drain"
     _NOT_INTERACTIVE = "DrainSecretProvider is a non-interactive service credential."
     _NO_START_LOGIN = "DrainSecretProvider is a non-interactive service credential; there is no login flow."
-
-    def __init__(self, *, secret: str, scope: str = "drain") -> None:
-        # Defence in depth: construction enforces the entropy bar too, so a
-        # caller bypassing register() still can't build a weak provider.
-        reason = assess_secret_strength(secret)
-        if reason is not None:
-            raise ValueError(f"drain secret rejected: {reason}")
-        self._secret = secret
-        self._scope = scope or "drain"
-
-    # ---- token capability (the only thing this provider implements) --------
-
-    def verify_token(self, *, token: str) -> Optional[TokenPrincipal]:
-        """Constant-time compare; ``drain-control`` principal on match, else
-        ``None`` so the generic seam falls through / fails closed."""
-        if token and hmac.compare_digest(token.encode("utf-8"), self._secret.encode("utf-8")):
-            return TokenPrincipal(principal="drain-control", provider=self.name, scopes=(self._scope,))
-        return None
-
-    # ---- interactive methods: unsupported (service credential only) --------
-
-    def verify_session(self, *, access_token: str) -> Optional[Session]:
-        # Never mints a Session, so never recognises a cookie. Return None (don't raise)
-        # so it stacks harmlessly in the cookie-verify loop.
-        return None
-
-    def refresh_session(self, *, refresh_token: str) -> Session:
-        raise NotImplementedError(self._NOT_INTERACTIVE)
-
-    def revoke_session(self, *, refresh_token: str) -> None:
-        return None
 
 
 # ---- Plugin entry point ----
@@ -85,24 +42,9 @@ def _load_config_drain_auth_section() -> dict:
 
 def _settings() -> dict:
     """Resolve DrainSecretProvider kwargs from env/config; raises ``SkipRegistration``."""
-    secret = os.environ.get("HERMES_DASHBOARD_DRAIN_SECRET", "").strip()
-    if not secret:
-        raise SkipRegistration(
-            "HERMES_DASHBOARD_DRAIN_SECRET is not set. Set a per-agent >=256-bit secret "
-            "(e.g. `python -c \"import secrets; print(secrets.token_urlsafe(32))\"`) to enable "
-            "NAS-driven drain coordination; leave it unset to disable the drain endpoint.")
-    section = _load_config_drain_auth_section()
-    scope = str(section.get("scope", "drain") or "drain").strip() or "drain"
-    try:
-        min_chars = int(section.get("min_secret_chars", _DEFAULT_MIN_SECRET_CHARS))
-    except (TypeError, ValueError):
-        min_chars = _DEFAULT_MIN_SECRET_CHARS
-    reason = assess_secret_strength(secret, min_chars=min_chars)
-    if reason is not None:
-        raise SkipRegistration(
-            f"HERMES_DASHBOARD_DRAIN_SECRET rejected — {reason}. The drain endpoint stays disabled (fail-closed).",
-            level="warning")
-    return {"secret": secret, "scope": scope}
+    return shared_secret_settings(
+        lambda: _load_config_drain_auth_section(), env="HERMES_DASHBOARD_DRAIN_SECRET",
+        default_scope="drain", purpose="NAS-driven drain coordination")
 
 
 def register(ctx) -> None:

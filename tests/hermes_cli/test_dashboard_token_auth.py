@@ -265,30 +265,6 @@ def test_prefix_route_does_not_match_outside_prefix():
         assert getattr(req.state, "token_authenticated", False) is False
 
 
-def test_prefix_route_excluded_subtree_stays_on_session_gate():
-    register_provider(_TokenProvider(secret="good", scopes=("kanban",)))
-    token_auth.register_token_route_prefix(
-        "/api/plugins/kanban/",
-        exclude=("/api/plugins/kanban/dashboard",),
-    )
-    # The interactive dashboard subtree is NOT owned by the seam: no token
-    # demanded, request passes through to the cookie/session gates untouched.
-    for path in (
-        "/api/plugins/kanban/dashboard",
-        "/api/plugins/kanban/dashboard/tasks/t_abc123",
-    ):
-        assert not token_auth.is_token_route(path)
-        req = _FakeRequest(path=path)
-        resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
-        assert resp.status_code == 200
-        assert getattr(req.state, "token_authenticated", False) is False
-    # ...while the external surface next to it is token-only.
-    assert token_auth.is_token_route("/api/plugins/kanban/tasks")
-    req = _FakeRequest(path="/api/plugins/kanban/tasks", headers={})
-    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
-    assert resp.status_code == 401
-
-
 def test_clear_token_routes_drops_prefixes():
     token_auth.register_token_route_prefix("/api/plugins/kanban/")
     token_auth.clear_token_routes()

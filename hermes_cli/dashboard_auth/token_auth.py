@@ -27,11 +27,9 @@ from hermes_cli.dashboard_auth.request_utils import (
 
 _log = logging.getLogger(__name__)
 
-# Exact paths map to an optional required scope; prefix entries additionally carry excluded
-# subtrees (an external plugin surface can be token-authable while its interactive dashboard
-# subtree stays on the cookie/session gate).
+# Exact paths and path prefixes, each mapped to an optional required scope.
 _token_routes: dict[str, Optional[str]] = {}
-_token_route_prefixes: list[tuple[str, Optional[str], tuple[str, ...]]] = []
+_token_route_prefixes: dict[str, Optional[str]] = {}
 _lock = threading.Lock()
 
 # Sentinel distinguishing "no registered route matched" from a matched route
@@ -47,45 +45,23 @@ def register_token_route(path: str, *, scope: Optional[str] = None) -> None:
         _token_routes[path] = scope
 
 
-def register_token_route_prefix(
-    prefix: str,
-    *,
-    scope: Optional[str] = None,
-    exclude: tuple[str, ...] = (),
-) -> None:
-    """Mark every path under ``prefix`` as token-authable.
-
-    The prefix form exists for routers with parameterised paths (e.g.
-    ``/tasks/{id}``) that exact-match registration cannot cover. ``exclude``
-    lists subtree roots under the prefix that must stay OUT of the seam —
-    each excluded path matches itself and everything below it.
-
-    Same semantics as :func:`register_token_route` otherwise, including the
-    optional required ``scope``. Idempotent for identical registrations.
-    """
-    if not prefix.endswith("/"):
-        prefix = prefix + "/"
-    entry = (prefix, scope, tuple(e.rstrip("/") for e in exclude))
+def register_token_route_prefix(prefix: str, *, scope: Optional[str] = None) -> None:
+    """Mark every path under ``prefix`` as token-authable — for routers with parameterised
+    paths (``/tasks/{id}``) that exact matching cannot cover. Otherwise the same semantics as
+    :func:`register_token_route`, including the optional required ``scope``."""
     with _lock:
-        if entry not in _token_route_prefixes:
-            _token_route_prefixes.append(entry)
+        _token_route_prefixes[prefix.rstrip("/") + "/"] = scope
 
 
 def _match_token_route(path: str):
-    """Return the required scope for ``path`` or ``_NO_MATCH``.
-
-    Exact registrations win over prefix registrations; the first matching
-    prefix (registration order) wins among prefixes.
-    """
+    """Required scope for ``path`` (``None`` = any verified principal), or ``_NO_MATCH``.
+    Exact registrations win; among prefixes the first registered match wins."""
     with _lock:
         if path in _token_routes:
             return _token_routes[path]
-        for prefix, scope, excludes in _token_route_prefixes:
-            if not path.startswith(prefix):
-                continue
-            if any(path == ex or path.startswith(ex + "/") for ex in excludes):
-                continue
-            return scope
+        for prefix, scope in _token_route_prefixes.items():
+            if path.startswith(prefix):
+                return scope
     return _NO_MATCH
 
 

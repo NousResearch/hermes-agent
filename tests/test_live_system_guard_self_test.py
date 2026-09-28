@@ -125,6 +125,16 @@ def test_subprocess_run_systemctl_restart_blocked():
         subprocess.run(["systemctl", "--user", "restart", "hermes-gateway"])
 
 
+@pytest.mark.parametrize(
+    "unit", ["hermes-dashboard.service", "hermes-serve-work.service"])
+def test_subprocess_run_systemctl_mutates_non_gateway_units_blocked(unit):
+    """#125988: the guard used to match gateway tokens only, so a mutating call
+    on the operator's live dashboard/serve unit sailed through and tripped its
+    start-limit on a host running real units."""
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run(["systemctl", "--user", "restart", unit])
+
+
 def test_subprocess_run_full_path_systemctl_blocked():
     """``/usr/bin/systemctl`` (full path) must be blocked too."""
     with pytest.raises(RuntimeError, match="live-system guard"):

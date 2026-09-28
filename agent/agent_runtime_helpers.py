@@ -650,6 +650,12 @@ def _normalize_sentinel_encoded_content(messages: List[Dict]) -> int:
         decoded = _decode_sentinel_content(content)
         if decoded is not content:
             msg["content"] = decoded
+            # Deliberately keep any `_db_persisted` marker: this decode is representation-only.
+            # `SessionDB._encode_content(decoded)` reproduces the same `\x00json:` scalar already
+            # stored, so the durable row is not stale. Dropping the marker here makes the append-only
+            # flush treat this historical turn as new (user _row_id values are never update targets in
+            # resolve_and_repair_transcript_batch), re-appending a duplicate user turn (review: ehz0ah,
+            # #125331). The merge/prune passes drop the marker only when the durable bytes actually change.
             restored += 1
     return restored
 

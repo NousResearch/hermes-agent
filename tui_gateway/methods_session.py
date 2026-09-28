@@ -13,6 +13,19 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 
+def _service_tier_override(raw) -> str | None:
+    value = str(raw or "").strip().lower()
+    if value == "fast":
+        return "priority"
+    if value == "normal":
+        return ""
+    return None
+
+
+def _startup_service_tier_override() -> str | None:
+    return _service_tier_override(os.environ.get("HERMES_TUI_SERVICE_TIER"))
+
+
 @method("session.create")
 def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
@@ -67,7 +80,9 @@ def _(rid, params: dict) -> dict:
     # true pins priority, and false pins normal. Empty string is the internal
     # explicit-normal sentinel because _make_agent uses None for inheritance.
     create_service_tier_override = None
-    if "fast" in params:
+    if "service_tier" in params:
+        create_service_tier_override = _service_tier_override(params.get("service_tier"))
+    elif "fast" in params:
         create_service_tier_override = (
             "priority" if is_truthy_value(params.get("fast")) else ""
         )
@@ -76,13 +91,7 @@ def _(rid, params: dict) -> dict:
         # override. The TUI client does not include CLI flags in every
         # session.create request, so bridge the value through the launch
         # environment while preserving an explicit per-session ``fast`` pick.
-        startup_tier = str(
-            os.environ.get("HERMES_TUI_SERVICE_TIER") or ""
-        ).strip().lower()
-        if startup_tier == "fast":
-            create_service_tier_override = "priority"
-        elif startup_tier == "normal":
-            create_service_tier_override = ""
+        create_service_tier_override = _startup_service_tier_override()
 
     ready = threading.Event()
     now = time.time()
@@ -775,6 +784,14 @@ def _(rid, params: dict) -> dict:
             lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
             _enable_gateway_prompts()
             overrides = _stored_session_runtime_overrides(found) or {}
+            resume_tier = (
+                _service_tier_override(params.get("service_tier"))
+                if "service_tier" in params
+                else _startup_service_tier_override()
+            )
+            if resume_tier is not None:
+                overrides = dict(overrides)
+                overrides["service_tier_override"] = resume_tier
             model_override = overrides.get("model_override") or {}
             cwd = profile_resume_cwd or _default_session_cwd()
             record = _deferred_session_record(
@@ -874,6 +891,14 @@ def _(rid, params: dict) -> dict:
             # deferred build (and the info below) match the eager path — without them
             # the build drops the provider ("No LLM provider configured").
             overrides = _stored_session_runtime_overrides(found) or {}
+            resume_tier = (
+                _service_tier_override(params.get("service_tier"))
+                if "service_tier" in params
+                else _startup_service_tier_override()
+            )
+            if resume_tier is not None:
+                overrides = dict(overrides)
+                overrides["service_tier_override"] = resume_tier
             model_override = overrides.get("model_override") or {}
             cwd = profile_resume_cwd or _default_session_cwd()
             record = _deferred_session_record(
@@ -968,7 +993,15 @@ def _(rid, params: dict) -> dict:
                 # resolve to the profile too. Runtime identity is restored from the
                 # stored session row so switching chats does not inherit whatever
                 # global model another chat last selected.
-                stored_runtime_overrides = _stored_session_runtime_overrides(found)
+                stored_runtime_overrides = _stored_session_runtime_overrides(found) or {}
+                resume_tier = (
+                    _service_tier_override(params.get("service_tier"))
+                    if "service_tier" in params
+                    else _startup_service_tier_override()
+                )
+                if resume_tier is not None:
+                    stored_runtime_overrides = dict(stored_runtime_overrides)
+                    stored_runtime_overrides["service_tier_override"] = resume_tier
                 agent = _make_agent(
                     sid,
                     target,

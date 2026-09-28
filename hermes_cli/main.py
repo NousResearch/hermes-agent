@@ -210,7 +210,7 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
-    service_tier: Optional[str] = None,
+    service_tier: object = None,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot

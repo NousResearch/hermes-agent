@@ -303,3 +303,30 @@ def test_tui_launcher_forwards_service_tier_to_child_env(monkeypatch, tmp_path):
 
     assert exc.value.code == 1
     assert captured["env"]["HERMES_TUI_SERVICE_TIER"] == "normal"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("fast", "priority"), ("normal", ""), ("invalid", None), (None, None)],
+)
+def test_tui_gateway_service_tier_override_mapping(raw, expected):
+    from tui_gateway.methods_session import _service_tier_override
+
+    assert _service_tier_override(raw) == expected
+
+
+@pytest.mark.parametrize(("tier", "expected"), [("fast", "priority"), ("normal", "")])
+def test_tui_gateway_session_create_accepts_service_tier_param(monkeypatch, tier, expected):
+    from tui_gateway import server
+
+    monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    server._sessions.clear()
+    response = server._methods["session.create"](
+        "tier", {"cols": 80, "service_tier": tier}
+    )
+    sid = response["result"]["session_id"]
+    try:
+        assert server._sessions[sid]["create_service_tier_override"] == expected
+    finally:
+        server._sessions.pop(sid, None)

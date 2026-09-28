@@ -5,6 +5,7 @@ import { evictInkCaches } from '@hermes/ink'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { STARTUP_SERVICE_TIER } from '../config/env.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
@@ -200,7 +201,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         await closeSession(previousSid)
       }
 
-      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      const createParams: { cols: number; service_tier?: string } = { cols: colsRef.current }
+      if (STARTUP_SERVICE_TIER === 'fast' || STARTUP_SERVICE_TIER === 'normal') {
+        createParams.service_tier = STARTUP_SERVICE_TIER
+      }
+      const r = await rpc<SessionCreateResponse>('session.create', createParams)
 
       if (!r) {
         patchUiState({ status: 'ready' })
@@ -341,7 +346,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
+        const resumeParams: { cols: number; session_id: string; service_tier?: string } = {
+          cols: colsRef.current,
+          session_id: id
+        }
+        if (STARTUP_SERVICE_TIER === 'fast' || STARTUP_SERVICE_TIER === 'normal') {
+          resumeParams.service_tier = STARTUP_SERVICE_TIER
+        }
+        gw.request<SessionResumeResponse>('session.resume', resumeParams)
           .then(raw => {
             const r = asRpcResult<SessionResumeResponse>(raw)
 

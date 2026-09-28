@@ -54,6 +54,20 @@ from tui_gateway.transport import (
 
 logger = logging.getLogger(__name__)
 
+
+def _service_tier_override(raw) -> str | None:
+    value = str(raw or "").strip().lower()
+    if value == "fast":
+        return "priority"
+    if value == "normal":
+        return ""
+    return None
+
+
+def _startup_service_tier_override() -> str | None:
+    return _service_tier_override(os.environ.get("HERMES_TUI_SERVICE_TIER"))
+
+
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"

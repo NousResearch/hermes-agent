@@ -97,3 +97,25 @@ def test_unpriceable_unknown_quant_model_never_shrinks_residency(tmp_path, monke
     _gguf_with_tensor_type(mdir / "ternary.gguf", 142)
     budget = HardwareBudget(24 << 30, 24 << 30, 16 << 30)
     assert admitted_residency_count(mdir, budget, 2) == 2
+
+
+def test_unknown_quant_draft_is_omitted_not_advertised(tmp_path):
+    """_draft_fits must refuse an unpriceable draft: the unknown tensors are skipped, so
+    pricing would under-count by the bulk of the file and advertise model-draft/spec-*
+    for a draft the stock engine cannot load (base refused it via ValueError; head must
+    keep that refusal — review finding on #123286)."""
+    from hermes_cli.local_runtime.estimator import profile_from_gguf
+    from hermes_cli.local_runtime.gguf import read_gguf_header
+    from hermes_cli.local_runtime.presets import _draft_fits
+
+    known = tmp_path / "draft-known.gguf"
+    unknown = tmp_path / "draft-ternary.gguf"
+    _gguf_with_tensor_type(known, 39)   # MXFP4: priced in the engine's table
+    _gguf_with_tensor_type(unknown, 142)
+    profile = profile_from_gguf(read_gguf_header(known))
+    budget = HardwareBudget(8 << 30, 8 << 30, 8 << 30)
+
+    assert _draft_fits(unknown, profile, budget, 8192, 0) is False
+    # Positive control: the same fixture with a priced type still admits the draft,
+    # so the early-out does not over-refuse.
+    assert _draft_fits(known, profile, budget, 8192, 0) is True

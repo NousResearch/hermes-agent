@@ -64,7 +64,16 @@ def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhe
     draft KV defaults to f16, independently of the target's q8 cache.
     """
     try:
-        draft = profile_from_gguf(read_gguf_header(path))
+        header = read_gguf_header(path)
+        if header.has_unknown_quant_types:
+            # Parseable but unpriced: the unknown tensors are skipped, so the
+            # weights byte count under-counts by the bulk of the file and the
+            # budget check would pass on a number missing most of the draft
+            # (base refused this file outright; head must not advertise an
+            # unloadable draft either). Same early-out as _launch_footprint.
+            logger.warning("draft omitted %s: unknown quant types for this engine", path.name)
+            return False
+        draft = profile_from_gguf(header)
         draft_need = footprint_bytes(
             draft, window, flash_attention=False,
             overhead_bytes=RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(draft.n_vocab, mtp_capable=False))

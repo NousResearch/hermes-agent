@@ -555,12 +555,29 @@ _INFLIGHT_NOTE_LEADS = (
     "[USER INITIATED SKILLS RELOAD:",
 )
 
+# The skills-reload note's body embeds user-supplied skill names/descriptions, so a
+# description containing "]" would make the first "]" cut mid-note, destroying the
+# restated task. Anchor on the trailer the producer emits (gateway/slash_commands.py
+# "Use skills_list to see the updated catalog.]"); if i18n changed it, fall back to
+# the LAST "]" before the blank line that separates the note from the task.
+_SKILLS_RELOAD_TRAILER = "Use skills_list to see the updated catalog.]"
+
 
 def _strip_leading_one_shot_note(text: str) -> str:
     """Drop a leading one-shot CLI note (through its closing bracket) from an
     in-flight task text; unknown text is returned unchanged."""
     for lead in _INFLIGHT_NOTE_LEADS:
         if text.startswith(lead):
+            if lead == _INFLIGHT_NOTE_LEADS[2]:
+                end = text.find(_SKILLS_RELOAD_TRAILER)
+                if end != -1:
+                    return text[end + len(_SKILLS_RELOAD_TRAILER):].lstrip()
+                block_end = text.find("\n\n")  # note body, then the restated task
+                if block_end != -1:
+                    last = text.rfind("]", 0, block_end)
+                    if last != -1:
+                        return text[last + 1:].lstrip()
+                break
             end = text.find("]")
             if end != -1:
                 return text[end + 1:].lstrip()

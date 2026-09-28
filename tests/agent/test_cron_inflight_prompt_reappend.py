@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import (
     _SUMMARY_END_MARKER,
+    _strip_leading_one_shot_note,
     SUMMARY_PREFIX,
     ContextCompressor,
 )
@@ -371,3 +372,27 @@ def test_repeated_compactions_never_nest_the_switch_note():
             if m.get("role") == "user":
                 assert "model was just switched" not in str(m.get("content")), cycle
         assert _job_copies(out) == 1, cycle
+
+
+SKILLS_NOTE_DESC_BRACKET = (
+    "[USER INITIATED SKILLS RELOAD:\n"
+    "Added Skills: 1\n"
+    "    - pdf: Returns a list [str] of rows\n"
+    "Use skills_list to see the updated catalog.]"
+)
+
+
+def test_skills_reload_note_with_bracketed_description_strips_cleanly():
+    """The skills-reload note embeds user-supplied skill descriptions; a `]` inside one
+    (an ordinary type hint) must not cut the strip mid-note — the restated task keeps
+    its first line and no note fragment survives."""
+    text = f"{SKILLS_NOTE_DESC_BRACKET}\n\n{JOB_SENTINEL} first line matters"
+    stripped = _strip_leading_one_shot_note(text)
+    assert stripped == f"{JOB_SENTINEL} first line matters"
+
+    # Well-formed note through the trailer the producer emits.
+    text2 = f"{SKILLS_NOTE_DESC_BRACKET}\n\n{JOB_SENTINEL}"
+    assert _strip_leading_one_shot_note(text2) == JOB_SENTINEL
+
+    # Unknown text is returned unchanged.
+    assert _strip_leading_one_shot_note(JOB_SENTINEL) == JOB_SENTINEL

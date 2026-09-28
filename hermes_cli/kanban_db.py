@@ -3997,15 +3997,18 @@ def goal_text_with_operator_notes(conn: sqlite3.Connection, task: Task) -> str:
     title + body, plus its most recent human-authored comments under an "Operator
     notes" heading — a waiver or steer left on the card is as much the goal as the
     body, and a judge that never sees it re-rejects a handoff the operator already
-    approved. Comments authored by the worker's own profile are its own output,
-    not operator intent, and are excluded (same filter as the live comment bridge
-    in tools/kanban_tools). Capped at the last 10 comments / 2000 chars so a
-    chatty card cannot blow up the judge prompt."""
+    approved. Comments authored by the card's assignee are the worker's own output,
+    not operator intent, and are excluded — keyed on ``task.assignee`` (the profile
+    that authors worker comments, per ``_persisted_identity`` in tools/kanban_tools),
+    never on the caller's profile, so a human closing a card from the CLI does not
+    have their own waiver dropped; an unassigned card excludes nothing. Capped at
+    the last 10 comments / 2000 chars so a chatty card cannot blow up the judge
+    prompt."""
     base = f"{task.title}\n\n{task.body or ''}".strip()
-    from hermes_cli.profiles import current_profile_name
-    own = current_profile_name("worker") or "worker"
+    own = (task.assignee or "").strip().casefold()
     human = [c for c in list_comments(conn, task.id)
-             if (c.author or "").strip() != own and (c.body or "").strip()]
+             if (not own or (c.author or "").strip().casefold() != own)
+             and (c.body or "").strip()]
     if not human:
         return base
     lines = [f"- {c.author or 'operator'}: {c.body.strip()}"

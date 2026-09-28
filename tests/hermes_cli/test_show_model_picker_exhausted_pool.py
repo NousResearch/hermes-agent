@@ -43,6 +43,9 @@ def test_show_model_picker_requests_for_picker():
     # The reasoning-effort step depends on the capability map; the rebase onto a main
     # that added ``capabilities=True`` must keep both flags in the same call.
     assert captured.get("capabilities") is True
+    # Visibility only: this call live-probes the current custom endpoint, which must keep
+    # its historical 5s discovery budget instead of the 1.5s fast-picker one (#103843).
+    assert captured.get("fast_custom_probe") is False
     cli._open_model_picker.assert_called_once()
     assert cli._open_model_picker.call_args[0][0] is providers
 

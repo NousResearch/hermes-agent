@@ -615,3 +615,218 @@ async def test_registry_thread_refusals_and_partial_delivery(
     if replacement is not None:
         replacement.send_message_event.assert_not_awaited()
     assert len(sent) <= (2 if visible else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keys", [False, True])
+async def test_sdk_admission_never_sends_plaintext_after_learning_encryption(
+    monkeypatch, keys
+):
+    from mautrix.client import Client
+    from mautrix.client.state_store.memory import MemoryStateStore
+    from mautrix.errors import MNotFound
+    from mautrix.types import EventType, RoomEncryptionStateEventContent
+    from plugins.platforms.matrix.read_context import (
+        MatrixSessionAccess,
+        MatrixSessionError,
+    )
+
+    adapter = _adapter()
+    store = MemoryStateStore()
+    client = Client(mxid="@bot:server", base_url="https://server", state_store=store)
+    adapter._client = client
+    monkeypatch.setattr(
+        client, "get_state_event", AsyncMock(side_effect=MNotFound(404, "Unencrypted"))
+    )
+    encrypt = AsyncMock(return_value={"ciphertext": "encrypted"})
+    if keys:
+        monkeypatch.setattr(
+            client, "crypto", SimpleNamespace(encrypt_megolm_event=encrypt)
+        )
+    wire = AsyncMock(return_value={"event_id": "$confirmed"})
+    monkeypatch.setattr(client.api, "request", wire)
+
+    async def identify(room):
+        await store.set_encryption_info(room, RoomEncryptionStateEventContent())
+        return False
+
+    adapter._is_dm_room = identify
+    try:
+        access = MatrixSessionAccess.capture(adapter, ROOM, USER)
+        if keys:
+            assert (
+                await access.send_message({"msgtype": "m.text", "body": "Secret"})
+                == "$confirmed"
+            )
+            assert str(EventType.ROOM_ENCRYPTED) in str(wire.call_args.args[1])
+            assert wire.call_args.args[2] == {"ciphertext": "encrypted"}
+        else:
+            with pytest.raises(MatrixSessionError, match="missing encryption keys"):
+                await access.send_message({"msgtype": "m.text", "body": "Secret"})
+            wire.assert_not_awaited()
+    finally:
+        await client.api.session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_send", [0, 1])
+async def test_sdk_connection_failure_preserves_confirmed_ids_and_uncertainty(
+    monkeypatch, failed_send
+):
+    from aiohttp import ServerDisconnectedError
+    from mautrix.client import Client
+    from mautrix.client.state_store.memory import MemoryStateStore
+    from mautrix.errors import MatrixConnectionError
+
+    importlib.import_module("model_tools")
+    adapter = _adapter()
+    store = MemoryStateStore()
+    monkeypatch.setattr(store, "is_encrypted", AsyncMock(return_value=False))
+    client = Client(mxid="@bot:server", base_url="https://server", state_store=store)
+    client.api.default_retry_count = 0
+    adapter._client = client
+    accepted = []
+
+    async def transport(*args):
+        event_id = "$root" if not accepted else "$reply"
+        accepted.append(event_id)
+        if len(accepted) - 1 == failed_send:
+            raise ServerDisconnectedError("Response lost after acceptance")
+        return {"event_id": event_id}, SimpleNamespace(status=200)
+
+    monkeypatch.setattr(client.api, "_send", transport)
+    try:
+        result = await _dispatch(adapter, {"root_text": "Root", "message": "Reply"})
+        expected = {
+            "success": False,
+            "error": f"{MatrixConnectionError.__name__}: Response lost after acceptance",
+            "delivery_uncertain": True,
+        }
+        if failed_send:
+            expected.update(room_id=ROOM, root_event_id="$root", partial=True)
+        assert result == expected
+        assert accepted == (["$root", "$reply"] if failed_send else ["$root"])
+        assert "$root" not in adapter._threads
+    finally:
+        await client.api.session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "confirmed,existing",
+    [(0, False), (1, False), (2, False), pytest.param(0, True, id="existing-root")],
+)
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_owner_loop_stop_bounds_waits_and_preserves_delivery_progress(
+    monkeypatch, confirmed, existing, cancelled
+):
+    import threading
+
+    from gateway import session_context
+    from contextvars import ContextVar
+
+    importlib.import_module("model_tools")
+    adapter = _adapter()
+    adapter.max_message_length = 120
+    adapter._client = SimpleNamespace(
+        crypto=None,
+        api=SimpleNamespace(token="token"),
+        state_store=SimpleNamespace(is_encrypted=AsyncMock(return_value=False)),
+        get_event=AsyncMock(
+            return_value={
+                "event_id": "$existing",
+                "room_id": ROOM,
+                "type": "m.room.message",
+                "content": {"msgtype": "m.text", "body": "Existing root"},
+            }
+        ),
+    )
+    owner = asyncio.new_event_loop()
+    reached = threading.Event()
+    sent = []
+    tasks = []
+
+    async def send(room, kind, content, **kwargs):
+        tasks.append(asyncio.current_task())
+        if len(sent) == confirmed:
+            owner.call_soon(owner.stop)
+            reached.set()
+            await asyncio.Event().wait()
+        event_id = "$root" if not sent else "$reply"
+        sent.append(event_id)
+        return event_id
+
+    adapter._client.send_message_event = send
+    real_wait = asyncio.wait_for
+    waits = []
+
+    async def expire(awaitable, timeout):
+        if timeout not in {300.0, 5.0}:
+            return await real_wait(awaitable, timeout)
+        waits.append(timeout)
+        assert await asyncio.to_thread(reached.wait, 15), (
+            "Send did not reach the stopped owner"
+        )
+        if len(waits) == 1 and cancelled:
+            raise asyncio.CancelledError
+        raise TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", expire)
+    thread = threading.Thread(target=owner.run_forever)
+    thread.start()
+    tokens = set_session_vars(
+        platform="matrix", chat_id=ROOM, user_id=USER, transport_adapter=adapter
+    )
+    monkeypatch.setattr(
+        session_context,
+        "_SESSION_TRANSPORT_LOOP",
+        ContextVar[asyncio.AbstractEventLoop | None]("stopping_owner", default=owner),
+    )
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                registry.dispatch,
+                "matrix_thread_create",
+                {
+                    "message": "Reply " * 60,
+                    **(
+                        {"root_event_id": "$existing"}
+                        if existing
+                        else {"root_text": "Root"}
+                    ),
+                },
+            ),
+            timeout=15,
+        )
+        expected = {
+            "success": False,
+            "error": "Matrix thread creation cancelled"
+            if cancelled
+            else "Matrix thread creation timed out",
+            "delivery_uncertain": True,
+        }
+        if existing:
+            expected.update(room_id=ROOM, root_event_id="$existing")
+        elif confirmed:
+            expected.update(room_id=ROOM, root_event_id="$root", partial=True)
+        if confirmed == 2:
+            expected["initial_reply_event_id"] = "$reply"
+        assert isinstance(result, str)
+        assert json.loads(result) == expected
+        assert waits == [300.0, 5.0]
+        assert sent == ["$root", "$reply"][:confirmed]
+    finally:
+        clear_session_vars(tokens)
+        thread.join(timeout=15)
+        assert not thread.is_alive()
+        for task in set(tasks):
+            task.cancel()
+
+        def drain():
+            async def finish():
+                await asyncio.gather(*set(tasks), return_exceptions=True)
+
+            owner.run_until_complete(finish())
+            owner.close()
+
+        await asyncio.to_thread(drain)

@@ -47,8 +47,12 @@ async def _matrix_thread_create(args: dict[str, Any]) -> str:
     if error:
         return json.dumps({"success": False, "error": error})
 
+    from plugins.platforms.matrix.thread_create import MatrixThreadCreateProgress
+
     interrupted = partial(is_thread_interrupted, threading.get_ident())
-    task = None
+    cancel_requested = threading.Event()
+    progress = MatrixThreadCreateProgress(room_id)
+    task: asyncio.Task[dict[str, Any]] | None = None
 
     async def create():
         nonlocal task
@@ -59,33 +63,51 @@ async def _matrix_thread_create(args: dict[str, Any]) -> str:
             requester=requester,
             root_text=root_text,
             root_event_id=root_event_id,
-            interrupted=interrupted,
+            interrupted=lambda: cancel_requested.is_set() or interrupted(),
+            progress=progress,
         )
 
     operation = create()
     if owner_loop is asyncio.get_running_loop():
-        result = await operation
-        return json.dumps(result, ensure_ascii=False)
-    try:
-        future = asyncio.run_coroutine_threadsafe(operation, owner_loop)
-    except RuntimeError:
-        operation.close()
-        return json.dumps({
-            "success": False,
-            "error": "Matrix gateway loop is unavailable",
-        })
-    wrapped = asyncio.wrap_future(future)
-    try:
-        result = await asyncio.shield(wrapped)
-    except asyncio.CancelledError:
-        if task is None:
-            future.cancel()
+        wrapped = asyncio.create_task(operation)
+        future = wrapped
+    else:
+        try:
+            future = asyncio.run_coroutine_threadsafe(operation, owner_loop)
+        except RuntimeError:
+            operation.close()
             return json.dumps({
                 "success": False,
-                "error": "Matrix thread creation cancelled",
+                "error": "Matrix gateway loop is unavailable",
             })
-        owner_loop.call_soon_threadsafe(task.cancel)
-        result = await asyncio.shield(wrapped)
+        wrapped = asyncio.wrap_future(future)
+    try:
+        result = await asyncio.wait_for(asyncio.shield(wrapped), timeout=300.0)
+    except (TimeoutError, asyncio.CancelledError) as exc:
+        cancel_requested.set()
+        error = (
+            "Matrix thread creation cancelled"
+            if isinstance(exc, asyncio.CancelledError)
+            else "Matrix thread creation timed out"
+        )
+        if task is None:
+            future.cancel()
+        else:
+            try:
+                owner_loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                delivery = progress.delivery
+                return json.dumps(
+                    delivery.failure(error, delivery_uncertain=delivery.sending)
+                )
+        try:
+            result = await asyncio.wait_for(asyncio.shield(wrapped), timeout=5.0)
+        except (TimeoutError, asyncio.CancelledError):
+            if task is not None and task.done() and not task.cancelled():
+                result = task.result()
+            else:
+                delivery = progress.delivery
+                result = delivery.failure(error, delivery_uncertain=delivery.sending)
     return json.dumps(result, ensure_ascii=False)
 
 

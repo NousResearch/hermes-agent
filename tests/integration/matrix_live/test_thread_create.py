@@ -170,3 +170,24 @@ def test_homeserver_denies_the_existing_root_reply_without_claiming_delivery(
         )
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))
+
+
+@pytest.mark.parametrize("live_room", ["group"], indirect=True)
+def test_separate_client_encryption_transition_refuses_plaintext_after_admission(
+    live_room: LiveRoom,
+    linux_nio_observer: LinuxNioObserver,
+    record_property: Callable[[str, object], None],
+) -> None:
+    started = time.monotonic()
+    try:
+        assert (
+            _probe(
+                linux_nio_observer,
+                live_room,
+                False,
+                f"asyncio.wait_for(probe.assert_admission_encryption_transition_refused({live_room.bot.access_token!r}), timeout=15)",
+            )
+            == "missing encryption keys"
+        )
+    finally:
+        record_property("body_seconds", round(time.monotonic() - started, 3))

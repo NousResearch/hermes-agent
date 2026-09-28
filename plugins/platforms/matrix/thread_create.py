@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -18,6 +19,49 @@ if TYPE_CHECKING:
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
 
+@dataclass(frozen=True)
+class MatrixThreadDelivery:
+    room_id: str
+    root_event_id: str | None = None
+    initial_reply_event_id: str | None = None
+    root_delivered: bool = False
+    sending: bool = False
+
+    def failure(
+        self, error: str, *, delivery_uncertain: bool = False
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {"success": False, "error": error}
+        if self.root_event_id:
+            result.update(room_id=self.room_id, root_event_id=self.root_event_id)
+        if self.root_delivered or self.initial_reply_event_id:
+            result["partial"] = True
+        if self.initial_reply_event_id:
+            result["initial_reply_event_id"] = self.initial_reply_event_id
+        if delivery_uncertain:
+            result["delivery_uncertain"] = True
+        return result
+
+
+@dataclass
+class MatrixThreadCreateProgress:
+    room_id: str
+    delivery: MatrixThreadDelivery = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.delivery = MatrixThreadDelivery(self.room_id)
+
+    def record(
+        self,
+        root: str | None,
+        initial_reply: str | None,
+        root_delivered: bool,
+        sending: bool,
+    ) -> None:
+        self.delivery = MatrixThreadDelivery(
+            self.room_id, root, initial_reply, root_delivered, sending
+        )
+
+
 class MatrixThreadCreateMixin:
     async def create_matrix_thread(
         self: MatrixAdapter,
@@ -28,6 +72,7 @@ class MatrixThreadCreateMixin:
         root_text: str | None,
         root_event_id: str | None,
         interrupted: Callable[[], bool],
+        progress: MatrixThreadCreateProgress | None = None,
     ) -> dict[str, Any]:
         """Return confirmed event IDs after posting the first reply to a main-timeline root."""
         root = None
@@ -35,6 +80,8 @@ class MatrixThreadCreateMixin:
         root_delivered = False
         sending = False
         phase = "root"
+        if progress is None:
+            progress = MatrixThreadCreateProgress(room_id)
         try:
             access = MatrixSessionAccess.capture(
                 self, room_id, requester, interrupted=interrupted
@@ -79,6 +126,7 @@ class MatrixThreadCreateMixin:
                         "Matrix root must be an eligible main-timeline message"
                     )
                 root = root_event_id
+                progress.record(root, initial_reply, root_delivered, sending)
             else:
                 if root_text is None:
                     raise MatrixSessionError("root_text is required for a new root")
@@ -90,11 +138,13 @@ class MatrixThreadCreateMixin:
                 self._check_thread_interrupt(interrupted)
                 access.check()
                 sending = True
+                progress.record(root, initial_reply, root_delivered, sending)
                 root = await self._send_room_message(
                     room_id, self._build_text_message_content(formatted), access=access
                 )
                 sending = False
                 root_delivered = True
+                progress.record(root, initial_reply, root_delivered, sending)
 
             phase = "reply"
             for chunk in self.truncate_message(
@@ -114,12 +164,14 @@ class MatrixThreadCreateMixin:
                     },
                 )
                 sending = True
+                progress.record(root, initial_reply, root_delivered, sending)
                 event_id = await self._send_room_message(
                     room_id, content, access=access
                 )
                 sending = False
                 if initial_reply is None:
                     initial_reply = event_id
+                    progress.record(root, initial_reply, root_delivered, sending)
                     access.check(event_id)
                     home_token = set_hermes_home_override(
                         str(access.participation_home)
@@ -146,25 +198,26 @@ class MatrixThreadCreateMixin:
                 elif initial_reply is None:
                     initial_reply = exc.event_id
                 sending = False
-            result = {
-                "success": False,
-                "error": "Matrix thread creation cancelled"
+            from mautrix.errors import MatrixConnectionError
+
+            progress.record(root, initial_reply, root_delivered, sending)
+            return progress.delivery.failure(
+                "Matrix thread creation cancelled"
                 if isinstance(exc, asyncio.CancelledError)
                 else f"{type(exc).__name__}: {exc}"
                 if not isinstance(exc, MatrixSessionError)
                 else str(exc),
-            }
-            if root:
-                result.update(room_id=room_id, root_event_id=root)
-            if root_delivered or initial_reply:
-                result["partial"] = True
-            if initial_reply:
-                result["initial_reply_event_id"] = initial_reply
-            if sending and isinstance(
-                exc, (asyncio.CancelledError, TimeoutError, OSError)
-            ):
-                result["delivery_uncertain"] = True
-            return result
+                delivery_uncertain=sending
+                and isinstance(
+                    exc,
+                    (
+                        asyncio.CancelledError,
+                        TimeoutError,
+                        OSError,
+                        MatrixConnectionError,
+                    ),
+                ),
+            )
 
     @staticmethod
     def _check_thread_interrupt(interrupted: Callable[[], bool]) -> None:

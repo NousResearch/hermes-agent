@@ -206,3 +206,89 @@ class ThreadCreationProbe:
             await self.send("Attempt thread creation [old:denied]", root=original)
         finally:
             await self.close()
+
+    async def assert_admission_encryption_transition_refused(
+        self, bot_token: str
+    ) -> str:
+        from mautrix.client import Client
+        from mautrix.client.state_store.memory import MemoryStateStore
+        from mautrix.types import RoomID
+        from nio import MessageDirection, RoomMessagesResponse
+        from gateway.config import PlatformConfig
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from plugins.platforms.matrix.read_context import (
+            MatrixSessionAccess,
+            MatrixSessionError,
+        )
+
+        await self.start()
+        sdk = Client(
+            mxid=self.bot_id,
+            base_url=self.client.homeserver,
+            token=bot_token,
+            state_store=MemoryStateStore(),
+        )
+        sdk.api.default_retry_count = 0
+        await sdk.join_room(RoomID(self.room_id))
+        observer = self.client
+        changed = False
+
+        class AdmissionAdapter(MatrixAdapter):
+            async def _is_dm_room(self, room_id: str) -> bool:
+                nonlocal changed
+                if not changed:
+                    response = await observer.room_put_state(
+                        room_id,
+                        "m.room.encryption",
+                        {"algorithm": "m.megolm.v1.aes-sha2"},
+                    )
+                    assert isinstance(response, RoomPutStateResponse), response
+                    changed = True
+                    await sdk.get_state(RoomID(room_id))
+                return await super()._is_dm_room(room_id)
+
+        adapter = AdmissionAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "homeserver": self.client.homeserver,
+                    "user_id": self.bot_id,
+                    "allowed_users": self.client.user_id,
+                    "e2ee_mode": "off",
+                },
+            )
+        )
+        adapter._client = sdk
+        adapter._joined_rooms.add(self.room_id)
+        adapter.set_authorization_check(
+            lambda user, chat_type, chat_id: user == self.client.user_id
+        )
+        try:
+            access = MatrixSessionAccess.capture(
+                adapter, self.room_id, self.client.user_id
+            )
+            try:
+                await access.send_message({
+                    "msgtype": "m.text",
+                    "body": "matrix-admission-secret",
+                })
+            except MatrixSessionError as exc:
+                assert str(exc) == "missing encryption keys"
+            else:
+                raise AssertionError(
+                    "Plaintext was accepted after encryption admission"
+                )
+            response = await self.client.room_messages(
+                self.room_id,
+                direction=MessageDirection.back,
+                limit=100,
+            )
+            assert isinstance(response, RoomMessagesResponse), response
+            assert not any(
+                event.source.get("content", {}).get("body") == "matrix-admission-secret"
+                for event in response.chunk
+            )
+            return "missing encryption keys"
+        finally:
+            await sdk.api.session.close()
+            await self.close()

@@ -157,6 +157,11 @@ class MatrixSessionAccess:
             self.check()
             event_type = EventType.ROOM_ENCRYPTED
         await self.admit()
+        if event_type == EventType.ROOM_MESSAGE and await self.require_delivery_keys():
+            content = await self.client.encrypt(RoomID(self.room_id), event_type, content)
+            self.check()
+            event_type = EventType.ROOM_ENCRYPTED
+            await self.admit()
         return await self.client.send_message_event(
             RoomID(self.room_id), event_type, content, disable_encryption=True,
         )

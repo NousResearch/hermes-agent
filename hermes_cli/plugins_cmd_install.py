@@ -280,6 +280,7 @@ def _install_plugin_core(
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
+    require_consent: bool = True,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
@@ -294,7 +295,9 @@ def _install_plugin_core(
     *before_swap(manifest, tree)* runs on the manifest-checked clone BEFORE the security scan, so
     the single scan and portable-package check admit the merged tree (file-count/size limits
     included). It may return the relative paths it merged in, which a scan block then attributes,
-    and may raise :class:`PluginOperationError` to abort (re-pin consent)."""
+    and may raise :class:`PluginOperationError` to abort (re-pin consent). *require_consent* False
+    skips the active-replacement dependency prompt in :func:`publish_plugin` — for a caller that
+    already gathered consent for this exact install itself (a multi-home batch)."""
     requested_revision = _pc()._normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _pc()._resolve_git_url(identifier)
@@ -384,7 +387,7 @@ def _install_plugin_core(
         from hermes_cli.plugins_transaction import publish_plugin
 
         try:
-            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True)
+            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=require_consent)
         except Exception as exc:
             raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}") from exc
 
@@ -530,11 +533,13 @@ def cmd_install(
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
-    ref: Optional[str] = None,
+    ref: Optional[str] = None, require_consent: bool = True,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
-    contract as ``--ref``); every path enforces the kill list (no GUI bypass)."""
+    contract as ``--ref``); every path enforces the kill list (no GUI bypass). *require_consent*
+    False skips the active-replacement dependency prompt for a caller that already gathered
+    consent for this exact install itself (the memory-provider migration's multi-home batch)."""
     from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
     entry = None
@@ -557,10 +562,10 @@ def dashboard_install_plugin(
     try:
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, allow_removed=False)
+                entry, force=force, allow_removed=False, require_consent=require_consent)
         else:
             target, installed_manifest, installed_name = _pc()._install_plugin_core(
-                identifier, force=force, ref=(ref or "").strip() or None)
+                identifier, force=force, ref=(ref or "").strip() or None, require_consent=require_consent)
     except _pc().PluginScanBlocked as exc:
         fields = ("pattern_id", "severity", "category", "file", "line", "description")
         return {

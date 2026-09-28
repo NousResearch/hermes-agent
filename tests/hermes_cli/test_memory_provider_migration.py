@@ -58,6 +58,114 @@ def test_provider_unknown_to_catalog_is_reported_not_installed(home, monkeypatch
     assert "not in the plugin catalog" in said[0] and "memory.provider" in said[0]
 
 
+def _four_homes_needing_hindsight(tmp_path):
+    homes = [tmp_path / name for name in ("default", "work-a", "work-b", "personal")]
+    for home in homes:
+        home.mkdir()
+        (home / "config.yaml").write_text("memory:\n  provider: hindsight\n")
+    return homes
+
+
+def test_migrate_all_homes_asks_once_for_several_profiles_sharing_a_provider(tmp_path, monkeypatch):
+    """Four profiles all missing the same provider must face ONE consent prompt, not
+    four (#125794): accepting it installs every affected home without reprompting."""
+    homes = _four_homes_needing_hindsight(tmp_path)
+    monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: homes)
+    monkeypatch.setattr(mig, "provider_present", lambda name, home: (home / "plugins" / name).is_dir())
+    monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    monkeypatch.setattr(mig.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(mig.sys.stdout, "isatty", lambda: True)
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt: (prompts.append(prompt), "y")[1])
+
+    installed_homes: list[Path] = []
+    consent_flags: list[bool] = []
+
+    def fake_install_into(home, *, consented=False):
+        consent_flags.append(consented)
+
+        def _install(name: str) -> dict:
+            installed_homes.append(home)
+            (home / "plugins" / name).mkdir(parents=True)
+            return {"ok": True}
+        return _install
+
+    monkeypatch.setattr(mig, "_install_into", fake_install_into)
+
+    installed = mig.migrate_all_homes(say=lambda s: None)
+
+    assert len(prompts) == 1
+    assert installed == ["hindsight"] * 4
+    assert installed_homes == homes
+    assert consent_flags == [True] * 4
+
+
+def test_migrate_all_homes_declined_batch_touches_no_home(tmp_path, monkeypatch):
+    homes = _four_homes_needing_hindsight(tmp_path)
+    monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: homes)
+    monkeypatch.setattr(mig, "provider_present", lambda name, home: (home / "plugins" / name).is_dir())
+    monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    monkeypatch.setattr(mig.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(mig.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    def must_not_install(home, *, consented=False):
+        def _install(name: str) -> dict:
+            pytest.fail("declining the batch prompt must not install anything")
+        return _install
+
+    monkeypatch.setattr(mig, "_install_into", must_not_install)
+
+    assert mig.migrate_all_homes(say=lambda s: None) == []
+    assert not any((home / "plugins").exists() for home in homes)
+
+
+def test_migrate_all_homes_non_interactive_skips_without_prompting(tmp_path, monkeypatch):
+    homes = _four_homes_needing_hindsight(tmp_path)
+    monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: homes)
+    monkeypatch.setattr(mig, "provider_present", lambda name, home: (home / "plugins" / name).is_dir())
+    monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    monkeypatch.setattr(mig.sys.stdin, "isatty", lambda: False)
+
+    def fail_on_input(prompt):
+        pytest.fail("non-interactive migration must not block on input()")
+
+    monkeypatch.setattr("builtins.input", fail_on_input)
+
+    def must_not_install(home, *, consented=False):
+        def _install(name: str) -> dict:
+            pytest.fail("a non-interactive decline must not install anything")
+        return _install
+
+    monkeypatch.setattr(mig, "_install_into", must_not_install)
+
+    assert mig.migrate_all_homes(say=lambda s: None) == []
+
+
+def test_migrate_all_homes_keyboard_interrupt_at_prompt_is_a_clean_decline(tmp_path, monkeypatch):
+    homes = _four_homes_needing_hindsight(tmp_path)
+    monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: homes)
+    monkeypatch.setattr(mig, "provider_present", lambda name, home: (home / "plugins" / name).is_dir())
+    monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    monkeypatch.setattr(mig.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(mig.sys.stdout, "isatty", lambda: True)
+
+    def raise_interrupt(prompt):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", raise_interrupt)
+
+    def must_not_install(home, *, consented=False):
+        def _install(name: str) -> dict:
+            pytest.fail("a cancelled batch consent must not install anything")
+        return _install
+
+    monkeypatch.setattr(mig, "_install_into", must_not_install)
+
+    # Must return cleanly — no KeyboardInterrupt escapes to the caller.
+    assert mig.migrate_all_homes(say=lambda s: None) == []
+
+
 def test_startup_recovery_attempts_each_profile_home(tmp_path, monkeypatch):
     """One multiplexed process can start agents for two homes missing the same provider."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override

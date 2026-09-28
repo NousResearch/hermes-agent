@@ -12,11 +12,16 @@ name, config section (``memory.<name>``), data directory and tool names, so the 
 Both install the catalog entry at its reviewed pin through the normal plugin install path (kill
 list, dependency constraints, enable), never a custom source. Offline or absent from the catalog:
 the user gets the exact one-liner instead of silently running without memory.
+
+:func:`migrate_all_homes` preflights every home before installing anything, so several profiles
+missing the same provider face ONE consent decision (deduplicated by provider) instead of one
+per profile — a decline or a non-interactive run leaves every home untouched.
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -52,13 +57,9 @@ def catalog_source(name: str) -> Optional[str]:
     return entry.name if entry is not None else None
 
 
-def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[str], None] = print) -> Optional[str]:
-    """Install the configured provider's catalog plugin into *home* when the provider is gone.
-
-    Returns the installed plugin name, or None when nothing needed doing or the install could not
-    happen (already reported through *say*). Never raises: memory being down must not take the
-    update or the agent down with it.
-    """
+def _pending_provider(home: Path, *, say: Callable[[str], None]) -> Optional[str]:
+    """The provider *home* needs installed from the catalog, or None (nothing to do, or a
+    catalog-miss already reported through *say*). Read-only: no install, no prompt."""
     name = configured_provider(home)
     from agent.memory_provider import is_core_memory_provider
     if is_core_memory_provider(name) or provider_present(name, home):
@@ -66,6 +67,19 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     if catalog_source(name) is None:
         say(f"  ⚠ Memory provider '{name}' is configured but not installed and not in the plugin catalog. "
             f"Install it with `hermes plugins install <source>` or change memory.provider.")
+        return None
+    return name
+
+
+def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[str], None] = print) -> Optional[str]:
+    """Install the configured provider's catalog plugin into *home* when the provider is gone.
+
+    Returns the installed plugin name, or None when nothing needed doing or the install could not
+    happen (already reported through *say*). Never raises: memory being down must not take the
+    update or the agent down with it.
+    """
+    name = _pending_provider(home, say=say)
+    if name is None:
         return None
     try:
         result = install(name)
@@ -80,30 +94,90 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     return None
 
 
-def _install_into(home: Path) -> Callable[[str], dict]:
+def _install_into(home: Path, *, consented: bool = False) -> Callable[[str], dict]:
+    """*consented* True skips the per-install dependency prompt: a batch caller
+    (:func:`migrate_all_homes`) already gathered one consent decision for this exact install."""
     def _install(name: str) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
-            return dashboard_install_plugin("", force=False, enable=True, catalog_name=name)
+            return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
+                                             require_consent=not consented)
         finally:
             reset_hermes_home_override(token)
     return _install
 
 
+def _consent_for_batch(pending: dict[str, list[Path]], *, say: Callable[[str], None]) -> bool:
+    """One y/N gate for every provider :func:`migrate_all_homes` found pending, across every home
+    (#125794): asking once per profile for the same dependency set turned a safe migration into a
+    repeated update-time interruption. Never raises: EOFError/KeyboardInterrupt at the prompt is a
+    plain decline, same as answering no."""
+    say("\n  Memory provider(s) moved out of core and need one-time installation:")
+    for name, homes in pending.items():
+        profiles = ", ".join(home.name or str(home) for home in homes)
+        say(f"    - {name} (profiles: {profiles})")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        say("  Non-interactive update — skipping dependency install. "
+            "Run `hermes plugins install <source>` for each provider when ready.\n")
+        return False
+    try:
+        answer = input("  Prepare these with Hermes through PM now? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer not in {"y", "yes"}:
+        say("  Skipped — run `hermes plugins install <source>` for each provider when ready.\n")
+        return False
+    return True
+
+
 def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
-    """``hermes update`` hook: every profile home sharing this venv. Returns installed plugin names."""
+    """``hermes update`` hook: every profile home sharing this venv.
+
+    Preflights every home first so several profiles missing the same provider face one consent
+    decision instead of one prompt each; a decline or a non-interactive run touches no home at
+    all. SIGINT at the prompt or during install is a clean cancellation, not a raw traceback that
+    would otherwise escape into the parent process waiting on the update handoff. Returns
+    installed plugin names.
+    """
     from pm.plugins_state import dependency_homes
-    installed: list[str] = []
+
+    pending: dict[str, list[Path]] = {}
     for home in dependency_homes():
         try:
-            name = migrate_home(home, install=_install_into(home), say=say)
+            name = _pending_provider(home, say=say)
         except Exception as exc:
-            logger.debug("memory provider migration skipped for %s: %s", home, exc)
+            logger.debug("memory provider migration preflight skipped for %s: %s", home, exc)
             continue
         if name:
-            installed.append(name)
+            pending.setdefault(name, []).append(home)
+
+    if not pending:
+        return []
+    if not _consent_for_batch(pending, say=say):
+        return []
+
+    installed: list[str] = []
+    try:
+        for name, homes in pending.items():
+            for home in homes:
+                try:
+                    result = _install_into(home, consented=True)(name)
+                except Exception as exc:
+                    logger.debug("memory provider migration skipped for %s: %s", home, exc)
+                    continue
+                if result.get("ok"):
+                    say(f"  ✓ Memory provider '{name}' moved out of core — installed its plugin from the "
+                        f"catalog for {home} (your memory.{name} settings and data are unchanged).")
+                    installed.append(name)
+                else:
+                    say(f"  ⚠ Memory provider '{name}' moved out of core and could not be installed "
+                        f"automatically for {home}: {result.get('error') or 'unknown error'}. "
+                        f"Run `hermes plugins install {name}`.")
+    except KeyboardInterrupt:
+        say("  ⚠ Memory provider migration cancelled; profiles already installed keep their plugin, "
+            "run `hermes plugins install <source>` for the rest when ready.")
     return installed
 
 

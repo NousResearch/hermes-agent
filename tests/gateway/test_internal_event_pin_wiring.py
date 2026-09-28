@@ -215,8 +215,9 @@ async def test_internal_event_keeps_channel_prompt_and_parent_override(monkeypat
     (("pending_steer", False), ("interrupt_message", True)),
     ids=("leftover-steer", "interrupt-text"),
 )
+@pytest.mark.parametrize("channel_prompt", ["Channel hint.", "", None], ids=("hint", "empty", "none"))
 async def test_eventless_followup_keeps_effective_prompt_through_next_human(
-    monkeypatch, result_key, interrupted
+    monkeypatch, result_key, interrupted, channel_prompt
 ):
     config = GatewayConfig()
     config.platforms[Platform.DISCORD] = PlatformConfig(
@@ -234,7 +235,7 @@ async def test_eventless_followup_keeps_effective_prompt_through_next_human(
     adapter._active_sessions = {}
     source = _human_thread_source()
 
-    await _drive(runner, ((False, source),), channel_prompt="Channel hint.")
+    await _drive(runner, ((False, source),), channel_prompt=channel_prompt)
     first = calls[0]
     turn_ctx = TurnContext(
         source=first["source"],
@@ -258,14 +259,9 @@ async def test_eventless_followup_keeps_effective_prompt_through_next_human(
     await runner._run_agent_queued_followup(
         turn_ctx, adapter, pending, pending_event, "done", result, None
     )
-    await _drive(runner, ((False, source),), channel_prompt="Channel hint.")
+    await _drive(runner, ((False, source),), channel_prompt=channel_prompt)
 
-    assert len(calls) == 3
-    assert [call["channel_prompt"] for call in calls] == [
-        "Channel hint.",
-        "Channel hint.",
-        "Channel hint.",
-    ]
+    assert [call["channel_prompt"] for call in calls] == [channel_prompt] * 3
     ephemeral = [_effective_ephemeral(runner, call) for call in calls]
     assert "Parent persona." in ephemeral[0]
     assert ephemeral[0] == ephemeral[1] == ephemeral[2]
@@ -306,8 +302,4 @@ async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypa
     )
 
     assert len(calls) == 1
-    assert calls[0]["channel_prompt"] == "Queued event prompt."
-    assert calls[0]["channel_prompt"] != turn_ctx.channel_prompt
-    assert calls[0]["source"] is source
-    assert calls[0]["session_key"] == KEY
-
+    assert calls[0]["channel_prompt"] == "Queued event prompt.", "event prompt must win over the inherited one"

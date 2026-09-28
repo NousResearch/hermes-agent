@@ -30,6 +30,7 @@ from rich.panel import Panel
 from hermes_constants import display_hermes_home
 from hermes_state_ids import new_session_id as mint_session_id
 from agent.i18n import t
+from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 from hermes_cli.browser_connect import (
@@ -1420,7 +1421,7 @@ class CLICommandsMixin:
             self._session_db.append_messages_batch(new_session_id, [
                 {"role": msg.get("role", "user"), "tool_name": msg.get("tool_name") or msg.get("name"),
                  "api_content": extract_api_content_sidecar(msg),
-                 **{k: msg.get(k) for k in _BRANCH_COPY_KEYS}}
+                 **{k: msg.get(k) for k in _BRANCH_COPY_KEYS}, **message_identity(msg, with_tool_uids=True)}
                 for msg in self.conversation_history], chunk_rows=500)
         with suppress(Exception):
             self._session_db.set_session_title(new_session_id, branch_title)

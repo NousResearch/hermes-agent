@@ -19,6 +19,9 @@ class EnvVarUpdate(BaseModel):
     # Bearer for the OPENAI_BASE_URL connectivity probe (auth-gated /v1/models otherwise looks
     # "reachable but empty"); ignored by plain PUT /api/env.
     api_key: str = ""
+    # Sent by the Desktop's provider-connection forms: a key a tool panel also asks for (Gemini,
+    # xAI...) then still counts as a provider setup in shared metrics.
+    provider_setup: bool = False
 
 class EnvVarDelete(BaseModel):
     key: str

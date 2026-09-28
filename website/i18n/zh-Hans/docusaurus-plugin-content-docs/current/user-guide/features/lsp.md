@@ -137,6 +137,8 @@ lsp:
 * `disabled: true` — 即使扩展名与文件匹配，也完全跳过该服务器。
 * `command: [bin, ...args]` — 指定自定义二进制路径，绕过自动安装。
 * `env: {KEY: value}` — 传递给启动进程的额外环境变量。
+  服务器以及 npm / `go install` 自动安装程序都从 Hermes 清理过的子进程环境启动
+  （不含网关令牌或模型提供商 API 密钥），因此需要这类变量的服务器只能通过此键获得。
 * `initialization_options: {...}` — 合并到 LSP `initialize` 握手时发送的
   `initializationOptions` 载荷中。具体内容因服务器而异，请参阅对应语言服务器的文档。
 

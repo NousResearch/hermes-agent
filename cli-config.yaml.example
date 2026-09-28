@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 48
+_config_version: 49
 
 # =============================================================================
 # Database Configuration
@@ -1824,13 +1824,16 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
-  # Tool progress display level (CLI and gateway)
+  # Tool progress display level (CLI, gateway, and the TUI/Desktop tool feed)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
   #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
+  # Independent of show_reasoning: hiding reasoning never hides tool rows.
+  # Answer-only (just the final response) is show_reasoning: false plus
+  # tool_progress: off.
   # tool_progress: all
 
   # tool_progress, interim_assistant_messages, long_running_notifications,

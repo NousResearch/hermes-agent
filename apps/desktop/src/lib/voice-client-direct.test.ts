@@ -445,3 +445,55 @@ describe('transcriptFromOpenAiMultipartBody', () => {
     expect(transcriptFromOpenAiMultipartBody('{"error":"nope"}')).toBe('{"error":"nope"}')
   })
 })
+
+describe('synthesizeSpeechClientDirect — a hung provider cannot wedge the speech queue', () => {
+  const elevenTts: DirectTtsConfig = {
+    mode: 'direct',
+    wire: 'elevenlabs-tts',
+    provider: 'elevenlabs',
+    base_url: 'https://api.elevenlabs.io/v1',
+    api_key: 'xi_test',
+    model: 'eleven_flash_v2_5',
+    voice: 'voice-1',
+    speed: null
+  }
+
+  function hangingFetch() {
+    return vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        })
+    )
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('gives up on a request that never answers', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', hangingFetch())
+
+    const pending = synthesizeSpeechClientDirect(elevenTts, 'Hello there.')
+    const settled = vi.fn()
+
+    pending.then(settled, settled)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(settled).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    await expect(pending).rejects.toThrow()
+  })
+
+  it('aborts at once when the caller cancels (barge-in)', async () => {
+    vi.stubGlobal('fetch', hangingFetch())
+    const barge = new AbortController()
+
+    const pending = synthesizeSpeechClientDirect(elevenTts, 'Hello there.', barge.signal)
+    barge.abort()
+
+    await expect(pending).rejects.toThrow()
+  })
+})

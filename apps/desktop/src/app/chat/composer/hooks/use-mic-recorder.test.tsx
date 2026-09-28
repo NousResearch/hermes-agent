@@ -28,7 +28,11 @@ function deferred() {
 class FakeAudioContext extends EventTarget {
   static instances: FakeAudioContext[] = []
   static throwOnConstruct = false
-  state: AudioContextState = 'running'
+  /** 'suspended' = autoplay/renderer handed back a context that isn't running. */
+  static initialState: AudioContextState = 'running'
+  /** Chromium leaves resume() pending (not rejected) when it won't resume. */
+  static resumeHangs = false
+  state: AudioContextState = FakeAudioContext.initialState
   closing = deferred()
 
   constructor() {
@@ -49,7 +53,13 @@ class FakeAudioContext extends EventTarget {
     return { connect: vi.fn() }
   }
 
-  resume = vi.fn(async () => undefined)
+  resume = vi.fn(async () => {
+    if (FakeAudioContext.resumeHangs) {
+      await new Promise(() => undefined)
+    }
+
+    this.state = 'running'
+  })
 
   close() {
     return this.closing.promise.then(() => {
@@ -83,6 +93,8 @@ const flush = () => act(async () => new Promise<void>(resolve => window.setTimeo
 beforeEach(() => {
   FakeAudioContext.instances = []
   FakeAudioContext.throwOnConstruct = false
+  FakeAudioContext.initialState = 'running'
+  FakeAudioContext.resumeHangs = false
   vi.stubGlobal('AudioContext', FakeAudioContext)
   vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
   vi.stubGlobal(
@@ -166,6 +178,49 @@ describe('useMicRecorder level meter', () => {
     await flush()
 
     expect(onMeterFailure).toHaveBeenCalledOnce()
+  })
+
+  // Speech captured while the meter's context is suspended reads as flat
+  // silence; the take must say so instead of claiming "no speech heard".
+  it('marks the take unverified when the meter context never starts running', async () => {
+    FakeAudioContext.initialState = 'suspended'
+    FakeAudioContext.resumeHangs = true
+    const onMeterFailure = vi.fn()
+    const { result } = renderHook(() => useMicRecorder(copy))
+
+    await act(async () => {
+      await result.current.handle.start({ onMeterFailure, onSilence: vi.fn(), silenceLevel: 0.075, silenceMs: 1_250 })
+    })
+
+    let recording: Awaited<ReturnType<typeof result.current.handle.stop>> = null
+
+    await act(async () => {
+      recording = await result.current.handle.stop()
+    })
+
+    expect(FakeAudioContext.instances[0].resume).toHaveBeenCalled()
+    expect(recording).toMatchObject({ heardSpeech: false, meterUnverified: true })
+    // Not a dead device: the take isn't reported as a meter failure.
+    expect(onMeterFailure).not.toHaveBeenCalled()
+  })
+
+  it('waits for a suspended meter to resume before the take counts as metered', async () => {
+    FakeAudioContext.initialState = 'suspended'
+    const { result } = renderHook(() => useMicRecorder(copy))
+
+    await act(async () => {
+      await result.current.handle.start()
+    })
+
+    expect(FakeAudioContext.instances[0].state).toBe('running')
+
+    let recording: Awaited<ReturnType<typeof result.current.handle.stop>> = null
+
+    await act(async () => {
+      recording = await result.current.handle.stop()
+    })
+
+    expect(recording).toMatchObject({ meterUnverified: false })
   })
 
   it('does not report its own close at the end of a take as a failure', async () => {

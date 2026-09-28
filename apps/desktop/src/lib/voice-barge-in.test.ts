@@ -110,3 +110,44 @@ describe('monitorSpeechDuringPlayback — voice.barge_in_threshold_multiplier (#
     }
   })
 })
+
+describe('monitorSpeechDuringPlayback — no deaf window after (re-)arming', () => {
+  // The monitor's SUSTAINED_MS; the trigger must fire within it (+2 frames).
+  const SUSTAINED_MS = 300
+
+  it('trips on speech from the very first frame, with no quiet calibration first', async () => {
+    const onSpeech = vi.fn()
+    micLevel = 0.2 // the user is already talking when the monitor opens
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech })
+
+    await flushMicrotasks()
+    advance(SUSTAINED_MS + 32)
+    stop()
+
+    expect(onSpeech).toHaveBeenCalledOnce()
+  })
+
+  it('does not learn speech into the floor: a level just over the quiet trigger still trips', async () => {
+    const onSpeech = vi.fn()
+    micLevel = 0.1
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech })
+
+    await flushMicrotasks()
+    advance(SUSTAINED_MS + 32)
+    stop()
+
+    expect(onSpeech).toHaveBeenCalledOnce()
+  })
+
+  it('still does not trip in a quiet room', async () => {
+    const onSpeech = vi.fn()
+    micLevel = 0.01
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => false, onSpeech })
+
+    await flushMicrotasks()
+    advance(2_000)
+    stop()
+
+    expect(onSpeech).not.toHaveBeenCalled()
+  })
+})

@@ -5,19 +5,14 @@ so each gateway user gets their own memory bucket instead of sharing a static on
 """
 
 import json
-import os
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
 
-
 # ---------------------------------------------------------------------------
 # Concrete test provider that records init kwargs
 # ---------------------------------------------------------------------------
-
 
 class RecordingProvider(MemoryProvider):
     """Minimal provider that records what initialize() receives."""
@@ -56,16 +51,12 @@ class RecordingProvider(MemoryProvider):
     def shutdown(self):
         pass
 
-
 # ---------------------------------------------------------------------------
 # MemoryManager user_id threading tests
 # ---------------------------------------------------------------------------
 
-
 class TestMemoryManagerUserIdThreading:
     """Verify user_id reaches providers via initialize_all."""
-
-
 
     def test_no_user_id_when_cli(self):
         """CLI sessions should not have user_id in kwargs."""
@@ -80,7 +71,6 @@ class TestMemoryManagerUserIdThreading:
 
         assert "user_id" not in p._init_kwargs
         assert p._init_kwargs.get("platform") == "cli"
-
 
     def test_multiple_providers_all_receive_user_id(self):
         mgr = MemoryManager()
@@ -149,10 +139,8 @@ class TestMemoryManagerUserIdThreading:
 # Mem0 provider user_id tests
 # ---------------------------------------------------------------------------
 
-
 class TestMem0UserIdScoping:
     """Verify Mem0 plugin uses gateway user_id when provided."""
-
 
     def test_no_user_id_falls_back_to_config(self):
         """Without user_id in kwargs, should use config default."""
@@ -168,7 +156,6 @@ class TestMem0UserIdScoping:
             provider.initialize(session_id="test-sess")
 
         assert provider._user_id == "custom-default"
-
 
     def test_different_users_get_different_ids(self):
         """Two providers initialized with different user_ids should be scoped differently."""
@@ -190,11 +177,9 @@ class TestMem0UserIdScoping:
         assert p2._user_id == "bob_456"
         assert p1._user_id != p2._user_id
 
-
 # ---------------------------------------------------------------------------
 # Honcho provider user_id tests
 # ---------------------------------------------------------------------------
-
 
 class TestHonchoUserIdScoping:
     """Verify Honcho plugin keeps runtime user scoping separate from config peer_name."""
@@ -298,29 +283,6 @@ class TestHonchoUserIdScoping:
         # peer_name should not have been overridden
         assert mock_cfg.peer_name == "my-custom-peer"
 
-
 # ---------------------------------------------------------------------------
 # AIAgent user_id propagation test
 # ---------------------------------------------------------------------------
-
-
-class TestAIAgentUserIdPropagation:
-    """Verify AIAgent stores user_id and passes it to memory init kwargs."""
-
-    def test_user_id_stored_on_agent(self):
-        """AIAgent should store user_id as instance attribute."""
-        with patch.dict(os.environ, {"HERMES_HOME": "/tmp/test_hermes"}):
-            from run_agent import AIAgent
-            agent = object.__new__(AIAgent)
-            # Manually set the attribute as __init__ does
-            agent._user_id = "test_user_42"
-            assert agent._user_id == "test_user_42"
-
-    def test_user_id_none_by_default(self):
-        """AIAgent should have None user_id when not provided (CLI mode)."""
-        with patch.dict(os.environ, {"HERMES_HOME": "/tmp/test_hermes"}):
-            from run_agent import AIAgent
-            agent = object.__new__(AIAgent)
-            agent._user_id = None
-            assert agent._user_id is None
-

@@ -9,6 +9,7 @@ import {
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
+import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
 import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
 import { HermesGateway } from '@/hermes'
@@ -161,6 +162,55 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
   }
 
   return connection.mode === 'local' ? 'local' : null
+}
+
+// A freshly spawned backend can block its event loop for 15-30s while it
+// connects MCP servers and discovers plugins, so a single initial connect
+// attempt races backend cold-start and loses intermittently — the renderer
+// surfaced "Could not connect to Hermes gateway" even though the backend
+// became healthy moments later (#49645). Retry the initial dial, re-minting
+// the WS URL on every attempt (OAuth tickets are single-use), instead of
+// failing the whole boot on the first transport error. Reauth failures
+// propagate immediately: more attempts with a dead ticket can never
+// succeed. Exported for tests.
+export async function connectInitialGateway({
+  attempts = 8,
+  connect,
+  delayMs = 3_000,
+  initialUrl,
+  isCancelled
+}: {
+  attempts?: number
+  connect: (wsUrl?: string) => Promise<void>
+  delayMs?: number
+  /** URL already minted at the boot boundary; used for the first attempt so the mint count stays observable. */
+  initialUrl?: string
+  isCancelled: () => boolean
+}): Promise<void> {
+  let lastConnectError: unknown = null
+
+  for (let attempt = 0; attempt < attempts && !isCancelled(); attempt += 1) {
+    try {
+      await connect(attempt === 0 ? initialUrl : undefined)
+      lastConnectError = null
+
+      break
+    } catch (err) {
+      if (isGatewayReauthRequired(err)) {
+        throw err
+      }
+
+      lastConnectError = err
+
+      if (attempt < attempts - 1) {
+        await new Promise(resolve => setTimeout(resolve, delayMs))
+      }
+    }
+  }
+
+  if (lastConnectError) {
+    throw lastConnectError
+  }
 }
 
 interface GatewayBootOptions {
@@ -641,7 +691,7 @@ export function useGatewayBoot({
       const peer = isPeerInstanceWindow()
 
       const route = profile
-        ? { profile, connectionId: peer ? new URLSearchParams(window.location.search).get('connectionId') : null }
+        ? { profile, connectionId: new URLSearchParams(window.location.search).get('connectionId') }
         : startup && !peer
           ? await desktop.profile?.getDefault?.()
           : null
@@ -905,6 +955,22 @@ export function useGatewayBoot({
 
     const gateway = adoptedFromHmr ? survivor!.gateway : new HermesGateway()
 
+    // Every socket this window owns (the primary below, every registry
+    // secondary via onEvent) funnels through this one gate before any store
+    // sees the event: two sockets to ONE backend both receive each frame of a
+    // chat they joined, and handled twice a delta doubles the streaming text
+    // (#120005). Keyed by the backend's own (epoch, session, seq) stamp.
+    const eventDedupe = createGatewayEventDedupe()
+
+    const deliverGatewayEvent = (event: GatewayEvent) => {
+      if (!eventDedupe.admit(event)) {
+        return
+      }
+
+      recordSessionEventScope(event)
+      callbacksRef.current.handleGatewayEvent(event)
+    }
+
     callbacksRef.current.onGatewayReady(gateway)
     setPrimaryGateway(gateway, survivor?.profile ?? normalizeProfileKey($activeGatewayProfile.get()))
     // Secondary (background-profile) sockets funnel into the same handler.
@@ -947,10 +1013,7 @@ export function useGatewayBoot({
           $activeGatewayProfile.set(key)
         }
       },
-      onEvent: event => {
-        recordSessionEventScope(event)
-        callbacksRef.current.handleGatewayEvent(event)
-      },
+      onEvent: deliverGatewayEvent,
       onActiveConnectionInvalidated: (fallbackProfile, invalidationEpoch) => {
         $activeGatewayProfile.set(fallbackProfile)
         // Bounded like every other getConnection() call in this file (#93454):
@@ -1042,8 +1105,7 @@ export function useGatewayBoot({
       const ownedEvent =
         $connection.get()?.sharedPrimary === true ? stampSecondaryProfileOwner(scopedEvent, sourceProfile) : scopedEvent
 
-      recordSessionEventScope(ownedEvent)
-      callbacksRef.current.handleGatewayEvent(ownedEvent)
+      deliverGatewayEvent(ownedEvent)
     })
 
     // Secondary sockets reach the same handler through the registry's onServerRequest.
@@ -1351,7 +1413,39 @@ export function useGatewayBoot({
           stage = 'dialing'
         }
 
-        await gateway.connect(wsUrl)
+        if (conn.mode === 'remote') {
+          // REMOTE keeps the single dial: a remote dial failure must stay a
+          // retryable boot failure (stage 'dialing') so the bounded boot-retry
+          // loop below re-runs the whole handshake — including a fresh
+          // getConnection() against a possibly-rebuilt tunnel.
+          await gateway.connect(wsUrl)
+        } else {
+          // LOCAL retries the dial across backend cold-start (#49645): main's
+          // readiness probe already passed, but a freshly spawned backend can
+          // still stall its event loop for seconds on the first WS handshake —
+          // a local boot failure is latched non-retryable, so without this
+          // retry the one lost race ended the boot in "Could not connect to
+          // Hermes gateway". The first attempt reuses the URL minted at the
+          // boot boundary above — the mint count stays observable (#93454) —
+          // while later attempts re-mint; local token URLs are long-lived, so
+          // the re-mint is a cheap no-op.
+          await connectInitialGateway({
+            connect: async (attemptWsUrl?: string) => {
+              const url =
+                attemptWsUrl ??
+                (await withTimeout(
+                  resolveDesktopGatewayWsUrl(desktop, conn),
+                  RECONNECT_ATTEMPT_TIMEOUT_MS,
+                  'Timed out minting the gateway WebSocket URL'
+                ))
+
+              await gateway.connect(url)
+            },
+            isCancelled: () => cancelled,
+            initialUrl: wsUrl
+          })
+        }
+
         stage = 'connected'
 
         if (cancelled) {

@@ -162,9 +162,14 @@ export const fr: Translations = {
     deleteSelectedConfirmMessage:
       "Cela supprime définitivement {count} sessions sélectionnées et tous leurs messages. Cette action est irréversible.",
     selectedSessionsDeleted: "{count} sessions supprimées",
+    selectedSessionsSkippedActive: "{deleted} supprimées ; {count} conservées car un tour est en cours",
     failedToDeleteSelected: "Échec de la suppression des sessions sélectionnées",
     resumeInChat: "Reprendre dans le chat",
     newChat: "Nouveau chat",
+    workspace: "espace de travail",
+    workspaceDefault: "Par défaut",
+    workspaceRescan: "Rechercher à nouveau les dépôts",
+    workspaceCustom: "Autre chemin…",
     previousPage: "Page précédente",
     nextPage: "Page suivante",
     roles: {

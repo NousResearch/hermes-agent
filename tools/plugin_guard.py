@@ -143,7 +143,7 @@ def _main_guard_body_lines(file_path: Path) -> set[int]:
     conservative severity.
     """
     try:
-        tree = ast.parse(file_path.read_text(encoding="utf-8"))
+        tree = ast.parse(file_path.read_text(encoding="utf-8-sig"))
     except (OSError, SyntaxError, ValueError):  # ValueError: UnicodeDecodeError, NUL bytes
         return set()
     lines: set[int] = set()
@@ -207,7 +207,7 @@ def _comment_severity(f: Finding) -> str:
 def _file_lines(file_path: Path) -> List[str]:
     """Full source lines (``Finding.match`` is truncated to 120 chars); unreadable → []."""
     try:
-        return file_path.read_text(encoding="utf-8").split("\n")
+        return file_path.read_text(encoding="utf-8-sig").split("\n")
     except (OSError, UnicodeDecodeError):
         return []
 

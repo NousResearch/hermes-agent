@@ -10,7 +10,7 @@ import os
 import tomllib
 from typing import Callable, Dict, Optional
 
-from tools.file_operations_common import LintResult
+from tools.file_operations_common import ExecuteResult, LintResult
 
 # Shell linters by extension (external toolchain). ``.tsx`` is deliberately absent:
 # it hits the "No linter" skip and LSP covers it when enabled.
@@ -21,6 +21,11 @@ LINTERS = {
     '.go': 'go vet {file} 2>&1',
     '.rs': 'rustfmt --check {file} 2>&1',
 }
+
+# Node linters Hermes runs on the host (local backend) under its PM-managed Node,
+# never the user's: the terminal PATH puts the user's dirs first, and ``npx tsc``
+# re-execs ``env node`` through that PATH.
+_MANAGED_NODE_LINTERS = {'.js': ('node', '--check'), '.ts': ('npx', 'tsc', '--noEmit')}
 
 # Per-file shell linters that flood phantom errors on real projects (single-file
 # ``tsc`` ignores tsconfig, ``go vet`` fails outside a module, ``rustfmt --check``
@@ -68,18 +73,19 @@ def _lint_json_inproc(content: str) -> tuple[bool, str]:
 
 
 def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
-    """In-process YAML syntax check; ``__SKIP__`` when PyYAML is missing. Syntax-only
-    (``yaml.parse``), NOT ``safe_load``: loading rejects valid multi-doc streams and
+    """In-process YAML syntax check; ``__SKIP__`` when ruamel.yaml is missing. Syntax-only
+    (``YAML.parse``), NOT ``safe_load``: loading rejects valid multi-doc streams and
     app tags (``!Sub``, ``!vault``), and this is a fail-closed WRITE gate."""
     try:
-        import yaml as _yaml
+        from ruamel.yaml import YAML
+        from ruamel.yaml.error import YAMLError
     except ImportError:
         return True, "__SKIP__"
     try:
-        for _event in _yaml.parse(content):
+        for _event in YAML(typ="safe").parse(content):
             pass
         return True, ""
-    except _yaml.YAMLError as e:
+    except YAMLError as e:
         return False, f"YAMLError: {e}"
     except Exception as e:  # noqa: BLE001
         return False, f"{type(e).__name__}: {e}"
@@ -95,9 +101,11 @@ def _lint_toml_inproc(content: str) -> tuple[bool, str]:
 
 
 def _lint_python_inproc(content: str) -> tuple[bool, str]:
-    """In-process Python syntax check via ast.parse (py_compile's scope, no subprocess)."""
+    """In-process Python syntax check via ast.parse (py_compile's scope, no subprocess). Parses the
+    bytes, as py_compile does, so a legacy ``coding:`` cookie is honoured for a file the edit paths
+    read with surrogateescape."""
     try:
-        ast.parse(content)
+        ast.parse(content.encode("utf-8", "surrogateescape"))
         return True, ""
     except SyntaxError as e:
         loc = f" (line {e.lineno}, column {e.offset})" if e.lineno else ""
@@ -155,12 +163,18 @@ class LintMixin:
             ))
         if ext in _SHELL_LINTER_LSP_REDUNDANT and self._lsp_will_handle(path):
             return LintResult(skipped=True, message=f"LSP server handles {ext} — shell linter skipped")
-        linter_cmd = LINTERS[ext]
-        base_cmd = linter_cmd.split()[0]
-        if not self._has_command(base_cmd):
-            return LintResult(skipped=True, message=f"{base_cmd} not available")
-        # Native Windows binaries need C:/... not MSYS /c/... (→ phantom ENOENT).
-        result = self._exec(linter_cmd.replace("{file}", self._escape_native_tool_arg(path)), timeout=30)
+        if ext in _MANAGED_NODE_LINTERS and self._lsp_local_only():
+            base_cmd = _MANAGED_NODE_LINTERS[ext][0]
+            result = self._run_managed_node_linter(ext, path)
+            if result is None:
+                return LintResult(skipped=True, message=f"{base_cmd} not available (Hermes-managed Node not installed)")
+        else:
+            linter_cmd = LINTERS[ext]
+            base_cmd = linter_cmd.split()[0]
+            if not self._has_command(base_cmd):
+                return LintResult(skipped=True, message=f"{base_cmd} not available")
+            # Native Windows binaries need C:/... not MSYS /c/... (→ phantom ENOENT).
+            result = self._exec(linter_cmd.replace("{file}", self._escape_native_tool_arg(path)), timeout=30)
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
             from tools.ansi_strip import strip_ansi
             cleaned = strip_ansi(result.stdout).strip()
@@ -168,6 +182,31 @@ class LintMixin:
             first_line = next((ln.strip() for ln in cleaned.splitlines() if ln.strip()), cleaned[:120])
             return LintResult(skipped=True, message=f"{base_cmd} not usable: {first_line[:200]}")
         return LintResult(success=result.exit_code == 0, output=result.stdout.strip())
+
+    def _run_managed_node_linter(self, ext: str, path: str) -> Optional[ExecuteResult]:
+        """Run the ``ext`` Node linter on the host under PM's Node; None when PM has none."""
+        import shutil
+        import subprocess
+
+        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_constants import with_hermes_node_path
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path, hermes_subprocess_env
+
+        tool, *args = _MANAGED_NODE_LINTERS[ext]
+        executable = shutil.which(tool, path=with_hermes_node_path({"PATH": ""})["PATH"])
+        if executable is None:
+            return None
+        cwd = getattr(self.env, "cwd", None) or self.cwd
+        if _IS_WINDOWS:
+            path, cwd = _msys_to_windows_path(path), cwd and _msys_to_windows_path(cwd)
+        try:
+            proc = subprocess.run(
+                [executable, *args, path], cwd=cwd or None, env=with_hermes_node_path(hermes_subprocess_env()),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=windows_hide_flags())
+        except subprocess.TimeoutExpired:
+            return ExecuteResult(stdout=f"{tool} timed out after 30s", exit_code=124)
+        return ExecuteResult(stdout=proc.stdout or "", exit_code=proc.returncode)
 
     def _check_lint_delta(self, path: str, pre_content: Optional[str],
                           post_content: Optional[str] = None) -> LintResult:

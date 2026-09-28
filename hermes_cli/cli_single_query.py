@@ -142,7 +142,8 @@ _TERMINAL_PROVIDER_REASONS = frozenset({
 })
 
 
-def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -> int:
+def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
+                            credentials_terminal: bool = False) -> int:
     """Map a one-shot turn result onto a process exit code, for both `-q` and `-Q`.
 
     0 only when the turn completed; 130 when it was interrupted; 1 when it failed, stopped
@@ -154,13 +155,18 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -
     The same sentinel applies when credential resolution itself is a quota/rate-limit
     AuthError (no turn result object is produced). One that failed on a terminal provider
     error (credential revoked, model gone) exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
-    (EX_CONFIG): the dispatcher blocks the card at once.
+    (EX_CONFIG): the dispatcher blocks the card at once. The same code applies
+    before a turn when credential resolution explicitly requires re-authentication;
+    unknown startup failures retain exit 1.
     """
     from cli import _TERMINAL_PROVIDER_REASONS, _TRANSIENT_PROVIDER_REASONS
     if not isinstance(result, dict):
         if credentials_rate_limited and os.environ.get("HERMES_KANBAN_TASK"):
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE
+        if credentials_terminal and os.environ.get("HERMES_KANBAN_TASK"):
+            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+            return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
         return 1
     if result.get("interrupted"):
         return 130
@@ -371,6 +377,13 @@ def _install_single_query_signal_handlers(cli):
     from cli import _arm_exit_watchdog_on_shutdown_signal, _flush_logging_and_stdio, _flush_one_shot_session_store, _interrupt_agent_for_signal
     import signal as _signal
 
+    def _kill_foreground_and_exit(*_):
+        # The worker's command runs in its own process group: SIGKILL it or it outlives os._exit.
+        with suppress(Exception):
+            from tools.environments.base import kill_live_foreground_processes
+            kill_live_foreground_processes(now=True)
+        os._exit(0)
+
     def _signal_handler_q(signum, frame):
         logger.debug("Received signal %s in single-query mode", signum)
         _arm_exit_watchdog_on_shutdown_signal()  # covers wedges in the unwind below
@@ -390,7 +403,7 @@ def _install_single_query_signal_handlers(cli):
         if os.environ.get("HERMES_KANBAN_TASK"):
             with suppress(Exception):
                 if hasattr(_signal, "SIGALRM"):
-                    _signal.signal(_signal.SIGALRM, lambda *_: os._exit(0))
+                    _signal.signal(_signal.SIGALRM, _kill_foreground_and_exit)
                     _signal.alarm(5)
             with suppress(Exception):
                 # Durable flush FIRST: memory-provider shutdown inside _run_cleanup can issue aux-LLM calls,
@@ -400,7 +413,7 @@ def _install_single_query_signal_handlers(cli):
                 # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
             _flush_logging_and_stdio()
-            os._exit(0)
+            _kill_foreground_and_exit()
         raise KeyboardInterrupt()
     with suppress(Exception):  # restricted environments
         for _name in ("SIGINT", "SIGTERM", "SIGHUP"):
@@ -450,6 +463,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     # full timeout. See #86878.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
     from hermes_cli.quiet_single_query import exit_single_query
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        from tools.kanban_tools import register_current_worker_from_env
+        if not register_current_worker_from_env():
+            # No exit trailer: the task log now belongs to the run that replaced this one.
+            print("kanban: this worker's run was reclaimed before it started; exiting", file=sys.stderr)
+            sys.exit(0)
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
         exit_single_query(1)
     try:
@@ -482,7 +501,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     _run_quiet_single_query(cli, effective_query, emitter=emitter)
 
             fail_code = _single_query_exit_code(
-                None, credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False))
+                None, credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False),
+                credentials_terminal=getattr(cli, "_credentials_terminal", False))
             if emitter is not None:
                 emitter.emit_result({"failed": True, "error": "credentials or agent init failed"},
                                     session_id=cli.session_id or "", exit_code=fail_code)
@@ -504,6 +524,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         cli._print_exit_summary(clear_screen=False)
         # Same exit contract as `-Q`: scripts and the Kanban dispatcher read the outcome from
         # the exit code. This path used to fall through to an implicit 0 for every outcome.
-        exit_single_query(_single_query_exit_code(cli._last_turn_result))
+        exit_single_query(_single_query_exit_code(
+            cli._last_turn_result,
+            credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False),
+            credentials_terminal=getattr(cli, "_credentials_terminal", False)))
     finally:
         _finalize_single_query(cli)

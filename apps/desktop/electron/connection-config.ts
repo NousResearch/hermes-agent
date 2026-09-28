@@ -107,9 +107,22 @@ function isGatewayAuthRejection(error) {
   return statusCode === 401 || statusCode === 403
 }
 
+/** True when the rejected credential is the app's saved bearer, not the server session. */
+function isStaleAppTokenRejection(error: unknown) {
+  return Boolean(error && typeof error === 'object' && (error as any).appTokenRejected === true)
+}
+
 function gatewayTicketFailure(error, authMessage, transportMessage) {
   const needsOauthLogin = isGatewayAuthRejection(error)
-  const err = new Error(needsOauthLogin ? authMessage : transportMessage)
+
+  const message = needsOauthLogin
+    ? isStaleAppTokenRejection(error)
+      ? 'Reached the gateway over HTTP, but the app token is invalid. ' +
+        "The app's saved gateway bearer is no longer valid. Sign out in the app and sign in again to replace it."
+      : authMessage
+    : transportMessage
+
+  const err = new Error(message)
 
   if (needsOauthLogin) {
     ;(err as any).needsOauthLogin = true
@@ -229,6 +242,8 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
+      // Untagged 401s keep the server OAuth-session wording. A stale app
+      // bearer is named inside gatewayTicketFailure.
       throw gatewayTicketFailure(
         error,
         'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
@@ -764,7 +779,12 @@ export function unscopableMutatingRequest(opts: ProfileRouteOptions = {}): boole
  *     backend, with `?profile=` when the handler reads the query (handlers that
  *     name their target in the path or `body.profile` get no query).
  *  6. Every other LOCAL profile also shares the one host backend
- *     (multiplex-only: one `hermes serve` per HOST). The two ways out are
+ *     (multiplex-only: one `hermes serve` per HOST). The descriptor carries
+ *     `sharedPrimary: true`, and the renderer honours it on BOTH request paths
+ *     (`requestGatewayForProfile` and the session-owner
+ *     `requestGatewayForAgent` family): the profile's calls ride the primary
+ *     socket with a `profile` param, never a second socket to the same
+ *     process (#120005). The two ways out are
  *     `HERMES_DESKTOP_ISOLATED_BACKEND=1`, which gives this app a private
  *     backend, and a MUTATING request the server cannot scope at all — that
  *     one keeps a pooled backend whose HERMES_HOME does the scoping, so a
@@ -967,18 +987,21 @@ function pathWithProfileScope(path, profile) {
 }
 
 export interface RegistryBackendRequestScope {
+  mode?: string
   remoteProfile?: null | string
+  sharedPrimary?: boolean
   sharedRemote?: boolean
 }
 
 /**
- * Scope a REST path for a resolved registry backend. Shared remotes serve
- * multiple profiles from one process and need an explicit profile query;
+ * Scope a REST path for a resolved registry backend. Local host backends and
+ * shared remotes need an explicit profile query, including the primary profile
+ * when Desktop attaches to a process launched under a different home;
  * isolated SSH backends already own one profile but may translate a Desktop
  * alias in an existing self-profile filter.
  */
 function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope) {
-  return backend.sharedRemote
+  return backend.sharedRemote || backend.sharedPrimary || backend.mode === 'local'
     ? pathWithProfileScope(path, profile)
     : translateSelfProfileQuery(path, profile, backend.remoteProfile)
 }

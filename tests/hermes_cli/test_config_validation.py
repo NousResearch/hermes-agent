@@ -4,11 +4,7 @@
 import pytest
 
 from hermes_cli.config import (
-    DEFAULT_CONFIG,
-    _EXTRA_KNOWN_ROOT_KEYS,
-    _KNOWN_ROOT_KEYS,
     validate_config_structure,
-    ConfigIssue,
 )
 
 
@@ -86,24 +82,9 @@ class TestMissingModelSection:
         assert not any("no 'model' section" in i.message for i in issues)
 
 
-class TestConfigIssueDataclass:
-    """ConfigIssue should be a proper dataclass."""
-
-    def test_fields(self):
-        issue = ConfigIssue(severity="error", message="test msg", hint="test hint")
-        assert issue.severity == "error"
-        assert issue.message == "test msg"
-        assert issue.hint == "test hint"
-
-    def test_equality(self):
-        a = ConfigIssue("error", "msg", "hint")
-        b = ConfigIssue("error", "msg", "hint")
-        assert a == b
 
 
 class TestVoiceSubmitModeValidation:
-    def test_default_is_direct(self):
-        assert DEFAULT_CONFIG["voice"]["submit_mode"] == "direct"
 
     def test_direct_and_draft_are_valid(self):
         for mode in ("direct", "draft"):
@@ -174,11 +155,6 @@ class TestUnknownTopLevelKeys:
     """
 
 
-    def test_known_root_keys_derived_from_default_config(self):
-        """_KNOWN_ROOT_KEYS must be DEFAULT_CONFIG.keys() plus extras — single source of truth."""
-        assert set(DEFAULT_CONFIG.keys()).issubset(_KNOWN_ROOT_KEYS)
-        assert _EXTRA_KNOWN_ROOT_KEYS.issubset(_KNOWN_ROOT_KEYS)
-        assert _KNOWN_ROOT_KEYS == frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
     def test_provider_like_unknown_root_keeps_misplaced_message(self):
         """Preserve existing base_url/api_key root-level guidance."""

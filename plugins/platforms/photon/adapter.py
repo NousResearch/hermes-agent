@@ -14,7 +14,6 @@ import logging
 import os
 import re
 import secrets
-import shutil
 import signal
 import subprocess
 import sys
@@ -52,6 +51,7 @@ from .auth import load_project_credentials
 # mirror files. Tests monkeypatch sidecar_paths._SIDECAR_DIR.
 from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _lock_newer_than_install, _npm_error_log, _sidecar_dir
 from .sidecar_paths import dir_writable as _dir_writable
+from hermes_constants import find_node_executable, with_hermes_node_path
 import contextlib
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ def _write_runtime_record(port: int, token: str, pid: int) -> None:
 
 def _read_runtime_record() -> Optional[Dict[str, Any]]:
     try:
-        raw = json.loads(_runtime_record_path().read_text(encoding="utf-8"))
+        raw = json.loads(_runtime_record_path().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return raw if isinstance(raw, dict) else None
@@ -211,27 +211,52 @@ def _is_timeout_error(exc: BaseException) -> bool:
     return "timeout" in type(exc).__name__.lower()
 
 
+
 def check_requirements() -> bool:
-    """Return True when both Python deps and the Node sidecar are available."""
+    """Report readiness or permission to prepare at connect; never provision here."""
+    from pm import lazy_installs_allowed
+
+    can_prepare = lazy_installs_allowed()
     if not HTTPX_AVAILABLE:
         logger.warning("photon: httpx not installed — pip install httpx")
         return False
-    node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or "node"
-    if not shutil.which(node_bin):
-        logger.warning("photon: node binary '%s' not found on PATH", node_bin)
+    if not (_get_scoped_secret("PHOTON_NODE_BIN") or find_node_executable("node") or can_prepare):
+        logger.warning("photon: node binary not found on PATH, in the pm store, or via PHOTON_NODE_BIN")
         return False
     if not sidecar_deps_installed():
-        # Self-install is possible at connect time (npm on PATH + writable sidecar dir):
-        # report available so _start_sidecar cold-installs — hosted images have no CLI.
-        if bool(shutil.which("npm")) and _dir_writable(_sidecar_dir()):
+        # spectrum-ts not installed yet, or node_modules/ was partially created
+        # by an aborted npm install (ENOSPC, network timeout, EACCES).
+        # Checking spectrum-ts presence — not just node_modules/ existence —
+        # prevents a false positive where an empty/broken node_modules/ dir
+        # causes check_requirements() to return True while the sidecar crashes
+        # at runtime with an unrelated-looking missing-module error.
+        #
+        # NS-606: if we can self-install at connect time — npm on PATH and
+        # the (resolved, possibly mirrored) sidecar dir is writable — report
+        # available so the gateway creates the adapter and ``_start_sidecar``
+        # cold-installs from the committed lockfile (on hosted images the
+        # user has no CLI to run `hermes photon setup`, so the connect path
+        # must self-heal). Otherwise keep returning False so
+        # `hermes setup` / status surface the missing-deps state.
+        if (find_node_executable("npm") or can_prepare) and _dir_writable(_sidecar_dir()):
             return True
         # DEBUG, not WARNING: normal pre-setup state, and check_fn is polled from hot paths.
         npm_error = ""
         with contextlib.suppress(OSError):
             if _npm_error_log().exists():
-                npm_error = _npm_error_log().read_text(encoding="utf-8").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
-        hint = f" (last npm error: {npm_error})" if npm_error else ""
-        logger.debug("photon: spectrum-ts not installed at %s%s — run: hermes photon setup", _sidecar_dir(), hint)
+                npm_error = _npm_error_log().read_text(encoding="utf-8-sig").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
+        if npm_error:
+            logger.debug(
+                "photon: spectrum-ts not installed at %s "
+                "(last npm error: %s) — run: hermes photon setup",
+                _sidecar_dir(),
+                npm_error,
+            )
+        else:
+            logger.debug(
+                "photon: spectrum-ts not installed at %s — run: hermes photon setup",
+                _sidecar_dir(),
+            )
         return False
     return True
 
@@ -243,18 +268,34 @@ def _sidecar_deps_stale() -> bool:
 
 
 def _reinstall_sidecar_deps() -> None:
-    """``npm ci`` (fallback ``npm install``); blocking, best-effort — on failure the stale
-    deps stay and the readiness check reports the real error."""
-    npm = shutil.which("npm")
-    if not npm:
-        logger.warning("[photon] cannot reinstall stale sidecar deps: npm not on PATH")
+    """Reinstall the sidecar's node_modules from the lockfile (blocking).
+
+    Mirrors ``hermes photon install-sidecar``: ``npm ci`` for an exact,
+    reproducible install, falling back to ``npm install`` if the lockfile is
+    missing or drifted. Runs the postinstall patch as part of the install.
+    Best-effort — a failure here just leaves the (stale) deps in place and the
+    normal ``_start_sidecar`` readiness check reports the real error.
+    """
+    import pm
+
+    try:
+        npm = find_node_executable("npm")
+        env = with_hermes_node_path()
+        if npm is None:
+            env = pm.ensure("npm").env
+            installed = pm.installed_package("npm")
+            if installed is None or installed.binary is None:
+                raise pm.InstallError("npm", "ensured but no selected binary was recorded")
+            npm = str(installed.binary)
+    except pm.InstallError as exc:
+        logger.warning("[photon] cannot prepare sidecar dependencies: %s", exc)
         return
     from hermes_cli._subprocess_compat import windows_hide_flags  # no console flash on Windows
 
     def _run(verb: str) -> subprocess.CompletedProcess:
         return subprocess.run(  # noqa: S603
             [npm, verb], cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", check=False, timeout=_NPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
+            errors="replace", check=False, env=env, timeout=_NPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
     try:
         result = _run("ci")
         if result.returncode != 0:
@@ -295,6 +336,25 @@ def _env_enablement() -> Optional[dict]:
 def _markdown_enabled() -> bool:
     """Replies go out as markdown; ``PHOTON_MARKDOWN=false`` is the kill-switch to plain text."""
     return _get_scoped_secret("PHOTON_MARKDOWN", "true").strip().lower() not in {"false", "0", "no"}
+
+
+# Mirrors URL_RE in plugins/platforms/photon/sidecar/send-format.mjs. Keep the
+# two in sync: the sidecar owns the builder choice, this owns the payload that
+# choice implies.
+_SIDECAR_URL_RE = re.compile(r"https?://[^\s)'\"<>]+", re.IGNORECASE)
+
+
+def _sidecar_payload_text(text: str, send_markdown: bool) -> str:
+    """The ``/send`` text: verbatim only when the sidecar will really use spectrum-ts' markdown builder.
+
+    ``chooseSendFormat`` routes markdown containing a raw URL through the verbatim ``text()`` builder
+    (the markdown builder's data detection 500s on those), and a plain send has no renderer at all, so
+    both are stripped here or iMessage shows literal ``**``/fences. Link targets survive as bare URLs:
+    iMessage auto-links those and nothing else.
+    """
+    if send_markdown and not _SIDECAR_URL_RE.search(text or ""):
+        return text
+    return strip_markdown(text, keep_link_targets=True)
 
 
 def _url_only_candidate(text: str) -> Optional[str]:
@@ -488,7 +548,7 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sidecar_token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
         autostart = str(_get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")).lower()
         self._autostart_sidecar = autostart not in ("0", "false", "no")
-        self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or shutil.which("node") or "node"
+        self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or find_node_executable("node")
         # Presence watchdog (second layer behind the sidecar's own zombie-stream detection):
         # respawns only when the sidecar's HTTP loop hangs; 10-min interval because shared
         # lines are quiet for hours. Config key wins, then env; None-aware so 0 disables it.
@@ -501,7 +561,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._probe_timeout = _setting("probe_timeout_seconds", "PHOTON_PROBE_TIMEOUT_SECONDS", 10.0, float)
         self._probe_max_failures = _setting("probe_max_failures", "PHOTON_PROBE_MAX_FAILURES", 3, int)
         self._probe_enabled = self._probe_interval > 0
-        self.supports_code_blocks = _markdown_enabled()  # markdown on => fences pass through
+        # Never advertise fences: a URL-bearing message goes out as raw text (literal ```), and the
+        # markdown path renders a fence as inline Unicode monospace, not a block.
+        self.supports_code_blocks = False
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
         self._respawn_lock: Optional[asyncio.Lock] = None
@@ -908,7 +970,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 subprocess.run,  # noqa: S603
                 [self._node_bin, str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"), str(_sidecar_dir())],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, check=False,
-                creationflags=hide_flags)
+                creationflags=hide_flags, env=with_hermes_node_path())
             if patch.returncode != 0:
                 raise RuntimeError((patch.stderr or patch.stdout or "").strip())
             if patch.stderr.strip():
@@ -917,9 +979,20 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.warning("[photon] failed to apply Spectrum mixed attachment patch: %s", exc)
 
     async def _start_sidecar(self) -> None:
+        if self._node_bin is None:
+            import pm
+
+            try:
+                await asyncio.to_thread(pm.ensure, "node")
+                installed = pm.installed_package("node")
+                if installed is None or installed.binary is None:
+                    raise pm.InstallError("node", "ensured but no selected binary was recorded")
+                self._node_bin = str(installed.binary)
+            except pm.InstallError as exc:
+                raise PhotonSidecarStartupError(str(exc), code="SIDECAR_NODE_MISSING", retryable=False) from exc
         await self._ensure_sidecar_deps()
         await self._reap_stale_sidecar()
-        env = os.environ.copy()
+        env = with_hermes_node_path()
         env.update({
             "PHOTON_PROJECT_ID": self._project_id, "PHOTON_PROJECT_SECRET": self._project_secret,
             "PHOTON_SIDECAR_PORT": str(self._sidecar_port), "PHOTON_SIDECAR_BIND": self._sidecar_bind,
@@ -933,11 +1006,21 @@ class PhotonAdapter(BasePlatformAdapter):
                 [self._node_bin, str(_sidecar_dir() / "index.mjs")],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                 start_new_session=(sys.platform != "win32"),
-                creationflags=windows_hide_flags())  # CREATE_NO_WINDOW only (no DETACHED_PROCESS): pipes stay usable
-        except FileNotFoundError as exc:  # deterministic: retrying can never fix a missing binary
+                # Windows: run the persistent sidecar headless so it does not open
+                # (or leave) a visible console window. CREATE_NO_WINDOW only (no
+                # DETACHED_PROCESS) so the stdin/stdout pipes above stay usable.
+                creationflags=windows_hide_flags(),
+            )
+        except FileNotFoundError as exc:
+            # Deterministic: node isn't resolvable (pm store or PATH).
+            # Retrying can never fix a missing binary (OOF-153).
             raise PhotonSidecarStartupError(
-                f"node binary not found ({self._node_bin!r}) — install Node.js or set PHOTON_NODE_BIN: {exc}",
-                code="SIDECAR_NODE_MISSING", retryable=False) from exc
+                f"node binary not found ({self._node_bin!r}) — install Node.js "
+                f"18+ or run `hermes pm install`: {exc}",
+                code="SIDECAR_NODE_MISSING",
+                retryable=False,
+            ) from exc
+        # Pump sidecar stderr/stdout into our logger so users see crashes.
         loop = asyncio.get_event_loop()
         self._sidecar_supervisor_task = loop.create_task(self._supervise_sidecar(self._sidecar_proc))
         deadline = time.time() + 15.0  # wait for /healthz — up to 15s on cold start
@@ -1293,7 +1376,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         # Markdown passes through verbatim (sidecar markdown() builder); PHOTON_MARKDOWN=false strips.
-        return content if _markdown_enabled() else strip_markdown(content)
+        return content if _markdown_enabled() else strip_markdown(content, keep_link_targets=True)
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
@@ -1349,11 +1432,15 @@ class PhotonAdapter(BasePlatformAdapter):
                 return rich_result
             logger.warning("[photon] rich-link send failed, falling back to plain text: %s", rich_result.error)
             markdown = False
+        send_markdown = markdown and _markdown_enabled()
+        # The format key stays even when the text is stripped: the sidecar owns the builder choice,
+        # and an older sidecar without chooseSendFormat must keep rendering natively.
+        text = _sidecar_payload_text(text, send_markdown)
         if len(text) > self.MAX_MESSAGE_LENGTH:
             logger.warning("[photon] truncating outbound from %d to %d chars", len(text), self.MAX_MESSAGE_LENGTH)
             text = text[: self.MAX_MESSAGE_LENGTH]
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
-        if markdown and _markdown_enabled():  # key omitted when disabled: pre-`format` sidecars still accept
+        if send_markdown:  # key omitted when disabled: pre-`format` sidecars still accept
             body["format"] = "markdown"
         return await self._post_send("/send", body, structured=True)
 
@@ -1515,8 +1602,10 @@ async def _standalone_send(
                 if rich_url:
                     _resp, data = await _post("/send-richlink", {"spaceId": chat_id, "url": rich_url})
                 if not data:  # no URL-only message, or the rich-link send failed: plain text
-                    send_body: Dict[str, Any] = {"spaceId": chat_id, "text": message[:_MAX_MESSAGE_LENGTH]}
-                    if _markdown_enabled() and not rich_url:
+                    send_markdown = _markdown_enabled() and not rich_url
+                    send_body: Dict[str, Any] = {
+                        "spaceId": chat_id, "text": _sidecar_payload_text(message, send_markdown)[:_MAX_MESSAGE_LENGTH]}
+                    if send_markdown:
                         send_body["format"] = "markdown"
                     resp, data = await _post("/send", send_body)
                     if not data:
@@ -1559,13 +1648,20 @@ def register(ctx) -> None:
         allow_all_env="PHOTON_ALLOW_ALL_USERS", max_message_length=_MAX_MESSAGE_LENGTH, emoji="📱",
         pii_safe=True,  # E.164 phone numbers: redact session descriptions before they reach the LLM
         allow_update_command=True,
+        # Grounded in spectrum-ts markdownToIMessageText + sidecar send-format.mjs: headings -> bold, tables ->
+        # "a | b" rows, code -> Unicode math-monospace; any message containing a URL is stripped to plain text.
         platform_hint=(
-            "You are communicating via Photon Spectrum (iMessage). "
-            "Treat replies like regular text messages — short and friendly. "
-            "Markdown is rendered (bold, italics, lists, code), but keep "
-            "formatting light and conversational. Recipient identifiers are "
-            "E.164 phone numbers; never expose them in responses unless the "
-            "user asked. Attachments arrive as metadata only."))
+            "You are texting via iMessage (Photon). Write like a person texting: short and conversational, "
+            "answer first, no preamble or recap. Markdown mostly does not survive here: any message containing "
+            "a link is sent as plain text with all formatting stripped, headings flatten to bold, tables to "
+            "pipe-separated lines, and backtick or code-block text turns into Unicode look-alike "
+            "glyphs that break when copied. So no headers, tables, code fences or backticks; an occasional "
+            "**bold** word is fine in a message without links. Put a command or code snippet on its own line "
+            "as plain text so it copies and runs. Write links as bare URLs; a message that is only a URL "
+            "sends as a rich preview card. You can send files natively: write MEDIA:/absolute/path/to/file "
+            "in your response (images and video appear inline, audio as voice notes, other files as "
+            "attachments). Recipient identifiers are E.164 phone numbers; never expose them in responses "
+            "unless the user asked."))
     ctx.register_cli_command(
         name="photon", help="Set up and manage the Photon iMessage integration",
         setup_fn=_cli.register_cli, handler_fn=_cli.dispatch)

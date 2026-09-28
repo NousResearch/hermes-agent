@@ -108,7 +108,7 @@ class CLITuiRuntimeMixin:
 
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)
-        print()
+        _cprint("")
         self._print_user_message_preview(notification_preview or user_input)
 
         if submit_images:
@@ -249,6 +249,15 @@ class CLITuiRuntimeMixin:
             self._maybe_offer_first_run_setup()
         except Exception:
             logger.debug("first-run setup offer failed", exc_info=True)
+        # A persisted Docker sandbox on the previous default image is kept until the user says
+        # so; this TTY is where they can. Either answer pins an image, so it is asked once.
+        if sys.stdin.isatty():
+            try:
+                from hermes_cli.sandbox_image_switch import offer_interactive
+                from cli import _cprint
+                offer_interactive(cprint=_cprint)
+            except Exception:
+                logger.debug("sandbox image switch offer failed", exc_info=True)
 
         if self._resumed and self._preload_resumed_session():
             self._display_resumed_history()

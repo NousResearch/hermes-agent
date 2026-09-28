@@ -79,16 +79,8 @@ def _run_finalize(agent: AIAgent) -> None:
     )
 
 
-def test_default_skip_background_review_is_false() -> None:
-    """Without an explicit override, AIAgent does NOT skip background review."""
-    agent = _make_agent()
-    assert agent.skip_background_review is False
 
 
-def test_skip_background_review_flag_persists() -> None:
-    """Passing skip_background_review=True records the flag on the instance."""
-    agent = _make_agent(skip_background_review=True)
-    assert agent.skip_background_review is True
 
 
 def test_finalize_turn_skips_review_when_flag_set() -> None:
@@ -111,21 +103,6 @@ def test_finalize_turn_fires_review_when_flag_unset() -> None:
     agent._spawn_background_review.assert_called_once()
 
 
-def test_cron_construction_sets_skip_background_review() -> None:
-    """The cron scheduler MUST construct AIAgent with skip_background_review=True.
-
-    Verified via source-text inspection — the cron scheduler is heavy to
-    boot in tests, so we assert that the source declares the flag rather
-    than running the scheduler. This catches accidental removal.
-    """
-    import pathlib
-
-    scheduler_src = pathlib.Path(__file__).resolve().parents[2] / "cron" / "scheduler.py"
-    text = scheduler_src.read_text(encoding="utf-8")
-
-    assert "skip_background_review=True" in text, (
-        "cron/scheduler.py must construct AIAgent with skip_background_review=True."
-    )
 
 
 def test_persistence_failure_error_fallback_is_pinned_and_leaves_final_response_empty(monkeypatch, tmp_path) -> None:

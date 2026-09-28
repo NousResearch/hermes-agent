@@ -32,12 +32,14 @@ import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos } from '@/store/todos'
+import { broadcastTranscriptChanged } from '@/store/transcript-sync'
 
 import type { ClientSessionState } from '../../../types'
 
 import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
+import { extendInterruptedReply } from './interrupted-reply'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
@@ -256,6 +258,21 @@ export function useMessageStream({
     },
     [mutateStream]
   )
+
+  // Turn-boundary orphan drop (#119543): discard queued bytes without
+  // painting them. Used when a new turn starts while no turn is live — the
+  // queue can only hold stragglers of the superseded attempt then.
+  const dropQueuedDeltas = useCallback((sessionId?: string) => {
+    const queue = queuedDeltasRef.current
+
+    if (sessionId) {
+      queue.delete(sessionId)
+
+      return
+    }
+
+    queue.clear()
+  }, [])
 
   const scheduleDeltaFlush = useCallback(() => {
     if (flushHandleRef.current !== null) {
@@ -608,7 +625,9 @@ export function useMessageStream({
       responsePreviewed?: boolean,
       failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
       occurredAt = Date.now() / 1000,
-      persistedTurn?: PersistedTurn | null
+      persistedTurn?: PersistedTurn | null,
+      responseTransformed?: boolean,
+      status?: string
     ) => {
       let shouldHydrate = false
 
@@ -616,10 +635,13 @@ export function useMessageStream({
         // Late completion from an already-cancelled turn: cancelRun has
         // already finalized the bubble (kept the partial text, dropped it if
         // empty). Re-running the dedupe below would replace the partial with
-        // the just-cancelled full text, so we settle and bail instead.
+        // the just-cancelled full text, so we settle and bail instead — only
+        // extending the bubble to the partial the agent persisted (#121594).
         if (state.interrupted) {
           return {
             ...state,
+            messages:
+              status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
             awaitingResponse: false,
             busy: false,
             needsInput: false,
@@ -630,7 +652,7 @@ export function useMessageStream({
           }
         }
 
-        const streamId = state.streamId
+        const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null
         const finalText = renderMediaTags(text).trim()
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
@@ -785,12 +807,48 @@ export function useMessageStream({
               (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
             )
 
-            if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
+            // A bare `error` event (e.g. the agent build failing) already
+            // painted this turn's error card; the turn's terminal error frame
+            // is the same failure, so it settles onto that card.
+            const failureRepeatsErrorCard = Boolean(completionError && existing.error && !existingText)
+
+            // The terminal frame names the stored row it settled; this
+            // trailing bubble is a still-unsettled display-only interim that
+            // never carried a durable rowId of its own. A rewritten final
+            // (response_previewed / response_transformed) shares no prefix
+            // with the streamed interim text, so the heuristics above miss
+            // and the volatile boundary flag cannot speak for it once a
+            // chained message.start reset it (#74560's ordering). The receipt
+            // is the durable identity the flag never was: settle onto the
+            // interim instead of painting a second bubble for one row
+            // (#124128). A frame with no receipt keeps the rules below, so a
+            // genuinely distinct reply still appends its own bubble.
+            const finalRowId = persistedTurn?.final_assistant_row_id
+
+            const settlesPersistedRow =
+              existing.interim === true &&
+              existing.rowId === undefined &&
+              typeof finalRowId === 'number' &&
+              Number.isSafeInteger(finalRowId) &&
+              finalRowId > 0
+
+            if (
+              existing.pending ||
+              failureRepeatsErrorCard ||
+              settlesPersistedRow ||
+              (!interimBoundaryPending && finalText && existingText === finalText)
+            ) {
               nextMessages = settleAt(index)
-            } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
+            } else if (
+              (interimBoundaryPending && (responsePreviewed || responseTransformed)) ||
+              finalContinuesInterim
+            ) {
               // Settle the interim in place instead of creating a duplicate —
-              // the DB has one row, so the live UI must agree. Two distinct
+              // the DB has one row, so the live UI must agree. Three distinct
               // settle paths with different boundary requirements:
+              //
+              // • settlesPersistedRow (above) keys on the frame's own durable
+              //   row address, so it needs no boundary flag at all.
               //
               // • responsePreviewed covers the verify-on-stop continuation-
               //   budget case, where the final may be a rewrite sharing no
@@ -802,6 +860,10 @@ export function useMessageStream({
               //   (otherwise interim('old') → message.start →
               //   complete({response_previewed: true, text: 'new'}) would
               //   silently destroy 'old').
+              //
+              // • responseTransformed (a transform_llm_output hook rewrote the
+              //   final after streaming, e.g. pseudonym restore) shares the
+              //   same no-continuity shape, so it takes the same boundary gate.
               //
               // • finalContinuesInterim (prefix-either-way continuity, same
               //   text or one a prefix of the other) is safe to settle
@@ -877,12 +939,13 @@ export function useMessageStream({
           // locally, so the user-tail guard keeps applying there.
           (!unresolvedUserTail || !finalText) &&
           !(localVisibleText && !finalText) &&
-          (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
+          (state.adoptedRunningTurn || !state.sawAssistantPayload)
 
         return {
           ...state,
           messages: nextMessages,
           adoptedRunningTurn: false,
+          heartbeatSettledStreamId: null,
           streamId: null,
           pendingBranchGroup: null,
           awaitingResponse: false,
@@ -906,6 +969,13 @@ export function useMessageStream({
       }
 
       scheduleSessionsRefresh()
+
+      if (completedState.storedSessionId) {
+        broadcastTranscriptChanged({
+          messageCount: completedState.messages.length,
+          sessionId: completedState.storedSessionId
+        })
+      }
 
       if (compactedTurnRef.current.delete(sessionId)) {
         shouldHydrate = false
@@ -941,9 +1011,26 @@ export function useMessageStream({
           ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
           : undefined
 
-        const nextMessages = prev.some(m => m.id === streamId)
+        const lastUserIndex = prev.findLastIndex(message => message.role === 'user')
+
+        // The turn's terminal error frame may already have painted this
+        // failure's card; a trailing bare `error` event updates that card.
+        const repeatedCard = state.streamId
+          ? undefined
+          : prev.findLast(
+              (message, index) =>
+                index > lastUserIndex &&
+                message.role === 'assistant' &&
+                !message.hidden &&
+                message.error &&
+                !chatMessageText(message).trim()
+            )
+
+        const targetId = repeatedCard?.id ?? streamId
+
+        const nextMessages = prev.some(m => m.id === targetId)
           ? prev.map(message =>
-              message.id === streamId
+              message.id === targetId
                 ? {
                     ...message,
                     completedAt: occurredAt,
@@ -1000,6 +1087,7 @@ export function useMessageStream({
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
+    dropQueuedDeltas,
     finalizeInterimAssistantMessage,
     hydrateFromStoredSession,
     queryClient,
@@ -1018,10 +1106,10 @@ export function useMessageStream({
     (request: ScopedServerRequest): boolean =>
       dispatchServerRequest(
         request,
-        { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall },
+        { activeSessionIdRef, sessionInterrupted, sessionStateByRuntimeIdRef, updateSessionState, upsertToolCall },
         activeSessionIdRef.current
       ),
-    [activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall]
+    [activeSessionIdRef, sessionInterrupted, sessionStateByRuntimeIdRef, updateSessionState, upsertToolCall]
   )
 
   return {

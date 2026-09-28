@@ -110,6 +110,8 @@ export const en: Translations = {
       "Your agent's disk is almost full. New messages, memories, and settings may fail to save.",
     diskElevatedBanner:
       "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage.",
+    multiplexStandaloneBanner:
+      "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: hermes gateway migrate --multiplex",
     dismiss: "Dismiss",
   },
 
@@ -191,9 +193,15 @@ export const en: Translations = {
     deleteSelectedConfirmMessage:
       "This permanently removes {count} selected sessions and all their messages. This cannot be undone.",
     selectedSessionsDeleted: "{count} sessions deleted",
+    selectedSessionsSkippedActive:
+      "{deleted} deleted; {count} kept because a turn is running",
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     newChat: "New chat",
+    workspace: "workspace",
+    workspaceDefault: "Default",
+    workspaceRescan: "Rescan repositories",
+    workspaceCustom: "Other path…",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {

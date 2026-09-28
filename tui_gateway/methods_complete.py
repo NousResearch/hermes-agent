@@ -286,7 +286,9 @@ def _(rid, params: dict) -> dict:
     from agent.skill_bundles import get_skill_bundles
     # Skill/bundle lookups are home- and cwd-keyed: bind the calling session's profile and workspace so
     # the popup offers the project-local skills ``command.dispatch`` accepts for that session (#114359).
-    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+    # A new-chat draft has no session yet: it names its rail-selected ``profile`` instead (#124651).
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                             profile=params.get("profile")):
         skill_commands, skill_bundles = dict(get_skill_commands()), dict(get_skill_bundles())
     completer = SlashCommandCompleter(
         skill_commands_provider=lambda: skill_commands, skill_bundles_provider=lambda: skill_bundles)
@@ -345,6 +347,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("model.save_key")
+@_profile_scoped
 @_catch(5034)
 def _(rid, params: dict) -> dict:
     """Save an API key for ``slug``; return its refreshed provider row (model.options shape + ``authenticated``)."""
@@ -365,13 +368,14 @@ def _(rid, params: dict) -> dict:
     # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
     env_var = pconfig.api_key_env_vars[0]
     from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
+    # Under the profile scope the save publishes into the addressed profile's secret scope (and the
+    # shared os.environ only for the launch profile), so the refreshed inventory below sees it.
     save_provider_env_credential(env_var, api_key)
-    os.environ[env_var] = api_key  # so the refreshed inventory sees it
-    # The launch profile's boot record may still say "nothing configured"; the gated picker's
-    # own chat waits on setup.status, so the fresh key must move the record (+ setup.ready).
-    if not params.get("profile"):
-        from hermes_cli.free_tier_bootstrap import reconcile_record
-        reconcile_record()
+    # The launch profile's boot record may still say "nothing configured"; the gated picker's own chat
+    # waits on setup.status, so the fresh key must move the record (+ setup.ready). reconcile_record
+    # leaves it alone when the bound home is another profile's.
+    from hermes_cli.free_tier_bootstrap import reconcile_record
+    reconcile_record()
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
     from hermes_cli.inventory import build_models_payload
     payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)
@@ -383,17 +387,28 @@ def _(rid, params: dict) -> dict:
 
 
 @method("model.disconnect")
+@_profile_scoped
 @_catch(5035)
 def _(rid, params: dict) -> dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
+    from hermes_cli import managed_scope
     from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+    from hermes_cli.config import env_write_refusal, load_env
     from hermes_cli.credential_lifecycle import remove_provider_env_credential
     if not (slug := (params.get("slug") or "").strip()):
         return _err(rid, 4001, "slug is required")
     pconfig = PROVIDER_REGISTRY.get(slug)
     # Remove EVERY env var plus its mirrors or the provider resurrects in the picker after restart.
     env_vars = (pconfig.api_key_env_vars if pconfig else None) or ()
-    cleared_env = any([remove_provider_env_credential(ev).get("found") for ev in env_vars])
+    # Ask the .env lock about every var before removing any: a refusal part-way through left the earlier stores
+    # stripped. A locked var that holds nothing is no refusal (a package-managed install keeps keys in auth.json).
+    removable = []
+    for ev in env_vars:
+        if (refusal := env_write_refusal(ev, "remove")) is None:
+            removable.append(ev)
+        elif managed_scope.is_env_managed(ev) or os.environ.get(ev) or load_env().get(ev):
+            return _err(rid, 5035, refusal)
+    cleared_env = any([remove_provider_env_credential(ev).get("found") for ev in removable])
     cleared_auth = clear_provider_auth(slug)  # full disconnect: OAuth grants go too
     if not cleared_env and not cleared_auth:
         return _err(rid, 4005, f"no credentials found for {slug}")

@@ -306,7 +306,7 @@ this Hermes understands still loads with a warning.
 | `manifest_version` | int | Manifest **file-format** version. Absent = `1`. Current max: `2`. Independent from `api_version`. |
 | `api_version` | int | Runtime **plugin API generation** the plugin targets (ctx surface / hook signatures). Deliberately a separate axis from `manifest_version` — an `api_version: 1` plugin can use a v2 manifest. |
 | `requires_plugins` | list | Inter-plugin dependencies: `- id: other-plugin` with optional `version_range: ">=1.0,<2"`. **Advisory**: a missing dependency logs a clear warning but the plugin still loads — probe at runtime with `ctx.has_plugin("other-plugin")`. Load **order** honors these edges: when A requires B, B's `register()` runs before A's (topological sort, alphabetical tiebreak; cycles warn and fall back to alphabetical order). |
-| `python_dependencies` | list of str | PEP 508 requirements (e.g. `"requests>=2.0,<3"`). Installed into Hermes' venv on `hermes plugins install` / `enable` and **re-applied after every `hermes update`** (see [Python dependencies](#python-dependencies)). A `pyproject.toml` beside `plugin.yaml` with `[project].dependencies` is the equivalent, preferred form. |
+| `python_dependencies` | list of str | Declared Python requirements (e.g. `"requests>=2.0,<3"`). Installation requests consent; enabling admits the candidate through PM with the existing core, extras, and enabled-plugin union. Successful preparation publishes the environment and configuration transactionally; failure preserves the previous selection and enabled set. Declining leaves the installed plugin disabled. Pin upper bounds. |
 | `python_runtime` | str | `external` — the plugin manages its own interpreter/venv (sidecar pattern); Hermes installs nothing and leaves any `pyproject.toml` alone. |
 | `config_schema` | mapping | JSON-schema-ish description of keys under `plugins.entries.<id>.settings`: `api_url: {type: str, default: "", description: "...", required: false}`. Validated at load; mismatches log actionable warnings naming the key and expected type — never load failures. Types: `str`, `int`, `float`, `bool`, `list`, `dict` (plus JSON-schema aliases) and `secret`. Also drives the settings form in the Desktop Plugins tab — see [Settings form in the Desktop](#settings-form-in-the-desktop). |
 | `license` | str | SPDX-style license id (e.g. `MIT`). |
@@ -326,10 +326,21 @@ requires_plugins:
   - id: other-plugin
     version_range: ">=1.0,<2"
 python_dependencies:
-  - "somepkg>=1.0,<2"     # installed on install/enable, re-applied after hermes update
+  - "somepkg>=1.0,<2"     # consent before PM admission
 config_schema:
   api_url: {type: str, default: "", description: "Service endpoint"}
 ```
+
+:::note Shared dependency admission
+Plugin installation requests Python dependency consent. Enabling the plugin
+prepares its requirements with core dependencies, extras, and enabled plugins
+through PM. Pack enables use the same admission transaction. Reinstalling an
+active plugin requests consent against its staged declaration before publication.
+A refusal preserves the installed plugin and selected environment.
+
+The installer and PM admission reject unsupported `manifest_version` values
+and unmet `requires_hermes` constraints before publication.
+:::
 
 ### Python dependencies
 
@@ -349,34 +360,60 @@ dependencies = [
 
 When both exist the `pyproject.toml` wins. What Hermes does with them:
 
-- **Install / enable** — the declared packages are installed into Hermes' venv with
-  `uv pip install` (pip fallback) under a **constraints file built from Hermes' own pinned
-  dependencies**, so a plugin can never move a core package (httpx, pydantic, …) off the version
-  Hermes was tested with. Environment markers (`; sys_platform == "win32"`) are honoured.
-- **Conflict = refusal, never a silent drop** — before the plugin tree is moved into place, its
-  dependencies are dry-run resolved together with every already-enabled plugin's. A candidate that
-  cannot resolve is *not installed* and the error names the conflict; existing plugins are untouched.
-- **`hermes update` re-applies them** — the update's `uv sync` rebuilds the venv from Hermes' lock
-  and strips anything else. Afterwards Hermes walks every profile's enabled plugins and reinstalls
-  their declared dependencies. If the union no longer resolves (a core pin moved), non-memory
-  plugins are dropped one at a time until it does; each dropped plugin is **disabled with a loud
-  message** naming it, and memory providers are kept over everything else, because a Hermes that
-  boots without memory looks like data loss.
-- **`hermes plugins update`** re-runs the install for whatever the new revision declares.
-- **`--no-deps`** on `hermes plugins install` skips all of this for one plugin (no conflict gate,
-  nothing installed) when you would rather manage its packages yourself.
-- **Opt out with `python_runtime: external`** — plugins that keep a heavy runtime (torch, native
-  extensions) in their own sidecar venv and talk to it over a subprocess declare this in
-  `plugin.yaml`; Hermes then installs nothing and the plugin never joins the shared resolution.
-- **Nothing to load is an error** — `hermes plugins validate` (and the catalog CI) fail a
-  `plugin.yaml` with no `__init__.py`, `desktop/plugin.js` or `plugin.json` beside it. A pip-layout
-  package whose code sits under `src/` behind an entry point needs a thin directory-plugin wrapper
-  whose `pyproject.toml` depends on the package.
-- `security.allow_lazy_installs: false` disables all of this; the plugin installs, its dependencies
-  do not, and the loader warns at import.
+- **Install / enable** — PM resolves core, selected extras, and the enabled plugin union
+  across every profile sharing the dependency home, including custom `HERMES_HOME` roots.
+  A new plugin is downloaded disabled; Python dependency consent precedes enablement.
+  `pyproject.toml` takes precedence over `python_dependencies` and legacy `pip_dependencies`.
+- **Atomic publication** — PM prepares a fresh environment generation before publishing
+  an enablement or an active plugin replacement. Resolution, download, or build failure
+  preserves the previous environment and plugin selection; no existing plugin is sacrificed.
+- **Updates retain the union** — `hermes update` includes enabled plugins while preparing
+  its new generation. There is no post-update pip reinstall. `hermes plugins update` prepares
+  active replacements before swapping their code and dependency generation together.
+- **Requirement hygiene** — malformed PEP 508 requirements are refused. Environment markers
+  remain intact for the target interpreter to evaluate. `hermes-agent` self-dependencies are
+  omitted because the checkout supplies Hermes. Direct-URL requirements are not managed;
+  use a plugin-owned external runtime for them.
+- **`--no-deps`** downloads a new plugin without dependency consent and leaves it disabled,
+  even with `--enable`. It cannot bypass PM admission when replacing an active plugin.
+- **`python_runtime: external`** keeps a sidecar's dependencies out of the shared union.
+  Hermes does not install that Python runtime or modify its declaration.
+- **Nothing to load is an error** — `hermes plugins validate` rejects `plugin.yaml` without
+  `__init__.py`, `desktop/plugin.js`, or `plugin.json` beside it. Pip-layout packages need
+  a directory-plugin wrapper.
+- `security.allow_lazy_installs: false` blocks on-demand acquisition. Explicit dependency
+  consent and explicit enablement authorize PM preparation; discovery never installs.
 
 `HERMES_HOME/plugins/` survives `hermes update` and Desktop updates: the updater only rebuilds the
 venv and the checkout, never the home directory.
+
+### Dependency security policy
+
+Hermes quarantines **its own** dependencies: the checkout's `[tool.uv] exclude-newer = "14 days"`
+keeps a freshly published release of any package Hermes itself depends on out of `hermes update`
+and the built-in lazy installs for two weeks, so a hijacked upload is caught upstream before it
+reaches users. **That quarantine does not apply to your plugin's dependencies.** When Hermes
+resolves your plugin into its environment, the cutoff stays on the packages Hermes itself locks
+and nowhere else, so a plugin can floor on a release published yesterday and install today — and the
+plugin's author, not Hermes, is responsible for what that pulls in. (A plugin that needs a newer
+version of a package Hermes itself depends on still waits out that package's window.)
+
+Set your own policy and hold yourself to it. Strongly recommended:
+
+- **Upper bounds on every dependency** — `>=floor,<next_major` for stable packages,
+  `>=0.29,<0.32` for pre-1.0 ones. A bare `>=X.Y` adopts every future release unreviewed.
+- **Floor on the oldest API-compatible version**, not the release of the week. A floor on a
+  fresh wheel forces every installer onto it the day it appears; `>=old,!=broken,<next` keeps the
+  wide range and skips the one bad release.
+- **Adopt a new-release quarantine of your own** — wait ~14 days before floors move to a new
+  release, and resolve with `uv --exclude-newer "14 days"` (or `UV_EXCLUDE_NEWER`) in your own CI so
+  the lock you test is the one users get.
+- **Pin your lock, review your bumps.** Treat a dependency bump as a code change: read the
+  upstream diff, then re-pin.
+
+The plugin catalog review reads your dependency list at the pinned SHA (`plugin.yaml` or
+`pyproject.toml`) and flags bare floors and missing bounds; an entry is not held for a floor that
+is merely recent.
 
 ## Step 3: Write the tool schemas
 
@@ -746,12 +783,13 @@ Put any files in your plugin directory and read them at import time:
 ```python
 # In tools.py or __init__.py
 from pathlib import Path
+from ruamel.yaml import YAML
 
 _PLUGIN_DIR = Path(__file__).parent
 _DATA_FILE = _PLUGIN_DIR / "data" / "languages.yaml"
 
 with open(_DATA_FILE) as f:
-    _DATA = yaml.safe_load(f)
+    _DATA = YAML(typ="safe").load(f)
 ```
 
 That's for files you *ship*. State you *write* is different — see the next
@@ -858,32 +896,50 @@ Both formats can be mixed in the same list. Already-set variables are skipped si
 
 ### Lazy-install optional Python dependencies
 
-If your plugin wraps an SDK that not every user will have installed (a vendor SDK, a heavy ML lib, a platform-specific package), don't `import` it at the top of the module. Use the `tools.lazy_deps.ensure(...)` helper inside the tool handler — Hermes will install the package on first use, gated by the user's `security.allow_lazy_installs` config.
+For an SDK covered by a Hermes project extra, use `pm.ensure_import` at the
+operation that needs it. Use `pm.available` for a read-only availability check.
+Do not install dependencies from a frequently polled `check_fn`.
+
+This example requests the existing `bedrock` extra:
 
 ```python
-# tools.py
-from tools.lazy_deps import ensure, FeatureUnavailable
+from pm import InstallError, ensure_import
 
 def my_tool_handler(args, **kwargs):
     try:
-        ensure("my-plugin.my-backend")   # key must be in LAZY_DEPS
-    except FeatureUnavailable as exc:
+        ensure_import("bedrock")
+    except InstallError as exc:
         return {"error": str(exc)}
 
-    import my_backend_sdk   # safe now
-    ...
+    import boto3
+    # Use the SDK here.
 ```
 
-Two rules from the security model in `tools/lazy_deps.py`:
+The argument is a `pyproject.toml` extra name. It is not an arbitrary package
+specification or a plugin-qualified key. The old `LAZY_DEPS` registry and
+`FeatureUnavailable` exception no longer exist.
 
-| Rule | Why |
-|---|---|
-| Your feature key must appear in the in-tree `LAZY_DEPS` allowlist | Prevents a malicious config from coaxing Hermes into installing arbitrary packages — only specs Hermes itself ships are eligible |
-| Specs are PyPI-by-name only | No `--index-url`, `git+https://`, or file: paths. Pin versions with PEP 440 (`"my-sdk>=1.2,<2"`) inside the allowlist entry |
+If a new environment is selected, the helper can report a required restart.
+Return that error instead of importing from a second environment inside the
+running process. Already available dependencies need no installation, even
+when `security.allow_lazy_installs` is false.
 
-For third-party plugins distributed via pip, declare the optional deps as `[project.optional-dependencies]` extras in your own `pyproject.toml` and tell users to `pip install your-plugin[backend]` — that path doesn't go through `lazy_deps`. The lazy-install dance is most useful for **bundled** plugins where shipping a hard dependency on every install would bloat the base Hermes footprint.
+For a directory plugin's own Python dependencies, declare `dependencies` under
+`[project]` in its `pyproject.toml`. Without an authored project file, PM combines
+legacy `pip_dependencies` and `python_dependencies` lists from `plugin.yaml` or
+`plugin.yml`. Old PM-generated project files do not override these lists.
+Consent, workspace membership, and currency checks use the same declaration.
+PM prepares their dependencies together with core requirements before enabling
+the plugin. The generated workspace does not rewrite the plugin directory or
+the shipped lockfile. Dependency conflicts refuse admission and preserve the
+previous selection. PM does not automatically disable other plugins.
 
-When `security.allow_lazy_installs: false` is set globally, `ensure()` raises `FeatureUnavailable` immediately with a remediation hint — your plugin should catch it and degrade gracefully (return an error result, not crash the tool loop).
+Dependencies installed manually with pip are not durable PM declarations.
+A later environment replacement need not retain them. Wrapper plugins whose
+Python runtimes remain outside PM can use the
+[memory-provider survival contract](../memory-provider-plugin.md#hermes_home-survival-contract-what-wrappers-can-rely-on).
+See [Package management](../../reference/package-management.md) for the
+runtime layout and lazy-install policy.
 
 
 
@@ -1794,10 +1850,13 @@ For sharing plugins publicly, add an entry point to your Python package:
 my-plugin = "my_plugin_package"
 ```
 
-```bash
-pip install hermes-plugin-calculator
-# Plugin auto-discovered on next hermes startup
-```
+Entry-point discovery remains supported when the distribution is present in the
+environment supplied by the installation owner (for example, a Nix derivation).
+It is discovery, not permission to inject packages into a PM-selected generation.
+For managed installs, distribute a directory plugin with `pyproject.toml` or
+manifest Python requirements and use `hermes plugins install` / `enable` so PM
+can admit it transactionally. Restart Hermes after a new environment is selected.
+`hermes pm install` accepts managed tool names, not arbitrary PyPI packages.
 
 ## Distribute for NixOS
 
@@ -1811,7 +1870,7 @@ NixOS users can install your plugin declaratively if you provide a `pyproject.to
 ```nix
 # User's configuration.nix
 services.hermes-agent.extraPythonPackages = [
-  (pkgs.python312Packages.buildPythonPackage {
+  (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
     pname = "my-plugin";
     version = "1.0.0";
     src = pkgs.fetchFromGitHub {
@@ -1821,7 +1880,7 @@ services.hermes-agent.extraPythonPackages = [
       hash = "sha256-...";  # nix-prefetch-url --unpack
     };
     format = "pyproject";
-    build-system = [ pkgs.python312Packages.setuptools ];
+    build-system = [ config.services.hermes-agent.package.python.pkgs.setuptools ];
   })
 ];
 ```

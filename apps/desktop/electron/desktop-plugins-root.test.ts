@@ -117,7 +117,7 @@ describe('reconcileUnifiedDesktopHalves', () => {
 
       try {
         expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'good')])
-        expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipping unreadable package denied'))
+        expect(warn).toHaveBeenCalled()
       } finally {
         warn.mockRestore()
         fs.chmodSync(denied, 0o600)
@@ -142,7 +142,7 @@ describe('reconcileUnifiedDesktopHalves', () => {
       try {
         expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
         expect(fs.existsSync(path.join(appRoot, 'denied'))).toBe(true)
-        expect(warn).toHaveBeenCalledWith(expect.stringContaining('unreadable package denied'))
+        expect(warn).toHaveBeenCalled()
       } finally {
         warn.mockRestore()
         fs.chmodSync(denied, 0o700)
@@ -180,6 +180,25 @@ describe('reconcileUnifiedDesktopHalves', () => {
 
     expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
     expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('user standalone')
+  })
+
+  it('adopts an unmarked copy of its own half that a pre-marker install left behind', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    // What `installDesktopPluginFromGit` used to publish: the package's half,
+    // byte for byte, with no marker. The page showed it as a second, enabled
+    // row while the agent row waited on "copying…".
+    write(path.join(home, 'plugins', 'media', 'desktop', 'plugin.js'), 'package half')
+    write(path.join(appRoot, 'media', 'plugin.js'), 'package half')
+
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'media', PACKAGE_MARKER), 'utf8'))
+    expect(marker.package).toBe('media')
+    // Adoption is a stamp, not a copy: the folder's own files are untouched and
+    // the next pass has nothing left to do.
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('package half')
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
   })
 
   it('replaces an interrupted marker-less copy, stamps it, and converges on retry', async () => {

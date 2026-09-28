@@ -7,17 +7,23 @@ second connection opened after the first one closed.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from gateway import delivery_ledger as dl
 
 
 def test_recording_a_reply_does_not_open_a_second_connection(tmp_path, monkeypatch):
-    monkeypatch.setattr(dl, "_db_path", lambda: tmp_path / "state.db")
+    db = tmp_path / "state.db"
+    monkeypatch.setattr(dl, "_db_path", lambda: db)
     real_connect = sqlite3.connect
     opened: list[str] = []
 
     def counting_connect(*args, **kwargs):
-        opened.append(str(args[0]) if args else str(kwargs.get("database")))
+        target = args[0] if args else kwargs.get("database")
+        # Only the ledger's own database counts: unrelated sqlite users in the
+        # process (other modules, background threads) must not move the tally.
+        if Path(str(target)).resolve() == db.resolve():
+            opened.append(str(target))
         return real_connect(*args, **kwargs)
 
     monkeypatch.setattr(sqlite3, "connect", counting_connect)

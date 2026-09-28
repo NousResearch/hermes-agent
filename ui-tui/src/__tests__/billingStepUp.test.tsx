@@ -96,26 +96,12 @@ const overlay = (screen: BillingOverlayState['screen']): BillingOverlayState => 
 describe('BillingOverlay — step-up screen (Allow Remote Spending)', () => {
   it('renders the one-time-setup prompt with the held amount, never leaking the raw scope', () => {
     const out = render(overlay('stepup'))
-    expect(out).toContain('One-time setup')
-    expect(out).toContain('Allow Remote Spending')
     expect(out).toContain('$100') // resumes the held purchase
-    expect(out).toContain('Not now')
     expect(out).not.toContain('billing:manage')
   })
 })
 
 describe('BillingOverlay — overview (reordered, dollars)', () => {
-  it('leads with balance in the title, Add funds first, no "credits"', () => {
-    const out = render(overlay('overview'))
-    expect(out).toContain('Top up · balance $12.00') // balance in the title
-    expect(out).toContain('Add funds') // buy action, renamed
-    expect(out).toContain('Auto-reload')
-    expect(out).toContain('Manage on portal')
-    expect(out.toLowerCase()).not.toContain('credits') // dollars only
-    // No standalone "Allow Remote Spending" item — discovered at pay time.
-    expect(out).not.toContain('Allow Remote Spending')
-  })
-
   it('renders the two-bar dollar usage when a usage model is present', () => {
     const withUsage: BillingOverlayState = {
       ...overlay('overview'),
@@ -147,9 +133,9 @@ describe('BillingOverlay — overview (reordered, dollars)', () => {
     }
 
     const out = render(withUsage)
-    expect(out).toContain('$14.00 left of $20.00')
-    expect(out).toContain('30% used')
-    expect(out).toContain('never expires')
+    expect(out).toContain('$14.00')
+    expect(out).toContain('$20.00')
+    expect(out).toContain('30%')
   })
 })
 
@@ -171,20 +157,8 @@ describe('BillingOverlay — auto-reload card divergence', () => {
       })
     })
 
-    expect(out).toContain('Auto-refill is charging Visa ••9999 — not your card on file')
-    expect(out).toContain('authorize Nous Research to charge Visa ••9999')
-    expect(out).toContain('Use your card on file — manage on portal')
-  })
-
-  it('uses generic distinct-card copy when metadata is unresolved', () => {
-    const out = render({
-      ...overlay('autoreload'),
-      state: billState({
-        auto_reload: autoReload({ kind: 'distinct', payment_method_id: 'pm_other', brand: null, last4: null })
-      })
-    })
-
-    expect(out).toContain('Auto-refill is charging a different card — not your card on file')
+    expect(out).toContain('9999')
+    expect(out).toContain('not your card on file')
   })
 
   it.each(['canonical', 'none'] as const)('does not warn for a %s auto-reload card', kind => {

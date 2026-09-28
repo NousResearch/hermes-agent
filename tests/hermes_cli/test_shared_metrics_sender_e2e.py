@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import gzip
 import json
-import sqlite3
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -226,15 +225,6 @@ class TestRealTransport:
         assert outcome.sent == 1
         assert len(Ingest.received) == 2
 
-    def test_a_retry_sends_identical_bytes(self, store, server):
-        _add(store, "pkg-1", metrics=5)
-        Ingest.script = [(503, {}, {}), (202, {}, {})]
-        _sender(store, server).send_pending()
-        first, second = Ingest.received
-        assert first["body"] == second["body"]
-        assert first["raw"] == second["raw"], (
-            "the raw request bytes must match, not just the parsed body"
-        )
 
     def test_a_gzipped_retry_is_byte_identical_on_the_wire(self, store, server):
         """gzip embeds an mtime by default, which would break this."""

@@ -67,7 +67,7 @@ def _is_memory_provider_dir(path: Path) -> bool:
     try:
         if not init_file.exists():
             return False
-        source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+        source = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
         return "register_memory_provider" in source or "MemoryProvider" in source
     except OSError as exc:  # one mode-000 / ACL-denied child must not abort discovery
         logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
@@ -231,25 +231,52 @@ def import_memory_provider_module(name: Optional[str] = None) -> bool:
     imported = False
     try:
         if provider_dir := find_provider_dir(name):
-            imported = _loader.load_plugin_module(
-                _module_name(provider_dir, name), provider_dir, parents=("plugins", "plugins.memory"),
-                logger=logger, synthetic_namespace=None if _is_bundled(provider_dir) else _USER_NAMESPACE,
-            ) is not None
+            imported = _load_package(provider_dir, name) is not None
         elif (entry_point := find_provider_entry_point(name)) is not None:
             entry_point.load()
             imported = True
     except Exception:
         logger.debug("memory provider '%s' warm-up import failed", name, exc_info=True)
     if imported:
-        # The deadlock is numpy's lazy ``_core`` init; hindsight defers that import to
-        # ``is_available()`` (sentence_transformers), so the provider module alone leaves
-        # it unwarmed. Every reporter's workaround was a plain ``import numpy`` up front.
+        # The deadlock is numpy's lazy ``_core`` init; embedding-backed providers (e.g. the
+        # hindsight plugin) defer that import to ``is_available()`` (sentence_transformers), so
+        # the provider module alone leaves it unwarmed. Every reporter's workaround was a plain ``import numpy`` up front.
         for module in _NATIVE_WARM_IMPORTS:
             try:
                 importlib.import_module(module)
             except Exception:
                 logger.debug("warm-up import of %s skipped", module, exc_info=True)
     return imported
+
+
+def _load_package(provider_dir: Path, name: str):
+    """Import the provider package at *provider_dir* under the module name the loader owns
+    (``plugins.memory.<name>`` bundled, synthetic user namespace otherwise); None on failure."""
+    return _loader.load_plugin_module(
+        _module_name(provider_dir, name), provider_dir,
+        parents=("plugins", "plugins.memory"),
+        logger=logger,
+        synthetic_namespace=None if _is_bundled(provider_dir) else _USER_NAMESPACE,
+    )
+
+
+def import_provider_module(name: str, submodule: Optional[str] = None):
+    """The package (or ``<package>.<submodule>``) of whichever copy of provider *name* is installed.
+
+    Host-side code (dashboard host-block storage, OAuth routes, doctor, profile clone) used to
+    ``import plugins.memory.<name>.<submodule>``, which only exists for the bundled copy; a
+    catalog install under ``$HERMES_HOME/plugins/`` loads under the synthetic user namespace,
+    so those surfaces 500'd/404'd the moment the bundled copy left core. Resolving through
+    ``find_provider_dir`` makes bundled and user-dir copies behave identically. Raises
+    ``ImportError`` when the provider is not installed or lacks the submodule.
+    """
+    provider_dir = find_provider_dir(name)
+    if provider_dir is None:
+        raise ImportError(f"memory provider {name!r} is not installed")
+    package = _load_package(provider_dir, name)
+    if package is None:
+        raise ImportError(f"memory provider {name!r} failed to import")
+    return importlib.import_module(f"{package.__name__}.{submodule}") if submodule else package
 
 
 def _instantiate_subclass(namespace) -> Optional["MemoryProvider"]:
@@ -305,12 +332,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
 def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional["MemoryProvider"]:
     """Import a provider module; ``register(ctx)`` first, else a top-level subclass."""
     name = provider_dir.name
-    mod = _loader.load_plugin_module(
-        _module_name(provider_dir, name), provider_dir,
-        parents=("plugins", "plugins.memory"),
-        logger=logger,
-        synthetic_namespace=None if _is_bundled(provider_dir) else _USER_NAMESPACE,
-    )
+    mod = _load_package(provider_dir, name)
     if mod is None:
         return None
 
@@ -441,7 +463,7 @@ def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
         return False
     names = {name, provider_dir.name}
     try:
-        import yaml
+        import hermes_yaml as yaml
         with open(provider_dir / "plugin.yaml", encoding="utf-8-sig") as f:
             names.add(str((yaml.safe_load(f) or {}).get("name") or ""))
     except Exception:

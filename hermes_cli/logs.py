@@ -174,7 +174,7 @@ def _read_tail(path: Path, num_lines: int, *, has_filters: bool = False, **filte
 
 
 def _read_all_lines(path: Path) -> list:
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         return f.readlines()
 
 
@@ -211,7 +211,8 @@ def _read_last_n_lines(path: Path, n: int) -> list:
 
 def _follow_log(path: Path, **filters) -> None:
     """Poll a log file for new content and print matching lines."""
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+        # Seek to end
         f.seek(0, 2)
         while True:
             line = f.readline()

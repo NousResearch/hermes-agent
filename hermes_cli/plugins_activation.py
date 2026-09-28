@@ -13,10 +13,13 @@ config or tree change.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_GO_LIVE_LOCK = threading.Lock()
 
 # Hooks the gateway consults per inbound/outbound message: live as soon as the registry holds them.
 _GATEWAY_TRANSFORM_HOOKS = frozenset({
@@ -126,18 +129,34 @@ def load_and_go_live(name: str) -> Optional[Dict[str, Any]]:
     MCP servers and hand them (and its skills) to this profile's open chats with a turn note. Returns
     the activation summary with ``live_now: {mcp_servers, skills}``; ``deferred`` then keeps only what
     waits for the next session (Python ``tools``, ``prompt``). None when the plugin did not load."""
+    # A forced rediscovery unloads every plugin before it loads them again, which drops their server
+    # configs, skills and liveness declarations for the length of the pass. Two installs finishing
+    # together (one card, two rows) each go live; the second one's pass must not run while the first
+    # reads or connects, or the first plugin comes up with no tools. One go-live at a time.
+    with _GO_LIVE_LOCK:
+        return _go_live(name)
+
+
+def _go_live(name: str) -> Optional[Dict[str, Any]]:
+    from hermes_cli.plugins_activation_live import connect_plugin_mcp, live_notice, plugin_skills
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        discover_plugins(force=True)
-        activation = find_activation(activation_summaries(get_plugin_manager()), name)
+        from hermes_cli.plugins import _join_background_discovery, get_plugin_manager
+        _join_background_discovery()
+        manager = get_plugin_manager()
+        # Other forced passes (a reload-plugins verb, the dashboard) do not take the go-live lock, so the
+        # reads share the discovery lock with the pass that produced them.
+        with manager._discovery_lock:
+            manager.discover_and_load(force=True)
+            activation = find_activation(activation_summaries(manager), name)
+            portable = manager.get_portable_mcp_servers()
+            skills = plugin_skills(activation["key"]) if activation else []
     except Exception:
         logger.debug("in-process plugin reload after change to %r failed", name, exc_info=True)
         return None
     if activation is None:
         return None
-    from hermes_cli.plugins_activation_live import connect_plugin_mcp, live_notice, plugin_skills
-    servers = connect_plugin_mcp(activation)
-    activation["live_now"] = {"mcp_servers": servers, "skills": plugin_skills(activation["key"])}
+    servers = connect_plugin_mcp(activation, portable)
+    activation["live_now"] = {"mcp_servers": servers, "skills": skills}
     activation["deferred"] = {k: v for k, v in (activation.get("deferred") or {}).items() if k != "mcp_servers"}
     import sys
     server = sys.modules.get("tui_gateway.server")  # loaded == this process hosts chats
@@ -151,17 +170,27 @@ def load_and_go_live(name: str) -> Optional[Dict[str, Any]]:
     return activation
 
 
+def _serve_backend_record():
+    """The host-owner record, else the Desktop child's (a Desktop-only box has no host owner)."""
+    from gateway import host_rendezvous as hr
+    for role in (hr.ROLE_SERVE, hr.ROLE_DESKTOP_SERVE):
+        record = hr.read_record(role)
+        if record is not None and record.port and hr.record_token_is_consistent(record):
+            return record
+    return None
+
+
 def notify_serve_backend(name: str, home: Path) -> Optional[Dict[str, Any]]:
-    """Ask the running Desktop / dashboard backend (``hermes serve``, found through its host record) to
+    """Ask the running dashboard / Desktop backend (``hermes serve``, found through its host record) to
     run :func:`load_and_go_live` for ``name`` in ``home``. None when no backend answers. Never raises."""
     try:
         import json
         import urllib.request
         from gateway import host_rendezvous as hr
-        record = hr.read_record(hr.ROLE_SERVE)
-        if record is None or not record.port or not hr.record_token_is_consistent(record):
+        record = _serve_backend_record()
+        if record is None:
             return None
-        token = hr.read_token(hr.ROLE_SERVE)
+        token = hr.read_token(record.role)
         request = urllib.request.Request(
             f"http://{hr.dial_host(record)}:{record.port}/api/dashboard/agent-plugins/activate",
             data=json.dumps({"name": name, "home": str(home)}).encode("utf-8"), method="POST",

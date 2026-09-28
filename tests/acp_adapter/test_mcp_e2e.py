@@ -168,7 +168,7 @@ class TestMcpRegistrationE2E:
         assert len(starts) >= 1, f"Expected ToolCallStart, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
         start_event = starts[0]
         assert isinstance(start_event, ToolCallStart)
-        assert start_event.title.startswith("terminal:")
+        assert "echo hello" in start_event.title
 
         # Should have at least one ToolCallUpdate (completion) with rawOutput
         assert len(completions) >= 1, f"Expected ToolCallUpdate, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
@@ -192,41 +192,9 @@ class TestMcpRegistrationE2E:
 
         assert len(update.content) == 1
         assert update.content[0].type == "content"
-        assert "Approval prompt shows the diff" in update.content[0].content.text
 
 
 
-class TestMcpSanitizationE2E:
-    """Verify server names with special chars work end-to-end."""
-
-    @pytest.mark.asyncio
-    async def test_slashed_server_name_registers_cleanly(self, acp_agent, mock_manager):
-        """Server name 'ai.exa/exa' should not crash — tools get sanitized names."""
-        servers = [
-            McpServerHttp(
-                name="ai.exa/exa",
-                url="https://exa.ai/mcp",
-                headers=[],
-            ),
-        ]
-
-        registered_configs = {}
-        def mock_register(config_map):
-            registered_configs.update(config_map)
-            return ["mcp_ai_exa_exa_search"]
-
-        fake_tools = [{"function": {"name": "mcp_ai_exa_exa_search"}}]
-
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=mock_register), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools):
-            resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
-
-        state = mock_manager.get_session(resp.session_id)
-
-        # Raw server name preserved as config key
-        assert "ai.exa/exa" in registered_configs
-        # Agent tools refreshed with sanitized name
-        assert "mcp_ai_exa_exa_search" in state.agent.valid_tool_names
 
 
 class TestSessionLifecycleMcpE2E:

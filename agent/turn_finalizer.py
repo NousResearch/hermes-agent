@@ -578,6 +578,9 @@ def finalize_turn(
 
     _rollback_interrupted_preflight_display(agent, interrupted)
 
+    from hermes_cli.observability.shared_metrics_harness import finish_turn
+    finish_turn(agent, _turn_exit_reason, final_response, interrupted=interrupted, failed=failed)
+
     _cleanup_errors: List[str] = []
     # The model has answered (or the loop gave up): a title upgrade held back because it shares a
     # self-hosted endpoint with the main request (#117296) may go out now.

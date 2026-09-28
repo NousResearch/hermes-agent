@@ -42,6 +42,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
+import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
 import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
@@ -2047,7 +2048,7 @@ export interface SessionTileDelegate {
   deleteSession(storedSessionId: string): Promise<void>
   /** Run a slash command against a tile's session (app-level effects — e.g.
    *  branch/handoff — act on the main surface, as they should). */
-  executeSlash(rawCommand: string, sessionId: string): Promise<void>
+  executeSlash(rawCommand: string, sessionId: string, options?: { typed?: boolean }): Promise<void>
   /** Interrupt a tile's running turn. */
   interruptSession(runtimeId: string): Promise<void>
   /** Drop the wiring cache's stored→runtime bindings. Called on gateway
@@ -2748,6 +2749,7 @@ export function reopenLastClosedTile(): void {
         ownerRoute: tile.ownerRoute
       })
       focusOpenSession(storedSessionId)
+      recordDislike('undo', 'closed_tab')
 
       return
     }

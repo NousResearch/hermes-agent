@@ -361,6 +361,7 @@ def install_pack_plugins(
         _set_plugin_enabled,
     )
     from hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_cli.plugins_cmd_install import recorded_install
     results: List[PackInstallResult] = []
 
     def _fail(display: str, error: str) -> None:
@@ -374,8 +375,10 @@ def install_pack_plugins(
             continue
         console.print(f"[dim]Installing {display} @ {rp.entry.ref[:12]}...[/dim]")
         try:
-            target, manifest, installed_name = _install_plugin_core(
-                rp.identifier, force=force, ref=rp.entry.ref)
+            # A bare pack name resolved through the plugin catalog; repo entries are custom sources.
+            target, manifest, installed_name = recorded_install(
+                lambda: _install_plugin_core(rp.identifier, force=force, ref=rp.entry.ref),
+                catalog_name=None if rp.entry.repo else rp.entry.name, identifier=rp.identifier)
         except PluginOperationError as exc:
             _fail(display, str(exc))
             continue

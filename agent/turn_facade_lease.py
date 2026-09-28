@@ -75,6 +75,8 @@ class DurableTurnLease:
         # Stamp the activity clock at turn entry: `_last_activity_ts` persists across turns, so
         # without this the watchdog would measure idle from the PREVIOUS turn and abort a fresh one.
         self.agent._touch_activity("starting new turn")
+        from hermes_cli.observability.shared_metrics_process import arm_turn
+        arm_turn(self.agent)
         from agent.periodic_scheduler import schedule
 
         self.timer_handles.append(schedule(self.refresh_tick, self.refresh_interval))

@@ -1315,8 +1315,12 @@ def _persist_migration(config: Dict[str, Any]) -> None:
     """Persist a migrated config under THE migration write invariant: a migration may only
     persist values that DIFFER from the schema default, plus explicit removals/renames of user
     data. Every migration step MUST write through here (``save_config`` with default-stripping
-    ON, no ``merge_existing``) so the invariant cannot regress one migration at a time."""
-    save_config(config)
+    ON, no ``merge_existing``) so the invariant cannot regress one migration at a time. A migration
+    is Hermes' own write, never a user turning a feature off."""
+    from hermes_cli.observability.shared_metrics_disabled import hermes_applied_write
+
+    with hermes_applied_write():
+        save_config(config)
 
 
 def _prompt_and_save_env(name: str, info: Dict[str, Any], prompt: str, results: Dict[str, Any]) -> bool:
@@ -2106,7 +2110,7 @@ TERMINAL_CONFIG_ENV_MAP = {
         for key in (
             "modal_mode", "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
             "docker_image", "docker_forward_env", "singularity_image", "modal_image",
-            "daytona_image", "vercel_runtime", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
+            "daytona_image", "vercel_runtime", "vercel_image", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
             "container_cpu", "container_memory", "container_disk", "container_persistent",
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
             "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
@@ -2502,6 +2506,8 @@ def save_config(
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+    from hermes_cli.observability.shared_metrics_disabled import record_config_saved
+    record_config_saved(_raw_for_paths, current_normalized)
 
 
 def load_env() -> Dict[str, str]:
@@ -2991,7 +2997,7 @@ def _show_terminal_section(config: Dict[str, Any]) -> None:
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
 
     configured = lambda *names: 'configured' if all(get_env_value(n) for n in names) else '(not set)'  # noqa: E731
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_img
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_img, DEFAULT_VERCEL_IMAGE as _DEFAULT_VERCEL_IMAGE
     backend_lines = {
         'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
         'singularity': lambda: [f"  Image:        {terminal.get('singularity_image', 'docker://' + default_img)}"],
@@ -3002,7 +3008,7 @@ def _show_terminal_section(config: Dict[str, Any]) -> None:
             f"  Daytona image: {terminal.get('daytona_image', default_img)}",
             f"  API key:      {configured('DAYTONA_API_KEY')}"],
         'vercel_sandbox': lambda: [
-            f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}",
+            f"  Vercel image:   {terminal.get('vercel_runtime') or terminal.get('vercel_image') or _DEFAULT_VERCEL_IMAGE}",
             f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}",
         ],
         'ssh': lambda: [
@@ -3529,7 +3535,8 @@ def _exit_invalid(msg: str) -> None:
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
-    atomic_config_write(config_path, user_config)
+    from hermes_cli.observability.shared_metrics_disabled import recording_raw_config_write
+    recording_raw_config_write(config_path, user_config, atomic_config_write)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:

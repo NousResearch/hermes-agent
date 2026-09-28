@@ -5,6 +5,7 @@ import { normalize } from '@/lib/text'
 
 import { sameViewerLocation } from '../../electron/plugin-viewer-policy'
 
+import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
 import { clearExplicitPreviewOpen, noteExplicitPreviewOpen } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
@@ -648,6 +649,7 @@ export function openBrowserTab() {
   const tabs = $previewTabs.get()
   const current = tabs.find(tab => tab.id === browserTabId(tabs))
 
+  recordFeatureUse('browser_pane')
   openPreview(current?.target ?? blankPage())
 }
 
@@ -655,6 +657,7 @@ export function openBrowserTab() {
 export function newBrowserTab() {
   const id = mintBrowserTabId()
 
+  recordFeatureUse('browser_pane')
   $previewTabs.set([...$previewTabs.get(), { id, target: blankPage() }])
   noteExplicitPreviewOpen(id)
   selectRightRailTab(id)

@@ -795,7 +795,7 @@ def _absorb_turn_result(
                     _apply_model_switch(
                         sid, session, _raw, confirm_expensive_model=False,
                         pin_session_override=bool(_prev_override),
-                        persist_override=False)  # session-internal restore, never config.yaml
+                        persist_override=False, count_switch=False)  # session-internal restore, never config.yaml
                 except Exception as _moa_restore_exc:
                     logger.warning("MoA one-shot model restore failed: %s", _moa_restore_exc)
         elif _restore is None:

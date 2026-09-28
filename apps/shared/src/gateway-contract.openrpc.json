@@ -3589,6 +3589,186 @@
       }
     },
     {
+      "name": "shared_metrics.desktop_daily",
+      "summary": "Record one finished Desktop day (mode use + button presses); recorded=false keeps it for a retry.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopDailyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsDesktopDailyResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.desktop_dislike",
+      "summary": "Count one Desktop dislike signal (fire-and-forget; capped per signal per day; a no-op unless on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopDislikeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.desktop_feature_use",
+      "summary": "Count one Desktop area used today (fire-and-forget; once per area per UTC day; a no-op unless on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopFeatureUseParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.desktop_friction",
+      "summary": "Count one Desktop friction event (fire-and-forget; capped per day; a no-op unless on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopFrictionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.desktop_onboarding",
+      "summary": "Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopOnboardingParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.set",
+      "summary": "Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsSetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsConsentResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.slash_command",
+      "summary": "Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsSlashCommandParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsSlashCommandResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.startup_latency",
+      "summary": "Record one client launch-to-ready latency (fire-and-forget; a no-op unless shared metrics are on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsStartupLatencyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsStartupLatencyResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.status",
+      "summary": "Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsConsentResult"
+        }
+      }
+    },
+    {
+      "name": "shared_metrics.update_run",
+      "summary": "Count one Desktop packaged self-update outcome (fire-and-forget; a no-op unless shared metrics are on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsUpdateRunParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsUpdateRunResult"
+        }
+      }
+    },
+    {
       "name": "shell.exec",
       "summary": "Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution.",
       "params": [
@@ -31196,6 +31376,17 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoIntent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -31870,6 +32061,532 @@
           }
         },
         "title": "SetupStatusResult",
+        "type": "object"
+      },
+      "SharedMetricsConsentResult": {
+        "additionalProperties": false,
+        "description": "The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while\n``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults\nare not an answer).",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "send": {
+            "title": "Send",
+            "type": "boolean"
+          },
+          "decided": {
+            "title": "Decided",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "send",
+          "decided"
+        ],
+        "title": "SharedMetricsConsentResult",
+        "type": "object"
+      },
+      "SharedMetricsDesktopActionDay": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "via": {
+            "enum": [
+              "click",
+              "menu",
+              "palette",
+              "shortcut"
+            ],
+            "title": "Via",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "via",
+          "count"
+        ],
+        "title": "SharedMetricsDesktopActionDay",
+        "type": "object"
+      },
+      "SharedMetricsDesktopDailyParams": {
+        "additionalProperties": false,
+        "description": "One finished UTC day of Desktop use, aggregated on the client. ``day`` (YYYY-MM-DD) only latches\na resend and is never recorded; the raw counts are bucketed by the backend.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "bot_count": {
+            "default": 0,
+            "title": "Bot Count",
+            "type": "integer"
+          },
+          "modes": {
+            "items": {
+              "$ref": "#/components/schemas/SharedMetricsDesktopModeDay"
+            },
+            "title": "Modes",
+            "type": "array"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/SharedMetricsDesktopActionDay"
+            },
+            "title": "Actions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "SharedMetricsDesktopDailyParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopDailyResult": {
+        "additionalProperties": false,
+        "properties": {
+          "recorded": {
+            "title": "Recorded",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "recorded"
+        ],
+        "title": "SharedMetricsDesktopDailyResult",
+        "type": "object"
+      },
+      "SharedMetricsDesktopDislikeParams": {
+        "additionalProperties": false,
+        "description": "``signal`` quick_close|cancelled|setting_off_default|rage_click|undo|feature_disabled; ``target`` a\nclosed code-defined id for that signal (area, flow, action, undo path, feature toggle); ``setting`` a\nconfig key for setting_off_default only (the value is never sent \u2014 the backend compares it to the\ndefault).",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "signal": {
+            "title": "Signal",
+            "type": "string"
+          },
+          "target": {
+            "default": "",
+            "title": "Target",
+            "type": "string"
+          },
+          "setting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Setting"
+          }
+        },
+        "required": [
+          "signal"
+        ],
+        "title": "SharedMetricsDesktopDislikeParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopFeatureUseParams": {
+        "additionalProperties": false,
+        "description": "``area`` is a Desktop surface id (``command_palette``, ``terminal_pane``, ``settings_<view>`` \u2026);\nthe backend collapses anything outside its closed set to ``other``.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "area": {
+            "title": "Area",
+            "type": "string"
+          }
+        },
+        "required": [
+          "area"
+        ],
+        "title": "SharedMetricsDesktopFeatureUseParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopFrictionParams": {
+        "additionalProperties": false,
+        "description": "``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|slow_frame; ``detail`` a\nclosed code-defined word for that kind (notice id, error category, crash reason, drop reason, frame\nduration bucket), never message text.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "detail"
+        ],
+        "title": "SharedMetricsDesktopFrictionParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopModeDay": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "bots",
+              "sessions"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "active_ms": {
+            "default": 0,
+            "title": "Active Ms",
+            "type": "number"
+          },
+          "messages_sent": {
+            "default": 0,
+            "title": "Messages Sent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "SharedMetricsDesktopModeDay",
+        "type": "object"
+      },
+      "SharedMetricsDesktopOnboardingParams": {
+        "additionalProperties": false,
+        "description": "``step`` a Desktop first-run step id; ``event`` reached|completed|abandoned.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "step": {
+            "title": "Step",
+            "type": "string"
+          },
+          "event": {
+            "title": "Event",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "event"
+        ],
+        "title": "SharedMetricsDesktopOnboardingParams",
+        "type": "object"
+      },
+      "SharedMetricsSetParams": {
+        "additionalProperties": false,
+        "description": "``send`` is ignored unless ``enabled``; ``first_run`` marks the Desktop first-run answer.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "send": {
+            "default": false,
+            "title": "Send",
+            "type": "boolean"
+          },
+          "first_run": {
+            "default": false,
+            "title": "First Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "SharedMetricsSetParams",
+        "type": "object"
+      },
+      "SharedMetricsSlashCommandParams": {
+        "additionalProperties": false,
+        "description": "``command`` is the raw typed name (no leading ``/``, no args); the backend canonicalizes it\nagainst the published registry. ``session_id`` scopes the count to that session's profile.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "SharedMetricsSlashCommandParams",
+        "type": "object"
+      },
+      "SharedMetricsSlashCommandResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "SharedMetricsSlashCommandResult",
+        "type": "object"
+      },
+      "SharedMetricsStartupLatencyParams": {
+        "additionalProperties": false,
+        "description": "``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready\n(TUI gateway ready / Desktop backend attached), measured once per launch by the client. The\nclient names its surface because a Desktop may attach to a URL/cloud backend where\n``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection.\n``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a\nreconnect re-sending the same launch counts once while a new launch counts again.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "number"
+          },
+          "surface": {
+            "anyOf": [
+              {
+                "enum": [
+                  "desktop_attach",
+                  "tui"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Surface"
+          },
+          "launch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Launch Id"
+          }
+        },
+        "required": [
+          "elapsed_ms"
+        ],
+        "title": "SharedMetricsStartupLatencyParams",
+        "type": "object"
+      },
+      "SharedMetricsStartupLatencyResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "SharedMetricsStartupLatencyResult",
+        "type": "object"
+      },
+      "SharedMetricsUpdateRunParams": {
+        "additionalProperties": false,
+        "description": "One Desktop PACKAGED self-update (electron-updater / App Installer / Store). Source-checkout\nhand-offs run ``hermes update`` and are counted from its receipt, never here. Raw words; the\nbackend buckets them: ``outcome`` success|failed|noop|refused, ``failed_stage``\ndownload|verify|apply|restart, ``mechanism`` the updater strategy kind, ``duration_ms`` wall\ntime, ``from_commit_date`` the updated-from build's commit time (epoch seconds) when known.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "failed_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Failed Stage"
+          },
+          "mechanism": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mechanism"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duration Ms"
+          },
+          "from_commit_date": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "From Commit Date"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "SharedMetricsUpdateRunParams",
+        "type": "object"
+      },
+      "SharedMetricsUpdateRunResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "SharedMetricsUpdateRunResult",
         "type": "object"
       },
       "ShellExecParams": {
@@ -35633,6 +36350,14 @@
         },
         "title": "UiMetaConflict",
         "type": "object"
+      },
+      "UndoIntent": {
+        "enum": [
+          "retry",
+          "undo"
+        ],
+        "title": "UndoIntent",
+        "type": "string"
       },
       "Usage": {
         "additionalProperties": true,

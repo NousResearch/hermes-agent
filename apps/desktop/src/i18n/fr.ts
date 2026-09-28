@@ -4,6 +4,40 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  sharedMetrics: {
+    consentTitle: 'Aider à améliorer Hermes ?',
+    consentBody:
+      'Les métriques partagées ne contiennent que des compteurs bornés. Jamais de prompts, fichiers, chemins ni textes d’erreur. La collecte reste locale. Les envoyer à Nous est un consentement distinct.',
+    whatIsCollected: 'Ce qui est collecté',
+    collectedIntro: 'Uniquement des compteurs bornés :',
+    collectedActivity: 'Activité, durée des sessions, résultats et classes d’erreur',
+    collectedModels: 'Routes de modèles et totaux de tokens',
+    collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
+    collectedMilestones: 'Comptes de configuration regroupés',
+    collectedReliability: 'Résultats et durée des mises à jour, plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
+    collectedUsage: "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
+    collectedMachine: "Données générales de la machine : plage de RAM, type de GPU, âge et canal de la version de Hermes, mises à jour en retard, utilisation d'un serveur de modèles local",
+    installId:
+      'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
+    consentWindow:
+      'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
+    readDocs: 'Lire tous les détails',
+    share: 'Collecter et envoyer à Nous',
+    local: 'Collecter en local uniquement',
+    off: 'Non merci',
+    changeLater: 'Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
+    saveFailed: 'Impossible d’enregistrer votre choix',
+    collectLabel: 'Collecter les statistiques d’utilisation',
+    collectDesc:
+      'Compteurs bornés conservés sur cet appareil. Jamais de prompts, fichiers, chemins ni textes d’erreur.',
+    sendLabel: 'Envoyer les statistiques d’utilisation à Nous',
+    sendDesc:
+      'Envoyer chaque paquet quotidien au service de télémétrie de Nous. Seules les données d’une fenêtre de consentement sont envoyées. Nécessite la collecte activée.',
+    unavailable: 'Mettez à jour le backend Hermes pour modifier ce réglage.',
+    stripBody: 'Uniquement des compteurs bornés, jamais de prompts ni de fichiers.',
+    stripChoices: { share: 'Envoyer à Nous', local: 'Local uniquement', off: 'Non merci' },
+    stripDetails: 'Détails'
+  },
   intro: introFr,
   connectors: {
     title: 'Connectez vos applications',
@@ -1176,6 +1210,8 @@ export const frOverrides = {
       textDirection: { auto: 'Auto', rtl: 'De droite à gauche', ltr: 'De gauche à droite' },
       introSplashTitle: "Écran d'accueil",
       introSplashDesc: "Le logo et l'invite affichés dans une conversation vide.",
+      modelPricingTitle: 'Tarifs des modèles',
+      modelPricingDesc: "Affiche les prix d'entrée, de sortie et de lecture du cache par million de jetons dans le sélecteur de modèle.",
       reactionsTitle: 'Réactions aux messages',
       reactionsDesc: 'Réactions emoji façon iMessage — réagissez aux messages, et Hermes peut réagir aux vôtres.',
       tipsTitle: "Astuces dans l'application",
@@ -4648,6 +4684,7 @@ export const frOverrides = {
     maybeLater: 'Peut-être plus tard',
     moreChanges: count =>
       `+ ${count} ${count === 1 ? 'changement supplémentaire inclus' : 'changements supplémentaires inclus'}.`,
+    copyFullLog: 'Copier le journal complet des modifications',
     manualTitle: 'Mise à jour depuis votre terminal',
     manualUnavailableTitle: 'Mise à jour impossible ici',
     manualBody:
@@ -5012,7 +5049,11 @@ export const frOverrides = {
       editModels: 'Modifier les modèles…',
       followDefault: 'Utiliser le modèle par défaut des Réglages',
       refreshModels: 'Actualiser les modèles',
-      fast: 'Rapide'
+      fast: 'Rapide',
+      free: 'gratuit',
+      cacheRead: 'lecture en cache',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'Aucune option pour ce modèle',

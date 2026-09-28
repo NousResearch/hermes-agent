@@ -7,6 +7,7 @@ import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
+import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { GrowRequest } from '../electron/window-growth'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
@@ -267,6 +268,8 @@ declare global {
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
+      /** Launch -> ready ms for the first caller per app launch, null afterwards. Absent on older shells. */
+      claimStartupLatency?: () => Promise<null | number>
       requestMicrophoneAccess: () => Promise<boolean>
       /** read_window_below tool: metadata for the OS window directly underneath this one (never pixels). */
       readWindowBelow?: () => Promise<{
@@ -599,6 +602,19 @@ declare global {
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
+        /** Claim the pending packaged self-update run (null when none or already claimed). */
+        takePendingRun?: () => Promise<UpdateRunReport | null>
+        /** `sent` deletes the claimed record; false keeps it for the next attach. */
+        ackPendingRun?: (sent: boolean) => Promise<void>
+        onPendingRun?: (callback: () => void) => () => void
+      }
+      desktopMetrics?: {
+        /** Mirror this window's focused profile and its opt-in; false deletes that profile's pending crashes. */
+        setEnabled?: (on: boolean, profile: string) => Promise<void>
+        /** Claim this window's profile's pending renderer-crash reasons (null when off, none, or claimed). */
+        takeRendererCrashes?: () => Promise<{ reasons: Array<'crash' | 'killed' | 'oom' | 'other'> } | null>
+        /** `sent` drops the claimed reasons; false keeps them for the next attach. */
+        ackRendererCrashes?: (sent: boolean) => Promise<void>
       }
       uninstall: {
         summary: () => Promise<DesktopUninstallSummary>

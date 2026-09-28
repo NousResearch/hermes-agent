@@ -603,8 +603,9 @@ def _scan_gateway_pids(
 
         # Root home: reject argv that advertises another profile in any spelling the CLI pre-parser
         # accepts (``--profile=ops`` slipped past a substring test, so a default-profile fallback stop
-        # could SIGTERM the named gateway) or a HERMES_HOME= naming another home.
-        if profile_flag_value(command_lc) is not None:
+        # could SIGTERM the named gateway) or a HERMES_HOME= naming another home. An explicit
+        # ``--profile default`` names this home (#100817).
+        if profile_flag_value(command_lc) not in (None, "default"):
             return False
         if hermes_home_assignments(command_lc):
             return command_line_names_hermes_home(command_lc, current_home_lc)
@@ -4591,6 +4592,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
     _apply_startup_watchdog_config()
+    from hermes_cli.observability.shared_metrics_process import begin_process
+    begin_process("gateway")
 
     # Detached Windows runs (HERMES_GATEWAY_DETACHED=1, or non-TTY for older wrappers) ignore
     # console-control broadcasts from sibling CLIs; foreground runs keep Ctrl+C-to-stop.

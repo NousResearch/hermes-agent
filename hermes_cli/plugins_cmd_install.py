@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
 
@@ -403,6 +403,24 @@ def _install_plugin_core(
     return target, installed_manifest, installed_manifest.get("name") or target.name
 
 
+def recorded_install(install: Callable[[], tuple], *, catalog_name: Optional[str], identifier: str) -> tuple:
+    """Run one plugin install attempt (a core ``(target, manifest, installed_name)`` call) and record
+    it as a shared-metrics extension install: failed when it raises, success unless it replaced an
+    already-installed plugin (a reinstall is not an install)."""
+    from hermes_cli.observability.shared_metrics_events import record_extension_install
+
+    source = "catalog" if catalog_name else ("local" if identifier.startswith("file://") else "url")
+    before = set(_pc()._read_install_metadata())
+    try:
+        result = install()
+    except Exception:
+        record_extension_install(kind="plugin", source=source, name=catalog_name, outcome="failed")
+        raise
+    if result[2] not in before:
+        record_extension_install(kind="plugin", source=source, name=catalog_name, outcome="success")
+    return result
+
+
 def cmd_install(
     identifier: str,
     force: bool = False,
@@ -455,15 +473,18 @@ def cmd_install(
         console.print(format_scan_report(scan_result))
         return _pc()._is_tty() and _pc()._ask_yes("  Install anyway? Only continue if you trust the source. [y/N]: ")
 
-    try:
+    def _install() -> tuple:
         if entry is not None:
-            target, installed_manifest, installed_name = catalog.install_catalog_entry(
+            return catalog.install_catalog_entry(
                 entry, force=force, ref=ref, allow_removed=allow_removed, scan_decision_cb=_interactive_scan_decision,
                 python_deps=not no_deps)
-        else:
-            target, installed_manifest, installed_name = _pc()._install_plugin_core(
-                identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision,
-                python_deps=not no_deps, allow_removed=allow_removed)
+        return _pc()._install_plugin_core(
+            identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision,
+            python_deps=not no_deps, allow_removed=allow_removed)
+
+    try:
+        target, installed_manifest, installed_name = recorded_install(
+            _install, catalog_name=entry.name if entry is not None else None, identifier=identifier)
     except _pc().PluginOperationError as e:
         _pc()._fail(console, f"[red]{'Blocked' if isinstance(e, _pc().PluginScanBlocked) else 'Error'}:[/red] {e}")
     if not _pc()._looks_like_plugin_dir(target):
@@ -566,13 +587,14 @@ def dashboard_install_plugin(
         pass
     except _pc().PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
-    try:
+    def _install() -> tuple:
         if entry is not None:
-            target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, allow_removed=False)
-        else:
-            target, installed_manifest, installed_name = _pc()._install_plugin_core(
-                identifier, force=force, ref=(ref or "").strip() or None)
+            return catalog.install_catalog_entry(entry, force=force, allow_removed=False)
+        return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None)
+
+    try:
+        target, installed_manifest, installed_name = recorded_install(
+            _install, catalog_name=entry.name if entry is not None else None, identifier=identifier)
     except _pc().PluginScanBlocked as exc:
         fields = ("pattern_id", "severity", "category", "file", "line", "description")
         return {

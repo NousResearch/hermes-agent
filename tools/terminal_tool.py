@@ -776,6 +776,7 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_image": _tenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": _tenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "vercel_runtime": _tenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "vercel_image": _tenv("TERMINAL_VERCEL_IMAGE", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1333,8 +1334,11 @@ def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
     workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
+    metered: bool = True,
 ) -> str:
-    """Execute in the foreground with retry on transient errors, then finalize."""
+    """Execute in the foreground with retry on transient errors, then finalize. ``metered``
+    is False for Hermes' own control-plane commands (``_host_local``)."""
+    from hermes_cli.observability.shared_metrics_harness import record_terminal_outcome
     max_retries = 0 if plan.execution_target is not None else 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
     cwd_record_key = eff if plan.execution_target is not None else session_key
@@ -1366,6 +1370,8 @@ def _run_foreground(
             )
             break
         except Exception as e:
+            # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it
+            # is not a terminal outcome; Hermes' own deadline arrives as ``hermes_timed_out``.
             if "timeout" in str(e).lower():
                 return _error_json(f"Command timed out after {effective_timeout} seconds", exit_code=124)
             # Retry on transient errors
@@ -1379,12 +1385,14 @@ def _run_foreground(
                          max_retries, _safe_command_preview(command), type(e).__name__, e, eff, env_type)
             return _error_json(_redact_terminal_error_text(f"Command execution failed: {type(e).__name__}: {e}"))
 
-    if result.get("yielded_session_id"):
+    if result.get("yielded_session_id"):  # handed to the background: no exit status yet
         return json.dumps({
             "output": result.get("output", ""), "exit_code": None, "error": None,
             "status": "yielded_to_background", "session_id": result["yielded_session_id"],
             "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
         }, ensure_ascii=False)
+    if metered:
+        record_terminal_outcome(command, env_type, result)
     return finalize_foreground_result(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
         task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
@@ -1495,7 +1503,9 @@ def terminal_tool(
     changing the parent backend, cwd, or approval/notification ownership.
     """
     from contextlib import ExitStack
+    from hermes_cli.observability.shared_metrics_loop import record_terminal_backend as _metered
     operation = ExitStack()
+    plan = None
     try:
         verdict = None
         selected_execution = None
@@ -1599,7 +1609,9 @@ def terminal_tool(
                 command, env, plan,
                 task_id=owner_task_id, session_id=session_id, session_key=session_key,
                 workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
+                metered=not _host_local,
             )
+        result = _metered(None if _host_local else plan, result)
         if target is not None:
             data = json.loads(result)
             data["execution_target"] = target
@@ -1610,10 +1622,13 @@ def terminal_tool(
         return r.result_json
     except EnvironmentConnectionError as e:
         if target is not None:
-            return _error_json(_redact_terminal_error_text(str(e)), status="error", execution_target=target)
-        return _degraded_result(e, task_id)
+            return _metered(
+                plan, _error_json(_redact_terminal_error_text(str(e)), status="error", execution_target=target),
+                error_class="tool_error",
+            )
+        return _metered(None if _host_local else plan, _degraded_result(e, task_id), error_class="tool_error")
     except Exception as e:
-        return _fatal_error_json(e)
+        return _metered(None if _host_local else plan, _fatal_error_json(e), error_class="exception")
     finally:
         operation.close()
 

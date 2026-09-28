@@ -86,10 +86,7 @@ would do or plan to do without actually doing it.
 - GitHub: alice-dev
 
 # Layer 7: Skills index
-## Skills (mandatory)
-Before replying, scan the skills below. If one clearly matches
-your task, load it with skill_view(name) and follow its instructions.
-...
+## Skills
 <available_skills>
   software-development:
     - code-review: Structured code review workflow

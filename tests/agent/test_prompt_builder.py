@@ -262,7 +262,21 @@ class TestBuildSkillsSystemPrompt:
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
+    def test_lists_skills_without_forcing_skill_loading(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "search"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: search\ndescription: Search stuff\n---\n"
+        )
 
+        result = build_skills_system_prompt()
+
+        assert result.startswith("## Skills\n<available_skills>\n")
+        assert result.endswith("</available_skills>")
+        assert "- search: Search stuff" in result
+        assert "MUST load" not in result
+        assert "Only proceed without loading" not in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

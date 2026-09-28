@@ -22,17 +22,17 @@ def _tools(*names):
     return [{"type": "function", "function": {"name": n}} for n in names]
 
 
-def test_oneshot_hides_skill_manage_and_skill_authoring_coaching(oneshot, interactive_prompt, tmp_path):
-    """-q: no skill_manage tool and a skills prompt that neither asks to save/patch skills nor pushes process
-    skills; skill reading stays. The interactive prompt for the same skills dir is the control."""
+def test_oneshot_hides_skill_manage_and_keeps_plain_skill_index(oneshot, interactive_prompt, tmp_path):
+    """-q hides skill_manage while both one-shot and interactive prompts remain plain skill indexes."""
     kept = {t["function"]["name"] for t in oneshot_footprint.prune_oneshot_tools(
         _tools("skill_manage", "skill_view", "skills_list", "terminal"))}
     assert "skill_manage" not in kept and {"skill_view", "skills_list", "terminal"} <= kept
 
     prompt = build_skills_system_prompt(available_tools={"skill_view", "skills_list"}, skills_dir_override=_skills_dir(tmp_path))
-    assert "demo-skill" in prompt and "skill_view" in prompt
-    assert "skill_manage" not in prompt and "offer to save as a skill" not in prompt
-    assert "skill_manage" in interactive_prompt and "offer to save as a skill" in interactive_prompt
+    assert "demo-skill" in prompt
+    assert "skill_manage" not in prompt and "MUST load" not in prompt
+    assert "demo-skill" in interactive_prompt
+    assert "skill_manage" not in interactive_prompt and "MUST load" not in interactive_prompt
 
 
 def _skills_dir(tmp_path):

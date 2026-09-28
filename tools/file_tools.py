@@ -34,8 +34,9 @@ from tools.file_tools_write_guards import (
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
     _mark_verification_stale, _patch_failure_lock, _patch_failure_tracker, _read_tracker,
-    _read_tracker_lock, _record_not_found, _record_patch_failure, _reset_patch_failures,
-    _task_data, _update_read_timestamp)
+    _in_spans, _read_tracker_lock, _record_not_found, _record_patch_failure, _record_seen_span,
+    _reset_patch_failures, _returned_line_span, _task_data, _unchanged_seen_spans,
+    _update_read_timestamp)
 
 logger = logging.getLogger(__name__)
 
@@ -466,79 +467,47 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     return json.dumps(result_dict, ensure_ascii=False)
 
 
-_DEDUP_OVERLAP_THRESHOLD = 0.6
+def _omit_seen_lines(result_dict: dict, span: tuple, seen_spans: list) -> list:
+    """Drop already-seen lines from a read's numbered content in place; return the
+    omitted spans (``[]`` leaves the result untouched).
+
+    Catches the window-shifting evasion of the exact ``(path, offset, limit)``
+    guard (``2158/15 -> 2158/12 -> 2161/15``) without hiding lines the model has
+    never been shown: only lines in *seen_spans* (actually returned earlier, file
+    unchanged) are omitted, the rest are returned with their line numbers."""
+    first, last = span
+    if not any(start <= last and end >= first for start, end in seen_spans):
+        return []
+    kept, omitted = [], []
+    # Slice to the returned span: drops the phantom empty last line of a sed page.
+    for n, line in enumerate(result_dict["content"].split("\n")[:last - first + 1], start=first):
+        if not _in_spans(n, seen_spans):
+            kept.append(line)
+        elif omitted and omitted[-1][1] == n - 1:
+            omitted[-1] = (omitted[-1][0], n)
+        else:
+            omitted.append((n, n))
+    result_dict["content"] = "\n".join(kept)
+    return omitted
 
 
-def _find_overlapping_flagged_key(task_data: dict, resolved_str: str, offset: int, limit: int) -> tuple | None:
-    """Find an already-flagged dedup key on the same path whose line range
-    substantially overlaps ``[offset, offset + limit)``.
-
-    The exact-tuple dedup guard (``dedup_key = (path, offset, limit)``) is
-    evadable by trivially varying offset/limit while re-reading essentially the
-    same region: a different tuple resets the "how many times in a row" counter
-    to zero. This closes that gap WITHOUT changing what gets returned to the
-    model (the caller still serves/blocks the read exactly as before) -- it only
-    decides WHICH existing counter a near-duplicate read should continue, so a
-    perturbed-but-overlapping read escalates instead of resetting.
-
-    Deliberately keyed on the REQUESTED range of the prior flagged read, not
-    its actual returned content -- two earlier upstream attempts at this exact
-    guard were abandoned after review found they recorded requested ranges as
-    "covered" even when the read was truncated, silently misclassifying
-    partial reads. This function is never used to decide what content a read
-    returns (only whether an already-flagged counter continues), so a
-    request/actual mismatch here can at worst delay an escalation by one call,
-    never suppress content the model hasn't seen.
-    """
-    new_start, new_end, new_len = offset, offset + limit, limit
-    best_key, best_ratio = None, 0.0
-    # Candidates come from BOTH hit containers: a key may have been flagged by a
-    # repeated exact read (dedup_hits, cleared on any other tool call) or by a
-    # prior overlap-chained escalation (dedup_overlap_hits, which survives
-    # intervening tool calls) -- either is evidence the region was already
-    # called out, so both seed the search.
-    candidates = dict(task_data.get("dedup_hits") or {})
-    candidates.update(task_data.get("dedup_overlap_hits") or {})
-    for key, hits in candidates.items():
-        if hits < 1 or key[0] != resolved_str or key == (resolved_str, offset, limit):
-            continue
-        _, old_offset, old_limit = key
-        old_start, old_end = old_offset, old_offset + old_limit
-        # A model consolidating a previously-flagged narrow window into one larger,
-        # wider read is the encouraged behavior, not a repeat offense -- only a read
-        # comparable in size to (or smaller than) the flagged window counts.
-        if new_len > old_limit * 1.5:
-            continue
-        overlap = max(0, min(new_end, old_end) - max(new_start, old_start))
-        if overlap <= 0:
-            continue
-        ratio = overlap / min(new_end - new_start, old_end - old_start)
-        if ratio >= _DEDUP_OVERLAP_THRESHOLD and ratio > best_ratio:
-            best_key, best_ratio = key, ratio
-    return best_key
-
-
-def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str, *, hits_key: str = "dedup_hits") -> str:
-    """Return the "unchanged" stub for a repeated identical read, escalating to a
-    hard BLOCK after 2 stubs so weak tool-followers don't loop forever.
-
-    ``hits_key`` selects which per-task counter tracks this key: the default
-    ``dedup_hits`` is reset by any other tool call (see
-    ``notify_other_tool_call``); the overlap-continuation call site below uses
-    ``dedup_overlap_hits`` instead, which survives intervening tool calls so a
-    model can't reset the escalation by interleaving an unrelated call.
-    """
+def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str, *, overlapping: bool = False) -> str:
+    """Return the "unchanged" stub for a read that would only re-send lines already
+    returned, escalating to a hard BLOCK after 2 stubs so weak tool-followers don't
+    loop forever. *overlapping*: a different window whose lines were all seen, so
+    the BLOCK must not claim an exact repeat nor forbid reading the rest of the file."""
     with _read_tracker_lock:
-        hits = task_data[hits_key].get(dedup_key, 0) + 1
-        task_data[hits_key][dedup_key] = hits
+        hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
+        task_data["dedup_hits"][dedup_key] = hits
         _cap_read_tracker_data(task_data)
 
     if hits >= 2:
+        repeat = (f"requested only already-read lines of this file {hits} times in a row"
+                  if overlapping else f"called read_file on this exact region {hits + 1} times")
         return tool_error(
-            f"BLOCKED: You have called read_file on this "
-            f"exact region {hits + 1} times and the file "
+            f"BLOCKED: You have {repeat} and the file "
             "has NOT changed. STOP calling read_file for "
-            "this path — the content from your earlier "
+            f"{'those lines' if overlapping else 'this path'} — the content from your earlier "
             "read_file result in this conversation is "
             "still current. Proceed with your task using "
             "the information you already have.",
@@ -555,17 +524,18 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str, *, hits_k
 
 
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
-                            offset: int, limit: int, dedup_key: tuple, *, partial: bool) -> int:
+                            offset: int, limit: int, dedup_key: tuple, *, partial: bool,
+                            returned_span: tuple | None = None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
-    Per-task tracker under the lock (stub counter, history, consecutive count,
-    mtime for dedup + staleness). Then OUTSIDE our lock (no nested locking): the
-    cross-agent registry, and the background-review read-mark (a FULL read of a
+    Per-task tracker under the lock (stub counters, history, consecutive count,
+    mtime for dedup + staleness, lines actually returned). Then OUTSIDE our lock
+    (no nested locking): the cross-agent registry, and the background-review read-mark (a FULL read of a
     skill file counts like skill_view so a follow-up skill_manage(patch) is accepted).
     """
     with _read_tracker_lock:
         task_data["dedup_hits"].pop(dedup_key, None)
-        task_data["dedup_overlap_hits"].pop(dedup_key, None)
+        task_data["dedup_hits"].pop((resolved_str, "seen_lines"), None)
         task_data["dedup_generation_reads"].add(dedup_key)
         task_data["read_history"].add((path, offset, limit))
         count = _bump_consecutive(task_data, ("read", path, offset, limit))
@@ -573,6 +543,8 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             _mtime_now = os.path.getmtime(resolved_str)
             task_data["dedup"][dedup_key] = _mtime_now
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            if returned_span:
+                _record_seen_span(task_data, resolved_str, _mtime_now, returned_span)
         except OSError:
             pass
         _cap_read_tracker_data(task_data)
@@ -665,20 +637,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                     return _dedup_stub_or_block(task_data, dedup_key, path)
             except OSError:
                 pass  # stat failed — fall through to full read
-        else:
-            # No exact-tuple match, but this offset/limit may still be a trivially
-            # perturbed re-read of a region already flagged under a DIFFERENT
-            # (offset, limit) key (see _find_overlapping_flagged_key). Continue that
-            # key's escalation instead of starting a fresh counter at zero.
-            with _read_tracker_lock:
-                overlap_key = _find_overlapping_flagged_key(task_data, resolved_str, offset, limit)
-                overlap_mtime = task_data["dedup"].get(overlap_key) if overlap_key else None
-            if overlap_key is not None and overlap_mtime is not None:
-                try:
-                    if os.path.getmtime(resolved_str) == overlap_mtime:
-                        return _dedup_stub_or_block(task_data, overlap_key, path, hits_key="dedup_overlap_hits")
-                except OSError:
-                    pass  # stat failed — fall through to full read
+        # A different window over lines already returned (file unchanged) only
+        # gets its unseen lines; see _omit_seen_lines.
+        seen_spans = _unchanged_seen_spans(task_data, resolved_str)
 
         result = _get_file_ops(task_id).read_file(path, offset, limit)
         result_dict = result.to_dict()
@@ -698,6 +659,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
+        returned_span = _returned_line_span(result_dict, offset, limit)
+        omitted = _omit_seen_lines(result_dict, returned_span, seen_spans) if returned_span and seen_spans else []
+        if omitted:
+            if not result_dict["content"]:
+                # Per-path key: shifting the window must not restart the escalation.
+                return _dedup_stub_or_block(task_data, (resolved_str, "seen_lines"), path, overlapping=True)
+            result.content = result_dict["content"]
+            ranges = ", ".join(f"{lo}-{hi}" if lo != hi else str(lo) for lo, hi in omitted)
+            result_dict["omitted_lines"] = ranges
+            result_dict["_note"] = (
+                f"Lines {ranges} omitted: unchanged since your earlier read_file result in this "
+                "conversation, which is still current. Only the other lines are shown.")
         if result.content:
             result.content = redact_sensitive_text(result.content, file_read=True)
             result_dict["content"] = result.content
@@ -710,7 +683,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "to keep context usage efficient."))
 
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
-                                        dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")))
+                                        dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
+                                        returned_span=returned_span)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "

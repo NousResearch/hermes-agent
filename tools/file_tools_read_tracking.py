@@ -6,9 +6,10 @@ stores: ``last_key``/``consecutive`` (loop detection; reset by any OTHER tool
 call), ``read_history`` (diagnostics), ``dedup`` (key -> mtime; survives context
 compression), ``dedup_generation_reads`` (keys whose full content was served since
 the last compaction boundary; cleared on compression so one recovery read returns
-full content), ``dedup_hits`` (stub-loop breaker), ``read_timestamps``
-(staleness warnings) and ``not_found`` (short-TTL negative cache). Every
-container is hard-capped (``_cap_read_tracker_data``) so long sessions stay small.
+full content), ``dedup_hits`` (stub-loop breaker), ``seen_lines`` (path ->
+(mtime, merged line spans actually returned); an overlapping read omits those
+lines), ``read_timestamps`` (staleness warnings) and ``not_found`` (short-TTL
+negative cache). Every container is hard-capped (``_cap_read_tracker_data``) so long sessions stay small.
 """
 
 import logging
@@ -34,6 +35,7 @@ _PATCH_FAILURE_PATHS_CAP = 64
 # warnings; caps bound accretion regardless of session length.
 _READ_HISTORY_CAP = 500
 _DEDUP_CAP = 1000
+_SEEN_SPANS_PER_PATH_CAP = 64
 _READ_TIMESTAMPS_CAP = 1000
 _NOT_FOUND_CAP = 500
 _NOT_FOUND_TTL_SECONDS = 60.0  # a path that didn't exist may be created soon
@@ -44,7 +46,7 @@ def _task_data(task_id: str) -> dict:
     (search_tool / tests create partial entries). Lock must be held."""
     task_data = _read_tracker.setdefault(task_id, {
         "last_key": None, "consecutive": 0, "read_history": set()})
-    for key in ("dedup", "dedup_hits", "dedup_overlap_hits", "read_timestamps"):
+    for key in ("dedup", "dedup_hits", "seen_lines", "read_timestamps"):
         task_data.setdefault(key, {})
     task_data.setdefault("dedup_generation_reads", set())
     return task_data
@@ -78,7 +80,7 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         ("read_history", _READ_HISTORY_CAP),
         ("dedup", _DEDUP_CAP),
         ("dedup_hits", _DEDUP_CAP),
-        ("dedup_overlap_hits", _DEDUP_CAP),
+        ("seen_lines", _DEDUP_CAP),
         ("dedup_generation_reads", _DEDUP_CAP),
         ("read_timestamps", _READ_TIMESTAMPS_CAP),
         ("not_found", _NOT_FOUND_CAP)):
@@ -135,6 +137,54 @@ def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str)
         _cap_read_tracker_data(task_data)
 
 
+def _returned_line_span(result_dict: dict, offset: int, limit: int) -> tuple[int, int] | None:
+    """File lines ``(first, last)`` a read ACTUALLY returned, or None.
+
+    Derived from the line-numbered content (one ``N|`` line per file line), not
+    the requested range, so a char-budget or end-of-file truncation never marks
+    unreturned lines as seen. Clamped to ``limit``/``total_lines`` because the
+    ``sed | cut`` page can carry a phantom empty last line."""
+    content = result_dict.get("content")
+    if not content or not isinstance(content, str):
+        return None
+    last = min(offset + content.count("\n"), offset + limit - 1)
+    total = result_dict.get("total_lines")
+    if isinstance(total, int) and total > 0:
+        last = min(last, total)
+    return (offset, last) if last >= offset else None
+
+
+def _in_spans(line: int, spans: list) -> bool:
+    return any(start <= line <= end for start, end in spans)
+
+
+def _unchanged_seen_spans(task_data: dict, resolved_str: str) -> list:
+    """Line spans of *resolved_str* already returned to the model, if the file is
+    unchanged since (else ``[]``). The stat runs outside the tracker lock."""
+    with _read_tracker_lock:
+        entry = task_data["seen_lines"].get(resolved_str)
+    if not entry:
+        return []
+    try:
+        return entry[1] if os.path.getmtime(resolved_str) == entry[0] else []
+    except OSError:
+        return []
+
+
+def _record_seen_span(task_data: dict, resolved_str: str, mtime: float, span: tuple) -> None:
+    """Merge *span* into the path's seen lines (reset when *mtime* moved). Lock must be held."""
+    entry = task_data["seen_lines"].pop(resolved_str, None)  # re-insert: newest last for eviction
+    spans = sorted((entry[1] if entry and entry[0] == mtime else []) + [span])
+    merged = [spans[0]]
+    for start, end in spans[1:]:
+        if start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    # Forgetting a span only means those lines get re-sent once; never hides content.
+    task_data["seen_lines"][resolved_str] = (mtime, merged[-_SEEN_SPANS_PER_PATH_CAP:])
+
+
 def _bump_consecutive(task_data: dict, key: tuple) -> int:
     """Update last_key/consecutive for *key* and return the new count. Lock must be held."""
     if task_data["last_key"] == key:
@@ -149,9 +199,9 @@ def reset_file_dedup(task_id: str = None):
     """Advance the read-dedup generation after context compression (one task, or all
     when ``task_id`` is None). The per-key ``dedup`` mtime map is PRESERVED so unchanged
     files keep returning stubs instead of re-bloating the reclaimed context; the
-    generation-read set is cleared so the FIRST unchanged read of each key after
-    compaction returns full content the summary may have dropped. Stub-hit counters
-    are cleared so the hard block restarts fresh."""
+    generation-read set and the seen-lines map are cleared so the FIRST unchanged
+    read of each key after compaction returns full content the summary may have
+    dropped. Stub-hit counters are cleared so the hard block restarts fresh."""
     with _read_tracker_lock:
         if task_id:
             targets = [_read_tracker[task_id]] if _read_tracker.get(task_id) else []
@@ -160,8 +210,8 @@ def reset_file_dedup(task_id: str = None):
         for task_data in targets:
             if "dedup_hits" in task_data:
                 task_data["dedup_hits"].clear()
-            if "dedup_overlap_hits" in task_data:
-                task_data["dedup_overlap_hits"].clear()
+            if "seen_lines" in task_data:
+                task_data["seen_lines"].clear()
             task_data.setdefault("dedup_generation_reads", set()).clear()
 
 
@@ -171,13 +221,6 @@ def notify_other_tool_call(task_id: str = "default"):
     Called by the dispatcher for every tool OTHER than read_file/search_files.
     Also clears stub-hit counters and the not-found cache: any other tool may
     have created a previously-missing path (or flipped its permissions).
-
-    ``dedup_overlap_hits`` is deliberately NOT cleared here: it tracks
-    escalation across offset/limit-perturbed re-reads of an already-flagged
-    region (see ``_find_overlapping_flagged_key``), and a model working
-    around that block will almost always interleave an unrelated tool call
-    before retrying — resetting on every other tool call would make the
-    overlap guard a no-op.
     """
     with _read_tracker_lock:
         task_data = _read_tracker.get(task_id)
@@ -203,10 +246,9 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
         if dedup:
             for k in [k for k in dedup if k[0] == resolved]:
                 del dedup[k]
-        overlap_hits = task_data.get("dedup_overlap_hits")
-        if overlap_hits:
-            for k in [k for k in overlap_hits if k[0] == resolved]:
-                del overlap_hits[k]
+        seen = task_data.get("seen_lines")
+        if seen:
+            seen.pop(resolved, None)
         _pop_not_found("read", resolved, task_id)
         _pop_not_found("search", resolved, task_id)
 

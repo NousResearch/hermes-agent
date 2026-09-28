@@ -545,9 +545,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 # CREATE_BREAKAWAY_FROM_JOB is rejected with access denied when the parent's
                 # job object forbids breakaway (a gateway launched via Task Scheduler runs in
                 # one); retry without it, mirroring hermes_cli.gateway_windows._spawn_detached.
+                # The predicate is winerror-only ON PURPOSE: ERROR_ACCESS_DENIED is winerror 5,
+                # while errno 5 on Windows is EIO (CRT mapping) — an errno fallback in a retry
+                # predicate would misfire. _spawn_detached's errno fallback feeds its log line
+                # only; it retries on any OSError. Here a non-access-denied OSError keeps
+                # failing loudly instead (pinned by test_other_oserror_not_retried).
                 if getattr(exc, "winerror", None) != 5:
                     raise
                 from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+                logger.warning(
+                    "[%s] Bridge breakaway spawn refused (winerror=5; job object forbids "
+                    "breakaway) — retrying without CREATE_BREAKAWAY_FROM_JOB; bridge now "
+                    "lives inside the gateway's job object",
+                    self.name,
+                )
                 self._bridge_process = subprocess.Popen(
                     bridge_argv, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(),
                     creationflags=windows_detach_flags_without_breakaway())

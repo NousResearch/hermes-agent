@@ -387,7 +387,7 @@ def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
 def match_runtime_outcomes(
     plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
-    stale_serve_pids: "set | None" = None,
+    stale_serve_pids: "set | None" = None, failed_respawn_pids: "set | None" = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
@@ -402,7 +402,9 @@ def match_runtime_outcomes(
     and still lists its pid: the restart phase is forbidden to restart it out from under the app (it
     hosts the live Desktop chats), so it is handed back to its supervisor and surfaced. Without a
     probe result it remains ``unaccounted``, rather than claiming the app owns an unknown
-    incarnation. The probe itself fails closed (unreadable ledger -> every planned serve is listed as
+    incarnation. ``failed_respawn_pids`` (serves the dashboard cleanup stopped and could not bring
+    back) read ``failed`` before the probe, whose "gone" is exactly what a failed respawn looks like
+    (#109290). The probe itself fails closed (unreadable ledger -> every planned serve is listed as
     surviving), so ``deferred`` means "not shown to be gone", not "observed alive". See #111494.
 
     See #91277.
@@ -416,13 +418,14 @@ def match_runtime_outcomes(
         relaunched = set(relaunched_profiles or []) | set(externally_supervised_profiles or [])
         killed = {int(p) for p in (killed_pids or set())}
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
+        failed_respawns = {int(p) for p in (failed_respawn_pids or set())}
 
         def _outcome(r: RuntimeRecord) -> str:
             killed_here = r.pid is not None and r.pid in killed
             if r.kind in _SERVE_KINDS:
                 if killed_here:
                     return "stopped"
-                if any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
+                if r.pid in failed_respawns or any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
                     return "failed"
                 if stale_serves is not None and r.pid not in stale_serves:
                     # Incarnation-verified: the pre-update process is gone (replaced by its unit / the

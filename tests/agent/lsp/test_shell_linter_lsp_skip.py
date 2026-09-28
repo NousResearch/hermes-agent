@@ -128,11 +128,10 @@ def test_ts_shell_linter_runs_when_no_ancestor_tsconfig(tmp_path):
 
     with patch.object(fops, "_lsp_local_only", return_value=True), \
          patch.object(fops, "_lsp_will_handle", return_value=False), \
-         patch.object(fops, "_has_command", return_value=True), \
-         patch.object(fops, "_exec", return_value=exec_result) as exec_mock:
+         patch.object(fops, "_run_managed_node_linter", return_value=exec_result) as exec_mock:
         fops._check_lint(str(src))
 
-    assert exec_mock.called, "shell tsc should run when there's no project tsconfig"
+    assert exec_mock.called, "tsc should run when there's no project tsconfig"
 
 
 if __name__ == "__main__":  # pragma: no cover

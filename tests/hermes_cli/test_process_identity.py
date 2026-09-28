@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -226,6 +228,29 @@ def test_ledger_entries_filters_dead_reused_and_foreign(tmp_path):
          patch.object(pi, "_ledger_path", return_value=ledger):
         live = pi.ledger_entries(project_root=Path("/x/install"))
     assert [e["pid"] for e in live] == [100]
+
+
+@pytest.mark.platforms("posix")
+def test_ledger_entries_excludes_a_killed_but_unreaped_process(tmp_path):
+    """A zombie is dead even though it keeps its create_time until reaped: ``hermes update``
+    books the stopped dashboard gone, then must not find it again as a pre-update survivor."""
+    import psutil
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        created = psutil.Process(child.pid).create_time()
+        child.terminate()
+        deadline = time.monotonic() + 10
+        while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline, "child never became a zombie"
+            time.sleep(0.05)
+        ledger = tmp_path / "spawn-ledger.json"
+        ledger.write_text(json.dumps([_entry(child.pid, created, purpose="dashboard")]), encoding="utf-8")
+        with patch.object(pi, "_ledger_path", return_value=ledger):
+            assert pi.ledger_entries(project_root=Path("/x/install")) == []
+    finally:
+        child.kill()
+        child.wait()
 
 
 def test_spawner_is_dead_tristate():

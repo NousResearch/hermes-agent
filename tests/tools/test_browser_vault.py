@@ -826,3 +826,45 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field"
+
+    def test_bare_unlabeled_single_field_accepted_as_otp(self):
+        """LOCAL PATCH regression (2026-09-28, cw): a React-generated 2FA field with no autocomplete,
+        no name, no label (Facebook's shape) must still classify when it is the ONLY text input on the
+        page — enter_code is only ever called on a page the model has already identified as a 2FA
+        challenge, so single-candidate acceptance here is safe."""
+        from agent.vault_login_classifier import LoginControl, classify_otp_controls
+
+        fb_field = LoginControl(autocomplete="off", form_index=0, index=0, label="", name="", type="text")
+        classified = classify_otp_controls([fb_field])
+        assert len(classified) == 1 and classified[0].token == "one-time-code" and classified[0].score == 55
+
+    def test_bare_single_field_excluded_when_clearly_nonauth(self):
+        """The same fallback must NOT fire for an unlabeled-looking field whose name/label reveals a
+        non-auth purpose (search, coupon, zip, ...) even when it is the sole text input on the page."""
+        from agent.vault_login_classifier import LoginControl, classify_otp_controls
+
+        promo_field = LoginControl(autocomplete="", form_index=0, index=0, label="Promo code", name="", type="text")
+        assert classify_otp_controls([promo_field]) == []
+
+    def test_bare_fallback_never_fires_with_multiple_untagged_candidates(self):
+        """Ambiguity (2+ untagged text inputs) must stay a refusal — never guess which one is the code."""
+        from agent.vault_login_classifier import LoginControl, classify_otp_controls
+
+        f1 = LoginControl(autocomplete="", form_index=0, index=0, label="", name="", type="text")
+        f2 = LoginControl(autocomplete="", form_index=0, index=1, label="", name="", type="text")
+        assert classify_otp_controls([f1, f2]) == []
+
+    def test_otp_tab_probe_matches_label_for_text(self):
+        """LOCAL PATCH regression (2026-09-28, cw): the root cause of the Facebook 2FA miss was one level
+        above the classifier — _TAB_PROBES["otp"] is a pure CSS attribute selector, which cannot see a
+        real <label for="..."> element's text content. Facebook's field has autocomplete="off", empty
+        name, no aria-label/placeholder, but IS associated with <label for="_r_a_">Code</label>. The probe
+        must fall back to walking visible text-like inputs and checking el.labels text for OTP wording
+        when the fast attribute-only path finds nothing — this is what selects the right tab BEFORE the
+        classifier ever runs, so a classifier-only fix (see tests above) is not sufficient by itself."""
+        from tools.browser_vault_tool import _TAB_PROBES
+
+        probe = _TAB_PROBES["otp"]
+        assert "el.labels" in probe and "labelText" in probe, (
+            "the otp tab probe must inspect associated <label> text, not just element attributes"
+        )

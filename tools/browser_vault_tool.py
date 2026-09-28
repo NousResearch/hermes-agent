@@ -328,8 +328,30 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                       ensure_ascii=False)
 
 
-_TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
-                      "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
+_TAB_PROBES["otp"] = (
+    "(() => {"
+    " const attrHit = document.querySelector("
+    "'input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
+    "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i], "
+    "input[placeholder*=code i]');"
+    " if (attrHit) return true;"
+    " const rx = /one[- ]?time|verification|security|auth(entication|enticator)?|2fa|two[- ]?factor|mfa|totp|otp|passcode|\\bcode\\b/i;"
+    " const inputs = Array.from(document.querySelectorAll("
+    "'input[type=text], input[type=tel], input[type=number], input:not([type])'));"
+    " return inputs.some((el) => {"
+    "   if (el.disabled || el.readOnly) return false;"
+    "   const style = getComputedStyle(el);"
+    "   if (style.display === 'none' || style.visibility === 'hidden' || el.getClientRects().length === 0) return false;"
+    "   const labelText = el.labels ? Array.from(el.labels, (l) => l.textContent || '').join(' ') : '';"
+    "   return rx.test(labelText);"
+    " });"
+    "})()"
+)
+# LOCAL PATCH (2026-09-28, cw): the attribute-only probe above missed Facebook's 2FA field — bare id,
+# empty name, no placeholder/aria-label, but a real <label for="..."> element with text "Code". Attribute
+# selectors can't see associated <label> text, so this JS walks visible text-like inputs as a fallback and
+# checks el.labels text against the same OTP-ish wording used elsewhere. Keeps the fast attribute path as
+# the primary check; only pays the DOM-walk cost when that misses.
 
 
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:

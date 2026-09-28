@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-import yaml
 
 from hermes_cli.cron import _run_outcome
 
@@ -25,7 +24,7 @@ def keeper_job(tmp_path, monkeypatch):
     root = tmp_path / "root"
     keeper_home = root / "profiles" / "keeper"
     keeper_home.mkdir(parents=True)
-    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {
+    (root / "config.yaml").write_text(json.dumps({"gateway": {  # YAML is a JSON superset; the test env ships no pyyaml
         "multiplex_profiles": True,
         "profile_routes": [{"name": "ops", "platform": "telegram", "chat_id": "-1004306455751",
                             "thread_id": "14", "profile": "keeper"}],

@@ -828,7 +828,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # Passed only when set: a human turn keeps today's call shape.
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
             r = agent.run_conversation(
-                user_message=run.user_message, conversation_history=run.conversation_history,
+                user_message=run.user_message, **_run_history_kwargs(run, agent),
                 task_id=effective_task_id, **author_kwargs)
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
@@ -845,6 +845,24 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                     with suppress(Exception):
                         reset(token)
         return r, _run_usage(agent), _served_runtime(agent)
+
+
+def _run_history_kwargs(run: _RunLaunch, agent) -> Dict[str, Any]:
+    """Only session-backed runs reread durable context under the native turn lease.
+
+    Explicit request histories and previous-response chains remain caller-owned.
+    Do not use the adapter's best-effort display reader here: an unavailable DB
+    must fail admission rather than silently replace the model context by [].
+    """
+    kwargs = {"conversation_history": run.conversation_history}
+    if run.session_history_delivery:
+        kwargs["conversation_history_loader"] = lambda sid: agent._session_db.get_messages_as_conversation(
+            sid, repair_alternation=True, include_row_ids=True)
+    else:
+        # Contention must not turn an explicit client/response-chain context into
+        # the unrelated local DB transcript through the legacy wait/reload path.
+        kwargs["conversation_history_loader"] = lambda sid: run.conversation_history if run.conversation_history is not None else []
+    return kwargs
 
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:

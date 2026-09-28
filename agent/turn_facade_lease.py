@@ -12,7 +12,7 @@ import os
 import threading
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -238,11 +238,12 @@ def _durable_session_exists(db, session_id: str) -> bool:
 def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
     conversation_history: Optional[List[Dict[str, Any]]],
+    conversation_history_loader: Optional[Callable[[str], List[Dict[str, Any]]]] = None,
 ) -> TurnLeaseAdmission:
     """Acquire the session turn lease when the session is durable; build (not start) its threads.
 
-    Mutates ``task_context["session_id"]`` and ``agent.session_id`` when the wait forced a resume-id
-    reload. Returns an ``early_result`` (interrupted / timed out) instead of a lease when admission
+    Mutates ``task_context["session_id"]`` and ``agent.session_id`` when a wait or a surface loader
+    requires canonical continuation resolution. Returns an ``early_result`` (interrupted / timed out) instead of a lease when admission
     fails; the caller returns it verbatim."""
     db = getattr(agent, "_session_db", None)
     admission = TurnLeaseAdmission(conversation_history=conversation_history)
@@ -289,24 +290,32 @@ def admit_durable_turn_lease(
     try:
         if waited:
             agent._emit_status("Session is free; loading the latest transcript...")
-            # The holder may have compressed/rotated the session while we waited: reload only
-            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
+        # A surface owns its model projection, which can contain data absent from
+        # display rows. Reconcile it under the lease, without guessing provenance
+        # from persistence/deduplication markers.
+        if waited or conversation_history_loader is not None:
             latest_session_id = db.resolve_resume_session_id(session_id)
             if latest_session_id:
                 agent.session_id = latest_session_id
                 task_context["session_id"] = latest_session_id
-            reloaded = db.get_messages_as_conversation(
-                agent.session_id, repair_alternation=True, include_row_ids=True
-            )
-            # A follow-up that aborted an earlier wait carries that turn's never-persisted input
-            # only in memory (see carry_unadmitted_user_message); the reload would drop it.
-            from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
-            reloaded.extend(
-                m for m in (conversation_history or [])
-                if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
-                and "_row_id" not in m
-            )
-            admission.conversation_history = reloaded
+            if conversation_history_loader is not None:
+                reloaded = conversation_history_loader(agent.session_id)
+                if not isinstance(reloaded, list) or not all(isinstance(m, dict) for m in reloaded):
+                    raise TypeError("conversation_history_loader must return a list of messages")
+                admission.conversation_history = reloaded
+            else:
+                # Preserve the legacy contended-turn reload contract for callers that
+                # do not provide a surface-specific reconciler.
+                reloaded = db.get_messages_as_conversation(
+                    agent.session_id, repair_alternation=True, include_row_ids=True
+                )
+                from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+                reloaded.extend(
+                    m for m in (conversation_history or [])
+                    if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+                    and "_row_id" not in m
+                )
+                admission.conversation_history = reloaded
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.

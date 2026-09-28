@@ -265,7 +265,7 @@ def _parked_agent(loop, started: asyncio.Event, release: threading.Event) -> Mag
     agent._last_compaction_in_place = False
     agent._hermes_api_runtime = {}
 
-    def _park(user_message=None, conversation_history=None, task_id=None):
+    def _park(user_message=None, conversation_history=None, task_id=None, conversation_history_loader=None):
         loop.call_soon_threadsafe(started.set)
         release.wait(_TURN_UNBLOCK_TIMEOUT)
         return {"final_response": "done", "messages": [], "api_calls": 0, "tools": []}
@@ -458,7 +458,7 @@ class TestShutdownInterruptReachesEveryApiTurn:
         release = threading.Event()
         agent = _parked_agent(loop, started, release)
         if late_outcome == "failure":
-            def _late_failure(user_message=None, conversation_history=None, task_id=None):
+            def _late_failure(user_message=None, conversation_history=None, task_id=None, conversation_history_loader=None):
                 loop.call_soon_threadsafe(started.set)
                 release.wait(_TURN_UNBLOCK_TIMEOUT)
                 raise RuntimeError("late failure")

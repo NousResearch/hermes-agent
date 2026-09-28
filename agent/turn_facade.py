@@ -8,7 +8,7 @@ MRO unchanged.
 import logging
 import uuid
 from contextlib import suppress
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.lazy_forward import forward as _forward
 
@@ -28,8 +28,16 @@ class TurnFacadeMixin:
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
         turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None,
+        conversation_history_loader: Optional[Callable[[str], List[Dict[str, Any]]]] = None,
     ) -> Dict[str, Any]:
-        """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        """Forwarder — see ``agent.conversation_loop.run_conversation``.
+
+        For an existing durable session, ``conversation_history_loader(session_id)``
+        prepares the surface's current model context after exclusive admission and
+        continuation resolution, before any model call. It must fail on unavailable
+        state and preserve its own model-only payloads and pending inputs. Fresh
+        sessions without a durable row retain the supplied in-memory seed.
+        """
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
         # Foreground priority is retained if the review does not acknowledge within the bounded deadline
@@ -81,6 +89,7 @@ class TurnFacadeMixin:
             admission = admit_durable_turn_lease(
                 self, session_id=session_id, relay_turn_id=relay_turn_id, task_context=task_context,
                 conversation_history=conversation_history,
+                conversation_history_loader=conversation_history_loader,
             )
             if admission.early_result is not None:
                 carry_unadmitted_user_message(

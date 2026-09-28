@@ -18,6 +18,16 @@ config/provider later), `max_iterations` (default 500, shared with subagents),
 `chat(message) -> str` is the simple interface; `run_conversation(user_message, system_message=None,
 conversation_history=None, task_id=None) -> dict` returns `final_response` + `messages`.
 
+## Surface-owned history admission
+
+An existing durable session can pass `conversation_history_loader(session_id)` to
+`run_conversation`. The facade invokes it after acquiring the native turn lease and
+resolving the continuation, before model execution. Read failures abort admission;
+the lease is released on every failure. A fresh session without a durable row keeps
+its caller's seed. Never treat `_db_persisted` as snapshot provenance: it also marks
+explicit caller histories for deduplication. `history_reconciliation.py` retains
+model-only payloads only on the same active row with an equal durable projection.
+
 ## Agent loop (`agent/conversation_loop.py` + `agent/turn_*.py`)
 
 Entirely synchronous, with interrupt checks, budget tracking, and a one-turn grace call:

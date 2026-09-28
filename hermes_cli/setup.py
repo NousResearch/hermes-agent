@@ -527,7 +527,8 @@ def setup_telemetry(config: dict):
           "outcomes, error classes, model routes and token totals, built-in tool, command",
           "and catalog names, bucketed setup counts, update results and timing, crashes,",
           "startup and reply speed, messaging-platform health, and coarse machine facts",
-          "(RAM range, GPU type, version age). Never prompts, files, paths or error text.",
+          "(RAM range, GPU type, version age and channel, updates behind, local model",
+          "server yes/no). Never prompts, files, paths or error text.",
           "Collection is local. Sending them to Nous is a separate opt-in.")
     shared_metrics = _sub_dict(_sub_dict(config, "telemetry"), "shared_metrics")
     current = shared_metrics.get("enabled") is True

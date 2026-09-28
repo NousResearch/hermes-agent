@@ -12,7 +12,7 @@ vi.mock('@/store/gateway', async () => {
     $gateway: atom<unknown>(null),
     activeGateway: () => ({ request }),
     activeGatewayProfileKey: () => 'default',
-    requestGatewayForProfile: (_profile: string, method: string, params: unknown) => request(method, params)
+    requestGatewayForProfile: (_profile: string, ...call: unknown[]) => (request as (...args: unknown[]) => unknown)(...call)
   }
 })
 vi.mock('@/store/session', async () => {

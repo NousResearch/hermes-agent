@@ -995,6 +995,41 @@ class TestGetModelContextLength:
         }
         assert get_model_context_length("test/model") == 32000
 
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_capitalized_custom_provider_name_resolves(self, mock_fetch):
+        """A custom_providers[].name is a display label, not a provider slug.
+
+        ``name: OpenRouter`` in config.yaml is what gets passed down as
+        ``provider``. The provider gates and the models.dev lookup both key on
+        lowercase slugs, so a capitalized label used to miss every one of them
+        and the model fell through to the 256K default — visible as ``/model``
+        reporting 256K for a 1M model. Assert the label and the slug agree.
+        """
+        mock_fetch.return_value = {"vendor/new-model": {"context_length": 1000000}}
+        by_label = get_model_context_length(
+            "vendor/new-model", base_url="https://openrouter.ai/api/v1", provider="OpenRouter"
+        )
+        by_slug = get_model_context_length(
+            "vendor/new-model", base_url="https://openrouter.ai/api/v1", provider="openrouter"
+        )
+        assert by_label == by_slug == 1000000
+        assert by_label != CONTEXT_PROBE_TIERS[0]  # not the 256K default
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_unknown_custom_provider_name_still_falls_back(self, mock_fetch):
+        """A label the slug table doesn't carry must not resolve to a catalog.
+
+        Folding is a spelling fix, not a provider-inventing one: a user's
+        private endpoint (Vectide, AMD) has no models.dev entry and must keep
+        whatever path it had before.
+        """
+        mock_fetch.return_value = {}
+        with patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None):
+            result = get_model_context_length(
+                "some/model", base_url="https://vectide.example/v1", provider="Vectide"
+            )
+        assert result == CONTEXT_PROBE_TIERS[0]
+
 
 
 

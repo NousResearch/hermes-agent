@@ -146,6 +146,73 @@ def _models_dev_to_hermes_ids(mdev_id: str) -> List[str]:
     return _MODELS_DEV_TO_PROVIDER.get(mdev_id, [])
 
 
+# Case-folded view of PROVIDER_TO_MODELS_DEV, built lazily on the first miss.
+_PROVIDER_KEY_ALIASES: Optional[Dict[str, str]] = None
+
+
+def _provider_key_normalized(provider: Optional[str]) -> str:
+    """Lower-cased provider key, with any ``custom:`` transport prefix dropped."""
+    key = (provider or "").strip().lower()
+    return key[len("custom:"):].strip() if key.startswith("custom:") else key
+
+
+def _hermes_provider_slug(provider: Optional[str]) -> Optional[str]:
+    """Canonical *Hermes* provider slug for a caller-supplied provider name.
+
+    Same spelling tolerance as :func:`_mdev_provider_id`, but returns the
+    table KEY rather than the models.dev value — the two are different
+    namespaces (``openai-codex`` is a Hermes slug whose models.dev id is
+    ``openai``). Use this when the result feeds a provider gate that tests
+    Hermes slugs; use :func:`_mdev_provider_id` for models.dev catalog reads.
+    """
+    if not provider:
+        return None
+    if provider in PROVIDER_TO_MODELS_DEV:
+        return provider
+    key = _provider_key_normalized(provider)
+    if not key:
+        return None
+    for alias in PROVIDER_TO_MODELS_DEV:
+        if alias.strip().lower() == key:
+            return alias
+    return None
+
+
+def _mdev_provider_id(provider: Optional[str]) -> Optional[str]:
+    """Hermes provider id → models.dev catalog id, tolerating caller spelling.
+
+    Callers reach this table from two different namespaces: internal slugs
+    that are already keys (``"openrouter"``), and user-authored
+    ``custom_providers[].name`` labels, which are free-form and conventionally
+    capitalized (``"OpenRouter"``), sometimes carrying a ``custom:`` transport
+    prefix. The table is keyed by lowercase slugs, so a capitalized label used
+    to miss and the model fell through to the 256K default even though
+    models.dev carried the correct value.
+
+    Exact keys win first, so existing slug callers are unaffected. Every
+    ``PROVIDER_TO_MODELS_DEV`` key is already lowercase and the fold is 1:1
+    (no two keys differ only by case), so the alias pass cannot pick the wrong
+    catalog. Returns ``None`` for providers the table doesn't carry — callers
+    apply their own models.dev-id passthrough where they accept one.
+    """
+    if not provider:
+        return None
+    exact = PROVIDER_TO_MODELS_DEV.get(provider)
+    if exact:
+        return exact
+
+    key = _provider_key_normalized(provider)
+    if not key:
+        return None
+
+    global _PROVIDER_KEY_ALIASES
+    if _PROVIDER_KEY_ALIASES is None:
+        _PROVIDER_KEY_ALIASES = {
+            alias.strip().lower(): mapped for alias, mapped in PROVIDER_TO_MODELS_DEV.items()
+        }
+    return _PROVIDER_KEY_ALIASES.get(key)
+
+
 def _dict_or_empty(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -460,7 +527,7 @@ def _registry_models(mdev_id: str, *, allow_network: bool) -> Optional[Dict[str,
 def _get_provider_models(provider: str, *, allow_network: bool = False) -> Optional[Dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict, or None if unknown.
     ``allow_network`` defaults to False — hot-path callers must never block."""
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider)
+    mdev_id = _mdev_provider_id(provider)
     return _registry_models(mdev_id, allow_network=allow_network) if mdev_id else None
 
 
@@ -486,7 +553,7 @@ def _openrouter_catalog_lookup_base(provider: str, model: str) -> Optional[str]:
     absent SKU must miss so ``model_overrides`` ``_default`` fill-gap
     semantics still apply.
     """
-    if provider not in _OPENROUTER_CATALOG_PROVIDERS:
+    if (_mdev_provider_id(provider) or provider) not in _OPENROUTER_CATALOG_PROVIDERS:
         return None
     return openrouter_variant_base(model)
 
@@ -611,7 +678,7 @@ def _provider_override_section(provider: str) -> Optional[Dict[str, Any]]:
     if not overrides or not provider_key:
         return None
     # Forward (Hermes → models.dev id) and reverse (caller passed a models.dev id, config keyed by Hermes id) aliases.
-    candidates = [provider_key, PROVIDER_TO_MODELS_DEV.get(provider_key), *_models_dev_to_hermes_ids(provider_key)]
+    candidates = [provider_key, _mdev_provider_id(provider_key), *_models_dev_to_hermes_ids(provider_key)]
     return next((section for section in (overrides.get(key) if key else None for key in candidates) if isinstance(section, dict)), None)
 
 
@@ -720,7 +787,7 @@ def _merge_catalog_entry_with_override(raw: Dict[str, Any], override: Dict[str, 
 def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """*entry* patched by its override; ``_UNKNOWN_MODEL_BASE`` patched by a fill-gap override on a
     catalog miss (selected AFTER lookup: _default only fills misses); None when neither exists."""
-    provider_key = PROVIDER_TO_MODELS_DEV.get((provider or "").strip(), (provider or "").strip())
+    provider_key = _mdev_provider_id(provider) or (provider or "").strip()
     builtin = _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
     base = entry if entry is not None else builtin
     override = _override_for(provider, model, catalog_hit=base is not None)
@@ -831,7 +898,7 @@ def _parse_provider_info(provider_id: str, raw: Dict[str, Any]) -> ProviderInfo:
 
 def get_provider_info(provider_id: str, *, allow_network: bool = True) -> Optional[ProviderInfo]:
     """Provider metadata by Hermes or models.dev ID, or None if not cataloged. ``allow_network`` defaults to True (interactive setup)."""
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    mdev_id = _mdev_provider_id(provider_id) or provider_id
     raw = _registry_provider(mdev_id, allow_network)
     return _parse_provider_info(mdev_id, raw) if raw is not None else None
 
@@ -846,7 +913,7 @@ def get_model_info(provider_id: str, model_id: str, *, allow_network: bool = Fal
     this boundary, and sub-dicts (``limit``, ``modalities``) are merged rather than clobbered. See #84482,
     #8731.
     """
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    mdev_id = _mdev_provider_id(provider_id) or provider_id
     models = _registry_models(mdev_id, allow_network=allow_network)
     mid, entry = next(_iter_model_entries(models, model_id, suffix_fallback=False, provider=provider_id), (model_id, None)) if models is not None else (model_id, None)
     # Not in catalog — an override (explicit or _default) may still provide it.

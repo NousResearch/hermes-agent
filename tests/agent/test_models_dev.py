@@ -114,6 +114,79 @@ class TestProviderMapping:
     def test_unmapped_provider_not_in_dict(self):
         assert "nous" not in PROVIDER_TO_MODELS_DEV
 
+    def test_case_fold_is_unambiguous(self):
+        """The case-folded alias pass can only be safe if the fold is 1:1.
+
+        If two keys ever differed only by case, a capitalized caller could be
+        routed to the wrong catalog. Guard it so adding such a key is caught.
+        """
+        folded: dict[str, str] = {}
+        for alias, mapped in PROVIDER_TO_MODELS_DEV.items():
+            key = alias.strip().lower()
+            assert folded.setdefault(key, mapped) == mapped, f"case-fold collision on {alias!r}"
+
+    def test_mdev_provider_id_tolerates_caller_spelling(self):
+        from agent.models_dev import _mdev_provider_id
+
+        for spelling in ("anthropic", "Anthropic", "ANTHROPIC", "  anthropic  "):
+            assert _mdev_provider_id(spelling) == "anthropic"
+        # models.dev id passthrough stays the caller's job, not ours.
+        assert _mdev_provider_id("github-copilot") is None
+        assert _mdev_provider_id("Vectide") is None
+        assert _mdev_provider_id("") is None
+        assert _mdev_provider_id(None) is None
+
+    def test_mdev_provider_id_strips_custom_transport_prefix(self):
+        from agent.models_dev import _mdev_provider_id
+
+        assert _mdev_provider_id("custom:openrouter") == "openrouter"
+        assert _mdev_provider_id("custom:Anthropic") == "anthropic"
+        assert _mdev_provider_id("custom:vectide") is None
+
+    def test_hermes_provider_slug_returns_key_not_mdev_id(self):
+        """Slugs and models.dev ids are different namespaces.
+
+        ``openai-codex`` is a Hermes slug whose models.dev id is ``openai``.
+        Feeding a models.dev id to a provider gate that tests Hermes slugs
+        would silently disable that gate, so the two helpers must not be
+        used interchangeably.
+        """
+        from agent.models_dev import _hermes_provider_slug, _mdev_provider_id
+
+        assert _hermes_provider_slug("Anthropic") == "anthropic"
+        assert _hermes_provider_slug("custom:openrouter") == "openrouter"
+        assert _hermes_provider_slug("openai-codex") == "openai-codex"
+        # The distinction that matters:
+        assert _mdev_provider_id("openai-codex") == "openai"
+        assert _hermes_provider_slug("openai-codex") != _mdev_provider_id("openai-codex")
+        # Unknown / empty input is left alone for the caller to handle.
+        assert _hermes_provider_slug("Vectide") is None
+        assert _hermes_provider_slug(None) is None
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_capitalized_label_reads_the_same_catalog(self, mock_fetch):
+        """A custom_providers[].name is a display label, not a slug.
+
+        ``name: OpenRouter`` in config.yaml is what /model passes down. Before
+        the spelling fix the catalog lookup missed and the model fell through
+        to the 256K default even though models.dev had the right value.
+        """
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("Anthropic", "claude-opus-4-6") == 1000000
+        assert lookup_models_dev_context("ANTHROPIC", "claude-opus-4-6") == 1000000
+        assert lookup_models_dev_context("  Anthropic  ", "claude-opus-4-6") == 1000000
+        assert lookup_models_dev_context("custom:anthropic", "claude-opus-4-6") == 1000000
+        # The mapped catalog must still be the one that answers (copilot ->
+        # github-copilot, which caps claude at 128K).
+        assert lookup_models_dev_context("Copilot", "claude-opus-4.6") == 128000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_unmapped_label_still_misses(self, mock_fetch):
+        """Case-folding must not invent a provider the table doesn't carry."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        for unknown in ("Vectide", "vectide", "AMD", "MyLocalBox", "custom:vectide"):
+            assert lookup_models_dev_context(unknown, "claude-opus-4-6") is None
+
 
 
 class TestExtractContext:

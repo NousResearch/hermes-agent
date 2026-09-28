@@ -1979,7 +1979,18 @@ def get_model_context_length(
             return ctx
     # 5. Provider-aware lookups — before the generic OR cache, since the same model has
     # different limits per provider. Generic providers are inferred from the URL.
-    effective_provider = provider
+    #
+    # A custom_providers[].name is a user-authored display label ("OpenRouter"), not a
+    # slug, so every provider gate below — and the models.dev lookup — would miss it.
+    # Canonicalize to the matching Hermes slug once here rather than at each gate.
+    # (Canonicalize to the slug, NOT to the models.dev id: "openai-codex" maps to
+    # "openai" over there, which would silently disable the Codex branch below.)
+    try:
+        from agent.models_dev import _hermes_provider_slug
+
+        effective_provider = _hermes_provider_slug(provider) or provider
+    except Exception:
+        effective_provider = provider
     if base_url and (not effective_provider or effective_provider in {"openrouter", "custom"}):
         effective_provider = _infer_provider_from_url(base_url) or effective_provider
     ctx = _resolve_provider_aware_context_length(model, base_url, api_key, provider, effective_provider)

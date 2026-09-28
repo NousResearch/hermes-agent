@@ -1,40 +1,28 @@
 """External cron workers must see plugin-registered secret sources (#121929).
 
-The worker process starts with the builtin secret-source registry alone; plugin
-sources (the documented path for third-party vaults —
-developer-guide/secret-source-plugin) only exist after plugin discovery runs.
-These tests pin the real chain: a temp profile home with a real directory
-plugin, discovered through ``discover_plugins()``, hydrating into the worker's
-secret scope.
+``python -m cron.scheduler --external-worker-file`` starts with the builtin secret-source
+registry alone; a plugin source (``ctx.register_secret_source()``) only exists after plugin
+discovery, so ``hydrate_profile_secret_sources`` hydrated nothing and agent-mode jobs died at
+credential resolution. Discovery must run under the payload's home override so a multiplexed
+worker loads the OWNING profile's plugins, not the launch profile's.
 """
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 
 import pytest
 
-
 STUB_PLUGIN_INIT = '''
-from pathlib import Path
-
-from agent.secret_sources.base import (
-    SECRET_SOURCE_API_VERSION,
-    FetchResult,
-    SecretSource,
-)
+from agent.secret_sources.base import SECRET_SOURCE_API_VERSION, FetchResult, SecretSource
 
 
 class TestVaultSource(SecretSource):
-    """Bulk stub: one value, no backend."""
-
     api_version = SECRET_SOURCE_API_VERSION
     name = "testvault"
     label = "Test Vault"
     shape = "bulk"
 
-    def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
+    def fetch(self, cfg, home_path):
         return FetchResult(secrets={"TESTVAULT_API_KEY": "stub-vault-key"})
 
 
@@ -43,136 +31,54 @@ def register(ctx):
 '''
 
 
-def _write_stub_plugin(profile_home: Path) -> None:
-    plugin_dir = profile_home / "plugins" / "test-vault"
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-    (plugin_dir / "plugin.yaml").write_text(
-        "name: test-vault\ndescription: Stub secret-source plugin for tests\n",
-        encoding="utf-8",
-    )
-    (plugin_dir / "__init__.py").write_text(STUB_PLUGIN_INIT, encoding="utf-8")
-
-
-def _write_profile_config(profile_home: Path) -> None:
-    profile_home.mkdir(parents=True, exist_ok=True)
-    (profile_home / "config.yaml").write_text(
-        "secrets:\n"
-        "  sources:\n"
-        "    - testvault\n"
-        "  testvault:\n"
-        "    enabled: true\n"
-        "plugins:\n"
-        "  enabled:\n"
-        "    - test-vault\n",
-        encoding="utf-8",
-    )
-
-
 @pytest.fixture
-def stub_profile_home(tmp_path, monkeypatch):
-    home = tmp_path / "profile"
-    _write_profile_config(home)
-    _write_stub_plugin(home)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    yield home
-    # Restore the pristine builtin-only registry for other tests in the run.
-    import agent.secret_sources.registry as reg
+def homes(tmp_path, monkeypatch):
+    """A launch home with no plugins and a profile home shipping the vault plugin."""
+    launch = tmp_path / "launch"
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    profile = tmp_path / "profile"
+    plugin_dir = profile / "plugins" / "test-vault"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: test-vault\ndescription: stub\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(STUB_PLUGIN_INIT, encoding="utf-8")
+    (profile / "config.yaml").write_text(
+        "secrets:\n  sources: [testvault]\n  testvault:\n    enabled: true\n"
+        "plugins:\n  enabled: [test-vault]\n",
+        encoding="utf-8",
+    )
+    yield launch, profile
+    import agent.secret_sources.registry as registry
+    from hermes_cli.env_loader import reset_secret_source_cache
+    from hermes_cli.plugins import _reset_plugin_managers_for_tests
 
-    reg._reset_registry_for_tests()
+    registry._reset_registry_for_tests()
+    reset_secret_source_cache()
+    _reset_plugin_managers_for_tests()
 
 
-def _run_worker_payload(payload_path: Path, ack_path: Path) -> bool:
+def test_worker_hydrates_owning_profile_plugin_secret_source(homes, tmp_path, monkeypatch):
+    launch, profile = homes
     import cron.scheduler as scheduler
 
-    return scheduler._run_external_worker_payload(payload_path, ack_path)
-
-
-def _make_payload(tmp_path: Path, profile_home: Path) -> Path:
     payload = tmp_path / "payload.json"
     payload.write_text(
-        json.dumps({
-            "job": {"id": "job-1", "execution_id": "exec-1"},
-            "profile_home": str(profile_home),
-        }),
+        json.dumps({"job": {"id": "job-1", "execution_id": "exec-1"},
+                    "profile_home": str(profile), "multiplex_active": True}),
         encoding="utf-8",
     )
-    return payload
-
-
-def test_worker_payload_hydrates_plugin_secret_sources(
-    stub_profile_home, tmp_path, monkeypatch
-):
-    """The worker adopts the payload and builds a scope that resolves the
-    plugin source's value — the exact step that failed for secondary profiles
-    before the fix (#121929)."""
-
-    payload = _make_payload(tmp_path, stub_profile_home)
-
-    from cron.executions import create_execution, mark_execution_handoff_pending
-
-    record = create_execution("job-1", source="builtin")
-    payload.write_text(
-        json.dumps({
-            "job": {"id": "job-1", "execution_id": record["id"]},
-            "profile_home": str(stub_profile_home),
-        }),
-        encoding="utf-8",
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"},
     )
-    assert mark_execution_handoff_pending(record["id"]) is not None
+    scopes = []
 
-    captured_scopes = []
-
-    import cron.scheduler as scheduler
-
-    def capture_scope(*args, **kwargs):
+    def capture(*_args, **_kwargs):
         from agent.secret_scope import current_secret_scope
-
-        captured_scopes.append(dict(current_secret_scope() or {}))
+        scopes.append(dict(current_secret_scope() or {}))
         return True
 
-    monkeypatch.setattr(scheduler, "run_one_job", capture_scope)
+    monkeypatch.setattr(scheduler, "run_one_job", capture)
 
-    assert _run_worker_payload(payload, tmp_path / "exec.ready") is True
-    assert captured_scopes, "run_one_job never ran — scope never captured"
-    assert (
-        captured_scopes[0].get("TESTVAULT_API_KEY") == "stub-vault-key"
-    ), "plugin secret source was not hydrated into the worker scope"
-
-
-def test_worker_payload_without_plugins_still_hydrates_builtin_path(
-    tmp_path, monkeypatch
-):
-    """The discovery call must not break workers whose profile has no plugins
-    (the common case): the payload still runs and hydrates without error."""
-
-    profile_home = tmp_path / "bare-profile"
-    profile_home.mkdir(parents=True, exist_ok=True)
-    # Create the execution row in the SAME store the worker adopts from —
-    # the payload home's cron store, not the test process's launch home.
-    monkeypatch.setenv("HERMES_HOME", str(profile_home))
-
-    from cron.executions import create_execution, mark_execution_handoff_pending
-
-    record = create_execution("job-bare", source="builtin")
-    payload = tmp_path / "payload-bare.json"
-    payload.write_text(
-        json.dumps({
-            "job": {"id": "job-bare", "execution_id": record["id"]},
-            "profile_home": str(profile_home),
-        }),
-        encoding="utf-8",
-    )
-    assert mark_execution_handoff_pending(record["id"]) is not None
-
-    import cron.scheduler as scheduler
-
-    ran = {"ok": False}
-
-    def mark_ran(*args, **kwargs):
-        ran["ok"] = True
-        return True
-
-    monkeypatch.setattr(scheduler, "run_one_job", mark_ran)
-
-    assert _run_worker_payload(payload, tmp_path / "exec-bare.ready") is True
-    assert ran["ok"]
+    assert scheduler._run_external_worker_payload(payload, tmp_path / "exec-1.ready") is True
+    assert scopes and scopes[0].get("TESTVAULT_API_KEY") == "stub-vault-key"

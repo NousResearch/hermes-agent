@@ -15,7 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv  # noqa: F401
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_replace, load_yaml_file_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,8 @@ _SCOPED_SKIP_LOGGED: set[str] = set()   # routed profile homes whose multiplex d
 _SECRET_SOURCES: dict[str, str] = {}
 # Immutable per-home snapshots: os.environ is shared across profiles and a later home's apply may overwrite it.
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
+# Per home: the subset of the snapshot a dotenv reload may re-assert — see ``AppliedVar.authoritative`` (#74265).
+_SECRET_SOURCE_RESTORE_BY_HOME: dict[str, dict[str, str]] = {}
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
@@ -51,6 +53,13 @@ _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 _DOTENV_PUBLISHED: dict[str, tuple[str | None, str, int]] = {}
 _DOTENV_PASSES = itertools.count()
 _DOTENV_LOCK = threading.RLock()
+
+# Per-process credentials a parent mints and injects into the child's environment (the Desktop shell /
+# a link-style launcher spawns `hermes dashboard` with a fresh HERMES_DASHBOARD_SESSION_TOKEN and keeps
+# the same token for its own /api probes). They are never .env configuration, so a persisted value in
+# ~/.hermes/.env must not replace an injected one — the parent would then 401 against its own child
+# (#115955). A value an earlier dotenv pass published is still reloaded normally.
+_SPAWN_CREDENTIAL_KEYS: frozenset[str] = frozenset({"HERMES_DASHBOARD_SESSION_TOKEN"})
 
 # Behavioral routing keys a parent Hermes process injects into child env that silently redirect a profile
 # onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
@@ -120,6 +129,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     # A retry must not keep serving a partial result after the source is removed, disabled, or can no
     # longer be evaluated. Publish only the snapshot established by this attempt.
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+    _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
 
     try:
         cfg = _load_secrets_config(home)
@@ -177,10 +187,12 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         _APPLIED_HOMES.clear()
         _SECRET_SOURCES.clear()
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
+        _SECRET_SOURCE_RESTORE_BY_HOME.clear()
         return
     home_key = str(Path(hermes_home).resolve())
     _APPLIED_HOMES.discard(home_key)
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+    _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -295,8 +307,11 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool, load_pass: int | N
                 continue
             current = os.environ.get(name)
             record = _DOTENV_PUBLISHED.get(name)
+            ours = record is not None and current == record[1]
+            if name in _SPAWN_CREDENTIAL_KEYS and current and not ours:
+                continue  # parent-minted per-process credential: .env must not split it from the parent
             # Ours and untouched since → keep the original baseline; anything else is a newer outside value.
-            baseline = record[0] if record is not None and current == record[1] else current
+            baseline = record[0] if ours else current
             os.environ[name] = value
             _DOTENV_PUBLISHED[name] = (baseline, value, load_pass)
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
@@ -431,6 +446,15 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded, load_pass=load_pass)
         loaded.append(project_env_path)
 
+    # The override=True loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale
+    # token) back over a value an external source resolved on an earlier call, and the source pass below is a
+    # once-per-home no-op — so the clobber stuck for the life of the process (#74265). Re-assert only what the
+    # source is authoritative for; managed scope, applied last with override=True, still wins on purpose.
+    if _SECRET_SOURCE_RESTORE_BY_HOME:
+        for name, value in _SECRET_SOURCE_RESTORE_BY_HOME.get(str(home_path.resolve()), {}).items():
+            if os.environ.get(name) != value:
+                os.environ[name] = value
+
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
     # that env on Windows, and a fresh retry after a deferred dependency install would otherwise make the
@@ -505,7 +529,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
     # Neither early return marks the home applied: a malformed config.yaml would otherwise permanently
     # disable secret loading for this process, and an unmarked home picks up a config change on the next
-    # load (the re-parse is a cheap fast_safe_load).
+    # load (the signature-cached read is cheap).
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
@@ -560,6 +584,8 @@ def _apply_external_secret_sources(home_path: Path) -> None:
             values[name] = os.environ[name]
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
+        n: values[n] for n, a in report.provenance.items() if a.authoritative and n in values}
 
     for src in report.sources:
         if src.applied:
@@ -606,9 +632,9 @@ def _load_secrets_config(home_path: Path) -> dict:
             return data.get("secrets") or {}
         except Exception:
             pass
+    # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = fast_safe_load(f) or {}
+        data = load_yaml_file_readonly(config_path) or {}
     except Exception:  # noqa: BLE001
         return {}
     return data.get("secrets") or {}
@@ -634,12 +660,15 @@ def _process_hermes_home() -> Path:
       (mtime,size)-keyed config cache is safe to reuse; under an override it
       must fall through to an isolated parse of the scoped profile.
 
-    ``hermes_constants.get_process_hermes_home()`` is the override-immune
-    resolver built for exactly this; delegate to it.
+    ``hermes_constants.get_routing_process_hermes_home()`` is the override-immune
+    resolver built for exactly this; delegate to it. It is also immune to a host
+    that mirrors the served profile into the live ``HERMES_HOME`` env var
+    (``pin_process_hermes_home``): without that, the mirrored profile satisfied
+    the guard above and bridged ITS ``terminal.*`` into the shared env.
     """
     try:
-        from hermes_constants import get_process_hermes_home
+        from hermes_constants import get_routing_process_hermes_home
 
-        return get_process_hermes_home()
+        return get_routing_process_hermes_home()
     except Exception:
         return Path.home() / ".hermes"

@@ -55,19 +55,31 @@ def _terminal_backend_rows() -> List[Dict[str, str]]:
 
 
 def _probe_docker_backend(_cfg) -> tuple:
-    if not shutil.which("docker"):
-        return ("needs_setup", "Docker CLI not found — install Docker Desktop or docker-ce.")
+    """Health-check the docker terminal backend the same way the agent resolves it.
+
+    ``find_docker()`` honors ``HERMES_DOCKER_BINARY``, then ``docker`` / ``podman``
+    on PATH. The probe uses ``version`` (not ``info --format {{.ServerVersion}}``)
+    because Podman has no ServerVersion field and the agent already probes with
+    ``version``.
+    """
+    from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
+    from tools.environments.remote_common import run_capture
+
+    docker_exe = find_docker()
+    if not docker_exe:
+        return (
+            "needs_setup",
+            "Docker CLI not found — install Docker Desktop, docker-ce, or Podman.",
+        )
+    runtime = docker_runtime_name(docker_exe)
     try:
-        proc = subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2)
-        if proc.returncode == 0:
+        if run_capture([docker_exe, "version"], timeout=2).returncode == 0:
             return ("ready", "")
-        return ("needs_setup", "Docker daemon not reachable — start Docker and retry.")
+        return ("needs_setup", f"{runtime} not reachable — {docker_runtime_start_hint(docker_exe)}.")
     except subprocess.TimeoutExpired:
-        return ("needs_setup", "Docker daemon not responding (timed out).")
+        return ("needs_setup", f"{runtime} not responding (timed out).")
     except Exception as exc:
-        return ("unavailable", f"Docker probe failed: {exc}")
+        return ("unavailable", f"{runtime} probe failed: {exc}")
 
 
 def _probe_singularity_backend(_cfg) -> tuple:

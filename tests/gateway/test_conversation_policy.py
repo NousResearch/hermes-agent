@@ -976,6 +976,30 @@ def test_yaml_configuration_real_load_and_streaming_gate(monkeypatch, tmp_path):
     assert not requires_buffered_delivery(config, "telegram")
 
 
+def test_guard_buffers_normal_and_proxy_streaming_on_delivery_adapter(monkeypatch):
+    from types import SimpleNamespace
+    from gateway.config import StreamingConfig
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
+
+    adapter = Adapter(settings={"pingpong_guard": {"enabled": True}})
+    source = event().source
+    runner = SimpleNamespace(
+        config=SimpleNamespace(streaming=StreamingConfig(enabled=True)),
+        _delivery_adapter_for=lambda candidate: adapter if candidate is source else None,
+    )
+    ctx = SimpleNamespace(
+        source=source, mute_notification_reply=False, scheduled_heartbeat=False,
+        streaming_tts_consumer_holder=[None], user_config={},
+        resolve_display_setting=lambda *args: True,
+        interim_assistant_messages_enabled=True,
+    )
+    consumer, deltas, _commentary, interim_enabled = TurnRunner(runner, ctx)._setup_stream_consumer("slack")
+    assert consumer is None and deltas is None and not interim_enabled
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    assert GatewayRunner._proxy_stream_consumer(runner, source, "message", None, lambda: True) is None
+
+
 @pytest.mark.anyio
 async def test_one_filter_model_selection_drives_both_filters(monkeypatch, tmp_path):
     import io

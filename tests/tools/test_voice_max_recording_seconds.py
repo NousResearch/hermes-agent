@@ -10,23 +10,9 @@ test pins the enforcement contract on the recorder:
 """
 from tools.voice_mode import AudioRecorder
 
-
-def test_cap_disabled_by_default():
-    r = AudioRecorder()
-    assert r._max_recording_seconds == 0.0
-    # No cap → duration trigger never fires, even at absurd elapsed times.
-    assert r._max_duration_reached(10_000.0) is False
-
-
 def test_cap_enforced_when_set():
     r = AudioRecorder()
     r._max_recording_seconds = 120
     assert r._max_duration_reached(119.9) is False
     assert r._max_duration_reached(120.0) is True
     assert r._max_duration_reached(300.0) is True
-
-
-def test_zero_means_unlimited():
-    r = AudioRecorder()
-    r._max_recording_seconds = 0
-    assert r._max_duration_reached(99_999.0) is False

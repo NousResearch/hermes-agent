@@ -5,12 +5,13 @@ import { useNavigate } from 'react-router'
 import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
 import { ProfileSwitcher } from '@/app/chat/sidebar/profile-dropdown-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
+import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
-import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
+import { $paneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -30,11 +31,12 @@ import {
   Zap
 } from '@/lib/icons'
 import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
-import { copyFilePath, revealFile } from '@/store/file-actions'
+import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { revealFileInTree } from '@/store/layout'
@@ -51,11 +53,18 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $sessionStartedAt,
+  $tileSessionFocusStartedAt,
   $turnStartedAt,
   idsShareLineage,
   sessionMatchesStoredId
 } from '@/store/session'
-import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $focusedSessionState,
+  $focusedStoredSessionId,
+  $sessionTiles,
+  isSessionRemote
+} from '@/store/session-states'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
@@ -125,6 +134,7 @@ export function useStatusbarItems({
   const primaryUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
+  const tileSessionFocusStartedAt = useStore($tileSessionFocusStartedAt)
   const primaryTurnStartedAt = useStore($turnStartedAt)
 
   // The indicator must speak the same scope as the Spawn-tree panel it opens:
@@ -162,11 +172,19 @@ export function useStatusbarItems({
   // clicking into a tile makes the statusbar describe THAT session.
   const focusedStoredSessionId = useStore($focusedStoredSessionId)
   const focusedRuntimeId = useStore($focusedRuntimeId)
+  // Whether the FOCUSED session's workspace lives on another machine: a
+  // Connections-tagged tile on a remote gateway inside a local-primary window
+  // (and vice versa) is decided by the tile's owner route, falling back to the
+  // ambient connection only when no owner is known (#115167).
+  const focusedWorkspaceRemote = useStoreSelector($sessionTiles, () => isSessionRemote(focusedStoredSessionId))
   // `$focusedSessionState` is a projection of `$sessionStates`, which is
   // republished on EVERY message delta — tens of times a second during a turn.
   // Only the fields read here are selected, so an unchanged readout bails out
   // instead of rebuilding all ~9 statusbar items per token.
   const focusedBusy = useStoreSelector($focusedSessionState, state => Boolean(state?.busy))
+
+  const focusedRuntimeStartedAt = useStoreSelector($focusedSessionState, state => state?.runtimeStartedAt ?? null)
+
   const focusedTurnStartedAt = useStoreSelector($focusedSessionState, state => state?.turnStartedAt ?? null)
   // `usage` is an object, so it can't be compared as a scalar. It IS however
   // replaced wholesale rather than mutated, and only changes when the backend
@@ -193,10 +211,10 @@ export function useStatusbarItems({
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
-  // A tile's session-start + cold cwd come from its stored row (the cache only
-  // knows runtime state). Only these scalars are read off `$sessions`, so
-  // select them — a whole-list `useStore` re-ran the hook on every session-list
-  // write (title updates, poll refreshes, archives).
+  // A tile's stored row supplies the cold/fallback session-start and cwd when
+  // no focused runtime value is available. Only these scalars are read off
+  // `$sessions`, so select them — a whole-list `useStore` re-ran this hook on
+  // every session-list write (title updates, poll refreshes, archives).
   const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
     focusedStoredSessionId
       ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
@@ -212,6 +230,17 @@ export function useStatusbarItems({
 
     return row?.cwd?.trim() || ''
   })
+
+  // Which backend the focused row runs on: a Connections-tagged row names its
+  // gateway; an untagged one is the window's primary. Decides whether the OS
+  // file manager on this computer can show its workspace at all.
+  const focusedRowConnectionId = useStoreSelector($sessions, sessions =>
+    focusedStoredSessionId
+      ? sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.connection_id?.trim() || ''
+      : ''
+  )
+
+  const offerLocalReveal = shouldOfferLocalReveal(focusedRowConnectionId, connection?.mode === 'remote')
 
   // Live runtime cwd is authoritative once it belongs to the focused chat
   // (agent can relocate mid-turn). Until then — cold tabs, mid-switch lag —
@@ -252,11 +281,13 @@ export function useStatusbarItems({
   const projectTree = useStore($projectTree)
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
 
-  const sessionStartedAt = primaryFocused
-    ? primarySessionStartedAt
-    : focusedRowStartedAt
-      ? focusedRowStartedAt * 1000
-      : null
+  const sessionStartedAt = resolveSessionTimerSince({
+    focusedStoredSessionId,
+    primaryFocused,
+    primarySessionStartedAt,
+    tileFocus: tileSessionFocusStartedAt,
+    fallbackRuntimeStartedAt: focusedRuntimeStartedAt
+  })
 
   // The backend only knows a session's MEASURED occupancy once a turn has run
   // in this process, so a resumed conversation reports none and the gauge had
@@ -279,8 +310,8 @@ export function useStatusbarItems({
   // only before that), and it is keyed to the session it describes. The global
   // `$currentUsage` is neither — a resumed session reports no context fields,
   // and the store merges rather than replaces, so the PREVIOUS session's gauge
-  // numbers survive the switch. Mid-turn there's no breakdown by design and
-  // the streamed usage carries the gauge.
+  // numbers survive the switch. Mid-turn useContextBreakdown returns null (the
+  // snapshot is pre-turn), so the streamed usage carries the gauge.
   const gaugeUsage = useMemo<UsageStats>(
     () =>
       contextBreakdown
@@ -361,7 +392,6 @@ export function useStatusbarItems({
 
     return {
       className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
-      detail: status.detail,
       hidden: status.unknown,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-client',
@@ -521,12 +551,20 @@ export function useStatusbarItems({
                 onSelect: () => void copyFilePath(currentCwd),
                 title: displayPath(currentCwd)
               },
-              {
-                id: 'reveal-workspace-finder',
-                label: fileMenu.revealFileManager,
-                onSelect: () => void revealFile(currentCwd),
-                title: displayPath(currentCwd)
-              },
+              // The OS file manager needs the local filesystem; a remote
+              // backend's workspace is not on this computer (the sidebar
+              // trees already hide reveal the same way), and a row tagged
+              // with another gateway is never local either.
+              ...(focusedWorkspaceRemote || !offerLocalReveal
+                ? []
+                : [
+                    {
+                      id: 'reveal-workspace-finder',
+                      label: fileMenu.revealFileManager,
+                      onSelect: () => void revealFile(currentCwd),
+                      title: displayPath(currentCwd)
+                    }
+                  ]),
               {
                 id: 'reveal-workspace-sidebar',
                 label: fileMenu.revealInSidebar,
@@ -588,10 +626,12 @@ export function useStatusbarItems({
       commandCenterOpen,
       copy,
       currentCwd,
+      focusedWorkspaceRemote,
       freeTierCopy,
       fileMenu.copyPath,
       fileMenu.revealFileManager,
       fileMenu.revealInSidebar,
+      offerLocalReveal,
       freeTier?.available,
       freeTier?.model,
       guideOwnsSignIn,
@@ -660,7 +700,8 @@ export function useStatusbarItems({
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
         id: 'session-timer',
-        label: copy.session,
+        label: copy.focusedSince,
+        title: copy.focusedSinceTitle,
         toggleLabel: copy.toggleSessionTimer,
         variant: 'text'
       },
@@ -676,7 +717,7 @@ export function useStatusbarItems({
         hidden: !chatOpen,
         icon: <Terminal className="size-3.5" />,
         id: 'terminal',
-        onSelect: () => togglePaneVisible('terminal'),
+        onSelect: () => toggleTerminalPane(),
         title: terminalShowing ? copy.hideTerminal : copy.showTerminal,
         toggleLabel: copy.toggleTerminal,
         variant: 'action'

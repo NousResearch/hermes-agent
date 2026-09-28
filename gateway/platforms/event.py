@@ -52,6 +52,11 @@ class MessageEvent:
     # refused first reply then reads as delivered). Reply routing is unaffected: the reply anchor
     # still comes from this event.
     ledger_message_id: Optional[str] = None
+    # Reply anchor for the final send when the answer is to a DIFFERENT message than the one that
+    # opened the turn: a successful busy redirect turns the running turn onto the redirecting
+    # message, so its reply must quote that message (#115001). ``_reply_anchor_for_event``
+    # honours this over ``message_id``; None = derive from the event as usual.
+    reply_anchor_override: Optional[str] = None
     # Platform update id (Telegram ``update_id``): ``/restart`` records it so the new gateway
     # advances past it even if PTB's shutdown ACK times out.
     platform_update_id: Optional[int] = None
@@ -81,13 +86,22 @@ class MessageEvent:
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
-    # so untrusted payload text stays conversational. Kept last for positional compat.
+    # so untrusted payload text stays conversational. New fields append after it (positional compat).
     allow_gateway_control: bool = True
+    # Was this message addressed to this bot? False lets a bare silence marker stand (the adapter
+    # knows the message was meant for someone else); None means unknown and keeps the visible
+    # fallback, like True.
+    reply_expected: Optional[bool] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+
+    def absorb_reply_expected(self, other: "MessageEvent") -> None:
+        """One turn now answers *other* too: an addressed message wins, then an unknown one."""
+        if self.reply_expected is not True and other.reply_expected is not False:
+            self.reply_expected = other.reply_expected
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

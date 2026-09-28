@@ -78,7 +78,7 @@ def _run_clarify(adapter, answer=None, questions=None, answers=(), via_tool=Fals
         return entry
 
     with patch.object(cm, "register", _register), \
-            patch("tools.clarify_gateway.get_clarify_timeout", return_value=1):
+            patch("tools.clarify_gateway.get_clarify_timeout", return_value=0.05):
         if questions is None:
             return runner._clarify_callback_sync("Pick one", ["a", "b"]), labels
         if via_tool:

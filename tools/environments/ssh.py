@@ -76,6 +76,7 @@ class SSHEnvironment(BaseEnvironment):
         if probe_only:
             self._sync_manager = None
             return
+        self._remote_home_detected = False
         self._remote_home = self._detect_remote_home()
         self._ensure_remote_dirs()
         self._sync_manager = FileSyncManager(
@@ -153,6 +154,7 @@ class SSHEnvironment(BaseEnvironment):
             result = self._run_ssh("echo $HOME", timeout=10)
             if result.returncode == 0 and result.stdout.strip():
                 logger.debug("SSH: remote home = %s", result.stdout.strip())
+                self._remote_home_detected = True
                 return result.stdout.strip()
         return "/root" if self.user == "root" else f"/home/{self.user}"
 
@@ -244,12 +246,24 @@ class SSHEnvironment(BaseEnvironment):
         # Tar from / with the full path so archive entries keep absolute paths
         # (home/user/.hermes/skills/f.py), matching _pushed_hashes keys.
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
-        ssh_cmd = self._build_ssh_command() + [f"tar cf - -C / {shlex.quote(rel_base)}"]
+        # Live sockets inside .hermes (gateway.sock and friends) cannot be archived: tar prints
+        # "socket ignored" and some builds exit 2, which failed every sync-back and left a
+        # multi-GB temp tar behind on each retry. Exclude them up front.
+        ssh_cmd = self._build_ssh_command() + [
+            f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}"]
         with open(dest, "wb") as f:
             result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120)
         if result.returncode != 0:
-            raise _sync_error(f"SSH bulk download failed: {result.stderr.decode(errors='replace').strip()}",
-                              f"File sync from {self.host}")
+            stderr = result.stderr.decode(errors="replace").strip()
+            # A socket not named *.sock is the only rc=2 we knowingly accept, and only when
+            # nothing else was reported — anchored to the diagnostic suffix so a filename merely
+            # containing "socket ignored" cannot sneak through. Every other status still fails.
+            diagnostic_lines = [line for line in stderr.splitlines() if line.strip()]
+            tolerated = result.returncode == 2 and bool(diagnostic_lines) and all(
+                line.endswith(": socket ignored") for line in diagnostic_lines)
+            if not tolerated:
+                raise _sync_error(f"SSH bulk download failed: {stderr}",
+                                  f"File sync from {self.host}")
 
     def _ssh_delete(self, remote_paths: list[str]) -> None:
         self._run_ssh_checked(quoted_rm_command(remote_paths), 10, "remote rm failed",

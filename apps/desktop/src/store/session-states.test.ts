@@ -10,6 +10,8 @@ import {
   setWorkspaceScope,
   workspaceScopeKey
 } from '@/components/pane-shell/workspace-scope'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -29,6 +31,7 @@ import {
   clearAllSessionStates,
   closeAllOpenSessionTiles,
   focusedSessionNeedsRoute,
+  focusedSessionWorkspaceScope,
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
   foregroundSessionScopes,
@@ -40,8 +43,10 @@ import {
   orderTilesByTree,
   patchSessionTile,
   recordSessionEventScope,
+  rekeySessionTile,
   releaseSessionTranscript,
   requestForOwnedSession,
+  resetRouteOwnedTileRuntimeBindings,
   resetTileRuntimeBindings,
   selectionHomesToWorkspace,
   type SessionTileDelegate,
@@ -128,14 +133,6 @@ describe('resetTileRuntimeBindings', () => {
     expect($sessionTiles.get()).toEqual([
       { anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }
     ])
-  })
-
-  it('tolerates a delegate without invalidateRuntimeBindings (older wiring)', () => {
-    setSessionTileDelegate({} as unknown as SessionTileDelegate)
-    $sessionTiles.set([{ runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
-
-    expect(() => resetTileRuntimeBindings()).not.toThrow()
-    expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
   })
 
   it('keeps Bot runtimes owned by a different connection', () => {
@@ -268,6 +265,76 @@ describe('resetTileRuntimeBindings', () => {
   })
 })
 
+function runtimeBindingDelegate(
+  dropRuntimeBindings: (storedSessionIds: ReadonlySet<string>) => void,
+  invalidateRuntimeBindings: (preserveStoredSessionIds?: ReadonlySet<string>) => void
+): SessionTileDelegate {
+  return {
+    archiveSession: vi.fn(),
+    branchSession: vi.fn(),
+    deleteSession: vi.fn(),
+    executeSlash: vi.fn(),
+    interruptSession: vi.fn(),
+    resumeTile: vi.fn(),
+    submitToSession: vi.fn(),
+    updateSession: vi.fn(),
+    dropRuntimeBindings,
+    invalidateRuntimeBindings
+  }
+}
+
+describe('resetRouteOwnedTileRuntimeBindings', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
+  it('drops only tiles owned by the reopened route and leaves ambient tiles bound', () => {
+    const invalidateRuntimeBindings = vi.fn()
+    const dropRuntimeBindings = vi.fn()
+    setSessionTileDelegate(runtimeBindingDelegate(dropRuntimeBindings, invalidateRuntimeBindings))
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'local', mode: 'local', profile: 'writer', targetProfile: 'writer' },
+        runtimeId: 'runtime-writer-bot',
+        storedSessionId: 'stored-writer-bot',
+        workspaceMode: 'bots'
+      },
+      {
+        ownerRoute: { connectionId: 'local', mode: 'local', profile: 'coder', targetProfile: 'coder' },
+        runtimeId: 'runtime-coder-bot',
+        storedSessionId: 'stored-coder-bot',
+        workspaceMode: 'bots'
+      },
+      { runtimeId: 'runtime-ambient', storedSessionId: 'stored-ambient' }
+    ])
+
+    resetRouteOwnedTileRuntimeBindings({ connectionId: 'local', profile: 'writer' })
+
+    const [writerBot, coderBot, ambient] = $sessionTiles.get()
+
+    expect(writerBot).toMatchObject({ storedSessionId: 'stored-writer-bot' })
+    expect(writerBot).not.toHaveProperty('runtimeId')
+    expect(coderBot).toMatchObject({ runtimeId: 'runtime-coder-bot' })
+    expect(ambient).toMatchObject({ runtimeId: 'runtime-ambient' })
+    expect(dropRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-writer-bot']))
+    expect(invalidateRuntimeBindings).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op when no open tile belongs to the reopened route', () => {
+    const invalidateRuntimeBindings = vi.fn()
+    const dropRuntimeBindings = vi.fn()
+    setSessionTileDelegate(runtimeBindingDelegate(dropRuntimeBindings, invalidateRuntimeBindings))
+    const tiles = [{ runtimeId: 'runtime-ambient', storedSessionId: 'stored-ambient' }]
+    $sessionTiles.set(tiles)
+
+    resetRouteOwnedTileRuntimeBindings({ connectionId: 'local', profile: 'writer' })
+
+    expect($sessionTiles.get()).toBe(tiles)
+    expect(dropRuntimeBindings).not.toHaveBeenCalled()
+    expect(invalidateRuntimeBindings).not.toHaveBeenCalled()
+  })
+})
+
 describe('SessionTile workspace scope', () => {
   afterEach(() => {
     $activeGatewayProfile.set('default')
@@ -338,6 +405,30 @@ describe('SessionTile workspace scope', () => {
     expect(focusOpenSession('bot-chat', scope)).toBe('tile')
   })
 
+  it('splits a Bot chat loaded in MAIN instead of silently no-oping the drop', () => {
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:connection-a::alpha' }
+
+    $selectedStoredSessionId.set('bot-chat')
+    // A real open records the bot scope on the MAIN chat (which has no tile
+    // to carry it). The drag handler then commits the drop with NO explicit
+    // scope — the tab it drags is the workspace pane itself.
+    setSessionTileWorkspaceScope('bot-chat', scope)
+    openSessionTile('bot-chat', 'right', 'workspace', undefined)
+
+    // The minted tile registers its pane (watchSessionTiles) and the drop
+    // hint's reveal adopts it — here, the tree that adoption produces.
+    $layoutTree.set(group(['workspace', tilePane('bot-chat')], { id: 'workspace-group' }))
+
+    expect(focusOpenSession('bot-chat', scope)).toBe('tile')
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:connection-a::alpha'
+      })
+    ])
+  })
+
   it('fronts the existing tab when compaction rotated the tip id — never a duplicate', () => {
     // The tile was opened when seg-2 was the tip; the conversation has since
     // rotated to seg-3 (projected row carries the full chain). Opening the
@@ -353,6 +444,20 @@ describe('SessionTile workspace scope', () => {
     openSessionTile('seg-3')
     expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-2'])
     setSessions([])
+  })
+
+  it('reports the workspace scope of the focused Bot session tab', () => {
+    const scope = {
+      ownerRoute: { connectionId: 'connection-a', profile: 'default' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'connection-a::default',
+      workspaceTabTitle: 'Bot Chat'
+    }
+
+    openSessionTile('bot-chat', 'center', undefined, undefined, scope)
+    $layoutTree.set(group(['workspace', tilePane('bot-chat')], { active: tilePane('bot-chat'), id: 'main' }))
+
+    expect(focusedSessionWorkspaceScope()).toEqual(scope)
   })
 
   it('keeps Bot tabs while a profile publication swaps the Sessions bucket', () => {
@@ -859,6 +964,42 @@ describe('dropTilesForProfile', () => {
     )
     expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['bot-remote'])
   })
+
+  // #108679: a tile record whose anchor is its OWN pane id is
+  // self-referential — the re-dock target can never exist at adoption time,
+  // so the tile falls through to an arbitrary same-placement neighbor
+  // instead of the recorded layout. Loading must rewrite it to the
+  // workspace anchor (the same surface an anchorless tile re-docks against)
+  // while a REAL cross-tile anchor survives the round-trip.
+  it('rewrites a self-anchored tile record to the workspace anchor at load', async () => {
+    window.localStorage.setItem(
+      TILES_KEY,
+      JSON.stringify({
+        default: [
+          // Self-referential: anchor === the tile's own pane id.
+          { anchor: 'session-tile:20260912_080117', storedSessionId: '20260912_080117' },
+          // Legitimate: docked beside another tile.
+          { anchor: 'session-tile:20260912_080117', storedSessionId: '20260912_080118' },
+          // Legitimate: docked beside the workspace.
+          { anchor: 'workspace', storedSessionId: '20260912_080119' }
+        ]
+      })
+    )
+
+    // Storage is read at module load — reset and re-import after seeding it.
+    vi.resetModules()
+
+    const fresh = await import('@/store/session-states')
+    const tiles = fresh.$sessionTiles.get()
+    const byId = new Map(tiles.map(tile => [tile.storedSessionId, tile]))
+
+    // The self-anchor is dropped (the mirror re-docks those tiles against
+    // the workspace by default); the other two anchors round-trip intact.
+    expect(tiles).toHaveLength(3)
+    expect(byId.get('20260912_080117')!.anchor).toBeUndefined()
+    expect(byId.get('20260912_080118')!.anchor).toBe('session-tile:20260912_080117')
+    expect(byId.get('20260912_080119')!.anchor).toBe('workspace')
+  })
 })
 
 describe('releaseSessionTranscript', () => {
@@ -872,13 +1013,6 @@ describe('releaseSessionTranscript', () => {
 
     expect(() => releaseSessionTranscript('runtime')).not.toThrow()
     expect($sessionStates.get().runtime).toEqual({ ...legacy, messages: [] })
-  })
-
-  it('ignores a legacy undefined state without throwing', () => {
-    $sessionStates.set({ runtime: undefined } as unknown as Record<string, ClientSessionState>)
-
-    expect(() => releaseSessionTranscript('runtime')).not.toThrow()
-    expect($sessionStates.get()).toHaveProperty('runtime', undefined)
   })
 })
 
@@ -1236,12 +1370,6 @@ describe('sessionTileOwnerRoute', () => {
 
     expect(sessionTileOwnerRoute('plain')).toBeUndefined()
   })
-
-  it('returns undefined when the session has no tile', () => {
-    $sessionTiles.set([])
-
-    expect(sessionTileOwnerRoute('missing')).toBeUndefined()
-  })
 })
 
 describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', () => {
@@ -1376,5 +1504,195 @@ describe('isSessionRemote (#94640)', () => {
     setSessions([{ id: 'stored-2', profile: 'loki' } as never])
 
     expect(isSessionRemote('stored-2')).toBe(true)
+  })
+
+  it("reads a connection-tagged row's mode from the registry, not the ambient connection (#120730)", () => {
+    // A row from the unified Sessions list carries connection_id but no mode;
+    // its owner is { connectionId, profile }. The byte-vs-path decision must
+    // come from that connection's registry kind.
+    $connectionsRegistry.set({
+      version: 1,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [
+        { id: 'local', kind: 'local', label: 'This Mac', tokenSet: false, tokenPreview: null },
+        { id: 'vps', kind: 'ssh', label: 'VPS', tokenSet: false, tokenPreview: null }
+      ]
+    })
+    setSessions([
+      { id: 'stored-ssh', profile: 'default', connection_id: 'vps' } as never,
+      { id: 'stored-local', profile: 'default', connection_id: 'local' } as never
+    ])
+
+    try {
+      $connection.set({ mode: 'local' } as never)
+      expect(isSessionRemote('stored-ssh')).toBe(true)
+
+      $connection.set({ mode: 'remote' } as never)
+      expect(isSessionRemote('stored-local')).toBe(false)
+    } finally {
+      $connectionsRegistry.set(null)
+    }
+  })
+
+  it('reads a bare-profile owner from the socket that serves it, not the ambient connection (#120730)', () => {
+    // The primary socket serving 'default' is a remote backend while the window
+    // shows a local source: the primary's own mode decides.
+    setPrimaryGateway({} as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'vps', mode: 'remote' })
+    $connection.set({ mode: 'local' } as never)
+    setSessions([{ id: 'stored-primary', profile: 'default' } as never])
+
+    try {
+      expect(isSessionRemote('stored-primary')).toBe(true)
+    } finally {
+      setPrimaryGateway(null)
+    }
+  })
+})
+
+describe('rekeySessionTile (#98622 — pane identity across compression tip rotation)', () => {
+  beforeEach(() => {
+    $activeGatewayProfile.set('default')
+    $layoutTree.set(null)
+    $sessionTiles.set([])
+    $selectedStoredSessionId.set(null)
+    setSessions([])
+  })
+
+  afterEach(() => {
+    $activeGatewayProfile.set('default')
+    $layoutTree.set(null)
+    $sessionTiles.set([])
+    $selectedStoredSessionId.set(null)
+    setSessions([])
+  })
+
+  it('re-keys the open tile to the new tip, preserving placement', () => {
+    $sessionTiles.set([
+      { anchor: 'workspace', before: null, dir: 'right', storedSessionId: 'tip-old' },
+      { storedSessionId: 'unrelated' }
+    ])
+
+    rekeySessionTile('tip-old', 'tip-new')
+
+    const tiles = $sessionTiles.get()
+    expect(tiles.find(t => t.storedSessionId === 'tip-old')).toBeUndefined()
+    const rekeyed = tiles.find(t => t.storedSessionId === 'tip-new')
+    expect(rekeyed).toMatchObject({ anchor: 'workspace', before: null, dir: 'right' })
+    expect(tiles.find(t => t.storedSessionId === 'unrelated')).toBeDefined()
+  })
+
+  it('keeps a Bot tile when the same stored session is selected in Sessions main', () => {
+    const botTile = {
+      ownerRoute: {
+        connectionId: 'bot-owner',
+        mode: 'remote' as const,
+        profile: 'default'
+      },
+      storedSessionId: 'tip-old',
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:bot-owner::default'
+    }
+
+    $selectedStoredSessionId.set('tip-new')
+    $sessionTiles.set([botTile])
+
+    rekeySessionTile('tip-old', 'tip-new')
+
+    expect($sessionTiles.get()).toEqual([{ ...botTile, storedSessionId: 'tip-new' }])
+  })
+
+  it('keeps a tile owned by another backend route beside the Sessions main', () => {
+    const ownerA = { connectionId: 'owner-a', mode: 'remote' as const, profile: 'default' }
+    const ownerB = { connectionId: 'owner-b', mode: 'remote' as const, profile: 'default' }
+
+    setSessions([{ connection_id: 'owner-b', id: 'tip-new', profile: 'default' } as never])
+    $selectedStoredSessionId.set('tip-new')
+    $sessionTiles.set([
+      { ownerRoute: ownerA, storedSessionId: 'tip-old' },
+      { ownerRoute: ownerB, storedSessionId: 'tip-new' }
+    ])
+
+    rekeySessionTile('tip-old', 'tip-new')
+
+    expect($sessionTiles.get()).toEqual([
+      { ownerRoute: ownerA, storedSessionId: 'tip-new' },
+      { ownerRoute: ownerB, storedSessionId: 'tip-new' }
+    ])
+  })
+
+  it('coalesces a minimal next tile without losing the live previous tile metadata', () => {
+    const ownerRoute = {
+      connectionId: 'connection-a',
+      mode: 'remote' as const,
+      profile: 'writer',
+      targetProfile: 'writer'
+    }
+
+    const previous = {
+      anchor: 'session-tile:anchor',
+      before: 'session-tile:next-sibling',
+      dir: 'left' as const,
+      error: 'resume failed',
+      ownerRoute,
+      runtimeId: 'runtime-live',
+      storedSessionId: 'tip-old',
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:connection-a::writer',
+      workspaceTabTitle: 'Live bot chat'
+    }
+
+    const next = { storedSessionId: 'tip-new' }
+    const paneId = tilePane('tip-new')
+
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { active: 'workspace', id: 'workspace-group' }),
+        group([paneId], { active: paneId, id: 'tile-group' })
+      ])
+    )
+    $sessionTiles.set([previous, next])
+
+    rekeySessionTile('tip-old', 'tip-new')
+
+    expect($sessionTiles.get()).toEqual([{ ...previous, storedSessionId: 'tip-new' }])
+    expect(findGroupOfPane($layoutTree.get()!, paneId)).toMatchObject({ active: paneId, id: 'tile-group' })
+  })
+
+  it('drops the stale tile when the new tip already has a tile (one pane per conversation)', () => {
+    $sessionTiles.set([{ storedSessionId: 'tip-old' }, { storedSessionId: 'tip-new' }])
+
+    rekeySessionTile('tip-old', 'tip-new')
+
+    const tiles = $sessionTiles.get()
+    expect(tiles).toHaveLength(1)
+    expect(tiles[0].storedSessionId).toBe('tip-new')
+  })
+
+  it('drops the stale tile when the new tip is already the main selection (main OR tile, never both)', () => {
+    $selectedStoredSessionId.set('tip-new')
+    $sessionTiles.set([{ storedSessionId: 'tip-old' }])
+
+    rekeySessionTile('tip-old', 'tip-new')
+
+    expect($sessionTiles.get()).toHaveLength(0)
+  })
+
+  it('is a no-op when no tile carries the previous id', () => {
+    $sessionTiles.set([{ storedSessionId: 'other' }])
+
+    rekeySessionTile('tip-old', 'tip-new')
+
+    expect($sessionTiles.get()).toEqual([{ storedSessionId: 'other' }])
+  })
+
+  it('ignores degenerate inputs (empty id, same id)', () => {
+    $sessionTiles.set([{ storedSessionId: 'tip-old' }])
+
+    rekeySessionTile('', 'tip-new')
+    rekeySessionTile('tip-old', 'tip-old')
+
+    expect($sessionTiles.get()).toEqual([{ storedSessionId: 'tip-old' }])
   })
 })

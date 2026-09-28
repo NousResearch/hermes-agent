@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Any
 from pathlib import Path
-import yaml
+import hermes_yaml as yaml
 
 from plugins.groupchat.config import (
     GroupchatSettings,
@@ -83,6 +83,16 @@ def put_settings(body: SettingsUpdate, profile: str | None = None):
         # Validation contains no credentials; expose the field/line diagnostic.
         detail = str(exc) if str(exc).startswith(('Invalid system pattern', 'Invalid multiline pattern', 'Invalid silence pattern', 'Invalid literal pattern', 'Too many ')) else "Invalid Groupchat settings: check provider, model and numeric limits"
         raise HTTPException(422, detail) from exc
+    # Existing configs may use JSON/flow-style YAML. Quote filter text explicitly:
+    # ruamel's round-trip emitter otherwise leaves regex question marks unquoted
+    # inside flow sequences, producing a config its own reader cannot parse.
+    from ruamel.yaml.scalarstring import SingleQuotedScalarString
+    for section, fields in (
+        ("relevance", ("system_patterns", "multiline_patterns", "literal_phrases")),
+        ("pingpong_guard", ("silence_patterns",)),
+    ):
+        for field in fields:
+            settings[section][field] = [SingleQuotedScalarString(value) for value in settings[section][field]]
     with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
         config = read_raw_config()
         plugins = dict(config.get("plugins") or {})

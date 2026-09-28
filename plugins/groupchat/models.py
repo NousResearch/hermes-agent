@@ -24,7 +24,7 @@ def credential(*names):
 
 
 def profile_codex_model():
-    import yaml
+    import hermes_yaml as yaml
     path = get_hermes_home() / "config.yaml"
     if not path.exists():
         return ""

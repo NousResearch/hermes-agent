@@ -9,9 +9,7 @@ import pytest
 import hermes_cli.web_server_chat as _web_server_chat
 
 
-pytestmark = pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
-)
+pytestmark = pytest.mark.platforms("posix")  # PTY bridge is POSIX-only
 
 
 class _OneFrameBridge:

@@ -97,7 +97,8 @@ def available_platforms():
     from gateway.config import Platform
     from gateway.platform_registry import platform_registry
     registered = {entry.name for entry in platform_registry.all_entries()}
-    return sorted(({platform.value for platform in Platform} | Platform._scan_bundled_plugin_platforms() | registered) - {"local"})
+    bundled, _aliases = Platform._scan_bundled_plugin_platforms()
+    return sorted(({platform.value for platform in Platform} | bundled | registered) - {"local"})
 
 
 def validate_settings(raw):

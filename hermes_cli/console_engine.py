@@ -660,8 +660,8 @@ def _guard_exports(db, session_ids: list[str]) -> None:
             db.assert_export_safe(session_id, max_messages=limit)
     except SessionExportTooLargeError as exc:
         raise ConsoleCommandError(
-            f"Session '{exc.session_id}' has more than {limit:,} active "
-            "messages; in-memory export is capped per session. "
+            f"Session '{exc.session_id}' has more than {limit:,} "
+            "exportable messages; in-memory export is capped per session. "
             "Use the Sessions page's streaming Export action, or set "
             "sessions.max_export_messages: 0 in config.yaml to disable "
             "the guard.") from exc
@@ -676,13 +676,15 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
             if not resolved_session_id:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
             _guard_exports(db, [resolved_session_id])
-            rows = [db.export_session(resolved_session_id)]
+            # Transfer projection: every row with its active/compacted flags, so an import of this
+            # JSONL restores a compacted session's whole history instead of only its live rows.
+            rows = [db.export_session(resolved_session_id, include_inactive=True)]
             if not rows[0]:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
         else:
             found = db.search_sessions(source=ns.source, limit=100000)
             _guard_exports(db, [session["id"] for session in found])
-            rows = db.export_all(source=ns.source)
+            rows = db.export_all(source=ns.source, include_inactive=True)
         text = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
         if text:
             text += "\n"
@@ -706,8 +708,15 @@ def _sessions_rename(_engine: HermesConsoleEngine, args: list[str]) -> None:
 
 @_captured
 def _sessions_optimize(_engine: HermesConsoleEngine, args: list[str]) -> None:
-    _expect_no_args(args, "sessions optimize")
+    # --force is parsed HERE: the refusal below points at it, and a hint the surface cannot
+    # accept would make this command refuse forever whenever a gateway is running.
+    ns = _parse("sessions optimize", args, (("--force",), dict(action="store_true")))
     with _session_db(read_only=False) as db:
+        from hermes_state_holders import held_store_refusal
+        refusal = None if ns.force else held_store_refusal(
+            db.db_path, command="optimize", force_hint="`sessions optimize --force`")
+        if refusal:
+            raise ConsoleCommandError(refusal)
         print(f"Optimized {db.vacuum()} FTS index(es).")
 
 
@@ -820,7 +829,7 @@ _BUILTIN_COMMANDS = (
      "Export sessions to JSONL.", _sessions_export, "Export session data?"),
     (("sessions", "rename"), "sessions rename <session> <title>", "Rename a session.",
      _sessions_rename, "Rename this session?"),
-    (("sessions", "optimize"), "sessions optimize", "Optimize the session store.",
+    (("sessions", "optimize"), "sessions optimize [--force]", "Optimize the session store.",
      _sessions_optimize, "Optimize the session database?"),
     (("sessions", "repair"), "sessions repair [--check-only] [--no-backup]",
      "Repair a malformed session database schema.", _sessions_repair,

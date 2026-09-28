@@ -311,7 +311,7 @@ class MattermostAdapter(BasePlatformAdapter):
         return await self._send_local_file(chat_id, file_path, caption, reply_to, file_name, metadata)
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
+                         reply_to: Optional[str] = None, metadata: _Metadata = None, **kwargs: Any) -> SendResult:
         return await self._send_local_file(chat_id, audio_path, caption, reply_to, metadata=metadata)
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,

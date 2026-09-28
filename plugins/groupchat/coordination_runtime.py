@@ -442,7 +442,7 @@ def transform_llm_output(session_id="", turn_id="", **kwargs):
 
 def enabled():
     from hermes_constants import get_hermes_home
-    import yaml
+    import hermes_yaml as yaml
     path = get_hermes_home() / "config.yaml"
     config = yaml.safe_load(path.read_text()) if path.exists() else {}
     group = (config or {}).get("groupchat") or {}

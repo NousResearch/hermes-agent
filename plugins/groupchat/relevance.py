@@ -603,7 +603,7 @@ class IntelligentReactionGate:
         cannot accidentally claim conversational names.
         """
         try:
-            import yaml
+            import hermes_yaml as yaml
             from hermes_cli.profiles import list_profiles
             from plugins.groupchat.config import matrix_require_mention
 
@@ -664,7 +664,7 @@ class IntelligentReactionGate:
         if not config_path.exists():
             return ""
         try:
-            import yaml  # local import: optional dependency for this helper only
+            import hermes_yaml as yaml
 
             data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
             model_cfg = data.get("model", {}) or {}

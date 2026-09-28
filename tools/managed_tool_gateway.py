@@ -42,8 +42,10 @@ def _read_nous_provider_state() -> Optional[dict]:
     with ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
     attached to a request.
 
-    Reads the profile's own ``auth.json`` through ``get_provider_auth_state`` like every other
-    credential reader."""
+    Resolves through the same profile-then-global-root fallback every other credential reader
+    uses: a profile created with ``share_auth`` has no ``auth.json`` of its own and signs in with
+    the root identity. Reading only ``HERMES_HOME/auth.json`` made that profile look signed out to
+    the connector gate alone, so ``manage_connections`` vanished from its tool list."""
     try:
         from hermes_cli.auth import get_provider_auth_state
 
@@ -77,15 +79,14 @@ def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
 
 def _read_user_token_override() -> Optional[str]:
     """Read the TOOL_GATEWAY_USER_TOKEN override through the secret scope. Scope verdict is authoritative
-    when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only when unscoped."""
-    try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
+    when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only
+    when unscoped. Any non-UnscopedSecretError failure propagates -- a failed scoped read must never
+    silently borrow the ambient env."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
 
-        try:
-            explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")
-        except UnscopedSecretError:
-            explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
-    except Exception:
+    try:
+        explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")
+    except UnscopedSecretError:
         explicit = os.getenv("TOOL_GATEWAY_USER_TOKEN")
     return _clean(explicit)
 

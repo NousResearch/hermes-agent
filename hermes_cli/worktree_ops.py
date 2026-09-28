@@ -79,6 +79,20 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
+def release_lsp_clients(wt_path: str) -> None:
+    """Shut down this process's language servers for ``wt_path`` before ``git worktree remove``.
+
+    A gateway outlives the sessions it runs, so without this the ``(server, root)`` client for the
+    removed tree stays registered (tsserver heaps of several GiB pointed at a deleted worktree).
+    Best-effort: LSP trouble must never block worktree removal.
+    """
+    try:
+        from agent.lsp import release_workspace
+        release_workspace(wt_path)
+    except Exception as e:
+        logger.debug("LSP release for worktree %s failed: %s", wt_path, e)
+
+
 def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str) -> None:
     """Sweep the leftovers of a failed/timed-out ``git worktree add`` (fail-soft).
 
@@ -558,7 +572,7 @@ def _worktree_merge_cache_path() -> Path:
 def _load_worktree_merge_cache() -> Dict[str, bool]:
     """Load the ``git cherry`` verdict cache. Missing/corrupt cache = empty."""
     try:
-        entries = json.loads(_worktree_merge_cache_path().read_text(encoding="utf-8")).get("verdicts")
+        entries = json.loads(_worktree_merge_cache_path().read_text(encoding="utf-8-sig")).get("verdicts")
     except Exception:
         return {}
     # A hand-edited or partially written cache must never inject a non-bool verdict.

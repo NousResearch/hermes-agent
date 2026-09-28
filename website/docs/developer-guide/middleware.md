@@ -131,19 +131,22 @@ For isolated local testing, use one `HERMES_HOME` for plugin enablement and the
 agent run:
 
 ```bash
-export HERMES_HOME=/tmp/hermes-middleware-test
+export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-middleware-test
 mkdir -p "$HERMES_HOME"
 hermes plugins enable <plugin-name>
 hermes chat --query 'Reply exactly ok'
 ```
 
-For source checkouts, prefer the source command so the runtime sees plugins and
-middleware from the working tree:
+For source checkouts, use the [PM developer workflow](../reference/package-management.md#developer-workflow)
+and a separate development home so the runtime sees plugins and middleware from
+the working tree:
 
 ```bash
-uv sync
-uv run hermes plugins enable <plugin-name>
-uv run hermes chat --query 'Reply exactly ok'
+export HERMES_HOME="$HOME/hermes-middleware-test"
+export HERMES_RUNTIME_DIR="$HERMES_HOME/tools"
+source ./activate
+python hermes plugins enable <plugin-name>
+python hermes chat --query 'Reply exactly ok'
 ```
 
 ## Generic Plugin Examples
@@ -180,6 +183,9 @@ The effective request is passed to `pre_api_request`, provider execution, and
 This plugin constrains `terminal` calls to a known working directory:
 
 ```python
+from pathlib import Path
+
+
 def register(ctx):
     ctx.register_middleware("tool_request", normalize_terminal_workdir)
 
@@ -188,7 +194,7 @@ def normalize_terminal_workdir(**kwargs):
     if kwargs.get("tool_name") != "terminal":
         return None
     args = dict(kwargs["args"])
-    args.setdefault("workdir", "/tmp/hermes-middleware-demo")
+    args.setdefault("workdir", str(Path.home() / ".hermes" / "cache" / "scratch" / "hermes-middleware-demo"))
     return {
         "args": args,
         "source": "middleware-demo",

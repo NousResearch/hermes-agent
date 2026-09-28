@@ -26,7 +26,7 @@ def setup_route(raft=False):
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
     runner.adapters = {adapter.platform: adapter}
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     runner._kanban_dispatcher_lock_handle = object()
     source = SessionSource(platform=adapter.platform, chat_id="42", user_id="42", chat_type="dm")
     return runner, adapter, source, build_session_key(source)

@@ -59,6 +59,8 @@ def test_set_hidden_unknown_id_still_errors(db):
     assert envelope.get("error"), envelope
 
 
+
+
 def test_session_list_include_hidden(db):
     _seed(db, "plain-chat")
     _seed(db, "bot-chat")

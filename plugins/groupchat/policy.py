@@ -70,7 +70,7 @@ class GroupchatAddon:
         self._load()
 
     def _load(self):
-        import yaml
+        import hermes_yaml as yaml
         config_path = get_hermes_home() / "config.yaml"
         config = {}
         if config_path.exists():

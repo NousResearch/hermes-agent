@@ -83,8 +83,13 @@ function loadedSessionRows(): SessionInfo[] {
  * `rowsByPinId`: when two profiles share the id, the write must target the
  * row the pull adopted — the active gateway's — or an unpin PATCHes the other
  * profile and the next page re-adopts the pin.
+ *
+ * Exported so any other surface that needs to resolve a row by its pin id (or
+ * its live id — `sessionMatchesStoredId` accepts either) across all three
+ * pinnable slices reuses this instead of re-deriving its own `$sessions`-only
+ * lookup, which would miss cron/messaging rows entirely.
  */
-function loadedRowFor(pinId: string): SessionInfo | undefined {
+export function loadedRowFor(pinId: string): SessionInfo | undefined {
   const rows = loadedSessionRows().filter(row => sessionMatchesStoredId(row, pinId))
   const gateway = normalizeProfileKey($activeGatewayProfile.get())
 

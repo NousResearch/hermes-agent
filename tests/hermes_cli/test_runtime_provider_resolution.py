@@ -722,6 +722,25 @@ def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, 
     assert resolved["api_key"] == expected_key
 
 
+@pytest.mark.parametrize("openrouter_base_url, inherits", [
+    ("https://gw.example.com:443/v1", True),
+    ("http://gw.example.com/v1", False),
+    ("https://gw.example.com:8443/v1", False),
+])
+def test_openai_key_follows_only_its_bound_origin(monkeypatch, openrouter_base_url, inherits):
+    """An OPENAI_BASE_URL-bound OPENAI_API_KEY reaches an OpenRouter mirror only on the identical origin:
+    the same hostname over http://, or on another port, is a different endpoint."""
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gw.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proxy-bound-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", openrouter_base_url)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["base_url"] == openrouter_base_url
+    assert (resolved["api_key"] == "sk-proxy-bound-key") is inherits
+
+
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
     """Persisted custom endpoints in config.yaml must still resolve when
     OPENAI_BASE_URL is absent from the current environment.

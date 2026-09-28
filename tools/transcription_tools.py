@@ -486,8 +486,55 @@ def _dispatch_stt_provider(
     # User-declared command-type provider (``stt.providers.<name>: type: command``). See #17843.
     command_provider_config = _resolve_command_stt_provider_config(provider, stt_config)
     if command_provider_config is not None:
-        return _transcribe_command_stt(file_path, provider, command_provider_config, stt_config,
-                                       model_override=model, language_override=language, prompt=prompt)
+        command_result = _transcribe_command_stt(
+            file_path, provider, command_provider_config, stt_config,
+            model_override=model, language_override=language, prompt=prompt,
+        )
+        if command_result.get("success"):
+            return command_result
+
+        fallback_provider = str(
+            command_provider_config.get("fallback_provider")
+            or command_provider_config.get("fallback")
+            or ""
+        ).strip().lower().replace("_", "-")
+        if fallback_provider in {"local", "faster-whisper"}:
+            command_error = command_result.get("error", "unknown error")
+            if _HAS_FASTER_WHISPER or _try_lazy_install_stt():
+                local_config = stt_config.get("local")
+                local_cfg = local_config if isinstance(local_config, dict) else {}
+                model_name = _normalize_local_model(local_cfg.get("model") or DEFAULT_LOCAL_MODEL)
+                logger.warning(
+                    "STT command provider '%s' failed; trying configured local fallback",
+                    provider,
+                )
+                # A command-provider model override belongs to that provider. Local fallback
+                # resolves its own model from stt.local and inherits only explicit shared hints.
+                fallback_kwargs = {}
+                if language:
+                    fallback_kwargs["language"] = language
+                if prompt:
+                    fallback_kwargs["prompt"] = prompt
+                fallback_result = _transcribe_local(file_path, model_name, **fallback_kwargs)
+                fallback_result["fallback_from"] = provider
+                fallback_result["fallback_reason"] = command_error
+                if fallback_result.get("success"):
+                    fallback_result["warning"] = (
+                        f"STT provider '{provider}' failed; fell back to local faster-whisper."
+                    )
+                else:
+                    fallback_error = fallback_result.get("error", "unknown error")
+                    fallback_result["error"] = (
+                        f"STT provider '{provider}' failed ({command_error}); "
+                        f"fallback provider 'local' also failed ({fallback_error})"
+                    )
+                return fallback_result
+            logger.warning(
+                "STT command provider '%s' failed and local fallback is configured, "
+                "but faster-whisper is unavailable",
+                provider,
+            )
+        return command_result
     # Plugin backend: reads ``stt.<provider>`` like built-ins; the ``model`` argument overrides it.
     plugin_result = _dispatch_to_plugin_provider(
         file_path, provider, stt_config, model=model or _get_stt_section(stt_config, provider).get("model"),

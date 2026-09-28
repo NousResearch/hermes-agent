@@ -639,16 +639,18 @@ For `format: json` / `srt` / `vtt`, Hermes returns the raw file content as the `
 
 #### STT command-provider optional keys
 
-| Key             | Default | Meaning                                                                                              |
-|-----------------|---------|------------------------------------------------------------------------------------------------------|
-| `timeout`       | `300`   | Seconds; the process tree is killed on expiry (Unix `start_new_session`, Windows `taskkill /T`).     |
-| `format`        | `txt`   | One of `txt` / `json` / `srt` / `vtt`. Sets the extension of `{output_path}`.                       |
-| `language`      | `en`    | Forwarded to `{language}`. Defaults to `stt.language` then `en`.                                     |
-| `model`         | empty   | Forwarded to `{model}`. The `model=` argument to `transcribe_audio()` overrides this.                |
+| Key                              | Default | Meaning                                                                                              |
+|----------------------------------|---------|------------------------------------------------------------------------------------------------------|
+| `timeout`                        | `300`   | Seconds; the process tree is killed on expiry (Unix `start_new_session`, Windows `taskkill /T`).     |
+| `format`                         | `txt`   | One of `txt` / `json` / `srt` / `vtt`. Sets the extension of `{output_path}`.                       |
+| `language`                       | `en`    | Forwarded to `{language}`. Defaults to `stt.language` then `en`.                                     |
+| `model`                          | empty   | Forwarded to `{model}`. The `model=` argument to `transcribe_audio()` overrides this.                |
+| `fallback_provider` / `fallback` | empty   | Set to `local` or `faster-whisper` to retry a failed command with the configured local model.        |
 
 #### STT command-provider behavior notes
 
 - **Built-ins always win.** Declaring `stt.providers.openai: type: command` does NOT override the real OpenAI Whisper handler. The built-in name is short-circuited before the command-provider resolver runs.
+- **Command-provider fallback.** Set `fallback_provider: local` (or `fallback: local`) to retry a failed command with faster-whisper. The fallback uses `stt.local.model` (or the local default), not the command provider's model override. Successful fallback is noted alongside the transcript echo; the command's raw failure text is not added to the agent's transcript.
 - **Process-tree cleanup.** A command running over `timeout` has its entire process tree killed, not just the shell wrapper. Long-running ASR pipelines that fork model-loading subprocesses are reaped reliably.
 - **Shell-quoting is automatic.** Placeholders inside `'…'` get single-quote-safe escaping; inside `"…"` get `$`/`` ` ``/`"` escaping; outside quotes get `shlex.quote`. Don't pre-quote placeholder values.
 

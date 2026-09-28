@@ -2221,17 +2221,23 @@ def _bare_unit_pinned_home() -> Path | None:
     one naming basis that holds still across the sudo mid-command switch (see ``_profile_suffix``) and it
     covers every elevated identity — ``sudo -i`` and cron included, where SUDO_USER is absent.
 
-    Linux- and root-gated: a systemd unit is not an identity authority for launchd labels, Windows
-    scheduled tasks, or s6 slots, which share ``_profile_suffix()``, and only an elevated process ever
-    operates the system unit — an unprivileged user-scope command must keep naming its own units, or a
-    bare system unit pinning ``profiles/<name>`` would alias that profile onto the user's default unit.
-    ``is_linux()`` is a plain ``sys.platform`` test; ``supports_systemd_services()`` would be wrong here,
-    since it can shell out to ``systemctl is-system-running`` on WSL/containers and this runs on every
-    name resolution.
+    Root reads the system unit; an unprivileged process reads only its own user unit, never the system
+    one — a bare system unit pinning ``profiles/<name>`` would otherwise alias that profile onto the
+    user's default unit. The user unit matters for a custom root: the ``hermes-gateway-<hash>`` naming
+    (#105525) left a bare user unit installed before it pinning that same root, so lifecycle commands
+    saw "no unit", ``gateway restart`` fell through to a foreground run, and the still-enabled legacy
+    unit's ``Restart=always`` looped on the instance lock (#109476). A unit pinning THIS home is this
+    home's service, whatever it is named.
+
+    Linux-gated: a systemd unit is not an identity authority for launchd labels, Windows scheduled tasks,
+    or s6 slots, which share ``_profile_suffix()``. ``is_linux()`` is a plain ``sys.platform`` test;
+    ``supports_systemd_services()`` would be wrong here, since it can shell out to ``systemctl
+    is-system-running`` on WSL/containers and this runs on every name resolution.
     """
-    if not is_linux() or os.geteuid() != 0:  # windows-footgun: ok — behind is_linux()
+    if not is_linux():
         return None
-    pinned = _hermes_home_pinned_by_unit(_SYSTEM_UNIT_DIR / f"{_SERVICE_BASE}.service")
+    unit_dir = _SYSTEM_UNIT_DIR if os.geteuid() == 0 else user_systemd_unit_dir()  # windows-footgun: ok — behind is_linux()
+    pinned = _hermes_home_pinned_by_unit(unit_dir / f"{_SERVICE_BASE}.service")
     if not pinned:
         return None
     try:

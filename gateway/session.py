@@ -16,6 +16,7 @@ from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
 from gateway.session_identity import transport_profile_of
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
+from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
@@ -477,39 +478,6 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
     return cleaned or None
 
 
-PROMPT_PIN_VERSION = 1
-
-
-def sanitize_prompt_pin(pin: Any) -> Optional[Dict[str, Any]]:
-    """Validated durable snapshot of the exact ephemeral inputs reused by internal turns.
-
-    ``redact_pii`` is the ``privacy.redact_pii`` the context bytes were rendered under; a pin
-    without it cannot prove which privacy policy produced them and is refused."""
-    if not isinstance(pin, dict) or pin.get("version") != PROMPT_PIN_VERSION:
-        return None
-    context_key = pin.get("context_key")
-    context_prompt = pin.get("context_prompt")
-    redact_pii = pin.get("redact_pii")
-    channel_prompt = pin.get("channel_prompt")
-    parent_chat_id = pin.get("parent_chat_id")
-    if not isinstance(context_key, str) or not context_key or not isinstance(context_prompt, str):
-        return None
-    if not isinstance(redact_pii, bool):
-        return None
-    if channel_prompt is not None and not isinstance(channel_prompt, str):
-        return None
-    if parent_chat_id is not None and not isinstance(parent_chat_id, str):
-        return None
-    return {
-        "version": PROMPT_PIN_VERSION,
-        "context_key": context_key,
-        "context_prompt": context_prompt,
-        "redact_pii": redact_pii,
-        "channel_prompt": channel_prompt,
-        "parent_chat_id": parent_chat_id,
-    }
-
-
 @dataclass
 class SessionEntry:
     """Routing-index entry: maps a session key to its current session ID and metadata."""
@@ -812,6 +780,7 @@ class AsyncSessionStore:
 
 class SessionStore(
     SessionPersistenceMixin, SessionRecoveryMixin, SessionLifecycleMixin, SessionTranscriptMixin,
+    SessionPromptPinMixin,
 ):
     """Session routing index + transcripts: SQLite (SessionDB), legacy JSONL fallback."""
 
@@ -1150,42 +1119,6 @@ class SessionStore(
         with self._lock:
             entry = self._entry_locked(session_key)
             return dict(entry.model_override) if entry and entry.model_override else None
-
-    def set_prompt_pin(
-        self, session_key: str, pin: Dict[str, Any], *, expected_session_id: Optional[str] = None,
-    ) -> bool:
-        """Persist effective prompt inputs without letting a stale turn cross a boundary.
-
-        The candidate is durable before the in-memory entry is published. The expected session id
-        is the turn's launch identity: a concurrent reset or resume makes this a no-op instead of
-        writing the old conversation's system bytes onto the new one.
-        """
-        from dataclasses import replace
-
-        cleaned = sanitize_prompt_pin(pin)
-        if cleaned is None:
-            return False
-        with self._lock:
-            entry = self._entry_locked(session_key)
-            if entry is None or (expected_session_id is not None and entry.session_id != expected_session_id):
-                return False
-            if entry.prompt_pin != cleaned:
-                self._save_entry(
-                    session_key, entry_data=replace(entry, prompt_pin=cleaned).to_dict(), lock_held=True)
-                entry.prompt_pin = cleaned
-            return True
-
-    def get_prompt_pin(
-        self, session_key: str, *, expected_session_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Return the prompt pin only while the route still owns the caller's session."""
-        with self._lock:
-            entry = self._entry_locked(session_key)
-            if entry is None:
-                return None
-            if expected_session_id is not None and entry.session_id != expected_session_id:
-                return None
-            return dict(entry.prompt_pin) if entry.prompt_pin else None
 
     def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""

@@ -14,9 +14,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
-from gateway.session import (
-    PROMPT_PIN_VERSION, SessionSource, build_session_context_prompt, sanitize_prompt_pin,
-)
+from gateway.session import SessionSource, build_session_context_prompt
+from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES

@@ -120,3 +120,29 @@ class TestFileOpsCacheIsValidatedByIdentity:
         ops = file_tools._get_file_ops("default")
         assert ops is not stale_ops
         assert ops.env is rebuilt
+
+    def test_replacement_env_does_not_rescue_the_dead_envs_cwd(self):
+        """The stale handle's cwd must not be recorded for a session that has none.
+
+        This branch is only reachable once the fast path checks identity: before
+        that, a re-pointed key returned the cached handle and never got here.
+        ``cached.cwd`` is the DEAD env's mount, and the session record is the
+        first anchor every later path and command resolution reads
+        (``get_session_cwd`` precedes the config cwd in ``resolve_command_cwd``
+        and in ``file_tools_paths._authoritative_workspace_root``), so recording
+        it would aim the rest of the session at a torn-down container.
+        """
+        dead = _FakeEnv("dead")
+        dead.cwd = "/workspace/from-dead"
+        _register("default", dead)
+        file_tools._get_file_ops("default")
+        assert terminal_tool.get_session_cwd("default") is None, "precondition: no record yet"
+
+        _register("default", _FakeEnv("live"))
+        ops = file_tools._get_file_ops("default")
+
+        assert ops.env.name == "live"
+        assert terminal_tool.get_session_cwd("default") is None, (
+            "the torn-down env's cwd was rescued into the session record: every later "
+            "relative path and command would resolve against a dead container's mount"
+        )

@@ -11,6 +11,7 @@ This module imports only the stdlib at load time so tool modules can import it o
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import threading
@@ -275,9 +276,10 @@ _STATUS_ERROR_CLASSES = {
 
 
 def _terminal_failure(data: dict[str, Any]) -> str | None:
-    if not data.get("error"):
-        return None
-    return "timeout" if data.get("exit_code") == 124 else "tool_error"
+    # 124 is the tool's own foreground-deadline code; it carries partial output and no ``error``.
+    if data.get("exit_code") == 124:
+        return "timeout"
+    return "tool_error" if data.get("error") else None
 
 
 def _code_failure(data: dict[str, Any]) -> str | None:
@@ -304,7 +306,7 @@ def execution_backend_fields(*, kind: Any, backend: Any, result: Any, error_clas
     kind_value = _norm(kind)
     if kind_value not in EXECUTION_BACKENDS_BY_KIND:
         return None
-    backend_value = _norm(backend)
+    backend_value = _norm(backend() if callable(backend) else backend)
     failure = error_class if error_class is not None else _FAILURE_CLASSIFIERS[kind_value](_parsed(result))
     return {
         "backend": backend_value if backend_value in EXECUTION_BACKENDS_BY_KIND[kind_value] else "other",
@@ -314,8 +316,26 @@ def execution_backend_fields(*, kind: Any, backend: Any, result: Any, error_clas
     }
 
 
+# Set while Hermes itself drives a backend (TUI/Desktop path completion listings): that is not the
+# user's workload, so it must not show up as backend usage.
+_UNMETERED = contextvars.ContextVar("shared_metrics_unmetered_backend", default=False)
+
+
+@contextlib.contextmanager
+def unmetered_backend_calls() -> Iterator[None]:
+    """Run Hermes-owned terminal/browser/code calls without counting them as execution-backend use."""
+    token = _UNMETERED.set(True)
+    try:
+        yield
+    finally:
+        _UNMETERED.reset(token)
+
+
 def record_execution_backend(kind: str, backend: Any, result: Any = None, *, error_class: str | None = None) -> Any:
-    """Count one tool call that reached its backend; returns ``result`` unchanged."""
+    """Count one tool call that reached its backend; returns ``result`` unchanged. ``backend`` may be a
+    callable so resolving it costs nothing while collection is off."""
+    if _UNMETERED.get():
+        return result
     _emit(
         "EXECUTION_BACKEND_MARK", execution_backend_fields, kind=kind, backend=backend, result=result,
         error_class=error_class,
@@ -353,8 +373,10 @@ def record_browser_call(call: Callable[[Callable[[Callable[[], Any]], Any]], Any
 
 
 def _safe_record_browser(backend: Callable[[], str], result: Any, error_class: str | None) -> None:
-    try:
-        name = backend()
-    except Exception:
-        name = "other"
+    def name() -> str:
+        try:
+            return backend()
+        except Exception:
+            return "other"
+
     record_execution_backend("browser", name, result, error_class=error_class)

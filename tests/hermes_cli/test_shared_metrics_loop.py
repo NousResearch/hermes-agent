@@ -126,14 +126,14 @@ def test_async_curator_pass_records_in_the_profile_that_started_it(home, tmp_pat
     assert _rows(owner, "hermes.curator.run.count") == [({**zero, "outcome": "success", "trigger": "manual"}, 1)]
 
 
-def test_scheduled_curator_pass_held_elsewhere_counts_as_skipped(home, monkeypatch):
+def test_scheduled_ticks_that_find_the_pass_held_elsewhere_record_nothing(home, monkeypatch):
     from agent import curator
 
     monkeypatch.setattr(curator, "should_run_now", lambda: True)
     monkeypatch.setattr(curator, "_claim_run", lambda: False)
-    assert curator.maybe_run_curator() is None
-    [(dims, value)] = _rows(home, "hermes.curator.run.count")
-    assert (dims["trigger"], dims["outcome"], value) == ("scheduled", "skipped", 1)
+    for _ in range(3):  # gateway housekeeping ticks while another process holds the claim
+        assert curator.maybe_run_curator() is None
+    assert _rows(home, "hermes.curator.run.count") == []
 
 
 def test_delegation_fanout_split_into_units_is_one_row_in_the_parent_profile(home, tmp_path):
@@ -196,6 +196,52 @@ def test_terminal_calls_count_against_the_configured_backend(home):
     assert _rows(home, "hermes.execution_backend.count") == [
         ({"backend": "local", "error_class": "none", "kind": "terminal", "outcome": "success"}, 2),
     ]
+
+
+def test_foreground_terminal_timeout_is_a_failed_timeout(home):
+    from tools.terminal_tool import terminal_tool
+
+    assert json.loads(terminal_tool("sleep 5", timeout=1))["exit_code"] == 124
+
+    assert _rows(home, "hermes.execution_backend.count") == [
+        ({"backend": "local", "error_class": "timeout", "kind": "terminal", "outcome": "failed"}, 1),
+    ]
+
+
+def test_path_completion_listing_is_not_user_backend_work(home):
+    import tui_gateway.methods_complete as mc
+    from tools.terminal_tool import terminal_tool
+
+    for _ in range(3):  # three keystrokes of `@file:` on a non-local backend each list the directory
+        assert mc._backend_dir_entries(str(home), "sess-1") is not None
+    terminal_tool("echo user-work")
+
+    assert _rows(home, "hermes.execution_backend.count") == [
+        ({"backend": "local", "error_class": "none", "kind": "terminal", "outcome": "success"}, 1),
+    ]
+
+
+def test_every_shipped_terminal_backend_has_its_own_bucket():
+    from hermes_cli.observability import shared_metrics_contract as contract
+    from tools.terminal_tool_config import _BUILTIN_BACKENDS
+
+    schema = json.loads(
+        (Path(contract.__file__).parent / "schemas" / "hermes.shared_metrics.v3.schema.json").read_text()
+    )
+    execution = schema["$defs"]["execution_backend_counter"]["properties"]["dimensions"]
+    for backend in _BUILTIN_BACKENDS:
+        fields = loop.execution_backend_fields(kind="terminal", backend=backend, result="{}", error_class=None)
+        assert fields["backend"] == backend
+        assert backend in execution["properties"]["backend"]["enum"]
+
+
+def test_browser_backend_is_not_resolved_while_collection_is_off(home, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config_readonly", lambda: {"telemetry": {"shared_metrics": {"enabled": False}}},
+    )
+    resolved = []
+    loop.record_browser_call(lambda legacy: legacy(lambda: '{"success": true}'), lambda: resolved.append(1) or "local")
+    assert resolved == []
 
 
 def test_browser_calls_name_the_backend_that_served_them(home):

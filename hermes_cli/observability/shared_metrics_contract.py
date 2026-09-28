@@ -199,7 +199,10 @@ CONTEXT_FILL_BUCKETS = frozenset({"lt_50", "50_to_75", "75_to_90", "90_to_100", 
 EXTENSION_KINDS = frozenset({"mcp_server", "plugin", "skill"})
 EXTENSION_SOURCES = frozenset({"bundled", "catalog", "hub", "local", "other", "url"})
 EXTENSION_OUTCOMES = frozenset({"failed", "success"})
-TERMINAL_BACKENDS = frozenset({"daytona", "docker", "local", "modal", "other", "singularity", "ssh"})
+# Every built-in backend in tools/terminal_tool_config.py::_BUILTIN_BACKENDS.
+TERMINAL_BACKENDS = frozenset({
+    "daytona", "docker", "local", "managed_modal", "modal", "other", "singularity", "ssh", "vercel_sandbox",
+})
 AUX_TASKS = _CatalogValues("aux_task_names", extra=frozenset({"none", "other"}))
 SLASH_COMMANDS = _CatalogValues("slash_command_names", extra=frozenset({"plugin", "skill", "unknown"}))
 SKILL_NAMES = _CatalogValues("bundled_skill_names", extra=frozenset({"custom"}))

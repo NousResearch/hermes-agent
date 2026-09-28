@@ -1201,9 +1201,7 @@ def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: O
         # Idle gating: only enforce when the caller provided a measurement.
         if not should_run_now() or (idle_for_seconds is not None and idle_for_seconds < get_min_idle_hours() * 3600.0):
             return None
-        if not _claim_run():
-            from hermes_cli.observability.shared_metrics_loop import record_curator_run
-            record_curator_run(trigger="scheduled", outcome="skipped")  # another process holds this home's pass
+        if not _claim_run():  # the holder's own pass is the one counted; every tick would re-count it
             return None
         try:
             return run_curator_review(on_summary=on_summary, trigger="scheduled")

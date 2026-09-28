@@ -1006,10 +1006,12 @@
                 "daytona",
                 "docker",
                 "local",
+                "managed_modal",
                 "modal",
                 "other",
                 "singularity",
-                "ssh"
+                "ssh",
+                "vercel_sandbox"
               ]
             },
             "behind_bucket": {
@@ -1778,11 +1780,13 @@
                 "firecrawl",
                 "lightpanda",
                 "local",
+                "managed_modal",
                 "modal",
                 "other",
                 "remote",
                 "singularity",
-                "ssh"
+                "ssh",
+                "vercel_sandbox"
               ]
             },
             "error_class": {

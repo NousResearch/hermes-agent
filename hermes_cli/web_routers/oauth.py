@@ -12,6 +12,7 @@ import secrets
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -328,6 +329,11 @@ def _status_card(
     return card
 
 
+def _epoch_ms_to_iso(value: Any) -> Optional[str]:
+    """Epoch ms (Qwen CLI ``expiry_date``) -> the aware ISO string the other cards send."""
+    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat() if value else None
+
+
 # Hand-written status cards per provider id: (hauth getter name, raw -> card).
 # Providers absent here fall through to the slug-driven ``get_auth_status``.
 # nous: refresh-free local snapshot so listing providers never performs an OAuth
@@ -343,8 +349,8 @@ _PROVIDER_STATUS: Dict[str, tuple[str, Callable[[dict], dict]]] = {
         _truncate_token(r.get("api_key")), None, False, r.get("last_refresh"),
     )),
     "qwen-oauth": ("get_qwen_auth_status", lambda r: _status_card(
-        r, "qwen_cli", r.get("auth_store_path") or "Qwen CLI",
-        _truncate_token(r.get("access_token")), r.get("expires_at"), bool(r.get("has_refresh_token")),
+        r, "qwen_cli", r.get("auth_file") or "Qwen CLI",
+        _truncate_token(r.get("api_key")), _epoch_ms_to_iso(r.get("expires_at_ms")), bool(r.get("has_refresh_token")),
     )),
     "minimax-oauth": ("get_minimax_oauth_auth_status", lambda r: _status_card(
         r, "minimax_oauth", f"MiniMax ({r.get('region', 'global')})", None, r.get("expires_at"), True,

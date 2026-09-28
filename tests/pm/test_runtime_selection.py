@@ -64,6 +64,43 @@ def test_boot_uses_one_selected_dependency_tree_in_fresh_process(tmp_path, monke
     assert process.stdout.splitlines() == ["new", "True"]
 
 
+def test_boot_puts_the_checkout_launcher_ahead_of_the_venvs_own_console_script(tmp_path, monkeypatch):
+    """#124627: the venv's `hermes` console script is an editable install bound to the
+    build-time source snapshot. A child resolving `hermes` off PATH must reach the
+    checkout's own launcher, never that stale copy."""
+    import os
+    import subprocess
+    import sys
+    from pm import environments as runtime_paths
+
+    root = tmp_path / "repo"
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state = runtime_paths.install_state_dir(root)
+    selected = state / "environments" / "new" / "venv"
+    def site_of(venv):
+        return venv / ("Lib/site-packages" if os.name == "nt" else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+    site_of(selected).mkdir(parents=True)
+    (selected / "pyvenv.cfg").write_text("home = test")
+    venv_bin = runtime_paths.venv_bin_dir(selected)
+    venv_bin.mkdir(parents=True)
+    checkout_bin = root / ".hermes" / "bin"
+    checkout_bin.mkdir(parents=True)
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "facts.json").write_text(json.dumps({"schema": 1, "packages": {
+        "venv": {"environment": str(selected)}
+    }}))
+    code = (
+        "import os, sys; from pathlib import Path; from pm.environments import activate_dependencies; "
+        "activate_dependencies(Path(sys.argv[1])); print(os.environ.get('PATH', ''))"
+    )
+    process = subprocess.run([sys.executable, "-c", code, str(root)],
+                             env=dict(os.environ), text=True, capture_output=True, timeout=30)
+    assert process.returncode == 0, process.stderr
+    entries = process.stdout.strip().split(os.pathsep)
+    assert entries.index(str(checkout_bin)) < entries.index(str(venv_bin))
+
+
 @pytest.mark.parametrize("command,allowed", [(["pm", "install", "--help"], True), (["pm", "doctor"], True),
     (["-p", "default", "pm", "repair"], True), (["chat"], False), (["chat", "pm", "install"], False)])
 def test_broken_environment_keeps_explicit_repair_entry_reachable(tmp_path, monkeypatch, command, allowed):

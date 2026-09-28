@@ -718,6 +718,29 @@ def _restore_pinned_tools(agent, session_row) -> list:
     return built_for_this_surface
 
 
+def _refresh_bot_chat_tools(agent) -> None:
+    """Rebuild ``agent.tools`` for a Bot Chat capability refresh through the builder that
+    created the session, so the refreshed set is what a fresh desktop/TUI session gets
+    (#124211). A canonical Bot Chat never forks, so its tools[] is otherwise a fossil of
+    session creation: ``hermes tools enable/disable`` writes ``platform_toolsets`` and the
+    automatic between-turns refresh reuses the build-time selection. Only the desktop/TUI
+    gateway keeps agents alive across turns; every other surface builds a fresh agent whose
+    tools[] already reflects config. No prefix preservation: a disabled toolset must drop,
+    and the prompt rebuild this rides on already breaks the cache."""
+    platform = getattr(agent, "platform", None)
+    if platform not in ("desktop", "tui"):
+        return
+    try:
+        from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        from tui_gateway.server import _load_disabled_toolsets, _load_enabled_toolsets
+        refresh_agent_mcp_tools(
+            agent, enabled_override=_load_enabled_toolsets(platform),
+            disabled_override=_load_disabled_toolsets(), quiet_mode=True, content_aware=True)
+    except Exception as exc:
+        logger.warning("Bot Chat capability refresh kept the previous tools for session %s: %s",
+                       agent.session_id, exc)
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -757,14 +780,18 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
                 pass
+            _refresh_bot_chat_tools(agent)
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
             stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is
-            # once per capability change). on_session_start not re-fired: continuation.
+            # once per capability change). Tools re-pin too: without it the next
+            # turn's pin-restore would resurrect the pre-refresh toolset (#124211).
+            # on_session_start not re-fired: continuation.
             _persist_system_prompt(
                 agent,
                 "Session DB update_system_prompt failed after Bot Chat capability refresh "
                 "(session=%s): %s. The refresh will re-fire next turn.",
+                persist_tools=True,
             )
             return
         # Continuing session — reuse the exact system prompt from the

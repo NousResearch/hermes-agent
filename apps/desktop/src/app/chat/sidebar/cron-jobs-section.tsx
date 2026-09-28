@@ -78,8 +78,10 @@ interface SidebarCronJobsSectionProps {
   jobs: CronJob[]
   label: string
   max?: number
-  // Open a run session's chat (1 click to output).
-  onOpenRun: (sessionId: string) => void
+  // Open a run session's chat (1 click to output). The run ROW rides along so
+  // the open can pin its owning (connection, profile) — the same owner-aware
+  // door every other session-list row uses.
+  onOpenRun: (sessionId: string, session?: SessionInfo) => void
   // Open the full Cron page focused on this job (manage / full history).
   onManageJob: (jobId: string) => void
   // Fire the job now.
@@ -241,7 +243,7 @@ function CronJobSidebarRow({
   job: CronJob
   nowMs: number
   onManage: () => void
-  onOpenRun: (sessionId: string) => void
+  onOpenRun: (sessionId: string, session?: SessionInfo) => void
   onTogglePeek: () => void
   onTrigger: () => void
 }) {
@@ -389,7 +391,13 @@ function CronJobSidebarRow({
   )
 }
 
-function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (sessionId: string) => void }) {
+function CronJobSidebarRuns({
+  jobId,
+  onOpenRun
+}: {
+  jobId: string
+  onOpenRun: (sessionId: string, session?: SessionInfo) => void
+}) {
   const { t } = useI18n()
   const c = t.cron
   const selectedSessionId = useStore($selectedStoredSessionId)
@@ -469,7 +477,7 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
                     : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
                 )}
                 key={run.id}
-                onClick={() => onOpenRun(run.id)}
+                onClick={() => onOpenRun(run.id, run)}
                 type="button"
               >
                 {formatRunTime(run.last_active || run.started_at)}

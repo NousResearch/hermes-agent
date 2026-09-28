@@ -30,6 +30,7 @@ from hermes_cli.doctor_config import (
     _check_env_file,
     _check_mcp_security,
     _check_xai_retirement,
+    _check_retired_session_reset,
     _check_plugin_compat,
 )
 from hermes_cli.doctor_platform import (
@@ -39,6 +40,7 @@ from hermes_cli.doctor_platform import (
     _check_python_environment,
     _check_required_packages,
     _check_security_advisories,
+    _check_web_dashboard_import,
 )
 from hermes_cli.doctor_tools import (
     _check_git_and_rg,
@@ -109,9 +111,11 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
 DOCTOR_CHECKS = (
     ('Security Advisories', _check_security_advisories), ('MCP Server Security', _check_mcp_security),
     ('Python Environment', _check_python_environment), ('SSL / CA Certificates', _check_certificates),
-    ('Required Packages', _check_required_packages), ('Configuration Files', _check_env_file),
+    ('Required Packages', _check_required_packages), (None, _check_web_dashboard_import),
+    ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
+    ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
     ('Plugin import paths (removed Sep 14, 2026)', _check_plugin_compat), ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
     (None, _check_gateway_supervision), (None, _check_command_installation),

@@ -194,14 +194,22 @@ describe('Group Chat attention', () => {
       onOpen: vi.fn()
     }
 
-    const { container } = render(<GroupRow {...props} />)
+    const { container, rerender } = render(<GroupRow {...props} />)
+    const row = screen.getByRole('button', { name: /^小助手,/ })
     const marker = () => container.querySelector('[aria-label="Needs your input"]')
+    const attentionRow = () => screen.queryByRole('button', { name: /Needs your input/ })
     expect(paneVisibility).toHaveBeenCalledWith('plugin-workspace:hermes-bots:group:u5c0f-u52a9-u624b')
     expect(marker()).not.toBeNull()
+    expect(attentionRow()).toBe(row)
     act(() => visible.set(true))
     expect(marker()).toBeNull()
+    expect(attentionRow()).toBeNull()
     act(() => visible.set(false))
     expect(marker()).not.toBeNull()
+    expect(attentionRow()).toBe(row)
+    rerender(<GroupRow {...props} needsYou={false} />)
+    expect(marker()).toBeNull()
+    expect(attentionRow()).toBeNull()
   })
 
   it('fails closed when a shell cannot report main-pane visibility', () => {

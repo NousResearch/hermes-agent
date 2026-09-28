@@ -580,7 +580,9 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
 
   const row = (
     <RowButton
-      aria-label={`${group}, ${b.group.memberCount(members.length)}, ${availabilityLabel}`}
+      aria-label={[group, b.group.memberCount(members.length), availabilityLabel, showAttention ? b.roster.needsInput : null]
+        .filter(Boolean)
+        .join(', ')}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',

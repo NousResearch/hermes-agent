@@ -8,6 +8,9 @@ belongs to its successor and starts a worker that ``_run_agent_track_agent`` ref
 ("Skipping stale agent promotion"), so no later /stop can reach it while it holds the session's
 durable turn lease.
 
+A follow-up discarded during preparation never ran, so it is reported CANCELLED. An internal wake
+is re-parked for the successor; a human follow-up is dropped, as /stop drops one from the slot.
+
 Real: ``GatewayRunner._run_agent`` drain and follow-up recursion, ``BasePlatformAdapter`` pending
 slot, run-generation bookkeeping.
 Fake: the agent (records which message started it), and /stop, applied as the generation
@@ -16,7 +19,7 @@ invalidation ``_interrupt_and_clear_session`` performs, at each await where a re
 
 import pytest
 
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, ProcessingOutcome
 from tests.gateway.test_queued_followup_processing_hooks import (
     SESSION_KEY,
     HookRecordingAdapter,
@@ -84,3 +87,55 @@ async def test_stop_during_followup_preparation_does_not_start_it(monkeypatch, t
     await _turn(runner, "first", runner._begin_session_run_generation(SESSION_KEY))
 
     assert _TwoTurnAgent.calls == ["first"]
+    assert adapter.completed == [("queued", ProcessingOutcome.CANCELLED)]
+    assert SESSION_KEY not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("successor_queued", [False, True], ids=["empty-slot", "successor-in-slot"])
+async def test_stop_during_followup_preparation_reparks_an_internal_wake(monkeypatch, tmp_path, successor_queued):
+    runner, adapter = _setup(monkeypatch, tmp_path)
+    wake = MessageEvent(text="delegation finished", source=_source(), internal=True)
+    successor = MessageEvent(text="successor's message", source=_source(), message_id="successor")
+    adapter._pending_messages[SESSION_KEY] = wake
+    landed = []
+
+    # /stop lands on the last await before the follow-up starts: an internal wake has no processing
+    # hooks to land on.
+    async def stop_before_followup_starts(*_args):
+        if not landed:
+            landed.append(runner._invalidate_session_run_generation(SESSION_KEY, reason="stop_command"))
+            if successor_queued:
+                adapter._pending_messages[SESSION_KEY] = successor
+
+    monkeypatch.setattr(runner, "_refresh_agent_cache_message_count", stop_before_followup_starts)
+    await _turn(runner, "first", runner._begin_session_run_generation(SESSION_KEY))
+
+    assert _TwoTurnAgent.calls == ["first"]
+    assert adapter._pending_messages[SESSION_KEY] is (successor if successor_queued else wake)
+
+    await _turn(runner, "second", landed[0])
+    assert _TwoTurnAgent.calls == ["first", "second"] + (
+        ["successor's message", "delegation finished"] if successor_queued else ["delegation finished"])
+
+
+@pytest.mark.asyncio
+async def test_only_the_discarded_followup_reports_cancelled(monkeypatch, tmp_path):
+    runner, adapter = _setup(monkeypatch, tmp_path)
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(text="ran", source=_source(), message_id="ran")
+
+    async def on_processing_start(event):
+        if event.message_id == "ran":
+            adapter._pending_messages[SESSION_KEY] = MessageEvent(
+                text="discarded", source=_source(), message_id="discarded",
+            )
+        else:
+            runner._invalidate_session_run_generation(SESSION_KEY, reason="stop_command")
+
+    monkeypatch.setattr(adapter, "on_processing_start", on_processing_start)
+    await _turn(runner, "first", runner._begin_session_run_generation(SESSION_KEY))
+
+    assert _TwoTurnAgent.calls == ["first", "ran"]
+    assert adapter.completed == [
+        ("discarded", ProcessingOutcome.CANCELLED), ("ran", ProcessingOutcome.SUCCESS),
+    ]

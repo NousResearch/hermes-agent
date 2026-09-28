@@ -519,9 +519,11 @@ print(r["delegation_id"])
     )
     delegation_id = first.stdout.strip().splitlines()[-1]
 
+    # The ledger replays on the first consumer, not at import (#123265).
     consumer = r'''
 import json
 from tools.process_registry import process_registry
+process_registry.restore_completions()
 evt = process_registry.completion_queue.get_nowait()
 print(json.dumps(evt, sort_keys=True))
 '''
@@ -544,7 +546,7 @@ assert ad.mark_completion_delivered({delegation_id!r})
         text=True, capture_output=True, timeout=15, check=True,
     )
     probe = subprocess.run(
-        [sys.executable, "-c", "from tools.process_registry import process_registry; print(process_registry.completion_queue.qsize())"],
+        [sys.executable, "-c", "from tools.process_registry import process_registry; process_registry.restore_completions(); print(process_registry.completion_queue.qsize())"],
         cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
     )
     assert probe.stdout.strip().splitlines()[-1] == "0"

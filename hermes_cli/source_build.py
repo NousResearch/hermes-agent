@@ -103,10 +103,10 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """Prepare the selected union once; a failed product aborts the update."""
     # Both current updates and historical takeover reach this in a fresh target
     # interpreter, never in the updater's pre-sync import graph.
-    from hermes_cli.main_install_repair import _warn_configured_features_missing_deps
+    from hermes_cli.main_install_repair import _install_configured_features_missing_deps
     from hermes_cli.update_stage import publish_stage
 
-    _warn_configured_features_missing_deps()
+    _install_configured_features_missing_deps(project_root)
     frontends = source_frontends(project_root)
     if not frontends:
         return

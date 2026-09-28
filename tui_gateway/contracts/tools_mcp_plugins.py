@@ -587,6 +587,10 @@ class PluginsAction(WireEnum):
     remove = "remove"
     settings = "settings"
     onboarding = "onboarding"
+    marketplaces = "marketplaces"
+    marketplace_add = "marketplace_add"
+    marketplace_refresh = "marketplace_refresh"
+    marketplace_remove = "marketplace_remove"
 
 
 class PluginsManageParams(ProfileParams):
@@ -602,6 +606,10 @@ class PluginsManageParams(ProfileParams):
     identifier: str | None = None
     repo: str | None = None
     catalog_name: str | None = None
+    marketplace_id: str | None = None
+    marketplace_plugin_name: str | None = None
+    source_id: str | None = None
+    url: str | None = None
     force: bool | None = None
     ref: str | None = None
     accept_capabilities: bool | None = None
@@ -671,6 +679,10 @@ class AgentPluginRow(Result):
     catalog_version: str | None = None
     update_available: bool | None = None
     pinned_sha: str | None = None
+    marketplace_id: str | None = None
+    marketplace_name: str | None = None
+    marketplace_plugin_name: str | None = None
+    marketplace_tree_sha: str | None = None
     settings_schema: list[PluginSettingField] | None = None
 
 
@@ -763,6 +775,9 @@ class PluginsManageResult(Result):
     written: list[str] | None = None
     # ``onboarding`` → the curated catalog plugins for the onboarding card.
     onboarding: list[OnboardingCatalogPlugin] | None = None
+    marketplace: dict[str, JsonValue] | None = None
+    marketplaces: list[dict[str, JsonValue]] | None = None
+    removed: bool | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,

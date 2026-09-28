@@ -288,6 +288,7 @@ def _install_plugin_core(
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
+    marketplace: Optional[dict] = None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
@@ -331,6 +332,11 @@ def _install_plugin_core(
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _pc()._repo_name_from_url(git_url))
+        if marketplace:
+            from hermes_cli.plugin_marketplaces import _git
+            if (plugin_name != marketplace["name"] or installed_revision != marketplace["sha"]
+                    or _git(tmp_clone, "rev-parse", f"HEAD:{subdir}") != marketplace["tree_sha"]):
+                raise _pc().PluginOperationError("Marketplace plugin identity or pin changed during install.")
         try:
             target = _pc()._sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
@@ -356,6 +362,12 @@ def _install_plugin_core(
                 f"Plugin '{plugin_name}' already exists. Use force reinstall "
                 f"or run `hermes plugins update {plugin_name}`.")
         prior = old_metadata.get(plugin_name)
+        previous_marketplace = prior.get("marketplace") if isinstance(prior, dict) else None
+        if marketplace and target.exists() and (
+                not isinstance(previous_marketplace, dict)
+                or previous_marketplace.get("id") != marketplace["source_id"]):
+            raise _pc().PluginOperationError(
+                f"Plugin '{plugin_name}' belongs to another source; remove it before installing this marketplace entry.")
         if target.exists() and requested_revision is None and isinstance(prior, dict) and prior.get("pinned") is True:
             raise _pc().PluginOperationError(
                 f"Plugin '{plugin_name}' is pinned. Reinstall it with an explicit "
@@ -388,11 +400,23 @@ def _install_plugin_core(
             write_catalog_sidecar_record(tmp_target, catalog, installed_revision)
         if allow_removed:
             record["allow_removed"] = True
+        if marketplace:
+            record["marketplace"] = {
+                "id": marketplace["source_id"], "name": marketplace["source_name"],
+                "plugin_name": marketplace["name"], "tree_sha": marketplace["tree_sha"],
+            }
         new_metadata = {**old_metadata, plugin_name: record}
         from hermes_cli.plugins_transaction import publish_plugin
 
         try:
-            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True)
+            if marketplace:
+                from hermes_cli.plugin_marketplaces import marketplace_authority
+                with marketplace_authority(marketplace["source_id"], marketplace["repo"]) as registered:
+                    if not registered:
+                        raise _pc().PluginOperationError("The plugin marketplace was removed before installation completed.")
+                    publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True)
+            else:
+                publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True)
         except Exception as exc:
             raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}") from exc
 
@@ -539,6 +563,7 @@ def cmd_install(
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
     ref: Optional[str] = None,
+    marketplace_id: Optional[str] = None, marketplace_plugin_name: Optional[str] = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
@@ -546,7 +571,17 @@ def dashboard_install_plugin(
     from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
     entry = None
-    if catalog_name:
+    marketplace = None
+    if marketplace_id:
+        from hermes_cli.plugin_marketplaces import get_marketplace_entry
+        if not marketplace_plugin_name or catalog_name or identifier or ref:
+            return {"ok": False, "error": "Marketplace install requires only marketplace_id and marketplace_plugin_name."}
+        marketplace = get_marketplace_entry(marketplace_id, marketplace_plugin_name, force=True)
+        if not marketplace or not marketplace["compatible"]:
+            return {"ok": False, "error": "Marketplace plugin is unavailable or incompatible with Hermes."}
+        identifier = f"{marketplace['repo']}#{marketplace['subdir']}"
+        warnings.append("Custom (unreviewed) marketplace source — not from the Hermes catalog.")
+    elif catalog_name:
         entry = catalog.get_live_catalog_entry(catalog_name)
         if entry is None:
             return {"ok": False, "error": f"'{catalog_name}' is not in the Hermes plugin catalog."}
@@ -558,7 +593,8 @@ def dashboard_install_plugin(
         git_url = _pc()._resolve_git_url(identifier)[0]
         if git_url.startswith(("http://", "file://")):
             warnings.append("Insecure URL scheme; prefer https:// or git@ for production installs.")
-        catalog.raise_if_removed(identifier, git_url, *((entry.name,) if entry else ()))
+        catalog.raise_if_removed(identifier, git_url, *((entry.name,) if entry else ()),
+                                 *((marketplace["name"],) if marketplace else ()))
     except ValueError:
         pass
     except _pc().PluginOperationError as exc:
@@ -567,6 +603,9 @@ def dashboard_install_plugin(
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
                 entry, force=force, allow_removed=False)
+        elif marketplace:
+            target, installed_manifest, installed_name = _pc()._install_plugin_core(
+                identifier, force=force, ref=marketplace["sha"], marketplace=marketplace)
         else:
             target, installed_manifest, installed_name = _pc()._install_plugin_core(
                 identifier, force=force, ref=(ref or "").strip() or None)

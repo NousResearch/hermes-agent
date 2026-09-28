@@ -126,3 +126,60 @@ def test_plugins_manage_list_resolves_the_live_catalog_once_per_listing(tmp_path
     # ONE resolution for the whole listing (the pre-hoist code paid one per installed plugin).
     assert len(resolver_calls) == 1
 
+
+def test_marketplaces_rpc_is_profile_scoped_and_does_not_install(tmp_path, monkeypatch):
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli import plugin_marketplaces as market
+
+    launch = tmp_path / "launch"
+    worker = tmp_path / "worker"
+    launch.mkdir()
+    worker.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(server, "_profile_home", lambda name: worker if name == "worker" else None)
+    source = {"id": market._source_id("https://example.com/team.git"),
+              "name": "Team", "url": "https://example.com/team.git"}
+    token = set_hermes_home_override(str(worker))
+    try:
+        market._write_registry([source])
+        market._write_cache(source, [])
+    finally:
+        reset_hermes_home_override(token)
+
+    def call(action, **kwargs):
+        return server.handle_request({"id": "m", "method": "plugins.manage",
+                                      "params": {"action": action, **kwargs}})
+
+    assert call("marketplaces")["result"]["marketplaces"] == []
+    rows = call("marketplaces", profile="worker")["result"]["marketplaces"]
+    assert rows[0]["id"] == source["id"]
+    assert rows[0]["entries"] == []
+    assert not (worker / "plugins").exists()
+    assert call("marketplace_remove", source_id=source["id"], profile="worker")["result"]["removed"]
+    assert call("marketplaces", profile="worker")["result"]["marketplaces"] == []
+
+
+def test_marketplace_install_routes_selected_profile_and_identifiers(tmp_path, monkeypatch):
+    from hermes_constants import get_hermes_home
+    from hermes_cli import plugins_cmd
+
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    monkeypatch.setattr(server, "_profile_home", lambda name: worker if name == "worker" else None)
+    seen = []
+
+    def install(identifier, **kwargs):
+        seen.append((get_hermes_home(), identifier, kwargs))
+        return {"ok": True, "plugin_name": "demo", "enabled": False}
+
+    monkeypatch.setattr(plugins_cmd, "dashboard_install_plugin", install)
+    response = server.handle_request({"id": "install", "method": "plugins.manage", "params": {
+        "action": "install", "identifier": "", "marketplace_id": "a" * 16,
+        "marketplace_plugin_name": "demo", "profile": "worker", "enable": False,
+    }})
+    assert response["result"]["ok"] is True
+    assert seen[0][0] == worker
+    assert seen[0][1] == ""
+    assert seen[0][2]["marketplace_id"] == "a" * 16
+    assert seen[0][2]["marketplace_plugin_name"] == "demo"
+

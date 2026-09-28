@@ -1129,9 +1129,24 @@ class GatewayBusySessionMixin:
         drops the pending sentinel (a session still being set up has no agent). Callers gate on
         authorization; ``own_key`` is excluded. Both tiers share one call.
         """
+        match = self._same_chat_key_matcher(source, own_key)
+        if match is None:
+            return []
+        runs = []
+        for key in self._snapshot_running_agents():
+            if key == own_key:
+                continue
+            parsed = match(key)
+            if parsed is not None:
+                runs.append((key, parsed[0], parsed[1]))
+        return runs
+
+    def _same_chat_key_matcher(self, source: Optional[SessionSource], own_key: str):
+        """``key -> (chat_type, tail) | None`` naming keys of the caller's chat, or None when the
+        caller has no chat id."""
         chat_id = str(getattr(source, "chat_id", None) or "")
         if not chat_id:
-            return []
+            return None
         if source.chat_type == "dm" and source.platform == Platform.WHATSAPP:
             # Match the same text build_session_key keyed: WhatsApp DM chat ids are canonicalised
             # there, so a raw JID/LID alias would never line up with the stored key.
@@ -1139,14 +1154,7 @@ class GatewayBusySessionMixin:
         namespace = ":".join(own_key.split(":", 2)[:2])
         prefix = f"{namespace}:{source.platform.value}:"
         scope_id = str(getattr(source, "scope_id", None) or "") or None
-        runs = []
-        for key in self._snapshot_running_agents():
-            if key == own_key:
-                continue
-            parsed = _same_chat_key_slots(key, prefix=prefix, chat_id=chat_id, scope_id=scope_id)
-            if parsed is not None:
-                runs.append((key, parsed[0], parsed[1]))
-        return runs
+        return lambda key: _same_chat_key_slots(key, prefix=prefix, chat_id=chat_id, scope_id=scope_id)
 
     def _sibling_thread_run_keys(
         self, source: SessionSource, runs: List[Tuple[str, str, str]],

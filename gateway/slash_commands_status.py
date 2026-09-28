@@ -220,13 +220,15 @@ def _usage_agent_stats_lines(agent) -> list[str]:
     return lines
 
 
-def _capped_rows(items: list, render) -> list[str]:
-    """Render up to ``_LIST_CAP`` items via *render* (list of lines each) plus an overflow line."""
+def _capped_rows(items: list, render, hidden: int = 0) -> list[str]:
+    """Render up to ``_LIST_CAP`` items via *render* (list of lines each) plus an overflow line that
+    also counts the *hidden* rows the caller may not see."""
     lines: list[str] = []
     for item in items[:_LIST_CAP]:
         lines.extend(render(item))
-    if len(items) > _LIST_CAP:
-        lines.append(t("gateway.agents.more", count=len(items) - _LIST_CAP))
+    more = max(0, len(items) - _LIST_CAP) + hidden
+    if more:
+        lines.append(t("gateway.agents.more", count=more))
     return lines
 
 
@@ -475,14 +477,29 @@ class GatewayStatusCommandsMixin:
             return [f"- `{proc.get('session_id', '?')}` · "
                     f"{format_uptime_short(int(proc.get('uptime_seconds', 0)))} · `{cmd}`"]
 
+        # Keys, commands and goals of OTHER chats stay counted but unlisted (a session key is a
+        # routing handle, not authority — same rule as /sessions all); a configured admin sees all.
+        same_chat = self._same_chat_key_matcher(event.source, current_session_key)
+        everything = self._resume_caller_is_admin(event.source)
+
+        def _visible(rows: list, key_of) -> list:
+            return rows if everything else [
+                r for r in rows if (k := str(key_of(r) or "")) == current_session_key
+                or (same_chat is not None and same_chat(k) is not None)]
+
+        shown_agents = _visible(agent_rows, lambda r: r["session_key"])
+        shown_procs = _visible(running_processes, lambda p: p.get("session_key"))
+        shown_delegations = _visible(delegations, lambda d: d.get("session_key"))
+
         lines = [t("gateway.agents.header"), "", t("gateway.agents.active_agents", count=len(agent_rows))]
-        lines += _capped_rows(list(enumerate(agent_rows, 1)), _agent_row)
+        lines += _capped_rows(list(enumerate(shown_agents, 1)), _agent_row, len(agent_rows) - len(shown_agents))
         lines += ["", t("gateway.agents.running_processes", count=len(running_processes))]
-        lines += _capped_rows(running_processes, _proc_row)
+        lines += _capped_rows(shown_procs, _proc_row, len(running_processes) - len(shown_procs))
         lines += ["", t("gateway.agents.async_jobs", count=len(background_tasks))]
         if delegations:
             lines += ["", t("gateway.agents.background_delegations", count=len(delegations))]
-            lines += _capped_rows(delegations, _agents_delegation_lines)
+            lines += _capped_rows(shown_delegations, _agents_delegation_lines,
+                                  len(delegations) - len(shown_delegations))
         if not (agent_rows or running_processes or background_tasks or delegations):
             lines += ["", t("gateway.agents.none")]
         return "\n".join(lines)

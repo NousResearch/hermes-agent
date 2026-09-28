@@ -278,7 +278,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/review [instructions]` | Spawn an independent reviewer subagent for the work just discussed (PR, code, docs); its review re-enters this chat when done. On Slack use `/hermes review …`. |
 | `/moa <prompt>` | Run one prompt through the default [Mixture of Agents](../user-guide/features/mixture-of-agents.md) preset, then restore the session model. |
 | `/branch [--here] [name]` (alias: `/fork`) | Branch the current session. Thread-capable platforms (Discord, Telegram, Slack, Matrix) open the branch in a new sibling thread and keep this chat on the original; `--here` switches this chat onto the branch. |
-| `/agents` (alias: `/tasks`) | Show active agents and running tasks. |
+| `/agents` (alias: `/tasks`) | Show active agents and running tasks. Work running in other chats is counted, but its session keys, commands and goals are listed only for a configured admin (`allow_admin_from` / `group_allow_admin_from`). |
 | `/sessions` | Browse and resume previous sessions. |
 | `/context [all]` (alias: `/ctx`) | Context-window usage gauge and category breakdown (messaging-friendly text form). `/context all` adds per-skill / per-toolset cost detail. |
 | `/egress [status]` | Show Docker egress proxy status. |

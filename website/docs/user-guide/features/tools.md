@@ -241,7 +241,9 @@ compressed continuation), then use the original `session_id` with
 `process(action="log")` for output and `process(action="poll")` for exit status.
 Unrelated conversations and requests without a bound owning session cannot read
 retained receipts, even with an exact process handle. `process(action="list")`
-also includes retained results for the current task or conversation.
+also includes retained results for the current task or conversation. On a
+messaging gateway the same holds for running processes: a chat can poll, read,
+write to or kill only the processes its own conversation started.
 
 Hermes keeps the newest **64 completed results**, for up to **7 days after
 completion**, under `logs/process-results/` in the profile's Hermes home. Each

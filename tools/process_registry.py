@@ -2763,6 +2763,24 @@ def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dic
 _MAX_HANDOFFS_PER_CHILD = 3
 
 
+def _foreign_chat_process(session_id: str, task_id: Optional[str]) -> bool:
+    """Whether a messaging turn is naming a live process another chat started. A handle is a
+    routing string, not authority (retained receipts already demand the owner): one gateway
+    serves many chats, and ``list`` never shows this caller another chat's processes."""
+    from gateway.session_context import get_session_env, session_is_messaging_surface
+    if not session_is_messaging_surface():
+        return False  # CLI/TUI/API: one principal; the key rotates on /new and must not orphan jobs
+    session = process_registry.get(session_id)
+    if session is None or not session.session_key:
+        return False
+    from tools.approval_context import get_current_session_key
+    if session.session_key == get_current_session_key(default=""):
+        return False
+    if task_id and session.owner_task_id == task_id:
+        return False
+    return not (session.parent_session_id and session.parent_session_id == get_session_env("HERMES_SESSION_ID", ""))
+
+
 def _handle_process(args, **kw):
     action = args.get("action", "")
     # Coerce to string — some models send session_id as an integer
@@ -2776,6 +2794,8 @@ def _handle_process(args, **kw):
     if action in _SESSION_ACTIONS:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
+        if _foreign_chat_process(session_id, kw.get("task_id")):
+            return json.dumps(_not_found(session_id), ensure_ascii=False)
         handler, redact = _SESSION_ACTIONS[action]
         result = handler(session_id, args)
         return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)

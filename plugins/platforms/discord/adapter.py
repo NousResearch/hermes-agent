@@ -600,6 +600,7 @@ def _clean_discord_id(entry: str) -> str:
 _GATE_ENV_KEYS = (
     "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES", "DISCORD_ALLOWED_CHANNELS",
     "DISCORD_IGNORED_CHANNELS", "DISCORD_NO_THREAD_CHANNELS", "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_FREE_RESPONSE_GUILDS",
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "DISCORD_ALLOW_ALL_USERS", "DISCORD_ALLOW_BOTS",
     "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
 )
@@ -1547,7 +1548,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     parent_id = None
                     if hasattr(message.channel, "parent_id") and message.channel.parent_id:
                         parent_id = str(message.channel.parent_id)
-                    free_channels = self._discord_free_response_channels()
+                    free_channels = self._discord_free_response_channels(message)
                     channel_keys = self._discord_channel_keys(message, parent_id)
                     if "*" not in free_channels and not (channel_keys & free_channels):
                         # Every other silent return in this function is at least guessable from
@@ -2374,7 +2375,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not isinstance(message.channel, discord.DMChannel):
             parent_id = self._get_parent_channel_id(message.channel)
             channel_keys = self._discord_channel_keys(message, parent_id)
-            free_channels = self._discord_free_response_channels()
+            free_channels = self._discord_free_response_channels(message)
             if (
                 self._discord_require_mention()
                 and "*" not in free_channels
@@ -5003,12 +5004,62 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._bot_tag_debounce_until[key] = now + self._bot_tag_window_seconds()
         return True
 
-    def _discord_free_response_channels(self) -> set:
-        """Channel IDs/names needing no mention; a lone "*" is preserved for wildcard short-circuit."""
+    def _discord_free_response_channels(self, message: Any = None) -> set:
+        """Channel IDs/names needing no mention; a lone "*" is preserved for wildcard short-circuit.
+
+        Guild scoping: when ``free_response_guilds`` (or ``DISCORD_FREE_RESPONSE_GUILDS``)
+        is configured, the free-response exemption — including the ``"*"`` wildcard —
+        applies only to messages in those guild (server) IDs. This is the only reliable
+        server-level scope: channel keys include bare names, and a ``#general``-style name
+        matches the same key on *every* server the bot is installed in, so channel
+        allow-lists cannot express "free-response everywhere, but only on my server".
+        DMs (no guild) are unaffected. Explicit @mention still works everywhere — this
+        gate only waives the mention requirement, never blocks mentions.
+
+        Callers without a message (e.g. building the missed-message-backfill channel
+        union) skip the guild filter; recovered messages are re-gated per-message in
+        :meth:`_dispatch_recovered_message`, so the filter cannot be bypassed.
+        """
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
-        return self._gate_csv_set(raw)
+        channels = self._gate_csv_set(raw)
+        if not channels:
+            return channels
+        guilds = self._get_free_response_guilds()
+        if not guilds:
+            return channels
+        guild_id = self._message_guild_id(message)
+        if guild_id is None:
+            # DM, or a message/channel object with no resolvable guild — never
+            # widen the exemption; leave it gated like any other channel.
+            return set()
+        if guild_id in guilds:
+            return channels
+        logger.debug(
+            "[%s] free-response suppressed in guild %s (not in free_response_guilds)",
+            self.name, guild_id)
+        return set()
+
+    def _get_free_response_guilds(self) -> set:
+        """This adapter's DISCORD_FREE_RESPONSE_GUILDS guild IDs (per-profile)."""
+        return {
+            entry for entry in self._gate_csv_set(
+                self._gate_raw("free_response_guilds", "DISCORD_FREE_RESPONSE_GUILDS")
+            )
+            if entry.isdigit()
+        }
+
+    @staticmethod
+    def _message_guild_id(message: Any) -> Optional[str]:
+        """Guild snowflake for a message, falling back to its channel's guild. None for DMs."""
+        if message is None:
+            return None
+        guild = getattr(message, "guild", None) or getattr(
+            getattr(message, "channel", None), "guild", None)
+        guild_id = getattr(guild, "id", None)
+        return str(guild_id) if guild_id is not None else None
+
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract user-mention IDs (``<@ID>`` and legacy ``<@!ID>``) from raw content,
@@ -5988,6 +6039,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Config (discord.* in config.yaml or DISCORD_* env vars):
         #   discord.require_mention: Require @mention in server channels (default: true)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
+        #   discord.free_response_guilds: If set, the free-response exemption (incl. "*")
+        #       applies only in these server (guild) IDs; mentions still work everywhere
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
@@ -6034,7 +6087,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if "*" in ignored_channels or (channel_keys & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
                 return False
-            free_channels = self._discord_free_response_channels()
+            free_channels = self._discord_free_response_channels(message)
             require_mention = self._discord_require_mention()
             # Voice-linked text channel is free-response while voice is active (exact channel only).
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
@@ -7387,6 +7440,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["approval_mentions"] = approval_mentions_cfg
         _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
+    _gate("free_response_guilds", "DISCORD_FREE_RESPONSE_GUILDS", from_platform_extra=False)
     for key, env_key in (
         ("auto_thread", "DISCORD_AUTO_THREAD"),
         ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),

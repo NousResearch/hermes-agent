@@ -269,11 +269,13 @@ _HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _SHELL_COMMAND_FLAGS = {"-c", "--command"}
-# Shell spellings of no-exec parsing (`bash -n`, `bash --noexec`, `bash -o noexec`): commands are
+# Shell spellings of no-exec parsing (`bash -n`, `bash -o noexec`): commands are
 # read and syntax-checked but never executed, so the script named after the options cannot run
 # anything — including a lifecycle command (#124700). Recognised only in the option area: past the
 # first operand a `-n` is the script's positional parameter (`bash script.sh -n` still executes).
-_SHELL_NOEXEC_FLAGS = frozenset({"-n", "--noexec"})
+# NOT spellings of it: `+o noexec` CLEARS the option (POSIX `+o`), so that invocation executes the
+# script; `--noexec` is refused by bash/sh/dash outright (invalid option, rc=2).
+_SHELL_NOEXEC_FLAGS = frozenset({"-n"})
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
@@ -881,7 +883,11 @@ def _shell_invocation_is_noexec(arguments: list[str]) -> bool:
     named afterwards is only syntax-checked, never run, so its contents cannot execute a lifecycle
     command (#124700). Walks the same option grammar `_references_at` uses — a value option skips
     its operand, the first non-option token ends the option area — so a ``-n`` arriving as a
-    script argument (`bash script.sh -n`) is not read as the shell's own flag."""
+    script argument (`bash script.sh -n`) is not read as the shell's own flag.
+
+    Only ``-o``/``-O`` TURN noexec on. ``+o noexec`` clears it (POSIX ``+o`` sets the option OFF),
+    so that spelling still executes the named script and must not read as parse-only — it merely
+    consumes its value option position like any other ``-o value`` pair."""
     index = 0
     while index < len(arguments):
         argument = arguments[index]
@@ -890,7 +896,11 @@ def _shell_invocation_is_noexec(arguments: list[str]) -> bool:
         if argument in _SHELL_NOEXEC_FLAGS:
             return True
         if argument in _SHELL_OPTIONS_WITH_VALUES:
-            if index + 1 < len(arguments) and arguments[index + 1] == "noexec":
+            if (
+                argument in ("-o", "-O")
+                and index + 1 < len(arguments)
+                and arguments[index + 1] == "noexec"
+            ):
                 return True
             index += 2
             continue

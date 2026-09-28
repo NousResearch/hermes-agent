@@ -13,6 +13,7 @@ from time import monotonic_ns
 from typing import Any, Callable
 
 from agent import relay_runtime
+from agent.portal_tags import get_conversation_context
 from hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
@@ -155,6 +156,27 @@ class _MetricsSession:
     first_turn_ns: int = 0
     last_turn_ns: int = 0
     model_state: model_.ModelSessionState = field(default_factory=model_.ModelSessionState)
+    lineage_root: str = ""
+
+
+@dataclass
+class _PeakLineage:
+    """Open segments of one conversation (compression rotates the session id) and their merged peak."""
+
+    open: set[str] = field(default_factory=set)
+    peak: model_.ModelSessionState = field(default_factory=model_.ModelSessionState)
+
+
+def _absorb_peak(into: model_.ModelSessionState, segment: model_.ModelSessionState) -> None:
+    """Merge one closed segment's context peak (fullest fill wins, a limit hit anywhere sticks)."""
+    if segment.peak_route is None:
+        return
+    into.limit_hit = into.limit_hit or segment.limit_hit
+    fuller = segment.peak_window is not None and (
+        into.peak_window is None or segment.peak_tokens / segment.peak_window > into.peak_tokens / into.peak_window
+    )
+    if into.peak_route is None or fuller:
+        into.peak_route, into.peak_tokens, into.peak_window = segment.peak_route, segment.peak_tokens, segment.peak_window
 
 
 class _Runtime:
@@ -171,6 +193,9 @@ class _Runtime:
         self._task_sessions: dict[tuple[str, str], _MetricsSession] = {}
         self._turn_sessions: dict[tuple[str, str], _MetricsSession] = {}
         self._sessions_lock = threading.RLock()
+        # Leaf lock (nothing is acquired under it): taken while a session.lock is held.
+        self._lineages: dict[str, _PeakLineage] = {}
+        self._lineage_lock = threading.Lock()
         self._task_creation_lock = threading.RLock()
         self._task_sessions_lock = threading.RLock()
         # Guards the opt-in send pass: at most one in flight per process.
@@ -354,6 +379,7 @@ class _Runtime:
             if model_call is None:
                 return
             model_call.fields = contract.model_call_fields(event)
+            self._join_lineage(session, session.tasks.get(model_call.task_id))
             if finish:
                 session.model_state.observe_call(model_call.fields, event.get("usage"), event.get("context_length"))
                 model_call.ttft_bucket = fields_.ttft_bucket(event)
@@ -543,6 +569,8 @@ class _Runtime:
         with self._task_sessions_lock:
             self._task_sessions.clear()
             self._turn_sessions.clear()
+        with self._lineage_lock:
+            self._lineages.clear()
         self._release()
 
     def _release(self) -> None:
@@ -835,10 +863,38 @@ class _Runtime:
                 session, None, contract.MODEL_FRICTION_MARK, model_.friction_fields("interrupt", route),
             )
 
-    def _emit_model_session_marks(self, session: _MetricsSession) -> None:
-        state = session.model_state
-        marks = [(contract.CONTEXT_PEAK_MARK, state.context_peak_fields())]
-        abandoned = state.quick_abandon_route(monotonic_ns())
+    def _join_lineage(self, session: _MetricsSession, task: _TaskRun | None) -> None:
+        """Compression rotates the session id mid-conversation. The turn publishes the lineage root
+        (the Portal conversation id), so every segment joins one context-peak lineage. Delegated
+        children share their parent's root but are their own conversation."""
+        if session.lineage_root or (task is not None and task.start_fields.get("entrypoint") == "delegated"):
+            return
+        root = get_conversation_context()
+        if not root:
+            return
+        session.lineage_root = root
+        with self._lineage_lock:
+            self._lineages.setdefault(root, _PeakLineage()).open.add(session.session_id)
+
+    def _context_peak_fields(self, session: _MetricsSession, counted: bool) -> dict[str, str] | None:
+        """This session's peak, or, for a lineage segment, the conversation's merged peak once its
+        last open segment closes (None before that)."""
+        state = session.model_state if counted else None
+        with self._lineage_lock:
+            lineage = self._lineages.get(session.lineage_root) if session.lineage_root else None
+            if lineage is None:
+                return state.context_peak_fields() if state is not None else None
+            lineage.open.discard(session.session_id)
+            if state is not None:
+                _absorb_peak(lineage.peak, state)
+            if lineage.open:
+                return None
+            del self._lineages[session.lineage_root]
+        return lineage.peak.context_peak_fields()
+
+    def _emit_model_session_marks(self, session: _MetricsSession, counted: bool) -> None:
+        marks = [(contract.CONTEXT_PEAK_MARK, self._context_peak_fields(session, counted))]
+        abandoned = session.model_state.quick_abandon_route(monotonic_ns()) if counted else None
         if abandoned is not None and model_.attended(session.start_fields):
             marks.append((contract.MODEL_FRICTION_MARK, model_.friction_fields("quick_abandon", abandoned)))
         for mark, data in marks:
@@ -859,9 +915,10 @@ class _Runtime:
     def _emit_session_summary(self, session: _MetricsSession) -> None:
         """One hermes.session.count row per closed top-level session (delegated children excluded)."""
         start = session.start_fields
-        if not session.turns or start is None or start.get("entrypoint") == "delegated":
+        counted = bool(session.turns) and start is not None and start.get("entrypoint") != "delegated"
+        self._emit_model_session_marks(session, counted)
+        if not counted:
             return
-        self._emit_model_session_marks(session)
         summary = fields_.session_fields(
             start, turns=session.turns, failed_turns=session.failed_turns,
             last_outcome=session.last_outcome,

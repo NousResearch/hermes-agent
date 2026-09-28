@@ -565,18 +565,28 @@ _STRICT_URL_USERINFO_RE = re.compile(r"(//)([^/\s?#@]+)@")
 # ``NAME=user:pass`` where NAME carries no secret keyword — an HTTP Basic auth pair is often stored
 # this way (#125664). Shape-only on arbitrary names, so it runs force-only (persistence boundary,
 # debug dumps, session export all pass force=True): ordinary prose/config keeps today's behaviour.
-# Guards against non-secret colon values: the password needs an 8-char floor AND a letter (ports,
-# version tags and ISO-timestamp tails are short or digit-only), the value is the WHOLE assignment
-# (``user`` cannot contain ``:``/``@``/``/``), and the ``:(?!//)`` lookahead keeps ``scheme://``
-# values (``MY_URL=https://example.com``) out. A pure ``{...}`` password is an f-string template
-# reference, not a literal credential (#33801's rule).
+# Guards against non-secret colon values: the password needs an 8-char floor AND a letter (ports and
+# digit-only tags fail it), the password group is a single token (no whitespace, quotes or ``/`` —
+# so ``registry.example.com:5000/repo`` keeps its path, and an ISO timestamp's ``:00:00`` tail
+# truncates the group to digits), and a version-shaped tail (``24.04-noble``, ``v1.2.3-alpine``)
+# is rejected outright. The value is the WHOLE assignment (``user`` cannot contain ``:``/``@``/``/``),
+# and the ``:(?!//)`` lookahead keeps ``scheme://`` values (``MY_URL=https://example.com``) out.
+# ``@`` is not a password character here either: a ``user:pass@host``-shaped value belongs to the
+# userinfo pass below, which knows the f-string ``{...}`` template exemption; excluding it lets that
+# pass see the pure brace expression (``BASIC="user:{pw}@host"`` keeps its template verbatim).
 _BASIC_PAIR_ASSIGN_RE = re.compile(
     r"(?<![A-Za-z0-9_.\-])([A-Za-z][A-Za-z0-9_.\-]{0,63})=([\"']?)"
-    r"([A-Za-z0-9._~\-]+)(?::(?!//)([^\s'\"]+))\2"
+    r"([A-Za-z0-9._~\-]+)(?::(?!//)([^\s'\"/:@]+))\2"
 )
 
+# ``24.04-noble`` / ``v1.2.3-alpine`` image tags: digit-led dotted versions, optionally ``v``-prefixed
+# — long and letter-bearing enough to pass the floor, yet never a credential.
+_VERSION_TAG_RE = re.compile(r"^[vV]?\d+(\.\d+)+")
+
 def _is_basic_pair_password(password: str) -> bool:
-    """8+ chars with at least one letter — long enough to be a secret, not a port/tag/timestamp."""
+    """8+ chars with a letter and not a version-shaped tail — a secret, not a tag or timestamp."""
+    if _VERSION_TAG_RE.search(password):
+        return False
     return len(password) >= 8 and any(c.isalpha() for c in password)
 
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
@@ -980,6 +990,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         def _basic_pair(m):
             password = m.group(4)
             if password is None or not _is_basic_pair_password(password):
+                return m.group(0)
+            # A pure ``{...}`` password is an f-string template reference, not a literal
+            # credential — same #33801 rule _redact_userinfo_passwords applies below.
+            if code_file and password.startswith("{") and password.endswith("}"):
                 return m.group(0)
             return f"{m.group(1)}={m.group(2)}{m.group(3)}:***{m.group(2)}"
         text = _BASIC_PAIR_ASSIGN_RE.sub(_basic_pair, text)

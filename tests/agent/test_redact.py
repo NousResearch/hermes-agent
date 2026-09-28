@@ -889,14 +889,34 @@ class TestBasicPairAssignmentRedaction:
             ("host:port", "MY_HOST=localhost:8080"),
             ("url value", "MY_URL=https://example.com"),
             ("iso timestamp", "TS=2026-01-01T12:00:00"),
+            ("iso timestamp with fraction", "TS=2026-01-01T12:00:00.123456Z"),
             ("image tag", "IMAGE=python:3.11"),
+            ("letter-bearing image tag", "IMAGE=ubuntu:24.04-noble"),
+            ("v-prefixed image tag", "IMAGE=myapp:v1.2.3-alpine"),
+            ("registry host:port/path", "TARGET=registry.example.com:5000/repo"),
         ],
     )
     def test_non_secret_colon_values_pass_through(self, name, text):
         """The issue's negative controls: colon-bearing values that are not
-        credentials stay untouched even at force=True (short or digit-only
-        after the colon, or a URL whose ``:`` belongs to the scheme)."""
+        credentials stay untouched even at force=True. The persistence boundary
+        redacts a STORED value — mangling a timestamp tail, an image tag or a
+        registry path here is data loss, not display (#125664 review)."""
         assert redact_sensitive_text(text, force=True) == text, name
+
+    @pytest.mark.parametrize("code_file", [False, True])
+    def test_fstring_template_password_kept(self, code_file):
+        """``user:{pw}@host`` under an innocuous name: the ``@`` stops the
+        password group at the pure brace expression, and with code_file the
+        #33801 f-string template rule keeps it verbatim — the brace exemption
+        the userinfo pass applies, honored by the assignment pass too."""
+        text = 'BASIC="user:{pw}@host"'
+        assert redact_sensitive_text(text, force=True, code_file=code_file) == text
+
+    def test_long_brace_template_kept_in_code_files(self):
+        """A long ``{...}`` template password in a code file stays verbatim;
+        outside code files the brace expression may be a literal credential."""
+        text = 'PROXY="admin:{secret}@gh"'
+        assert redact_sensitive_text(text, force=True, code_file=True) == text
 
     def test_secret_keyword_names_unaffected(self):
         """Names with a secret keyword already mask via the ENV pass on every

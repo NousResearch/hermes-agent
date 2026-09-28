@@ -277,6 +277,33 @@ telemetry:
     )
 
 
+# One interactive turn (2 model calls, 1 read_file) on the canary custom model: the v5 per-turn,
+# per-conversation and adoption rows it must produce, identical in SQLite and in the export.
+V5_EXPECTED_DIMENSIONS = {
+    "hermes.task_cost.count": {
+        "api_calls_bucket": "2", "model": "custom", "outcome": "completed", "provider": "custom",
+        "tokens_bucket": "lt_2k", "tool_calls_bucket": "1",
+    },
+    "hermes.tool_output_truncation.count": {"original_size_bucket": "lt_1k", "tool": "read_file", "truncated": "no"},
+    "hermes.tool_enabled_unused.count": {"toolset": "file", "used": "yes"},
+    "hermes.feature_adoption.count": {"days_since_install_bucket": "same_day", "feature": "skills_created"},
+}
+
+
+def _validate_v5_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
+    for name, dimensions in V5_EXPECTED_DIMENSIONS.items():
+        if [row["dimensions"] for row in rows[name]] != [dimensions] or rows[name][0]["value"] != 1:
+            raise AssertionError(f"Unexpected {name}: {rows[name]}")
+    [overhead] = rows["hermes.tool_overhead.count"]  # the file toolset's 4 tools, schema tokens estimated
+    if (
+        overhead["value"] != 1
+        or overhead["dimensions"]["execution_surface"] != "cli"
+        or overhead["dimensions"]["enabled_tool_count_bucket"] != "3_to_5"
+        or overhead["dimensions"]["tool_schema_tokens_bucket"] in {"0", "unknown"}
+    ):
+        raise AssertionError(f"Unexpected tool overhead: {overhead}")
+
+
 def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     if not database_path.is_file():
         raise AssertionError(f"Metrics database was not created: {database_path}")
@@ -303,6 +330,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     if set(by_name) != {
         "hermes.client.active",
         "hermes.context_peak.count",
+        "hermes.feature_adoption.count",
         "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_reply_issue.count",
@@ -313,10 +341,14 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.startup.latency",
+        "hermes.task_cost.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool.usage.count",
         "hermes.tool_call.count",
+        "hermes.tool_enabled_unused.count",
+        "hermes.tool_output_truncation.count",
+        "hermes.tool_overhead.count",
     }:
         raise AssertionError(
             f"Unexpected SQLite counters:\n{json.dumps(counters, indent=2)}"
@@ -467,6 +499,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         or any(counter["packaged_value"] != 1 for counter in loads)
     ):
         raise AssertionError(f"Unexpected skill load counters: {loads}")
+    _validate_v5_rows(by_name)
     return counters
 
 
@@ -521,6 +554,7 @@ def _validate_packages(
     if set(metrics) != {
         "hermes.client.active",
         "hermes.context_peak.count",
+        "hermes.feature_adoption.count",
         "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_reply_issue.count",
@@ -531,10 +565,14 @@ def _validate_packages(
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.startup.latency",
+        "hermes.task_cost.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool.usage.count",
         "hermes.tool_call.count",
+        "hermes.tool_enabled_unused.count",
+        "hermes.tool_output_truncation.count",
+        "hermes.tool_overhead.count",
     }:
         raise AssertionError(
             f"Unexpected package metrics:\n{json.dumps(metrics, indent=2)}"
@@ -615,6 +653,7 @@ def _validate_packages(
         ("reused", "reused_after_patch", "3_to_5"),
     }:
         raise AssertionError(f"Unexpected skill load metrics: {loads}")
+    _validate_v5_rows(metrics)
     return package_paths, packages
 
 

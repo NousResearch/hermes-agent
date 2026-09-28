@@ -888,13 +888,39 @@ def _refresh_cua_driver_after_update() -> None:
         pm.ensure("cua-driver", explicit=True)
 
 
-def _install_default_tools_after_update() -> None:
-    """Give an existing install the optional default PM tools (agent-browser + Chromium).
+#: Bound for the Browser Use CLI provision inside install/update (well under the
+#: 600s interactive default - an update must not stall on one optional download).
+_BROWSER_USE_CLI_UPDATE_TIMEOUT_S = 180
 
-    A source update re-syncs only the venv, so a tool that became a default after
-    this install was created would never arrive and browser tools would stay
-    missing. The installers' PM stage runs the same selection. Declined packages
-    stay declined (pm/defaults.py). A failed download warns and never fails the update.
+
+def _ensure_browser_use_cli_after_update() -> None:
+    """Provision the Browser Use CLI, the default browser driver.
+
+    It is a PM tool environment, not a store package, so ``Package.default`` cannot
+    carry it; without this step an unset ``browser.backend`` silently downgrades to
+    the built-in tools. ``off`` and Camofox never use it, and declining the browser
+    tools (``--skip-browser``) declines it too.
+    """
+    from pm.defaults import declined
+    from tools.browser_use_cli import _BACKEND_KEY, _camofox_active, _find_cli, get_browser_backend
+
+    if "agent-browser" in declined() or get_browser_backend() not in ("", _BACKEND_KEY):
+        return
+    if _camofox_active() or _find_cli() is not None:
+        return
+    from hermes_cli.tools_config_post_setup import _ensure_browser_use_cli
+
+    _ensure_browser_use_cli(timeout_s=_BROWSER_USE_CLI_UPDATE_TIMEOUT_S)
+
+
+def _install_default_tools_after_update() -> None:
+    """Give the install its optional default tools: the PM defaults (agent-browser +
+    Chromium, cua-driver) and the Browser Use CLI.
+
+    Runs at the end of both the installers (via the source completion) and
+    ``hermes update``: a source update re-syncs only the venv, so a tool that became
+    a default after this install was created would never arrive otherwise. Declined
+    packages stay declined (pm/defaults.py). A failed download warns and never fails.
     """
     import pm
     from pm.defaults import default_packages
@@ -909,12 +935,13 @@ def _install_default_tools_after_update() -> None:
     for name in default_packages(Lockfile(lockfile_path()).names()):
         if pm.installed_package(name) is not None:
             continue
-        print(f"\n→ Installing {name} (browser tools; opt out with `hermes pm install --without {name}`)...")
+        print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...")
         try:
             pm.ensure(name, explicit=True)
         except (pm.InstallError, OSError) as exc:
             print(f"  ⚠ {name} was not installed: {exc}")
             print(f"    Retry with: hermes pm install {name}")
+    _ensure_browser_use_cli_after_update()
 
 
 def _print_checkpoint_footprint_notice() -> None:

@@ -42,6 +42,7 @@ import path from 'node:path'
 // with no tsconfig path resolution (see scripts/bundle-electron-main.mjs).
 import { stripAnsi } from '../../shared/src/ansi'
 
+import { pathEnvKey, storeFirstPath } from './backend-env'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 const IS_WINDOWS = process.platform === 'win32'
@@ -479,6 +480,18 @@ function cleanInstallerLogLine(raw: string): string {
   return frames.length ? frames[frames.length - 1] : ''
 }
 
+// The installer drives Hermes's own toolchain (install.sh takes a uv from PATH
+// when it is new enough), so store dirs already on PATH stay ahead of the
+// login-shell entries shell-path.ts merged in front of them.
+function installerEnv(hermesHome) {
+  const env = { ...process.env, HERMES_HOME: hermesHome || process.env.HERMES_HOME || '' }
+  const key = pathEnvKey(env)
+
+  env[key] = storeFirstPath(env[key] || '', { currentEnv: env })
+
+  return env
+}
+
 function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
@@ -489,12 +502,9 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       fullArgs,
       hiddenWindowsChildOptions({
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          // Pass HERMES_HOME through so install.ps1 respects the caller's
-          // choice rather than re-computing the default.
-          HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
-        }
+        // Pass HERMES_HOME through so install.ps1 respects the caller's
+        // choice rather than re-computing the default.
+        env: installerEnv(hermesHome)
       })
     )
 
@@ -590,10 +600,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
   return new Promise<any>((resolve, reject) => {
     const child = spawn('bash', [scriptPath, ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
-      }
+      env: installerEnv(hermesHome)
     })
 
     let stdout = ''

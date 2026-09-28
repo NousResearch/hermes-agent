@@ -127,6 +127,16 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     for key in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
         if key in os.environ:
             env[key] = os.environ[key]
+    # Pin the ACTIVE (served) profile's home so a stdio child never falls back to the
+    # platform-default home (issue #18594). Without it a child spawned by a multiplexed host
+    # or a dashboard/desktop backend serving ``--open-profile`` resolves HERMES_HOME to the
+    # LAUNCH profile's home (or the platform default) and writes to the wrong profile — and a
+    # Python child that imports hermes_constants trips the ``_warn_profile_fallback_once``
+    # guard. Resolve at call time: ``get_hermes_home()`` honours the served-profile
+    # contextvar, which does not cross the process boundary, while ``os.environ`` holds only
+    # the launch profile's home. An explicit server ``env.HERMES_HOME`` still wins below.
+    from hermes_constants import get_hermes_home
+    env["HERMES_HOME"] = str(get_hermes_home())
     if user_env:
         env.update(user_env)
     from agent.delegation_context import delegated_child_subprocess_env

@@ -409,6 +409,19 @@ def _preview_shell(key: str):
     return _build
 
 
+def _preview_execute_code(args: dict, max_len: int) -> str | None:
+    code = args.get("code")
+    lines = str(code).strip().splitlines() if code is not None else []
+    if not lines:
+        return None
+    preview = _oneline(lines[0])
+    if len(lines) == 2:
+        preview += f" | {_oneline(lines[1])}"
+    elif len(lines) > 2:
+        preview += f" (+{len(lines) - 1} lines)"
+    return _tail_trunc(preview, max_len) or None
+
+
 def _preview_read_file(args: dict, max_len: int) -> str | None:
     path = args.get("path") or args.get("file") or args.get("filepath")
     label = (Path(str(path).replace("\\", "/")).name or str(path)) if path is not None else None
@@ -451,7 +464,7 @@ def _preview_bridge_call(tool_name: str):
 _PREVIEW_BUILDERS = {
     "browser_exec": _preview_browser_exec, "delegate_task": _preview_delegate_task,
     "process_manage": _preview_process_manage, "todo_list": _preview_todo_list,
-    "terminal": _preview_shell("command"), "execute_code": _preview_shell("code"),
+    "terminal": _preview_shell("command"), "execute_code": _preview_execute_code,
     "read_file": _preview_read_file, "memory": _preview_memory, "send_message": _preview_send_message,
     "skill_view": _preview_skill_view,
     "session_search": lambda args, _m: f"recall: \"{_clip(_oneline(args.get('query', '')), 25)}\"",
@@ -1084,8 +1097,8 @@ def _cute_cronjob(a: dict, _r) -> str:
 
 
 def _cute_execute_code(a: dict, _r) -> str:
-    code = a.get("code", "").strip()
-    return f"┊ 🐍 exec      {_cute_trunc(code.split(chr(10))[0] if code else '')}"
+    limit = min(_tool_preview_max_len, 55) if _tool_preview_max_len else 0
+    return f"┊ 🐍 exec      {build_tool_preview('execute_code', a, max_len=limit) or ''}"
 
 
 def _cute_browser_exec(a: dict, _r) -> str:

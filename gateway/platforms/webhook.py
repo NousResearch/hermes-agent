@@ -241,11 +241,12 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Could not bind %s:%d: %s. Set a different host or port in config.yaml under "
                          "platforms.webhook.extra.", self._host or "all IPv4+IPv6 interfaces", self._port, exc)
             return False
-        from gateway.platforms.shared_ingress import bound_site_endpoints, listener_base_url
+        from gateway.platforms.shared_ingress import bound_listener_port, bound_site_endpoints, listener_base_url
         self._bound_listener_endpoints = bound_site_endpoints(site, self._host, self._port)
-        self._mark_connected(listener_base=listener_base_url(self._host, self._port))
+        listener_port = bound_listener_port(self._bound_listener_endpoints, self._port)
+        self._mark_connected(listener_base=listener_base_url(self._host, listener_port))
         logger.info("[webhook] Listening on %s:%d — routes: %s", self._host or "* (all interfaces, IPv4+IPv6)",
-                    self._port, ", ".join(self._routes.keys()) or "(none configured)")
+                    listener_port, ", ".join(self._routes.keys()) or "(none configured)")
         self._wire_plugin_handlers(None)
         return True
 

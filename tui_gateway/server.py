@@ -1574,6 +1574,15 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
         provider = billing_provider
     base_url, api_mode, service_tier = field("base_url"), field("api_mode"), field("service_tier")
+    gateway_runtime = model_config.get("gateway_runtime")
+    if (not field("provider") and isinstance(gateway_runtime, dict)
+            and gateway_runtime.get("provider") and not gateway_runtime.get("fallback_active")):
+        # A gateway-only route belongs with the current model column, unlike the first-call
+        # billing bucket. Do not override an explicit Desktop pick or change temporary-fallback
+        # resume policy: those records have a separate precedence contract.
+        from hermes_state import SessionDB
+        route = SessionDB.session_gateway_runtime(row)
+        provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
     reasoning_config = model_config.get("reasoning_config")
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
     if is_foreign_provider_endpoint(provider, base_url):

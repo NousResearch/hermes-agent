@@ -382,6 +382,44 @@ def test_sensitive_env_files_hidden_from_listing(forced_files_client):
     assert ".env.prod" not in names
 
 
+def test_listing_survives_a_vanished_entry_without_a_locked_root(local_files_client):
+    """#47154: the unlocked-root dashboard is the reporter's actual config.
+
+    ``forced_files_client`` pins a locked root, so the containment check runs
+    there. A normal local dashboard has ``locked_root=None`` and the reported
+    Steam failure lands on exactly that path, so the unlocked policy needs its
+    own coverage of the same race.
+    """
+    from pathlib import Path
+
+    client, home = local_files_client
+    browsed = home / ".local" / "share" / "Steam" / "linux32"
+    browsed.mkdir(parents=True)
+    (browsed / "visible.txt").write_text("i exist")
+    vanished = browsed / "steam"
+    vanished.write_text("live during readdir only")
+
+    real_entry = _rt_files._managed_file_entry
+
+    def racing_entry(policy, target, **kwargs):
+        if Path(target).name == vanished.name:
+            Path(target).unlink(missing_ok=True)
+        return real_entry(policy, target, **kwargs)
+
+    _rt_files._managed_file_entry = racing_entry
+    try:
+        response = client.get("/api/files", params={"path": str(browsed)})
+    finally:
+        _rt_files._managed_file_entry = real_entry
+
+    assert response.status_code == 200, response.text
+    assert [e["name"] for e in response.json()["entries"]] == ["visible.txt"]
+    # Unlocked means the browser really is the home tree here: the sibling is
+    # still listed and nothing above the browsed directory leaked into it.
+    assert response.json()["root"] is None
+    assert client.get("/api/files/read", params={"path": str(vanished)}).status_code == 404
+
+
 def test_listing_survives_an_entry_that_vanishes_during_the_scan(forced_files_client):
     """#47154: one dead entry must not take the whole directory with it.
 

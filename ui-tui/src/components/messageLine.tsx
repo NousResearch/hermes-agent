@@ -17,6 +17,7 @@ import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.j
 import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
+import { AllocatedToolTrail, isSettledToolTrailCandidate } from './toolAllocation.js'
 import { TodoPanel } from './todoPanel.js'
 
 // Collapse threshold for long system messages (system prompt etc.)
@@ -89,6 +90,29 @@ export const MessageLine = memo(function MessageLine({
         t={t}
         todos={msg.todos}
       />
+    )
+  }
+
+  // First vertical slice of the attention-budget contract (#111986):
+  // a single finalized tool result can consume one semantic row in collapsed
+  // mode. Live tools, multi-tool groups, thinking-bearing trails, and explicit
+  // expanded detail stay on ToolTrail until viewport allocation is wired.
+  const settledToolLines =
+    msg.kind === 'trail' &&
+    !msg.isMoaReference &&
+    !thinking &&
+    tools.length === 0 &&
+    toolsMode === 'collapsed' &&
+    msg.tools?.length === 1 &&
+    isSettledToolTrailCandidate(msg.tools)
+      ? msg.tools
+      : null
+
+  if (settledToolLines) {
+    return (
+      <Box flexDirection="column" marginTop={leadGap ? 1 : 0}>
+        <AllocatedToolTrail lines={settledToolLines} rowsPerTool={1} t={t} />
+      </Box>
     )
   }
 

@@ -10,6 +10,7 @@ from typing import Optional
 
 from gateway.platforms.base import MessageEvent
 from gateway.group_home_consent import protect_group_callback, protect_group_result
+from gateway.group_chat_private_send import PrivateGroupSendMixin
 
 
 logger = logging.getLogger("gateway.run")
@@ -30,7 +31,7 @@ _GROUP_CHAT_STOP_RATE_LIMIT = 30
 _GROUP_CHAT_RATE_BUCKET_CAP = 2048
 
 
-class GroupChatSlashCommandsMixin:
+class GroupChatSlashCommandsMixin(PrivateGroupSendMixin):
     """Authorize, render, and mutate Group Chats from messaging clients."""
 
     async def _try_send_group_choice_picker(self, event, *args, disclosure_stamp=None, **kwargs):
@@ -327,8 +328,23 @@ class GroupChatSlashCommandsMixin:
             "(https://hermes-agent.nousresearch.com/docs/user-guide/bot-mode/#groups-and-group-chats)",
         ])
 
-    @protect_group_result
     async def _handle_rooms_command(self, event: MessageEvent) -> Optional[str]:
+        """Use private canonical authority where present; retain legacy controls."""
+        if getattr(self, "session_authorities", None) is not None:
+            from gateway.session_group_messaging_identity import is_private_source
+
+            if is_private_source(event.source):
+                words = self._group_chat_command_args(event).split()
+                canonical_read = not words or words[0].casefold() in {"list", "help"}
+                # Unsupported decimal shapes must be rejected by native Read,
+                # not interpreted as an unrelated legacy room selector.
+                native_reference = bool(words) and words[0].isdecimal()
+                if canonical_read or native_reference:
+                    return await self._handle_group_command(event)
+        return await self._handle_legacy_rooms_command(event)
+
+    @protect_group_result
+    async def _handle_legacy_rooms_command(self, event: MessageEvent) -> Optional[str]:
         """List Bot Group Chats or show one chat's recent activity."""
 
         from gateway.group_home_consent import PROCEED, emergency, prepare_group_access

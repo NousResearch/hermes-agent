@@ -1,0 +1,8 @@
+{
+  "gateway/group_chat_slash.py": "197200a2f0bff4b588bdba3376818bbbf9250d920e156a62ea17f432b8cbeea1",
+  "gateway/group_chat_private_send.py": "ab55605944bf1bbbd05d72e13236a31dc91f858b174ba1b7daeedd7080b1c3c3",
+  "gateway/group_chat_private_read.py": "317f9e3fc55732a5add7e2150a45805955d550c4267203264bffe971b32aeaa5",
+  "tests/gateway/test_canonical_group_messaging_send.py": "7f5bc08004c84cc8409b272f692030c7085f2c47781c161534c9311e81e260f2",
+  "tests/gateway/test_canonical_group_private_read.py": "f58236751fe8523e10331f1ea15b393c1f1970436ae46e2a04864e4cba3c3398",
+  "tests/gateway/test_canonical_group_private_journey.py": "d1fe9b05f96e5c98b5e0e60a9d382275769fd9832ca744c73a3638beb437aa5c"
+}

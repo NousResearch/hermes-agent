@@ -546,6 +546,66 @@ class TestAgentCacheIdleResume:
             f"tabs and cookies gone on resume. Calls: {browser_calls}"
         )
 
+    def test_release_clients_shuts_down_memory_provider(self):
+        """release_clients() must call shutdown_all() on the memory manager.
+
+        Memory providers spawn background writer threads (retaindb-writer,
+        openviking-sync, ...). Without shutdown on soft eviction, these threads
+        pile up as zombies — one per evicted agent — eventually causing thread
+        proliferation and gateway liveness crashes.
+
+        release_clients() must drain + shut the manager down WITHOUT calling
+        on_session_end() (end-of-session extraction): the gateway's
+        _commit_then_release_soft() already commits extraction via
+        commit_memory_session() before soft-releasing, and a resumed session
+        builds a fresh manager anyway.
+        """
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4", api_key="test",
+            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            max_iterations=5, quiet_mode=True,
+            skip_context_files=True, skip_memory=True,
+            session_id="mem-provider-evict-test",
+        )
+
+        class _MockMM:
+            def __init__(self):
+                self.shutdown_all_calls = 0
+                self.on_session_end_calls = 0
+            def shutdown_all(self):
+                self.shutdown_all_calls += 1
+            def on_session_end(self, messages):
+                self.on_session_end_calls += 1
+
+        mock_mm = _MockMM()
+        agent._memory_manager = mock_mm
+
+        try:
+            agent.release_clients()
+        except Exception:
+            pass
+        # Snapshot BEFORE the final close(): close() -> shutdown_memory_provider()
+        # legitimately calls on_session_end()/shutdown_all() at the hard teardown
+        # boundary — the assertions below are about the soft-eviction path only.
+        shutdown_calls, session_end_calls = mock_mm.shutdown_all_calls, mock_mm.on_session_end_calls
+
+        try:
+            agent.close()
+        except Exception:
+            pass
+
+        assert shutdown_calls >= 1, (
+            "release_clients() must call shutdown_all() to terminate memory "
+            "provider writer threads. Leaked threads cause thread proliferation "
+            "under cache turnover."
+        )
+        assert session_end_calls == 0, (
+            "release_clients() must NOT call on_session_end() — that triggers "
+            "end-of-session extraction, too heavy for a soft-evicted session."
+        )
+
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.
 

@@ -15,6 +15,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.run_inbound_context import discord_triggering_note
 from gateway.session import SessionSource
+from gateway.turn_context import TurnContext
 
 
 def _runner() -> GatewayRunner:
@@ -72,7 +73,7 @@ async def test_queued_followup_persists_authored_text():
     runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     source = _discord_source()
-    turn_ctx = SimpleNamespace(
+    turn_ctx = TurnContext(
         source=source, session_id="sid", session_key="agent:main:discord:dm:dm1", run_generation=1,
         _interrupt_depth=0, history=[], _status_thread_metadata=None, context_prompt=None,
         result_holder=[None],

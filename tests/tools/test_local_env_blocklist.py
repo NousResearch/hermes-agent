@@ -169,8 +169,31 @@ def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, mon
     token = set_hermes_home_override(a)
     try:
         assert "CHATX_WEBHOOK_KEY" not in local.hermes_subprocess_env(inherit_credentials=True)
+        # Removing the plugin releases its names, and a symlinked alias of the home shares one entry.
+        manifest.unlink()
+        assert "CHATX_WEBHOOK_KEY" in local.hermes_subprocess_env(inherit_credentials=True)
     finally:
         reset_hermes_home_override(token)
+
+
+@pytest.mark.platforms("posix")  # symlinks
+def test_a_symlinked_home_alias_shares_its_profiles_plugin_declarations(child_env, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.environments import local_env_policy as policy
+    home = child_env / "profiles" / "a"
+    _user_platform_plugin(home, "chatx", "CHATX_SIGNING_SECRET")
+    alias = child_env / "a-alias"
+    alias.symlink_to(home, target_is_directory=True)
+    monkeypatch.setenv("CHATX_SIGNING_SECRET", "fake-value")
+    sizes = []
+    for bound in (home, alias):
+        token = set_hermes_home_override(bound)
+        try:
+            assert "CHATX_SIGNING_SECRET" not in local.hermes_subprocess_env(inherit_credentials=True)
+        finally:
+            reset_hermes_home_override(token)
+        sizes.append(len(policy._HOME_ADAPTER_SECRET_CACHE))
+    assert sizes[0] == sizes[1]
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,  # windows-footgun: ok — short-circuits on nt
@@ -192,8 +215,8 @@ def test_unreadable_platform_manifest_fails_closed(tmp_path):
     finally:
         manifest.chmod(0o644)
     # Not provably a platform's, so no reason to fail: an unsearchable plugin dir (a root-owned
-    # __pycache__ or plugin in a volume) or an unreadable flat plugins/* manifest.
-    locked = [tmp_path / "plugins" / "__pycache__", tmp_path / "plugins" / "memx"]
+    # plugin in a volume) or an unreadable flat plugins/* manifest.
+    locked = [tmp_path / "plugins" / "lockedx", tmp_path / "plugins" / "memx"]
     for d in locked:
         d.mkdir()
     (locked[1] / "plugin.yaml").write_text("kind: memory\n", encoding="utf-8")
@@ -204,6 +227,27 @@ def test_unreadable_platform_manifest_fails_closed(tmp_path):
     finally:
         locked[0].chmod(0o755)
         (locked[1] / "plugin.yaml").chmod(0o644)
+
+
+def test_unreadable_bundled_manifest_fails_the_policy_instead_of_dropping_it(monkeypatch):
+    """The import-time read keeps the bundled secret set only when every bundled manifest was
+    read; otherwise the policy's strict re-read raises rather than building without them."""
+    import builtins
+    import hermes_cli.config as cfg
+    target = next(path for _name, path, _kind, _st in cfg._platform_manifest_paths(source="bundled") if path)
+    real_open = builtins.open
+
+    def denying_open(file, *args, **kwargs):
+        if str(file) == str(target):
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(cfg, "OPTIONAL_ENV_VARS", dict(cfg.OPTIONAL_ENV_VARS))
+    monkeypatch.setattr(builtins, "open", denying_open)
+    assert cfg._inject_platform_plugin_env_vars() is None
+    monkeypatch.setattr(cfg, "BUNDLED_PLATFORM_SECRET_ENVS", None)
+    with pytest.raises(PermissionError):
+        cfg.platform_manifest_secret_envs(source="bundled", strict=True)
 
 
 def test_inheriting_child_gets_provider_keys_but_never_adapter_secrets(child_env, monkeypatch):

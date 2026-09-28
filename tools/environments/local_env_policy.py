@@ -138,17 +138,22 @@ def _home_adapter_secret_env() -> frozenset:
     return cached[1]
 
 
-def _registered_adapter_secret_env() -> frozenset:
-    """Per-call adapter secrets: the bound profile's user-plugin declarations (Tier 1, see
-    :func:`_home_adapter_secret_env`) plus the secret-named ``required_env`` of the adapters
-    registered in the current profile scope. Registered names are Tier 2 only: ``required_env`` is
-    an unchecked setup list, so a plugin naming OPENAI_API_KEY must not strip it from credentialed
-    children. No blanket fallback: a registry error surfaces instead of an empty (fail-open) set."""
+def _registry_adapter_secret_env() -> frozenset:
+    """Secret-named ``required_env`` of the adapters registered in the current profile scope.
+    Tier 2 only: ``required_env`` is an unchecked setup list, so a plugin naming OPENAI_API_KEY
+    must not strip it from credentialed children. No blanket fallback: a registry error surfaces
+    instead of an empty (fail-open) set."""
     from gateway.platform_registry import platform_registry
     from hermes_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
-    registered = {n.upper() for n in platform_registry.required_env_names()
-                  if n.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES)}
-    return frozenset(registered) | _home_adapter_secret_env()
+    return frozenset(n.upper() for n in platform_registry.required_env_names()
+                     if n.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES))
+
+
+def _registered_adapter_secret_env() -> frozenset:
+    """Per-call adapter secrets: the bound profile's user-plugin declarations (Tier 1, see
+    :func:`_home_adapter_secret_env`) plus the registered adapters' (Tier 2,
+    :func:`_registry_adapter_secret_env`)."""
+    return _registry_adapter_secret_env() | _home_adapter_secret_env()
 
 
 def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = None) -> bool:

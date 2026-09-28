@@ -3332,7 +3332,8 @@ export const ja = defineLocale({
     removeCustomModel: 'カスタムモデルを削除',
     resetToDefaults: 'デフォルトに戻す',
     resetConfirm: 'モデルの表示設定をデフォルトに戻しますか？',
-    resetDescription: '表示・非表示の選択が消去され、各プロバイダーのデフォルトの一覧に戻ります。追加したカスタムモデルは残り、表示されます。',
+    resetDescription:
+      '表示・非表示の選択が消去され、各プロバイダーのデフォルトの一覧に戻ります。追加したカスタムモデルは残り、表示されます。',
     resetAction: 'リセット'
   },
 

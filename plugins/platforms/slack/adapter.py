@@ -5575,13 +5575,19 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             return
         team_id, action_id, session_key, message, msg_ts, channel_id, user_name, user_id = started
         choice = self._APPROVAL_CHOICES.get(action_id, "deny")
-        # The bare ts too: stored without a team id, clicked with one.
-        approval_key = msg_ts if msg_ts in self._approval_resolved else self._workspace_message_marker(team_id, msg_ts)
+        logger.debug("[Slack] Approval click: action=%s ts=%s team=%r user=%s", action_id, msg_ts, team_id, user_name)
+        # Send and click can disagree on the team id (an Enterprise Grid click may carry only
+        # ``enterprise``): match the ts component either way, or the click is silently swallowed.
+        approval_key = self._workspace_message_marker(team_id, msg_ts)
+        if approval_key not in self._approval_resolved:
+            approval_key = next((k for k in self._approval_resolved
+                                 if (k[1] if isinstance(k, tuple) else k) == msg_ts), approval_key)
         if await self._refuse_other_requester(approval_refusal(
                 session_key, user_id, extra=self.config.extra, request_id=self._approval_request_ids.get(approval_key),
                 choice=choice), body):
             return
         if self._approval_resolved.pop(approval_key, True):  # double-click guard (atomic pop)
+            logger.warning("[Slack] Approval click for ts=%s (team=%r) matched no live card", msg_ts, team_id)
             return
         request_id = self._approval_request_ids.pop(approval_key, None)
         # Resolve FIRST (unblocks the agent); render after so a click past the

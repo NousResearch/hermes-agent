@@ -20,6 +20,8 @@ Test patterns for the marker emit checks adapted from PR #32375
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.context_compressor import (
     SKILL_PRUNED_MARKER_PREFIX,
     SUMMARY_PREFIX,
@@ -157,6 +159,16 @@ class TestProtectedSkillPrune:
 
 class TestMarkerSurvivesRealCompress:
     """P2 layer: markers survive a real compress() with a mocked aux LLM."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_launch_bootstrap(self, monkeypatch):
+        # compress() lazily imports conversation_loop -> process_bootstrap ->
+        # hermes_bootstrap. These are compression tests, not entry-point tests:
+        # never prepare/recover/activate the developer's installed environment.
+        # HERMES_HOME alone cannot relocate the payload manifest beside the code.
+        monkeypatch.setattr("hermes_cli.venv_sync.prepare_launch", lambda *_: None)
+        monkeypatch.setattr("hermes_cli._early_recovery.recover_if_needed", lambda *_: None)
+        monkeypatch.setattr("pm.environments.activate_dependencies", lambda *_: None)
 
     def _mock_response(self, text):
         response = MagicMock()

@@ -578,6 +578,19 @@ terminal:
 #   protected_instruction_extra_patterns: []
 
 # =============================================================================
+# LSP Diagnostics (post-write lint for write_file / patch)
+# =============================================================================
+# lsp:
+#   enabled: true
+#   # Language servers only load code a project ships (its .venv interpreter,
+#   # node_modules TypeScript, svelte.config.js, Rust build scripts/proc-macros)
+#   # in the git worktree Hermes was launched in, or under a directory listed
+#   # here. Other checkouts, such as a repository the agent cloned, get
+#   # Hermes-side tools instead. Gateway and desktop sessions usually need this.
+#   trusted_workspaces:
+#     - ~/code/my-app
+
+# =============================================================================
 # Browser Tool Configuration
 # =============================================================================
 browser:

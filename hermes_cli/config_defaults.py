@@ -2388,6 +2388,12 @@ DEFAULT_CONFIG = {
         # finish in budget, while every other workspace keeps its diagnostics. Must be a list —
         # any other shape logs a warning and skips LSP for every workspace until fixed.
         "exclude_roots": [],
+        # Directories (~ expanded; everything under an entry counts) whose projects a language
+        # server may load code from: the project's own .venv/venv interpreter, node_modules
+        # TypeScript SDK, svelte.config.js, Rust build scripts and proc-macros. The git worktree
+        # Hermes was launched in is always trusted; any other checkout (a clone the agent made,
+        # a gateway/desktop session's repo) gets Hermes-side tools instead until listed here.
+        "trusted_workspaces": [],
         # Missing server binaries: auto = install via npm/go/pip into <HERMES_HOME>/lsp/bin/ on
         # first use; manual = only binaries on PATH; off = alias for manual.
         "install_strategy": "auto",

@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +50,12 @@ _LANGUAGE_ALIASES: dict[str, str] = {
 
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
+
+# Least-recently-used first; capped like the lru_cache(maxsize=8) it replaced (a process only
+# serves a handful of profile homes, but home overrides also come from per-request callers).
+_language_cache: dict[str, str | None] = {}
+_LANGUAGE_CACHE_MAX = 8
+_language_lock = threading.Lock()
 
 
 def _locales_dir() -> Path:
@@ -118,18 +123,34 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
         out[prefix] = node
 
 
-@lru_cache(maxsize=8)
 def _config_language_cached(hermes_home: str) -> str | None:
     """``display.language`` from config.yaml, read once per profile home (``t()`` is a hot path).
     Keyed by home so a multiplexed gateway serving several profiles doesn't freeze the first
-    profile's language for every other profile."""
+    profile's language for every other profile. A result read from a FailedConfigRead fallback
+    (config.yaml exists but could not be read or parsed: a transient I/O error, or a half-saved
+    edit) is never memoised, so it's retried on the next call instead of pinning the language for
+    the life of the process; a reader that raises is not memoised either. A config.yaml that does
+    not exist yet is NOT a failed read — that result (no language) is cached like any other."""
+    with _language_lock:
+        if hermes_home in _language_cache:
+            _language_cache[hermes_home] = _language_cache.pop(hermes_home)  # mark most recent
+            return _language_cache[hermes_home]
     try:
         from hermes_cli.config import load_config_readonly
-        lang = (load_config_readonly().get("display") or {}).get("language")
-        return _normalize_lang(lang) if lang else None
+        from hermes_cli.config_read_errors import FailedConfigRead
+        cfg = load_config_readonly()
+        lang = (cfg.get("display") or {}).get("language")
+        result = _normalize_lang(lang) if lang else None
     except Exception as exc:
         logger.debug("Could not read display.language from config: %s", exc)
         return None
+    if not isinstance(cfg, FailedConfigRead):
+        with _language_lock:
+            _language_cache.pop(hermes_home, None)
+            while len(_language_cache) >= _LANGUAGE_CACHE_MAX:
+                _language_cache.pop(next(iter(_language_cache)))  # evict least recently used
+            _language_cache[hermes_home] = result
+    return result
 
 
 def _config_language() -> str | None:
@@ -139,7 +160,8 @@ def _config_language() -> str | None:
 
 def reset_language_cache() -> None:
     """Invalidate cached language resolution and catalogs (call after ``save_config`` changes ``display.language``)."""
-    _config_language_cached.cache_clear()
+    with _language_lock:
+        _language_cache.clear()
     with _catalog_lock:
         _catalog_cache.clear()
 

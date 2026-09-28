@@ -319,7 +319,7 @@ def _is_interim_send(content: str, metadata: Optional[Dict[str, Any]] = None) ->
     before the wire. The text prefixes remain a fallback for callers that pass no
     metadata. See #106446.
     """
-    if (metadata or {}).get("_interim_send"):
+    if (metadata or {}).get("_interim_send") or (metadata or {}).get("busy_ack"):
         return True
     return _is_system_bypass(content)
 

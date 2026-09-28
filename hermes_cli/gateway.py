@@ -2301,13 +2301,20 @@ def get_service_name() -> str:
 
 
 def user_systemd_unit_dir() -> Path:
-    """``$XDG_CONFIG_HOME/systemd/user`` (``~/.config`` only as the spec's default).
+    """``$XDG_CONFIG_HOME/systemd/user`` (``~/.config`` only as the spec's default), ``~`` being the
+    ACCOUNT home, not the process HOME.
 
     Hardcoding ``~/.config`` made every unit probe silently false-negative on a host that moves
-    XDG_CONFIG_HOME — doctor then reported no gateway unit while systemd was running ours.
+    XDG_CONFIG_HOME — doctor then reported no gateway unit while systemd was running ours. And
+    ``Path.home()`` trusts a process HOME that profile isolation may point at ``{HERMES_HOME}/home`` — the
+    ACTIVE profile's, not even the one selected with ``-p`` — so ``gateway install`` wrote the unit under
+    ``~/.hermes/profiles/<active>/home/.config/systemd/user/`` where ``systemctl --user`` never looks and
+    ``enable`` failed with "Unit ... does not exist" (#98699). ``systemctl --user`` targets the login
+    user's session, so the unit dir follows the account home like ``get_launchd_plist_path()`` does.
     """
+    from hermes_constants import get_real_home
     config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    base = Path(config_home) if config_home else Path.home() / ".config"
+    base = Path(config_home) if config_home else Path(get_real_home()) / ".config"
     return base / "systemd" / "user"
 
 

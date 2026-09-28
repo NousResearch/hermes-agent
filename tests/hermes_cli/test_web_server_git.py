@@ -273,27 +273,30 @@ def _out(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
+_IDENT = ("-c", "user.email=t@example.com", "-c", "user.name=Test")
+
+
 def _seed_origin(tmp_path):
-    """A bare origin whose `main` and `feature` sit one commit past tag `v0`."""
+    """A bare origin whose `main` and `feature` sit one commit past tag `v0`, plus the work
+    repo that pushed it."""
     origin = tmp_path / "origin.git"
     origin.mkdir()
     _git(origin, "init", "-q", "-b", "main", "--bare")
     work = tmp_path / "seed"
     work.mkdir()
     _git(work, "init", "-q", "-b", "main")
-    ident = ("-c", "user.email=t@example.com", "-c", "user.name=Test")
-    _git(work, *ident, "commit", "-q", "--allow-empty", "-m", "c1")
+    _git(work, *_IDENT, "commit", "-q", "--allow-empty", "-m", "c1")
     _git(work, "tag", "v0")
-    _git(work, *ident, "commit", "-q", "--allow-empty", "-m", "c2")
+    _git(work, *_IDENT, "commit", "-q", "--allow-empty", "-m", "c2")
     _git(work, "branch", "feature")
     _git(work, "push", "-q", str(origin), "main", "feature", "v0")
-    return origin, _out(work, "rev-parse", "HEAD")
+    return origin, work, _out(work, "rev-parse", "HEAD")
 
 
 def _narrow_clone(tmp_path, *, seed_tracking_ref=False):
     """A tag-pinned narrow clone (--single-branch --branch <tag>) whose remote.origin.fetch
     maps only the tag, the shape older installers made (#125686)."""
-    origin, tip = _seed_origin(tmp_path)
+    origin, _, tip = _seed_origin(tmp_path)
     clone = tmp_path / "clone"
     _git(tmp_path, "clone", "-q", "--single-branch", "--branch", "v0", str(origin), str(clone))
     if seed_tracking_ref:
@@ -302,7 +305,7 @@ def _narrow_clone(tmp_path, *, seed_tracking_ref=False):
 
 
 def _normal_clone(tmp_path):
-    origin, tip = _seed_origin(tmp_path)
+    origin, _, tip = _seed_origin(tmp_path)
     clone = tmp_path / "normal"
     _git(tmp_path, "clone", "-q", str(origin), str(clone))
     return clone, tip
@@ -403,14 +406,12 @@ def test_worktree_add_glob_base_is_not_fetched(tmp_path):
 
 def test_worktree_add_base_refreshes_valid_branch_names_the_sanitizer_would_rewrite(tmp_path):
     """"fix+1" is a valid branch the sanitizer rewrites; its base must still be fetched."""
-    origin, _ = _seed_origin(tmp_path)
-    seed = tmp_path / "seed"
+    origin, seed, _ = _seed_origin(tmp_path)
     _git(seed, "branch", "fix+1")
     _git(seed, "push", "-q", str(origin), "fix+1")
     clone = tmp_path / "normal"
     _git(tmp_path, "clone", "-q", str(origin), str(clone))
-    _git(seed, "-c", "user.email=t@example.com", "-c", "user.name=Test",
-         "commit", "-q", "--allow-empty", "-m", "moved after the clone")
+    _git(seed, *_IDENT, "commit", "-q", "--allow-empty", "-m", "moved after the clone")
     _git(seed, "push", "-q", str(origin), "HEAD:fix+1")
     from hermes_cli.web_git import worktree_add
 

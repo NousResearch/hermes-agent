@@ -326,15 +326,15 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
 // installers made: remote.origin.fetch maps only the tag, so no branch has a
 // tracking ref. The remote has `main` and `feature` one commit past the tag.
 // Returns both paths and the tip. The caller must remove them.
+const IDENT = ['-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes']
+
 function seedNarrowClone(label) {
   const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-remote-`))
   const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-clone-`))
-  const ident = ['-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes']
-
   execFileSync('git', ['init', '-q', '-b', 'main', remoteDir])
-  execFileSync('git', ['-C', remoteDir, ...ident, 'commit', '-q', '--allow-empty', '-m', 'root'])
+  execFileSync('git', ['-C', remoteDir, ...IDENT, 'commit', '-q', '--allow-empty', '-m', 'root'])
   execFileSync('git', ['-C', remoteDir, 'tag', 'v0'])
-  execFileSync('git', ['-C', remoteDir, ...ident, 'commit', '-q', '--allow-empty', '-m', 'tip'])
+  execFileSync('git', ['-C', remoteDir, ...IDENT, 'commit', '-q', '--allow-empty', '-m', 'tip'])
   execFileSync('git', ['-C', remoteDir, 'branch', 'feature'])
   const tip = execFileSync('git', ['-C', remoteDir, 'rev-parse', 'HEAD']).toString().trim()
 
@@ -450,11 +450,10 @@ test('addWorktree: a local slash branch named like a remote branch stays local',
 
 test('addWorktree: a valid branch the sanitizer would rewrite is still refreshed as a base', async () => {
   const { cloneDir, remoteDir } = seedRemoteAndClone('plus-base', ['fix+1'])
-  const ident = ['-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes']
 
   try {
     execFileSync('git', ['-C', remoteDir, 'checkout', '-q', 'fix+1'])
-    execFileSync('git', ['-C', remoteDir, ...ident, 'commit', '-q', '--allow-empty', '-m', 'moved after the clone'])
+    execFileSync('git', ['-C', remoteDir, ...IDENT, 'commit', '-q', '--allow-empty', '-m', 'moved after the clone'])
     const moved = execFileSync('git', ['-C', remoteDir, 'rev-parse', 'HEAD']).toString().trim()
 
     const result = await addWorktree(cloneDir, { base: 'origin/fix+1', branch: 'x', name: 'x' }, 'git')

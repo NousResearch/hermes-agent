@@ -20,7 +20,7 @@ import {
   type SourceFingerprintInput
 } from './managed-rollout-identity'
 import type { TrustedInventorySnapshot } from './managed-rollout-inventory'
-import { createManagedRolloutJournal } from './managed-rollout-journal'
+import { createManagedRolloutJournal, type RecoveryClearance } from './managed-rollout-journal'
 import type { TargetResolution } from './managed-rollout-preflight'
 import {
   createManagedRolloutProvider,
@@ -45,6 +45,18 @@ const NEXT_INSTALL_ID = 'f'.repeat(32)
 const THIRD_INSTALL_ID = 'ab'.repeat(16)
 const SECOND_CONNECTION_ID = '22222222-2222-4222-8222-222222222222'
 const THIRD_CONNECTION_ID = '33333333-3333-4333-8333-333333333333'
+
+// The structured clearance artifact a proved recovery produces. The durable
+// journal validates this shape before a recovery-cleared fact can release a
+// fence, so fixtures must carry the same evidence the composed path records.
+const RECOVERY_CLEARANCE: RecoveryClearance = {
+  kind: 'remote-original-obligation-clearance',
+  markerClear: true,
+  launchIntentClear: true,
+  originalRecordRemoved: true,
+  receiptRequired: false,
+  receiptProvedRequest: null
+}
 
 function assuranceEnvelope(fingerprint: string = SOURCE_FINGERPRINT): Uint8Array {
   const document = {
@@ -508,16 +520,18 @@ test.each([
       return { authorization, outcome: observedOutcome, receipt: update.receipt, health: null }
     },
     reprobe: async authorization => ({ correlationId: authorization.correlationId, outcome: 'unverified', terminal: false }),
-    recover: async authorization => ({ correlationId: authorization.correlationId, clearanceProved: true })
+    recover: async authorization => ({ correlationId: authorization.correlationId, clearanceProved: true, clearance: RECOVERY_CLEARANCE })
   }
 
   try {
     const provider = createManagedRolloutProvider(dependencies)
     await provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null })
+
     const preflight = await provider.preflight({
       inventoryRevision: INVENTORY.inventoryRevision, targetResolutionId: RESOLUTION.id,
       waves: [[INSTALL_ID]], concurrency: 1, promotionPolicy: 'auto-if-healthy', retryOf: null
     }) as { token: string; requestId: string }
+
     const started = await provider.start(preflight) as { id: string }
     await provider.waitForIdle()
 
@@ -591,7 +605,7 @@ test('hydrates an authorized running journal record as recoverable unknown witho
   const { dependencies, journalDirectory, launchCalls } = makeDependencies()
   const rolloutId = '33333333-3333-4333-8333-333333333333'
   const correlationId = '44444444-4444-4444-8444-444444444444'
-  let clearanceMode: 'missing' | 'foreign' | 'proved' = 'missing'
+  let clearanceMode: 'missing' | 'foreign' | 'bare' | 'proved' = 'missing'
 
   try {
     dependencies.journal.create({
@@ -675,7 +689,10 @@ test('hydrates an authorized running journal record as recoverable unknown witho
         }),
         recover: async authorization => ({
           correlationId: clearanceMode === 'foreign' ? 'foreign-correlation' : authorization.correlationId,
-          clearanceProved: clearanceMode !== 'missing'
+          // 'bare' claims clearance without the structured artifact: the
+          // provider's artifact gate must refuse it, not the correlation check.
+          clearanceProved: clearanceMode !== 'missing',
+          ...(clearanceMode === 'missing' || clearanceMode === 'bare' ? {} : { clearance: RECOVERY_CLEARANCE })
         })
       }
     }
@@ -693,7 +710,8 @@ test('hydrates an authorized running journal record as recoverable unknown witho
 
     for (const [mode, requestId] of [
       ['missing', '77777777-7777-4777-8777-777777777777'],
-      ['foreign', '88888888-8888-4888-8888-888888888888']
+      ['foreign', '88888888-8888-4888-8888-888888888888'],
+      ['bare', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']
     ] as const) {
       clearanceMode = mode
       const refused = await provider.command({
@@ -1113,6 +1131,77 @@ test('refuses to settle success when the receipt never recorded which request it
     assert.equal(settled.attempts[0].phase, 'unverified')
     assert.equal(settled.attempts[0].recoveryRequired, true)
     assert.equal(record.facts.some(item => item.kind === 'settlement-validated'), false)
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test.each([
+  ['never recorded the request it answered', undefined],
+  ['recorded a different request', 'd'.repeat(40)]
+])('refuses to settle success when the service receipt %s even if the observation adapter claims success', async (_label, requestedSha) => {
+  const { dependencies, journalDirectory } = makeDependencies()
+  dependencies.managedSshUpdateService = {
+    ...dependencies.managedSshUpdateService,
+    requestCoordinator: (connectionId, input) => ({
+      admitted: true as const,
+      operation: Promise.resolve({
+        connectionId: String(connectionId),
+        correlationId: input.correlationId,
+        ok: true, updateOk: true, restoreOk: true,
+        outcome: 'updated' as const,
+        exitCode: 0,
+        receipt: {
+          correlationId: input.correlationId,
+          outcome: 'updated',
+          startedAt: NOW_ISO,
+          finishedAt: NOW_ISO,
+          preSha: ADMITTED_SHA,
+          postSha: TARGET_SHA,
+          ...(requestedSha === undefined ? {} : { requestedSha })
+        },
+        scopes: []
+      })
+    })
+  }
+  dependencies.observe = {
+    observe: async ({ authorization }) => ({
+      authorization,
+      outcome: 'updated' as const,
+      receipt: {
+        correlationId: authorization.correlationId,
+        outcome: 'updated',
+        requestedSha: TARGET_SHA,
+        startedAt: NOW_ISO,
+        finishedAt: NOW_ISO,
+        preSha: ADMITTED_SHA,
+        postSha: TARGET_SHA
+      },
+      health: health()
+    })
+  }
+
+  try {
+    const provider = createManagedRolloutProvider(dependencies)
+    await provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null })
+    const preflight = await provider.preflight({
+      inventoryRevision: INVENTORY.inventoryRevision, targetResolutionId: RESOLUTION.id,
+      waves: [[INSTALL_ID]], concurrency: 1, promotionPolicy: 'auto-if-healthy', retryOf: null
+    }) as { token: string; requestId: string }
+    const started = await provider.start(preflight) as { id: string }
+
+    await provider.waitForIdle()
+
+    // The observation adapter returned a reviewed-target receipt, but the
+    // service's own receipt never proved the request. A settlement that
+    // releases the installation fence must be provable from both records,
+    // never from a cooperating adapter alone.
+    const settled = await provider.get(started.id) as any
+    const record = dependencies.journal.read(started.id)
+
+    assert.equal(settled.attempts[0].phase, 'unverified')
+    assert.equal(record.facts.some(item => item.kind === 'settlement-validated'), false)
+    assert.equal(record.unresolved.length, 1)
   } finally {
     fs.rmSync(journalDirectory, { recursive: true, force: true })
   }

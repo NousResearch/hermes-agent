@@ -14,6 +14,7 @@ import {
   type JournalFs,
   type JournalSnapshot,
   ManagedRolloutJournal,
+  type RecoveryClearance,
   type UnresolvedFence
 } from './managed-rollout-journal'
 
@@ -72,6 +73,19 @@ function withTempDirectory(run: (directory: string) => void): void {
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
   }
+}
+
+// The structured clearance artifact a proved recovery carries into a
+// recovery-cleared fact. The journal validates this shape before the fact can
+// release a fence, so fixtures must carry the same evidence the composed path
+// produces.
+const CLEARANCE: RecoveryClearance = {
+  kind: 'remote-original-obligation-clearance',
+  markerClear: true,
+  launchIntentClear: true,
+  originalRecordRemoved: true,
+  receiptRequired: true,
+  receiptProvedRequest: true
 }
 
 function realFs(overrides: Partial<JournalFs> = {}): JournalFs {
@@ -481,7 +495,8 @@ test('releases a fence on matching recovery-clearance evidence without a success
     assert.equal(instance.hasUnresolvedInstall(INSTALL_A), true)
 
     // Recovery releases the fence on proved clearance. That evidence is its
-    // own kind — it must not masquerade as a receipt-backed settlement.
+    // own kind — it must not masquerade as a receipt-backed settlement — and
+    // it must carry the structured clearance proof it claims.
     instance.record({
       id: ROLLOUT_A,
       expectedRevision: 1,
@@ -496,7 +511,8 @@ test('releases a fence on matching recovery-clearance evidence without a success
           correlationId: unresolved.correlationId,
           installId: INSTALL_A,
           observedAt: '2026-09-21T00:00:01.000Z',
-          basis: 'correlated recovery proved clearance of the durable scope obligation'
+          basis: 'correlated recovery proved clearance of the durable scope obligation',
+          clearance: CLEARANCE
         }
       ],
       unresolved: { remove: [unresolved.key] }
@@ -506,6 +522,182 @@ test('releases a fence on matching recovery-clearance evidence without a success
     const facts = instance.read(ROLLOUT_A).facts
     assert.ok(facts.some(fact => fact.kind === 'recovery-cleared'))
     assert.equal(facts.some(fact => fact.kind === 'settlement-validated'), false)
+  })
+})
+
+test('refuses recovery clearance that does not carry the structured proof it claims', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    const unresolved = fence()
+    instance.create(snapshot(ROLLOUT_A, { phase: 'attention-required' }), { unresolved: [unresolved] })
+
+    // A bare caller assertion is not clearance evidence: the fact must carry
+    // the structured artifact the recovery produced.
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-asserted-clearance',
+          payload: { action: 'reconciled', key: unresolved.key },
+          snapshot: snapshot(ROLLOUT_A, { phase: 'attention-required' }),
+          facts: [
+            {
+              kind: 'recovery-cleared',
+              rolloutId: ROLLOUT_A,
+              correlationId: unresolved.correlationId,
+              installId: INSTALL_A,
+              observedAt: '2026-09-21T00:00:01.000Z',
+              basis: 'caller assertion only; no recovery artifact'
+            }
+          ],
+          unresolved: { remove: [unresolved.key] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'corrupt-journal'
+    )
+
+    // An artifact that does not prove clearance — a live marker, an uncleared
+    // launch intent, or an unproved request — must not release the fence.
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-unproved-clearance',
+          payload: { action: 'reconciled', key: unresolved.key },
+          snapshot: snapshot(ROLLOUT_A, { phase: 'attention-required' }),
+          facts: [
+            {
+              kind: 'recovery-cleared',
+              rolloutId: ROLLOUT_A,
+              correlationId: unresolved.correlationId,
+              installId: INSTALL_A,
+              observedAt: '2026-09-21T00:00:01.000Z',
+              basis: 'recovery claimed but the artifact admits a live marker',
+              // Fault injection: an artifact that does not prove clearance
+              // must be refused by the journal validator at runtime.
+              clearance: { ...CLEARANCE, markerClear: false } as unknown as RecoveryClearance
+            }
+          ],
+          unresolved: { remove: [unresolved.key] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'corrupt-journal'
+    )
+
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), true)
+  })
+})
+
+test('refuses fences tagged for another rollout in the same journal', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+
+    // A fence is an obligation of the rollout that owns it; a record must
+    // never accept a fence tagged with a different rollout's identity.
+    assert.throws(
+      () => instance.create(snapshot(ROLLOUT_A), { unresolved: [fence(ROLLOUT_B)] }),
+      (error: unknown) => error instanceof JournalError && error.code === 'invalid-input'
+    )
+
+    instance.create(snapshot(ROLLOUT_A, { phase: 'running' }), { unresolved: [fence(ROLLOUT_A)] })
+
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-foreign-fence',
+          payload: { action: 'fence' },
+          snapshot: snapshot(ROLLOUT_A, { phase: 'running' }),
+          unresolved: { add: [fence(ROLLOUT_B)] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'invalid-input'
+    )
+    assert.equal(instance.read(ROLLOUT_A).unresolved.length, 1)
+  })
+})
+
+test('refuses to release a fence whose stored tag names another rollout', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    const unresolved = fence()
+    instance.create(snapshot(ROLLOUT_A, { phase: 'attention-required' }), { unresolved: [unresolved] })
+
+    // Simulate a record that reached disk carrying a rollout-mismatched fence:
+    // release evidence recorded for this record must never clear it.
+    const file = path.join(directory, `${ROLLOUT_A}.json`)
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'))
+    stored.unresolved[0].rolloutId = ROLLOUT_B
+    fs.writeFileSync(file, JSON.stringify(stored), 'utf8')
+
+    const reopened = journal(directory)
+
+    assert.throws(
+      () =>
+        reopened.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-foreign-release',
+          payload: { action: 'reconciled' },
+          snapshot: snapshot(ROLLOUT_A, { phase: 'attention-required' }),
+          facts: [
+            {
+              kind: 'settlement-validated',
+              rolloutId: ROLLOUT_A,
+              correlationId: unresolved.correlationId,
+              installId: INSTALL_A,
+              observedAt: '2026-09-21T00:00:01.000Z',
+              basis: 'receipt for this record only'
+            }
+          ],
+          unresolved: { remove: [unresolved.key] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'fence-release-unproven'
+    )
+    assert.equal(reopened.hasUnresolvedInstall(INSTALL_A), true)
+  })
+})
+
+test('a legacy recovery-cleared fact without the clearance artifact can never release a persisted fence', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    const unresolved = fence()
+    instance.create(snapshot(ROLLOUT_A, { phase: 'attention-required' }), { unresolved: [unresolved] })
+
+    // Simulate a record written by an older build: a recovery-cleared fact
+    // with only a textual basis and no structured artifact. The read path
+    // must accept the legacy record, but its bare assertion must never
+    // release the fence — release revalidates the artifact.
+    const file = path.join(directory, `${ROLLOUT_A}.json`)
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'))
+    stored.facts = [
+      {
+        kind: 'recovery-cleared',
+        rolloutId: ROLLOUT_A,
+        correlationId: unresolved.correlationId,
+        installId: INSTALL_A,
+        observedAt: '2026-09-21T00:00:01.000Z',
+        basis: 'caller assertion only; no recovery artifact'
+      }
+    ]
+    fs.writeFileSync(file, JSON.stringify(stored), 'utf8')
+
+    const reopened = journal(directory)
+    assert.equal(reopened.read(ROLLOUT_A).facts.length, 1)
+
+    assert.throws(
+      () =>
+        reopened.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-legacy-bare-release',
+          payload: { action: 'reconciled' },
+          snapshot: snapshot(ROLLOUT_A, { phase: 'attention-required' }),
+          unresolved: { remove: [unresolved.key] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'fence-release-unproven'
+    )
+    assert.equal(reopened.hasUnresolvedInstall(INSTALL_A), true)
   })
 })
 

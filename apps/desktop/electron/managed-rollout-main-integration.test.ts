@@ -462,7 +462,15 @@ describe('managed rollout main integration', () => {
     })
     await expect((integration.observe as any).recover(authorization)).resolves.toEqual({
       correlationId: CORRELATION_ID,
-      clearanceProved: true
+      clearanceProved: true,
+      clearance: {
+        kind: 'remote-original-obligation-clearance',
+        markerClear: true,
+        launchIntentClear: true,
+        originalRecordRemoved: true,
+        receiptRequired: true,
+        receiptProvedRequest: true
+      }
     })
     await expect((integration.observe as any).reprobe(authorization)).resolves.toMatchObject({
       correlationId: CORRELATION_ID,
@@ -523,7 +531,7 @@ describe('managed rollout main integration', () => {
     expect(observed.health.installReady).toBe(false)
   })
 
-  test('refuses a success-shaped live observation when readiness is not proven', async () => {
+  test('refuses a success-shaped already-current observation that contradicts the earlier service receipt requested SHA', async () => {
     const { integration, authorization } = await reprobeFixture()
     const expected = { correlationId: CORRELATION_ID, outcome: 'already-current', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
     vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
@@ -544,6 +552,75 @@ describe('managed rollout main integration', () => {
     expect(observed.outcome).toBe('unverified')
     expect(observed.health.receiptSucceeded).toBe(false)
     expect(observed.health.installReady).toBe(false)
+  })
+
+  test('does not project success when coordinator readiness is not proven', async () => {
+    const { integration, authorization } = await reprobeFixture()
+    const receipt = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent', receipt, coordinatorReady: null
+    } as any)
+
+    // The service and the live observation agree on a matching receipt, but
+    // the coordinator never proved readiness for this correlation: the
+    // projection must not label the attempt updated while that proof is
+    // missing, and the provider's stricter settlement gate must not be the
+    // only place this contradiction is caught.
+    const observed: any = await (integration.observe as any).observe({
+      authorization,
+      update: { ok: true, updateOk: true, restoreOk: true, receipt, scopes: [] }
+    })
+
+    expect(observed.health.dependencyReady).toBe(false)
+    expect(observed.outcome).toBe('unverified')
+  })
+
+  test('does not project success while recovery markers remain', async () => {
+    const { integration, authorization } = await reprobeFixture()
+    const receipt = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'present', receipt,
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    // A live launch intent that is not dead/absent leaves recovery unproved,
+    // so the success projection must stay unknown.
+    const observed: any = await (integration.observe as any).observe({
+      authorization,
+      update: { ok: true, updateOk: true, restoreOk: true, receipt, scopes: [] }
+    })
+
+    expect(observed.health.recoveryClear).toBe(false)
+    expect(observed.outcome).toBe('unverified')
+  })
+
+  test.each([
+    ['refused', 'refused'],
+    ['update-failed', 'failed']
+  ])('keeps a known %s service outcome when the follow-up observation cannot run', async (serviceOutcome, expectedOutcome) => {
+    const { integration, authorization } = await reprobeFixture()
+
+    const receipt = {
+      correlationId: CORRELATION_ID,
+      outcome: expectedOutcome,
+      startedAt: '2026-09-21T00:00:00.000Z',
+      finishedAt: '2026-09-21T00:01:00.000Z',
+      preSha: 'c'.repeat(40),
+      postSha: 'c'.repeat(40)
+    }
+
+    vi.mocked(observeManagedRemoteUpdate).mockRejectedValue(new Error('observation transport unavailable'))
+
+    const observed: any = await (integration.observe as any).observe({
+      authorization,
+      update: { ok: false, updateOk: false, restoreOk: true, outcome: serviceOutcome, receipt, scopes: [] }
+    })
+
+    // The service returned a receipt-backed terminal failure; a transport
+    // failure on the follow-up observation must not erase that known
+    // classification back to unknown.
+    expect(observed.outcome).toBe(expectedOutcome)
+    expect(observed.receipt).toEqual(receipt)
   })
 
   test('refuses a live observation whose post-update SHA contradicts the earlier service receipt', async () => {
@@ -677,6 +754,7 @@ describe('managed rollout main integration', () => {
 
   test('Recover refuses clearance without the original durable scope record', async () => {
     const recoverManagedSsh = vi.fn(async () => undefined)
+
     const { integration } = makeIntegration(TARGET_SHA, {
       readRecoveryRecord: () => null,
       recoverManagedSsh
@@ -704,6 +782,7 @@ describe('managed rollout main integration', () => {
       source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
     }
     const recoverManagedSsh = vi.fn(async () => undefined)
+
     const { integration } = makeIntegration(TARGET_SHA, {
       readRecoveryRecord: () => record,
       recoverManagedSsh
@@ -717,7 +796,8 @@ describe('managed rollout main integration', () => {
 
     await expect((integration.observe as any).recover({
       connectionId: CONNECTION_ID,
-      correlationId: CORRELATION_ID
+      correlationId: CORRELATION_ID,
+      targetSha: TARGET_SHA
     })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
     expect(recoverManagedSsh).toHaveBeenCalledWith(record)
   })
@@ -730,6 +810,7 @@ describe('managed rollout main integration', () => {
       scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
       source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
     }
+
     const recoverManagedSsh = vi.fn(async () => {record = null})
     const { integration } = makeIntegration(TARGET_SHA, {
       readRecoveryRecord: () => record,
@@ -743,9 +824,90 @@ describe('managed rollout main integration', () => {
     await expect((integration.observe as any).recover({
       connectionId: CONNECTION_ID,
       correlationId: CORRELATION_ID
-    })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: true })
+    })).resolves.toMatchObject({ correlationId: CORRELATION_ID, clearanceProved: true })
     expect(recoverManagedSsh).toHaveBeenCalledWith(expect.objectContaining({
       phase: 'prepared', scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }]
+    }))
+  })
+
+  test.each([
+    ['never recorded the request it answered', undefined],
+    ['recorded a different request', 'd'.repeat(40)]
+  ])('Recover refuses to clear a launched attempt whose receiving receipt %s', async (_label, requestedSha) => {
+    let record: any = {
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      phase: 'launching',
+      scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
+      source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
+    }
+
+    const recoverManagedSsh = vi.fn(async () => {record = null})
+    const { integration } = makeIntegration(TARGET_SHA, {
+      readRecoveryRecord: () => record,
+      recoverManagedSsh
+    })
+
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent',
+      launchIntent: 'absent',
+      receipt: {
+        correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA,
+        ...(requestedSha === undefined ? {} : { requestedSha })
+      }
+    } as any)
+
+    // A launched attempt's receipt must prove the request that left the
+    // obligation before its fence may be cleared: a receipt that never
+    // recorded the reviewed request, or answered a different one, leaves
+    // clearance unproved even though the remote markers are clear.
+    await expect((integration.observe as any).recover({
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      targetSha: TARGET_SHA
+    })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    expect(recoverManagedSsh).not.toHaveBeenCalled()
+  })
+
+  test('Recover clears a launched attempt whose receipt proves the reviewed request', async () => {
+    let record: any = {
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      phase: 'launching',
+      scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
+      source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
+    }
+    const recoverManagedSsh = vi.fn(async () => {record = null})
+    const { integration } = makeIntegration(TARGET_SHA, {
+      readRecoveryRecord: () => record,
+      recoverManagedSsh
+    })
+
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent',
+      launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    } as any)
+
+    const result: any = await (integration.observe as any).recover({
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      targetSha: TARGET_SHA
+    })
+
+    expect(result.clearanceProved).toBe(true)
+    // The proved clearance must carry the structured artifact the fence
+    // release is validated against, not a bare claim.
+    expect(result.clearance).toMatchObject({
+      kind: 'remote-original-obligation-clearance',
+      markerClear: true,
+      launchIntentClear: true,
+      originalRecordRemoved: true,
+      receiptRequired: true,
+      receiptProvedRequest: true
+    })
+    expect(recoverManagedSsh).toHaveBeenCalledWith(expect.objectContaining({
+      connectionId: CONNECTION_ID, phase: 'launching'
     }))
   })
 })

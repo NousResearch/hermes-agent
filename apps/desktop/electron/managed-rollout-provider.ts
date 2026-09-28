@@ -56,7 +56,9 @@ import {
   type JournalRecord,
   type JournalSnapshot,
   type ManagedRolloutJournal,
-  type UnresolvedFenceChange
+  type RecoveryClearance,
+  type UnresolvedFenceChange,
+  validateRecoveryClearance
 } from './managed-rollout-journal'
 import {
   canonicalPlanDigest,
@@ -118,6 +120,7 @@ export interface ManagedRolloutObservationReader {
   recover?: (authorization: ManagedRolloutAuthorization) => Promise<{
     correlationId: string
     clearanceProved: boolean
+    clearance?: RecoveryClearance
   }>
 }
 
@@ -188,6 +191,7 @@ type Runtime = {
   authorizations: Map<string, ManagedRolloutAuthorization>
   observations: Map<string, ObservationState>
   reprobeObservations: Map<string, NonNullable<Awaited<ReturnType<NonNullable<ManagedRolloutObservationReader['reprobe']>>>>>
+  recoveryClearances: Map<string, RecoveryClearance>
   launches: Map<string, LaunchPromise>
   coordinator: Coordinator
   snapshot: RolloutSnapshot
@@ -1058,6 +1062,7 @@ export function createManagedRolloutProvider(
         .filter(attempt => attempt.receipt || attempt.health)
         .map(attempt => [attempt.identity.installId, { receipt: attempt.receipt, health: attempt.health }])),
       reprobeObservations: new Map(),
+      recoveryClearances: new Map(),
       launches: new Map<string, LaunchPromise>(),
       coordinator: null as unknown as Coordinator,
       snapshot: restored?.snapshot ?? initialSnapshot(id, plan, isoNow(now), new Map([...targets.values()].map(target => [target.installId, target.correlationId]))),
@@ -1192,7 +1197,29 @@ export function createManagedRolloutProvider(
 
           return result
         },
-        recover: authorization => deps.observe.recover!(authorization)
+        recover: async authorization => {
+          const result = await deps.observe.recover!(authorization)
+          // A recovery claim without the structured clearance artifact is
+          // not proof: the durable fence may only be released by evidence the
+          // journal can revalidate, so an unproved or malformed artifact is
+          // refused here before it can be recorded.
+          let clearance: RecoveryClearance | null = null
+
+          if (result.clearance !== undefined) {
+            try {
+              clearance = validateRecoveryClearance(result.clearance)
+            } catch {
+              clearance = null
+            }
+          }
+
+          const proved = result.clearanceProved && clearance !== null
+
+          if (proved) {runtime.recoveryClearances.set(authorization.installId, clearance!)}
+          else {runtime.recoveryClearances.delete(authorization.installId)}
+
+          return proved ? { ...result, clearanceProved: true, clearance: clearance! } : { ...result, clearanceProved: false, clearance: undefined }
+        }
       } : undefined
     }
 
@@ -1401,13 +1428,18 @@ export function createManagedRolloutProvider(
           }
           const requiredScopeIds = runtime.plan.rows.find(row => row.installId === installId)?.requiredScopeIds ?? []
 
-          // A settlement that releases the installation fence must be provable
-          // from the receipt itself, not from a cooperating adapter: the
-          // remote's recorded requested and post-update SHAs must both equal
-          // the reviewed target. A receipt that answered a different request —
-          // or recorded no request at all — never settles as success.
+          // A settlement that releases the installation fence must be
+          // provable from the receipts themselves, not from a cooperating
+          // adapter: the service's own receipt and the live observation
+          // receipt must both record the reviewed request — correlation,
+          // requested SHA, and post-update SHA. A missing receipt, a receipt
+          // that answered a different request, or one that never recorded
+          // which request it answered never settles as success.
           if (SUCCESSFUL_OUTCOMES.has(observation.outcome) && (
             !update.ok || !update.updateOk || !update.restoreOk ||
+            !update.receipt || update.receipt.correlationId !== authorization.correlationId ||
+            update.receipt.requestedSha !== authorization.targetSha ||
+            update.receipt.postSha !== authorization.targetSha ||
             !observation.receipt || observation.receipt.correlationId !== authorization.correlationId ||
             observation.receipt.requestedSha !== authorization.targetSha ||
             observation.receipt.postSha !== authorization.targetSha ||
@@ -1712,15 +1744,20 @@ export function createManagedRolloutProvider(
 
       if (transition.ok && parsed.installId && parsed.action === 'recover') {
         const authorization = runtime.authorizations.get(parsed.installId)
-        const ownedFence = authorization && liveRecord.unresolved.find(item =>
+        // Fence release requires the structured clearance artifact proved by
+        // the recovery; a transition without it leaves the obligation intact.
+        const clearance = runtime.recoveryClearances.get(parsed.installId)
+
+        const ownedFence = authorization && clearance ? liveRecord.unresolved.find(item =>
           item.key === `managed-rollout:${runtime.id}:${parsed.installId}:${authorization.correlationId}` &&
           item.rolloutId === runtime.id && item.installId === parsed.installId &&
           item.correlationId === authorization.correlationId
-        )
+        ) : undefined
 
-        if (ownedFence) {
-          facts.push(fact('recovery-cleared', runtime.id, parsed.installId, authorization.correlationId, isoNow(now), 'correlated recovery cleared the original durable scope obligation'))
+        if (ownedFence && authorization && clearance) {
+          facts.push({ ...fact('recovery-cleared', runtime.id, parsed.installId, authorization.correlationId, isoNow(now), 'correlated recovery cleared the original durable scope obligation'), clearance })
           unresolved = { remove: [ownedFence.key] }
+          runtime.recoveryClearances.delete(parsed.installId)
         }
       }
 

@@ -5,7 +5,7 @@ import { validateHealthEvidence } from '../src/lib/managed-rollout-contract'
 import type { ManagedRolloutState } from './managed-rollout-coordinator'
 import { buildHealthEvidence, runEvidenceSweep, type SweepProbeContext } from './managed-rollout-evidence'
 import { canonicalRepositoryId, installationFingerprint, sourceFingerprint } from './managed-rollout-identity'
-import { createManagedRolloutJournal, type ManagedRolloutJournal } from './managed-rollout-journal'
+import { createManagedRolloutJournal, type ManagedRolloutJournal, type RecoveryClearance } from './managed-rollout-journal'
 import { createManagedRolloutProductionAdapters } from './managed-rollout-production-adapters'
 import { observeManagedRemoteUpdate } from './managed-ssh-update'
 import type { ManagedSshRecoveryRecord } from './managed-ssh-update-service'
@@ -602,16 +602,23 @@ async function observeRemote(options: ManagedRolloutMainIntegrationOptions, inpu
   try {
     const observed = await observeHealth(options, input.authorization, input.update.receipt, input.authorization.correlationId, input.update.scopes || [])
 
-    const successProved = observed.health.receiptSucceeded && observed.health.installReady
+    // A success projection must be backed by the complete live health
+    // evidence itself: a receipt that proved the reviewed target, a ready
+    // installation with clear markers, coordinator readiness for this
+    // correlation, a complete scope capture, and every scope restored with a
+    // verified process identity at the reviewed SHA. When any part of that
+    // proof is missing or contradicted, the outcome stays unknown instead of
+    // echoing the earlier service receipt's flags, and an unproved
+    // success-shaped receipt (including already-current) never projects as
+    // success. A known-bad service outcome keeps its own classification.
+    const successProved = observed.health.receiptSucceeded && observed.health.installReady &&
+      observed.health.markerClear && observed.health.dependencyReady && observed.health.recoveryClear &&
+      observed.health.scopeCapture === 'complete' &&
+      observed.health.scopes.every(scope =>
+        scope.restored && scope.ready && scope.processIdentityVerified && scope.codeSha === input.authorization.targetSha)
+
     const applied = input.update.ok && input.update.updateOk && input.update.restoreOk
 
-    // A success projection must be backed by the live health evidence itself —
-    // the receipt succeeded against the reviewed target and the installation
-    // is ready. When either observation contradicts the success claim, the
-    // outcome stays unknown instead of echoing the earlier service receipt's
-    // flags, and an unproved success-shaped receipt (including already-current)
-    // never projects as success. A known-bad service outcome keeps its own
-    // classification.
     const outcome: 'updated' | 'already-current' | 'failed' | 'refused' | 'unverified' = successProved && applied
       ? observed.receipt?.outcome === 'already-current' ? 'already-current' : 'updated'
       : applied
@@ -620,7 +627,23 @@ async function observeRemote(options: ManagedRolloutMainIntegrationOptions, inpu
 
     return { outcome, receipt: observed.receipt, health: observed.health, authorization: input.authorization }
   } catch {
-    return { outcome: 'unverified' as const, receipt: input.update.receipt, health: null, authorization: input.authorization }
+    // A service result that is already a receipt-backed known failure keeps
+    // its own classification when the follow-up live observation cannot run:
+    // the receipt is the evidence, and a transport outage must not erase a
+    // known refusal or failure back into unknown. Every other case stays
+    // unknown.
+    const receipt = input.update.receipt
+    const failedOutcomes = ['update-failed', 'restore-failed', 'update-and-restore-failed']
+
+    const knownBad = Boolean(!input.update.ok && receipt &&
+      receipt.correlationId === input.authorization.correlationId &&
+      (input.update.outcome === 'refused' || failedOutcomes.includes(input.update.outcome)))
+
+    const outcome = !knownBad
+      ? 'unverified' as const
+      : input.update.outcome === 'refused' ? 'refused' as const : 'failed' as const
+
+    return { outcome, receipt, health: null, authorization: input.authorization }
   }
 }
 
@@ -749,9 +772,17 @@ async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, auth
     const clear = ['absent', 'dead'].includes(raw.marker) && ['absent', 'dead'].includes(raw.launchIntent)
     const receiptRequired = record.phase === 'launching'
 
-    // A prepared record was persisted before launch. It may correctly have no
-    // receipt; the durable scope record and clear remote markers govern recovery.
-    if (!clear || (receiptRequired && !correlated) || (!receiptRequired && receipt && !correlated)) {
+    // A launched attempt's receipt must prove the reviewed request before its
+    // obligation can be cleared: the receipt's own recorded requested and
+    // post-update SHAs must both be the pinned target. A receipt that never
+    // recorded the request, or answered a different one, leaves clearance
+    // unproved. A prepared record was persisted before launch: it may
+    // correctly have no receipt, and the durable scope record and clear
+    // remote markers govern recovery.
+    const receiptProvedRequest = Boolean(correlated &&
+      receipt?.requestedSha === authorization.targetSha && receipt?.postSha === authorization.targetSha)
+
+    if (!clear || (receiptRequired && !receiptProvedRequest) || (!receiptRequired && receipt && !correlated)) {
       return { correlationId: typeof receipt?.correlationId === 'string' ? receipt.correlationId : '', clearanceProved: false }
     }
 
@@ -761,7 +792,20 @@ async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, auth
     // removal of the original durable obligation proves local clearance.
     const remaining = options.readRecoveryRecord(authorization.connectionId, authorization.correlationId)
 
-    return { correlationId: authorization.correlationId, clearanceProved: remaining === null }
+    if (remaining !== null) {return { correlationId: authorization.correlationId, clearanceProved: false }}
+
+    // The proved clearance carries the structured artifact the durable
+    // journal revalidates before the fence may be released.
+    const clearance: RecoveryClearance = {
+      kind: 'remote-original-obligation-clearance',
+      markerClear: true,
+      launchIntentClear: true,
+      originalRecordRemoved: true,
+      receiptRequired,
+      receiptProvedRequest: receiptRequired ? true : null
+    }
+
+    return { correlationId: authorization.correlationId, clearanceProved: true, clearance }
   } finally {
     await transport.close().catch(() => undefined)
   }

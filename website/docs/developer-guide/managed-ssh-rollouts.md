@@ -199,13 +199,21 @@ ID. A non-terminal result deliberately leaves the state unchanged. `recover` is
 admissible for every attempt that can still carry an unresolved obligation —
 unverified and recovery-required, plus settled failed, refused, updated, and
 already-current attempts whose fence still needs proved clearance. A mismatched
-correlation or unproved clearance is refused. Recovery does not mark an update
+correlation or unproved clearance is refused. For a launched attempt, the
+receipt found during recovery must itself prove the reviewed request — its
+recorded requested and post-update SHAs must equal the pinned target — before
+clearance can be proved; a receipt that never recorded which request it
+answered, or answered a different one, leaves clearance unproved. A prepared
+pre-launch record may correctly have no receipt; there the durable scope
+record and clear remote markers govern. Recovery does not mark an update
 successful, does not relabel a failed/refused outcome, and does not issue a new
 launch capability. Proved clearance releases the installation's durable fence
-and is recorded as its own `recovery-cleared` evidence kind; it does not clear
-the attempt's own recovery state — an unverified attempt remains unverified and
-may still report `recoveryRequired`, because recovery does not settle the
-launch.
+and is recorded as its own `recovery-cleared` evidence kind, carrying the
+structured clearance artifact (clear markers, removal of the original durable
+obligation, and whether the launched request was proved) that the durable
+journal revalidates before release; it does not clear the attempt's own
+recovery state — an unverified attempt remains unverified and may still report
+`recoveryRequired`, because recovery does not settle the launch.
 
 For the single-install service, durable recovery reopens the transport, waits
 for the required restore clearance, closes the transport, and restores each
@@ -222,11 +230,15 @@ index survives process restart and is visible to admission/promotion checks.
 
 A fence cannot be removed by archive, exclusion, or a successful-looking local
 transition. `managed-rollout-journal.ts` releases it only on one of two distinct
-evidence kinds recorded for the same correlation ID and installation:
-`settlement-validated`, a receipt-backed success whose requested and post-update
-SHAs equal the reviewed target, or `recovery-cleared`, proved recovery
-clearance of the original durable scope obligation. Recovery clearance never
-asserts that the update applied and is never recorded as a success settlement.
+evidence kinds recorded for the same rollout ID, correlation ID, and
+installation: `settlement-validated`, a receipt-backed success whose requested
+and post-update SHAs equal the reviewed target, or `recovery-cleared`, proved
+recovery clearance of the original durable scope obligation, which must carry
+the structured clearance artifact and can never be a bare assertion. A fence
+also never accepts a foreign tag: fence evidence is bound to the rollout that
+owns the obligation, and a fence tagged for another rollout cannot be added to
+a record or released by that record's facts. Recovery clearance never asserts
+that the update applied and is never recorded as a success settlement.
 Pruning a settled journal record with an unresolved fence leaves a tombstone
 in the unresolved index so the debt remains enumerable.
 
@@ -234,6 +246,16 @@ Promotion is also evidence-gated. A healthy target must have a fresh observation
 for the exact sweep, the admitted SHA, complete and ready scopes, clear update
 marker, clear recovery state, verified process identity, and a correlated
 successful receipt whose requested and post-update SHAs equal the reviewed SHA.
+The settlement path requires that proof from both receipts — the service's own
+receipt and the live observation receipt — so a cooperating adapter cannot
+substitute an observation receipt for a service receipt that never proved the
+request. A live Main observation is itself a complete readiness projection:
+success is only projected when the receipt proved the reviewed target and the
+installation is ready with clear markers, coordinator readiness for the
+correlation, a complete scope capture, and every scope restored with a verified
+process identity at the reviewed SHA. A receipt-backed known failure (refused
+or failed) keeps its own classification even when a follow-up live observation
+cannot run; everything else stays unknown.
 The live sweep is bounded to the current and next wave: the 240-probe budget is
 a deliberate bound, not a claim that every earlier wave is re-probed. Earlier
 waves are revalidated against their recorded settlement evidence — each

@@ -84,6 +84,22 @@ export interface JournalEvidenceFact extends Record<string, unknown> {
   installId: string | null
   observedAt: string
   basis: string
+  clearance?: RecoveryClearance
+}
+
+/**
+ * The structured artifact a proved recovery produces. It records exactly what
+ * was proved — clear remote markers, removal of the original durable
+ * obligation, and whether the launched request itself was proved — so the
+ * durable journal can refuse a bare caller assertion.
+ */
+export interface RecoveryClearance {
+  kind: 'remote-original-obligation-clearance'
+  markerClear: true
+  launchIntentClear: true
+  originalRecordRemoved: true
+  receiptRequired: boolean
+  receiptProvedRequest: boolean | null
 }
 
 export interface UnresolvedFence {
@@ -459,7 +475,7 @@ function validateEventInput(value: unknown, forRead = false): JournalEventInput 
   return value as JournalEventInput | JournalEvent
 }
 
-function validateEvidenceFact(value: unknown): JournalEvidenceFact {
+function validateEvidenceFact(value: unknown, forRead = false): JournalEvidenceFact {
   if (!isPlainObject(value)) {throw new JournalCorruptionError('Journal evidence fact must be an object.')}
 
   const kinds: JournalFactKind[] = [
@@ -488,9 +504,56 @@ function validateEvidenceFact(value: unknown): JournalEvidenceFact {
     throw new JournalCorruptionError('Journal evidence basis is invalid.')
   }
 
+  if (value.kind === 'recovery-cleared') {
+    // Proved recovery clearance is the one evidence kind that releases a
+    // fence without a success receipt, so a newly recorded fact must carry
+    // the structured artifact the recovery produced; a bare assertion is not
+    // evidence. Records written before the artifact existed remain readable
+    // (forRead), but such facts can never release a fence — the release
+    // check revalidates the artifact.
+    if (value.clearance === undefined && !forRead) {
+      throw new JournalCorruptionError('Recovery clearance evidence must carry the structured clearance artifact.')
+    }
+
+    if (value.clearance !== undefined) {validateRecoveryClearance(value.clearance)}
+  } else if (value.clearance !== undefined) {
+    throw new JournalCorruptionError('Journal evidence clearance is only valid for recovery clearance.')
+  }
+
   canonicalJson(value)
 
   return clone(value) as JournalEvidenceFact
+}
+
+const RECOVERY_CLEARANCE_KIND = 'remote-original-obligation-clearance'
+
+export function validateRecoveryClearance(value: unknown): RecoveryClearance {
+  if (!isPlainObject(value)) {throw new JournalCorruptionError('Recovery clearance must be an object.')}
+
+  if (value.kind !== RECOVERY_CLEARANCE_KIND) {throw new JournalCorruptionError('Recovery clearance kind is invalid.')}
+
+  if (value.markerClear !== true || value.launchIntentClear !== true || value.originalRecordRemoved !== true) {
+    throw new JournalCorruptionError('Recovery clearance does not prove the original obligation was cleared.')
+  }
+
+  if (typeof value.receiptRequired !== 'boolean') {throw new JournalCorruptionError('Recovery clearance receiptRequired is invalid.')}
+
+  const proved = value.receiptProvedRequest ?? null
+
+  if (proved !== null && typeof proved !== 'boolean') {throw new JournalCorruptionError('Recovery clearance receiptProvedRequest is invalid.')}
+
+  if (value.receiptRequired && proved !== true) {
+    throw new JournalCorruptionError('Recovery clearance did not prove the request that left the obligation.')
+  }
+
+  return {
+    kind: RECOVERY_CLEARANCE_KIND,
+    markerClear: true,
+    launchIntentClear: true,
+    originalRecordRemoved: true,
+    receiptRequired: value.receiptRequired,
+    receiptProvedRequest: proved as boolean | null
+  }
 }
 
 function validateMetadata(value: unknown): Record<string, unknown> {
@@ -863,7 +926,7 @@ export class ManagedRolloutJournal {
     const facts = parsed.facts === undefined
       ? []
       : Array.isArray(parsed.facts)
-        ? parsed.facts.map(item => validateEvidenceFact(item))
+        ? parsed.facts.map(item => validateEvidenceFact(item, true))
         : (() => { throw new JournalCorruptionError(`Managed rollout ${expectedId} evidence facts are invalid.`) })()
 
     const archive = validateArchive(parsed.archive)
@@ -948,7 +1011,7 @@ export class ManagedRolloutJournal {
       const evidenceFacts = item.evidenceFacts === undefined
         ? []
         : Array.isArray(item.evidenceFacts)
-          ? item.evidenceFacts.map(fact => validateEvidenceFact(fact))
+          ? item.evidenceFacts.map(fact => validateEvidenceFact(fact, true))
           : (() => { throw new JournalCorruptionError('Managed rollout history evidence facts are invalid.') })()
 
       const requestDigests = item.requestDigests === undefined
@@ -1148,7 +1211,8 @@ export class ManagedRolloutJournal {
 
   private applyFenceChange(
     current: UnresolvedFence[],
-    change: UnresolvedFenceChange | UnresolvedFence[] | undefined
+    change: UnresolvedFenceChange | UnresolvedFence[] | undefined,
+    rolloutId: string
   ): UnresolvedFence[] {
     if (change === undefined) {return clone(current)}
     const next = new Map(current.map(item => [item.key, clone(item)]))
@@ -1156,6 +1220,8 @@ export class ManagedRolloutJournal {
     if (Array.isArray(change)) {
       for (const item of change) {
         validateFence(item)
+
+        if (item.rolloutId !== rolloutId) {throw new JournalError('invalid-input', 'Unresolved fence rollout does not match the journal record.')}
         next.set(item.key, clone(item))
       }
     } else {
@@ -1163,6 +1229,8 @@ export class ManagedRolloutJournal {
 
       for (const item of change.add ?? []) {
         validateFence(item)
+
+        if (item.rolloutId !== rolloutId) {throw new JournalError('invalid-input', 'Unresolved fence rollout does not match the journal record.')}
         next.set(item.key, clone(item))
       }
     }
@@ -1193,13 +1261,30 @@ export class ManagedRolloutJournal {
       // Receipt-backed settlement and proved recovery clearance are distinct
       // evidence kinds: both prove the fence's obligation is cleared, and
       // neither may be recorded as the other. Recovery releases the fence
-      // without asserting that the update succeeded.
-      const settled = nextFacts.some(
-        fact =>
-          (fact.kind === 'settlement-validated' || fact.kind === 'recovery-cleared') &&
-          fact.correlationId === fence.correlationId &&
-          fact.installId === fence.installId
-      )
+      // without asserting that the update succeeded. The fact must also
+      // belong to the same rollout the fence is tagged for — evidence for one
+      // rollout never clears another rollout's obligation — and a
+      // recovery-cleared fact must carry the structured clearance artifact
+      // it claims, revalidated here so a legacy bare assertion can never
+      // release a fence.
+      const settled = nextFacts.some(fact => {
+        if (fact.rolloutId !== fence.rolloutId || fact.correlationId !== fence.correlationId ||
+            fact.installId !== fence.installId) {
+          return false
+        }
+
+        if (fact.kind === 'settlement-validated') {return true}
+
+        if (fact.kind !== 'recovery-cleared') {return false}
+
+        try {
+          validateRecoveryClearance(fact.clearance)
+
+          return true
+        } catch {
+          return false
+        }
+      })
 
       if (!settled) {throw new JournalError('fence-release-unproven', `Fence ${fence.key} lacks validated settlement evidence.`)}
     }
@@ -1313,7 +1398,7 @@ export class ManagedRolloutJournal {
       events,
       requests,
       archive: options.archive ? clone(options.archive) : null,
-      unresolved: this.applyFenceChange([], options.unresolved),
+      unresolved: this.applyFenceChange([], options.unresolved, id),
       facts: this.validateFacts(options.facts, id),
       ...(options.metadata === undefined ? {} : { metadata: validateMetadata(options.metadata) }),
       createdAt: normalizedSnapshot.createdAt,
@@ -1407,7 +1492,7 @@ export class ManagedRolloutJournal {
       ? current.metadata
       : validateMetadata(input.metadata)
 
-    const nextUnresolved = this.applyFenceChange(current.unresolved, input.unresolved)
+    const nextUnresolved = this.applyFenceChange(current.unresolved, input.unresolved, id)
     this.assertFenceRelease(current, nextFacts, nextUnresolved)
 
     const nextRecord: JournalRecord = {

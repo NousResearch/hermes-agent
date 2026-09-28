@@ -45,6 +45,7 @@ The script writes a deterministic JSON report to stdout. Invalid rows or duplica
 - `latency_ms` is the measured end-to-end elapsed time supplied by the harness.
 - `cost_microusd` is optional measured cost in micro-USD; `cost_source` must identify the rate card or invoice source.
 - Paired deltas compare only case IDs present in both a variant and the selected baseline.
+- Cost totals are reported only when every run for that variant has cost from the same source; mixed or missing sources remain unknown.
 
 The report includes Wilson 95% intervals for acceptance rates. These describe binomial sampling uncertainty only; they do not correct for biased cases or repeated-measure dependence.
 

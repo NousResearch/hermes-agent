@@ -101,7 +101,9 @@ def summarize(records: list[dict[str, Any]], baseline: str | None = None) -> dic
         accepted = sum(row["accepted"] for row in rows)
         cost_rows = [row for row in rows if "cost_microusd" in row]
         all_costs_known = len(cost_rows) == len(rows)
-        total_cost = sum(row["cost_microusd"] for row in cost_rows) if all_costs_known else None
+        cost_sources = sorted({row["cost_source"] for row in cost_rows})
+        costs_comparable = all_costs_known and len(cost_sources) == 1
+        total_cost = sum(row["cost_microusd"] for row in cost_rows) if costs_comparable else None
         summaries[variant] = {
             "runs": len(rows),
             "accepted": accepted,
@@ -112,6 +114,8 @@ def summarize(records: list[dict[str, Any]], baseline: str | None = None) -> dic
             "tokens_total": sum(row["tokens"] for row in rows),
             "tokens_per_run_mean": sum(row["tokens"] for row in rows) / len(rows),
             "cost_known_runs": len(cost_rows),
+            "cost_sources": cost_sources,
+            "cost_comparable": costs_comparable,
             "cost_microusd_total": total_cost,
             "cost_microusd_per_accepted": (total_cost / accepted if total_cost is not None and accepted else None),
         }

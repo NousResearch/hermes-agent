@@ -26,6 +26,19 @@ class SwarmBenchmarkAnalysisTests(unittest.TestCase):
         self.assertIsNone(report["variants"]["v"]["cost_microusd_total"])
         self.assertIsNone(report["variants"]["v"]["cost_microusd_per_accepted"])
 
+    def test_costs_from_different_sources_are_not_added(self):
+        rows = [{"benchmark_id": "b", "case_id": "c1", "variant": "v",
+                 "accepted": True, "tokens": 10, "latency_ms": 12,
+                 "cost_microusd": 2, "cost_source": "rate-a"},
+                {"benchmark_id": "b", "case_id": "c2", "variant": "v",
+                 "accepted": True, "tokens": 10, "latency_ms": 12,
+                 "cost_microusd": 3, "cost_source": "rate-b"}]
+        report = MODULE.summarize(rows)
+        summary = report["variants"]["v"]
+        self.assertFalse(summary["cost_comparable"])
+        self.assertEqual(summary["cost_sources"], ["rate-a", "rate-b"])
+        self.assertIsNone(summary["cost_microusd_total"])
+
     def test_bad_cost_provenance_and_duplicate_pairs_fail_closed(self):
         row = {"benchmark_id": "b", "case_id": "c", "variant": "v",
                "accepted": True, "tokens": 10, "latency_ms": 12,

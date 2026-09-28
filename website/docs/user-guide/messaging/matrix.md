@@ -421,6 +421,8 @@ Reaction controls use:
 - ❌ deny
 - number reactions for `/model` choices
 
+Reactions count only from users the gateway would accept a command from in that room: `MATRIX_ALLOWED_USERS`, `GATEWAY_ALLOWED_USERS`, a user approved through pairing, or everyone when `MATRIX_ALLOW_ALL_USERS` / `GATEWAY_ALLOW_ALL_USERS` is set.
+
 Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
 
 ### Media Limits

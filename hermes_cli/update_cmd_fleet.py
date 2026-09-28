@@ -387,7 +387,10 @@ def _marker_only_restart_obsolete() -> bool:
     that died before its inventory was recorded, #115638) clears once every live gateway is
     current on the checkout — there is no recorded owed set, so the fleet running the code on disk
     is the whole of the evidence the marker's warning can be about, even after HEAD moved past
-    ``expected_sha`` by an out-of-band pull. With no live gateway at all, the inventory-less marker
+    ``expected_sha`` by an out-of-band pull. An inventory-less record armed with no SHA at all
+    (a no-op update whose head capture failed, #125952) settles by the same live-fleet evidence
+    once the process that armed it is gone: a status call must not discharge a restart phase
+    that is still running. With no live gateway at all, the inventory-less marker
     asks the host instead (``update_cmd_fleet_gatewayless``): it clears when no profile left a
     gateway that should be running and every live runtime is supervisor-owned or handed off, so a
     Desktop-only install stops failing every later update (#118742).
@@ -419,9 +422,22 @@ def _marker_only_restart_obsolete() -> bool:
         logger.debug("Fleet-restart-pending marker discharged: no gateway obligation recorded")
         return True
     if not expected_sha:
-        return False
+        if owed is not None:
+            return False  # an inventoried obligation without its SHA can never be proven
+        # An inventory-less record armed with no SHA (a no-op update whose head capture
+        # failed, #125952) has no equality gate to hold it to; the fleet running the
+        # checkout code is the whole of the evidence, but never discharge an update
+        # whose arming process may still be mid-restart-phase.
+        from hermes_cli._subprocess_compat import pid_exists_stdlib
+
+        try:
+            armer_pid = int(fields.get("pid", "") or 0)
+        except ValueError:
+            return False
+        if armer_pid > 0 and pid_exists_stdlib(armer_pid):
+            return False
     checkout_sha = _current_checkout_sha()
-    if owed is not None and checkout_sha != expected_sha and not checkout_contains(expected_sha):
+    if expected_sha and owed is not None and checkout_sha != expected_sha and not checkout_contains(expected_sha):
         return False  # a newer pull moved HEAD; it owns a fresh obligation
     # HEAD may sit past ``expected_sha`` by a carried local commit (a cherry-picked hotfix) that no
     # pull made and no fresh obligation covers; the fleet is held to the code it actually runs, which

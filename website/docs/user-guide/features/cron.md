@@ -458,8 +458,11 @@ returns mid-run qualifies too, provided it names the window: the wait is read
 through the shared provider-grammar table (`agent/retry_utils.py`), so the
 phrasings providers actually emit — "your usage window refills in 46 minutes",
 "resets in 2 hours", "the window renews in 3h" — resolve to a wait instead of
-failing every tick. A 429 that names no window is still retried on the normal
-cadence.
+failing every tick. That table's precedence holds, so an explicit
+`retry after <N>s` still wins over a quota window named in the same message, and
+the parsed wait is clamped to a week — the longest window a provider really
+names — so a mis-parsed value cannot park the job for years. A 429 that names no
+window is still retried on the normal cadence.
 
 Instead, the scheduler **parks the job**: the one failure alert says the
 window is closed and that the job is held. If the provider reopens well before

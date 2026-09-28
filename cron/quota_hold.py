@@ -11,12 +11,16 @@ stamps ``quota_hold_until`` so the stale-error re-arm
 
 Complement to ``cron/unreachable_retry.py``: this one moves ``next_run_at`` out of a known
 closed provider window. Any run that reaches the model clears the marker.
+
+The wait is read through the shared provider-grammar table (``agent.retry_utils``: "retry
+after <N>s", "resets in ...", "refills in ...", the stringified ``resets_in_seconds``
+field) and clamped to ``MAX_HOLD_SECONDS``, so a mis-parsed window cannot park a job for
+years.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -33,14 +37,40 @@ SCHEDULE_EXPR_KEY = "quota_hold_cron_expr"
 # recorded a little wall clock has passed, so land clearly past the boundary.
 HOLD_SLACK_SECONDS = 60
 
-_RETRY_AFTER_RE = re.compile(r"retry after (\d+)s", re.IGNORECASE)
+# Ceiling on the parsed wait. The longest window a provider really names is a weekly limit
+# (the Codex quota probe's own hint is ~34h), so anything past a week is a mis-parse — a
+# sentinel in a stringified ``resets_in_seconds`` field, say — and parking on it would strand
+# the job for years. ``agent/turn_recovery.py`` caps the same idea at 600s for an in-turn
+# retry wait; a job park has to cover the provider's real window, so the ceiling is a week.
+MAX_HOLD_SECONDS = 7 * 24 * 60 * 60
+
+
+def _bounded_hold(seconds: Optional[float]) -> Optional[float]:
+    """The wait to park for, or None when the provider named no usable window.
+
+    A non-positive value carries no usable wait — the caller then leaves the job on its
+    normal cadence rather than hot-looping the provider. Anything past ``MAX_HOLD_SECONDS``
+    is clamped instead of trusted: the value came out of free text, and a job parked on a
+    pathological one would not fire again for years.
+    """
+    if seconds is None:
+        return None
+    seconds = float(seconds)
+    if seconds <= 0:
+        return None
+    if seconds > MAX_HOLD_SECONDS:
+        logger.warning(
+            "Provider named a %.0fs (%.1f years) usage window; clamping the hold to %ds",
+            seconds, seconds / (365.25 * 24 * 3600), MAX_HOLD_SECONDS)
+        return float(MAX_HOLD_SECONDS)
+    return seconds
 
 
 def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:
     """Seconds the provider said it will stay closed, or None when *exc* (or anything in its
-    cause chain) is not a rate-limited ``AuthError`` carrying a wait hint. Anchored on the
-    AuthError itself, never on arbitrary text, so an unrelated "retry after" in an agent's
-    output cannot park a job."""
+    cause chain) is not a rate-limited ``AuthError`` or a 429-stamped failure carrying a wait
+    hint. Anchored on the AuthError / the stamped status itself, never on arbitrary text, so
+    an unrelated "retry after" in an agent's output cannot park a job."""
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
     seen: set[int] = set()
@@ -51,22 +81,29 @@ def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:
         if isinstance(cur, AuthError) and is_rate_limited_auth_error(cur):
             hint = getattr(cur, "retry_after", None)
             if hint is None:
-                # agent.retry_utils is the ONE grammar table for provider free text
-                # and it carries the "refills?"/"renews?" verbs plus the
-                # minimum-across-every-named-window rule. This module's own
-                # _RETRY_AFTER_RE ("retry after <N>s") does not match the wording
-                # providers actually use for a usage window — "Your usage window
-                # refills in 46 minutes" — so the hint was lost and the job failed on
-                # every cadence tick instead of being parked for the window.
+                # agent.retry_utils is the shared grammar table for provider free text
+                # (the conversation loop's error context, the credential pool's cooldown
+                # and the gateway all read it): the "refills?"/"renews?" verbs plus the
+                # explicit-retry-after precedence. It covers the wording providers
+                # actually use for a usage window — "Your usage window refills in 46
+                # minutes" — which this module's own "retry after <N>s" pattern could not,
+                # so the hint was lost and the job failed on every cadence tick instead of
+                # being parked for the window.
                 hint = min_reset_delay_from_message(text)
-            return float(hint) if hint is not None and float(hint) > 0 else None
+            return _bounded_hold(hint)
         if getattr(cur, "status_code", None) == 429:
             # A mid-run 429 from the provider (not the pre-flight credential probe this
-            # module was originally scoped to) carries the same envelope. Park it for
-            # the window the provider named rather than re-firing into the wall.
-            secs = min_reset_delay_from_message(text)
-            if secs is not None and float(secs) > 0:
-                return float(secs)
+            # module was originally scoped to) carries the same envelope. The scheduler
+            # stamps the classifier's verdict and the window it named onto the error it
+            # raises for a failed run (``cron.scheduler._stamp_rate_limit_context``), so the
+            # structured hint is read first and the message text is the fallback. A 429 that
+            # names no window at all stays on the normal cadence.
+            hint = getattr(cur, "retry_after", None)
+            if hint is None:
+                hint = min_reset_delay_from_message(text)
+            hold = _bounded_hold(hint)
+            if hold is not None:
+                return hold
         cur = cur.__cause__ or cur.__context__
     return None
 

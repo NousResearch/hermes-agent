@@ -122,22 +122,29 @@ def reset_delay_from_message(message: str) -> Optional[float]:
 
 
 def min_reset_delay_from_message(message: str) -> Optional[float]:
-    """Shortest seconds-until-reset across EVERY window named in *message*, or None.
+    """Shortest seconds-until-reset among the windows *message* names, or None.
 
-    A fallback-chain failure can carry more than one provider's window ("DeepSeek V4
-    Flash and GLM 5.3 Flash keep answering in the meantime"). The earliest instant at
-    which any configured model can serve again is the shortest one, so a caller
-    scheduling a re-run wants the minimum, not the first match.
+    ``reset_delay_from_message`` owns the precedence: the table's patterns are tried in
+    order and the first pattern matching ANYWHERE in the body decides, so an explicit
+    "retry after N s" still wins over a "resets in ..." quota window (see
+    ``RETRY_DELAY_PATTERNS``). This variant only widens the search *inside* that winning
+    pattern — a fallback-chain failure can name several models ("DeepSeek V4 Flash ...
+    refills in 46 minutes; GLM 5.3 Flash ... refills in 5 minutes") and the earliest
+    instant any of them can serve again is when a re-run is worth attempting. Taking the
+    minimum across DIFFERENT patterns would instead overrule the provider's own explicit
+    wait, and every other reader of this table (``agent/credential_pool.py``,
+    ``agent/error_classifier.py``, ``gateway/run.py``) would disagree with the caller.
     """
     if not message:
         return None
-    found: list[float] = []
     for pattern, to_seconds in RETRY_DELAY_PATTERNS:
-        for m in pattern.finditer(message):
-            seconds = to_seconds(m)
-            if seconds is not None:
-                found.append(seconds)
-    return min(found) if found else None
+        found = [
+            seconds for m in pattern.finditer(message)
+            if (seconds := to_seconds(m)) is not None
+        ]
+        if found:
+            return min(found)
+    return None
 
 
 def jittered_backoff(attempt: int, *, base_delay: float = 5.0, max_delay: float = 120.0, jitter_ratio: float = 0.5) -> float:

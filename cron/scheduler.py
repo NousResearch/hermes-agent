@@ -2001,6 +2001,31 @@ def _run_agent_with_watchdog(
     return result
 
 
+# FailoverReason verdicts that mean the provider answered 429 (``agent/error_classifier.py``):
+# a failed turn result carries the verdict in ``failure_reason`` and, when the provider named
+# the window, its epoch instant in ``failure_resets_at``.
+_RATE_LIMIT_FAILURE_REASONS = frozenset({"rate_limit", "upstream_rate_limit"})
+
+
+def _stamp_rate_limit_context(error: RuntimeError, result: dict) -> None:
+    """Carry a failed result's rate-limit verdict onto the error raised for it (#89376).
+
+    ``_final_response_from_result`` raises a bare ``RuntimeError`` built from the result's
+    error text, so the exception ``run_one_job`` classifies has neither a status code nor the
+    window the provider named: ``cron/quota_hold.py``'s mid-run 429 arm could never fire and a
+    window-naming 429 was re-fired on every cadence tick. The failed result already carries the
+    classifier's verdict, so stamp it where the hold reads it.
+    """
+    if str(result.get("failure_reason") or "").strip() not in _RATE_LIMIT_FAILURE_REASONS:
+        return
+    # setattr, not attribute assignment: the error stays a plain RuntimeError (its type name
+    # reaches the job's failure text and incident signature) and only carries the hold context.
+    setattr(error, "status_code", 429)
+    resets_at = result.get("failure_resets_at")
+    if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool):
+        setattr(error, "retry_after", max(0.0, float(resets_at) - time.time()))
+
+
 def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
     """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
     `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
@@ -2014,7 +2039,9 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     final_response_text = (result.get("final_response") or "").strip()
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
-        raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+        error = RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+        _stamp_rate_limit_context(error, result)
+        raise error
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

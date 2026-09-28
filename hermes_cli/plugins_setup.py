@@ -80,7 +80,7 @@ def _invoke(path, action, home, *, revision=""):
         [sys.executable, "-I", "-B", "-c", _RUNNER, str(path), action, str(home), revision],
         cwd=path.parent, env={**os.environ, "HERMES_HOME": str(home)},
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        start_new_session=os.name != "nt",
+        encoding="utf-8", start_new_session=os.name != "nt",
     ) as process:
         try:
             stdout, stderr = process.communicate(timeout=timeout)

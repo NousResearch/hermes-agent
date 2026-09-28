@@ -48,11 +48,25 @@ def committed_home(tmp_path, monkeypatch):
     packages.mkdir(parents=True)
     dirs = [p for p in sys.path if p and Path(p).is_dir() and Path(p).resolve() != REPO]
     (packages / "hermes-test-deps.pth").write_text("\n".join(dirs) + "\n", encoding="utf-8")
+    return home, _commit(home, venv)
+
+
+@pytest.fixture
+def uncommittable_home(tmp_path, monkeypatch):
+    """A temp ``HERMES_HOME`` whose committed generation is gone, so activation cannot succeed."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    install_state_dir(REPO).mkdir(parents=True)
+    return home, _commit(home, install_state_dir(REPO) / "environments" / "missing" / "venv")
+
+
+def _commit(home, venv):
     runtime_facts_path(REPO).write_text(
         json.dumps({"packages": {"venv": {"environment": str(venv)}}}), encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV")}
     env["HERMES_HOME"] = str(home)
-    return home, env
+    return env
 
 
 def _run(argv, env):
@@ -81,10 +95,29 @@ def test_delivery_runner_admits_through_dependencies_it_activates(tmp_path, comm
     assert not dm_file.exists()
 
 
-def test_reply_waiter_runs_through_the_bootstrapped_entry(tmp_path, committed_home):
-    """The relay's reply waiter shares the entry: its argv, exactly as ``waiter_command`` builds it,
-    must pass the bootstrap untouched and print the reply the sender wakes on."""
-    _home, env = committed_home
+def test_delivery_runner_that_cannot_activate_names_the_repair_remedy(tmp_path, uncommittable_home):
+    """When the committed environment cannot be activated, the runner exits with PM's
+    ``hermes pm repair`` remedy before touching the DM, instead of an ambiguous
+    ``No module named …`` outcome the sender is told not to resend."""
+    _home, env = uncommittable_home
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("hello teammate", encoding="utf-8")
+
+    result = _run([*BARE, str(RUNNER), "--run-delivery", "query-file", str(dm_file),
+                   sys.executable, "-c", "pass"], env)
+
+    assert result.returncode == 1, result
+    assert "hermes pm repair" in result.stderr
+    assert "No module named" not in result.stdout + result.stderr
+    assert dm_file.read_text(encoding="utf-8") == "hello teammate"
+
+
+@pytest.mark.parametrize("home", ["committed_home", "uncommittable_home"])
+def test_reply_waiter_prints_the_reply_whatever_the_dependency_state(tmp_path, request, home):
+    """The relay's reply waiter shares the entry but is stdlib only, and its stdout is the
+    sender's wake-up: its argv, exactly as ``waiter_command`` builds it, must print the reply
+    whether or not the committed environment can be activated."""
+    _home, env = request.getfixturevalue(home)
     root = tmp_path / "root"
     envelope = {"id": "e" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
     reply_path = bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{envelope['id']}.json"

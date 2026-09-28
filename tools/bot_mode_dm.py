@@ -828,5 +828,8 @@ if __name__ == "__main__":  # pragma: no cover - exercised as a background proce
     # interpreter (dependencies are activated in-process, never inherited), so boot like every
     # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is tools/.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    import hermes_bootstrap  # noqa: F401
+    # The reply waiter is stdlib only and its stdout is the sender's wake-up, so an activation
+    # failure must never exit it before it can print the outcome.
+    if sys.argv[1:2] != ["--wait-reply"]:
+        import hermes_bootstrap  # noqa: F401
     raise SystemExit(_delivery_main(sys.argv[1:]))

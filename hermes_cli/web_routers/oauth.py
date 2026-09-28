@@ -296,12 +296,13 @@ def _codex_full_login_worker(session_id: str) -> None:
         # The cancellation check and the save are one atomic critical section
         # under the lock cancel_oauth_session() uses; otherwise DELETE could
         # flip "cancelled" between the check and the save and tokens would be
-        # persisted after the user believed the login was aborted.
-        with _oauth_sessions_lock:
+        # persisted after the user believed the login was aborted. The profile scope
+        # (which holds _SKILLS_PROFILE_LOCK) is entered first, as in every other saver:
+        # the reverse order deadlocks against a Nous/xAI/MiniMax save finishing at once.
+        with _profile_scope(session_profile), _oauth_sessions_lock:
             if _codex_cancelled(sess, session_id, " before token save"):
                 return
-            with _profile_scope(session_profile):
-                _save_codex_tokens(tokens)
+            _save_codex_tokens(tokens)
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)
     except Exception as e:

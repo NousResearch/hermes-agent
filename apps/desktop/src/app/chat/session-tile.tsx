@@ -22,7 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'r
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { blobToDataUrl } from '@/app/session/hooks/use-prompt-actions/utils'
-import { resolveStoredSession } from '@/app/session/hooks/use-session-actions/utils'
+import { probeStoredSession, resolveStoredSession } from '@/app/session/hooks/use-session-actions/utils'
 import { ModelMenuPanel } from '@/app/shell/model-menu-panel'
 import { ReasoningMenuPanel } from '@/app/shell/reasoning-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
@@ -41,9 +41,10 @@ import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
-import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
+import { createComposerAttachmentScope, draftTitleFor, takeSessionDraft } from '@/store/composer'
+import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
 import {
@@ -65,6 +66,7 @@ import {
   $sessionTileDelegateRevision,
   $sessionTiles,
   closeSessionTile,
+  discardSessionTile,
   patchSessionTile,
   type SessionTile,
   sessionTileDelegate
@@ -622,9 +624,15 @@ export function tileStoredRow(storedSessionId: string): SessionInfo | undefined 
  *  A restored background tab has no runtimeId and does not mount its pane, so
  *  the resolution effect above never runs; when its row is outside the recents
  *  page and project tree, `tileTitle()` reads "New session" until first click.
- *  `resolveStoredSession` upserts the row into `$sessions`, which the tab strip
- *  already watches — nothing is persisted. Runs once the gateway can answer. */
-export function startUnrestoredTileTitleBackfill(lookup = resolveStoredSession): () => void {
+ *  The shared probe upserts found rows for the tab strip. An empty restored
+ *  tile with authoritative all-profile absence is persistently closed; drafts
+ *  and inconclusive/switching lookups stay recoverable. */
+export function startUnrestoredTileTitleBackfill(lookup = probeStoredSession): () => void {
+  // Only tiles present at startup can be retired: a newly created unbound
+  // draft may legitimately have no durable row yet.
+  const restored = new Set($sessionTiles.get().filter(tile => !tile.runtimeId))
+  const pendingCleanups = new Set<() => void>()
+  let cancelled = false
   const run = () => {
     if ($gatewayState.get() !== 'open') {
       return
@@ -634,7 +642,47 @@ export function startUnrestoredTileTitleBackfill(lookup = resolveStoredSession):
 
     for (const tile of $sessionTiles.get()) {
       if (!tile.runtimeId && !tile.workspaceTabTitle && !tileStoredRow(tile.storedSessionId)) {
-        void lookup(tile.storedSessionId, tile.ownerRoute).catch(() => undefined)
+        // Any scope transition invalidates absence evidence, including A→B→A.
+        let changed = $gatewaySwitching.get() || Boolean($gatewaySwapTarget.get())
+        const invalidate = () => {
+          changed = true
+        }
+        const unlisten = [
+          $connection.listen(invalidate),
+          $activeGatewayProfile.listen(invalidate),
+          $profiles.listen(invalidate),
+          $gatewayState.listen(invalidate),
+          $gatewaySwitching.listen(invalidate),
+          $gatewaySwapTarget.listen(invalidate)
+        ]
+        const cleanup = () => {
+          if (pendingCleanups.delete(cleanup)) unlisten.forEach(off => off())
+        }
+        pendingCleanups.add(cleanup)
+        const hasInventory = Boolean(tile.ownerRoute) || $profiles.get().length > 0
+
+        void lookup(tile.storedSessionId, tile.ownerRoute)
+          .then(result => {
+            const draft = takeSessionDraft(tile.storedSessionId)
+            if (
+              result?.status === 'gone' &&
+              !cancelled &&
+              !changed &&
+              hasInventory &&
+              restored.has(tile) &&
+              $sessionTiles.get().includes(tile) &&
+              !tile.runtimeId &&
+              tile.workspaceMode !== 'bots' &&
+              !tileStoredRow(tile.storedSessionId) &&
+              !tileBackendIdentityChanged(tile.ownerRoute?.connectionId, $connection.get()) &&
+              !draft.text.trim() &&
+              draft.attachments.length === 0
+            ) {
+              discardSessionTile(tile.storedSessionId)
+            }
+          })
+          .catch(() => undefined)
+          .finally(cleanup)
       }
     }
   }
@@ -642,7 +690,11 @@ export function startUnrestoredTileTitleBackfill(lookup = resolveStoredSession):
   const off = $gatewayState.listen(run)
   run()
 
-  return off
+  return () => {
+    cancelled = true
+    off()
+    pendingCleanups.forEach(cleanup => cleanup())
+  }
 }
 
 /** Drop persisted tile bindings that belong to a different backend than the

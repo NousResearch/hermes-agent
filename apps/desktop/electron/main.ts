@@ -16720,7 +16720,8 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   // stale question (#92352). Re-point the record at the newly applied primary
   // in the same step as the notify: both run only after the config/registry
   // write has committed, so a rolled-back apply can never leave a record
-  // naming a source that did not land.
+  // naming a source that did not land. A profile-scoped apply (v1 per-profile
+  // override) leaves the registry primary untouched, so it keeps the bare notify.
   const applyPrimaryRoute = () => {
     const win = mainWindow
 
@@ -16729,12 +16730,14 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 
       recordWindowConnectionRoute(
         win.webContents,
-        appliedPrimaryWindowRoute(readDesktopConnectionsRegistry(), previous?.profile ?? primaryProfileKey())
+        appliedPrimaryWindowRoute(nextRegistry, previous?.profile ?? primaryProfileKey())
       )
     }
 
     sendConnectionApplied()
   }
+
+  const notifyApplied = key ? sendConnectionApplied : applyPrimaryRoute
 
   await applyConnectionConfigAtomically({
     previousConfig,
@@ -16759,12 +16762,12 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
               bootstrapFailure = null
             },
             mode: config.mode,
-            notifyConnectionApplied: applyPrimaryRoute,
+            notifyConnectionApplied: notifyApplied,
             resumeFirstRunRemote: abandonFirstRunSetupChoiceForRemoteApply,
             teardownPrimaryBackend: teardownPrimaryBackendAndWait
           }),
         scope,
-        sendApplied: applyPrimaryRoute,
+        sendApplied: notifyApplied,
         stopPool: stopPoolBackend,
         teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
         teardownSsh: value => teardownSshConnection(value || null)

@@ -88,9 +88,15 @@ def _clamp_command_names(
 
 def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, str]]:
     """(command_name, description) pairs for Telegram setMyCommands: sanitized canonical names
-    only (no aliases). Built-ins needing arguments are included (their handlers show usage when
-    selected bare); plugin commands needing arguments are excluded (may lack a no-arg fallback)."""
-    pairs = [(cmd.name, cmd.description) for cmd in _gateway_available_commands()]
+    and messaging-only aliases (no regular aliases). Built-ins needing arguments are included
+    (their handlers show usage when selected bare); plugin commands needing arguments are
+    excluded (may lack a no-arg fallback)."""
+    pairs = [
+        name_desc for cmd in _gateway_available_commands()
+        for name_desc in ((cmd.name, cmd.description),
+                          *((a, f"Alias for /{cmd.name} — {cmd.description}")
+                            for a in cmd.gateway_aliases))
+    ]
     if include_plugins:
         pairs += [(n, d) for n, d, hint in _iter_plugin_command_entries()
                   if not _requires_argument(hint)]
@@ -382,7 +388,7 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights", "login"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "login", "usage"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -396,7 +402,15 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     standalone slash, deduped and clamped to the 50-command cap; Slack built-ins and
     _SLACK_VIA_HERMES_ONLY are skipped. ``/hermes`` is always first for anything dropped."""
     available = _gateway_available_commands()
-    wanted = [(cmd.name, cmd.description, cmd.args_hint or "") for cmd in available]
+    # Messaging-only aliases (e.g. /clear → /new, #40123) sit directly after canonicals:
+    # Telegram surfaces them, so Slack parity requires they win slots before regular
+    # aliases (which no parity test covers and would flood the 50-slash cap).
+    wanted = [
+        entry for cmd in available
+        for entry in ((cmd.name, cmd.description, cmd.args_hint or ""),
+                      *((a, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+                        for a in cmd.gateway_aliases))
+    ]
     wanted += [(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
                for cmd in available for alias in cmd.aliases]
     wanted += [(name, desc, hint or "") for name, desc, hint in _iter_plugin_command_entries()]
@@ -434,7 +448,8 @@ def slack_subcommand_map() -> dict[str, str]:
     """name/alias -> "/command" for the Slack ``/hermes`` handler, plugin commands included."""
     mapping: dict[str, str] = {
         name: f"/{name}"
-        for cmd in _gateway_available_commands() for name in (cmd.name, *cmd.aliases)}
+        for cmd in _gateway_available_commands()
+        for name in (cmd.name, *cmd.aliases, *cmd.gateway_aliases)}
     for name, _description, _args_hint in _iter_plugin_command_entries():
         mapping.setdefault(name, f"/{name}")
     return mapping

@@ -175,6 +175,34 @@ async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter)
 
 
 @pytest.mark.asyncio
+async def test_native_clear_slash_registered_and_dispatches_reset(adapter):
+    """`/clear` is a native Discord slash that dispatches /reset-equivalent
+    text — the session reset — never the CLI screen-clear (#40123)."""
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    clear_cmd = adapter._client.tree.commands["clear"]
+    interaction = SimpleNamespace()
+    await clear_cmd(interaction)
+
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/reset", "Session reset~")
+
+
+@pytest.mark.asyncio
+async def test_auto_registration_stays_cap_aware_without_alias_flooding(adapter):
+    """Gateway-only aliases (clear) surface natively; regular aliases stay
+    typed-only so the 100-command cap is not burned on duplicate names."""
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    tree_names = set(adapter._client.tree.commands.keys())
+    assert "clear" in tree_names
+    # bg/tasks and q are aliases — registering every alias would eat cap slots.
+    assert "tasks" not in tree_names
+    assert "q" not in tree_names
+
+
+@pytest.mark.asyncio
 async def test_auto_registers_plugin_commands_for_discord(adapter):
     """Plugin slash commands should appear as native Discord app commands."""
     adapter._run_simple_slash = AsyncMock()

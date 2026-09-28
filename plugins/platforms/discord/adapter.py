@@ -96,6 +96,9 @@ _REQUIRED = object()
 _NATIVE_SLASH_COMMANDS: tuple = (
     ("new", "Start a new conversation", (), "/reset", "New conversation started~"),
     ("reset", "Reset your Hermes session", (), "/reset", "Session reset~"),
+    # Messaging /clear aliases /new (#40123): no screen to clear in a chat, so it
+    # dispatches the /reset text — the same session reset as /new and /reset.
+    ("clear", "Clear the conversation (start a new session)", (), "/reset", "Session reset~"),
     ("model", "Show or change the model",
      (("name", str, "", "Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.", None),),
      "/model {name}", None),

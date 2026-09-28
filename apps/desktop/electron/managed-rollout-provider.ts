@@ -55,6 +55,7 @@ import {
   type JournalEvidenceFact,
   type JournalRecord,
   type JournalSnapshot,
+  type JournalSummary,
   type ManagedRolloutJournal,
   type RecoveryClearance,
   type UnresolvedFenceChange,
@@ -1244,8 +1245,26 @@ export function createManagedRolloutProvider(
     return runtime
   }
 
+  // Hydration and the read surfaces must consider every persisted record, not
+  // just the newest page: a fence older than the first MAX_PROVIDER_PAGE_SIZE
+  // records is still an obligation, and an active rollout outside the newest
+  // page still owns the single-rollout admission slot.
+  const allHistory = (): JournalSummary[] => {
+    const items: JournalSummary[] = []
+    let cursor: string | null = null
+
+    for (;;) {
+      const page = deps.journal.history({ cursor, limit: MAX_PROVIDER_PAGE_SIZE })
+
+      items.push(...page.items)
+
+      if (!page.nextCursor) {return items}
+      cursor = page.nextCursor
+    }
+  }
+
   const hydrateRuntimes = (): void => {
-    for (const summary of deps.journal.history({ limit: MAX_PROVIDER_PAGE_SIZE }).items) {
+    for (const summary of allHistory()) {
       const fenced = summary.unresolvedInstallIds.length > 0
 
       // A rollout can reach a terminal phase while its installation still
@@ -1568,7 +1587,7 @@ export function createManagedRolloutProvider(
     // before creating any journal or authorizing a fleet effect.
     await validateAdmission(session.plan)
 
-    const active = deps.journal.history({ limit: MAX_PROVIDER_PAGE_SIZE }).items.find(item => activePhase(item.phase) && !item.archived)
+    const active = allHistory().find(item => activePhase(item.phase) && !item.archived)
 
     if (active) {throw new Error('rollout-already-active')}
     const runtime = makeRuntime(session.rolloutId, session.plan)
@@ -1913,16 +1932,14 @@ export function createManagedRolloutProvider(
       return promise
     },
     activeRevision: async () => {
-      const page = deps.journal.history({ limit: MAX_PROVIDER_PAGE_SIZE })
-      const active = page.items.filter(item => activePhase(item.phase) && !item.archived)
+      const active = allHistory().filter(item => activePhase(item.phase) && !item.archived)
 
       return active.length ? Math.max(...active.map(item => item.revision)) : null
     },
     read: async sinceRevision => {
       if (sinceRevision !== null && (!Number.isSafeInteger(sinceRevision) || sinceRevision < 0)) {throw new Error('managed-rollout-revision-invalid')}
-      const page = deps.journal.history({ limit: MAX_PROVIDER_PAGE_SIZE })
 
-      const active = page.items
+      const active = allHistory()
         .filter(item => activePhase(item.phase) && !item.archived)
         .sort((left, right) => right.revision - left.revision)
 

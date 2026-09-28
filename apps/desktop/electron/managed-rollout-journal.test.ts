@@ -22,6 +22,8 @@ const ROLLOUT_A = '11111111-1111-4111-8111-111111111111'
 const ROLLOUT_B = '22222222-2222-4222-8222-222222222222'
 const ROLLOUT_C = '33333333-3333-4333-8333-333333333333'
 const INSTALL_A = 'install-a'
+const FENCE_CORRELATION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const TARGET_SHA = 'b'.repeat(40)
 
 function snapshot(id: string = ROLLOUT_A, overrides: Partial<JournalSnapshot> = {}): JournalSnapshot {
   return {
@@ -58,7 +60,7 @@ function fence(
     key: `${rolloutId}:${installId}`,
     rolloutId,
     installId,
-    correlationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    correlationId: FENCE_CORRELATION_ID,
     reason: 'authorized launch has no conclusive settlement',
     recordedAt: '2026-09-21T00:00:00.000Z',
     ...overrides
@@ -86,6 +88,46 @@ const CLEARANCE: RecoveryClearance = {
   originalRecordRemoved: true,
   receiptRequired: true,
   receiptProvedRequest: true
+}
+
+// A snapshot that carries the settlement proof a fence release is validated
+// against: the attempt for the fenced installation concluded as a success and
+// its receipt records the exact request the snapshot pinned.
+function settledSnapshot(overrides: Partial<JournalSnapshot> = {}): JournalSnapshot {
+  return snapshot(ROLLOUT_A, {
+    phase: 'completed',
+    target: { sha: TARGET_SHA },
+    attempts: [{
+      identity: { installId: INSTALL_A },
+      correlationId: FENCE_CORRELATION_ID,
+      phase: 'updated',
+      launchState: 'observed',
+      receipt: {
+        correlationId: FENCE_CORRELATION_ID,
+        requestedSha: TARGET_SHA,
+        postSha: TARGET_SHA
+      }
+    }],
+    ...overrides
+  })
+}
+
+// A snapshot whose fenced attempt never left the pre-launch side: no receipt
+// exists and no dispatch was observed, so a recovery clearance may record
+// receiptRequired=false without contradicting the record's own evidence.
+function unlaunchedSnapshot(overrides: Partial<JournalSnapshot> = {}): JournalSnapshot {
+  return snapshot(ROLLOUT_A, {
+    phase: 'attention-required',
+    target: { sha: TARGET_SHA },
+    attempts: [{
+      identity: { installId: INSTALL_A },
+      correlationId: FENCE_CORRELATION_ID,
+      phase: 'unverified',
+      launchState: 'authorized',
+      receipt: null
+    }],
+    ...overrides
+  })
 }
 
 function realFs(overrides: Partial<JournalFs> = {}): JournalFs {
@@ -445,7 +487,7 @@ test('removing a resolved fence updates the durable unresolved index', () => {
       expectedRevision: 1,
       requestId: 'request-resolve-fence',
       payload: { action: 'reconciled', key: unresolved.key },
-      snapshot: snapshot(ROLLOUT_A, { phase: 'completed' }),
+      snapshot: settledSnapshot(),
       events: [event('reconciled', INSTALL_A)],
       facts: [
         {
@@ -487,6 +529,116 @@ test('refuses fence release without a matching validated settlement fact', () =>
   })
 })
 
+test('refuses to release a fence on a settlement fact the record itself never proves', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    const unresolved = fence()
+    // The failed attempt never produced a success receipt, so no assertion
+    // may release its fence: the fact must be backed by the record's own
+    // snapshot proving this installation settled the pinned request.
+
+    const failedSnapshot = settledSnapshot({
+      phase: 'attention-required',
+      attempts: [{
+        identity: { installId: INSTALL_A },
+        correlationId: FENCE_CORRELATION_ID,
+        phase: 'failed',
+        launchState: 'observed',
+        receipt: null
+      }]
+    })
+
+    instance.create(failedSnapshot, { unresolved: [unresolved] })
+
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-unproved-settlement',
+          payload: { action: 'reconciled', key: unresolved.key },
+          snapshot: failedSnapshot,
+          facts: [
+            {
+              kind: 'settlement-validated',
+              rolloutId: ROLLOUT_A,
+              correlationId: unresolved.correlationId,
+              installId: INSTALL_A,
+              observedAt: '2026-09-21T00:00:01.000Z',
+              basis: 'bare assertion without receipt proof'
+            }
+          ],
+          unresolved: { remove: [unresolved.key] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'fence-release-unproven'
+    )
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), true)
+
+    // A receipt that never recorded which request it answered proves no more
+    // than its absence: it must not release the fence either.
+    const legacyReceiptSnapshot = settledSnapshot({
+      phase: 'attention-required',
+      attempts: [{
+        identity: { installId: INSTALL_A },
+        correlationId: FENCE_CORRELATION_ID,
+        phase: 'updated',
+        launchState: 'observed',
+        receipt: {
+          correlationId: FENCE_CORRELATION_ID,
+          requestedSha: null,
+          postSha: TARGET_SHA
+        }
+      }]
+    })
+
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-legacy-receipt-release',
+          payload: { action: 'reconciled', key: unresolved.key },
+          snapshot: legacyReceiptSnapshot,
+          facts: [
+            {
+              kind: 'settlement-validated',
+              rolloutId: ROLLOUT_A,
+              correlationId: unresolved.correlationId,
+              installId: INSTALL_A,
+              observedAt: '2026-09-21T00:00:01.000Z',
+              basis: 'receipt never recorded the reviewed request'
+            }
+          ],
+          unresolved: { remove: [unresolved.key] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'fence-release-unproven'
+    )
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), true)
+
+    // Control: the same assertion releases once the snapshot itself proves
+    // the settlement — success phase, correlated receipt, both SHAs.
+    instance.record({
+      id: ROLLOUT_A,
+      expectedRevision: 1,
+      requestId: 'request-proved-settlement',
+      payload: { action: 'reconciled', key: unresolved.key },
+      snapshot: settledSnapshot({ phase: 'attention-required' }),
+      facts: [
+        {
+          kind: 'settlement-validated',
+          rolloutId: ROLLOUT_A,
+          correlationId: unresolved.correlationId,
+          installId: INSTALL_A,
+          observedAt: '2026-09-21T00:00:01.000Z',
+          basis: 'validated terminal receipt and restored scope'
+        }
+      ],
+      unresolved: { remove: [unresolved.key] }
+    })
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), false)
+  })
+})
+
 test('releases a fence on matching recovery-clearance evidence without a success receipt', () => {
   withTempDirectory(directory => {
     const instance = journal(directory)
@@ -502,7 +654,7 @@ test('releases a fence on matching recovery-clearance evidence without a success
       expectedRevision: 1,
       requestId: 'request-recovery-clearance',
       payload: { action: 'reconciled', key: unresolved.key },
-      snapshot: snapshot(ROLLOUT_A, { phase: 'attention-required' }),
+      snapshot: unlaunchedSnapshot(),
       events: [event('reconciled', INSTALL_A)],
       facts: [
         {
@@ -522,6 +674,159 @@ test('releases a fence on matching recovery-clearance evidence without a success
     const facts = instance.read(ROLLOUT_A).facts
     assert.ok(facts.some(fact => fact.kind === 'recovery-cleared'))
     assert.equal(facts.some(fact => fact.kind === 'settlement-validated'), false)
+  })
+})
+
+test('refuses a recovery clearance that denies a required receipt on an observed launch', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    const unresolved = fence()
+    // The snapshot shows the dispatch was observed: the launch left the
+    // machine, so a clearance claiming no receipt was required contradicts
+    // the record's own evidence and must not release the fence.
+
+    const launched = settledSnapshot({
+      phase: 'attention-required',
+      attempts: [{
+        identity: { installId: INSTALL_A },
+        correlationId: FENCE_CORRELATION_ID,
+        phase: 'failed',
+        launchState: 'observed',
+        receipt: null
+      }]
+    })
+
+    instance.create(launched, { unresolved: [unresolved] })
+
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-false-clearance',
+          payload: { action: 'reconciled', key: unresolved.key },
+          snapshot: launched,
+          facts: [
+            {
+              kind: 'recovery-cleared',
+              rolloutId: ROLLOUT_A,
+              correlationId: unresolved.correlationId,
+              installId: INSTALL_A,
+              observedAt: '2026-09-21T00:00:01.000Z',
+              basis: 'clearance claims no receipt was required',
+              clearance: {
+                kind: 'remote-original-obligation-clearance',
+                markerClear: true,
+                launchIntentClear: true,
+                originalRecordRemoved: true,
+                receiptRequired: false,
+                receiptProvedRequest: null
+              }
+            }
+          ],
+          unresolved: { remove: [unresolved.key] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'fence-release-unproven'
+    )
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), true)
+
+    // The same launched obligation does release on a clearance that proves
+    // the request, because the launch evidence and the proof agree.
+    instance.record({
+      id: ROLLOUT_A,
+      expectedRevision: 1,
+      requestId: 'request-proved-clearance',
+      payload: { action: 'reconciled', key: unresolved.key },
+      snapshot: launched,
+      facts: [
+        {
+          kind: 'recovery-cleared',
+          rolloutId: ROLLOUT_A,
+          correlationId: unresolved.correlationId,
+          installId: INSTALL_A,
+          observedAt: '2026-09-21T00:00:01.000Z',
+          basis: 'correlated recovery proved clearance of the durable scope obligation',
+          clearance: CLEARANCE
+        }
+      ],
+      unresolved: { remove: [unresolved.key] }
+    })
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), false)
+  })
+})
+
+test('requires the recovery clearance artifact to record request proof explicitly', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    const unresolved = fence()
+    instance.create(unlaunchedSnapshot(), { unresolved: [unresolved] })
+
+    // A clearance that omits the field is incomplete, not "not required":
+    // persisted artifacts must carry exactly what was validated, so a later
+    // read can never mistake an absent field for a proved absence.
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-omitted-proof',
+          payload: { action: 'reconciled', key: unresolved.key },
+          snapshot: unlaunchedSnapshot(),
+          facts: [
+            {
+              kind: 'recovery-cleared',
+              rolloutId: ROLLOUT_A,
+              correlationId: unresolved.correlationId,
+              installId: INSTALL_A,
+              observedAt: '2026-09-21T00:00:01.000Z',
+              basis: 'artifact omits whether the request was proved',
+              // Fault injection: an artifact missing receiptProvedRequest
+              // must be refused rather than coalesced to null.
+              clearance: {
+                kind: 'remote-original-obligation-clearance',
+                markerClear: true,
+                launchIntentClear: true,
+                originalRecordRemoved: true,
+                receiptRequired: false
+              } as unknown as RecoveryClearance
+            }
+          ],
+          unresolved: { remove: [unresolved.key] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'corrupt-journal'
+    )
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), true)
+
+    // The complete pre-launch artifact is accepted — and the persisted fact
+    // carries receiptProvedRequest explicitly, never a coalesced absence.
+    instance.record({
+      id: ROLLOUT_A,
+      expectedRevision: 1,
+      requestId: 'request-explicit-proof',
+      payload: { action: 'reconciled', key: unresolved.key },
+      snapshot: unlaunchedSnapshot(),
+      facts: [
+        {
+          kind: 'recovery-cleared',
+          rolloutId: ROLLOUT_A,
+          correlationId: unresolved.correlationId,
+          installId: INSTALL_A,
+          observedAt: '2026-09-21T00:00:01.000Z',
+          basis: 'prepared pre-launch obligation with no receipt',
+          clearance: { ...CLEARANCE, receiptRequired: false, receiptProvedRequest: null }
+        }
+      ],
+      unresolved: { remove: [unresolved.key] }
+    })
+
+    const released = instance.read(ROLLOUT_A)
+    assert.equal(released.unresolved.length, 0)
+    const fact = released.facts.find(item => item.kind === 'recovery-cleared')
+    assert.ok(fact?.clearance)
+    const clearance = fact!.clearance as RecoveryClearance
+    assert.equal(clearance.receiptRequired, false)
+    assert.equal(clearance.receiptProvedRequest, null)
+    assert.equal(Object.prototype.hasOwnProperty.call(clearance, 'receiptProvedRequest'), true)
   })
 })
 
@@ -685,13 +990,14 @@ test('refuses a same-key fence replacement that drops the old obligation without
     assert.equal(instance.read(ROLLOUT_A).unresolved[0].correlationId, original.correlationId)
 
     // The same replacement is accepted once the original obligation's release
-    // is proved by a matching validated settlement fact.
+    // is proved by a matching validated settlement fact together with the
+    // record's own proved request.
     instance.record({
       id: ROLLOUT_A,
       expectedRevision: 1,
       requestId: 'request-same-key-replacement-proved',
       payload: { action: 'fence' },
-      snapshot: snapshot(ROLLOUT_A, { phase: 'attention-required' }),
+      snapshot: settledSnapshot({ phase: 'attention-required' }),
       facts: [
         {
           kind: 'settlement-validated',
@@ -912,7 +1218,7 @@ test('persists summaries and archive metadata, including after reopen', () => {
   })
 })
 
-test('prunes old settled records but retains an unresolved tombstone and its fence', () => {
+test('prunes old settled records but never a record whose fence is still unresolved', () => {
   withTempDirectory(directory => {
     const instance = journal(directory, { retentionLimit: 1 })
     instance.create(snapshot(ROLLOUT_A, { phase: 'stopped' }), { unresolved: [fence()] })
@@ -944,16 +1250,27 @@ test('prunes old settled records but retains an unresolved tombstone and its fen
     })
 
     const result = instance.prune()
-    assert.ok(result.prunedRecordIds.includes(ROLLOUT_A))
-    assert.ok(!fs.existsSync(path.join(directory, `${ROLLOUT_A}.json`)))
-    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), true)
-    const tombstone = instance.unresolvedIndex().find(item => item.key === `${ROLLOUT_A}:${INSTALL_A}`)
-    assert.equal(tombstone?.tombstone, true)
-    assert.equal(tombstone?.rolloutId, ROLLOUT_A)
+
+    // The fenced record is retained: physical deletion would strand its
+    // installation-level obligation with no recoverable carrier, because
+    // only the record itself can reach recovery.
+    assert.ok(!result.prunedRecordIds.includes(ROLLOUT_A))
+    assert.ok(fs.existsSync(path.join(directory, `${ROLLOUT_A}.json`)))
+    assert.ok(result.retainedRecordIds.includes(ROLLOUT_A))
+
+    // Unfenced settled records beyond the retention limit still compact.
+    assert.ok(result.prunedRecordIds.includes(ROLLOUT_B))
+    assert.ok(!fs.existsSync(path.join(directory, `${ROLLOUT_B}.json`)))
+    assert.ok(fs.existsSync(path.join(directory, `${ROLLOUT_C}.json`)))
 
     const reopened = journal(directory, { retentionLimit: 1 })
     assert.equal(reopened.hasUnresolvedInstall(INSTALL_A), true)
-    assert.equal(reopened.unresolvedIndex().find(item => item.key === `${ROLLOUT_A}:${INSTALL_A}`)?.tombstone, true)
+    assert.equal(reopened.unresolvedIndex().find(item => item.key === `${ROLLOUT_A}:${INSTALL_A}`)?.tombstone, false)
+    assert.equal(reopened.read(ROLLOUT_A).unresolved.length, 1)
+    assert.equal(
+      reopened.history({ limit: 10 }).items.find(item => item.id === ROLLOUT_B)?.tombstone,
+      true
+    )
     assert.equal(
       reopened.history({ limit: 10 }).items.some(item => item.id === ROLLOUT_A),
       true

@@ -885,6 +885,247 @@ test.each([
   }
 })
 
+test('recovers a fenced rollout whose history lies beyond the first provider page', async () => {
+  const { dependencies, journalDirectory } = makeDependencies()
+  const rolloutId = '00000000-0000-4000-8000-000000000001'
+  const correlationId = '99999999-9999-4999-8999-999999999999'
+
+  try {
+    dependencies.journal.create({
+      schemaVersion: 1,
+      id: rolloutId,
+      revision: 0,
+      createdAt: NOW_ISO,
+      updatedAt: NOW_ISO,
+      finishedAt: NOW_ISO,
+      retryOf: null,
+      archivedAt: null,
+      target: TARGET,
+      phase: 'stopped',
+      activeWave: 0,
+      concurrency: 1,
+      promotionPolicy: 'manual',
+      canaryApproved: false,
+      continuationRequired: false,
+      attempts: [{
+        identity: {
+          connectionId: CONNECTION_ID,
+          installId: INSTALL_ID,
+          aliasConnectionIds: [],
+          label: INSTALL_ID,
+          displayAddress: CONNECTION_ID,
+          installationFingerprint: INSTALLATION_FINGERPRINT,
+          sourceFingerprint: SOURCE_FINGERPRINT,
+          admittedSha: ADMITTED_SHA
+        },
+        correlationId,
+        wave: 0,
+        phase: 'failed',
+        launchState: 'observed',
+        requiredScopeIds: ['scope-main'],
+        skipReason: null,
+        reprobes: 0,
+        receipt: null,
+        health: null,
+        recoveryRequired: true,
+        reasons: []
+      }],
+      eventCount: 0
+    } as any, {
+      metadata: {
+        schema: 1,
+        queueGeneration: 0,
+        currentWave: 0,
+        phase: 'stopped',
+        policy: 'manual',
+        canaryApproved: false,
+        continuationRequired: false,
+        stopRequested: true,
+        plan: BASE_PLAN
+      },
+      events: [],
+      unresolved: [{
+        key: `managed-rollout:${rolloutId}:${INSTALL_ID}:${correlationId}`,
+        rolloutId, installId: INSTALL_ID, correlationId,
+        reason: 'remote-launch-settlement-required', recordedAt: NOW_ISO
+      }]
+    })
+
+    // Fifty newer terminal records push the fenced rollout beyond the first
+    // history page; hydration must still page through to it, or the fence
+    // could never be cleared after a restart.
+    for (let index = 1; index <= 50; index += 1) {
+      dependencies.journal.create({
+        schemaVersion: 1,
+        id: `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+        revision: 0,
+        createdAt: NOW_ISO,
+        updatedAt: NOW_ISO,
+        finishedAt: NOW_ISO,
+        retryOf: null,
+        archivedAt: null,
+        phase: 'completed',
+        attempts: [],
+        eventCount: 0
+      } as any)
+    }
+
+    const freshJournal = createManagedRolloutJournal({ directory: journalDirectory, clock: () => NOW_ISO })
+
+    const freshDependencies: ManagedRolloutProviderDependencies = {
+      ...dependencies,
+      journal: freshJournal,
+      observe: {
+        ...dependencies.observe,
+        reprobe: async authorization => ({ correlationId: authorization.correlationId, outcome: 'unverified' as const, terminal: false }),
+        recover: async authorization => ({
+          correlationId: authorization.correlationId,
+          clearanceProved: true,
+          clearance: RECOVERY_CLEARANCE
+        })
+      }
+    }
+
+    const provider = createManagedRolloutProvider(freshDependencies)
+    const before = await provider.get(rolloutId) as Record<string, unknown>
+
+    assert.equal(before.phase, 'attention-required')
+
+    const recovered = await provider.command({
+      id: rolloutId,
+      expectedRevision: before.revision as number,
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      action: 'recover',
+      kind: 'recover',
+      installId: INSTALL_ID,
+      reason: null,
+      promotionPolicy: null
+    } as any) as Record<string, unknown>
+
+    assert.equal(recovered.ok, true)
+    assert.equal(freshJournal.read(rolloutId).unresolved.length, 0)
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('finds active rollouts beyond the first provider page for reads and admission checks', async () => {
+  const { dependencies, journalDirectory } = makeDependencies()
+  const activeId = '00000000-0000-4000-8000-000000000002'
+  const correlationId = '99999999-9999-4999-8999-999999999998'
+  let provider: ReturnType<typeof createManagedRolloutProvider> | undefined
+
+  try {
+    for (let index = 1; index <= 50; index += 1) {
+      dependencies.journal.create({
+        schemaVersion: 1,
+        id: `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+        revision: 0,
+        createdAt: NOW_ISO,
+        updatedAt: NOW_ISO,
+        finishedAt: NOW_ISO,
+        retryOf: null,
+        archivedAt: null,
+        phase: 'completed',
+        attempts: [],
+        eventCount: 0
+      } as any)
+    }
+
+    dependencies.journal.create({
+      schemaVersion: 1,
+      id: activeId,
+      revision: 0,
+      createdAt: NOW_ISO,
+      updatedAt: NOW_ISO,
+      finishedAt: null,
+      retryOf: null,
+      archivedAt: null,
+      target: TARGET,
+      phase: 'running',
+      activeWave: 0,
+      concurrency: 1,
+      promotionPolicy: 'manual',
+      canaryApproved: false,
+      continuationRequired: false,
+      attempts: [{
+        identity: {
+          connectionId: CONNECTION_ID,
+          installId: INSTALL_ID,
+          aliasConnectionIds: [],
+          label: INSTALL_ID,
+          displayAddress: CONNECTION_ID,
+          installationFingerprint: INSTALLATION_FINGERPRINT,
+          sourceFingerprint: SOURCE_FINGERPRINT,
+          admittedSha: ADMITTED_SHA
+        },
+        correlationId,
+        wave: 0,
+        phase: 'updating',
+        launchState: 'authorized',
+        requiredScopeIds: ['scope-main'],
+        skipReason: null,
+        reprobes: 0,
+        receipt: null,
+        health: null,
+        recoveryRequired: false,
+        reasons: []
+      }],
+      eventCount: 0
+    } as any, {
+      metadata: {
+        schema: 1,
+        queueGeneration: 0,
+        currentWave: 0,
+        phase: 'running',
+        policy: 'manual',
+        canaryApproved: false,
+        continuationRequired: false,
+        stopRequested: false,
+        plan: BASE_PLAN
+      },
+      events: []
+    })
+
+    provider = createManagedRolloutProvider(dependencies)
+    const currentRevision = dependencies.journal.read(activeId).snapshot.revision
+
+    // The active rollout sorts beyond the first page of newer terminal
+    // records; the read surface and the one-rollout admission rule must
+    // still see it.
+    assert.equal(await provider.activeRevision(), currentRevision)
+
+    const read = await provider.read(null) as Record<string, unknown>
+
+    assert.equal(read.revision, currentRevision)
+
+    const resolution = await provider.resolveTarget({
+      connectionIds: [CONNECTION_ID],
+      inventoryRevision: INVENTORY.inventoryRevision,
+      retryOf: null
+    }) as Record<string, unknown>
+
+    const preflight = await provider.preflight({
+      inventoryRevision: INVENTORY.inventoryRevision,
+      targetResolutionId: resolution.resolutionId,
+      waves: [[INSTALL_ID]],
+      concurrency: 1,
+      promotionPolicy: 'auto-if-healthy',
+      retryOf: null
+    }) as Record<string, unknown>
+
+    // A second rollout must never start while one is active, even when the
+    // active record lies beyond the first page.
+    await assert.rejects(
+      () => provider!.start({ token: preflight.token as string, requestId: preflight.requestId as string }),
+      /rollout-already-active/
+    )
+  } finally {
+    await provider?.waitForIdle().catch(() => undefined)
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
 test('refuses retry while the prior rollout fence is unresolved and permits it after settlement evidence', async () => {
   const { dependencies, journalDirectory } = makeDependencies()
 

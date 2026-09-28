@@ -101,19 +101,27 @@ does not guess whether the remote update happened.
 An unresolved fence remains until evidence for the same installation and
 correlation is validated — a receipt-backed settlement or proved recovery
 clearance, each bound to the rollout that owns the obligation and never
-accepted as a bare claim. Recovery re-proves the recorded installation
-against the selected remote before restoring anything, and re-observes the
-remote update marker and launch intent at release time, so a stale
-pre-restoration observation cannot clear the fence. Proved recovery clearance
-carries the structured `remote-original-obligation-clearance` artifact —
-`markerClear`, `launchIntentClear`, and `originalRecordRemoved` (all
-`true`), plus `receiptRequired` and `receiptProvedRequest` recording whether
-a receipt was found and whether its `requestedSha` and `postSha` proved the
-pinned target — which the durable journal revalidates before release.
-Archiving or pruning a record does not erase that fence; a rollout that
-reaches a terminal phase with an unresolved fence still offers recover after
-a restart. This prevents a restart, stale screen, or local success-looking
-message from turning an uncertain remote state into a second mutation.
+accepted as a bare claim. Settlement evidence is cross-checked against the
+record's own snapshot: the fenced attempt must have concluded as a success
+and its recorded receipt must prove the exact pinned request, `requestedSha`
+and `postSha` included. Recovery re-proves an installation identity against
+the selected remote before restoring anything — the recorded installation
+when the record has one, and a valid installation even for a legacy record
+that never recorded one — and re-observes the remote update marker and
+launch intent at release time, so a stale pre-restoration observation cannot
+clear the fence. Proved recovery clearance carries the structured
+`remote-original-obligation-clearance` artifact — `markerClear`,
+`launchIntentClear`, and `originalRecordRemoved` (all `true`), plus
+`receiptRequired` and `receiptProvedRequest` recording whether a receipt was
+found and whether its `requestedSha` and `postSha` proved the pinned target
+— which the durable journal revalidates against the record's own launch
+evidence before release; a clearance that denies a receipt on an observed
+launch is refused. Archiving never erases that fence, and pruning never
+deletes a record whose fence is still unresolved, so a rollout that reaches
+a terminal phase with an unresolved fence still offers recover after a
+restart no matter how much history has accumulated. This prevents a restart,
+stale screen, or local success-looking message from turning an uncertain
+remote state into a second mutation.
 
 ## What is available now?
 

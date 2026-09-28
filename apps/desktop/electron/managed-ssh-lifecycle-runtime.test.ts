@@ -117,3 +117,21 @@ test('startup recovery keeps the obligation pending when the selected remote can
 
   assert.deepEqual(cleared, [])
 })
+
+test('startup recovery consults the selected remote for an identity-less legacy record', async () => {
+  // A legacy record carries no recorded installation; the resolver must be
+  // consulted and a null answer keeps the obligation pending.
+  const unprovable = lifecycleFor('', [recoveryRecord(undefined)])
+
+  await unprovable.runtime.resumeManagedSshRecoveries()
+
+  assert.deepEqual(unprovable.cleared, [])
+
+  // Once the selected remote proves a valid installation, the legacy record
+  // restores exactly as a recorded-identity record would.
+  const provable = lifecycleFor(RECORDED_INSTALL_ID, [recoveryRecord(undefined)])
+
+  await provable.runtime.resumeManagedSshRecoveries()
+
+  assert.deepEqual(provable.cleared, [`homelab:${RECOVERY_CORRELATION}`])
+})

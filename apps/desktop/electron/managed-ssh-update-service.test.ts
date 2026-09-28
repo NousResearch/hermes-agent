@@ -794,6 +794,65 @@ test('durable recovery keeps the obligation pending when installation identity r
   assert.equal(completed, 0)
 })
 
+test('durable recovery consults the selected remote for an identity-less legacy record and keeps it pending without proof', async () => {
+  let restored = 0
+  let completed = 0
+  let resolutions = 0
+
+  const service = createManagedSshUpdateService(
+    deps({
+      resolveInstallationId: async () => {
+        resolutions += 1
+
+        return null
+      },
+      readRecoveryRecords: () => [{
+        connectionId: 'homelab', correlationId: CORRELATION,
+        phase: 'launching', scopes: [{ key: 'scope-main', kind: 'legacy', profile: 'default' }], source: source('homelab')
+      }],
+      restoreRecoveryScope: async () => { restored += 1 },
+      completeRecovery: async () => { completed += 1 }
+    })
+  )
+
+  await service.resumeRecoveries()
+
+  // A legacy record carries no recorded installation, but recovery still may
+  // not mutate a remote whose identity is unprovable: the resolver must be
+  // consulted and a null answer keeps the obligation pending.
+  assert.equal(resolutions, 1)
+  assert.equal(restored, 0)
+  assert.equal(completed, 0)
+})
+
+test('durable recovery restores an identity-less legacy record once the selected remote proves a valid installation', async () => {
+  let restored = 0
+  let completed = 0
+  let resolutions = 0
+
+  const service = createManagedSshUpdateService(
+    deps({
+      resolveInstallationId: async () => {
+        resolutions += 1
+
+        return EXPECTED_SOURCE.installId
+      },
+      readRecoveryRecords: () => [{
+        connectionId: 'homelab', correlationId: CORRELATION,
+        phase: 'launching', scopes: [{ key: 'scope-main', kind: 'legacy', profile: 'default' }], source: source('homelab')
+      }],
+      restoreRecoveryScope: async () => { restored += 1 },
+      completeRecovery: async () => { completed += 1 }
+    })
+  )
+
+  await service.resumeRecoveries()
+
+  assert.equal(resolutions, 1)
+  assert.equal(restored, 1)
+  assert.equal(completed, 1)
+})
+
 test('service captures, restores, closes owned transport, and releases admission in order', async () => {
   const events: string[] = []
   let persistedInstallationId: string | null = null

@@ -510,12 +510,13 @@ function validateEvidenceFact(value: unknown, forRead = false): JournalEvidenceF
     // the structured artifact the recovery produced; a bare assertion is not
     // evidence. Records written before the artifact existed remain readable
     // (forRead), but such facts can never release a fence — the release
-    // check revalidates the artifact.
+    // check revalidates the artifact, including its required receipt-proof
+    // fields.
     if (value.clearance === undefined && !forRead) {
       throw new JournalCorruptionError('Recovery clearance evidence must carry the structured clearance artifact.')
     }
 
-    if (value.clearance !== undefined) {validateRecoveryClearance(value.clearance)}
+    if (value.clearance !== undefined) {validateRecoveryClearance(value.clearance, forRead)}
   } else if (value.clearance !== undefined) {
     throw new JournalCorruptionError('Journal evidence clearance is only valid for recovery clearance.')
   }
@@ -527,7 +528,7 @@ function validateEvidenceFact(value: unknown, forRead = false): JournalEvidenceF
 
 const RECOVERY_CLEARANCE_KIND = 'remote-original-obligation-clearance'
 
-export function validateRecoveryClearance(value: unknown): RecoveryClearance {
+export function validateRecoveryClearance(value: unknown, forRead = false): RecoveryClearance {
   if (!isPlainObject(value)) {throw new JournalCorruptionError('Recovery clearance must be an object.')}
 
   if (value.kind !== RECOVERY_CLEARANCE_KIND) {throw new JournalCorruptionError('Recovery clearance kind is invalid.')}
@@ -537,6 +538,16 @@ export function validateRecoveryClearance(value: unknown): RecoveryClearance {
   }
 
   if (typeof value.receiptRequired !== 'boolean') {throw new JournalCorruptionError('Recovery clearance receiptRequired is invalid.')}
+
+  // The artifact records exactly what was proved, so the field is part of
+  // the contract rather than an optional annotation: a newly recorded
+  // artifact that omits it is incomplete and refused. Records written before
+  // the field was required remain readable, but the missing proof normalizes
+  // to null — and release revalidation never runs with forRead, so such a
+  // fact can never release a fence.
+  if (value.receiptProvedRequest === undefined && !forRead) {
+    throw new JournalCorruptionError('Recovery clearance receiptProvedRequest is required.')
+  }
 
   const proved = value.receiptProvedRequest ?? null
 
@@ -669,6 +680,60 @@ function summaryFromRecord(record: JournalRecord): JournalSummary {
 
 function isSettled(record: JournalRecord): boolean {
   return new Set(['stopped', 'completed', 'completed-with-exclusions']).has(record.snapshot.phase)
+}
+
+// Attempt phases that can only be reached through an observed dispatch: a
+// terminal success or failure is the outcome of a launch whose result came
+// back to this machine, so its settlement evidence must exist.
+const OBSERVED_DISPATCH_PHASES = new Set(['updated', 'already-current', 'failed', 'refused'])
+const SETTLED_ATTEMPT_PHASES = new Set(['updated', 'already-current'])
+
+function fencedAttempt(snapshot: JournalSnapshot, fence: UnresolvedFence): Record<string, unknown> | null {
+  for (const candidate of snapshot.attempts) {
+    if (!isPlainObject(candidate)) {continue}
+
+    const identity = isPlainObject(candidate.identity) ? candidate.identity : null
+
+    if (identity?.installId === fence.installId && candidate.correlationId === fence.correlationId) {
+      return candidate
+    }
+  }
+
+  return null
+}
+
+// A settlement fact is evidence only when the record's own snapshot proves
+// it: the fenced attempt concluded as a success and its receipt recorded the
+// exact pinned request, both SHAs included. A bare fact — even a matching
+// one — cannot conjure that proof.
+function snapshotProvesSettlement(snapshot: JournalSnapshot, fence: UnresolvedFence): boolean {
+  const target = isPlainObject(snapshot.target) ? snapshot.target : null
+
+  if (!target || typeof target.sha !== 'string') {return false}
+  const attempt = fencedAttempt(snapshot, fence)
+
+  if (!attempt || !SETTLED_ATTEMPT_PHASES.has(String(attempt.phase))) {return false}
+  const receipt = isPlainObject(attempt.receipt) ? attempt.receipt : null
+
+  return Boolean(receipt &&
+    receipt.correlationId === fence.correlationId &&
+    receipt.requestedSha === target.sha &&
+    receipt.postSha === target.sha)
+}
+
+// Recovery release must stay consistent with the record's own launch
+// evidence: when the snapshot shows the dispatch was observed — an observed
+// launch state, a recorded receipt, or a terminal outcome — a clearance
+// claiming no receipt was required contradicts that evidence and cannot
+// release the obligation.
+function snapshotShowsObservedDispatch(snapshot: JournalSnapshot, fence: UnresolvedFence): boolean {
+  const attempt = fencedAttempt(snapshot, fence)
+
+  if (!attempt) {return false}
+
+  return attempt.launchState === 'observed' ||
+    isPlainObject(attempt.receipt) ||
+    OBSERVED_DISPATCH_PHASES.has(String(attempt.phase))
 }
 
 export class ManagedRolloutJournal {
@@ -1250,6 +1315,7 @@ export class ManagedRolloutJournal {
 
   private assertFenceRelease(
     current: JournalRecord,
+    nextSnapshot: JournalSnapshot,
     nextFacts: JournalEvidenceFact[],
     nextUnresolved: UnresolvedFence[]
   ): void {
@@ -1273,19 +1339,29 @@ export class ManagedRolloutJournal {
       // rollout never clears another rollout's obligation — and a
       // recovery-cleared fact must carry the structured clearance artifact
       // it claims, revalidated here so a legacy bare assertion can never
-      // release a fence.
+      // release a fence. The release is additionally cross-checked against
+      // the record's own snapshot: a settlement fact must be proved by the
+      // snapshot's successful attempt and its exact recorded request, and a
+      // recovery clearance must not deny a receipt the record's own launch
+      // evidence shows was required.
       const settled = nextFacts.some(fact => {
         if (fact.rolloutId !== fence.rolloutId || fact.correlationId !== fence.correlationId ||
             fact.installId !== fence.installId) {
           return false
         }
 
-        if (fact.kind === 'settlement-validated') {return true}
+        if (fact.kind === 'settlement-validated') {
+          return snapshotProvesSettlement(nextSnapshot, fence)
+        }
 
         if (fact.kind !== 'recovery-cleared') {return false}
 
         try {
-          validateRecoveryClearance(fact.clearance)
+          const clearance = validateRecoveryClearance(fact.clearance)
+
+          if (snapshotShowsObservedDispatch(nextSnapshot, fence)) {
+            return clearance.receiptRequired === true && clearance.receiptProvedRequest === true
+          }
 
           return true
         } catch {
@@ -1500,7 +1576,7 @@ export class ManagedRolloutJournal {
       : validateMetadata(input.metadata)
 
     const nextUnresolved = this.applyFenceChange(current.unresolved, input.unresolved, id)
-    this.assertFenceRelease(current, nextFacts, nextUnresolved)
+    this.assertFenceRelease(current, nextSnapshot, nextFacts, nextUnresolved)
 
     const nextRecord: JournalRecord = {
       schemaVersion: JOURNAL_SCHEMA_VERSION,
@@ -1665,6 +1741,14 @@ export class ManagedRolloutJournal {
 
     const keep = new Set(records.slice(0, this.retentionLimit).map(record => record.id))
 
+    // A settled record whose installation fence is still unresolved is the
+    // only carrier that can reach recovery, so it is never pruned: deleting
+    // it would strand an installation-level safety obligation with no path
+    // that could ever clear it. Unfenced settled records still compact.
+    for (const record of records) {
+      if (record.unresolved.length > 0) {keep.add(record.id)}
+    }
+
     const plans = records
       .filter(record => !keep.has(record.id))
       .map(record => ({
@@ -1681,18 +1765,6 @@ export class ManagedRolloutJournal {
     const now = this.now()
 
     for (const { record, prior } of plans) {
-      const hasFence = record.unresolved.length > 0
-
-      if (hasFence) {
-        for (const fence of record.unresolved) {
-          nextUnresolved.set(fence.key, {
-            ...clone(fence),
-            tombstone: true,
-            tombstoneAt: now
-          })
-        }
-      }
-
       nextSummaries.set(record.id, {
         ...prior,
         pruned: true,

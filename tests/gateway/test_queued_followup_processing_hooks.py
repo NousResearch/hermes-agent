@@ -200,6 +200,25 @@ async def test_queued_followup_fires_processing_hooks(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handoff_turn_leaves_concurrent_message_queued(monkeypatch, tmp_path):
+    _TwoTurnAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _TwoTurnAgent)
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    queued = MessageEvent(text="follow-up", source=_source(), message_id="queued-handoff")
+    adapter._pending_messages[SESSION_KEY] = queued
+
+    result = await runner._run_agent(
+        message="handoff", context_prompt="", history=[], source=_source(),
+        session_id="handoff", session_key=SESSION_KEY, handoff_delivery=True,
+    )
+
+    assert result["final_response"] == "done-1"
+    assert _TwoTurnAgent.calls == ["handoff"]
+    assert adapter._pending_messages[SESSION_KEY] is queued
+
+
+@pytest.mark.asyncio
 async def test_queued_followup_failure_completes_the_hook(monkeypatch, tmp_path):
     """A follow-up turn that blows up still closes its hook, so a platform
     never strands a 'still working' marker on the user's message."""

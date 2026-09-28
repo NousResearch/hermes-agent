@@ -4344,7 +4344,11 @@ class GatewayTurnMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
-            pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
+            # A tagged handoff has one validated final delivery. Leave any concurrent message queued
+            # for the next normal turn instead of taking the queued-first-response egress path.
+            pending_event, pending = (None, None) if handoff_delivery else await self._run_agent_drain_pending(
+                result, adapter, source, session_key,
+            )
             if pending_event or pending:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,

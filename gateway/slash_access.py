@@ -34,6 +34,9 @@ class SlashAccessPolicy:
     enabled: bool  # gating active for this scope?
     admin_user_ids: FrozenSet[str]
     user_allowed_commands: FrozenSet[str]
+    # Operator override for the refusal text (``command_denied_message``): ``None`` = built-in
+    # refusal; ``""`` = deny silently (send nothing); any other string = that exact text.
+    denied_message: Optional[str] = None
 
     def is_admin(self, user_id: Optional[str]) -> bool:
         # Gating disabled -> everyone is admin so callers can use is_admin/can_run uniformly.
@@ -90,7 +93,18 @@ def policy_from_extra(extra: dict, scope: str) -> SlashAccessPolicy:
     cmds = _coerce_command_list(extra.get(cmd_key))
     if scope == "dm" and not cmds:
         cmds = _coerce_command_list(extra.get("group_user_allowed_commands"))
-    return SlashAccessPolicy(enabled=bool(admin_ids), admin_user_ids=admin_ids, user_allowed_commands=cmds)
+    denied_raw = extra.get("command_denied_message")
+    denied_message: Optional[str] = None
+    if denied_raw is not None:
+        denied_message = str(denied_raw).strip()
+        if denied_message.lower() == "silent":
+            denied_message = ""
+    return SlashAccessPolicy(
+        enabled=bool(admin_ids),
+        admin_user_ids=admin_ids,
+        user_allowed_commands=cmds,
+        denied_message=denied_message,
+    )
 
 
 def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:

@@ -63,6 +63,20 @@ def test_only_a_disabled_shipped_builtin_is_reported(monkeypatch):
     assert signals.tool_unavailable_fields(agent, "memory", "unknown_tool", route) is None
 
 
+def test_deferred_builtins_and_cron_narrowing_are_not_unavailable(monkeypatch):
+    monkeypatch.setattr("tools.skill_provenance.is_background_review", lambda: False)
+    route = {"model": "m", "provider": "openrouter"}
+    agent = SimpleNamespace(_delegate_depth=0, enabled_toolsets=None, disabled_toolsets=None)
+    # Enabled but behind tool_search (reachable via tool_call): not "disabled in this session".
+    assert signals.tool_unavailable_fields(agent, "session_search", "unknown_tool", route) is None
+    # The same tool in a session that turned its toolset off is.
+    narrowed = SimpleNamespace(_delegate_depth=0, enabled_toolsets=None, disabled_toolsets=["session_search"])
+    assert signals.tool_unavailable_fields(narrowed, "session_search", "unknown_tool", route) is not None
+    # Cron strips clarify on purpose.
+    cron = SimpleNamespace(_delegate_depth=0, platform="cron")
+    assert signals.tool_unavailable_fields(cron, "clarify", "unknown_tool", route) is None
+
+
 def test_turn_validation_reports_disabled_builtin_once_and_unknown_names_never(marks, monkeypatch):
     from hermes_cli.observability.shared_metrics_model import record_tool_call_quality
 

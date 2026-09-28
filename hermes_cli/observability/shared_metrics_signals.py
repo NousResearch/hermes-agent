@@ -32,16 +32,18 @@ _DAYS_SINCE_INSTALL_THRESHOLDS = (
 def tool_unavailable_fields(agent: Any, name: Any, issue: str, route: dict[str, str]) -> dict[str, str] | None:
     """Fields for a call to a shipped built-in the session has disabled; None for anything else.
 
-    Background reviews and delegated children run with toolsets Hermes (or the parent model)
-    narrowed on purpose, so their misses say nothing about what users should get by default.
+    Background reviews, delegated children and cron jobs run with toolsets Hermes (or the parent
+    model) narrowed on purpose, so their misses say nothing about what users should get by default.
+    A built-in deferred behind ``tool_search`` is enabled (reachable through ``tool_call``), not missing.
     """
     if issue != "unknown_tool" or not isinstance(name, str) or name not in contract.BUILTIN_TOOL_NAMES:
         return None
-    if getattr(agent, "_delegate_depth", 0):
+    if getattr(agent, "_delegate_depth", 0) or getattr(agent, "platform", None) == "cron":
         return None
+    from agent.tool_executor import _tool_search_scoped_names
     from tools.skill_provenance import is_background_review
 
-    if is_background_review():
+    if is_background_review() or name in _tool_search_scoped_names(agent):
         return None
     return {**route, "tool_name": name}
 

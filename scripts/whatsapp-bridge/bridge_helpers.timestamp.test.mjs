@@ -1,65 +1,94 @@
 /**
- * Unit tests for timestampedLine, the ISO-8601-prefix helper for
- * bridge.js's human-facing lifecycle log lines.
+ * Unit tests for the bridge's log-line stamping: formatLogStamp,
+ * installConsoleStamps and writeJsonLine.
  *
  * Regression for issue #97021: startup/connection lifecycle console.log/
  * console.warn lines (bridge listening, connected, logged out, reconnect,
  * "[bridge] ..." warnings) carried no timestamp, and the platform adapter
- * captures the bridge's stdout/stderr verbatim into bridge.log -- only
- * structured JSON events (pair events, allowlist rejections, #92683) were
- * timestamped, making bridge.log impossible to sequence on its own during
- * incident forensics.
+ * captures the bridge's stdout/stderr verbatim into bridge.log, making
+ * bridge.log impossible to sequence on its own during incident forensics.
+ * Machine-read JSON event lines (pair events parsed line-by-line by the
+ * dashboard pairing watcher, `ignored` events) must stay byte-identical.
  */
 
 import { strict as assert } from 'node:assert';
 
-import { timestampedLine } from './bridge_helpers.js';
+import { formatLogStamp, installConsoleStamps, writeJsonLine } from './bridge_helpers.js';
 
-const ISO_8601_PREFIX_RE = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] /;
+const LOCAL_STAMP_PREFIX_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} /;
 
-// The prefix is a valid, parseable ISO-8601 UTC timestamp.
-{
-  const line = timestampedLine('✅ WhatsApp connected!');
-
-  assert.match(line, ISO_8601_PREFIX_RE);
-
-  const bracketed = line.slice(1, line.indexOf(']'));
-  assert.ok(!Number.isNaN(new Date(bracketed).getTime()));
+function captureWrites(stream, fn) {
+  const chunks = [];
+  const originalWrite = stream.write;
+  stream.write = (chunk, ...rest) => {
+    chunks.push(String(chunk));
+    const callback = rest.find(arg => typeof arg === 'function');
+    if (callback) callback();
+    return true;
+  };
+  try {
+    fn();
+  } finally {
+    stream.write = originalWrite;
+  }
+  return chunks;
 }
 
-// The original message text survives byte-for-byte after the prefix --
-// this is a display shim, not a message-mangling one.
-{
-  const message = '❌ Logged out. Delete session and restart to re-authenticate.';
-  const line = timestampedLine(message);
-
-  assert.ok(line.endsWith(message));
+function withStampedConsole(fn) {
+  const saved = { log: console.log, warn: console.warn, error: console.error };
+  installConsoleStamps();
+  try {
+    fn();
+  } finally {
+    Object.assign(console, saved);
+  }
 }
 
-// A template-literal-interpolated message (matching the actual bridge.js
-// call sites, e.g. the reconnect/warn lines) is preserved intact too.
+// The stamp is local wall-clock time in Python's asctime shape.
 {
-  const reason = 'stream error';
-  const message = `⚠️  Connection closed (reason: ${reason}). Reconnecting in 3s...`;
-  const line = timestampedLine(message);
-
-  assert.ok(line.includes('stream error'));
-  assert.ok(line.endsWith(message));
+  assert.equal(formatLogStamp(new Date(2026, 8, 28, 3, 4, 5, 62)), '2026-09-28 03:04:05,062');
 }
 
-// Two calls a moment apart produce increasing (or equal, at ms resolution)
-// timestamps -- the prefix reflects the actual call time, not a cached or
-// module-load-time value, so a relaunch loop's individual lines remain
-// independently sequenceable.
-{
-  const first = timestampedLine('a');
-  await new Promise(resolve => setTimeout(resolve, 5));
-  const second = timestampedLine('b');
+// A console.log line is stamped with the current local time, and the message
+// text survives byte-for-byte after the stamp.
+withStampedConsole(() => {
+  const before = Date.now();
+  const out = captureWrites(process.stdout, () => {
+    console.log('❌ Logged out. Delete session and restart to re-authenticate.');
+  });
 
-  const firstTs = new Date(first.slice(1, first.indexOf(']'))).getTime();
-  const secondTs = new Date(second.slice(1, second.indexOf(']'))).getTime();
+  assert.equal(out.length, 1);
+  assert.match(out[0], LOCAL_STAMP_PREFIX_RE);
+  assert.ok(out[0].endsWith(' ❌ Logged out. Delete session and restart to re-authenticate.\n'));
+  const [day, time] = out[0].split(' ');
+  const stampedMs = new Date(`${day}T${time.replace(',', '.')}`).getTime();
+  assert.ok(Math.abs(stampedMs - before) < 5000, `stamp ${day} ${time} is not local now`);
+});
 
-  assert.ok(secondTs >= firstTs);
-}
+// console.warn keeps its multi-argument formatting and still goes to stderr.
+withStampedConsole(() => {
+  const err = captureWrites(process.stderr, () => {
+    console.warn('[bridge] failed to send read receipt:', 'boom');
+  });
+
+  assert.equal(err.length, 1);
+  assert.match(err[0], LOCAL_STAMP_PREFIX_RE);
+  assert.ok(err[0].endsWith(' [bridge] failed to send read receipt: boom\n'));
+});
+
+// A JSON event line is not stamped, even with the console wrapped, so the
+// pairing watcher's per-line json.loads still parses it.
+withStampedConsole(() => {
+  const out = captureWrites(process.stdout, () => {
+    writeJsonLine({ ts: 1790000000000, event: 'qr', qr: 'abc' });
+  });
+
+  assert.deepEqual(out, ['{"ts":1790000000000,"event":"qr","qr":"abc"}\n']);
+});
+
+// An empty console.log() stays a bare newline rather than a lone stamp.
+withStampedConsole(() => {
+  assert.deepEqual(captureWrites(process.stdout, () => console.log()), ['\n']);
+});
 
 console.log('bridge_helpers.timestamp.test.mjs: all assertions passed');

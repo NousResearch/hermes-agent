@@ -1572,6 +1572,24 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
 
 _ENV_REF_RE = re.compile(r"\${([^}]+)}")
 
+# Bash default-value operator: ``${VAR:-fallback}``. Only ``:-`` is recognized — bash's bare
+# ``-`` (unset-but-not-empty) would put two notions of "set" in one config file.
+_ENV_REF_DEFAULT_OP = ":-"
+
+
+def split_env_ref_default(body: str) -> Tuple[str, Optional[str]]:
+    """Split a ``${...}`` body into ``(ref, default)`` on the first ``:-``; ``default`` is None
+    for a bare ref. A default carrying ``$`` or ``{`` is not treated as one, so nested / escaped
+    shapes (``${A:-${B}}``) keep their literal behavior instead of half-parsing. The ref half
+    keeps its ``env:`` prefix for ``_env_ref_var_name``."""
+    idx = body.find(_ENV_REF_DEFAULT_OP)
+    if idx <= 0:
+        return body, None
+    default = body[idx + len(_ENV_REF_DEFAULT_OP):]
+    if "$" in default or "{" in default:
+        return body, None
+    return body[:idx].strip(), default
+
 
 def _env_ref_lookup(name: str) -> Optional[str]:
     """Resolve the env var behind a ``${VAR}`` / ``${env:VAR}`` ref — plain ``os.environ`` outside
@@ -1593,13 +1611,14 @@ def _env_ref_lookup(name: str) -> Optional[str]:
 
 
 def _env_expand_match(m: re.Match) -> str:
-    """Expand one ``${VAR}`` (legacy bare name) or ``${env:VAR}`` (Cursor-style SecretRef).
+    """Expand one ``${VAR}`` (legacy bare name), ``${env:VAR}`` (Cursor-style SecretRef) or
+    ``${VAR:-default}`` (bash default: used when the var is unset OR empty).
     Other SecretRef sources (``file:``, ``bitwarden:``, ``vault:``...) are NOT resolved here:
     external backends inject their values into the environment at startup (the ``secrets:``
     block), so a config ref only ever needs the env shape. Unresolved refs stay verbatim so
     callers can detect them."""
     raw = m.group(0)
-    inner = m.group(1).strip()
+    inner, default = split_env_ref_default(m.group(1).strip())
     name = _env_ref_var_name(inner)
     if name is None:
         if not inner.startswith("env:") and _is_non_env_secret_ref(inner):
@@ -1610,6 +1629,8 @@ def _env_expand_match(m: re.Match) -> str:
                 raw, inner.split(":", 1)[0])
         return raw  # non-env source, or empty ``${env:}``
     val = _env_ref_lookup(name)
+    if default is not None:
+        return val if val else default
     if val is not None:
         return val
     if inner.startswith("env:"):
@@ -1657,7 +1678,7 @@ def _env_ref_snapshot(obj, snapshot=None):
         snapshot = {}
     if isinstance(obj, str):
         for raw in _ENV_REF_RE.findall(obj):
-            name = _env_ref_var_name(raw)
+            name = _env_ref_var_name(split_env_ref_default(raw.strip())[0])
             if name is not None:
                 snapshot[name] = _env_ref_lookup(name)
     elif isinstance(obj, dict):

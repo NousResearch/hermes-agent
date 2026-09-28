@@ -304,14 +304,19 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
 
 
 def _interpolate_env_vars(value):
-    """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` placeholders and context vars. Env
-    refs resolve from the active profile's secret scope when multiplexing (the routed profile's
-    value, not another profile's in ``os.environ``). Unset vars keep the literal placeholder."""
+    """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` / bash ``${VAR:-default}`` placeholders
+    and context vars. Env refs resolve from the active profile's secret scope when multiplexing (the
+    routed profile's value, not another profile's in ``os.environ``). Unset vars keep the literal
+    placeholder unless the ref carries a default (same grammar as config.yaml)."""
     from agent.secret_scope import get_secret as _get_secret
+    from hermes_cli.config import split_env_ref_default
     if isinstance(value, str):
         def _replace(m):
             resolver = _CONTEXT_VAR_RESOLVERS.get(m.group(1).strip())
-            return resolver() if resolver is not None else (_get_secret(_env_ref_name(m.group(1)), m.group(0)) or m.group(0))
+            if resolver is not None:
+                return resolver()
+            ref, default = split_env_ref_default(m.group(1).strip())
+            return _get_secret(_env_ref_name(ref), "") or (m.group(0) if default is None else default)
         return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
         return {k: _interpolate_env_vars(v) for k, v in value.items()}

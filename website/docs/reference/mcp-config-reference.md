@@ -83,7 +83,13 @@ mcp_servers:
       GITHUB_PERSONAL_ACCESS_TOKEN: "${env:GITHUB_TOKEN}"   # same as "${GITHUB_TOKEN}"
 ```
 
-Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder.
+Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder unless the reference carries a bash-style default — `${VAR:-fallback}` / `${env:VAR:-fallback}` — which is used when the variable is unset or empty (the default itself may not contain `$` or `{`):
+
+```yaml
+mcp_servers:
+  local:
+    url: "http://${MCP_HOST:-localhost}:${MCP_PORT:-8080}/mcp"
+```
 
 ### Context variables
 

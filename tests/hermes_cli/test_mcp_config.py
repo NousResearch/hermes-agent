@@ -364,6 +364,24 @@ class TestEnvVarInterpolation:
 
         assert _interpolate_env_vars("Bearer ${env:MY_KEY}") == "Bearer secret123"
 
+    def test_interpolate_default_operator_matches_config_yaml_grammar(self, monkeypatch):
+        """``${VAR:-x}`` in an MCP server entry behaves like config.yaml (openclaw/openclaw#155164
+        port): default on unset/empty, env value when set, bare unset refs still stay literal."""
+        monkeypatch.delenv("MCP_OC155164_UNSET", raising=False)
+        monkeypatch.setenv("MCP_OC155164_EMPTY", "")
+        monkeypatch.setenv("MCP_OC155164_SET", "live")
+        from tools.mcp_tool_config import _interpolate_env_vars
+
+        assert _interpolate_env_vars({
+            "url": "http://${MCP_OC155164_UNSET:-localhost}:${MCP_OC155164_EMPTY:-8080}/mcp",
+            "headers": {"X-Env": "${env:MCP_OC155164_SET:-fallback}"},
+            "args": ["${MCP_OC155164_UNSET}"],
+        }) == {
+            "url": "http://localhost:8080/mcp",
+            "headers": {"X-Env": "live"},
+            "args": ["${MCP_OC155164_UNSET}"],
+        }
+
 
     def test_env_ref_name_strips_prefix(self):
         from tools.mcp_tool_common import _env_ref_name

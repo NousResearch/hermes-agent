@@ -153,6 +153,18 @@ delegation:
 
 Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is) and a warning is logged. Bare `$VAR` is not expanded.
 
+A bash-style default fills in when the variable is unset **or empty**: `${VAR:-fallback}` (also `${env:VAR:-fallback}`). The default is plain text — it may not itself contain `$` or `{` — and it resolves without a warning, so a shared `config.yaml` can carry sane defaults that an operator overrides from `.env` or the process environment:
+
+```yaml
+model:
+  base_url: "https://${LLM_HOST:-api.openai.com}/v1"
+mcp_servers:
+  local:
+    url: "http://${MCP_HOST:-localhost}:${MCP_PORT:-8080}/mcp"
+```
+
+Saving the loaded config (`hermes config set`, setup flows) writes the authored `${VAR:-fallback}` template back, never the value it resolved to.
+
 Under a [multiplexed multi-profile gateway](./multi-profile-gateways.md), references in a profile's `config.yaml` resolve against **that profile's** `.env` (its secret scope), not the shared process environment — a `${MATRIX_ACCESS_TOKEN}` in profile B stays unresolved (kept verbatim, warning logged) unless B defines the variable itself. This holds wherever B's config is loaded inside the multiplexer: routed gateway turns, B's adapter startup, and B's cron jobs. Single-profile runs are unchanged. See [What is isolated per profile](./multi-profile-gateways.md#what-is-isolated-per-profile) for the full list.
 
 Cursor-style SecretRef syntax is also accepted: `${env:VAR_NAME}` resolves exactly like `${VAR_NAME}` (the `env:` prefix is stripped), so MCP or provider snippets copied from Cursor / Claude configs work unchanged in both `config.yaml` and the `mcp_servers` block. Other SecretRef sources (`${file:...}`, `${vault:...}`, `${bitwarden:...}`) are **not** resolved inline — external secret backends inject their values into the environment at startup via the `secrets:` block, so reference them as `${env:NAME}` instead; unknown prefixes warn once and stay verbatim.

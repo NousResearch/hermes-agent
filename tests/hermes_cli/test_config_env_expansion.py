@@ -12,6 +12,34 @@ class TestExpandEnvVars:
         assert _expand_env_vars(True) is True
         assert _expand_env_vars(None) is None
 
+    def test_default_operator_fills_unset_or_empty_and_yields_to_a_set_var(self, monkeypatch):
+        """``${VAR:-x}`` (port of openclaw/openclaw#155164): the default wins when the var is unset
+        OR empty (bash ``:-``), a set var wins over the default, ``${env:VAR:-x}`` shares the grammar,
+        and a default carrying ``$``/``{`` is not parsed (nested shapes stay literal as before)."""
+        from hermes_cli.config import _env_ref_snapshot, _preserve_env_ref_templates
+
+        monkeypatch.delenv("OC155164_UNSET", raising=False)
+        monkeypatch.setenv("OC155164_EMPTY", "")
+        monkeypatch.setenv("OC155164_SET", "from-env")
+        cfg = {
+            "unset": "${OC155164_UNSET:-fallback}",
+            "empty": "${OC155164_EMPTY:-fallback}",
+            "set": "${env:OC155164_SET:-fallback}",
+            "composite": "https://${OC155164_UNSET:-api.example.com}/v1",
+            "empty_default": "[${OC155164_UNSET:-}]",
+            "nested": "${OC155164_UNSET:-${OC155164_SET}}",
+        }
+        assert _expand_env_vars(cfg) == {
+            "unset": "fallback", "empty": "fallback", "set": "from-env",
+            "composite": "https://api.example.com/v1", "empty_default": "[]",
+            "nested": "${OC155164_UNSET:-${OC155164_SET}}",
+        }
+        # The cache-staleness snapshot keys on the REAL var name, so a later export of the var
+        # invalidates an expansion that resolved from the default (#58514 contract).
+        assert "OC155164_UNSET" in _env_ref_snapshot(cfg)
+        # Persisting the loaded config restores the authored template, never the inlined default.
+        assert _preserve_env_ref_templates("fallback", "${OC155164_UNSET:-fallback}") == "${OC155164_UNSET:-fallback}"
+
 
 class TestLoadConfigExpansion:
     def test_load_config_expands_env_vars(self, tmp_path, monkeypatch):

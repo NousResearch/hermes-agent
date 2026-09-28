@@ -190,12 +190,11 @@ The first cloud build ran on 2026-09-28. `BUILD_LOG.md` records it with the snap
 - `install-host.sh` ran outside a container on the x86_64 package set. The droplet-only steps ran: the Tailscale install (installed, not joined), `loginctl enable-linger hermes` (`Linger=yes`), fail2ban and unattended-upgrades (both active), and the sshd drop-in (`sshd -t` passes).
 - `cloud-init clean --logs --machine-id` worked. A droplet from the snapshot got a new machine id, and cloud-init applied its hostname and SSH key. So droplets from this image process their user-data.
 - The unit is enabled and does not start without `/etc/litco-agent/env` (`ConditionResult=no`). No secret is in the image.
+- journald is persistent, and `do-agent` and `droplet-agent` are active once first boot finishes. These were checked on rc2.
 
 **Not verified:**
 
 - Matter user-data on a real droplet has not run. That covers `write_files` with `b64`, the `matter-<shortid>` hostname, `tailscale up --auth-key=file:` (the `file:` form needs a recent Tailscale), the ufw reset on a real kernel, the restart ordering, and the gateway answering `/health` on a droplet. The rendered YAML is parsed in tests, not by cloud-init.
-- Persistent journald was not checked on the droplet.
-- The DigitalOcean monitoring agent showed `inactive` about a minute after boot, while cloud-init was still running. Whether it reports later is unchecked.
 - The allowlist egress policy has never been applied anywhere.
 - Linger is on, but nothing has run through hermes's user manager. Cron jobs that need `systemd-run --user` are untested.
 - A real model provider. The smoke turn used the stub model, not a provider key.

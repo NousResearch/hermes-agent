@@ -1156,6 +1156,9 @@ def _build_replay_entry(
     # flushes skip rows already in state.db (#121462/#123462).
     if msg.get("_db_persisted"):
         entry["_db_persisted"] = True
+    # A merged user dict lost that stamp; this one is what ties it to its durable rows at compaction.
+    if msg.get("_merged_durable_rows"):
+        entry["_merged_durable_rows"] = msg["_merged_durable_rows"]
     return entry
 
 

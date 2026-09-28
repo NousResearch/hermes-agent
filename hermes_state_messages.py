@@ -1000,9 +1000,13 @@ class SessionMessagesMixin:
         A reload without row ids turns a durable ``user;user`` pair (a prompt that never got its reply)
         into one dict equal to neither row. Read as an unpersisted turn, its rows would be re-sequenced
         after the compacted set like concurrent appends, behind the turn that is running.
+        Only a dict the repair stamped: a prompt that was never persisted can carry the same text as
+        rows another surface appended, and those were never held.
         """
-        content = message.get("content")
-        if message.get("role") != "user" or not isinstance(content, str) or "\n\n" not in content:
+        from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
+
+        content, width = message.get("content"), message.get(MERGED_DURABLE_ROWS)
+        if message.get("role") != "user" or not isinstance(content, str) or type(width) is not int or width < 2:
             return []
         rows = [
             (int(row["id"]), row["role"], self._loaded_view_content(row["role"], self._decode_content(row["content"])))
@@ -1019,8 +1023,9 @@ class SessionMessagesMixin:
                 merged = f"{merged}\n\n{part}" if merged and part else (merged or part)
                 if not content.startswith(merged):
                     break
-                if end > start and merged == content:
-                    runs.append([rows[i][0] for i in range(start, end + 1)])
+                if end - start + 1 == width:
+                    if merged == content:
+                        runs.append([rows[i][0] for i in range(start, end + 1)])
                     break
         if len(runs) > 1:
             return None

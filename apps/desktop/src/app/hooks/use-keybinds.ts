@@ -11,7 +11,6 @@ import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
   isPaneVisible,
-  layoutHasRootSide,
   toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
@@ -43,10 +42,11 @@ import { toggleSimpleMode } from '@/store/interface-mode'
 import { $capture, $comboIndex, captureStep, endCapture, setBinding } from '@/store/keybinds'
 import {
   cycleSidebarGrouping,
+  layoutHasRightSide,
   requestSessionSearchFocus,
   setFileBrowserOpen,
-  toggleFileBrowserOpen,
   togglePanesFlipped,
+  toggleRightSide,
   toggleSidebarOpen
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
@@ -338,10 +338,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // Narrow-viewport reveal is handled inside the store toggles now.
     'view.toggleSidebar': toggleSidebarOpen,
     'view.cycleSidebarGrouping': cycleSidebarGrouping,
-    // ⌘J toggles the right sidebar — but a layout with no right side (e.g.
-    // terminal-on-bottom) would leave it a dead key, so it falls back to the
-    // terminal there. The single "secondary panel" toggle.
-    'view.toggleRightSidebar': () => (layoutHasRootSide('right') ? toggleFileBrowserOpen() : toggleTerminalPane()),
+    // ⌘J toggles the physical right side — whatever column lives there in the
+    // live tree (the Browser preview column, the files column). Falls back to
+    // the terminal when nothing lives on the right (terminal-on-bottom).
+    'view.toggleRightSidebar': () => (layoutHasRightSide() ? toggleRightSide() : toggleTerminalPane()),
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
     'view.toggleProfileRail': toggleProfileRailVisible,

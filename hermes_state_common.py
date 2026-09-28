@@ -12,8 +12,8 @@ from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
-from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
-    _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
+from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, MODEL_ONLY_DISPLAY_METADATA_KEY, SUMMARY_PREFIX,
+    _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
 
 
 # Persisted title provenance: automatic display labels are not user-selected identities.
@@ -89,6 +89,12 @@ def _sql_json_extract(expression: str, path: str) -> str:
     return f"json_extract({safe_json}, {_sql_literal(path)})"
 
 
+# Model-only carriers retain the originals in display history. Unqualified so correlated
+# subqueries bind this predicate to their innermost messages alias.
+DISPLAY_VISIBLE_SQL = (
+    f" AND COALESCE({_sql_json_extract('display_metadata', '$.' + MODEL_ONLY_DISPLAY_METADATA_KEY)}, 0) = 0")
+
+
 def _sql_ltrim_whitespace(expression: str) -> str:
     return f"LTRIM({expression}, {_SQL_WHITESPACE})"
 
@@ -126,7 +132,8 @@ _PREVIEW_FORCE_USER_REMAINDER_SQL = _sql_after_marker(_SUMMARY_END_MARKER)
 
 # Pure compaction rows are ineligible; force-user-leading and merged carriers only when authentic content survives.
 # A display_kind="hidden" row is model-facing scaffolding the gateway never paints; the preview must not paint it either.
-_PREVIEW_ELIGIBLE_SQL = (f"(COALESCE(m.display_kind, '') <> 'hidden'"
+_PREVIEW_ELIGIBLE_SQL = (f"(COALESCE(m.display_kind, '') <> 'hidden'{DISPLAY_VISIBLE_SQL}"
+    f" AND (m.active = 1 OR m.compacted = 1)"
     f" AND ((NOT {_PREVIEW_STANDALONE_SUMMARY_SQL} AND NOT {_PREVIEW_MERGED_SUMMARY_SQL})"
     f" OR ({_PREVIEW_STANDALONE_SUMMARY_SQL} AND INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)}) > 0"
     f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_FORCE_USER_REMAINDER_SQL)}) > 0)"

@@ -20,8 +20,8 @@ from agent.message_metadata import (
 from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_id
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
-    _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    DISPLAY_VISIBLE_SQL, _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL,
+    _ended_by_compression, _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
 
@@ -52,10 +52,6 @@ _BUMP_GENERATION_SQL = """
 _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?"
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
-# Model-only rows (see MODEL_ONLY_DISPLAY_METADATA_KEY) never enter a display projection. Unqualified on
-# purpose: inside a correlated subquery it binds to the innermost ``messages`` alias.
-DISPLAY_VISIBLE_SQL = (
-    f" AND COALESCE({_sql_json_extract('display_metadata', '$.' + MODEL_ONLY_DISPLAY_METADATA_KEY)}, 0) = 0")
 _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
 # A display row is indexed only when both halves are set; the read path backfills before projecting, so
 # the in-transaction delete fence must refuse (not project) any session this probe still matches.
@@ -1499,9 +1495,10 @@ class SessionMessagesMixin:
                             search_visible: bool = False) -> Dict[str, Any]:
         """Up to *window* messages either side of an anchor id (ascending). ``messages_before``/``_after`` count
         strictly around the anchor (fewer than *window* = session boundary). Empty for a foreign anchor.
-        ``search_visible`` skips hidden and rewound rows while retaining compaction archives."""
+        ``search_visible`` skips hidden, model-only and rewound rows while retaining compaction archives."""
         window = max(window, 0)
         visible = (" AND (active = 1 OR compacted = 1) AND COALESCE(display_kind, '') <> 'hidden'"
+                   + DISPLAY_VISIBLE_SQL
                    if search_visible else "")
         with self._read_ctx() as conn:
             if not conn.execute(f"SELECT 1 FROM messages WHERE id = ? AND session_id = ?{visible} LIMIT 1",

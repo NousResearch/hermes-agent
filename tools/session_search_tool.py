@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
+from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
 from hermes_state_common import _BOUNDARY_END_REASONS
 from hermes_time import safe_strftime
 
@@ -291,7 +292,8 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
         return None
     messages = [m for m in _quiet(lambda: db.get_messages(session_id), [],
                                  "get_messages failed for title match %s", session_id)
-                if m.get("display_kind") != "hidden"]
+                if m.get("display_kind") != "hidden"
+                and not (m.get("display_metadata") or {}).get(MODEL_ONLY_DISPLAY_METADATA_KEY)]
     anchor_id = messages[0].get("id") if messages else None
     view = {} if anchor_id is None else _quiet(
         lambda: db.get_anchored_view(session_id, anchor_id, window=5, bookend=3), {},
@@ -455,7 +457,8 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
                       session_id)
     if err:
         return err
-    rows = [m for m in rows if m.get("display_kind") != "hidden"]
+    rows = [m for m in rows if m.get("display_kind") != "hidden"
+            and not (m.get("display_metadata") or {}).get(MODEL_ONLY_DISPLAY_METADATA_KEY)]
     shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows]
     total, truncated = len(shaped), len(shaped) > head + tail
     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),

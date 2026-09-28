@@ -13,7 +13,7 @@ from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
-    FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
+    DISPLAY_VISIBLE_SQL, FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
@@ -57,8 +57,8 @@ _LIKE_COALESCED_COLUMN_SQL = (
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
 # Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
 # Context follows the hit visibility rule, including the include_inactive opt-in.
-_CONTEXT_WINDOW_SQL = """WITH target AS (
-    SELECT session_id, timestamp, id FROM messages WHERE id IN ({ids})
+_CONTEXT_WINDOW_SQL = f"""WITH target AS (
+    SELECT session_id, timestamp, id FROM messages WHERE id IN ({{ids}})
 )
 SELECT t.id AS match_id, m.role, m.content
 FROM target t JOIN messages m ON m.id IN (
@@ -66,16 +66,16 @@ FROM target t JOIN messages m ON m.id IN (
     (SELECT p.id FROM messages p
      WHERE p.session_id = t.session_id AND (p.timestamp, p.id) < (t.timestamp, t.id)
        AND (? OR p.active = 1 OR p.compacted = 1)
-       AND COALESCE(p.display_kind, '') <> 'hidden'
+       AND COALESCE(p.display_kind, '') <> 'hidden'{DISPLAY_VISIBLE_SQL}
      ORDER BY p.timestamp DESC, p.id DESC LIMIT 1),
     (SELECT n.id FROM messages n
      WHERE n.session_id = t.session_id AND (n.timestamp, n.id) > (t.timestamp, t.id)
        AND (? OR n.active = 1 OR n.compacted = 1)
-       AND COALESCE(n.display_kind, '') <> 'hidden'
+       AND COALESCE(n.display_kind, '') <> 'hidden'{DISPLAY_VISIBLE_SQL}
      ORDER BY n.timestamp, n.id LIMIT 1)
 )
 WHERE (? OR m.active = 1 OR m.compacted = 1)
-  AND COALESCE(m.display_kind, '') <> 'hidden'
+  AND COALESCE(m.display_kind, '') <> 'hidden'{DISPLAY_VISIBLE_SQL}
 ORDER BY t.id, m.timestamp, m.id"""
 # Unified Ideographs, Extension A, Extension B, CJK Symbols, Hiragana, Katakana, Hangul Syllables.
 _CJK_RANGES = (
@@ -178,7 +178,7 @@ def _search_filter_clauses(
     if not include_inactive:
         where.append("(m.active = 1 OR m.compacted = 1)")
     # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
-    where.append("COALESCE(m.display_kind, '') <> 'hidden'")
+    where.append(f"COALESCE(m.display_kind, '') <> 'hidden'{DISPLAY_VISIBLE_SQL}")
     if source_filter is not None:
         where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
         params.extend(source_filter)
@@ -742,7 +742,7 @@ class SessionSearchMixin:
         goal and the resolution of a long session. ``window`` is filtered to ``keep_roles``
         (None disables) EXCEPT the anchor; ``bookend_start`` / ``bookend_end`` are the
         first/last ``bookend`` non-empty-content messages with ids strictly outside the
-        window (empty when it overlaps the head/tail). Hidden and rewound rows are omitted;
+        window (empty when it overlaps the head/tail). Hidden, model-only and rewound rows are omitted;
         compaction archives remain visible. Empty result when the anchor isn't in the session."""
         bookend = max(bookend, 0)
         primitive = self.get_messages_around(session_id, around_message_id, window=window, search_visible=True)
@@ -765,6 +765,7 @@ class SessionSearchMixin:
                         f"SELECT * FROM messages "
                         f"WHERE session_id = ? AND id {op} ?{role_clause} "
                         "AND (active = 1 OR compacted = 1) AND COALESCE(display_kind, '') <> 'hidden' "
+                        f"{DISPLAY_VISIBLE_SQL} "
                         f"AND length(content) > 0 "
                         f"ORDER BY id {order} LIMIT ?",
                         (session_id, boundary_id, *role_params, bookend),
@@ -1102,7 +1103,8 @@ class SessionSearchMixin:
         Returns snippet + session metadata + 1-message context per hit; ``fields`` selects a
         projection. ``sort``: None = BM25 rank; "newest"/"oldest" = timestamp then rank (the
         CJK LIKE fallback ignores it). Rewound rows (``active=0, compacted=0``) are excluded
-        by default; compaction-archived rows ARE included; ``include_inactive`` = every row.
+        by default; compaction-archived rows ARE included; ``include_inactive`` also admits rewound rows.
+        Hidden and model-only rows are always excluded.
         ``after_ts``/``before_ts`` bound ``sessions.started_at`` on every route (FTS5, CJK,
         trigram, LIKE fallback, unindexed-gap supplement)."""
         result_fields = self._search_message_fields(fields)

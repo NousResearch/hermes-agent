@@ -159,9 +159,11 @@ def _sweep_dead_leases(leases: Path) -> None:
     name and locked in place; the creator's open handle covers the unlocked-yet-visible
     window, because a sweep that probes in it fails the unlink on that handle. Either
     way, a lock that now probes free belongs to a holder that exited through a path
-    ``atexit`` never runs. Leases this process itself holds are skipped — Windows byte
-    locks are per-process re-entrant, so probing our own would succeed — and so are
-    staged names, which a concurrent creator may not have locked yet.
+    ``atexit`` never runs. The probe fd is closed before the unlink for the same
+    handle-vs-delete reason: on Windows the sweep's own open handle would block it.
+    Leases this process itself holds are skipped — Windows byte locks are per-process
+    re-entrant, so probing our own would succeed — and so are staged names, which a
+    concurrent creator may not have locked yet.
     """
     mine = {held.resolve() for held in _ACTIVE_LEASES}
     for lease in leases.glob("*"):
@@ -172,11 +174,12 @@ def _sweep_dead_leases(leases: Path) -> None:
         except FileNotFoundError:
             continue  # swept concurrently by another launcher
         try:
-            if _lock(fd, wait=False):
-                with suppress(OSError):
-                    lease.unlink()
+            abandoned = _lock(fd, wait=False)
         finally:
             os.close(fd)
+        if abandoned:
+            with suppress(OSError):
+                lease.unlink()
 
 
 def lease_directory(generation: Path) -> Callable[[], None]:

@@ -177,8 +177,10 @@ dependencies = [
   # "not a recognized image". pillow-heif registers a Pillow opener so
   # _normalize_to_supported_image can re-encode HEIF/AVIF to PNG before embed.
   # Ships prebuilt wheels bundling libheif for the common platforms (no system
-  # libs needed), so it's safe in the base install alongside Pillow.
-  "pillow-heif>=1.4.0,<2; python_version >= '3.14'",
+  # libs needed), so it's safe in the base install alongside Pillow. Floor is
+  # 1.8.0: 1.4.0-1.7.x bundle a libheif vulnerable to CVEs in HEIF decode,
+  # reachable from the vision tools' untrusted image inputs (#125940).
+  "pillow-heif>=1.8.0,<2; python_version >= '3.14'",
   # SVG rendering for the icon generator (scripts/generate_icons.py). Source
   # builds render icons with the runtime interpreter (`hermes desktop`,
   # `hermes update`), so a source install carries its renderer instead of
@@ -644,6 +646,11 @@ exclude-newer = "14 days"
 # aiohttp, cryptography: same shape — the advisory fixes are newer than the
 # 14-day window, so the resolver cannot see them without an exception.
 #
+# pillow-heif: same CVE shape (#125940). The libheif bundled in <=1.7.x is
+# vulnerable (incl. CVE-2026-81353, an RCE in HEIF decode) and the fixed 1.8.0
+# (published 2026-09-22) is newer than the 14-day window. Reachable from the
+# vision tools' untrusted image inputs. Remove after 2026-10-06.
+#
 # defusedxml, python-olm, unpaddedbase64: the OPPOSITE shape (#80387, #79434,
 # #78227 family). These are ancient, effectively frozen releases (2021-2023)
 # whose upload dates are frequently absent from mirror indexes and stale uv
@@ -754,6 +761,7 @@ packaging = false
 parallel-web = false
 pathspec = false
 pillow = false
+pillow-heif = false
 piper-tts = "2026-09-04T16:47:32Z"
 prompt-toolkit = false
 psutil = false

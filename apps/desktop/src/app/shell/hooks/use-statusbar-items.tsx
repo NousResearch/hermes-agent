@@ -673,7 +673,9 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        detail: contextBar ? <ContextMeterDetail bar={contextBar} compressions={currentUsage.compressions} /> : undefined,
+        detail: contextBar ? (
+          <ContextMeterDetail bar={contextBar} compressions={currentUsage.compressions} />
+        ) : undefined,
         // Never self-hide: the user opted this item in (it's hidden-by-
         // default), so an empty label must render as a waiting placeholder,
         // not a vanished item — an enabled-but-invisible toggle reads as

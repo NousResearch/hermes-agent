@@ -171,6 +171,16 @@ def test_only_unmapped_human_emails_fail_the_contributor_check(repo, step):
     assert status["results"][0]["detail"] == "zoe@example.net (Zoë New)"
 
 
+def test_contributor_check_matches_a_mapping_whatever_case_the_commit_uses(repo, step):
+    # The directory cannot hold two case variants of one email (case-collision guard),
+    # so a commit stamped `Mapped@` must pass through the `mapped@` file.
+    commit(repo, {"contributors/emails/mapped@x.org": "alice\n",
+                  "scripts/releases/authors_legacy.py": 'AUTHOR_MAP = {"legacy@y.org": "bob"}\n'})
+    for email in ("Mapped@X.org", "LEGACY@y.org"):
+        commit(repo, {email: "x"}, author=("Known", email))
+    assert step.run(repo, "check_contributor_emails.py").returncode == 0
+
+
 def test_supply_chain_scan_flags_payload_lines_but_not_lockfiles(repo, step):
     base = git(repo, "rev-parse", "HEAD").strip()
     # Built from pieces: the scanner reads this PR's own added lines, so no line here may match it.

@@ -1923,7 +1923,9 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
-            await self._check_room_encryption(room_id)
+            encrypted = await self._check_room_encryption(room_id)
+            if encrypted and "url" in msg_content:
+                raise ValueError("Room encryption changed during upload; plaintext attachment was not sent")
             event_id = await asyncio.wait_for(
                 self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
             self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))

@@ -542,6 +542,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             runner,
             lambda: _matrix_send_core(live_adapter, chat_id, message, media_files, metadata),
             "send_message: failed to schedule Matrix send on gateway loop",
+            cancel_on_caller_cancel=True,
         )
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
@@ -601,6 +602,17 @@ async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
                 return _error(f"Matrix media send failed: {last_result.error}")
         if last_result is None:
             return {"error": _NO_DELIVERABLE}
+        resolver = getattr(type(adapter), "resolve_delivery_target", None)
+        if callable(resolver):
+            from gateway.session_identity import replace_source
+            try:
+                current = await adapter.resolve_delivery_target(source)
+            except Exception as exc:
+                logger.warning("Matrix target '%s': continuation identity revalidation failed: %s", target, exc)
+                source = replace_source(source, chat_type="unknown")
+            else:
+                if current.chat_type != source.chat_type:
+                    source = replace_source(source, chat_type="unknown")
         return _success("matrix", chat_id, message_id=last_result.message_id, chat_type=source.chat_type,
                         **({"thread_id": source.thread_id} if source.thread_id else {}))
     except Exception as exc:

@@ -762,6 +762,7 @@ class TestMatrixMediaLiveAdapterReuse:
             "platform": "matrix",
             "chat_id": "#general:example.com",
             "message_id": "$text",
+            "chat_type": "dm",
         }
         assert calls == [
             ("connect",),

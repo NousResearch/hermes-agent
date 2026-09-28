@@ -165,3 +165,166 @@ async def test_native_send_failures_preserve_the_original_target(
         "upload rejected" if failure in {"upload", "encrypted_upload"} else "power level rejected"
     )
     assert result == SendResult(success=False, error=f"Matrix target '{target}': {detail}")
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["same_loop", "worker"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "metadata",
+        "account_data",
+        "caller_cancel",
+        "upload_encryption",
+        "upload_unknown",
+    ],
+)
+async def test_native_delivery_bounds_resolution_and_rejects_upload_state_changes(
+    monkeypatch, tmp_path, path, failure
+):
+    import asyncio
+    import logging
+    from plugins.platforms.matrix import adapter as matrix
+    from tools import send_message_senders as senders
+
+    from mautrix.client.state_store.memory import MemoryStateStore
+    from mautrix.client.store_updater import StoreUpdatingAPI
+
+    loop = asyncio.get_running_loop()
+    alias, room = "#deadline:remote.test", "!deadline:remote.test"
+    adapter = MatrixAdapter(
+        PlatformConfig(enabled=True, extra={"e2ee_mode": "optional"})
+    )
+    adapter._user_id = "@bot:remote.test"
+    adapter._encryption = True
+    encrypted = False
+    blocked = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    deadline_seen = []
+
+    async def stall(*args, **kwargs) -> None:
+        blocked.set()
+        try:
+            await release.wait()
+        finally:
+            cancelled.set()
+
+    async def state(*args, **kwargs):
+        if not encrypted:
+            raise _MissingEncryption()
+        if failure == "upload_unknown":
+            raise ValueError("encryption state unavailable")
+        return {"algorithm": "m.megolm.v1.aes-sha2"}
+
+    async def upload(*args, **kwargs):
+        nonlocal encrypted
+        blocked.set()
+        await release.wait()
+        encrypted = True
+        return "mxc://remote.test/plain-upload"
+
+    state_store = MemoryStateStore()
+    sdk = StoreUpdatingAPI(
+        mxid=adapter._user_id,
+        state_store=state_store,
+        api=SimpleNamespace(request=state, log=logging.getLogger("matrix-test")),
+    )
+    adapter._client = SimpleNamespace(
+        resolve_room_alias=AsyncMock(
+            return_value=SimpleNamespace(room_id=room, servers=[])
+        ),
+        join_room=AsyncMock(return_value=room),
+        get_state_event=sdk.get_state_event,
+        state_store=state_store,
+        crypto=SimpleNamespace(),
+        send_message_event=AsyncMock(return_value="$sent"),
+        upload_media=AsyncMock(side_effect=upload),
+    )
+    adapter._refresh_dm_cache = AsyncMock()
+    adapter._get_room_members = AsyncMock(
+        return_value={adapter._user_id, "@alice:remote.test"}
+    )
+    adapter._get_room_member_profiles = AsyncMock(return_value=None)
+    adapter._get_room_state_value = AsyncMock(return_value=None)
+    if failure in {"metadata", "caller_cancel"}:
+        monkeypatch.setattr(adapter, "_get_room_state_value", stall)
+    if failure == "account_data":
+        monkeypatch.setattr(adapter, "_refresh_dm_cache", stall)
+    runner = SimpleNamespace(_gateway_loop=loop)
+    monkeypatch.setattr(senders, "_live_adapter", lambda *a, **kw: (runner, adapter))
+    original_wait_for = asyncio.wait_for
+
+    async def deadline(awaitable, timeout):
+        if timeout != 90 or failure not in {"metadata", "account_data"}:
+            return await original_wait_for(awaitable, timeout)
+        deadline_seen.append(timeout)
+        task = asyncio.ensure_future(awaitable)
+        await blocked.wait()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise TimeoutError
+
+    monkeypatch.setattr(matrix.asyncio, "wait_for", deadline)
+    attachment = tmp_path / "report.txt"
+    attachment.write_bytes(b"private attachment")
+    media = [(str(attachment), False)] if failure.startswith("upload_") else []
+
+    async def deliver():
+        return await senders._send_matrix_via_adapter(
+            adapter.config, alias, "" if media else "brief", media, "$root"
+        )
+
+    worker_loop = []
+    worker_task = []
+
+    async def worker_deliver():
+        worker_loop.append(asyncio.get_running_loop())
+        current_task = asyncio.current_task()
+        assert current_task is not None
+        worker_task.append(current_task)
+        return await deliver()
+
+    if path == "worker":
+        task = asyncio.create_task(
+            asyncio.to_thread(lambda: asyncio.run(worker_deliver()))
+        )
+    else:
+        task = asyncio.create_task(deliver())
+    if failure in {"metadata", "account_data"}:
+        await blocked.wait()
+        if not deadline_seen:
+            release.set()
+    if failure.startswith("upload_"):
+        await blocked.wait()
+        release.set()
+    if failure == "caller_cancel":
+        await blocked.wait()
+        if path == "worker":
+            worker_loop[0].call_soon_threadsafe(worker_task[0].cancel)
+        else:
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+        was_cancelled = cancelled.is_set()
+        release.set()
+        await asyncio.sleep(0)
+        assert was_cancelled
+    else:
+        result = await task
+        assert alias in result["error"], result
+        detail = (
+            "timeout"
+            if failure in {"metadata", "account_data"}
+            else (
+                "encryption state unavailable"
+                if failure == "upload_unknown"
+                else "encryption"
+            )
+        )
+        assert detail in result["error"].lower(), result
+        if failure in {"metadata", "account_data"}:
+            assert deadline_seen == [90]
+            assert cancelled.is_set()
+    release.set()
+    await asyncio.sleep(0)
+    adapter._client.send_message_event.assert_not_awaited()

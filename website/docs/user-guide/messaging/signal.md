@@ -222,6 +222,42 @@ The adapter monitors the SSE connection and automatically reconnects if:
 
 ---
 
+## Version Compatibility
+
+Two setups are in circulation. Which one applies depends on your Hermes version and on
+which components you run — mixing them is the most common cause of a Signal channel that
+connects but never receives anything.
+
+| Setup | Hermes | Components you need |
+|-------|--------|---------------------|
+| **signal-cli daemon** (JSON-RPC + SSE) — the setup described above | any current release, up to and including **0.21.5 (2026-09-24)** | `signal-cli` **≥ 0.14.5** (Java 17+ when run natively) |
+| **signal-cli-rest-api** (REST + WebSocket) | a release containing the REST/WebSocket adapter — see PR [#53696](https://github.com/NousResearch/hermes-agent/pull/53696); **not yet in a published release** as of 0.21.5 | `signal-cli-rest-api` **v0.99 or newer**, `signal-cli` **≥ 0.14.5**, Docker, container started with `MODE=json-rpc` |
+
+**Hermes version.** Releases up to and including 0.21.5 talk to signal-cli directly: outbound
+over JSON-RPC (`/api/v1/rpc`), inbound over SSE (`/api/v1/events`). The REST/WebSocket adapter
+(inbound `/v1/receive/<number>`, outbound `/v2/send`) is the subject of
+[#53696](https://github.com/NousResearch/hermes-agent/pull/53696) and is not part of a published
+release yet. Check what your installation actually speaks before pointing `SIGNAL_HTTP_URL` at a
+container — `grep -c SIGNAL_API_MODE` in `gateway/platforms/signal.py` returns `0` on the
+JSON-RPC/SSE path.
+
+**signal-cli version.** Use **0.14.5 or newer**. Device linking had recurring defects in older
+builds: 0.14.7 shipped *"Fix linking after previous unsuccessful link attempt"*, and
+`addDevice returns Error: 404 - Add device link failed` is a separate, still-reported failure
+mode ([AsamK/signal-cli#2107](https://github.com/AsamK/signal-cli/issues/2107)).
+
+**signal-cli-rest-api version.** Use **v0.99 or newer**. The SSE endpoint `/api/v1/events` was
+removed there, so a JSON-RPC/SSE Hermes pointed at a current container connects but stays silent
+(related: [bbernhard/signal-cli-rest-api#678](https://github.com/bbernhard/signal-cli-rest-api/issues/678)).
+Run the container with `MODE=json-rpc`; see
+[#57862](https://github.com/NousResearch/hermes-agent/issues/57862) for the history behind the
+`?account=` query parameter failing against multi-account daemons.
+
+**Docker.** Only the REST setup requires a container — the daemon setup works natively or
+containerised, as long as signal-cli itself is reachable on `SIGNAL_HTTP_URL`.
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |
@@ -233,6 +269,30 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | **Group messages ignored** | Configure `SIGNAL_GROUP_ALLOWED_USERS` with specific group IDs, or `*` to allow all groups. |
 | **Bot responds to no one** | Configure `SIGNAL_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
 | **Duplicate messages** | Ensure only one signal-cli instance is listening on your phone number |
+| **The linking URI expires before the phone can use it** | The device-linking session is short-lived — roughly 90 seconds in testing, after which signal-cli reports `Link request timed out`. Open **Signal → Settings → Linked Devices → Link New Device** on the phone *first*, then run `signal-cli link -n "HermesAgent"` and enter the URI immediately. |
+| **Phone-only setup — no second screen to scan the QR code from** | `signal-cli link` also prints a `sgnl://linkdevice?…` URI. Open that URI **on the phone** (paste it into a self-sent message or a note and tap it); Signal treats it exactly like a scanned code and asks you to confirm the link. |
+| **Signal asks to link the device, but confirming does nothing** | Known device-linking failure on the signal-cli side; older builds cannot always recover from an earlier interrupted attempt (0.14.7: *"Fix linking after previous unsuccessful link attempt"*). Verify afterwards with `signal-cli listAccounts` — a linked account appears there; `"User +… is not registered"` means the link did **not** complete and has to be repeated with a current build. |
+| **`--account` / `-u` fails with `User +… is not registered` on a freshly linked account** | Start the daemon without the account flag (`signal-cli daemon --http 127.0.0.1:8080`) — it then auto-detects the accounts in `accounts.json`. The `?account=` form of the SSE URL fails against such a multi-account daemon with HTTP 400. |
+
+### Linking a device
+
+The linking session is time-boxed: in testing, `signal-cli link` invalidated its URI after about
+**90 seconds** (`Link request timed out`). Prepare the phone before running the command — the
+sensible order is *open Linked Devices → Link New Device on the phone, then generate the URI and
+enter it within seconds*.
+
+The URI that `signal-cli link` prints (`sgnl://linkdevice?uuid=…&pub_key=…`) works without a QR
+code: open it on the phone and Signal offers the same "Link device?" confirmation. This is the
+practical path when the phone is the only device you have in hand.
+
+If the confirmation appears on the phone and the link still does not complete, nothing was
+linked — the account stays unregistered server-side. Confirm with a read-only probe before
+promising a working channel:
+
+```bash
+signal-cli listAccounts      # must list the account
+signal-cli listGroups        # "User +… is not registered." => the link did not complete
+```
 
 ---
 

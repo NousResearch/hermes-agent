@@ -19,14 +19,33 @@ import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
+  '0': 'off',
   bottom: 'bottom',
+  false: 'off',
+  hidden: 'off',
+  no: 'off',
   off: 'off',
   on: 'top',
   top: 'top'
 }
 
-export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
-  raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
+export const normalizeStatusBar = (raw: unknown): StatusBarMode => {
+  // Match the classic CLI: false, 0, and the hidden-word strings all mean off.
+  // Anything else unrecognised stays at the top, which is the visible default.
+  if (raw === false || raw === 0) return 'off'
+  if (typeof raw !== 'string') return 'top'
+  return STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top'
+}
+
+/** `tui_statusbar` wins when set. Otherwise `display.statusbar` (classic CLI). */
+export const statusBarFromDisplay = (
+  display: { statusbar?: unknown; tui_statusbar?: unknown } | null | undefined
+): StatusBarMode => {
+  if (display && display.tui_statusbar !== undefined && display.tui_statusbar !== null) {
+    return normalizeStatusBar(display.tui_statusbar)
+  }
+  return normalizeStatusBar(display?.statusbar)
+}
 
 // `display.status_bar.fields` — the SAME key the classic CLI bar honors
 // (PR #98250). A non-empty list filters status-rule segments; missing/empty/
@@ -306,7 +325,7 @@ export const applyDisplay = (
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
-    statusBar: normalizeStatusBar(d.tui_statusbar),
+    statusBar: statusBarFromDisplay(d),
     statusBarFields: normalizeStatusBarFields(d.status_bar?.fields),
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —

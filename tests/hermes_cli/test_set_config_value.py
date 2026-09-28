@@ -131,6 +131,16 @@ class TestConfigYamlRouting:
 
 
 
+    def test_display_statusbar_is_recognized(self, _isolated_hermes_home, capsys):
+        """display.statusbar is what the classic CLI reads. Saving hidden must not warn."""
+        set_config_value("display.statusbar", "hidden")
+
+        captured = capsys.readouterr()
+        assert "not a recognized config key" not in captured.out
+        assert "not a recognized config key" not in captured.err
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["display"]["statusbar"] == "hidden"
+
     def test_tool_search_defer_is_recognized(self, _isolated_hermes_home, capsys):
         """tools.tool_search.defer is read by ToolSearchConfig.from_raw, so it must be a
         registered config key (not flagged as unrecognized) and coerce to a real list."""

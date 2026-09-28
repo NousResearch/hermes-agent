@@ -327,6 +327,37 @@ def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
     assert leftovers == [], f"temp upload files leaked on cancellation: {leftovers}"
 
 
+@pytest.mark.require_symlinks
+def test_listing_skips_a_dangling_symlink_whose_target_escapes_the_root(forced_files_client, tmp_path):
+    """#47154: a dangling link must not 403 the listing through the boundary check.
+
+    ``resolve()`` sends a dangling link to its missing target's path. When that
+    path is outside the managed root, the containment check rejects it before the
+    stat that would have identified it as a vanished entry, so one dead link
+    failed the whole directory. The link is a genuine entry of this directory, so
+    the listing skips it — but the containment decision itself must not weaken.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    (root / "visible.txt").write_text("i exist")
+    escaping = root / "outside_broken"
+    escaping.symlink_to(outside / "never-created")
+
+    response = client.get("/api/files", params={"path": str(root)})
+    assert response.status_code == 200, response.text
+    assert [e["name"] for e in response.json()["entries"]] == ["visible.txt"]
+
+    # A symlink that RESOLVES outside the root is a real escape attempt and must
+    # stay a 403 on direct read, whatever the listing does.
+    real_escape = root / "real_escape"
+    real_escape.symlink_to(outside / "present.txt")
+    (outside / "present.txt").write_text("outside the root")
+    assert client.get("/api/files/read", params={"path": str(real_escape)}).status_code == 403
+
+
 def test_sensitive_env_files_hidden_from_listing(forced_files_client):
     """Regression test for #57505: .env files must not appear in directory listings."""
     client, root = forced_files_client

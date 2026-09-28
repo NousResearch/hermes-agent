@@ -178,6 +178,25 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
     return {"root": locked_root, "locked_root": locked_root, "can_change_path": policy.can_change_path}
 
 
+def _dangling_symlink(target: Path, resolved: Path) -> bool:
+    """True when *target* is a symlink whose target is gone.
+
+    A dangling link is still a real directory entry, but ``resolve()`` sends it
+    to the missing target's path. When that path sits outside the managed root
+    the containment check rejects it before the stat that would have identified
+    it, so the listing sees a 403 instead of a vanished entry (#47154).
+    """
+    if not target.is_symlink():
+        return False
+    try:
+        resolved.stat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def _managed_file_entry(
     policy: ManagedFilesPolicy, target: Path, *, skip_missing: bool = False
 ) -> Dict[str, Any] | None:
@@ -185,6 +204,11 @@ def _managed_file_entry(
         resolved = target.resolve()
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid path")
+    # Classify a dangling symlink before the boundary check: it is a directory
+    # entry of this directory, not an escape attempt. Only a listing opts in;
+    # every other caller still gets the 403/500.
+    if skip_missing and _dangling_symlink(target, resolved):
+        return None
     if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 

@@ -29,6 +29,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { isSessionOwnerRoute } from '@/store/session-request-router'
 import { runtimeSessionOwner } from '@/store/session-states'
 import { reportInstallMethodWarning } from '@/store/updates'
 
@@ -122,8 +123,12 @@ function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
   const activeId = $activeSessionId.get()
   const oldState = activeId ? deps.sessionStateByRuntimeIdRef.current.get(activeId) : undefined
 
+  const eventOwner = activeId ? runtimeSessionOwner(activeId) : undefined
+
   const owner =
-    (activeId ? runtimeSessionOwner(activeId) : undefined) ?? oldState?.ownerRoute ?? oldState?.transcriptProvenance
+    (isSessionOwnerRoute(eventOwner) ? eventOwner : undefined) ??
+    oldState?.ownerRoute ??
+    oldState?.transcriptProvenance
 
   // Durable ids are only unique inside one owner. In all-profiles mode the
   // pane may not belong to the chrome's active gateway, so compare the old

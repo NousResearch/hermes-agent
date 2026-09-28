@@ -2992,8 +2992,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
     { connectionId: 'source-a', profile: 'other' }
   ])('keeps overlapping same-id native resumes isolated for $connectionId/$profile', async ownerB => {
     const ownerA = { connectionId: 'source-a', profile: 'default' }
-    const pendingA = deferred<SessionResumeResponse>()
-    const pendingB = deferred<SessionResumeResponse>()
+    const pendingA = deferred<SessionResumeResult>()
+    const pendingB = deferred<SessionResumeResult>()
     const states = { current: new Map<string, ClientSessionState>() }
     const viewSync = vi.fn()
     vi.mocked(getLatestSessionMessages).mockClear()

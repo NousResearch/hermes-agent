@@ -163,10 +163,6 @@ export function forgetProfileOnlyRuntimeOwners(profile: string): void {
   }
 }
 
-export function runtimeSessionOwner(runtimeId: string): SessionOwnerRoute | undefined {
-  return sessionOwnerByRuntimeId.get(runtimeId)
-}
-
 /** Composite scopes of registry-sourced sessions that are live (busy or
  * waiting on input) — the (connectionId, profile) half of the gateway
  * keep-set. Local-source live work keeps flowing through profile names. */

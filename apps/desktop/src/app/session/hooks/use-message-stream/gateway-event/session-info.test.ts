@@ -5,7 +5,6 @@ import { createOverviewActions } from '@/app/agents/actions'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { AgentRow } from '@/store/agent-overview'
-import { $activeSessionId } from '@/store/session'
 import {
   $activeSessionId,
   $currentBranch,

@@ -5,6 +5,7 @@ import { stableArray } from '@/lib/stable-array'
 import { agentOwnerKey, type AgentRow, type Attention, overviewCache } from './agent-overview'
 import { isGatewayOpenForAgent } from './gateway'
 import { $sessionDotStateById, type SessionDotState, sessionStatusBucket } from './session-dot-state'
+import { isSessionOwnerRoute } from './session-request-router'
 import { $sessionStates, runtimeSessionOwner } from './session-states'
 
 interface ObservedStatus {
@@ -78,7 +79,8 @@ export const $overviewRows = computed([overviewCache.state, $sessionDotStateById
 
   for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
     // The inbound event ledger proves the socket owner; a navigation hint does not.
-    const owner = runtimeSessionOwner(runtimeId) ?? state.ownerRoute
+    const eventOwner = runtimeSessionOwner(runtimeId)
+    const owner = (isSessionOwnerRoute(eventOwner) ? eventOwner : undefined) ?? state.ownerRoute
 
     if (!owner || !state.storedSessionId) {
       continue

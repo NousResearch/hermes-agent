@@ -235,7 +235,7 @@ it.each(recoveryCases)(
     seed()
 
     if (expiredRecovery) {
-      registerRecoveredRuntime('stored-B', 'rt-B-cached')
+      registerRecoveredRuntime('stored-B', 'rt-B-cached', { connectionId: 'connection-B', profile: 'default' })
     }
 
     let pending!: Promise<boolean>

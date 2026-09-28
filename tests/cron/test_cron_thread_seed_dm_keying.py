@@ -18,7 +18,7 @@ not on SessionSource field shapes — pins the end-to-end contract.
 from unittest.mock import MagicMock, patch
 
 from cron.scheduler_delivery import _seed_cron_channel_session, _seed_cron_thread_session
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, build_session_key
 
 
@@ -87,6 +87,7 @@ def test_matrix_room_thread_seed_key_matches_room_reply_key():
     """The Matrix adapter keys an in-thread reply on the ROOM's type (``group``), so a
     cron ``attach_to_session`` seed typed ``thread`` is a row no reply ever hits (#112918)."""
     store = MagicMock()
+    store.config = GatewayConfig()
     adapter = MagicMock()
     adapter._session_store = store
 

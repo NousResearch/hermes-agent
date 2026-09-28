@@ -2942,14 +2942,14 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
                 return str(value)
         return None
 
-    async def _get_room_members(self, room_id: str) -> Optional[set[str]]:
+    async def _get_room_members(self, room_id: str, *, force_refresh: bool = False) -> Optional[set[str]]:
         """Read the complete joined member list from the store or homeserver."""
         client = getattr(self, "_client", None)
         if client is None:
             return None
 
         state_store = getattr(client, "state_store", None)
-        if state_store is not None:
+        if state_store is not None and not force_refresh:
             with suppress(Exception):
                 if await state_store.has_full_member_list(RoomID(room_id)):
                     members = await state_store.get_members(
@@ -3027,8 +3027,10 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
                 return None
             raise
 
-    async def _read_room_member_profiles(self, room_id: str) -> tuple[Optional[set[str]], Optional[Dict[Any, Any]]]:
-        members = await self._get_room_members(room_id)
+    async def _read_room_member_profiles(
+        self, room_id: str, *, force_refresh: bool = False,
+    ) -> tuple[Optional[set[str]], Optional[Dict[Any, Any]]]:
+        members = await self._get_room_members(room_id, force_refresh=force_refresh)
         profiles = await self._get_room_member_profiles(room_id) if members is not None else None
         return members, profiles
 
@@ -3081,7 +3083,7 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
                     "m.room.history_visibility", "m.room.encryption", "m.room.tombstone",
                 )
             ),
-            self._read_room_member_profiles(room_id),
+            self._read_room_member_profiles(room_id, force_refresh=force_refresh),
             return_exceptions=True,
         )
         failed_reads = [result for result in reads if isinstance(result, Exception)]

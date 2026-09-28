@@ -54,6 +54,13 @@ async def main():
                 profile='secondary' if POLICY_DISAGREEMENT else None,
             )
             if MEMBERSHIP_CHANGE:
+                await adapter._resolve_send_target(TARGET.removeprefix('matrix:').split('/')[0])
+                adapter._sync_task.cancel()
+                await asyncio.gather(adapter._sync_task, return_exceptions=True)
+                from mautrix.types import RoomID
+                await adapter._client.get_joined_members(RoomID(ROOM))
+                assert await adapter._client.state_store.has_full_member_list(RoomID(ROOM))
+                assert (await adapter._resolve_room_identity(ROOM)).chat_type == 'dm'
                 original_send = adapter._client.send_message_event
                 first_send = True
                 async def paused_send(*args, **kwargs):
@@ -66,13 +73,6 @@ async def main():
                                 await asyncio.sleep(0.01)
                     return await original_send(*args, **kwargs)
                 adapter._client.send_message_event = paused_send
-                original_state = adapter._on_room_state
-                async def observe_membership(event):
-                    await original_state(event)
-                    if str(event.room_id) == ROOM and str(getattr(event, 'state_key', '')) == PEER:
-                        Path('/opt/data/membership-observed').touch()
-                from mautrix.types import EventType
-                adapter._client.add_event_handler(EventType.ROOM_MEMBER, observe_membership, wait_sync=True)
 
             if ABSENT_PARTICIPANT:
                 bob = runner.session_store.get_or_create_session(SessionSource(
@@ -106,6 +106,22 @@ async def main():
                 assert bool(result.get('mirrored')) == (not ABSENT_PARTICIPANT and not MEMBERSHIP_CHANGE), result
                 assert (result['chat_id'], result['thread_id']) == (ROOM, THREAD), result
             else:
+                http_calls = []
+                if HTTP_FALLBACK:
+                    await adapter._resolve_send_target(TARGET.removeprefix('matrix:').split('/')[0])
+                    from tools import send_message_senders
+                    from plugins.platforms.matrix.adapter import MatrixAdapter
+                    from plugins.platforms.matrix.standalone import _HTTPDelivery
+                    original_http = _HTTPDelivery.request
+                    async def observe_http(self, method, path, **kwargs):
+                        result = await original_http(self, method, path, **kwargs)
+                        http_calls.append((method, path))
+                        return result
+                    async def unavailable_native(self):
+                        return False
+                    send_message_senders._live_adapter = lambda *args, **kwargs: (None, None)
+                    MatrixAdapter.connect = unavailable_native
+                    _HTTPDelivery.request = observe_http
                 if TRANSIENT_RESOLUTION:
                     adapter = runner.adapters[Platform.MATRIX]
                     original = adapter._client.resolve_room_alias
@@ -126,6 +142,9 @@ async def main():
                     BRIEF, runner.adapters, loop,
                 )
                 assert error is None, error
+                if HTTP_FALLBACK:
+                    assert len([path for method, path in http_calls if method == 'PUT' and '/send/' in path]) == 1, http_calls
+                    assert len([path for method, path in http_calls if path.endswith('joined_members')]) == 2, http_calls
             if ABSENT_PARTICIPANT:
                 assert list(runner.session_store._entries) == [bob.session_key]
                 assert runner.session_store.load_transcript(bob.session_id) == bob_before
@@ -134,6 +153,9 @@ async def main():
                 assert runner.session_store._db.get_session(entry.session_id)['system_prompt'] == 'Existing cached prefix'
                 if MEMBERSHIP_CHANGE:
                     assert runner.session_store.load_transcript(entry.session_id) == before
+            if MEMBERSHIP_CHANGE:
+                assert adapter._sync_task.done()
+                adapter._sync_task = asyncio.create_task(adapter._sync_loop())
             print(json.dumps({'cron_ready': True}), flush=True)
             await stopped.wait()
     finally:
@@ -150,7 +172,10 @@ asyncio.run(main())
         "per_user_cron",
         "per_user_tool",
         "per_user_tool_absent",
+        "per_user_cron_absent",
         "per_user_fallback_cron",
+        "per_user_http_fallback",
+        "per_user_http_fallback_absent",
         "policy_tool",
         "policy_fallback",
         "membership_tool",
@@ -166,6 +191,8 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
     tool_send = delivery.endswith("tool") or delivery.startswith("per_user_tool")
     transient_resolution = delivery in {
         "per_user_fallback_cron",
+        "per_user_http_fallback",
+        "per_user_http_fallback_absent",
         "policy_fallback",
         "membership_fallback",
     }
@@ -245,8 +272,9 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
             f"PARTICIPANT = {live_room.observer.user_id!r}\n"
             f"PER_USER = {delivery != 'shared_cron'!r}\n"
             f"TOOL_SEND = {tool_send!r}\n"
-            f"ABSENT_PARTICIPANT = {delivery == 'per_user_tool_absent'!r}\n"
+            f"ABSENT_PARTICIPANT = {delivery.endswith('_absent')!r}\n"
             f"TRANSIENT_RESOLUTION = {transient_resolution!r}\n"
+            f"HTTP_FALLBACK = {'http_fallback' in delivery!r}\n"
             f"MEMBERSHIP_CHANGE = {membership_change!r}\n"
             f"POLICY_DISAGREEMENT = {delivery.startswith('policy_')!r}\n"
             f"PEER = {peer_id!r}\n" + _CONTINUE
@@ -283,12 +311,6 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
                         await client.close()
 
                 asyncio.run(asyncio.wait_for(join_peer(), timeout=5))
-                _wait_for(
-                    lambda: (home / "membership-observed").exists(),
-                    "SDK membership dispatch",
-                    timeout=5,
-                    details=logs,
-                )
                 (home / "release-send").touch()
             _wait_for(
                 lambda: '{"cron_ready": true}' in logs(),
@@ -368,20 +390,24 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
                                     for message in messages
                                 )
                                 assert mirrored == (
-                                    delivery != "per_user_tool_absent"
+                                    not delivery.endswith("_absent")
                                     and not membership_change
                                 ), messages
                                 assert "Bob's isolated context" not in json.dumps(
                                     messages
                                 )
-                                if not tool_send and not membership_change:
+                                if (
+                                    not tool_send
+                                    and not membership_change
+                                    and not delivery.endswith("_absent")
+                                ):
                                     assert (
                                         "[Cron delivery: alias-continuation]"
                                         in json.dumps(messages)
                                     )
                                 if (
-                                    delivery
-                                    not in {"shared_cron", "per_user_tool_absent"}
+                                    delivery != "shared_cron"
+                                    and not delivery.endswith("_absent")
                                     and not membership_change
                                 ):
                                     assert "Existing participant context" in json.dumps(

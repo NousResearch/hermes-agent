@@ -41,10 +41,10 @@ export const COMPOSER_FOLD_VOICE_PX = 260
 // spare at any width the layout tree allows (~74 all-in).
 export const COMPOSER_MINIMAL_PX = 180
 
-// A single editor line is ~28px (--composer-input-min-height 1.625rem + 0.5rem
-// vertical padding). Anything taller means the text wrapped to a second line,
-// which is when the composer should expand to the stacked layout.
-export const COMPOSER_SINGLE_LINE_MAX_PX = 36
+// A single compact editor line is ~20px (--composer-input-min-height 1.25rem
+// over a 1rem line box). Anything taller means the text wrapped to a second
+// line, which is when the composer should expand to the stacked layout.
+export const COMPOSER_SINGLE_LINE_MAX_PX = 26
 
 export const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'

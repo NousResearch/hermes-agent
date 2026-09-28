@@ -35,8 +35,8 @@ afterEach(() => {
 
 describe('bounded history geometry', () => {
   it.each([
-    { shift: 800, css: 'native' },
-    { shift: -800, css: 'native' },
+    { shift: 800, css: 'provided' },
+    { shift: -800, css: 'provided' },
     { shift: 800, css: 'absent' },
     { shift: 800, css: 'no-escape' }
   ])('keeps an exact visible occurrence after a $shift pixel shift (CSS: $css)', ({ shift, css }) => {
@@ -53,7 +53,9 @@ describe('bounded history geometry', () => {
       rect(100 + displacement - viewport.scrollTop, 2000)
     )
     const children = Array.from(group.children) as HTMLElement[]
-    const key = 'text-[99]"quoted"'
+    // The shared bootstrap provides an identity escape stub, not a browser's
+    // implementation. Quoted keys exercise our fallback when that API is absent.
+    const key = css === 'provided' ? 'text-99' : 'text-[99]"quoted"'
     children.forEach(child => {
       child.dataset.historyAnchor = key
     })
@@ -83,8 +85,8 @@ describe('bounded history geometry', () => {
   })
 
   it.each([
-    { cancel: false, css: 'native' },
-    { cancel: true, css: 'native' },
+    { cancel: false, css: 'provided' },
+    { cancel: true, css: 'provided' },
     { cancel: false, css: 'absent' },
     { cancel: false, css: 'no-escape' }
   ])('retargets the selected prompt through layout changes (cancel: $cancel, CSS: $css)', async ({ cancel, css }) => {
@@ -111,7 +113,8 @@ describe('bounded history geometry', () => {
     const viewport = document.createElement('div')
     viewport.innerHTML =
       '<div data-slot="aui_message-group"><div data-slot="aui_turn-pair"><div data-message-id="exact-row"></div></div></div>'
-    const id = 'exact-["row"]'
+
+    const id = css === 'provided' ? 'exact-row' : 'exact-["row"]'
     viewport.querySelector('[data-message-id]')!.setAttribute('data-message-id', id)
     document.body.append(viewport)
     Object.defineProperty(viewport, 'scrollHeight', { value: 6000 })

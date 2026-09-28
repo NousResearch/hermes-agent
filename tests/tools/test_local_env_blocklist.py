@@ -176,6 +176,73 @@ def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, mon
         reset_hermes_home_override(token)
 
 
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,  # windows-footgun: ok — short-circuits on nt
+                    reason="needs POSIX permissions as non-root")
+@pytest.mark.parametrize("layout", ["platforms", "flat"])
+def test_a_failed_rescan_keeps_the_denials_it_already_knew(child_env, monkeypatch, layout):
+    """healthy -> unreadable -> recovered: a plugin the scan cannot read right now still declared
+    its secret a moment ago, and the value may already be in the process or profile overlay."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home = child_env / "profiles" / "a"
+    if layout == "platforms":
+        _user_platform_plugin(home, "chatx", "CHATX_SIGNING_SECRET")
+        plugin_dir = home / "plugins" / "platforms" / "chatx"
+        locked = plugin_dir  # unsearchable dir: skipped, the scan is partial
+    else:
+        plugin_dir = home / "plugins" / "chatx"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: chatx\nkind: platform\nrequires_env:\n  - name: CHATX_SIGNING_SECRET\n    password: true\n",
+            encoding="utf-8")
+        locked = plugin_dir / "plugin.yaml"  # unreadable flat manifest: skipped, the scan is partial
+    monkeypatch.setenv("CHATX_SIGNING_SECRET", "fake-value")
+    token = set_hermes_home_override(home)
+    try:
+        def stripped():
+            return "CHATX_SIGNING_SECRET" not in local.hermes_subprocess_env(inherit_credentials=True)
+        assert stripped()
+        locked.chmod(0)
+        try:
+            assert stripped()
+            assert stripped()  # and again, from the uncached partial result
+        finally:
+            locked.chmod(0o755 if layout == "platforms" else 0o644)
+        assert stripped()
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_a_partial_scan_is_rescanned_on_the_next_spawn(child_env, monkeypatch):
+    """A manifest read that fails once (same file signature afterwards) must not pin the partial
+    result: the next spawn reads it and strips the secret."""
+    import builtins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home = child_env / "profiles" / "a"
+    plugin_dir = home / "plugins" / "chatx"
+    plugin_dir.mkdir(parents=True)
+    manifest = plugin_dir / "plugin.yaml"
+    manifest.write_text(
+        "name: chatx\nkind: platform\nrequires_env:\n  - name: CHATX_SIGNING_SECRET\n    password: true\n",
+        encoding="utf-8")
+    real_open, failures = builtins.open, [1]
+
+    def flaky_open(path, *args, **kwargs):
+        if failures and Path(path) == manifest:
+            failures.pop()
+            raise PermissionError(13, "denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", flaky_open)
+    monkeypatch.setenv("CHATX_SIGNING_SECRET", "fake-value")
+    token = set_hermes_home_override(home)
+    try:
+        local.hermes_subprocess_env(inherit_credentials=True)
+        assert not failures  # the failed read happened
+        assert "CHATX_SIGNING_SECRET" not in local.hermes_subprocess_env(inherit_credentials=True)
+    finally:
+        reset_hermes_home_override(token)
+
+
 @pytest.mark.platforms("posix")  # symlinks
 def test_a_symlinked_home_alias_shares_its_profiles_plugin_declarations(child_env, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override

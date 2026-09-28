@@ -4045,17 +4045,20 @@ def platform_manifest_stamp(home: Optional[Path] = None) -> tuple:
 
 
 def _platform_plugin_manifests(home: Optional[Path] = None, source: PlatformManifestSource = "all", *,
-                               strict: bool = False):
+                               strict: bool = False, skipped: "list | None" = None):
     """Yield ``(dir_name, manifest_dict)`` for every platform plugin manifest (see
     :func:`_platform_manifest_paths`). ``strict`` raises when a manifest cannot be read instead of
     skipping it: the child-env scrub must not lose a declared secret to an I/O error. Only a
     manifest known to be a platform's counts (the bundled and ``plugins/platforms/`` dirs); a
     flat ``plugins/*`` manifest proves it is one only by its content, so an unreadable one is
     skipped with a warning, as is an unsearchable plugin directory. A manifest that does not
-    parse declares nothing (its adapter cannot load either) and is skipped."""
+    parse declares nothing (its adapter cannot load either) and is skipped. Every skip is appended
+    to ``skipped``, so a caller can tell a complete scan from a partial one."""
     for dir_name, manifest_path, require_kind, st in _platform_manifest_paths(home, source):
         if manifest_path is None:
             logger.warning("Skipping unreadable plugin directory %s: %s", dir_name, st)
+            if skipped is not None:
+                skipped.append(dir_name)
             continue
         try:
             with open(manifest_path, "r", encoding="utf-8-sig") as f:
@@ -4064,8 +4067,12 @@ def _platform_plugin_manifests(home: Optional[Path] = None, source: PlatformMani
             if strict and not require_kind:
                 raise
             logger.warning("Skipping unreadable plugin manifest %s: %s", manifest_path, exc)
+            if skipped is not None:
+                skipped.append(str(manifest_path))
             continue
         except Exception:
+            if skipped is not None:
+                skipped.append(str(manifest_path))
             continue
         if not isinstance(manifest, dict) or (require_kind and manifest.get("kind") != "platform"):
             continue
@@ -4109,6 +4116,15 @@ def platform_manifest_secret_envs(home: Optional[Path] = None, source: PlatformM
     if source == "bundled" and BUNDLED_PLATFORM_SECRET_ENVS is not None:
         return BUNDLED_PLATFORM_SECRET_ENVS
     return _manifest_secret_envs(_platform_plugin_manifests(home, source, strict=strict))
+
+
+def platform_manifest_secret_scan(home: Optional[Path] = None) -> "tuple[frozenset[str], bool]":
+    """``home``'s user-installed platform plugin secrets, strictly read, and whether the scan was
+    complete: False when a plugin dir or flat manifest could not be read or parsed, so the caller
+    keeps the denials it already knew instead of releasing them on a failed discovery."""
+    skipped: list = []
+    names = _manifest_secret_envs(_platform_plugin_manifests(home, "user", strict=True, skipped=skipped))
+    return names, not skipped
 
 
 def _inject_platform_plugin_env_vars() -> "frozenset[str] | None":

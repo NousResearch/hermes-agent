@@ -7,7 +7,7 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvoca
 $installer = Join-Path $repoRoot 'scripts/install.ps1'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('hermes-utf8-' + [guid]::NewGuid())
 $savedEncoding = [Console]::OutputEncoding
-$envNames = @('HERMES_HOME', 'UTF8_PROBE_PYTHON', 'UTF8_PROBE_CALLS', 'UTF8_PROBE_PM', 'UTF8_PROBE_NEEDS_INSTALL')
+$envNames = @('HERMES_HOME', 'HERMES_RUNTIME_DIR', 'UTF8_PROBE_PYTHON', 'UTF8_PROBE_CALLS', 'UTF8_PROBE_PM', 'UTF8_PROBE_NEEDS_INSTALL', 'UTF8_PROBE_FIND_EXIT')
 $savedEnv = @{}
 foreach ($name in $envNames) { $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name) }
 
@@ -25,7 +25,7 @@ try {
     $testInstallDir = Join-Path $profileDir 'hermes-agent'
     $packageDir = Join-Path $testInstallDir 'pm'
     New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
-    [IO.File]::WriteAllText((Join-Path $packageDir 'lock.json'), '{"packages":{"python":{"version":"3.14.0+fixture"}}}')
+    [IO.File]::WriteAllText((Join-Path $packageDir 'lock.json'), '{"packages":{"python":{"version":"3.14.0+fixture"},"uv":{"version":"fixture","artifacts":{"any":{"url":"https://example.invalid/unused.zip"}}}}}')
     $env:UTF8_PROBE_PYTHON = Join-Path $profileDir 'python.exe'
     $env:UTF8_PROBE_CALLS = Join-Path $testRoot 'uv-calls.txt'
     $env:UTF8_PROBE_PM = Join-Path $testRoot 'pm-call.txt'
@@ -37,6 +37,7 @@ using System.Text;
 class Fixture {
     static string Env(string key) { return Environment.GetEnvironmentVariable(key); }
     static int Main(string[] args) {
+        if (args[0] == "--version") { Console.WriteLine("uv 0.12.3 (fixture)"); return 0; }
         if (args[0] == "-m") {
             File.WriteAllText(Env("UTF8_PROBE_PM"), String.Join(" ", args));
             return 0;
@@ -54,7 +55,8 @@ class Fixture {
         byte[] bytes = new UTF8Encoding(false).GetBytes(Env("UTF8_PROBE_PYTHON") + "\r\n");
         Stream stdout = Console.OpenStandardOutput();
         stdout.Write(bytes, 0, bytes.Length);
-        return args[0] == "exit7" ? 7 : 0;
+        if (args[0] == "exit7") return 7;
+        return Env("UTF8_PROBE_FIND_EXIT") == "9" ? 9 : 0;
     }
 }
 '@)
@@ -64,6 +66,18 @@ class Fixture {
     & $compiler /nologo /target:exe "/out:$env:UTF8_PROBE_PYTHON" $fixtureSource
     if ($LASTEXITCODE) { throw 'native fixture compilation failed' }
 
+    # Run the supported setup/activation entry from a real temporary checkout.
+    # Prestage uv at its pinned store path so setup needs no download or mocks.
+    $setupScript = Join-Path $testInstallDir 'setup-hermes.ps1'
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'setup-hermes.ps1') -Destination $setupScript
+    $env:HERMES_RUNTIME_DIR = Join-Path $profileDir 'tools'
+    foreach ($arch in @('x64', 'arm64')) {
+        $uvEntry = Join-Path $env:HERMES_RUNTIME_DIR "uv-fixture-win32-$arch"
+        New-Item -ItemType Directory -Path $uvEntry -Force | Out-Null
+        Copy-Item -LiteralPath $env:UTF8_PROBE_PYTHON -Destination (Join-Path $uvEntry 'uv.exe')
+    }
+    $env:UTF8_PROBE_FIND_EXIT = '0'
+
     . $installer -InstallDir $testInstallDir -HermesHome $env:HERMES_HOME
     # Override acquisition only. Production Get-BootstrapPython, both native
     # find call sites, caching and Stage-PythonDeps still execute unchanged.
@@ -72,7 +86,7 @@ class Fixture {
     foreach ($codePage in @(936, 437, 65001)) {
         [Console]::OutputEncoding = [Text.Encoding]::GetEncoding($codePage)
 
-        # Contract 2: the actual dependency stage launches the Unicode path on
+        # The actual dependency stage launches the Unicode path on
         # both a cache hit in uv and a miss followed by install + find.
         foreach ($needsInstall in @('0', '1')) {
             $env:UTF8_PROBE_NEEDS_INSTALL = $needsInstall
@@ -88,7 +102,28 @@ class Fixture {
             Assert-Equal $expectedCalls ([IO.File]::ReadAllText($env:UTF8_PROBE_CALLS)) 'cached lookup does not rerun uv'
         }
 
-        # Contract 1: UTF-8 capture preserves bytes, exit status and caller state,
+        # The sibling dev setup must resolve and execute that same Unicode path,
+        # and restore the caller's encoding even when uv's lookup fails.
+        foreach ($findExit in @('0', '9')) {
+            $env:UTF8_PROBE_FIND_EXIT = $findExit
+            $env:UTF8_PROBE_NEEDS_INSTALL = '0'
+            Remove-Item -LiteralPath $env:UTF8_PROBE_CALLS, $env:UTF8_PROBE_PM -Force -ErrorAction SilentlyContinue
+            $setupFailure = $null
+            try { & $setupScript -RuntimeOnly } catch { $setupFailure = $_ }
+            Assert-Equal $codePage ([Console]::OutputEncoding.CodePage) 'setup preserves caller encoding'
+            Assert-Equal "install`nfind`n" ([IO.File]::ReadAllText($env:UTF8_PROBE_CALLS)) 'setup native call sequence'
+            if ($findExit -eq '0') {
+                if ($setupFailure) { throw $setupFailure }
+                Assert-Equal 0 $LASTEXITCODE 'setup succeeds'
+                Assert-Equal '-m pm.cli install --trust-recorded --test-environment=' ([IO.File]::ReadAllText($env:UTF8_PROBE_PM)) 'setup invokes resolved executable'
+            } else {
+                Assert-Equal 'bootstrap Python lookup failed' "$setupFailure" 'setup rejects failed lookup'
+                Assert-Equal $false (Test-Path -LiteralPath $env:UTF8_PROBE_PM) 'setup must not start PM on failed lookup'
+            }
+        }
+        $env:UTF8_PROBE_FIND_EXIT = '0'
+
+        # UTF-8 capture preserves bytes, exit status and caller state,
         # including a terminating failure inside the supplied scriptblock.
         $captured = Invoke-Native -Utf8Output { & $env:UTF8_PROBE_PYTHON exit7 }
         Assert-Equal 7 $LASTEXITCODE 'native exit code survives'

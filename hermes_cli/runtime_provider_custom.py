@@ -66,6 +66,21 @@ def _model_cfg_key_env_for(model_cfg: Dict[str, Any], base_url: str) -> str:
     return _key_env_secret(model_cfg, "model")
 
 
+def _model_cfg_own_key_for(model_cfg: Dict[str, Any], base_url: str) -> str:
+    """The main model's own key for a bare ``custom`` runtime on ``base_url``: the literal
+    ``model.api_key`` when ``base_url`` is a trusted ``model.base_url`` (the gate the bare-custom main
+    path applies, so a stale block for another provider lends nothing), else ``model.key_env``."""
+    cfg_base_url = _clean(model_cfg.get("base_url")).rstrip("/")
+    if not cfg_base_url or cfg_base_url != _clean(base_url).rstrip("/"):
+        return ""
+    literal = _clean(model_cfg.get("api_key"))
+    # An unresolved ``${VAR}`` is not a key.
+    if (literal and "${" not in literal
+            and _rp()._config_base_url_trustworthy_for_bare_custom(cfg_base_url, _clean(model_cfg.get("provider")))):
+        return literal
+    return _model_cfg_key_env_for(model_cfg, base_url)
+
+
 def _entry_url(entry: Dict[str, Any]) -> str:
     return entry.get("api") or entry.get("url") or entry.get("base_url") or ""
 
@@ -494,14 +509,19 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     base_url = explicit_base_url.strip().rstrip("/")
     # Pool first — mirrors the named-custom path so bare `provider: custom` with a configured
     # custom_providers entry gets its api_key from the pool instead of env fallbacks.
-    pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", None)
+    # On the main model's own endpoint the alias IS the main model: resolve only from a pool its own
+    # key can own, so a same-URL named sibling's pool (or its key) is never used. No own key to match:
+    # the lookup stays URL-only, as before.
+    model_key = _model_cfg_own_key_for(rp._get_model_config(), base_url)
+    owner_api_key = (explicit_api_key or "").strip() or model_key
+    pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", None, owner_api_key=owner_api_key or None)
     if pool_result:
         pool_result["source"] = "direct-alias"
         return pool_result
     # OLLAMA_API_KEY gets its own gate here: without it a `model_aliases:` entry pointing at
     # Ollama Cloud resolved no key at all.
-    # ``model.key_env`` only when this alias endpoint IS the configured model.base_url (#67453).
-    candidates = [(explicit_api_key or "").strip(), _model_cfg_key_env_for(rp._get_model_config(), base_url),
+    # The model's own key only when this alias endpoint IS the trusted model.base_url (#67453).
+    candidates = [(explicit_api_key or "").strip(), model_key,
                   *rp._host_gated_env_key_candidates(base_url, ollama=True)]
     api_key = next((c for c in candidates if rp.has_usable_secret(c)), "")
     return _custom_runtime(rp, base_url, api_key, None, source="direct-alias", requested_provider=requested_provider)

@@ -226,3 +226,72 @@ def test_model_without_its_own_key_still_uses_its_sole_same_url_entry(tmp_path, 
     main = resolve_runtime_provider(requested="custom")
     assert main["api_key"] in (("manual-key", "entry-key") if manual_row else ("entry-key",))
     assert main["api_key"] != "no-key-required"
+
+
+# ── direct alias (bare custom + explicit base_url) on the main model's endpoint ──────────
+
+
+@ENDPOINTS
+@pytest.mark.parametrize("sibling", [{"key_env": "SECOND_KEY"}, {"api_key": "second-key"}], ids=["key-env", "literal"])
+def test_direct_alias_to_the_main_models_endpoint_keeps_the_main_models_key(tmp_path, monkeypatch, endpoint, sibling):
+    """A bare ``custom`` runtime with an explicit base_url equal to ``model.base_url`` (for example an
+    ``auxiliary.<task>.provider: openai`` expanded beside ``OPENAI_BASE_URL``) is the main model's
+    endpoint: it resolves with the model's own key, never the same-URL sibling's and never the
+    ``no-key-required`` placeholder."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    _write_home(tmp_path, monkeypatch, _sibling_config(endpoint, **sibling), env={"SECOND_KEY": "second-key"})
+
+    alias = resolve_runtime_provider(requested="custom", explicit_base_url=endpoint)
+    assert alias["api_key"] == "main-key"
+    assert resolve_runtime_provider(requested="second")["api_key"] == "second-key"
+
+
+def test_direct_alias_to_another_endpoint_is_not_given_the_main_models_key(tmp_path, monkeypatch):
+    """The model key was declared for ``model.base_url`` only; an alias elsewhere never gets it."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    _write_home(tmp_path, monkeypatch, _sibling_config(GENERIC, key_env="SECOND_KEY"), env={"SECOND_KEY": "second-key"})
+
+    alias = resolve_runtime_provider(requested="custom", explicit_base_url="https://other.example.test/v1")
+    assert alias["api_key"] not in ("main-key", "second-key")
+
+
+def test_direct_alias_does_not_take_a_stale_model_blocks_literal_key(tmp_path, monkeypatch):
+    """A ``model`` block still naming another provider (the picker switched to Custom without
+    rewriting it) is not a trusted bare-custom endpoint, so its literal key is not lent."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    config = _sibling_config(GENERIC, key_env="SECOND_KEY")
+    config["model"]["provider"] = "zai"
+    _write_home(tmp_path, monkeypatch, config, env={"SECOND_KEY": "second-key"})
+
+    alias = resolve_runtime_provider(requested="custom", explicit_base_url=GENERIC)
+    assert alias["api_key"] != "main-key"
+
+
+def test_direct_alias_skips_an_unresolved_model_key_placeholder(tmp_path, monkeypatch):
+    """An unresolved ``${VAR}`` in ``model.api_key`` is not a key; ``model.key_env`` backs the alias."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    monkeypatch.delenv("MISSING_MAIN_KEY", raising=False)
+    config = _sibling_config(GENERIC, key_env="SECOND_KEY")
+    config["model"]["api_key"] = "${MISSING_MAIN_KEY}"
+    config["model"]["key_env"] = "MAIN_KEY_ENV"
+    _write_home(tmp_path, monkeypatch, config, env={"SECOND_KEY": "second-key", "MAIN_KEY_ENV": "env-main-key"})
+
+    alias = resolve_runtime_provider(requested="custom", explicit_base_url=GENERIC)
+    assert alias["api_key"] == "env-main-key"
+
+
+def test_openai_aux_alias_on_the_main_models_endpoint_keeps_the_main_models_key(tmp_path, monkeypatch):
+    """``auxiliary.<task>.provider: openai`` beside ``OPENAI_BASE_URL`` expands to a bare-custom
+    direct alias; on the main model's endpoint it must not degrade to ``no-key-required``."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    _write_home(tmp_path, monkeypatch, _sibling_config(GENERIC, key_env="SECOND_KEY"),
+                env={"SECOND_KEY": "second-key", "OPENAI_BASE_URL": GENERIC})
+
+    aux = resolve_runtime_provider(requested="openai")
+    assert aux["base_url"] == GENERIC
+    assert aux["api_key"] == "main-key"

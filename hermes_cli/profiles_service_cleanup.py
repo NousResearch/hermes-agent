@@ -22,7 +22,7 @@ def remove_system_systemd_unit() -> bool:
     unit = gateway._SYSTEM_UNIT_DIR / f"{svc_name}.service"
     if not unit.exists():
         return False
-    if os.geteuid() != 0:
+    if os.geteuid() != 0:  # windows-footgun: ok — called only from the Linux arm of profiles._cleanup_gateway_service
         print(f"⚠ System service {svc_name} remains at {unit}; it will restart the removed profile at boot.")
         print(f"  Remove it with: sudo systemctl disable --now {svc_name} && sudo rm {unit} && sudo systemctl daemon-reload")
         return False

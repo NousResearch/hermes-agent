@@ -153,9 +153,12 @@ export function ChatBar({
   // is created first); render-time assignment keeps the ref current.
   const voiceStopRef = useRef<{ active: boolean; end: () => void }>({ active: false, end: () => {} })
 
-  // Every send (typed, queued, voice) passes through the contributed
-  // middleware chain first — rewrite / pass-through / cancel. Empty chain =
-  // exact pass-through, so surfaces without contributions are byte-identical.
+  // Every send (typed, queued, voice, busy steer) passes through the
+  // contributed middleware chain first — rewrite / pass-through / cancel —
+  // exactly ONCE per user send: a busy steer runs the chain in its steer
+  // path (#126917), and its queue fallback drains back here pre-flagged
+  // (`middlewareApplied`). Empty chain = exact pass-through, so surfaces
+  // without contributions are byte-identical.
   const onSubmit = useCallback<ChatBarProps['onSubmit']>(
     async (value, options) => {
       // Bare stop phrase typed while the voice conversation is live: end the
@@ -173,7 +176,9 @@ export function ChatBar({
         return true
       }
 
-      const draft = await runComposerMiddleware({ text: value, attachments: options?.attachments })
+      const draft = options?.middlewareApplied
+        ? { text: value, attachments: options?.attachments }
+        : await runComposerMiddleware({ text: value, attachments: options?.attachments })
 
       if (!draft) {
         return false

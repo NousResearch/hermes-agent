@@ -730,6 +730,12 @@ export interface SubmitTextOptions {
    *  model-bound note by the gateway (never persisted, never rendered). */
   voiceContext?: string
   fromQueue?: boolean
+  /** The contributed middleware chain already ran over this text upstream —
+   *  a busy steer whose onSteer fell back to the queue and drained later.
+   *  The composer's submit wrapper must not run the chain a second time:
+   *  the rewrite would double-apply, and a cancellation would eat a turn
+   *  that was already approved once (#126917). */
+  middlewareApplied?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground
    *  session between enqueue and drain. */

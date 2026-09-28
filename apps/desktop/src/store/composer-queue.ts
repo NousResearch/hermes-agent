@@ -21,6 +21,11 @@ export interface QueuedPromptEntry {
   /** A hidden note (a setup line for the model) parked while the turn ran. The panel
    *  shows a neutral label and the drain submits it hidden again. */
   displayKind?: 'hidden'
+  /** The composer middleware chain already ran over this text (a busy steer
+   *  whose redirect fell back to the queue, #126917). The drain forwards the
+   *  flag so the submit wrapper doesn't run the chain a second time. Dropped
+   *  when the user edits the entry — the rewrite no longer describes it. */
+  middlewareApplied?: boolean
   /** Consecutive auto-drain attempts that rejected this entry, persisted with
    *  the queue so a restart does not replay the whole retry ladder (and its
    *  exhaustion notice) for a session that is just as dead as before (#98015).
@@ -163,7 +168,13 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
+  payload: {
+    text: string
+    attachments: ComposerAttachment[]
+    displayText?: string
+    displayKind?: 'hidden'
+    middlewareApplied?: boolean
+  }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -176,6 +187,7 @@ export const enqueueQueuedPrompt = (
     text: payload.text,
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
+    ...(payload.middlewareApplied ? { middlewareApplied: true } : {}),
     attachments: cloneAttachments(payload.attachments),
     queuedAt: Date.now()
   }
@@ -341,8 +353,9 @@ export const updateQueuedPrompt = (
 
     // The user rewrote the text, so any display projection it carried (a
     // `/skill` invocation standing in for the expanded body) no longer
-    // describes it — what they typed is now what sends.
-    const { displayText: _dropped, ...rest } = entry
+    // describes it — what they typed is now what sends. The middleware
+    // marker goes with it: the chain should re-run over the edited words.
+    const { displayText: _dropped, middlewareApplied: _droppedMiddleware, ...rest } = entry
 
     return { ...rest, text: update.text, attachments }
   })

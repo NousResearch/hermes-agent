@@ -51,15 +51,22 @@ Add `--dry-run` to any apply form to preview the full plan without writing.
    because no model is in that loop. Writes go through `cron.jobs.save_jobs` under
    `use_cron_store(home)` so the cross-process jobs lock and the shrink-merge guard
    still apply. Never hand-edit `jobs.json`.
-5. **Auxiliary tasks** — only via the `auxiliary` subcommand or
+5. **Auxiliary tasks** - only via the `auxiliary` subcommand or
    `include_auxiliary: true`. Off by default: those models are usually pinned to a
-   cheap tier on purpose.
+   cheap tier on purpose. The sweep covers the install root and every selected
+   named profile, including when invoked from a named profile. It obeys the same
+   `include_profiles`, `profile_allowlist`, and `profile_blocklist` settings:
+   blocklist wins over allowlist, and the install root is always included. The
+   explicit `auxiliary` subcommand opts into the sweep, not around those filters.
 
 ## Safety
 
 - `--dry-run` first is the intended habit; the plan names every file.
 - Every touched file is copied to `<name>.bak-model-fleet-<UTC stamp>` before the
-  write (disable with `backup: false`).
+  invocation's first write to that file, preserving its pre-change bytes even
+  when multiple helpers write it (disable with `backup: false`).
+- Only auxiliary tasks already declaring a non-empty model participate; absent
+  blocks and blocks with no eligible tasks are reported as skipped.
 - A refused switch (bad model, missing credentials) is reported and **nothing** is
   written — the check runs before the first mutation.
 - A new model reaches new sessions and the next cron fire. The chat that ran the

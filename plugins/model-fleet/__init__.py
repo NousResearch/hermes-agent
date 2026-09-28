@@ -665,10 +665,14 @@ def _apply_sync(provider: str, model: str, dry_run: bool, with_auxiliary: bool) 
 
     if dry_run:
         # Reuse the resolved route without persisting it, so the preview matches the write.
-        profile_changes, _ = _apply_profiles(provider, model, result, settings, stamp, True)
-        cron_changes, cron_skipped, _ = _apply_crons(provider, model, settings, stamp, True)
-        aux_changes = (_apply_auxiliary(provider, model, settings, stamp, True)[0]
-                       if settings["include_auxiliary"] else [])
+        try:
+            profile_changes, _ = _apply_profiles(provider, model, result, settings, stamp, True)
+            cron_changes, cron_skipped, _ = _apply_crons(provider, model, settings, stamp, True)
+            aux_changes = (_apply_auxiliary(provider, model, settings, stamp, True)[0]
+                           if settings["include_auxiliary"] else [])
+        except Exception as exc:
+            return (f"**Preview aborted** for `{provider}/{model}`: {exc}. "
+                    "Nothing was written.")
         lines = [f"**Dry run** — would set the install to `{provider}/{model}`", ""]
         lines += [f"- {c}" for c in profile_changes]
         lines += [f"- {c}" for c in cron_changes]
@@ -699,6 +703,12 @@ def _apply_sync(provider: str, model: str, dry_run: bool, with_auxiliary: bool) 
         return (f"**Switch aborted partway** for `{provider}/{model}`: {exc}.\n"
                 "Restore from the backups listed below (or run with `backup: false` to "
                 f"skip them deliberately).\n{chr(10).join(f'- `{b}`' for b in backups)}")
+    except Exception as exc:
+        recovery = (f"Pre-change backups use the suffix `.bak-model-fleet-{stamp}` "
+                    "beside the files written before the failure." if settings["backup"] else
+                    "Backups were disabled for this invocation.")
+        return (f"**Switch aborted partway** for `{provider}/{model}`: {exc}.\n"
+                f"Some files may already have changed. {recovery}")
 
 
 def _commit(provider: str, model: str, result, settings: Dict[str, Any], stamp: str,

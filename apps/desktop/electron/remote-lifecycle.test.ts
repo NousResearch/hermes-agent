@@ -423,6 +423,40 @@ test('locateHermes uses a login shell for the command -v probe', async () => {
   )
 })
 
+test('locateHermes rejects an explicit path that is a directory, naming it', async () => {
+  // POSIX [ -x ] passes for a traversable directory (a drwxr-xr-x install
+  // dir), so an install dir used to resolve as the launcher and every later
+  // capability probe answered NO — reported as "update the remote" (#126552).
+  const ssh = fakeSsh([[/\[ -d /, 'DIR']])
+
+  await assert.rejects(
+    () => locateHermes(ssh, '~/.hermes/hermes-agent'),
+    (err: any) => {
+      assert.equal(err.kind, 'hermes-not-found')
+      assert.match(err.message, /directory/)
+      assert.match(err.message, /\.hermes\/hermes-agent/)
+
+      return true
+    }
+  )
+  assert.ok(
+    !ssh.calls.some(c => c.includes('command -v')),
+    'an explicit path must not fall back to auto-detect'
+  )
+})
+
+test('locateHermes skips an auto-detect candidate that is a directory', async () => {
+  // A directory passes [ -x ] but is not a launcher: the ladder must move on
+  // to the next candidate instead of blessing it (#126552).
+  const ssh = fakeSsh([
+    [/command -v hermes/, ''],
+    [(cmd: string) => cmd.includes('.local/bin/hermes'), ''],
+    [(cmd: string) => cmd.includes('/usr/local/bin/hermes'), 'OK']
+  ])
+
+  assert.equal(await locateHermes(ssh, ''), '/usr/local/bin/hermes')
+})
+
 test('probeRemotePlatform accepts Linux and macOS', async () => {
   assert.deepEqual(await probeRemotePlatform(fakeSsh([[/uname/, 'Linux\nx86_64']])), {
     os: 'Linux',

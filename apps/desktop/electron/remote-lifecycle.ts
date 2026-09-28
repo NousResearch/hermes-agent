@@ -184,7 +184,16 @@ async function locateHermes(ssh, remoteHermesPath) {
   const isExecutable = async (candidate: string) => {
     try {
       validateRemotePath(candidate)
-      const ok = (await ssh.exec(`[ -x ${expandRemotePath(candidate)} ] && echo OK || true`)).trim()
+
+      // -x alone blesses a traversable DIRECTORY on POSIX (a drwxr-xr-x install
+      // dir passes), so a configured install dir resolved as the launcher and
+      // every later probe died with "Is a directory" (#126552). Require a
+      // regular executable file.
+      const quoted = expandRemotePath(candidate)
+
+      const ok = (
+        await ssh.exec(`[ -f ${quoted} ] && [ -x ${quoted} ] && echo OK || true`)
+      ).trim()
 
       return ok === 'OK'
     } catch {
@@ -195,6 +204,23 @@ async function locateHermes(ssh, remoteHermesPath) {
   if (remoteHermesPath) {
     if (await isExecutable(remoteHermesPath)) {
       return resolveLauncher(remoteHermesPath)
+    }
+
+    // Pasting the install directory is the natural mistake for this field, and
+    // -x used to accept it — name it instead of the generic miss below, which
+    // reads as a remote-side problem (#126552).
+    const dirProbe = await ssh
+      .exec(`[ -d ${expandRemotePath(remoteHermesPath)} ] && echo DIR || true`)
+      .catch(() => '')
+
+    if (String(dirProbe || '').trim() === 'DIR') {
+      const err: any = new Error(
+        `The Hermes path set for this connection is a directory, not an executable: "${remoteHermesPath}". ` +
+          'Set it to the remote `hermes` binary (e.g. ~/.local/bin/hermes), or clear the field to auto-detect.'
+      )
+
+      err.kind = 'hermes-not-found'
+      throw err
     }
 
     const err: any = new Error(

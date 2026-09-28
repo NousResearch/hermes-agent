@@ -78,30 +78,54 @@ class _FakeStreamResponse:
 
 
 class TestLimitedResponse:
-    def test_declared_over_limit_never_iterates_body(self, monkeypatch):
+    @pytest.mark.parametrize("declared", ["11", None, "invalid", "1"])
+    @pytest.mark.parametrize("operation", ["discovery", "login", "refresh"])
+    def test_limit_rejects_before_reading_unneeded_body(self, monkeypatch, rsa_keypair, declared, operation):
+        provider = _make_provider(rsa_keypair)
         response = _FakeStreamResponse(
-            "GET", _ISSUER, chunks=[], headers={"content-length": "11"}
+            "GET", _ISSUER, chunks=[],
+            headers={"content-length": declared} if declared is not None else {},
         )
-        response.iter_bytes = MagicMock(side_effect=AssertionError("body read"))
+
+        def chunks(**kwargs):
+            yield b"x" * 6
+            yield b"y" * 5
+            pytest.fail("read beyond the limit")
+
+        response.iter_bytes = MagicMock(side_effect=chunks)
         monkeypatch.setattr(oidc_plugin.httpx, "stream", lambda *a, **kw: response)
+        monkeypatch.setattr(oidc_plugin, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
         with pytest.raises(ProviderError, match="exceeds 10 bytes"):
-            oidc_plugin._request_limited_response("GET", _ISSUER, body_limit=10)
-        response.iter_bytes.assert_not_called()
+            if operation == "discovery":
+                provider._fetch_discovery()
+            elif operation == "login":
+                provider.complete_login(
+                    code="code", state="state", code_verifier="verifier",
+                    redirect_uri="https://hermes.example/auth/callback",
+                )
+            else:
+                provider.refresh_session(refresh_token="old-refresh")
+        if declared == "11":
+            response.iter_bytes.assert_not_called()
+        else:
+            response.iter_bytes.assert_called_once()
 
     @pytest.mark.parametrize("encoding,compress", [("gzip", gzip.compress), ("deflate", zlib.compress)])
     @pytest.mark.parametrize("status", [200, 400, 500])
     def test_decoded_body_and_headers_agree(self, monkeypatch, encoding, compress, status):
         body = b'{"error":"invalid_grant","padding":"' + b"x" * 1000 + b'"}'
-        response = httpx.Response(
-            status,
-            headers={"content-type": "application/json", "content-encoding": encoding,
-                     "content-length": str(len(compress(body)))},
-            stream=httpx.ByteStream(compress(body)),
-            request=httpx.Request("POST", f"{_ISSUER}/token"),
-        )
+        responses = []
 
         @contextmanager
         def stream(*args, **kwargs):
+            response = httpx.Response(
+                status,
+                headers={"content-type": "application/json", "content-encoding": encoding,
+                         "content-length": str(len(compress(body)))},
+                stream=httpx.ByteStream(compress(body)),
+                request=httpx.Request("POST", f"{_ISSUER}/token"),
+            )
+            responses.append(response)
             try:
                 yield response
             finally:
@@ -114,42 +138,12 @@ class TestLimitedResponse:
         assert result.json()["error"] == "invalid_grant"
         assert "content-encoding" not in result.headers
         assert int(result.headers["content-length"]) == len(body)
-        assert result.url == response.url
-        assert response.is_closed
-
-    def test_compressed_body_is_limited_after_decoding(self, monkeypatch):
-        body = gzip.compress(b"x" * 1000)
-        assert len(body) < 100
-        response = httpx.Response(
-            200, headers={"content-encoding": "gzip", "content-length": str(len(body))},
-            stream=httpx.ByteStream(body), request=httpx.Request("GET", _ISSUER),
-        )
-
-        @contextmanager
-        def stream(*args, **kwargs):
-            try:
-                yield response
-            finally:
-                response.close()
-
-        monkeypatch.setattr(oidc_plugin.httpx, "stream", stream)
+        assert result.url == responses[0].url
+        # Wire length fits, but the decoded body exceeds the second limit.
+        assert len(compress(body)) < 100 < len(body)
         with pytest.raises(ProviderError, match="exceeds 100 bytes"):
-            oidc_plugin._request_limited_response("GET", _ISSUER, body_limit=100)
-        assert response.is_closed
-
-    @pytest.mark.parametrize("headers", [{}, {"content-length": "invalid"}, {"content-length": "1"}])
-    def test_stream_limit_stops_before_reading_remainder(self, monkeypatch, headers):
-        response = _FakeStreamResponse("GET", _ISSUER, chunks=[], headers=headers)
-
-        def chunks(**kwargs):
-            yield b"x" * 6
-            yield b"y" * 5
-            pytest.fail("read beyond the limit")
-
-        response.iter_bytes = chunks
-        monkeypatch.setattr(oidc_plugin.httpx, "stream", lambda *a, **kw: response)
-        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
-            oidc_plugin._request_limited_response("GET", _ISSUER, body_limit=10)
+            oidc_plugin._request_limited_response("POST", f"{_ISSUER}/token", body_limit=100)
+        assert all(response.is_closed for response in responses)
 
 
 # ---------------------------------------------------------------------------
@@ -394,24 +388,6 @@ class TestDiscovery:
             "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             assert p._fetch_discovery()["issuer"] == _ISSUER
-
-    def test_discovery_rejects_oversized_response_body(self, monkeypatch):
-        p = self._provider()
-
-        def fake_stream(method, url, **kwargs):
-            return _FakeStreamResponse(
-                method,
-                url,
-                chunks=[b"a" * 6, b"b" * 6],
-                headers={"content-type": "application/json"},
-            )
-
-        monkeypatch.setattr(oidc_plugin.httpx, "stream", fake_stream)
-        monkeypatch.setattr(oidc_plugin, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
-
-        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
-            p._get_discovery()
-
 
 # ---------------------------------------------------------------------------
 # OIDC discovery against a REAL HTTP server that redirects (regression)
@@ -714,27 +690,6 @@ class TestCompleteLogin:
                     code_verifier="v",
                     redirect_uri="https://hermes.example/auth/callback",
                 )
-
-    def test_token_endpoint_rejects_oversized_response_body(self, provider, monkeypatch):
-        def fake_stream(method, url, **kwargs):
-            return _FakeStreamResponse(
-                method,
-                url,
-                chunks=[b"x" * 8, b"y" * 8],
-                headers={"content-type": "application/json"},
-            )
-
-        monkeypatch.setattr(oidc_plugin.httpx, "stream", fake_stream)
-        monkeypatch.setattr(oidc_plugin, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
-
-        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
-            provider.complete_login(
-                code="x",
-                state="s",
-                code_verifier="v",
-                redirect_uri="https://hermes.example/auth/callback",
-            )
-
 
 # ---------------------------------------------------------------------------
 # Confidential client (client_secret) — token-endpoint client authentication

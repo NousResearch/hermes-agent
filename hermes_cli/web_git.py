@@ -546,25 +546,15 @@ def _sanitize_branch(name: str) -> str:
     return value
 
 
-def _materialize_tracking_ref(root: str, remote: str, branch: str) -> bool:
-    """Ensure ``refs/remotes/<remote>/<branch>`` exists and ``--track`` can wire it.
+def _fetch_tracking_ref(root: str, remote: str, branch: str) -> bool:
+    """Fetch ``<remote>/<branch>`` by explicit refspec; True when the remote has the branch.
 
-    A tag-pinned narrow clone maps only the tag in ``remote.<remote>.fetch``, so the tracking
-    refs of every other branch are missing and a by-name fetch writes FETCH_HEAD without
-    creating them. An explicit refspec fetch creates the ref, but ``worktree add --track``
-    and ``branch --set-upstream-to`` still need the *configured* refspec to reverse-map the
-    ref back to a remote branch — so register the branch on the remote additively
-    (``set-branches --add`` keeps any existing refspecs) and fetch through it. The ``+``
-    matches what `hermes update` uses because on a depth-1 clone the new tip need not
-    descend from the old one. Returns whether the tracking ref is available afterwards
-    (fetch failures fall back to the last known ref, or none).
+    A tag-pinned narrow clone maps only the tag in ``remote.<remote>.fetch``, so a by-name
+    fetch writes FETCH_HEAD without creating the tracking ref (#125686).
     """
-    _git(root, ["remote", "set-branches", "--add", remote, branch])
-    _git(
-        root,
-        ["fetch", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"],
-    )
-    return _git(root, ["show-ref", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}"])[0] == 0
+    from hermes_cli.update_cmd_check import tracking_refspec
+
+    return _git(root, ["fetch", remote, tracking_refspec(remote, branch)])[0] == 0
 
 
 def _slugify(name: str) -> str:
@@ -624,16 +614,16 @@ def _worktree_for_existing(root: str, raw_name: str) -> dict:
     # a remote gateway serves this mirror, so the desktop's convert-a-branch flow must behave identically.
     # #81724)
     remote = _remote_of_ref(root, requested)
+    fetched = False
     if not remote and "/" in requested:
-        # A tag-pinned narrow clone maps only the tag in remote.<r>.fetch, so the tracking ref of
-        # every other branch is missing and the ref-based reading above misreads "origin/feature"
-        # as a local branch. Register the branch on the remote (additive — the existing refspec
-        # stays) and fetch it; when the remote does not carry the branch either, keep the
-        # local-branch reading so the error stays the familiar one.
+        # A tag-pinned narrow clone has no tracking ref for any branch, so the ref-based reading
+        # above misreads "origin/feature" as a local branch. When the remote carries the branch,
+        # fetching it creates the ref; otherwise keep the local-branch reading and its error.
         maybe_remote, maybe_branch = requested.split("/", 1)
-        if _git_line(root, ["remote", "get-url", maybe_remote]):
-            if _materialize_tracking_ref(root, maybe_remote, maybe_branch):
-                remote = maybe_remote
+        if _git_line(root, ["remote", "get-url", maybe_remote]) and _fetch_tracking_ref(
+            root, maybe_remote, maybe_branch
+        ):
+            remote, fetched = maybe_remote, True
     existing = requested.split("/", 1)[1] if remote else requested
     if not remote and existing == _default_branch(root):
         _git_ok(root, ["switch", existing])
@@ -641,20 +631,18 @@ def _worktree_for_existing(root: str, raw_name: str) -> dict:
     target = _unique_dir(os.path.join(root, ".worktrees", _slugify(existing)))
     if remote:
         ref = f"{remote}/{existing}"
-        # `worktree add --track` (and `branch --set-upstream-to`) derive upstream from the
-        # configured remote refspecs; on a tag-pinned narrow clone they map only the tag, so the
-        # wiring dies with "starting point is not a branch" even with a fresh tracking ref. Make
-        # sure the branch is registered on the remote (additive; no-op on a normal clone where the
-        # wildcard refspec already covers it), refresh the ref (best-effort: on failure the last
-        # known one is still there to branch from), then wire upstream explicitly — `--track`
-        # silently skips the wiring instead of failing when the reverse-map is impossible.
-        _materialize_tracking_ref(root, remote, existing)
-        if (
-            _git(root, ["worktree", "add", "--track", "-b", existing, target, ref])[0]
-            != 0
-        ):
+        # Best-effort freshness: on failure (offline, branch gone) the last known ref is still
+        # there to branch from.
+        fetched = fetched or _fetch_tracking_ref(root, remote, existing)
+        if _git(root, ["worktree", "add", "--track", "-b", existing, target, ref])[0] != 0:
+            # `--track` needs remote.<remote>.fetch to map the ref back to a remote branch; a
+            # narrow clone maps only its tag. Branch untracked, then register the branch and
+            # wire upstream, but only for a branch the fetch just proved exists: a configured
+            # refspec whose source is gone makes every later plain `git fetch` fail.
             _git_ok(root, ["worktree", "add", "-b", existing, target, ref])
-            _git(root, ["branch", f"--set-upstream-to={ref}", existing])
+            if fetched:
+                _git(root, ["remote", "set-branches", "--add", remote, existing])
+                _git(root, ["branch", f"--set-upstream-to={ref}", existing])
     else:
         _git_ok(root, ["worktree", "add", target, existing])
     return {"path": target, "branch": existing, "repoRoot": root}
@@ -677,11 +665,11 @@ def worktree_add(cwd: str, options: dict) -> dict:
         # (offline / no remote) are ignored — git uses the local ref or raises a clear error
         # below if it is entirely missing.
         if base.startswith("origin/"):
-            # A by-name fetch writes only FETCH_HEAD when remote.origin.fetch maps a
-            # tag (#125686). The updater's tracking refspec still creates origin/<branch>.
-            from hermes_cli.update_cmd_check import tracking_refspec
-
-            _git(root, ["fetch", "origin", tracking_refspec("origin", base[len("origin/"):])])
+            remote_branch = base[len("origin/"):]
+            # `base` comes straight from the API, and inside a refspec a glob such as
+            # "origin/*" would fetch every branch: only fetch names the sanitizer leaves alone.
+            if remote_branch == _sanitize_branch(remote_branch):
+                _fetch_tracking_ref(root, "origin", remote_branch)
             # Branching off a remote-tracking ref auto-wires upstream tracking; the user wants
             # a standalone local branch (Electron-op parity).
             args.append("--no-track")

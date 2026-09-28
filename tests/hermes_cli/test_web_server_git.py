@@ -392,3 +392,60 @@ def test_worktree_add_existing_branch_tracks_when_refspec_cannot_reverse_map(cli
         cwd=added["path"], capture_output=True, text=True,
     ).stdout.strip()
     assert upstream == "origin/feature"
+
+
+def _fetch_config(clone):
+    return subprocess.run(
+        ["git", "config", "--get-all", "remote.origin.fetch"],
+        cwd=clone, check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def _normal_clone(tmp_path):
+    """The narrow fixture's origin, cloned the normal way (wildcard fetch refspec)."""
+    _narrow_clone(tmp_path)
+    clone = tmp_path / "normal"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(clone)],
+                   check=True, capture_output=True, text=True)
+    return clone
+
+
+@pytest.mark.parametrize("shape", ["narrow", "normal"])
+def test_worktree_add_missing_remote_branch_leaves_fetch_config_alone(client, tmp_path, shape):
+    """A configured refspec whose source is missing makes every later plain `git fetch`
+    fail, so a typo'd "origin/<branch>" must never be registered on the remote."""
+    clone = _narrow_clone(tmp_path)[0] if shape == "narrow" else _normal_clone(tmp_path)
+    before = _fetch_config(clone)
+
+    resp = client.post(
+        "/api/git/worktree/add", json={"path": str(clone), "existingBranch": "origin/typo"},
+    )
+
+    assert resp.status_code != 200
+    assert _fetch_config(clone) == before
+    subprocess.run(["git", "fetch", "-q"], cwd=clone, check=True, capture_output=True)
+
+
+def test_worktree_add_existing_branch_on_normal_clone_adds_no_fetch_refspec(client, tmp_path):
+    clone = _normal_clone(tmp_path)
+    before = _fetch_config(clone)
+
+    added = client.post(
+        "/api/git/worktree/add", json={"path": str(clone), "existingBranch": "origin/feature"},
+    ).json()
+
+    assert added["branch"] == "feature"
+    assert _fetch_config(clone) == before
+
+
+def test_worktree_add_glob_base_is_not_fetched(tmp_path):
+    """`base` comes from the API; inside a refspec "origin/*" would fetch every branch."""
+    clone, _ = _narrow_clone(tmp_path)
+    from hermes_cli.web_git import worktree_add
+
+    with pytest.raises(RuntimeError):
+        worktree_add(str(clone), {"base": "origin/*", "name": "glob"})
+
+    refs = subprocess.run(["git", "for-each-ref", "refs/remotes"], cwd=clone,
+                          check=True, capture_output=True, text=True).stdout
+    assert refs == ""

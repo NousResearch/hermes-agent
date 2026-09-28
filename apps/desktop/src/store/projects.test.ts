@@ -1,3 +1,4 @@
+import { waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -14,6 +15,7 @@ import {
   $projectsRpcAvailable,
   $projectTree,
   addProjectFolder,
+  applyRenamedSessionTitle,
   createProject,
   deleteProject,
   enterProject,
@@ -894,6 +896,79 @@ describe('project tree profile isolation', () => {
     $activeGatewayProfile.set('default')
     $projects.set([])
     $projectTree.set([])
+  })
+
+  it('mirrors a renamed title into cached tree rows and refreshes the tree (#123337)', async () => {
+    // The rename wrote the backend row; the cached snapshot (overview
+    // previews + hydrated lanes) kept the old title until an unrelated
+    // refetch. applyRenamedSessionTitle patches every cached copy by lineage
+    // id and re-pulls the authoritative tree.
+    const sess = (id: string, title: string) => ({ id, title })
+
+    const treeProject = {
+      id: 'p_1',
+      label: 'One',
+      path: '/one',
+      repos: [
+        {
+          id: '/one',
+          label: 'one',
+          path: '/one',
+          sessionCount: 2,
+          groups: [
+            {
+              id: '/one::branch::main',
+              label: 'main',
+              path: '/one',
+              sessions: [
+                sess('tip-row', 'Old title'),
+                sess('other-row', 'Untouched'),
+                { ...sess('preview-only', 'Old title'), _lineage_root_id: 'root-x' }
+              ]
+            }
+          ]
+        }
+      ],
+      sessionCount: 2,
+      previewSessions: [sess('tip-row', 'Old title')]
+    }
+
+    $projectTree.set([treeProject as never])
+
+    const request = vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: [] })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    gatewayAtom.set({ connectionState: 'open', request } as never)
+
+    applyRenamedSessionTitle('tip-row', 'New title')
+
+    // Synchronous patch: every cached copy carries the new title.
+    const project = $projectTree.get()[0]
+    const lane = project.repos[0].groups[0]
+    expect(lane.sessions.find(s => s.id === 'tip-row')?.title).toBe('New title')
+    expect(lane.sessions.find(s => s.id === 'other-row')?.title).toBe('Untouched')
+    expect(lane.sessions.find(s => s.id === 'preview-only')?.title).toBe('Old title')
+    expect(project.previewSessions?.[0].title).toBe('New title')
+
+    // A lineage-root rename reaches a row the snapshot holds under its tip.
+    applyRenamedSessionTitle('root-x', 'Root renamed')
+    expect($projectTree.get()[0].repos[0].groups[0].sessions.find(s => s.id === 'preview-only')?.title).toBe(
+      'Root renamed'
+    )
+
+    // And the authoritative tree is re-pulled.
+    await waitFor(() => expect(request).toHaveBeenCalledWith('projects.tree', expect.anything()))
+  })
+
+  it('keeps the tree reference when no cached row matches the rename', () => {
+    const before = [{ id: 'p_2', label: 'Two', path: '/two', repos: [], sessionCount: 0 }]
+    $projectTree.set(before as never)
+
+    const request = vi.fn()
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    applyRenamedSessionTitle('absent-row', 'Whatever')
+
+    expect($projectTree.get()).toBe(before)
   })
 
   it('retries a dropped projects.tree request once on the active gateway', async () => {

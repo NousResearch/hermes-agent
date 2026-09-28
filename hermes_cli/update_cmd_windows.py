@@ -244,16 +244,16 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     # inline source carries for a LATER spawn, not to this holder (#107002) -- unless the source is a
     # Hermes bootstrap running the entry point in this process (#124318).
     from gateway.status import command_line_runs_inline_source, inline_bootstrap_argv
-    normalized = [t.strip('"').replace("\\", "/") for t in tokens]
+    normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
     if command_line_runs_inline_source(normalized):
         tokens = inline_bootstrap_argv(normalized)
         if tokens is None:
             return None
 
     def _is_entry(i: int, token: str) -> bool:
-        low = token.lower().strip('"')
+        low = token.lower().strip("\"'").replace("\\", "/")
         return (low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m") or (
-            low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe"))
+            low.rsplit("/", 1)[-1] in ("hermes", "hermes.exe")) or low.endswith("hermes_cli/main.py")
 
     entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)
     if entry_idx is None:

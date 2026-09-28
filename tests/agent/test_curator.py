@@ -7,6 +7,7 @@ tests run fully offline and the curator module doesn't need real credentials.
 from __future__ import annotations
 
 import importlib
+import json
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1121,3 +1122,39 @@ def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
         "run_conversation, or every copied tool-worker context keeps private "
         "marks and the read-before-write guard refuses all patches"
     )
+
+
+def test_threaded_llm_pass_keeps_callers_profile_scope(curator_env, tmp_path, monkeypatch):
+    """#125032: the daemon ``curator-review`` thread must inherit the caller's contextvars (home
+    override + secret scope), else on a multiplexed gateway it runs unscoped against the ROOT home."""
+    from agent import secret_scope as ss
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    c, root = curator_env["curator"], curator_env["home"]
+    profile = tmp_path / "profiles" / "served"
+    (profile / "skills").mkdir(parents=True)
+    seen = {}
+
+    def _pass(prefix, auto_summary, dry_run, before_names):
+        seen["home"] = get_hermes_home()
+        seen["secret"] = ss.get_secret("CURATOR_PROBE_KEY")
+        return f"{prefix}{auto_summary}; llm: stub", c._llm_meta("stub")
+
+    monkeypatch.setattr(c, "_consolidation_pass", _pass)
+    ss.set_multiplex_active(True)
+    home_tok = set_hermes_home_override(profile)
+    scope_tok = ss.set_secret_scope({"CURATOR_PROBE_KEY": "served"}, profile_home=str(profile))
+    try:
+        c.run_curator_review(synchronous=False, consolidate=True)
+        for t in threading.enumerate():
+            if t.name == "curator-review":
+                t.join(timeout=10.0)
+    finally:
+        ss.reset_secret_scope(scope_tok)
+        reset_hermes_home_override(home_tok)
+        ss.set_multiplex_active(False)
+
+    assert seen == {"home": profile, "secret": "served"}
+    assert not (root / "skills" / ".curator_state").exists(), "thread wrote the ROOT home's state"
+    state = json.loads((profile / "skills" / ".curator_state").read_text(encoding="utf-8-sig"))
+    assert state["last_run_summary"].endswith("llm: stub")

@@ -332,9 +332,11 @@ import {
   executeManagedRemoteUpdate,
   fenceManagedSshBootstrapPublication,
   ManagedConnectionUpdateGate,
+  managedSshDrainBlocker,
   managedSshRecoveryScopes,
   managedSshScopeRole,
   managedSshTokenPersistencePlan,
+  managedSshUpdateAllRow,
   MAX_MANAGED_SSH_RECOVERY_ATTEMPTS,
   recoverManagedSshScopes,
   refusedManagedSshUpdate,
@@ -11746,6 +11748,12 @@ async function drainManagedSshScope(scope) {
 async function updateManagedSshConnection(source, correlationId) {
   const sourceSnapshot = { ...source }
   const scopes = await captureManagedSshScopes(sourceSnapshot)
+  const blocker = managedSshDrainBlocker(scopes)
+
+  if (blocker) {
+    return refusedManagedSshUpdate(source.id, correlationId, blocker.message, blocker.reason)
+  }
+
   let ephemeral: null | { close: () => Promise<void>; target: RemoteUpdateTarget } = null
   let launchAttempted = false
   const firstState = scopes.find(scope => scope.state)?.state
@@ -16377,15 +16385,7 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
           }
 
           if (connection.kind === 'ssh') {
-            const result = await requestManagedSshUpdate(connection.id)
-
-            return {
-              ...base,
-              ok: result.ok,
-              detail: result.message,
-              managed: result,
-              ...(result.ok ? {} : { error: result.error || result.outcome })
-            }
+            return managedSshUpdateAllRow(base, await requestManagedSshUpdate(connection.id))
           }
 
           // Claim-guarded (#90812): coalesce with a concurrent renderer dial

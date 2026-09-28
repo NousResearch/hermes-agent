@@ -59,6 +59,9 @@ interface ManagedConnectionUpdateResult {
   scopes: ManagedUpdateScopeResult[]
   error?: string
   message?: string
+  // Set when the connection was deliberately not attempted (a known safety
+  // limit, not a failure). Batch callers report it as a per-row skip.
+  skipReason?: string
 }
 
 interface ManagedSshScope {
@@ -941,7 +944,7 @@ async function runManagedSshUpdate<TScope extends ManagedSshScope>(
   }
 }
 
-function refusedManagedSshUpdate(connectionId: string, correlationId: string, error: string) {
+function refusedManagedSshUpdate(connectionId: string, correlationId: string, error: string, skipReason?: string) {
   const message = String(error || 'This connection is not managed by Desktop SSH.')
 
   return {
@@ -955,7 +958,50 @@ function refusedManagedSshUpdate(connectionId: string, correlationId: string, er
     receipt: null,
     scopes: [],
     error: message,
-    message
+    message,
+    ...(skipReason ? { skipReason } : {})
+  }
+}
+
+const DARWIN_DRAIN_UNSUPPORTED = 'darwin-drain-unsupported'
+
+// The POSIX drain signals the owned serve only through a pidfd, which binds the
+// signal to the verified process. Darwin has no equivalent, so
+// terminateOwnedDashboardForUpdate deliberately refuses there rather than
+// accept a PID-reuse window. Detect that before touching any scope: cycling
+// forwards only to hit the refusal would disrupt healthy sessions for nothing.
+// A macOS remote with no live Desktop-owned serve needs no drain and updates.
+function managedSshDrainBlocker(
+  scopes: Array<{ profile: string; state?: { remotePlatform?: string } | null }>
+): null | { reason: string; message: string } {
+  const blocked = scopes.filter(scope => scope.state?.remotePlatform === 'Darwin').map(scope => scope.profile)
+
+  if (blocked.length === 0) {
+    return null
+  }
+
+  return {
+    reason: DARWIN_DRAIN_UNSUPPORTED,
+    message:
+      `Skipped: Desktop cannot safely stop its running Hermes serve on this macOS remote (${blocked.join(', ')}). ` +
+      'Disconnect it, or run `hermes update` on the remote, then retry.'
+  }
+}
+
+// One "Update all instances" row for a managed SSH connection. A deliberate
+// refusal with a skip reason is a skip, not a failure, so it is reported
+// per-row without reading as a broken batch.
+function managedSshUpdateAllRow<TBase extends object>(base: TBase, result: ManagedConnectionUpdateResult) {
+  if (result.skipReason) {
+    return { ...base, ok: false, skipped: true, reason: result.skipReason, detail: result.message, managed: result }
+  }
+
+  return {
+    ...base,
+    ok: result.ok,
+    detail: result.message,
+    managed: result,
+    ...(result.ok ? {} : { error: result.error || result.outcome })
   }
 }
 
@@ -1121,12 +1167,14 @@ export {
   launchManagedRemoteUpdate,
   ManagedConnectionUpdateGate,
   type ManagedConnectionUpdateResult,
+  managedSshDrainBlocker,
   managedSshRecoveryDisposition,
   type ManagedSshRecoveryScope,
   managedSshRecoveryScopes,
   type ManagedSshScope,
   managedSshScopeRole,
   managedSshTokenPersistencePlan,
+  managedSshUpdateAllRow,
   type ManagedUpdateDeps,
   type ManagedUpdateOutcome,
   type ManagedUpdateReceiptSummary,

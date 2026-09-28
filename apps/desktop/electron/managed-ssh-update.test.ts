@@ -13,10 +13,12 @@ import {
   buildWindowsManagedUpdateLaunch,
   fenceManagedSshBootstrapPublication,
   ManagedConnectionUpdateGate,
+  managedSshDrainBlocker,
   managedSshRecoveryDisposition,
   managedSshRecoveryScopes,
   managedSshScopeRole,
   managedSshTokenPersistencePlan,
+  managedSshUpdateAllRow,
   MAX_MANAGED_SSH_RECOVERY_ATTEMPTS,
   parseRemoteUpdateObservation,
   RECEIPT_GRACE_MS,
@@ -1041,4 +1043,37 @@ test('refused result is structured and has no managed scopes to restore', () => 
   assert.equal(result.outcome, 'refused')
   assert.equal(result.restoreOk, true)
   assert.deepEqual(result.scopes, [])
+})
+
+test('a live Desktop-owned serve on a macOS remote is a per-row skip, not a batch failure (#124617)', () => {
+  // Darwin cannot bind a signal to the verified PID, so the drain refuses to
+  // stop the serve. Detect that before any scope is touched and report the
+  // connection as skipped instead of an aborted update.
+  const blocker = managedSshDrainBlocker([
+    { profile: 'default', state: { remotePlatform: 'Darwin' } },
+    { profile: 'work', state: null }
+  ])
+
+  assert.equal(blocker?.reason, 'darwin-drain-unsupported')
+  assert.match(blocker?.message || '', /macOS remote \(default\)/)
+
+  const refused = refusedManagedSshUpdate('mac', CORRELATION, blocker!.message, blocker!.reason)
+  const row: any = managedSshUpdateAllRow({ connectionId: 'mac', label: 'Mac', kind: 'ssh' }, refused)
+
+  assert.equal(row.skipped, true)
+  assert.equal(row.reason, 'darwin-drain-unsupported')
+  assert.equal(row.detail, blocker!.message)
+  assert.equal(row.error, undefined)
+})
+
+test('macOS remotes with no live serve and Linux remotes still update', () => {
+  assert.equal(managedSshDrainBlocker([{ profile: 'default', state: null }]), null)
+  assert.equal(managedSshDrainBlocker([{ profile: 'default', state: { remotePlatform: 'Linux' } }]), null)
+
+  const failed = { ...refusedManagedSshUpdate('box', CORRELATION, 'boom'), outcome: 'update-failed' as const }
+  const row: any = managedSshUpdateAllRow({ connectionId: 'box' }, failed)
+
+  assert.equal(row.skipped, undefined)
+  assert.equal(row.ok, false)
+  assert.equal(row.error, 'boom')
 })

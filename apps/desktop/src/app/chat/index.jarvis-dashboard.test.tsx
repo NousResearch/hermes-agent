@@ -214,13 +214,16 @@ function baseProps(overrides: Partial<React.ComponentProps<typeof ChatView>> = {
   }
 }
 
-function renderChatView(overrides: Partial<React.ComponentProps<typeof ChatView>> = {}) {
+function renderChatView(
+  overrides: Partial<React.ComponentProps<typeof ChatView>> = {},
+  initialEntries: string[] = ['/stored-1']
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const props = baseProps(overrides)
 
-  render(
+  const { container } = render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/stored-1']}>
+      <MemoryRouter initialEntries={initialEntries}>
         <I18nProvider configClient={null} initialLocale="pl">
           <ChatView {...props} />
         </I18nProvider>
@@ -228,7 +231,7 @@ function renderChatView(overrides: Partial<React.ComponentProps<typeof ChatView>
     </QueryClientProvider>
   )
 
-  return props
+  return { ...props, container }
 }
 
 function setOpenSession(sessionId: string, storedSessionId = 'stored-1') {
@@ -236,6 +239,18 @@ function setOpenSession(sessionId: string, storedSessionId = 'stored-1') {
   $selectedStoredSessionId.set(storedSessionId)
   $sessions.set([{ id: storedSessionId, message_count: 1, title: 'Stable chat' } as never])
 }
+
+/** A true fresh draft on the Desktop: no session, no messages, so the home
+ *  hero owns the surface (`shouldShowIntro` needs every clause to hold). */
+function setFreshHome() {
+  $activeSessionId.set(null)
+  $selectedStoredSessionId.set(null)
+  $sessions.set([])
+  $freshDraftReady.set(true)
+  $messages.set([])
+}
+
+const transcriptFrame = (container: HTMLElement) => container.querySelector('[data-chat-transcript-frame]')
 
 function publishTaskPhase(type: string, at: number, sessionId = $activeSessionId.get() ?? 'runtime-1') {
   act(() =>
@@ -505,5 +520,51 @@ describe('ChatView Agent Czesiek dashboard seam', () => {
 
     expect($jarvisUi.get()).toMatchObject({ sessionId: 'runtime-1', task: { phase: 'idle' } })
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Zatrzymaj zadanie' }).disabled).toBe(true)
+  })
+
+  it('marks the transcript frame empty while the home hero owns the surface', () => {
+    // Empty session on the Desktop: the hero sits straight on the wallpaper, so
+    // the frame must carry the flag that stands the reading pane down
+    // (styles.css, `[data-chat-transcript-frame]:not([data-chat-transcript-empty])`).
+    // Dropping this wiring repaints the glass rectangle over the wallpaper.
+    setFreshHome()
+
+    const { container } = renderChatView({}, ['/'])
+    const frame = transcriptFrame(container)
+
+    expect(frame).not.toBeNull()
+    expect(frame?.hasAttribute('data-chat-transcript-empty')).toBe(true)
+  })
+
+  it('drops the empty flag the moment there is content to read', () => {
+    // A message — including a delegated work report from Hermes — means the
+    // transcript is worth reading again: the pane must come back.
+    setFreshHome()
+    $messages.set([assistantMessage('report-1', 'Raport z delegacji do Hermesa: gotowe.')])
+
+    const { container } = renderChatView({}, ['/'])
+    const frame = transcriptFrame(container)
+
+    expect(frame).not.toBeNull()
+    expect(frame?.hasAttribute('data-chat-transcript-empty')).toBe(false)
+  })
+
+  it('shows the pane as soon as a run is live, even before the first message lands', () => {
+    // Czesiek hands work to Hermes: the user watches it being written, so the
+    // pane is back from the first frame of the turn.
+    setFreshHome()
+    $busy.set(true)
+
+    const { container } = renderChatView({}, ['/'])
+
+    expect(transcriptFrame(container)?.hasAttribute('data-chat-transcript-empty')).toBe(false)
+  })
+
+  it('keeps the pane for a session that has content (never standalone-empty)', () => {
+    // The ordinary open session: nothing about the empty guard may silence the
+    // readable pane here.
+    const { container } = renderChatView()
+
+    expect(transcriptFrame(container)?.hasAttribute('data-chat-transcript-empty')).toBe(false)
   })
 })

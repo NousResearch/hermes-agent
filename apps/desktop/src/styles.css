@@ -733,10 +733,19 @@
           transparent }`) so its backdrop shows through its wrappers. The
           transcript frame inherits that paint and, being unlayered, it
           outranks this rule on specificity too.
+     The pane stands down COMPLETELY for the empty session: while the Desktop
+     home hero owns the surface the frame carries `data-chat-transcript-empty`,
+     the transcript has nothing to read, and a fill/blur/border/radius/margin/
+     shadow block would repaint the rectangle the user reported over the
+     wallpaper the hero is meant to sit on. The `:not(...)` on both mode
+     selectors keeps the pane honest for every session that HAS content
+     (messages, delegation reports, tool results) — the coverage guard still
+     applies there.
+
      The contract test (`chat-surface-glass.test.ts`) fails if the flag or
      the coverage is dropped.  */
-  :root[data-hermes-glass] [data-chat-transcript-frame],
-  :root[data-hermes-clear] [data-chat-transcript-frame] {
+  :root[data-hermes-glass] [data-chat-transcript-frame]:not([data-chat-transcript-empty]),
+  :root[data-hermes-clear] [data-chat-transcript-frame]:not([data-chat-transcript-empty]) {
     margin: 0.5rem;
     border: 1px solid var(--ui-stroke-tertiary);
     border-radius: var(--radius-xl);
@@ -3840,4 +3849,124 @@ html:has([data-hud-shell]) [data-slot='popover-content'] {
 :root[data-hermes-glass] [data-chat-transcript-frame] [data-conversation-scaffold],
 :root[data-hermes-clear] [data-chat-transcript-frame] [data-conversation-scaffold] {
   opacity: 0.82;
+}
+
+/* ── Desktop result pane — the verified answer on the Pulpit ─────────────
+   `JarvisDashboard` prints `$jarvisUi.result` between the voice controls and
+   the conversation below. The gateway hands that field the WHOLE answer
+   (`message.complete` → `task.verified`, see
+   app/session/hooks/use-message-stream/gateway-event/jarvis.ts), so the old
+   bare `<h1 class="text-xl …">{title}</h1>` printed the markdown SOURCE at
+   display size — literal `**bold**`, `|---|` tables — with no panel, straight
+   over the wallpaper in front of the orb: the wall of text reported in Live
+   mode (light and dark alike).
+
+   It is a preview of the reply the transcript carries in full, so it speaks at
+   the log's scale on the transcript pane's own glass recipe: ≥90% coverage,
+   hairline frame, 12px prose / 11px code, height-capped so the orb keeps the
+   surface. Unscoped on purpose — the Pulpit sits on the wallpaper in every
+   translucency mode, not just glass/clear.
+
+   The contract test (`result-pane-css.test.ts`) fails if the panel, the ink or
+   the scale regress; `result-pane.test.tsx` fails if the raw markers come back. */
+[data-jarvis-result-pane] {
+  /* The pane retunes the conversation tokens for its own subtree, exactly as
+     the transcript frame does: the markdown leaves carry Tailwind utilities
+     that resolve these very tokens, so the utilities keep winning and still
+     render at our value. */
+  --conversation-text-font-size: 0.75rem;
+  --conversation-line-height: 1rem;
+  --paragraph-gap: 0.4rem;
+  box-sizing: border-box;
+  max-width: 100%;
+  /* Cap, not clamp: a long answer stays readable inside the pane (it scrolls)
+     and never buries the orb, which owns the surface. */
+  max-height: 40vh;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: var(--radius-xl);
+  background: color-mix(
+      in srgb,
+      color-mix(in srgb, var(--ui-bg-chrome) 95%, var(--ui-text-primary) 5%) 96%,
+      transparent
+    )
+    !important;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    var(--shadow-nous);
+  backdrop-filter: blur(1rem) saturate(1.08);
+  -webkit-backdrop-filter: blur(1rem) saturate(1.08);
+  color: var(--ui-text-primary);
+  font-size: var(--conversation-text-font-size);
+  font-weight: 400;
+  line-height: 1.45;
+  scrollbar-gutter: stable;
+}
+
+/* Prose rhythm is reclaimed from Tailwind Typography at higher specificity:
+   `[data-jarvis-result-pane] .aui-md :where(p)` out-specifies `.prose
+   :where(p)` (0,2,0 against 0,1,0), so the 1.25em document margin cannot
+   reopen the gap this pane just closed. */
+[data-jarvis-result-pane] .aui-md :where(p, ul, ol, blockquote, pre, table) {
+  margin-block: var(--paragraph-gap) 0;
+}
+
+[data-jarvis-result-pane] .aui-md > :first-child {
+  margin-top: 0;
+}
+
+/* Section marks, not display type: one near-size, one weight, full ink. */
+[data-jarvis-result-pane] .aui-md :is(h1, h2, h3, h4, h5, h6) {
+  margin-block: 0.5rem 0.125rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ui-text-primary);
+}
+
+[data-jarvis-result-pane] .aui-md :is(ul, ol) {
+  padding-inline-start: 1rem;
+}
+
+[data-jarvis-result-pane] .aui-md li {
+  margin-block: 0.125rem;
+}
+
+/* Nothing leaves the pane sideways: fences and tables scroll in place, prose
+   and links break instead of widening the column. */
+[data-jarvis-result-pane] .aui-md :is(pre, .aui-shiki, .aui-shiki > pre) {
+  max-width: 100%;
+  overflow-x: auto;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+}
+
+[data-jarvis-result-pane] .aui-md :is(.aui-md-table, table) {
+  max-width: 100%;
+}
+
+[data-jarvis-result-pane] .aui-md .aui-md-table {
+  overflow-x: auto;
+}
+
+[data-jarvis-result-pane] .aui-md :is(th, td) {
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  padding: 0.25rem 0.375rem;
+}
+
+[data-jarvis-result-pane] .aui-md :is(p, li, blockquote, th, td, figcaption, code) {
+  overflow-wrap: break-word;
+}
+
+[data-jarvis-result-pane] .aui-md a {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+[data-jarvis-result-pane] .aui-md :is(img, video, iframe) {
+  max-width: 100%;
+  height: auto;
 }

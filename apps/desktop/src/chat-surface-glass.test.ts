@@ -158,6 +158,42 @@ describe('glass chat transcript surface', () => {
     expect(panelRule?.body).toMatch(/color:\s*var\(--ui-text-primary\)/)
   })
 
+  it('stands the pane down while the empty-session home hero owns the surface', () => {
+    // The surface marks the frame with `data-chat-transcript-empty` while the
+    // Desktop home hero shows. A session with NOTHING to read must not paint
+    // the pane at all — no fill, blur, border or shadow over the wallpaper.
+    // Every mode selector has to carry the guard: leaving one out repaints the
+    // rectangle the user reported (light+glass, hero behind a glass slab).
+    //
+    // Read the selectors straight from the sheet: the flat rule parser above
+    // drags the preceding comment's braces into the selector string, so the
+    // exact-string check goes to the source.
+    const paneSelectorPair = stylesheet.match(
+      /(:root\[data-hermes-glass\]\s+\[data-chat-transcript-frame\][^,{]*,\s*:root\[data-hermes-clear\]\s+\[data-chat-transcript-frame\][^,{]*)\s*\{/
+    )?.[1]
+
+    const selectors = (paneSelectorPair ?? '')
+      .split(',')
+      .map(part => part.trim())
+      .filter(Boolean)
+
+    expect(selectors).toEqual([
+      ':root[data-hermes-glass] [data-chat-transcript-frame]:not([data-chat-transcript-empty])',
+      ':root[data-hermes-clear] [data-chat-transcript-frame]:not([data-chat-transcript-empty])'
+    ])
+  })
+
+  it('keeps the pane (fill + blur) for a session that has content', () => {
+    // The other direction: a message, a delegation report or a tool result
+    // must still land on the readable pane. The empty guard is a `:not`
+    // attribute test, never an ancestor/sibling condition that would also
+    // silence the content case.
+    expect(panelRule).toBeDefined()
+    expect(panelDeclaration).toMatch(/var\(--ui-bg-chrome\)\s+(?:9\d|100)%/)
+    expect(panelRule?.body).toMatch(/backdrop-filter:\s*blur\([\d.]+rem\)/)
+    expect(coverage(panelDeclaration)).toBeGreaterThanOrEqual(0.9)
+  })
+
   it('does not change the global glass painter or terminal surface contract', () => {
     const rootGlassRule = stylesheet.match(/:root\[data-hermes-glass\]\s*\{([^}]*)\}/)?.[1]
 

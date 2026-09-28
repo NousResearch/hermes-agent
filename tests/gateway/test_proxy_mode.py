@@ -288,6 +288,24 @@ class TestRunAgentViaProxy:
         assert result["final_response"] == "Hello world"
 
     @pytest.mark.asyncio
+    async def test_handoff_proxy_turn_sends_no_typing(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        adapter = MagicMock()
+        adapter.send_typing = AsyncMock()
+        runner._delivery_adapter_for = MagicMock(return_value=adapter)
+        source = _make_source(Platform.TELEGRAM)
+        session = _FakeSession(_FakeSSEResponse(sse_chunks=["data: [DONE]\n\n"]))
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                await runner._run_agent_via_proxy(
+                    "handoff", "", [], source, "session-abc", handoff_delivery=True,
+                )
+
+        adapter.send_typing.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://unreachable:8642")
         monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)

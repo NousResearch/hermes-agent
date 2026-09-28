@@ -2840,7 +2840,7 @@ class GatewayTurnMixin:
         stream_task = asyncio.create_task(_stream_consumer.run()) if _stream_consumer else None
 
         _adapter = self._delivery_adapter_for(source)
-        if _adapter and not scheduled_heartbeat:
+        if _adapter and not (scheduled_heartbeat or handoff_delivery):
             with suppress(Exception):
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
 

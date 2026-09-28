@@ -320,13 +320,13 @@ def mark_undelivered_interim(agent: Any, *, assistant_message: Any, assistant_ms
     text will not reach the user; returns whether it did.
 
     With interim messages disabled (no ``interim_assistant_callback``) and the text not
-    already streamed, the user never sees it, and a later reply that assumes they did
-    leaves them without it. The marker tells the next call so, with full context. Only
-    the sidecar changes: ``content`` stays what the user-facing transcript shows, and the
-    sidecar is persisted with the row and replayed verbatim, so this row's wire bytes are
-    identical on every later call. Decided before the row is flushed, which is why it
-    mirrors the delivery decision of ``_emit_interim_assistant_message`` instead of
-    reading its result."""
+    already fully streamed, the user never sees it, and a later reply that assumes they
+    did leaves them without it. The marker tells the next call so, with full context.
+    Only the sidecar changes: ``content`` stays what the user-facing transcript shows, and
+    the sidecar is persisted with the row and replayed verbatim, so this row's wire bytes
+    are identical on every later call. It is decided before the row is flushed (interim
+    emission runs after the flush), from the same callback and streamed-text checks the
+    interim path uses."""
     from agent.conversation_loop import _looks_like_material_interim_content
 
     if getattr(agent, "interim_assistant_callback", None) is not None:
@@ -335,7 +335,7 @@ def mark_undelivered_interim(agent: Any, *, assistant_message: Any, assistant_ms
     if not isinstance(content, str) or not content or "api_content" in assistant_msg:
         return False
     visible = agent._interim_assistant_visible_text(assistant_msg)
-    if not visible or agent._interim_content_was_streamed(visible):
+    if not visible or agent._interim_content_fully_streamed(visible):
         return False
     clean_turn_content = agent._strip_think_blocks(assistant_message.content or "").strip()
     if not clean_turn_content or not _looks_like_material_interim_content(clean_turn_content):

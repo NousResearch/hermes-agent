@@ -233,3 +233,130 @@ def test_failed_setup_never_runs_child_and_releases_handles(tmp_path, monkeypatc
             proc._handle.Close()
         for job in jobs:
             job.close()
+
+
+_POSIX_SCRIPT = r'''
+import json, subprocess, sys, time
+from pathlib import Path
+import psutil
+root = Path(sys.argv[1])
+role = sys.argv[2]
+def record(name):
+    p = psutil.Process()
+    target = root / (name + '.json')
+    temp = target.with_suffix('.tmp')
+    temp.write_text(json.dumps({'pid': p.pid, 'created': p.create_time()}))
+    temp.replace(target)
+record(role)
+if role == 'owner':
+    from hermes_cli.local_runtime.processes import spawn_server
+    proc, job = spawn_server([sys.executable, __file__, str(root), 'router'],
+                             reap_with_owner=True)
+    (root / 'ready').write_text('ready')
+    while not (root / 'stop_router').exists():
+        time.sleep(.02)
+    # A graceful stop: the owner (the router's parent) terminates it itself and
+    # deliberately does NOT wait, so the corpse stays a zombie for a while.
+    proc.terminate()
+    time.sleep(90)
+elif role == 'router':
+    # The crash scenario needs a tree (router + grandchild) to verify the whole
+    # tree dies; the graceful-stop scenario only watches the reaper vs the
+    # zombie router, so the crash test plants the switch file before launch.
+    if (root / 'with_grandchild').exists():
+        subprocess.Popen([sys.executable, __file__, str(root), 'grandchild'])
+    time.sleep(90)
+else:
+    time.sleep(90)
+'''
+
+
+def _dead_or_zombie(identity):
+    """A terminated non-child cannot be waited out — only its own parent can reap
+    the corpse — so zombie-or-gone is the strongest death observable from here."""
+    try:
+        proc = psutil.Process(identity['pid'])
+        return proc.create_time() != identity['created'] or (
+            proc.status() == psutil.STATUS_ZOMBIE or not proc.is_running())
+    except psutil.NoSuchProcess:
+        return True
+
+
+def _reaper_procs():
+    return [p for p in psutil.process_iter(['cmdline', 'exe'])
+            if p.info['cmdline'] and p.info['exe']
+            and 'python' in p.info['exe'].lower()
+            and 'hermes-owner-death-reaper' in ' '.join(p.info['cmdline'])]
+
+
+def _launch(role, script, tmp_path, env, log):
+    return subprocess.Popen([sys.executable, str(script), str(tmp_path), role],
+                            env=env, stdout=log, stderr=log)
+
+
+@pytest.mark.platforms("posix")
+def test_owner_crash_reaps_router_tree_not_external(tmp_path):
+    script = tmp_path / 'disposable posix server.py'
+    script.write_text(_POSIX_SCRIPT)
+    env = dict(os.environ, HERMES_HOME=str(tmp_path / 'home'),
+               PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+    (tmp_path / 'with_grandchild').write_text('tree')
+    with (tmp_path / 'children.log').open('w') as log:
+        launchers = [_launch(role, script, tmp_path, env, log)
+                     for role in ('control', 'owner')]
+        try:
+            identities = {role: _read(tmp_path / f'{role}.json')
+                          for role in ('owner', 'router', 'grandchild', 'control')}
+            assert _wait((tmp_path / 'ready').exists)
+            assert _wait(lambda: _reaper_procs()), 'owner-death reaper never armed'
+            print('disposable identities:', identities)
+            _kill(identities['owner'])
+            for launcher in launchers:
+                if launcher.poll() is None and launcher.pid == identities['owner']['pid']:
+                    launcher.wait(timeout=10)
+            # The sibling reaper takes the whole tree down within a polling cycle.
+            assert _wait(lambda: _dead_or_zombie(identities['router'])
+                         and _dead_or_zombie(identities['grandchild']), timeout=20), (
+                'uncontained router/grandchild survived owner crash',
+                identities['router'], identities['grandchild'])
+            assert _wait(lambda: not _reaper_procs(), timeout=20), (
+                'reaper lingered after reaping')
+            assert _alive(identities['control']), 'unrelated external control was terminated'
+        finally:
+            for path in tmp_path.glob('*.json'):
+                _kill(json.loads(path.read_text()))
+            for launcher in launchers:
+                if launcher.poll() is None:
+                    launcher.kill()
+                launcher.wait(timeout=10)
+
+
+@pytest.mark.platforms("posix")
+def test_reaper_exits_after_router_stops_but_owner_lives(tmp_path):
+    script = tmp_path / 'disposable posix server.py'
+    script.write_text(_POSIX_SCRIPT)
+    env = dict(os.environ, HERMES_HOME=str(tmp_path / 'home'),
+               PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+    with (tmp_path / 'children.log').open('w') as log:
+        owner = _launch('owner', script, tmp_path, env, log)
+        try:
+            identities = {role: _read(tmp_path / f'{role}.json')
+                          for role in ('owner', 'router')}
+            assert _wait((tmp_path / 'ready').exists)
+            assert _wait(lambda: _reaper_procs()), 'owner-death reaper never armed'
+            # A graceful stop takes the router down while the owner lives on
+            # (the owner terminates it itself — the live-system guard rightly
+            # forbids the test from signalling outside its own subtree);
+            # the reaper must treat the unreaped zombie as gone and exit.
+            (tmp_path / 'stop_router').write_text('stop')
+            assert _wait(lambda: _dead_or_zombie(identities['router']))
+            assert _wait(lambda: not _reaper_procs(), timeout=20), (
+                'reaper lingered after a graceful router stop')
+            assert _alive(identities['owner']), 'reaper terminated a living owner'
+        finally:
+            # The zombie router is reaped by the OS once its owner dies; the
+            # owner itself is this test's launcher, so cleaning it up is enough.
+            _kill(identities['owner'])
+            if owner.poll() is None:
+                owner.kill()
+            owner.wait(timeout=10)

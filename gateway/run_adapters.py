@@ -1510,6 +1510,9 @@ class GatewayAdapterLifecycleMixin:
             )
             return
         profile_map.pop(platform, None)
+        # The notification may arrive outside the profile's scope: the row is that profile's.
+        if (profile_home := self._routed_profile_home(profile_name)) is not UNRESOLVED_PROFILE_HOME:
+            record_platform_disconnect(adapter, hermes_home=profile_home)
         await self._safe_adapter_disconnect(adapter, platform)
         if not self._running:
             return

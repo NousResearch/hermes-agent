@@ -85,9 +85,13 @@ _SEND_KIND_CLASSES = {
 
 
 def _status_code(exc: BaseException | None) -> int | None:
-    for holder in (exc, getattr(exc, "response", None)):
+    # Stored values only, never a property: a deprecated one warns (websockets' ``code``), and a
+    # classifier must not run library code against the adapter's live exception.
+    from inspect import getattr_static
+
+    for holder in (exc, getattr_static(exc, "response", None)):
         for attr in ("status_code", "status", "code"):
-            value = getattr(holder, attr, None)
+            value = getattr_static(holder, attr, None)
             if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
                 return value
     return None
@@ -163,22 +167,48 @@ def platform_health_fields(*, platform: Any, event: str, error_class: str) -> di
     }
 
 
+def _record_health(platform: Any, event: str, *, exc: BaseException | None = None, fatal_code: Any = None) -> None:
+    # Classified on the worker: whatever an exception carries, the caller re-raising it never sees us.
+    error_class = "none" if event in {"connect_ok", "reconnect"} else connect_error_class(exc=exc, fatal_code=fatal_code)
+    _emit("PLATFORM_HEALTH_MARK", platform_health_fields, platform=platform, event=event, error_class=error_class)
+
+
+def _in_home(home: Any, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+    """Run ``fn`` scoped to ``home`` (the profile that owns the row), or the submitting context's scope."""
+    if home is None:
+        fn(*args, **kwargs)
+        return
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(home))
+    try:
+        fn(*args, **kwargs)
+    finally:
+        reset_hermes_home_override(token)
+
+
 def record_platform_connect(
     adapter: Any, platform: Any, *, is_reconnect: bool, ok: bool, exc: BaseException | None = None,
 ) -> None:
     """One adapter connect attempt (cold start or reconnect watcher), from the runner's single
     connect seam. A failed attempt is ``connect_failed`` whichever path made it."""
     event = ("reconnect" if is_reconnect else "connect_ok") if ok else "connect_failed"
-    error_class = "none" if ok else connect_error_class(
-        exc=exc, fatal_code=None if exc is not None else getattr(adapter, "fatal_error_code", None))
-    _submit(_emit, "PLATFORM_HEALTH_MARK", platform_health_fields,
-            platform=platform, event=event, error_class=error_class)
+    fatal_code = None if ok or exc is not None else getattr(adapter, "fatal_error_code", None)
+    _submit(_record_health, platform, event, exc=exc, fatal_code=fatal_code)
 
 
-def record_platform_disconnect(adapter: Any) -> None:
-    """A live adapter lost its connection after startup (its fatal-error handler owned it)."""
-    _submit(_emit, "PLATFORM_HEALTH_MARK", platform_health_fields, platform=adapter, event="disconnect",
-            error_class=connect_error_class(fatal_code=getattr(adapter, "fatal_error_code", None)))
+# The user turned the platform off (relay opt-out revokes its credential): not a lost connection.
+_USER_CHOSEN_FATAL_CODES = frozenset({"relay_disabled"})
+
+
+def record_platform_disconnect(adapter: Any, *, hermes_home: Any = None) -> None:
+    """A live adapter lost its connection after startup (its fatal-error handler owned it).
+    ``hermes_home``: the owning profile, for handlers that run outside its scope (multiplexed
+    secondaries)."""
+    fatal_code = getattr(adapter, "fatal_error_code", None)
+    if fatal_code in _USER_CHOSEN_FATAL_CODES:
+        return
+    _submit(_in_home, hermes_home, _record_health, adapter, "disconnect", fatal_code=fatal_code)
 
 
 # ---- hermes.platform.delivery + hermes.gateway.reply_latency ----
@@ -202,16 +232,18 @@ def records_delivery(send: Callable[..., Any]) -> Callable[..., Any]:
         try:
             result = await send(self, *args, **kwargs)
         except Exception as exc:
-            _submit(_emit, "PLATFORM_DELIVERY_MARK", delivery_fields,
-                    platform=self, failure_class=delivery_failure_class(exc=exc))
+            _submit(_record_delivery, self, exc=exc)
             raise
-        success = getattr(result, "success", None)
-        if isinstance(success, bool):
-            _submit(_emit, "PLATFORM_DELIVERY_MARK", delivery_fields, platform=self,
-                    failure_class="none" if success else delivery_failure_class(result))
+        if isinstance(getattr(result, "success", None), bool):
+            _submit(_record_delivery, self, result)
         return result
 
     return wrapper
+
+
+def _record_delivery(adapter: Any, result: Any = None, *, exc: BaseException | None = None) -> None:
+    failure_class = "none" if exc is None and result.success else delivery_failure_class(result, exc)
+    _emit("PLATFORM_DELIVERY_MARK", delivery_fields, platform=adapter, failure_class=failure_class)
 
 
 def stops_reply_clock(send_or_edit: Callable[..., Any]) -> Callable[..., Any]:
@@ -234,6 +266,9 @@ _REPLY_CLOCK_MAX_AGE = 3600.0
 # send side may run outside the turn's scope, so the start side records whose row it is.
 _reply_clocks: OrderedDict[tuple[str, str], tuple[float, str]] = OrderedDict()
 _reply_lock = threading.Lock()
+# One connector adapter fronting several platforms: the turn started under the platform the message
+# came in on (``discord``), its reply leaves through this adapter.
+_FRONTING_PLATFORMS = frozenset({"relay"})
 
 
 def _clock_key(platform: Any, chat_id: Any) -> tuple[str, str] | None:
@@ -263,10 +298,14 @@ def stop_reply_clock(adapter: Any, chat_id: Any, result: Any = None) -> None:
         return
     with _reply_lock:
         started = _reply_clocks.pop(key, None)
+        if started is None and key[0] in _FRONTING_PLATFORMS:
+            fronted = [k for k in _reply_clocks if k[1] == key[1]]
+            started = _reply_clocks.pop(fronted[0]) if len(fronted) == 1 else None
     # A turn that ended without a reply leaves its clock behind; an unrelated send hours later
     # must not be read as that turn's reply.
     if started is not None and time.monotonic() - started[0] <= _REPLY_CLOCK_MAX_AGE:
-        _submit(_record_reply_latency, adapter, time.monotonic() - started[0], started[1])
+        _submit(_in_home, started[1], _emit, "REPLY_LATENCY_MARK", reply_latency_fields,
+                platform=adapter, seconds=time.monotonic() - started[0])
 
 
 def reply_latency_fields(*, platform: Any, seconds: float) -> dict[str, str]:
@@ -276,16 +315,6 @@ def reply_latency_fields(*, platform: Any, seconds: float) -> dict[str, str]:
         "first_response_bucket": _bucket(max(0.0, seconds), _REPLY_THRESHOLDS, "gte_60s"),
         "platform": _platform(platform),
     }
-
-
-def _record_reply_latency(adapter: Any, seconds: float, home: str) -> None:
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-
-    token = set_hermes_home_override(home)
-    try:
-        _emit("REPLY_LATENCY_MARK", reply_latency_fields, platform=adapter, seconds=seconds)
-    finally:
-        reset_hermes_home_override(token)
 
 
 # ---- hermes.cron.run ----

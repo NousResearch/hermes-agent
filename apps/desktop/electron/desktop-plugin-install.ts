@@ -467,10 +467,11 @@ export async function installDesktopPluginFromGit(
       // the AGENT package name, so the copy this app makes and the one
       // `reconcileUnifiedDesktopHalves` would make are the same folder (#100412)
       // and the Plugins page pairs them into one row. Catalog identity takes
-      // precedence; a non-catalog desktop-only repo stays standalone.
-      const packageName =
-        catalogName ?? (detected.agent ? (detected.agentName ?? desktopPluginFolderName(gitUrl, subdir)) : null)
-      const pluginName = packageName ?? desktopPluginFolderName(gitUrl, subdir)
+      // precedence; desktop-only repos stay standalone (the marker means agent-owned).
+      const packageName = detected.agent
+        ? (catalogName ?? detected.agentName ?? desktopPluginFolderName(gitUrl, subdir))
+        : null
+      const pluginName = catalogName ?? packageName ?? desktopPluginFolderName(gitUrl, subdir)
       const targetDir = path.join(desktopPluginsRoot, pluginName)
       const targetPlugin = path.join(targetDir, 'plugin.js')
 

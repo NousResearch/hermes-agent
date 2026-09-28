@@ -194,6 +194,8 @@ describe('installDesktopPluginFromGit', () => {
       if (subdir) {
         fs.mkdirSync(pluginRoot, { recursive: true })
         fs.renameSync(path.join(repo, 'desktop'), path.join(pluginRoot, 'desktop'))
+        fs.writeFileSync(path.join(pluginRoot, 'plugin.yaml'), JSON.stringify({ name: 'manifest-name' }))
+        fs.writeFileSync(path.join(pluginRoot, '__init__.py'), 'def register(ctx): pass')
       }
       const entry = path.join(pluginRoot, 'desktop', 'plugin.js')
       const olderBytes = 'export const version = "reviewed"'
@@ -322,7 +324,9 @@ describe('installDesktopPluginFromGit', () => {
     const appRoot = mkdtemp('hermes-plugin-root-')
     roots.push(appRoot)
 
-    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, false, {
+      catalogName: 'standalone-catalog'
+    })
 
     expect(result.ok).toBe(true)
     expect(fs.existsSync(path.join(appRoot, String(result.pluginName), 'plugin.js'))).toBe(true)
